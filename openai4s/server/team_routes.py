@@ -116,9 +116,18 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
             # unknown, expired, revoked, and already-used are one sentence
             self._json({"error": "invalid invite", "code": "invalid_invite"}, 403)
             return True
-        user = store.team.create_user(
-            username=username, password=password, role="guest"
-        )
+        try:
+            user = store.team.create_user(
+                username=username, password=password, role="guest"
+            )
+        except ValueError as e:
+            # The pre-check above is not a lock: a concurrent redemption can
+            # take the same username between it and here. Returning the
+            # invite is what keeps a lost race recoverable — the holder
+            # retries with another name instead of holding a burnt token.
+            store.governance.reinstate_invite(token)
+            self._json({"error": str(e)}, 409)
+            return True
         store.governance.set_member(invite["project_id"], user["id"], role="guest")
         store.team.audit(
             actor=username,

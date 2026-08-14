@@ -2119,9 +2119,10 @@ class SessionRunner:
                 ),
                 emitter_for=lambda root_frame_id: self.hub.emitter(root_frame_id),
                 llm_config_for=lambda state: self._llm_cfg(state),
-                review_evidence=lambda evidence, config: review_evidence(
-                    evidence, config
-                ),
+                review_evidence=lambda evidence, config, root_frame_id: (
+                    self.enforce_llm_quota(root_frame_id),
+                    review_evidence(evidence, config),
+                )[1],
                 providers=lambda: PROVIDERS,
                 clean_api_key=lambda value: _clean_api_key(value),
                 resolve_profile_key=lambda profile: _resolve_profile_key(
@@ -3337,6 +3338,42 @@ class SessionRunner:
             reason="publishing share snapshot",
         ):
             return fn(st.cancel)
+
+    def enforce_llm_quota(self, root_frame_id: str) -> None:
+        """Team-mode LLM quota (M2-6), consulted before a provider request.
+
+        One method rather than a closure so every LLM entry point the daemon
+        owns can share it: the turn loop's ChatModel and the reviewer, which
+        calls the provider through its own port and would otherwise be an
+        unmetered, user-triggered way around an exhausted quota.
+
+        Frozen decision: a *broken* check admits and audits — availability
+        over bookkeeping.
+        """
+        try:
+            owner = self.store.team.session_owner(root_frame_id)
+        except Exception:  # noqa: BLE001
+            owner = None
+        if owner is None:
+            return
+        try:
+            for kind in ("llm_input_tokens", "llm_output_tokens"):
+                self.store.governance.check_quota(
+                    user_id=owner["user_id"],
+                    project_id=owner["project_id"],
+                    kind=kind,
+                )
+        except QuotaExceeded:
+            raise
+        except Exception as e:  # noqa: BLE001
+            try:
+                self.store.team.audit(
+                    actor=owner["user_id"],
+                    action="quota_check_failed",
+                    detail=str(e)[:200],
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def session_replay_view(self, root_frame_id: str) -> bytes:
         """The sanitized read-only view.json bytes for a session (M2-3).
@@ -6604,32 +6641,7 @@ class SessionRunner:
             )
 
         def _llm_quota_gate() -> None:
-            """Team-mode LLM quota (M2-6), consulted before every provider
-            request. Frozen decision: a broken check admits and audits."""
-            try:
-                owner = self.store.team.session_owner(st.root_frame_id)
-            except Exception:  # noqa: BLE001
-                owner = None
-            if owner is None:
-                return
-            try:
-                for kind in ("llm_input_tokens", "llm_output_tokens"):
-                    self.store.governance.check_quota(
-                        user_id=owner["user_id"],
-                        project_id=owner["project_id"],
-                        kind=kind,
-                    )
-            except QuotaExceeded:
-                raise
-            except Exception as e:  # noqa: BLE001
-                try:
-                    self.store.team.audit(
-                        actor=owner["user_id"],
-                        action="quota_check_failed",
-                        detail=str(e)[:200],
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+            self.enforce_llm_quota(st.root_frame_id)
 
         engine = AgentEngine(
             ChatModel(
@@ -8697,6 +8709,100 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except Exception:  # noqa: BLE001 — auditing must not break the read
                 pass
 
+        def _team_root_of_artifact_meta(self, meta: dict | None) -> str | None:
+            """The session root a resolved artifact/version row belongs to.
+
+            Three shapes reach here, and only the first carries the root
+            directly: an `artifacts` row (`root_frame_id`), an
+            `artifact_versions` row (`frame_id`, often NULL, plus
+            `artifact_id`), and a filename match (an `artifacts` row again).
+            Reading only `root_frame_id` made the version-addressed case
+            resolve to None — which the caller then treated as "nothing to
+            check", i.e. exactly the leak the guard exists to stop.
+            """
+            if not meta:
+                return None
+            root = meta.get("root_frame_id")
+            if root:
+                return str(root)
+            fid = meta.get("frame_id")
+            if fid:
+                try:
+                    resolved = store.resolve_frame_scope(str(fid)).get("root_frame_id")
+                except Exception:  # noqa: BLE001
+                    resolved = None
+                if resolved:
+                    return str(resolved)
+            artifact_id = meta.get("artifact_id")
+            if artifact_id:
+                try:
+                    parent = store.get_artifact(str(artifact_id))
+                except Exception:  # noqa: BLE001
+                    parent = None
+                if parent and parent.get("root_frame_id"):
+                    return str(parent["root_frame_id"])
+            return None
+
+        def _team_guard_served_artifact(self, meta: dict | None) -> None:
+            """The real byte chokepoint (INV-13): enforced inside _serve_artifact
+            so it covers /preview/ (dispatched before _api) AND version- or
+            filename-addressed serves that the path-based _team_scope_guard —
+            which resolves artifact_id only, inside _api — cannot see. A guest
+            fails visibility on everything here, which is correct: a guest's
+            only data surface is the sanitized replay (D3)."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return
+            root = self._team_root_of_artifact_meta(meta)
+            if identity.is_admin:
+                if root:
+                    self._team_audit_admin_private_read(root)
+                return
+            # An artifact whose session cannot be resolved is admin-only, the
+            # same fail-closed rule an unowned session gets. Treating
+            # "unknown owner" as "no restriction" is how a version-addressed
+            # serve walked past this check.
+            if root is None or not store.team.session_visible_to(
+                root, self._team_identity_dict()
+            ):
+                raise GatewayError(404, "artifact not found")
+
+        def _team_filter_artifacts(self, artifacts: list[dict]) -> list[dict]:
+            """Keep only the artifacts whose session this caller may see
+            (project-level metadata/zip routes; INV-13). Admin keeps all and
+            audits each private one."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return artifacts
+            if identity.is_admin:
+                for a in artifacts:
+                    root = self._team_root_of_artifact_meta(a)
+                    if root:
+                        self._team_audit_admin_private_read(root)
+                return artifacts
+            user = self._team_identity_dict()
+            kept = []
+            for a in artifacts:
+                root = self._team_root_of_artifact_meta(a)
+                if root and store.team.session_visible_to(root, user):
+                    kept.append(a)
+            return kept
+
+        def _team_guard_project(self, method: str, sub: str) -> None:
+            """Refuse a project-addressed route to a non-participant (M2-1).
+            404, matching the frame guard: which projects exist is protected.
+            Admin passes. The bare `/projects` list is filtered at its handler,
+            not here."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return
+            m = re.fullmatch(r"/projects/([^/]+)(?:/.*)?", sub)
+            if not m:
+                return
+            pid = unquote(m.group(1))
+            if not store.governance.is_project_participant(pid, identity.user_id):
+                raise GatewayError(404, "project not found")
+
         def _team_scope_guard(self, method: str, sub: str) -> None:
             """Refuse frame- and artifact-addressed routes whose session this
             caller may not see (M1-6, INV-13). 404, not 403: which sessions
@@ -8705,7 +8811,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             Session resolution goes through the *root* frame — a child frame
             id must not answer differently from its root. An artifact is as
             visible as the session that produced it. Admin reads pass, but a
-            private session leaves an audit row per view (D4).
+            private session leaves an audit row per view (D4). This path-based
+            guard is a first line only for artifacts: the authoritative byte
+            check is _team_guard_served_artifact inside _serve_artifact.
             """
             identity = getattr(self, "_team_identity", None)
             if _team_auth is None or identity is None:
@@ -9379,6 +9487,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if not path or not Path(path).is_file():
                 self._json({"error": "artifact not found"}, 404)
                 return
+            # Team scope (INV-13): the real byte chokepoint. /preview/<id> is
+            # dispatched before _api, and version-/filename-addressed serves
+            # are invisible to the path-based scope guard — both reach here.
+            self._team_guard_served_artifact(meta)
             ctype = (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
             if force_html:
                 ctype = "text/html; charset=utf-8"
@@ -9509,8 +9621,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"ok": True, "visibility": visibility})
                 return
             # Ownership scope (team mode): every frame-/artifact-addressed
-            # route below answers 404 unless the caller may see its session.
+            # route below answers 404 unless the caller may see its session,
+            # and every /projects/<pid>/* route unless the caller participates
+            # in that project (bare /projects list is filtered at its handler).
             self._team_scope_guard(method, sub)
+            self._team_guard_project(method, sub)
             if sub == "/sessions/verify" and method == "POST":
                 # Verification before import, so a recipient can check what
                 # they were handed without first admitting it to their
@@ -9983,10 +10098,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
             if sub == "/projects" and method == "GET":
+                projects = store.list_projects()
+                # Team mode (INV-13): a non-admin sees only projects they
+                # participate in — otherwise the list leaks every team's
+                # project names and agent-context prose.
+                filt = self._team_visibility_filter()
+                if filt is not None:
+                    allowed = store.governance.participant_project_ids(filt)
+                    projects = [
+                        p for p in projects if str(p.get("project_id")) in allowed
+                    ]
                 self._json(
                     {
-                        "projects": [_project_json(p) for p in store.list_projects()],
-                        "total": len(store.list_projects()),
+                        "projects": [_project_json(p) for p in projects],
+                        "total": len(projects),
                     }
                 )
                 return
@@ -9997,6 +10122,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     description=b.get("description") or "",
                     context=b.get("context") or "",
                 )
+                # Team mode: the creator becomes a member, so the project
+                # guard above lets them back into the project they just made.
+                _creator = self._team_owner_user_id()
+                if _creator:
+                    try:
+                        store.governance.set_member(p["project_id"], _creator)
+                    except Exception:  # noqa: BLE001
+                        pass
                 self._json(
                     _project_json(
                         {
@@ -11083,7 +11216,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 pid = m.group(1)
                 self._serve_artifact_bundle(
-                    store.list_artifacts({"project_id": pid}),
+                    self._team_filter_artifacts(
+                        store.list_artifacts({"project_id": pid})
+                    ),
                     f"project-{pid}-artifacts.zip",
                 )
                 return
@@ -11132,7 +11267,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # (frames) — powers the Files panel's "project" scope so files
                 # aren't siloed per conversation.
                 pid = m.group(1)
-                arts = store.list_artifacts({"project_id": pid})
+                arts = self._team_filter_artifacts(
+                    store.list_artifacts({"project_id": pid})
+                )
                 self._json([_artifact_json(a) for a in arts])
                 return
             m = re.fullmatch(r"/frames/([^/]+)/execution-log", sub)
@@ -12871,30 +13008,37 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except OSError:
                 return
             conn = WSConnection(self.wfile)
-            # Team mode (M1-7): the identity resolved by the team guard at
-            # upgrade time is fixed for the connection's lifetime. Every
-            # subscription below is authorized against it, and a broadcast
-            # only reaches subscribed connections — so the subscribe check is
-            # the per-event check.
-            _ws_user = self._team_identity_dict() if _team_auth is not None else None
+            # Team mode (M1-7): the identity is RE-RESOLVED from the persisted
+            # handshake headers on every message, not captured once. A member
+            # who is disabled or whose password is reset (both delete their
+            # auth_sessions) then fails resolution mid-connection — so a stale
+            # long-lived socket cannot keep subscribing to new sessions or
+            # cancelling executions with authority its owner no longer has.
+
+            def _ws_user_now() -> dict | None:
+                if _team_auth is None:
+                    return None
+                identity = self._team_identity_from_request()
+                self._team_identity = identity  # keep audit helpers coherent
+                return self._team_identity_dict() if identity is not None else None
 
             def _ws_session_visible(rid: str) -> bool:
                 if _team_auth is None:
                     return True
+                user = _ws_user_now()
+                if user is None:
+                    # identity revoked since upgrade: deny everything
+                    return False
                 frame = store.get_frame(rid)
                 if frame is None:
                     # An unknown id must not be pre-subscribable: frame ids
                     # are random, and a lucky guess parked on a future
                     # session would stream it from its first event.
                     return bool(
-                        _ws_user
-                        and (
-                            _ws_user.get("role") == "admin"
-                            or _ws_user.get("kind") == "service"
-                        )
+                        user.get("role") == "admin" or user.get("kind") == "service"
                     )
                 root = frame.get("root_frame_id") or rid
-                return store.team.session_visible_to(str(root), _ws_user)
+                return store.team.session_visible_to(str(root), user)
 
             hub.add(conn)
             try:

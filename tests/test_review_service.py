@@ -204,7 +204,9 @@ def _service(
         ),
         emitter_for=emitter_for,
         llm_config_for=lambda _state: config,
-        review_evidence=lambda evidence, cfg: reviews["call"](evidence, cfg),
+        review_evidence=lambda evidence, cfg, root_frame_id=None: reviews["call"](
+            evidence, cfg
+        ),
         providers=lambda: provider_registry["value"],
         clean_api_key=lambda value: str(value or "").strip(),
         # A profile's api_key holds a broker reference once migrated; this

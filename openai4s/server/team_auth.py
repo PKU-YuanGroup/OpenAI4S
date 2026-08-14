@@ -88,13 +88,18 @@ class TeamAuthService:
             allowed = tokens >= 1.0
             self._buckets[key] = (tokens - 1.0 if allowed else tokens, now)
             # Opportunistic trim so a scan of many usernames cannot grow the
-            # dict without bound: full buckets that are no longer interesting
-            # carry no information and can be dropped.
+            # dict without bound. A bucket refills to full after
+            # capacity/rate = 60s of no activity, at which point it carries no
+            # rate-limiting state: a fresh get() re-seeds it at full, which is
+            # identical behavior. So drop everything idle longer than that
+            # window. The previous predicate tested the *stored* token count,
+            # which for an allowed attempt is at most capacity-1 and so never
+            # crossed the threshold — the trim kept every entry and the dict
+            # grew without bound.
             if len(self._buckets) > 4096:
+                full_after = LOGIN_ATTEMPTS_PER_MINUTE / rate  # == 60.0s
                 self._buckets = {
-                    k: v
-                    for k, v in self._buckets.items()
-                    if v[0] < LOGIN_ATTEMPTS_PER_MINUTE - 0.01
+                    k: v for k, v in self._buckets.items() if (now - v[1]) < full_after
                 }
         return allowed
 

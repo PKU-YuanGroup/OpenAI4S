@@ -738,6 +738,21 @@ def _strip_sql_literals(sql: str) -> str:
     return _SQL_LITERAL_RE.sub(" ", sql or "")
 
 
+#: Word-boundary matcher for the denylist pre-check. A bare substring test
+#: (`if bad in text`) denies any query that merely *contains* a denied word —
+#: harmless for a specific name like `settings`, but a real single-user
+#: regression once the team tables add generic words: `SELECT * FROM
+#: active_users` contains `users`. `\b` treats a denied table as a token, so
+#: `\busers\b` matches `FROM users`, `"users"`, `main.users`, and `users,`
+#: (every real reference) but NOT `active_users` (`_` is a word char). This
+#: only makes the cheap pre-check less aggressive; the SQLite authorizer,
+#: which denies by the *resolved* table name, stays the real enforcement, so
+#: no denied table becomes readable.
+_DENY_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in sorted(QUERY_DENYLIST)) + r")\b"
+)
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -4504,9 +4519,9 @@ class Store:
         """
         lowered = sql.lower()
         deny_scan = _strip_sql_literals(lowered)
-        for bad in QUERY_DENYLIST:
-            if bad in deny_scan:
-                raise PermissionError(f"host.query: table '{bad}' is not readable")
+        bad = _DENY_WORD_RE.search(deny_scan)
+        if bad is not None:
+            raise PermissionError(f"host.query: table '{bad.group(0)}' is not readable")
         stripped = lowered.lstrip()
         if not (stripped.startswith("select") or stripped.startswith("with")):
             raise ValueError("host.query only allows read-only SELECT/CTE")

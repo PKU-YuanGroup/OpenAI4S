@@ -157,22 +157,26 @@ def test_search_does_not_leak_other_users_sessions(daemon):
 
 
 def test_project_timeline_is_ownership_filtered(daemon):
+    """Two layers, and both matter: a non-participant is refused the project
+    outright, and a participant still sees only sessions they may see."""
     a = _login(daemon, "alice", "fake-pw-a")
     b = _login(daemon, "bob", "fake-pw-b")
     fid_a = _create_session(daemon, a)
+    path = f"/api/v1/projects/{_project_id(daemon)}/action-timeline"
 
-    status, raw = _get(
-        daemon.port,
-        f"/api/v1/projects/{_project_id(daemon)}/action-timeline",
-        cookie=b,
-    )
-    assert status == 200
+    # bob participates in nothing here: the project itself is not his to read
+    assert _get(daemon.port, path, cookie=b)[0] == 404
+
+    # once he has a session of his own in the project he may read it — and
+    # alice's session is still filtered out of the cross-session view
+    _create_session(daemon, b)
+    status, raw = _get(daemon.port, path, cookie=b)
+    assert status == 200, raw[:200]
     payload = _body(raw)
     roots = {
         g.get("session", {}).get("root_frame_id") for g in payload.get("groups", [])
     }
     assert fid_a not in roots
-    assert payload.get("session_count") == 0
 
 
 def test_deleting_a_session_removes_its_ownership_row(daemon):

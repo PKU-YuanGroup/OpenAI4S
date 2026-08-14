@@ -198,33 +198,49 @@ def test_quota_verdicts(store):
 
 
 def test_quota_set_validation_and_listing(store):
+    kind = "llm_input_tokens"
     with pytest.raises(ValueError):
         store.governance.set_quota(
-            scope="org", scope_id="x", kind="k", limit_amount=1, window="day"
+            scope="org", scope_id="x", kind=kind, limit_amount=1, window="day"
         )
     with pytest.raises(ValueError):
         store.governance.set_quota(
-            scope="user", scope_id="x", kind="k", limit_amount=1, window="hour"
+            scope="user", scope_id="x", kind=kind, limit_amount=1, window="hour"
+        )
+    # A quota on a kind no enforcement point consults is refused rather than
+    # silently recorded: an admin who set it would believe the resource was
+    # capped. kernel_cpu_s is metered but not yet enforced.
+    with pytest.raises(ValueError):
+        store.governance.set_quota(
+            scope="user",
+            scope_id="x",
+            kind="kernel_cpu_s",
+            limit_amount=1,
+            window="day",
+        )
+    with pytest.raises(ValueError):
+        store.governance.set_quota(
+            scope="user", scope_id="x", kind="", limit_amount=1, window="day"
         )
     store.governance.set_quota(
-        scope="user", scope_id="x", kind="k", limit_amount=1, window="day"
+        scope="user", scope_id="x", kind=kind, limit_amount=1, window="day"
     )
     store.governance.set_quota(
-        scope="user", scope_id="x", kind="k", limit_amount=9, window="day"
+        scope="user", scope_id="x", kind=kind, limit_amount=9, window="day"
     )  # upsert
     rows = store.governance.list_quotas()
     assert rows == [
         {
             "scope": "user",
             "scope_id": "x",
-            "kind": "k",
+            "kind": kind,
             "limit_amount": 9.0,
             "window": "day",
         }
     ]
     assert (
         store.governance.delete_quota(
-            scope="user", scope_id="x", kind="k", window="day"
+            scope="user", scope_id="x", kind=kind, window="day"
         )
         is True
     )

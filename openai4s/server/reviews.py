@@ -96,7 +96,11 @@ class ReviewPorts:
     state_for: Callable[[str, str], ReviewState]
     emitter_for: Callable[[str], EventSink]
     llm_config_for: Callable[[ReviewState], Any]
-    review_evidence: Callable[[dict, Any], dict]
+    # (evidence, llm_config, root_frame_id). The session id is not used by
+    # the reviewer itself: it is what lets the composition root apply the
+    # same team-mode LLM quota gate the turn loop applies, since this port
+    # reaches the provider without passing through ChatModel.
+    review_evidence: Callable[[dict, Any, str], dict]
     providers: Callable[[], Mapping[str, dict]]
     clean_api_key: Callable[[Any], str]
     # A profile's api_key field holds a broker reference once migrated.
@@ -400,6 +404,7 @@ class ReviewService:
                     review_box["result"] = self.ports.review_evidence(
                         evidence,
                         config,
+                        root_frame_id,
                     )
                 except Exception as review_error:  # noqa: BLE001
                     review_box["error"] = review_error

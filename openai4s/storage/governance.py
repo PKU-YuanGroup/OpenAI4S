@@ -39,6 +39,15 @@ KIND_LLM_OUTPUT_TOKENS = "llm_output_tokens"
 KIND_KERNEL_CPU_S = "kernel_cpu_s"
 KIND_SESSIONS_CREATED = "sessions_created"
 
+#: The kinds a *quota* may name. Deliberately narrower than what the ledger
+#: records: `kernel_cpu_s` is metered but has no enforcement point yet, and a
+#: limit nothing consults is worse than no limit — an admin sets it, believes
+#: the resource is capped, and it is not. Refusing the write is what makes the
+#: gap visible. Widen this set in the same commit that adds the check.
+ENFORCED_QUOTA_KINDS = frozenset(
+    {KIND_LLM_INPUT_TOKENS, KIND_LLM_OUTPUT_TOKENS, KIND_SESSIONS_CREATED}
+)
+
 _QUOTA_WINDOWS_MS = {
     "day": 24 * 3600 * 1000,
     "week": 7 * 24 * 3600 * 1000,
@@ -168,6 +177,40 @@ class GovernanceRepository:
             ).fetchall()
         return [{"project_id": r[0], "role": r[1]} for r in rows]
 
+    def is_project_participant(self, project_id: str | None, user_id: str) -> bool:
+        """May this user address a project at all (M2-1 authz)?
+
+        A participant is a member (``project_members`` row) OR the owner of
+        at least one session in the project (``session_owners``). The second
+        clause keeps a member's own project reachable before an admin has
+        added a membership row — and keeps single-user 'default'/'proj_example'
+        sessions reachable by whoever created them.
+        """
+        if not project_id or not user_id:
+            return False
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM project_members WHERE project_id=? AND user_id=?"
+                " UNION SELECT 1 FROM session_owners WHERE project_id=?"
+                " AND user_id=? LIMIT 1",
+                (project_id, user_id, project_id, user_id),
+            ).fetchone()
+        return row is not None
+
+    def participant_project_ids(self, user_id: str) -> set[str]:
+        """Every project id this user participates in (member or session
+        owner) — the filter for a non-admin's project list."""
+        if not user_id:
+            return set()
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT project_id FROM project_members WHERE user_id=?"
+                " UNION SELECT project_id FROM session_owners WHERE user_id=?"
+                " AND project_id IS NOT NULL",
+                (user_id, user_id),
+            ).fetchall()
+        return {str(r[0]) for r in rows if r[0]}
+
     # --- invites (M2-4) ---------------------------------------------------
 
     def create_invite(
@@ -209,6 +252,25 @@ class GovernanceRepository:
             self._connection.commit()
         return {"project_id": row[0], "created_by": row[1]}
 
+    def reinstate_invite(self, token: str) -> bool:
+        """Undo a redemption whose follow-up work failed.
+
+        Redemption marks `used_at` before the account exists, because the
+        mark is what makes it single-use under concurrency. If account
+        creation then fails (a username race), the invite was consumed for
+        nothing — so it is handed back rather than left burnt. Only an
+        unexpired invite is reinstated: an expired one stays consumed.
+        """
+        digest = invite_digest(token or "")
+        with self._lock:
+            cur = self._connection.execute(
+                "UPDATE invites SET used_at=NULL WHERE token_hash=? AND"
+                " used_at IS NOT NULL AND expires_at>?",
+                (digest, self._clock_ms()),
+            )
+            self._connection.commit()
+        return cur.rowcount > 0
+
     def list_invites(self, *, project_id: str | None = None) -> list[dict]:
         """Digest-prefixed metadata only — never anything a client could
         turn back into a working token."""
@@ -237,12 +299,21 @@ class GovernanceRepository:
         ]
 
     def revoke_invite(self, token_prefix: str) -> bool:
-        """Revocation by the listed prefix (the raw token is long gone)."""
+        """Revocation by the listed prefix (the raw token is long gone).
+
+        Prefix-matched with ``substr`` rather than ``LIKE``: ``LIKE`` would
+        read ``%`` / ``_`` in the admin-supplied prefix as wildcards, so a
+        ``DELETE /team/invites/%`` would revoke *every* live invite at once.
+        ``substr(token_hash, 1, len)`` compares literal characters only.
+        """
+        prefix = str(token_prefix or "")
+        if not prefix:
+            return False
         with self._lock:
             cur = self._connection.execute(
-                "UPDATE invites SET used_at=? WHERE token_hash LIKE ? AND"
-                " used_at IS NULL",
-                (self._clock_ms(), token_prefix + "%"),
+                "UPDATE invites SET used_at=? WHERE"
+                " substr(token_hash, 1, ?) = ? AND used_at IS NULL",
+                (self._clock_ms(), len(prefix), prefix),
             )
             self._connection.commit()
         return cur.rowcount > 0
@@ -321,6 +392,11 @@ class GovernanceRepository:
             raise ValueError("scope must be 'user' or 'project'")
         if window not in _QUOTA_WINDOWS_MS:
             raise ValueError(f"window must be one of {sorted(_QUOTA_WINDOWS_MS)}")
+        if kind not in ENFORCED_QUOTA_KINDS:
+            raise ValueError(
+                f"kind must be one of {sorted(ENFORCED_QUOTA_KINDS)}; a quota "
+                f"on {kind!r} would be recorded and never consulted"
+            )
         with self._lock:
             self._connection.execute(
                 "INSERT INTO quotas(scope, scope_id, kind, limit_amount, window)"
@@ -392,6 +468,7 @@ class GovernanceRepository:
 
 
 __all__ = [
+    "ENFORCED_QUOTA_KINDS",
     "GovernanceRepository",
     "INVITE_TTL_S",
     "KIND_KERNEL_CPU_S",
