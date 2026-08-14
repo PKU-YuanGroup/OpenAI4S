@@ -422,6 +422,15 @@ class SessionDeletionRepository:
                 f"session_id IN {self._marks(roots)}",
                 roots,
             )
+            # Team-mode ownership rows (M1-6): deleting the session must not
+            # leave an orphan claim that a future frame id collision could
+            # inherit.
+            self._delete_counted(
+                deleted_rows,
+                "session_owners",
+                f"session_id IN {self._marks(roots)}",
+                roots,
+            )
             for root in roots:
                 for key in (
                     f"review:auto:{root}",

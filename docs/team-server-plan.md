@@ -305,4 +305,7 @@ STALE_EPOCH  STALE_SPEC_REVISION  DUPLICATE_SUBMISSION  KERNEL_STATE_LOST
 
 ## 附录 D:执行偏差记录(执行代理追加,每行:日期 · 条目 · 原状 · 改法与理由)
 
-*(空)*
+- 2026-08-14 · §0.2 分支基点 · "从最新 origin/next 切" · 从本地 next(= origin/next + 本计划文档提交 6867582)切出 feat/team-server——计划文件本身尚未推到 origin,分支上必须携带它才能追加本附录。
+- 2026-08-14 · 附录 A 时间戳 · `created_at REAL` · 按仓库 storage 惯例改为 INTEGER 毫秒(注入的 `clock_ms`);列名与约束语义不变。
+- 2026-08-14 · 附录 B 路由名 · `/api/auth/login` 等 · 网关 API 带版本前缀(contract.API_ROOT = /api/v1),落地为 `/api/v1/auth/*`,与既有 `/auth/status` 同侧;文件区同理为 `/api/v1/files*`。
+- 2026-08-14 · M1-4 loopback Bearer · "保留 loopback Bearer 通路给管理 CLI" · service 身份仅接受来自 127.0.0.1/::1 对等端的 header 令牌(X-OpenAI4S-Token / Bearer);团队模式下 `?token=` 换 cookie 的 bootstrap 流程停用——浏览器一律走 /login,机器令牌不再能变成已登录浏览器。

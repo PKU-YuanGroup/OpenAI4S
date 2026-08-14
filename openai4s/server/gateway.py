@@ -2749,20 +2749,36 @@ class SessionRunner:
     def delete_session(self, root_frame_id: str) -> dict[str, Any]:
         return self.deletions.delete_session(root_frame_id)
 
-    def create_session(self, project_id: str, *, model: str | None = None) -> str:
-        """Create a root frame atomically with project-deletion admission."""
+    def create_session(
+        self,
+        project_id: str,
+        *,
+        model: str | None = None,
+        owner_user_id: str | None = None,
+    ) -> str:
+        """Create a root frame atomically with project-deletion admission.
+
+        ``owner_user_id`` (team mode, M1-6) records the session's owner in
+        the same locked section as the frame insert, so no enumeration can
+        observe the frame before its ownership row exists.
+        """
 
         with self._lock:
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is in progress")
             if self.store.get_project(project_id) is None:
                 raise GatewayError(404, "project not found")
-            return self.store.new_frame(
+            fid = self.store.new_frame(
                 kind="turn",
                 project_id=project_id,
                 model=model,
                 status="ready",
             )
+            if owner_user_id:
+                self.store.team.set_session_owner(
+                    fid, owner_user_id, project_id=project_id
+                )
+            return fid
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
         with self._lock:
@@ -8493,6 +8509,72 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return _TEAM_SERVICE_IDENTITY
             return None
 
+        def _team_visibility_filter(self) -> str | None:
+            """The user_id session enumeration must be filtered by, or None
+            when this caller sees everything (team mode off, admin, CLI)."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return None
+            return identity.user_id
+
+        def _team_owner_user_id(self) -> str | None:
+            """Who a session created by this request belongs to (team mode)."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return None
+            return identity.user_id
+
+        def _team_identity_dict(self) -> dict | None:
+            identity = getattr(self, "_team_identity", None)
+            if identity is None:
+                return None
+            return {
+                "id": identity.user_id,
+                "role": identity.role,
+                "kind": identity.kind,
+            }
+
+        def _team_claim_imported(self, imported: dict) -> None:
+            """An imported session belongs to whoever imported it (M1-6)."""
+            owner = self._team_owner_user_id()
+            root = (imported or {}).get("root_frame_id")
+            if owner and root:
+                store.team.set_session_owner(
+                    str(root), owner, project_id=imported.get("project_id")
+                )
+
+        def _team_scope_guard(self, method: str, sub: str) -> None:
+            """Refuse frame- and artifact-addressed routes whose session this
+            caller may not see (M1-6, INV-13). 404, not 403: which sessions
+            exist is itself the information being protected.
+
+            Session resolution goes through the *root* frame — a child frame
+            id must not answer differently from its root. An artifact is as
+            visible as the session that produced it.
+            """
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return
+            user = self._team_identity_dict()
+            m = re.fullmatch(r"/frames/([^/]+)(?:/.*)?", sub)
+            if m:
+                frame = store.get_frame(m.group(1))
+                if frame is not None:
+                    root = frame.get("root_frame_id") or m.group(1)
+                    if not store.team.session_visible_to(root, user):
+                        raise GatewayError(404, "session not found")
+                return
+            m = re.fullmatch(r"/artifacts/([^/]+)(?:/.*)?", sub)
+            if m:
+                try:
+                    artifact = store.get_artifact(unquote(m.group(1)))
+                except Exception:  # noqa: BLE001 - unknown ids fall through
+                    artifact = None
+                if artifact is not None:
+                    root = artifact.get("root_frame_id")
+                    if root and not store.team.session_visible_to(root, user):
+                        raise GatewayError(404, "artifact not found")
+
         def _team_admit(self, method: str, path: str) -> bool:
             """Admit or answer. True -> continue routing with
             `self._team_identity` bound; False -> a response was sent."""
@@ -9182,6 +9264,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # capture drives them with team mode off.
             if team_routes.handle(self, method, sub, _team_auth, store):
                 return
+            # Ownership scope (team mode): every frame-/artifact-addressed
+            # route below answers 404 unless the caller may see its session.
+            self._team_scope_guard(method, sub)
             if sub == "/sessions/verify" and method == "POST":
                 # Verification before import, so a recipient can check what
                 # they were handed without first admitting it to their
@@ -9210,6 +9295,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     imported = runner.session_domain.session_import(payload)
                 except SessionPackageError as error:
                     raise GatewayError(400, str(error)) from error
+                self._team_claim_imported(imported)
                 self._json(imported, 201)
                 return
             if sub == "/sessions/import-url" and method == "POST":
@@ -9226,6 +9312,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(400, str(error)) from error
                 except SessionPackageError as error:
                     raise GatewayError(400, str(error)) from error
+                self._team_claim_imported(imported)
                 self._json(imported, 201)
                 return
             # ---- web shares ----
@@ -9420,11 +9507,29 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # ---- global search (⌘K command palette) ----
             if sub.split("?")[0] == "/search" and method == "GET":
                 query = (q.get("q") or [""])[0]
-                self._json(
+                payload = (
                     store.search(query)
                     if query.strip()
                     else {"sessions": [], "artifacts": [], "datapro": []}
                 )
+                if self._team_visibility_filter() is not None:
+                    # Team mode (INV-13): the command palette must not
+                    # enumerate other people's sessions or their artifacts.
+                    _user = self._team_identity_dict()
+                    payload["sessions"] = [
+                        s
+                        for s in payload.get("sessions", [])
+                        if store.team.session_visible_to(str(s.get("id")), _user)
+                    ]
+                    payload["artifacts"] = [
+                        a
+                        for a in payload.get("artifacts", [])
+                        if a.get("root_frame_id")
+                        and store.team.session_visible_to(
+                            str(a["root_frame_id"]), _user
+                        )
+                    ]
+                self._json(payload)
                 return
             if sub in ("", "/"):
                 self._json({"service": "openai4s", "ok": True})
@@ -9717,12 +9822,24 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/projects/([^/]+)/action-timeline", sub)
             if m and method == "GET":
                 limit = int((q.get("limit") or ["500"])[0])
-                self._json(global_views.timeline_view(unquote(m.group(1)), limit=limit))
+                self._json(
+                    global_views.timeline_view(
+                        unquote(m.group(1)),
+                        limit=limit,
+                        visible_to_user_id=self._team_visibility_filter(),
+                    )
+                )
                 return
             m = re.fullmatch(r"/projects/([^/]+)/lineage", sub)
             if m and method == "GET":
                 limit = int((q.get("limit") or ["2000"])[0])
-                self._json(global_views.lineage_view(unquote(m.group(1)), limit=limit))
+                self._json(
+                    global_views.lineage_view(
+                        unquote(m.group(1)),
+                        limit=limit,
+                        visible_to_user_id=self._team_visibility_filter(),
+                    )
+                )
                 return
             m = re.fullmatch(r"/folders/([^/]+)", sub)
             if m:
@@ -9772,6 +9889,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             roots_only=True,
                             limit=limit * 2,
                             before=cursor,
+                            visible_to_user_id=self._team_visibility_filter(),
                         )
                         if not batch:
                             break
@@ -9820,7 +9938,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method == "POST":
                     b = self._body()
                     pid = b.get("project_id") or "default"
-                    fid = runner.create_session(pid, model=b.get("model"))
+                    fid = runner.create_session(
+                        pid,
+                        model=b.get("model"),
+                        owner_user_id=self._team_owner_user_id(),
+                    )
                     self._json(_frame_json(store.get_frame(fid), store))
                     return
             m = re.fullmatch(r"/frames/([^/]+)", sub)

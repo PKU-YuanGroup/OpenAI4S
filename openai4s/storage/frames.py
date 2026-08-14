@@ -618,6 +618,7 @@ class FrameRepository:
         roots_only: bool = True,
         limit: int = 50,
         before: tuple[int, str] | None = None,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         """Newest-first page of frames.
 
@@ -642,6 +643,18 @@ class FrameRepository:
             params.append(status)
         if roots_only:
             clauses.append("parent_id IS NULL")
+        if visible_to_user_id is not None:
+            # Team mode (INV-13): a non-admin caller sees only sessions with
+            # their own ownership row. Filtered in SQL, not post-hoc — the
+            # keyset pagination above reports has_more from row counts, and a
+            # post-read filter would turn a full page of hidden rows into a
+            # phantom "end of list". A session with no row (pre-team history,
+            # demo seeds) is admin-only by construction here.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM session_owners so "
+                "WHERE so.session_id = frames.frame_id AND so.user_id = ?)"
+            )
+            params.append(visible_to_user_id)
         if before is not None:
             before_created, before_id = before
             clauses.append("(created_at < ? OR (created_at = ? AND frame_id < ?))")

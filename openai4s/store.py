@@ -114,7 +114,11 @@ from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
 from openai4s.storage.snapshots import SessionSnapshotRepository
-from openai4s.storage.team import TeamRepository, create_team_schema
+from openai4s.storage.team import (
+    TeamRepository,
+    create_session_owners_schema,
+    create_team_schema,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -1190,6 +1194,7 @@ class Store:
                         self._apply_datapro_content_index_repair,
                     ),
                     18: ("team_users", self._apply_team_users),
+                    19: ("session_owners", self._apply_session_owners),
                 },
             )
             if report["migrated"]:
@@ -1210,6 +1215,15 @@ class Store:
         """
 
         create_team_schema(conn)
+
+    def _apply_session_owners(self, conn: sqlite3.Connection) -> None:
+        """Version 19: session ownership for team mode (M1-6, INV-13).
+
+        Additive; existing sessions get no row, which the visibility rule
+        reads as admin-only rather than everyone's.
+        """
+
+        create_session_owners_schema(conn)
 
     def _apply_datapro_content_index_repair(self, conn: sqlite3.Connection) -> None:
         """Version 17: repair an early v16 database stamped without its tables.
@@ -2286,6 +2300,7 @@ class Store:
         roots_only: bool = True,
         limit: int = 50,
         before: tuple[int, str] | None = None,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         return self._frames.browse_frames(
             project_id=project_id,
@@ -2293,6 +2308,7 @@ class Store:
             roots_only=roots_only,
             limit=limit,
             before=before,
+            visible_to_user_id=visible_to_user_id,
         )
 
     def frame_detail(

@@ -79,9 +79,26 @@ CREATE INDEX IF NOT EXISTS ix_team_audit_actor ON team_audit_log(actor);
 """
 
 
+SESSION_OWNERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_owners (
+    session_id TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    project_id TEXT,
+    visibility TEXT NOT NULL DEFAULT 'project'
+               CHECK (visibility IN ('project','private'))
+);
+CREATE INDEX IF NOT EXISTS ix_session_owners_user ON session_owners(user_id);
+"""
+
+
 def create_team_schema(conn: sqlite3.Connection) -> None:
     """Idempotent DDL, called from the numbered Store migration."""
     conn.executescript(TEAM_SCHEMA)
+
+
+def create_session_owners_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent DDL for session ownership (M1-6), its own numbered step."""
+    conn.executescript(SESSION_OWNERS_SCHEMA)
 
 
 def hash_password(password: str, salt: bytes, iterations: int | None = None) -> bytes:
@@ -322,6 +339,69 @@ class TeamRepository:
             )
             self._connection.commit()
         return cur.rowcount
+
+    # --- session ownership (M1-6, INV-13) --------------------------------
+
+    def set_session_owner(
+        self,
+        session_id: str,
+        user_id: str,
+        *,
+        project_id: str | None = None,
+        visibility: str = "project",
+    ) -> None:
+        """Record who a session belongs to. Idempotent upsert: an import or a
+        recovery replay may record the same ownership twice, and the second
+        write must not fail or silently change the owner to someone else."""
+        if visibility not in ("project", "private"):
+            raise ValueError("visibility must be 'project' or 'private'")
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO session_owners(session_id, user_id, project_id,"
+                " visibility) VALUES(?,?,?,?)"
+                " ON CONFLICT(session_id) DO UPDATE SET"
+                " project_id=excluded.project_id",
+                (session_id, user_id, project_id, visibility),
+            )
+            self._connection.commit()
+
+    def session_owner(self, session_id: str) -> dict | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT session_id, user_id, project_id, visibility"
+                " FROM session_owners WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "session_id": row[0],
+            "user_id": row[1],
+            "project_id": row[2],
+            "visibility": row[3],
+        }
+
+    def delete_session_owner(self, session_id: str) -> None:
+        with self._lock:
+            self._connection.execute(
+                "DELETE FROM session_owners WHERE session_id=?", (session_id,)
+            )
+            self._connection.commit()
+
+    def session_visible_to(self, session_id: str, user: dict | None) -> bool:
+        """May this user read/operate this session (M1 semantics)?
+
+        Admins see everything (INV-13 carves them out; the per-view audit for
+        private sessions arrives with visibility in M2). A session with no
+        ownership row — pre-team history, demo seeds, CLI runs — is admin-only
+        rather than everyone's: fail closed, not open.
+        """
+        if user is None:
+            return False
+        if user.get("role") == "admin" or user.get("kind") == "service":
+            return True
+        owner = self.session_owner(session_id)
+        return owner is not None and owner["user_id"] == user.get("id")
 
     # --- audit (INV-12) --------------------------------------------------
 
