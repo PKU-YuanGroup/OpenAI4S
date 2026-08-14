@@ -664,13 +664,20 @@ repeat {
   if (!identical(outcome, "ok")) {
     .oai4s_unwind_sinks()
     if (!.oai4s_responded) {
+      # rss is NULL, not 0L, for the reason .oai4s_rss_kb() gives at the top of
+      # this file: 0 is a measurement this worker cannot make. It matters more
+      # here than anywhere else, because sink_capture = TRUE merges genuinely
+      # measured byte counters into the same usage dict -- a fabricated zero
+      # sitting beside real numbers reads as measured, and reaches
+      # execution_log.peak_rss_kb as one. The refusal at the top of
+      # .oai4s_handle_line already passes NULL; these now agree with it.
       if (identical(outcome, "interrupted")) {
         .oai4s_respond(.oai4s_regex_id(line), "", "", "Interrupted", TRUE,
-                       NULL, NULL, 0, 0, 0L, sink_capture = TRUE)
+                       NULL, NULL, 0, 0, NULL, sink_capture = TRUE)
       } else {
         .oai4s_respond(.oai4s_regex_id(line), "", "",
                        paste0("openai4s r_worker ", outcome), FALSE,
-                       NULL, NULL, 0, 0, 0L, sink_capture = TRUE)
+                       NULL, NULL, 0, 0, NULL, sink_capture = TRUE)
       }
     }
   }

@@ -101,21 +101,19 @@ def fetch_contributors(token: str | None) -> list[dict]:
 
 
 def include_recognized_contributors(people: list[dict]) -> list[dict]:
-    """Append public non-commit contributors without duplicating API users."""
+    """Append public non-commit contributors without duplicating API users.
 
-    merged = list(people)
-    seen = {
-        str(person.get("login", "")).casefold()
-        for person in merged
-        if person.get("login")
-    }
-    for login in RECOGNIZED_CONTRIBUTORS:
-        normalized = login.casefold()
-        if normalized in seen:
-            continue
-        merged.append({"login": login, "type": "User", "contributions": 0})
-        seen.add(normalized)
-    return merged
+    The same two guards `fetch_contributors` applies to an API row apply here:
+    a hand-maintained list is not a reason to render a bot or an organization
+    account inside a wall that is otherwise restricted to human users.
+    """
+
+    seen = {person["login"].casefold() for person in people}
+    return people + [
+        {"login": login}
+        for login in RECOGNIZED_CONTRIBUTORS
+        if login.casefold() not in seen and login not in EXCLUDE
+    ]
 
 
 def _circular_png(raw: bytes) -> bytes:
@@ -134,31 +132,54 @@ def _circular_png(raw: bytes) -> bytes:
     return out.getvalue()
 
 
-def write_avatars(people: list[dict], token: str | None) -> set[str]:
+def _avatar_name(login: str) -> str:
+    return f"{login}.png"
+
+
+def write_avatars(people: list[dict], token: str | None) -> tuple[set[str], int]:
+    """Refresh the avatars, prune the departed, and say what was written.
+
+    Returns the logins that have a usable committed PNG *and* the number this
+    run actually produced: "a file with that name exists" and "I refreshed it"
+    are different facts, and only the second one says the run worked.
+    """
+
     os.makedirs(AVATAR_DIR, exist_ok=True)
-    have_png: set[str] = set()
+    written = 0
     for c in people:
         login = c["login"]
-        url = c.get("avatar_url") or f"https://github.com/{login}.png"
+        avatar_url = c.get("avatar_url")
+        url = avatar_url or f"https://github.com/{login}.png"
         url += ("&" if "?" in url else "?") + "s=256"
-        path = os.path.join(AVATAR_DIR, f"{login}.png")
         try:
-            png = _circular_png(_get(url, token))
+            # Only the API's own avatar_url is fetched authenticated. The
+            # github.com/<login>.png form 302s to avatars.githubusercontent.com,
+            # and urllib copies every header except content-length/content-type
+            # across a redirect -- so sending the token here would hand it to a
+            # host that never asked for it.
+            png = _circular_png(_get(url, token if avatar_url else None))
         except Exception as exc:  # noqa: BLE001
             print(f"  avatar failed for {login}: {exc}", file=sys.stderr)
-            if os.path.isfile(path):
-                have_png.add(login)
             continue
-        with open(path, "wb") as f:
+        with open(os.path.join(AVATAR_DIR, _avatar_name(login)), "wb") as f:
             f.write(png)
-        have_png.add(login)
+        written += 1
     # Drop old identities and legacy SVGs, but keep a current contributor's
-    # committed PNG when a transient refresh fails.
-    current = {f"{person['login']}.png" for person in people}
+    # committed PNG when a transient refresh fails. Compared case-insensitively
+    # because a login whose casing drifts from the committed filename writes
+    # through to the existing inode under the OLD name on a case-preserving
+    # filesystem, and an exact-match prune then deletes the file just written.
+    current = {_avatar_name(person["login"]).casefold() for person in people}
     for name in os.listdir(AVATAR_DIR):
-        if name not in current and (name.endswith(".png") or name.endswith(".svg")):
+        if name.casefold() not in current and name.endswith((".png", ".svg")):
             os.remove(os.path.join(AVATAR_DIR, name))
-    return have_png
+    # Derived from what survived on disk, spelled exactly as render() will spell
+    # it, so a local <img src> is never emitted for a name that is not there.
+    on_disk = set(os.listdir(AVATAR_DIR))
+    have_png = {
+        person["login"] for person in people if _avatar_name(person["login"]) in on_disk
+    }
+    return have_png, written
 
 
 def render(people: list[dict], have_png: set[str]) -> str:
@@ -166,7 +187,7 @@ def render(people: list[dict], have_png: set[str]) -> str:
     for c in people:
         login = c["login"]
         src = (
-            f".github/contributors/{login}.png"
+            f"{AVATAR_DIR.replace(os.sep, '/')}/{_avatar_name(login)}"
             if login in have_png
             else f"https://github.com/{login}.png"
         )
@@ -205,13 +226,14 @@ def main() -> int:
         print("no contributors fetched (rate limit or auth?)", file=sys.stderr)
         return 1
     people = include_recognized_contributors(people)
-    have_png = write_avatars(people, token)
+    have_png, written = write_avatars(people, token)
     block = render(people, have_png)
     changed = [p for p in READMES if os.path.exists(p) and update_readme(p, block)]
     print(
         f"{len(people)} contributors: "
         + ", ".join(c["login"] for c in people)
-        + f"\ncircular pngs: {len(have_png)}; readmes updated: {changed or 'none'}"
+        + f"\ncircular pngs: {written} refreshed, {len(have_png)} linked locally"
+        + f"; readmes updated: {changed or 'none'}"
     )
     return 0
 

@@ -831,8 +831,16 @@ def test_r_top_level_fallback_preserves_host_capture(
         setup = f"""
 .oai4s_saved_handle_line <- .oai4s_handle_line
 .oai4s_handle_line <- function(line) {{
-  assign('.oai4s_handle_line', .oai4s_saved_handle_line, envir = globalenv())
   frame <- jsonlite::fromJSON(line, simplifyVector = TRUE)
+  if (is.null(frame$sink_out)) {{
+    # Only an execute frame carries sinks. Hand anything else back rather than
+    # crash on fifo(NULL): the self-restore below runs on the FIRST call, so an
+    # assertion failing before it would otherwise leave this patch installed to
+    # swallow teardown's shutdown frame, and kernel.shutdown() would spend its
+    # whole 5 s budget before SIGKILLing a worker that never saw the request.
+    return(.oai4s_saved_handle_line(line))
+  }}
+  assign('.oai4s_handle_line', .oai4s_saved_handle_line, envir = globalenv())
   out_con <- fifo(as.character(frame$sink_out), open = 'wb', blocking = TRUE)
   err_con <- fifo(as.character(frame$sink_err), open = 'wb', blocking = TRUE)
   writeBin(charToRaw('fallback stdout\\n'), out_con)
@@ -847,34 +855,76 @@ def test_r_top_level_fallback_preserves_host_capture(
 
         result = kernel.execute("ignored")
 
-        # The zero worker counters distinguish the outer fallback from the
-        # measured response at the end of .oai4s_run.
         usage = result["usage"]
-        assert usage["wall_s"] == 0
-        assert usage["cpu_s"] == 0
-        assert usage["peak_rss_kb"] == 0
         assert result["interrupted"] is interrupted
         assert result["error"] == expected_error
         assert result["sink_capture"] is True
         assert result["stdout"] == "fallback stdout\n"
         assert result["stderr"] == "fallback stderr\n"
+        # The byte counters are the host's and are real; the worker's own three
+        # are not measured on this path. `peak_rss_kb` says so with null rather
+        # than 0 -- a fabricated zero beside real numbers reads as measured, and
+        # lands in execution_log.peak_rss_kb as one. wall_s/cpu_s cannot say it
+        # yet: .oai4s_num renders NULL as 0, so they remain the one place this
+        # frame still asserts a measurement it did not take.
         assert usage == {
             "wall_s": 0.0,
             "cpu_s": 0.0,
-            "peak_rss_kb": 0,
-            "stdout_seen_bytes": 16,
-            "stdout_retained_bytes": 16,
-            "stdout_dropped_bytes": 0,
-            "stdout_truncated": False,
-            "stderr_seen_bytes": 16,
-            "stderr_retained_bytes": 16,
-            "stderr_dropped_bytes": 0,
-            "stderr_truncated": False,
+            "peak_rss_kb": None,
+            **sink_drain.channel_counters(seen=16, retained=16, prefix="stdout_"),
+            **sink_drain.channel_counters(seen=16, retained=16, prefix="stderr_"),
         }
 
         after = kernel.execute("cat('still here\\n')")
         assert after["stdout"] == "still here\n"
         assert after["usage"]["stdout_truncated"] is False
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_an_interrupt_escaping_oai4s_run_still_reports_the_host_capture(tmp_path):
+    """The fallback shape production actually produces, driven end to end.
+
+    The test above replaces the dispatcher, so it opens the fifos itself and
+    closes them before raising -- the host's readers then end on EOF. The real
+    escape cannot do that: ``out_con``/``msg_con`` are locals of the
+    ``.oai4s_run`` frame the condition unwound, and ``.oai4s_unwind_sinks()``
+    pops sink levels without closing connections. Reach it the way a user does
+    -- ``.oai4s_run`` autoprints a visible value at a ``tryCatch`` that handles
+    ``error`` but not ``interrupt`` -- so the sinks are still live and the cell
+    really wrote through them. Deterministic: the condition is signalled by the
+    print method, not by a timed SIGINT.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        primed = kernel.execute(
+            "print.oai4sprobe <- function(x, ...) {\n"
+            "  cat('written through the live sink\\n')\n"
+            "  signalCondition(structure(list(message = 'ctrl-c'),"
+            " class = c('interrupt', 'condition')))\n"
+            "}\n"
+            "probe <- function() structure(list(), class = 'oai4sprobe')\n"
+        )
+        assert primed["error"] is None, primed
+
+        result = kernel.execute("probe()")
+
+        assert result["interrupted"] is True
+        assert result["error"] == "Interrupted"
+        # The point of the fix: what the cell wrote before the escape survives,
+        # and it is the host that has it.
+        assert result["sink_capture"] is True
+        assert result["stdout"] == "written through the live sink\n"
+        assert result["usage"]["stdout_seen_bytes"] == 30
+        assert result["usage"]["stdout_truncated"] is False
+        # Not a measurement this path took -- absent, not zero.
+        assert result["usage"]["peak_rss_kb"] is None
+
+        after = kernel.execute("cat('still here\\n')")
+        assert after["stdout"] == "still here\n"
     finally:
         kernel.shutdown()
 
