@@ -179,8 +179,13 @@ def test_the_injected_api_key_variable_is_one_that_actually_reaches_the_client(
     # measures the variable the manifests actually inject.
     for shadowing in ("OPENAI4S_ARK_API_KEY", "ARK_API_KEY", "DOUBAO_API_KEY"):
         monkeypatch.delenv(shadowing, raising=False)
-    monkeypatch.setenv(injected, "sk-supplied-by-the-orchestrator")
-    assert LLMConfig(provider="ark").api_key == "sk-supplied-by-the-orchestrator", (
+    # Deliberately not key-shaped. `sk-…` would match the `openai-api-key`
+    # detector in scripts/source_secret_scan.py, and that scan has no allowlist
+    # by design — its detectors are named rather than entropy-based precisely so
+    # that no file needs an exemption. A fixture only has to be distinguishable,
+    # not realistic.
+    monkeypatch.setenv(injected, "supplied-by-the-orchestrator")
+    assert LLMConfig(provider="ark").api_key == "supplied-by-the-orchestrator", (
         f"{injected} no longer reaches the model client; the deployment assets "
         "inject a variable that resolves to nothing"
     )
