@@ -12932,16 +12932,17 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                 f"{', '.join(_report.migrated)}",
                 file=sys.stderr,
             )
-        for _failure in _report.failed:
+        if _report.failed:
             print(
-                f"[openai4s] could not migrate {_failure['setting']} "
-                f"({_failure['error']}) — it remains stored in plaintext",
+                "[openai4s] one or more settings credentials could not be "
+                "migrated — they remain stored in plaintext",
                 file=sys.stderr,
             )
-        for _setting in _report.reentry_required:
+        if _report.reentry_required:
             print(
-                f"[openai4s] {_setting} must be saved again: its legacy system "
-                f"credential has no Store namespace and was not read",
+                "[openai4s] one or more settings credentials must be saved "
+                "again: their legacy system credentials have no Store namespace "
+                "and were not read",
                 file=sys.stderr,
             )
 
