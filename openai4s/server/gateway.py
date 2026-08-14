@@ -88,6 +88,7 @@ from openai4s.server import (
     kernel_routes,
     local_auth,
     retrieval_source,
+    team_routes,
     ws_frames,
 )
 from openai4s.server.action_timeline import ActionTimelineService
@@ -8375,6 +8376,28 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     if store.get_setting("network_enabled") == "0":
         os.environ["OPENAI4S_ALLOW_NETWORK"] = "0"
 
+    # Team mode (docs/team-server-plan.md M1): when ON, the team guard below
+    # replaces the single-credential token gate — every request resolves to a
+    # user (login cookie) or the loopback-CLI service identity before routing.
+    # When OFF, `_team_auth` is None and nothing in this block runs (INV-1).
+    from openai4s.server.team_auth import SERVICE_IDENTITY as _TEAM_SERVICE_IDENTITY
+    from openai4s.server.team_auth import TEAM_COOKIE as _TEAM_COOKIE
+    from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
+
+    _team_auth = _TeamAuthService(store) if cfg.team_mode else None
+    #: Reachable without a login in team mode. The login page and the login
+    #: POST are the recovery path; /auth/status and /health answer with mode
+    #: strings only; /static assets are the login page's css/js (the app
+    #: source is public anyway, and every data route stays behind the guard).
+    _TEAM_EXEMPT_PATHS = frozenset(
+        {
+            "/health",
+            "/login",
+            _API_ROOT + "/auth/status",
+            _API_ROOT + "/auth/login",
+        }
+    )
+
     # DNS-rebinding defense (CWE-346 / CWE-350): the Origin==Host guard in
     # _route() stops classic cross-origin CSRF, but DNS rebinding defeats it —
     # an attacker points evil.test at 127.0.0.1, so the browser sends
@@ -8437,6 +8460,62 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ):
                 return True
             return local_auth.matches(_presented_token(self.headers), _auth_token)
+
+        # ---- team guard (active only when OPENAI4S_TEAM_MODE is on) -----
+        def _peer_is_loopback(self) -> bool:
+            try:
+                return str(self.client_address[0]) in ("127.0.0.1", "::1")
+            except Exception:
+                return False
+
+        def _team_identity_from_request(self):
+            """Resolve this request's identity, or None.
+
+            A login cookie wins; the daemon access token presented in a
+            header *from loopback* is the CLI's admin-equivalent service
+            path (M1-4: the Bearer channel stays open for the server-side
+            management CLI, and only there — over the network the token is
+            a shared machine secret, not a person).
+            """
+            from http.cookies import SimpleCookie
+
+            jar = SimpleCookie(self.headers.get("Cookie", "") or "")
+            morsel = jar.get(_TEAM_COOKIE)
+            if morsel is not None and _team_auth is not None:
+                identity = _team_auth.resolve(morsel.value)
+                if identity is not None:
+                    return identity
+            if (
+                _auth_token
+                and local_auth.matches(_presented_token(self.headers), _auth_token)
+                and self._peer_is_loopback()
+            ):
+                return _TEAM_SERVICE_IDENTITY
+            return None
+
+        def _team_admit(self, method: str, path: str) -> bool:
+            """Admit or answer. True -> continue routing with
+            `self._team_identity` bound; False -> a response was sent."""
+            identity = self._team_identity_from_request()
+            self._team_identity = identity
+            if identity is not None:
+                return True
+            if path in _TEAM_EXEMPT_PATHS or (
+                method == "GET" and path.startswith("/static/")
+            ):
+                return True
+            self.close_connection = True
+            if method == "GET" and _wants_html(self.headers):
+                # A person in a browser: send them to the login page rather
+                # than a JSON refusal they cannot act on.
+                self._last_status = 303
+                self.send_response(303)
+                self.send_header("Location", "/login")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return False
+            self._json({"error": "login required", "code": "login_required"}, 401)
+            return False
 
         def _json(self, obj, code: int = 200) -> None:
             # Every error response carries a stable `code` and the request's
@@ -8719,8 +8798,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             self.close_connection = True
                             self._json({"error": "cross-origin request refused"}, 403)
                             return
+                # Team guard (OPENAI4S_TEAM_MODE): resolves every request to a
+                # user or the loopback-CLI service identity, and *replaces*
+                # the single-credential token gate below — a member's browser
+                # holds a login cookie, not the machine token. Off by default;
+                # the elif keeps the legacy gate byte-identical then (INV-1).
+                if _team_auth is not None:
+                    if not self._team_admit(method, path):
+                        return
                 # M2: token gate (only active when bound non-loopback / opt-in).
-                if _auth_token and path not in _UNAUTHENTICATED_PATHS:
+                elif _auth_token and path not in _UNAUTHENTICATED_PATHS:
                     from http.cookies import SimpleCookie
 
                     jar = SimpleCookie(self.headers.get("Cookie", "") or "")
@@ -8853,6 +8940,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "status": "ok",
                             "model": cfg.llm.model,
                         }
+                    )
+                    return
+                if method == "GET" and path == "/login":
+                    # The team login page. Served in both modes (its script
+                    # redirects home when team mode is off), so the guard's
+                    # 303 target exists before the guard does.
+                    self._serve_file(
+                        WEBUI_DIR / "login.html", "text/html; charset=utf-8"
                     )
                     return
                 # static / SPA shell
@@ -9081,6 +9176,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         # ---- REST API ---------------------------------------------------
         def _api(self, method: str, sub: str) -> None:
             q = self._query()
+            # Team auth routes (login/logout/me). Dispatched first: they
+            # depend on no session state and must answer before any frame
+            # guard can object. Deterministic in both modes — the contract
+            # capture drives them with team mode off.
+            if team_routes.handle(self, method, sub, _team_auth, store):
+                return
             if sub == "/sessions/verify" and method == "POST":
                 # Verification before import, so a recipient can check what
                 # they were handed without first admitting it to their

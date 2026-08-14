@@ -85,6 +85,8 @@ gateway.py
 | [`share_router.py`](share_router.py) | 单个分享的只读公网请求处理器：仅 GET/HEAD、有且仅有两个读取根（内存查看器资产 + 当前 lease 的快照）、严格 CSP、单段 Range，以及统一 404。它绝不触碰内核、dispatcher 或任何 gateway 路由。 |
 | [`share_service.py`](share_service.py) | Web 分享的两阶段发布（DB 状态机 + 不可变版本目录 + `current.json` 指针），带 SnapshotLease 引用计数 GC、崩溃恢复、有效期清扫与撤销。FIFO 准入与隧道客户端由外部注入。 |
 | [`skills.py`](skills.py) | Web Customize 里用户自撰 Skill 文档的生命周期。它管增删改查和导入，管 UI 读的那份目录投影，也管能力的启用。 |
+| [`team_auth.py`](team_auth.py) | 团队模式认证（`OPENAI4S_TEAM_MODE`）：`os_user` 登录 cookie；按（用户名, ip）的令牌桶限速——在 PBKDF2 计算**之前**消耗令牌，所以限速同时约束了攻击者能让 daemon 做多少哈希功；以及 loopback CLI 的 service 身份，让服务器上的管理 CLI 继续用 daemon 访问令牌而不冒充任何真人账号。每次登录结果都写审计（INV-12）。 |
+| [`team_routes.py`](team_routes.py) | 认证路由（`/auth/login`、`/auth/logout`、`/auth/me`），按 `kernel_routes` 的形态组织：一张经校验的 `RouteSpec` 表，运行时分发和契约清单读同一份。两种模式下都确定性应答——团队模式关闭时返回稳定的"已禁用"形状，契约捕获冻结的正是它。Set-Cookie 走 `_send` 带消毒的 header 通道；原始会话 token 只存在于该头和客户端 cookie jar 里。 |
 | [`titles.py`](titles.py) | 在后台根据第一条消息生成会话标题。模型配置延迟绑定，持久化和广播都做了防竞态处理。 |
 | [`variable_inspector.py`](variable_inspector.py) | 通过一个很窄的 manager 协议请求，读取活着且空闲的 Python/R 命名空间，返回有界、净化过的变量预览。它不会创建会话，也不会创建 worker，更不会进入 Cell 事务。 |
 | [`workbench_state.py`](workbench_state.py) | 根据持久状态与实时状态投影 Context 和 Security 面板。它不暴露消息内容；在真实 worker 报回自测结果之前，它也不会声称 OS 沙箱已经存在。 |
