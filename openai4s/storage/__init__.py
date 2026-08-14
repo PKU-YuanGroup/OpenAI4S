@@ -8,6 +8,7 @@ from openai4s.storage.artifacts import ArtifactRepository
 from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.checkpoint_state import CheckpointStateRepository
 from openai4s.storage.connectors import ConnectorRepository
+from openai4s.storage.datapro_index import DataProIndexRepository
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.kernels import KernelGenerationRepository
 from openai4s.storage.memories import MemoryRepository
@@ -34,6 +35,7 @@ __all__ = [
     "CapabilityStateRepository",
     "CheckpointStateRepository",
     "ConnectorRepository",
+    "DataProIndexRepository",
     "FrameRepository",
     "KernelGenerationRepository",
     "MemoryRepository",

@@ -75,24 +75,31 @@ That's it — the workbench now runs on your model.
 > **Cheapest path:** pick **Ark-compatible** and paste a Volcengine Ark key —
 > you get a Claude-Science-class agent for the price of the ¥9.9/month plan.
 
-## 4. Configure the web-search API (Tavily)
+## 4. Configure web search (Doubao Search Custom)
 
 Web search lets the agent pull live literature, database records, and data
-packages instead of relying only on its training knowledge. The key lives in a
-**different tab from the model key**:
+packages instead of relying only on its training knowledge. **Doubao Search
+Custom is the primary option** and uses an Ark Agent Plan Key:
 
 1. Open **Settings → Network** (中文 UI: **设置 → 网络**).
 2. Make sure **Allow network access** is toggled **on** — this master switch
    gates the agent's `web_search` / `web_fetch` / download tools.
-3. Register a free account at **[tavily.com](https://tavily.com)** and copy your
-   API key from its dashboard.
-4. Paste it into the **Search API key (Tavily)** field
-   (中文: **搜索 API Key（Tavily）**) and click **Save**.
+3. Paste your Ark **Agent Plan Key** into the **Doubao Search Custom** card and
+   click **Save credential**. If the active Ark model profile already uses that
+   same key, OpenAI4S reuses it automatically; the password field is cleared
+   immediately after saving and the key is never displayed back.
+4. Run one query in the card. The UI marks Doubao available only after the
+   direct provider returns at least one real result; this check never falls
+   back to another search engine.
 
-The endpoint is fixed to `api.tavily.com`; the key is stored locally under
-`~/.openai4s` and is never displayed back. **Without a Tavily key, web search
-still works** via keyless scrapers (DuckDuckGo and friends), but Tavily is more
-reliable and rate-limit-resistant, so it is recommended.
+The Agent Plan Key is stored through the selected local SecretBroker backend;
+business settings under `~/.openai4s` keep only an opaque reference. The
+explicit `OPENAI4S_SECRET_STORE=plaintext` backend is the documented exception
+that stores the broker value in SQLite. The credential is shared with
+the managed DataPro professional-dataset connector. **Tavily remains available
+as a backup** in the same Network screen, and keyless scrapers (DuckDuckGo and
+friends) remain a final backup for the separate generic search path. Their
+results never make the dedicated Doubao check claim success.
 
 ## 5. (Optional) Add the R kernel
 
@@ -114,8 +121,9 @@ The same CLI also gives you `openai4s status`, `openai4s stop`, and
 Open a new chat and ask a real question — for example *"Fetch human insulin
 (UniProt P01308), summarize its chains, and plot residue hydrophobicity."* The
 bundled stack runs cheminformatics, single-cell, and dataframe workflows
-offline; with your Tavily key configured, the agent can also reach UniProt,
-RCSB PDB, NCBI, and the wider web.
+offline; with Doubao Search authorized by your Agent Plan Key, the agent can
+also reach current sources across the wider web. Tavily and keyless engines
+remain available as backups.
 
 **Troubleshooting**
 
@@ -201,21 +209,25 @@ Artifact、日志）都写在 `~/.openai4s`。
 > **最省钱路线：** 选 **ark 兼容协议** 并粘贴一个火山方舟 Key——用 ¥9.9/月 套餐的价钱，
 > 就能得到一个 Claude Science 级的智能体。
 
-## 4. 配置联网搜索 API（Tavily）
+## 4. 配置联网搜索（豆包搜索 Custom 版）
 
-联网搜索让智能体能拉取实时文献、数据库记录和数据包，而不只依赖训练知识。这个 Key
-**和模型 Key 不在同一个标签页**：
+联网搜索让智能体能拉取实时文献、数据库记录和数据包，而不只依赖训练知识。**豆包搜索
+Custom 版是主选项**，使用火山方舟 Agent Plan Key：
 
 1. 打开 **设置 → 网络**（Settings → Network）。
 2. 确认 **允许联网** 开关处于**打开**状态——这个总开关控制智能体的
    `web_search` / `web_fetch` / 下载工具。
-3. 到 **[tavily.com](https://tavily.com)** 免费注册账号，从控制台复制你的 API Key。
-4. 粘贴到 **搜索 API Key（Tavily）** 输入框（占位提示「输入 Tavily API Key」），点
-   **保存**。
+3. 把火山方舟 **Agent Plan Key** 粘贴到**豆包搜索 Custom 版**卡片，点**保存凭证**。
+   当前 Ark 模型配置已经使用同一个 Key 时，OpenAI4S 会自动复用；保存后密码输入框立即
+   清空，Key 也不会回显。
+4. 在卡片里真实查询一次。只有豆包直连返回至少一条真实结果时，UI 才标记豆包可用；
+   这个专用检查绝不回退到其他搜索引擎。
 
-接入点固定为 `api.tavily.com`；Key 保存在本地 `~/.openai4s`，不会回显。**不填 Tavily
-Key，联网搜索仍可用**（走 DuckDuckGo 等免密钥抓取），但 Tavily 更稳定、更抗限流，
-推荐配置。
+Agent Plan Key 由所选的本地 SecretBroker 后端保存；`~/.openai4s` 下的业务设置只保留
+不透明引用。显式启用 `OPENAI4S_SECRET_STORE=plaintext` 是例外，会把 broker 值保存到
+SQLite。该凭证与托管的 DataPro 专业数据集连接器共用。**Tavily 仍在同一「网络」页面作为备用**，
+DuckDuckGo 等免密钥抓取则是独立通用搜索路径的最后备用；它们的结果都不会让豆包专用
+检查冒充成功。
 
 ## 5.（可选）加装 R 内核
 
@@ -234,7 +246,8 @@ openai4s setup        # 需要一个 Conda 家族管理器：micromamba / mamba 
 
 开一个新对话，问个真实问题——比如 *「拉取人胰岛素（UniProt P01308），概括它的各条链，
 并画出残基疏水性。」* 内置科学栈可离线跑化学信息学、单细胞和 DataFrame 工作流；配好
-Tavily Key 之后，智能体还能访问 UniProt、RCSB PDB、NCBI 以及更广的互联网。
+Agent Plan Key 授权豆包搜索之后，智能体还能检索更广的实时互联网；Tavily 与免密钥引擎
+继续作为备用。
 
 **排障**
 

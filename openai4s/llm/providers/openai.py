@@ -6,7 +6,7 @@ import os
 from typing import Any
 
 from ..messages import _openai_messages
-from ..models import LLMError
+from ..models import LLMError, TransportError, status_is_retryable
 from ..tooling import _apply_chat_tools, _assistant_message, _normalized_tool_call
 from ..transport import _BROWSER_UA
 
@@ -108,6 +108,35 @@ class _StreamStartError(Exception):
     to a blocking call (nothing was emitted to the client yet)."""
 
 
+# HTTP-equivalent statuses for error events delivered inside an otherwise
+# successful SSE response.  This is deliberately an exact allowlist: provider
+# messages are arbitrary prose and must never become classification input.
+_STREAM_ERROR_STATUS = {
+    "RequestBurstTooFast": 429,
+    "ServerOverloaded": 429,
+    "TooManyRequests": 429,
+    "rate_limit": 429,
+    "rate_limit_exceeded": 429,
+    "too_many_requests": 429,
+    "invalid_api_key": 401,
+    "unauthorized": 401,
+    "authentication_error": 401,
+    "server_error": 500,
+    "internal_server_error": 500,
+    "service_unavailable": 503,
+    "overloaded_error": 503,
+}
+
+# Some OpenAI-compatible endpoints support Chat Completions but reject the
+# streaming-only request fields or SSE Accept header.  One blocking retry keeps
+# that compatibility path without giving retryable capacity failures (or
+# credential refusals) a fresh request budget.
+_STREAM_COMPATIBILITY_FALLBACK_STATUS = frozenset({400, 404, 405, 406, 415, 422, 501})
+_STREAM_AUTH_ERROR_CODES = frozenset(
+    {"invalid_api_key", "unauthorized", "authentication_error"}
+)
+
+
 def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> dict:
     payload["stream"] = True
     # Ask for a usage row on the terminal chunk (ignored by proxies that don't
@@ -122,7 +151,26 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
         "started": False,
         "terminal": False,
         "tool_calls": {},
+        "output_committed": False,
     }
+
+    def _discard_uncommitted_attempt() -> None:
+        """Drop state an SSE attempt accumulated without publishing.
+
+        The transport may replay a typed provider error.  Reasoning, usage and
+        partial tool fragments are adapter-local until a terminal reply, so
+        they are safe to discard; carrying them into the next attempt would
+        corrupt its reply.  Visible content is never discarded or replayed.
+        """
+
+        if state["output_committed"]:
+            return
+        parts.clear()
+        reasoning.clear()
+        state["usage"] = {}
+        state["finish"] = None
+        state["terminal"] = False
+        state["tool_calls"].clear()
 
     def _on_event(evt: dict) -> None:
         if evt.get("error") or evt.get("type") == "error":
@@ -130,6 +178,34 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
             error = evt.get("error")
             if isinstance(error, dict):
                 detail = error.get("message") or str(error)
+                raw_code = error.get("code")
+                raw_type = error.get("type")
+                provider_code = raw_code if type(raw_code) is str else None
+                provider_type = raw_type if type(raw_type) is str else None
+                # An SSE connection can answer HTTP 200 and carry the real
+                # failure in an error event.  Infer an HTTP-equivalent status
+                # only from this closed set of provider signals -- never from
+                # message prose.  The raw code remains private diagnostic
+                # evidence; public surfaces use models.llm_failure_code().
+                status = next(
+                    (
+                        _STREAM_ERROR_STATUS[value]
+                        for value in (provider_code, provider_type)
+                        if value in _STREAM_ERROR_STATUS
+                    ),
+                    None,
+                )
+                if status is not None:
+                    _discard_uncommitted_attempt()
+                    raise TransportError(
+                        f"OpenAI stream error: {detail}",
+                        provider=cfg.provider,
+                        operation="post_sse",
+                        status=status,
+                        error_code=provider_code or provider_type,
+                        retryable=status_is_retryable(status),
+                        output_committed=bool(state["output_committed"]),
+                    )
             else:
                 detail = error or evt.get("message") or str(evt)
             raise LLMError(f"OpenAI stream error: {detail}")
@@ -145,6 +221,7 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
         piece = delta.get("content")
         if piece:
             parts.append(piece)
+            state["output_committed"] = True
             try:
                 on_delta(piece)
             except Exception:  # noqa: BLE001 — a UI callback must never kill the stream
@@ -176,11 +253,26 @@ def _chat_openai_stream(url, payload, headers, cfg, on_delta, *, post_sse) -> di
     timeout = max(cfg.timeout_s, 60.0)
     try:
         post_sse(url, payload, headers, timeout, _on_event)
+    except TransportError as exc:
+        # A typed HTTP/SSE failure already passed through the bounded transport
+        # retry policy.  Treating it as "streaming unsupported" would start a
+        # second blocking request with a fresh retry budget (3 SSE + 3 JSON).
+        # Preserve the historical one-shot compatibility fallback only for
+        # non-retryable protocol-shape refusals before any stream event.  Auth,
+        # capacity and connection failures must never take this branch.
+        if (
+            not state["started"]
+            and not exc.retryable
+            and exc.status in _STREAM_COMPATIBILITY_FALLBACK_STATUS
+            and exc.error_code not in _STREAM_AUTH_ERROR_CODES
+        ):
+            raise _StreamStartError() from exc
+        raise
     except LLMError:
-        # Connection/HTTP error. If we already streamed tokens, surfacing a hard
-        # error would duplicate/contradict what the user saw — but nothing was
-        # committed downstream yet, so re-raise as a start error only when we
-        # never emitted, else propagate.
+        # An untyped failure before the first semantic event may mean this
+        # compatible endpoint simply does not implement SSE. Keep the historical
+        # blocking fallback for that narrow case; typed transport failures above
+        # have already exhausted their one retry budget.
         if not state["started"]:
             raise _StreamStartError()
         raise

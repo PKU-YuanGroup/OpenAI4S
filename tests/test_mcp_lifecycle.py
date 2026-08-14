@@ -309,6 +309,276 @@ def test_eviction_spares_a_newer_connection_for_the_same_connector_id(tmp_path):
         assert manager.shutdown() == []
 
 
+@pytest.mark.stubbed_backend
+def test_datapro_sessions_are_partitioned_by_live_store_generation(
+    tmp_path, monkeypatch
+):
+    """Two Stores with one managed connector id must never share credentials.
+
+    ``MCPManager`` is process-wide while embedders can host multiple Stores at
+    once. Caching only by connector id made the first Store's header-provider
+    closure serve every later Store. This stub executes the real runtime config
+    providers at request time, then proves reuse within one Store, isolation
+    across Stores, and exact-scope invalidation.
+    """
+    from openai4s import datapro
+    from openai4s.store import Store
+
+    first_key = "first-plan-key-canary"
+    second_key = "second-plan-key-canary"
+    first_store = Store(tmp_path / "first" / "openai4s.db")
+    second_store = Store(tmp_path / "second" / "openai4s.db")
+    manager = MCPManager()
+    created = []
+    requests = []
+
+    class Connection:
+        command = ["streamable_http"]
+
+        def __init__(self, config: dict, ordinal: int):
+            self.cache_scope = config["cache_scope"]
+            self.headers_provider = config["headers_provider"]
+            self.ordinal = ordinal
+            self.closed = False
+
+        def faulted(self) -> bool:
+            return self.closed
+
+        def list_tools(self) -> list[dict]:
+            headers = self.headers_provider()
+            requests.append(
+                (self.cache_scope, self.ordinal, headers["X-Agent-Plan-Key"])
+            )
+            return [{"name": datapro.TOOL_NAME, "connection": self.ordinal}]
+
+        def close(self) -> bool:
+            self.closed = True
+            return True
+
+        def failure(self):
+            return None
+
+    def connect(config: dict):
+        connection = Connection(config, len(created) + 1)
+        created.append(connection)
+        return connection
+
+    monkeypatch.setattr(manager, "_connect", connect)
+    try:
+        datapro.save_agent_plan_key(first_store, first_key)
+        datapro.save_agent_plan_key(second_store, second_key)
+        connector = {"connector_id": datapro.CONNECTOR_ID}
+        first_config = datapro.connector_runtime_config(first_store, connector)
+        second_config = datapro.connector_runtime_config(second_store, connector)
+        first_scope = datapro.runtime_cache_scope(first_store)
+        second_scope = datapro.runtime_cache_scope(second_store)
+
+        assert first_config["cache_scope"] == first_scope
+        assert second_config["cache_scope"] == second_scope
+        assert first_scope != second_scope
+        assert first_key not in first_scope + second_scope
+        assert second_key not in first_scope + second_scope
+
+        first_result = manager.list_tools(datapro.CONNECTOR_ID, first_config)
+        assert manager.list_tools(datapro.CONNECTOR_ID, first_config) == first_result
+        second_result = manager.list_tools(datapro.CONNECTOR_ID, second_config)
+        assert first_result[0]["connection"] == 1
+        assert second_result[0]["connection"] == 2
+        assert requests == [
+            (first_scope, 1, first_key),
+            (first_scope, 1, first_key),
+            (second_scope, 2, second_key),
+        ]
+
+        manager.disconnect(datapro.CONNECTOR_ID, cache_scope=first_scope)
+        assert created[0].closed is True
+        assert created[1].closed is False
+        assert manager.list_tools(datapro.CONNECTOR_ID, second_config) == second_result
+        replacement = manager.list_tools(datapro.CONNECTOR_ID, first_config)
+        assert replacement[0]["connection"] == 3
+        assert requests[-2:] == [
+            (second_scope, 2, second_key),
+            (first_scope, 3, first_key),
+        ]
+    finally:
+        assert manager.shutdown() == []
+        first_store.close()
+        second_store.close()
+
+
+@pytest.mark.stubbed_backend
+def test_store_close_drops_only_its_datapro_scope_and_secret_state(
+    tmp_path, monkeypatch
+):
+    """A closed Store cannot remain reachable through the global MCP cache."""
+
+    from openai4s import datapro
+    from openai4s.store import Store
+
+    first_store = Store(tmp_path / "first-close" / "openai4s.db")
+    second_store = Store(tmp_path / "second-close" / "openai4s.db")
+    manager = MCPManager()
+    created = []
+
+    class Connection:
+        command = ["streamable_http"]
+
+        def __init__(self, config: dict):
+            self.cache_scope = config["cache_scope"]
+            self.headers_provider = config["headers_provider"]
+            self.reflection_secrets = []
+            self.closed = False
+
+        def faulted(self) -> bool:
+            return self.closed
+
+        def list_tools(self) -> list[dict]:
+            key = self.headers_provider()["X-Agent-Plan-Key"]
+            if key not in self.reflection_secrets:
+                self.reflection_secrets.append(key)
+            return [{"name": datapro.TOOL_NAME}]
+
+        def close(self) -> bool:
+            self.closed = True
+            self.headers_provider = None
+            self.reflection_secrets.clear()
+            return True
+
+        def failure(self):
+            return None
+
+    def connect(config: dict):
+        connection = Connection(config)
+        created.append(connection)
+        return connection
+
+    monkeypatch.setattr(manager, "_connect", connect)
+    monkeypatch.setattr(mcp_client, "_MANAGER", manager)
+    try:
+        datapro.save_agent_plan_key(first_store, "first-close-key-canary")
+        datapro.save_agent_plan_key(second_store, "second-close-key-canary")
+        connector = {"connector_id": datapro.CONNECTOR_ID}
+        first_config = datapro.connector_runtime_config(first_store, connector)
+        second_config = datapro.connector_runtime_config(second_store, connector)
+        first_scope = datapro.runtime_cache_scope(first_store)
+        second_scope = datapro.runtime_cache_scope(second_store)
+
+        manager.list_tools(datapro.CONNECTOR_ID, first_config)
+        manager.list_tools(datapro.CONNECTOR_ID, second_config)
+        assert [connection.reflection_secrets for connection in created] == [
+            ["first-close-key-canary"],
+            ["second-close-key-canary"],
+        ]
+
+        first_store.close()
+
+        assert created[0].closed is True
+        assert created[0].headers_provider is None
+        assert created[0].reflection_secrets == []
+        assert created[1].closed is False
+        assert set(manager._conns) == {(datapro.CONNECTOR_ID, second_scope)}
+        assert manager.list_tools(datapro.CONNECTOR_ID, second_config) == [
+            {"name": datapro.TOOL_NAME}
+        ]
+
+        second_store.close()
+        assert created[1].closed is True
+        assert created[1].headers_provider is None
+        assert created[1].reflection_secrets == []
+        assert manager._conns == {}
+        assert first_scope != second_scope
+    finally:
+        first_store.close()
+        second_store.close()
+        assert manager.shutdown() == []
+
+
+@pytest.mark.stubbed_backend
+def test_closing_store_without_mcp_use_does_not_create_manager(tmp_path, monkeypatch):
+    """Store-only callers must keep the MCP subsystem completely lazy."""
+
+    from openai4s.store import Store
+
+    monkeypatch.setattr(mcp_client, "_MANAGER", None)
+    store = Store(tmp_path / "no-mcp" / "openai4s.db")
+
+    store.close()
+
+    assert mcp_client._MANAGER is None
+
+
+@pytest.mark.stubbed_backend
+def test_scoped_disconnect_rejects_only_that_store_inflight_connection(monkeypatch):
+    """Connect locks and invalidation epochs use the Store scope too."""
+
+    connector_id = "volcengine-datapro"
+    first_scope = "store:first-generation"
+    second_scope = "store:second-generation"
+    first_started = threading.Event()
+    release_first = threading.Event()
+    first_errors = []
+    created = []
+
+    class Connection:
+        command = ["streamable_http"]
+
+        def __init__(self, scope: str):
+            self.scope = scope
+            self.closed = False
+
+        def faulted(self) -> bool:
+            return self.closed
+
+        def list_tools(self) -> list[dict]:
+            return [{"name": "dataPro_search", "scope": self.scope}]
+
+        def close(self) -> bool:
+            self.closed = True
+            return True
+
+        def failure(self):
+            return None
+
+    def connect(config: dict):
+        connection = Connection(config["cache_scope"])
+        created.append(connection)
+        if connection.scope == first_scope:
+            first_started.set()
+            assert release_first.wait(5)
+        return connection
+
+    manager = MCPManager()
+    monkeypatch.setattr(manager, "_connect", connect)
+
+    def connect_first() -> None:
+        try:
+            manager.list_tools(connector_id, {"cache_scope": first_scope})
+        except MCPError as exc:
+            first_errors.append(exc)
+
+    first_thread = threading.Thread(target=connect_first)
+    first_thread.start()
+    try:
+        assert first_started.wait(5)
+        # If connect locks were still keyed only by connector id, this would
+        # wait behind first_scope instead of completing independently.
+        second = manager.list_tools(connector_id, {"cache_scope": second_scope})
+        assert second == [{"name": "dataPro_search", "scope": second_scope}]
+
+        manager.disconnect(connector_id, cache_scope=first_scope)
+        release_first.set()
+        first_thread.join(5)
+        assert not first_thread.is_alive()
+        assert len(first_errors) == 1
+        assert created[0].closed is True
+        assert created[1].closed is False
+        assert manager.list_tools(connector_id, {"cache_scope": second_scope}) == second
+    finally:
+        release_first.set()
+        first_thread.join(5)
+        assert manager.shutdown() == []
+
+
 # -- the two queues a server gets to grow ------------------------------------
 def _swallow(connection: MCPConnection):
     """A thread body that parks in `list_tools` until the connection is closed."""

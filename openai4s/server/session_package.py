@@ -520,11 +520,11 @@ class SessionPackageService:
         for name, value in os.environ.items():
             if _SECRET_KEY.search(name) and len(value) >= 8:
                 values.add(value)
-        for setting in ("llm_api_key", "model_profiles"):
+        for setting in ("llm_api_key", "agent_plan_key", "model_profiles"):
             raw = self.store.get_setting(setting)
             if not raw:
                 continue
-            if setting == "llm_api_key":
+            if setting in {"llm_api_key", "agent_plan_key"}:
                 # Resolve through the broker first. Once migrated this row holds
                 # a reference, and adding *that* to the redaction set would
                 # redact a harmless opaque string while leaving the real key —

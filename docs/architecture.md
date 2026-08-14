@@ -259,9 +259,10 @@ the usual answer to the real multi-process access here — `openai4s run` and
 `openai4s init` open the database from their own process — but measurement showed
 no reader blocking to fix, and changing a live database's on-disk format on
 folklore is a bad trade), and `synchronous` stays FULL because this database holds
-an audit ledger. `foreign_keys` is ON, which is a no-op today: the schema declares
-no `REFERENCES` at all, so the pragma only ensures a future constraint would
-actually bite rather than read as documentation.
+an audit ledger. `foreign_keys` is ON. DataPro index entries are the first rows
+to use it: each references its batch with `ON DELETE CASCADE`; lifecycle
+repositories still delete both explicitly so upgraded or externally opened
+databases remain correct as well.
 
 Repositories share the `Store` connection and `RLock`; services use narrow
 ports or late-bound providers for replaceable session state. Compatibility

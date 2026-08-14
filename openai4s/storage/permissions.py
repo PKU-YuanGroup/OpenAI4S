@@ -41,6 +41,14 @@ DEFAULT_PERMISSION_RULES = (
     ("web_search", "*", "allow"),
     ("science_search", "*", "allow"),
     ("skills_edit", "*", "allow"),
+    # The managed DataPro product flow uses the user's brokered Agent Plan Key;
+    # supplying or activating that shared Ark credential is the explicit
+    # authorization.  The bundled connector/Skill are enabled by default and
+    # the UI's enable action is idempotent. Allow exactly that one narrow search
+    # tool so the promised one-key, zero-friction path does not immediately ask
+    # for a second approval. A standing deny still wins absolutely; every other
+    # MCP call retains the ask default.
+    ("mcp_call", "volcengine-datapro/dataPro_search", "allow"),
     ("mcp_call", "*", "ask"),
     # Reading a resource / rendering a prompt pulls attacker-controllable
     # content addressed by a model-chosen URI/name, so it stays "ask" like
@@ -58,9 +66,10 @@ DEFAULT_PERMISSION_RULES = (
 # marker.  New releases advance this separate version and list only the rules
 # introduced by that version, so upgrades add new defaults without restoring a
 # default that an operator deliberately deleted or changed.
-_DEFAULT_PERMISSION_RULE_VERSION = 2
+_DEFAULT_PERMISSION_RULE_VERSION = 3
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
     2: (("science_search", "*", "allow"),),
+    3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
 }
 
 

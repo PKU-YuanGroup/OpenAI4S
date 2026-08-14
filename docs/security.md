@@ -244,12 +244,24 @@ property it still has.
 
 Model and search credentials are held by a **SecretBroker**
 ([`security/secret_broker.py`](../openai4s/security/secret_broker.py)): the row
-stores an opaque reference such as `secret://v1/llm/llm_api_key` and the value
-lives in the system keychain. The reference is not derived from the value, so it
-is safe to log and safe to sit in a row. Covered today: `llm_api_key`,
-`tavily_api_key`, the per-profile `api_key` of every saved model profile
-(`secret://v1/model_profile/<id>`), and every connector `env` value
-(`secret://v1/connector_env/<id>.<VAR>`).
+stores an opaque reference and the value lives in the system keychain. New
+references use
+`secret://v2/<store-namespace>/<scope>/<name>`; the namespace is a
+domain-separated digest of the canonical database path, not the path or any
+credential. Thus two data directories cannot overwrite the same physical
+Keychain or Secret Service slot, and copying a database does not copy authority
+to its credentials. The reference is not derived from the value, so it is safe
+to log and safe to sit in a row. Covered today: `llm_api_key`,
+`tavily_api_key`, the shared `agent_plan_key` used by DataPro and Doubao Search,
+the per-profile `api_key` of every saved model profile, and every connector
+`env` value.
+
+Legacy v1 system-keychain references contain no Store ownership evidence. They
+are never read, claimed, or deleted automatically; the UI reports the
+credential absent and the user saves it again into the v2 Store namespace.
+This deliberately leaves the ambiguous legacy slot untouched because another
+data directory may still use it. DB-local plaintext v1 slots remain readable,
+as do explicitly process-global environment variables.
 
 Connector env brokers **every** value, not only the credential-shaped ones.
 Choosing by variable name would mean a regex over names — the same name-based
@@ -280,14 +292,17 @@ was exactly the one that silently got none, while a laptop that needed it least
 got the keychain. A warning printed at boot is not a control; it scrolls away
 and the credential stays in the clear.
 
-**Servers supply credentials through the environment.** Set
-`OPENAI4S_SECRET_<SCOPE>_<NAME>` (e.g. `OPENAI4S_SECRET_LLM_LLM_API_KEY`) from
-systemd's `EnvironmentFile`, a Kubernetes Secret, or whatever the config
-management already owns; set `OPENAI4S_SECRET_ENV=1` to opt in before any are
-configured. **Nothing is written to disk** — stronger than the keychain case,
-not a fallback from it. It is read-only on purpose: if the environment owns the
-secret, the app must not overwrite it behind the operator's back, so a write
-attempt fails with the exact variable name to set.
+**Servers supply credentials through the environment.** The preferred variable
+is `OPENAI4S_SECRET_V2_<STORE_NAMESPACE>_<SCOPE>_<NAME>`. Existing
+`OPENAI4S_SECRET_<SCOPE>_<NAME>` variables (for example,
+`OPENAI4S_SECRET_LLM_LLM_API_KEY`) remain an explicit process-global fallback,
+so an upgrade does not silently change an operator's deployment contract. Set
+either from systemd's `EnvironmentFile`, a Kubernetes Secret, or whatever the
+config management already owns; set `OPENAI4S_SECRET_ENV=1` to opt in before any
+are configured. **Nothing is written to disk** — stronger than the keychain
+case, not a fallback from it. It is read-only on purpose: if the environment
+owns the secret, the app must not overwrite it behind the operator's back, so a
+write attempt fails with the exact preferred variable name to set.
 
 An injected credential resolves **with no settings row at all**, which is the
 only state a fresh server can be in: nothing can put the reference row there,
@@ -301,6 +316,17 @@ unconfigured. `resolve_setting` therefore asks a **read-only** backend for
 writable backend an empty row is the app's own answer, and since clearing a key
 swallows a failed delete, going to the backend anyway would let a revoked
 credential come back to life.
+
+The reference it builds carries this Store's **namespace**, i.e. the same v2
+reference `put` would have written. That is not a detail: a v1 reference
+reaches only the plain `OPENAI4S_SECRET_<SCOPE>_<NAME>`, while the refusal an
+operator sees when the UI declines to save a key names the namespaced
+`OPENAI4S_SECRET_V2_<NS>_<SCOPE>_<NAME>`. Built the v1 way, following that
+instruction exactly still resolved to nothing — the same dead end one spelling
+over. The v2 path tries the namespaced variable and falls back to the plain
+one, so both work; the plain form is the portable one, since a namespace is
+derived from the data directory's real path and a Secret written against one
+data directory would not resolve after the volume moved.
 
 The corollary is that clearing an injected key from the UI does not unset it —
 the environment owns that value, and the settings route reports the
@@ -330,7 +356,9 @@ working, reported on stderr.
 
 Still outstanding, and stated plainly rather than left implied:
 
-- **Windows has no backend**, so it resolves to plaintext under `auto`.
+- **Windows has no system-keychain backend**, so `auto` fails closed unless
+  environment injection is configured. Plaintext remains available only when
+  the operator explicitly selects `OPENAI4S_SECRET_STORE=plaintext`.
   `security` and `secret-tool` cover macOS and Linux desktops; DPAPI would need
   a `ctypes` shim.
 - **The file mode is the only barrier for what is not yet migrated.** The data

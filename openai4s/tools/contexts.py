@@ -49,6 +49,7 @@ class ControlToolContext:
         set_active_r_env: Callable[[str | None], None],
         get_on_env_switch: Callable[[], Callable[[str], None] | None],
         invoke_control: Callable[..., Any] | None = None,
+        search_web: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self._workspace = workspace
         self._get_active_env_bin = get_active_env_bin
@@ -56,6 +57,7 @@ class ControlToolContext:
         self._set_active_r_env = set_active_r_env
         self._get_on_env_switch = get_on_env_switch
         self._invoke_control = invoke_control
+        self._search_web = search_web
 
     def workspace(self) -> Path:
         return self._workspace.workspace()
@@ -96,6 +98,29 @@ class ControlToolContext:
         if self._invoke_control is None:
             raise RuntimeError(f"control behavior is unavailable: {method}")
         return self._invoke_control(method, *arguments)
+
+    def search_web(
+        self,
+        query: Any,
+        *,
+        num_results: int = 8,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        """Use the Host-bound primary search implementation.
+
+        This callback is deliberately separate from ``invoke``.  It has no
+        ``_m_*`` dispatcher handler and therefore cannot be addressed on the
+        kernel Host wire to bypass the existing ``web_search`` permission,
+        audit, and untrusted-output envelope.
+        """
+
+        if self._search_web is None:
+            raise RuntimeError("primary web search is unavailable")
+        return self._search_web(
+            query,
+            num_results=num_results,
+            timeout=timeout,
+        )
 
 
 __all__ = [

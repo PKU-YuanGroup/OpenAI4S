@@ -762,7 +762,7 @@ def _failed_frame_updates(runner):
     ]
 
 
-def _run_failing_turn(runner, monkeypatch, exc):
+def _run_failing_turn(runner, monkeypatch, exc, *, request="go"):
     """POST a real `wait:false` turn whose *inner* loop raises."""
     frame_id = runner.store.new_frame(kind="turn", project_id="proj", status="ready")
 
@@ -771,7 +771,10 @@ def _run_failing_turn(runner, monkeypatch, exc):
 
     monkeypatch.setattr(runner, "_loop", boom)
     accepted, status = _api(
-        runner, "POST", f"/frames/{frame_id}/message", {"request": "go", "wait": False}
+        runner,
+        "POST",
+        f"/frames/{frame_id}/message",
+        {"request": request, "wait": False},
     )
     assert status == 202, (status, accepted)
     job = next(iter(runner._jobs.values()))
@@ -823,6 +826,52 @@ def test_one_id_reaches_all_five_surfaces_for_a_real_internal_failure(
     ), f"five surfaces, {len(set(ids.values()))} ids: {ids}"
     assert persisted.get("code") == stored[-1]["failure"].get("code")
     assert updates[-1].get("code")
+
+
+@pytest.mark.stubbed_backend
+def test_ark_burst_protection_is_named_consistently_without_blaming_the_key(
+    runner, monkeypatch
+):
+    """A provider burst refusal is operational, not a bad configuration.
+
+    The exact Ark code is a controlled signal.  Its free-form message is not:
+    it may contain upstream request metadata or credential-shaped text, so the
+    public wording and stable code must be local on all five failure surfaces.
+    """
+    exc = TransportError(
+        f"System protection triggered by request burst: {CREDENTIAL}",
+        provider="ark",
+        status=429,
+        error_code="RequestBurstTooFast",
+        retryable=True,
+    )
+    frame_id, _accepted, result, messages = _run_failing_turn(
+        runner, monkeypatch, exc, request="请继续完成这个长任务"
+    )
+    updates = _failed_frame_updates(runner)
+    stored = [m for m in messages["messages"] if m.get("failure")]
+    raw = [
+        m
+        for m in runner.store.list_messages(frame_id)
+        if "failure" in str(m.get("metadata") or "")
+    ]
+    assert updates and stored and raw
+    persisted = json.loads(raw[-1]["metadata"])["failure"]
+
+    for where in (result, updates[-1], persisted, stored[-1]["failure"]):
+        assert where.get("code") == "llm_request_burst", where
+
+    chunks = [
+        str(event.get("chunk") or "")
+        for event in runner.hub.events
+        if event.get("type") == "text_chunk"
+    ]
+    public_blob = json.dumps(
+        [result, updates[-1], stored[-1], chunks], ensure_ascii=False, default=str
+    )
+    assert "突发流量保护" in public_blob
+    assert "Customize → Models" not in public_blob
+    assert CREDENTIAL not in public_blob
 
 
 @pytest.mark.stubbed_backend

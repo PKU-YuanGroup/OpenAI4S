@@ -129,6 +129,11 @@ upper-cased with every non-alphanumeric run collapsed to `_`. So:
 | model API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
 | Tavily search key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
 
+Use that plain form in a manifest. The UI's refusal names a *namespaced*
+variant (`OPENAI4S_SECRET_V2_<NS>_…`), which also works, but the namespace is
+derived from the data directory's real path — so a Secret written against one
+volume stops resolving if the volume moves. The plain name is the portable one.
+
 The backend is **read-only by design**: if the environment owns the secret, the
 app must not overwrite it behind the operator's back. **Customize → Models
 therefore cannot save an API key** — it refuses, naming the exact variable to
@@ -416,6 +421,11 @@ cookie 也随之失效。
 |---|---|
 | 模型 API key | `OPENAI4S_SECRET_LLM_LLM_API_KEY` |
 | Tavily 搜索 key | `OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY` |
+
+清单里请用上面这个朴素形式。UI 的拒绝信息给出的是**带命名空间**的变体
+（`OPENAI4S_SECRET_V2_<NS>_…`），它同样有效，但命名空间是从数据目录的真实路径推导出来
+的——所以针对某个卷写下的 Secret，在卷换了位置之后就解析不出来了。朴素名才是可移植的
+那个。
 
 这个后端**按设计是只读的**：既然环境拥有这个密钥，应用就不该背着运维把它覆盖掉。
 因此 **Customize → Models 无法保存 API key**——它会拒绝，并告诉你该设哪个变量。

@@ -26,7 +26,7 @@
 | `science-connectors.md` | `science_search` 背后的七个公开科学数据库：各自的接口、学科范围，以及归一化后返回的记录字段。 |
 | `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
 | `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |
-| `startup-guide.md` | 双语 macOS `.dmg` 上手全流程：安装、Gatekeeper，以及在 UI 里配置模型 + Tavily 搜索 Key。 |
+| `startup-guide.md` | 双语 macOS `.dmg` 上手全流程：安装、Gatekeeper、配置模型，以及在 UI 里用一个 Agent Plan Key 授权豆包搜索；Tavily/免密钥搜索保留为备用。 |
 | `webapp-api.md` | REST/WebSocket 功能面的详细契约与兼容行为。 |
 | `windows-wsl.md` | 双语 Windows/WSL2 安装与运维指南：Ubuntu 24.04、bubblewrap 安装前自检、校验后离线安装、安全浏览器 URL、后台生命周期、国内镜像，以及 localhost:7897 在 NAT/镜像网络下的区别。 |
 | `response-schemas.json` | 离线套件触达的每条 HTTP 响应的形状，从真实响应里抓取固化，不是手写的。由 [`scripts/capture_response_schemas.py`](../scripts/capture_response_schemas.py) 生成；这里出现 diff 就意味着某条 route 改变了它的返回。覆盖率是部分的，而且刻意可见：文件里没有的 route，就是没有任何离线测试触达的 route。描述宿主机而非 API 的子树——内核的 `sandbox` 块，它的字段**类型**在能强制 sandbox 的机器和不能的机器上本就不同；以及 `default_host`，compute registry 把它定义为 `"<alias>" | null`，于是配了 ssh alias 的机器与没配的机器对它的类型看法不同——记为 `machine_state`，不予固化。把这类字段钉住并不能抓到漂移，只会把抓取这份文件的那台机器冻结下来，然后把其他每一台机器都报成 API 的破坏性变更。带 `stubbed_backend` 标记的测试不贡献任何形状：把服务换成桩之后，路由返回的是编造出来的东西，把它作为契约发布比让这条路由没有形状更糟，因为读的人会当真。这些路由改由单元测试看守。 |

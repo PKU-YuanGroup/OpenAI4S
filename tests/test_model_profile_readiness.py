@@ -194,6 +194,39 @@ def test_a_failed_probe_names_the_cause_without_quoting_the_provider(
     assert "request_id" in result
 
 
+@pytest.mark.stubbed_backend
+def test_a_burst_refusal_is_not_reported_as_a_bad_model_or_key(tmp_path, monkeypatch):
+    import openai4s.llm as llm_module
+    from openai4s.llm.models import TransportError
+
+    def _fail(*_args, **_kwargs):
+        raise TransportError(
+            "System protection triggered by request burst; request id private",
+            provider="ark",
+            status=429,
+            error_code="RequestBurstTooFast",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(llm_module, "chat", _fail)
+    store, service = _service(tmp_path)
+    service.create(
+        {
+            "name": "Ark",
+            "provider": "ark",
+            "base_url": "https://ark.invalid/v3",
+            "model": "doubao-seed-2.0-pro",
+            "api_key": "abc123def456ghi789",
+        }
+    )
+
+    result = service.probe(store.list_model_profiles()[0]["id"])
+    assert result["contacted"] is True and result["reachable"] is False
+    assert "burst-traffic protection" in result["detail"]
+    assert "credential is not the problem" in result["detail"]
+    assert "request id private" not in result["detail"]
+
+
 def test_probing_an_unknown_profile_is_a_404(tmp_path):
     _store, service = _service(tmp_path)
     with pytest.raises(ModelProfileError) as refused:

@@ -29,7 +29,13 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .models import LLMError, TransportError, parse_retry_after, status_is_retryable
+from .models import (
+    LLMError,
+    TransportError,
+    llm_failure_code,
+    parse_retry_after,
+    status_is_retryable,
+)
 
 
 def bind_call_context(fn, **context):
@@ -65,6 +71,12 @@ def bind_call_context(fn, **context):
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BASE_BACKOFF = 0.5
 DEFAULT_MAX_BACKOFF = 8.0
+# Ark's burst protector explicitly asks clients to grow traffic gradually.  A
+# full-jitter wait in [0, 0.5] can immediately collide again, so this one exact
+# controlled classification gets a slower, strictly-positive backoff.  It is
+# still governed by the same attempt count, cap, total budget and cancellation
+# polling as every other retryable transport failure.
+REQUEST_BURST_BASE_BACKOFF = 4.0
 # Ceiling on time spent sleeping across a call. A provider may advertise a
 # 300s Retry-After; honouring that inside one turn would look like a hang.
 DEFAULT_RETRY_BUDGET = 30.0
@@ -169,8 +181,16 @@ def _wait(delay: float, do_sleep, should_cancel) -> bool:
 
 def _sleep_for(err: TransportError, attempt: int, base: float, cap: float) -> float:
     """Honour Retry-After when present, else exponential backoff with jitter."""
-    if err.retry_after is not None:
+    failure_code = llm_failure_code(err)
+    if err.retry_after is not None and (
+        err.retry_after > 0 or failure_code != "llm_request_burst"
+    ):
         return err.retry_after
+    if failure_code == "llm_request_burst":
+        backoff = min(cap, REQUEST_BURST_BASE_BACKOFF * (2 ** (attempt - 1)))
+        # Equal jitter: unlike full jitter its lower bound is non-zero, while
+        # concurrent clients still do not resynchronise on one fixed delay.
+        return random.uniform(backoff / 2.0, backoff)
     backoff = min(cap, base * (2 ** (attempt - 1)))
     # Full jitter: without it, N clients rate-limited at the same instant all
     # come back at the same instant.

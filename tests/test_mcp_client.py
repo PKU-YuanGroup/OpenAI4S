@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import http.client
+import json
 import os
+import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+from pathlib import Path
 
 import pytest
 
 from openai4s import mcp_client
+from openai4s.http_deadline import (
+    HTTPExchangeDeadline,
+    HTTPExchangeTimeout,
+    _DeadlineHTTPSConnection,
+)
 from openai4s.mcp_client import (
     MCPConnection,
     MCPError,
@@ -17,7 +28,312 @@ from openai4s.mcp_client import (
     _connector_environment,
     example_server_config,
 )
+from openai4s.mcp_http import MCPHTTPConnection
+from openai4s.mcp_protocol import MCPTimeout
 from openai4s.mcp_servers.example_server import RESOURCE_URI
+
+
+class _HTTPHeaders(dict):
+    def get(self, key, default=None):
+        wanted = str(key).casefold()
+        return next(
+            (value for name, value in self.items() if str(name).casefold() == wanted),
+            default,
+        )
+
+
+class _HTTPResponse:
+    def __init__(self, status, body=b"", headers=None):
+        self.status = status
+        self._body = body
+        self._offset = 0
+        self.headers = _HTTPHeaders(headers or {})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def getcode(self):
+        return self.status
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            size = len(self._body) - self._offset
+        chunk = self._body[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+
+def _rpc_response(message, *, session=None, media_type="application/json"):
+    body = json.dumps(message).encode("utf-8")
+    if media_type == "text/event-stream":
+        body = b"event: message\ndata: " + body + b"\n\n"
+    headers = {"Content-Type": media_type}
+    if session is not None:
+        headers["Mcp-Session-Id"] = session
+    return _HTTPResponse(200, body, headers)
+
+
+def _permit_fake_http(monkeypatch, opener):
+    from openai4s import egress, webtools
+
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_handlers: opener)
+    monkeypatch.setattr(webtools, "network_allowed", lambda: True)
+    monkeypatch.setattr(webtools, "guard_url", lambda _url: None)
+    monkeypatch.setattr(egress, "check_url", lambda _url: None)
+
+
+def _socketpair_deadline_opener(
+    exchange: HTTPExchangeDeadline,
+    client: socket.socket,
+) -> urllib.request.OpenerDirector:
+    """urllib opener whose HTTPS connection uses one deterministic socketpair."""
+
+    class _SocketpairConnection(_DeadlineHTTPSConnection):
+        def connect(self) -> None:
+            self.sock = client
+            self._absolute_deadline._register_socket(client)
+            client.settimeout(self._absolute_deadline.remaining())
+
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        exchange.https_handler(_SocketpairConnection),
+    )
+
+
+@pytest.mark.stubbed_backend
+def test_absolute_exchange_deadline_interrupts_opener_during_response_headers():
+    """A slow header cannot turn urllib's idle timeout into an infinite open.
+
+    The peer supplies a valid status and starts a header, but never terminates
+    that header. The body reader is never reached: only closing the socket used
+    inside ``HTTPResponse.begin()`` can make this deterministic call return.
+    """
+
+    secret = "timer-secret-canary"
+    client, peer = socket.socketpair()
+    peer.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: unfinished")
+    stop_drip = threading.Event()
+
+    def drip_header() -> None:
+        # Every byte arrives well inside urllib's relative socket timeout. A
+        # legacy opener therefore remains in ``HTTPResponse.begin`` for the
+        # whole two-second producer lifetime instead of timing out at 150 ms.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not stop_drip.wait(0.025):
+            try:
+                peer.sendall(b"x")
+            except OSError:
+                return
+
+    producer = threading.Thread(target=drip_header, name="slow-header-upstream")
+    producer.start()
+    exchange = HTTPExchangeDeadline(0.15)
+    started = time.monotonic()
+    timer = None
+    try:
+        with pytest.raises(HTTPExchangeTimeout) as caught:
+            with exchange:
+                timer = exchange._timer
+                opener = _socketpair_deadline_opener(exchange, client)
+                exchange.open(
+                    opener,
+                    urllib.request.Request(
+                        "https://deadline.invalid/slow-headers",
+                        headers={"Authorization": f"Bearer {secret}"},
+                    ),
+                )
+    finally:
+        stop_drip.set()
+        peer.close()
+        client.close()
+        producer.join(1.0)
+
+    elapsed = time.monotonic() - started
+    assert 0.10 <= elapsed < 1.0
+    assert not producer.is_alive()
+    assert timer is not None and not timer.is_alive()
+    assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+    assert secret not in repr(exchange.__dict__)
+
+
+@pytest.mark.stubbed_backend
+def test_absolute_exchange_deadline_preserves_a_normal_header_and_body_response():
+    """The same opener path admits an ordinary response and cancels its timer."""
+
+    client, peer = socket.socketpair()
+    peer.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+    exchange = HTTPExchangeDeadline(1.0)
+    timer = None
+    try:
+        with exchange:
+            timer = exchange._timer
+            opener = _socketpair_deadline_opener(exchange, client)
+            with exchange.open(
+                opener,
+                urllib.request.Request("https://deadline.invalid/complete"),
+            ) as response:
+                assert response.status == 200
+                assert response.read() == b"{}"
+    finally:
+        peer.close()
+        client.close()
+
+    assert timer is not None and not timer.is_alive()
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_uses_the_exchange_deadline_during_initialize(
+    monkeypatch,
+):
+    """The MCP transport, not just its helper, owns the header watchdog."""
+
+    from openai4s import egress, mcp_http, webtools
+
+    client, peer = socket.socketpair()
+    peer.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: unfinished")
+    exchanges = []
+
+    class _SocketpairExchange(HTTPExchangeDeadline):
+        def __init__(self, timeout):
+            super().__init__(timeout)
+            exchanges.append(self)
+
+        def build_opener(self, *_handlers):
+            return _socketpair_deadline_opener(self, client)
+
+    monkeypatch.setattr(mcp_http, "HTTPExchangeDeadline", _SocketpairExchange)
+    monkeypatch.setattr(webtools, "network_allowed", lambda: True)
+    monkeypatch.setattr(webtools, "guard_url", lambda _url: None)
+    monkeypatch.setattr(egress, "check_url", lambda _url: None)
+    secret = "mcp-deadline-secret-canary"
+    try:
+        with pytest.raises(MCPTimeout) as caught:
+            MCPHTTPConnection(
+                "https://deadline.invalid/mcp",
+                headers={"X-Agent-Plan-Key": secret},
+                timeout=0.15,
+            )
+    finally:
+        peer.close()
+        client.close()
+
+    assert len(exchanges) == 1
+    assert exchanges[0]._timer is not None
+    assert not exchanges[0]._timer.is_alive()
+    assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+    assert secret not in repr(exchanges[0].__dict__)
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_body_reader_prefers_one_raw_read_per_deadline_check():
+    """A response with ``read1`` must never fall back to buffered ``read``."""
+
+    class _Socket:
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+    class _Raw:
+        def __init__(self, sock):
+            self._sock = sock
+
+    class _FP:
+        def __init__(self, sock):
+            self.raw = _Raw(sock)
+
+    class _Read1OnlyResponse:
+        def __init__(self):
+            self.headers = _HTTPHeaders()
+            self.socket = _Socket()
+            self.fp = _FP(self.socket)
+            self.chunks = iter((b"one", b"-read", b""))
+            self.read1_calls = 0
+
+        def read1(self, _size):
+            self.read1_calls += 1
+            return next(self.chunks)
+
+        def read(self, _size=-1):
+            raise AssertionError("buffered read must not run when read1 exists")
+
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+    response = _Read1OnlyResponse()
+
+    body = connection._read_body(response, time.monotonic() + 2.0)
+
+    assert body == b"one-read"
+    assert response.read1_calls == 3
+    assert len(response.socket.timeouts) == 3
+    assert all(0 < value <= 2.0 for value in response.socket.timeouts)
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_slow_drip_cannot_refresh_the_absolute_timeout(monkeypatch):
+    """Each byte may arrive in time, but the whole body still has one budget."""
+
+    from openai4s import mcp_http
+
+    class _Clock:
+        now = 100.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+    class _Socket:
+        def __init__(self):
+            self.timeouts = []
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+    class _Raw:
+        def __init__(self, sock):
+            self._sock = sock
+
+    class _FP:
+        def __init__(self, sock):
+            self.raw = _Raw(sock)
+
+    class _SlowDripResponse:
+        def __init__(self):
+            self.headers = _HTTPHeaders()
+            self.socket = _Socket()
+            self.fp = _FP(self.socket)
+            self.read1_calls = 0
+
+        def read1(self, _size):
+            self.read1_calls += 1
+            _Clock.now += 0.4
+            return b"x"
+
+        def read(self, _size=-1):
+            raise AssertionError("slow-drip protection requires read1")
+
+    monkeypatch.setattr(mcp_http.time, "monotonic", _Clock.monotonic)
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 1.0
+    response = _SlowDripResponse()
+
+    with pytest.raises(MCPTimeout, match="exceeded 1s"):
+        connection._read_body(response, 101.0)
+
+    assert response.read1_calls == 3
+    assert response.socket.timeouts == pytest.approx([1.0, 0.6, 0.2])
+    assert all(
+        later < earlier
+        for earlier, later in zip(
+            response.socket.timeouts, response.socket.timeouts[1:]
+        )
+    )
 
 
 def test_connector_environment_is_allowlisted_and_explicit_env_is_the_secret_boundary():
@@ -308,5 +624,586 @@ def test_editing_or_disabling_a_connector_drops_its_cached_process(tmp_path):
             assert dropped == [], "enabling need not drop anything"
         finally:
             real.disconnect = original  # type: ignore[assignment]
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_uses_fresh_headers_and_preserves_structured_content(
+    monkeypatch,
+):
+    """The cached connection resolves secrets for each outbound POST.
+
+    This also drives both response media types and the 202 notification shape;
+    initialize/tools-list success alone is deliberately not interpreted here.
+    """
+
+    requests = []
+    keys = iter(
+        [
+            "plan-init",
+            "plan-notify",
+            "plan-list",
+            "plan-init-more-secret",
+        ]
+    )
+
+    class _Opener:
+        def open(self, request, timeout=None):
+            payload = json.loads(request.data)
+            headers = {name.casefold(): value for name, value in request.header_items()}
+            requests.append((payload, headers, timeout))
+            method = payload.get("method")
+            if method == "initialize":
+                return _rpc_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {"protocolVersion": "2025-06-18"},
+                    },
+                    session="session-a",
+                )
+            if method == "notifications/initialized":
+                return _HTTPResponse(202)
+            if method == "tools/list":
+                return _rpc_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {"tools": [{"name": "dataPro_search"}]},
+                    },
+                    media_type="text/event-stream",
+                )
+            reflected = headers["x-agent-plan-key"]
+            return _rpc_response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "content": [{"type": "text", "text": "real result"}],
+                        "structuredContent": {
+                            "code": 0,
+                            "data": ["record"],
+                            "echo": reflected,
+                            reflected: "reflected-key",
+                            "[REDACTED]": "literal-redacted-key-value",
+                            "prior": "plan-init",
+                            "plan-init": "prior-key",
+                            "extended": "plan-init-more-secret",
+                        },
+                    },
+                }
+            )
+
+    _permit_fake_http(monkeypatch, _Opener())
+    manager = MCPManager()
+    config = {
+        "transport": "streamable_http",
+        "url": "https://dataset.example/mcp",
+        "headers_provider": lambda: {"X-Agent-Plan-Key": next(keys)},
+        "timeout": 2,
+    }
+    try:
+        tools = manager.list_tools("datapro", config)
+        result = manager.call_tool(
+            "datapro", config, "dataPro_search", {"query": "question"}
+        )
+        cached = manager._conns[("datapro", "")]
+        assert cached._reflection_secrets == [
+            "plan-init",
+            "plan-notify",
+            "plan-list",
+            "plan-init-more-secret",
+        ], "each distinct sent Key must occupy one bounded scrub entry"
+    finally:
+        manager.shutdown()
+
+    assert tools == [{"name": "dataPro_search"}]
+    structured = result["raw"]["structuredContent"]
+    assert structured["code"] == 0
+    assert structured["data"] == ["record"]
+    assert structured["echo"] == "[REDACTED]"
+    assert "[REDACTED]" in structured
+    assert structured["[REDACTED]"] == "reflected-key"
+    assert structured["[REDACTED]#2"] == "literal-redacted-key-value"
+    assert structured["prior"] == "[REDACTED]"
+    assert structured["extended"] == "[REDACTED]"
+    assert "plan-init" not in json.dumps(result)
+    assert "plan-init-more-secret" not in json.dumps(result)
+    assert [entry[1]["x-agent-plan-key"] for entry in requests] == [
+        "plan-init",
+        "plan-notify",
+        "plan-list",
+        "plan-init-more-secret",
+    ]
+    assert requests[2][1]["mcp-session-id"] == "session-a"
+    assert requests[2][1]["mcp-protocol-version"] == "2025-06-18"
+    assert requests[0][1]["accept"] == "application/json, text/event-stream"
+    assert manager._conns.get(("datapro", "")) is None
+
+
+@pytest.mark.stubbed_backend
+def test_shutdown_epoch_rejects_an_old_store_connection_that_finishes_late(
+    monkeypatch,
+):
+    """A pre-shutdown DataPro header provider cannot re-enter the cache."""
+
+    started = threading.Event()
+    release = threading.Event()
+    created = []
+    old_errors = []
+
+    class _Connection:
+        command = ["streamable_http"]
+
+        def __init__(self, generation):
+            self.generation = generation
+            self.closed = False
+
+        def faulted(self):
+            return self.closed
+
+        def list_tools(self):
+            return [{"name": self.generation}]
+
+        def close(self):
+            self.closed = True
+            return True
+
+    def connect(config):
+        connection = _Connection(config["generation"])
+        created.append(connection)
+        if connection.generation == "old":
+            started.set()
+            assert release.wait(5)
+        return connection
+
+    manager = MCPManager()
+    monkeypatch.setattr(manager, "_connect", connect)
+
+    def old_call():
+        try:
+            manager.list_tools("volcengine-datapro", {"generation": "old"})
+        except Exception as error:  # noqa: BLE001 - asserted below
+            old_errors.append(error)
+
+    thread = threading.Thread(target=old_call)
+    thread.start()
+    assert started.wait(5)
+    manager.shutdown()
+    assert manager.list_tools("volcengine-datapro", {"generation": "new"}) == [
+        {"name": "new"}
+    ]
+    release.set()
+    thread.join(5)
+
+    assert not thread.is_alive()
+    assert len(old_errors) == 1
+    assert isinstance(old_errors[0], MCPError)
+    assert created[0].closed is True
+    assert manager._conns[("volcengine-datapro", "")].generation == "new"
+    assert manager.list_tools("volcengine-datapro", {"generation": "new"}) == [
+        {"name": "new"}
+    ]
+    manager.shutdown()
+
+
+@pytest.mark.stubbed_backend
+def test_disconnect_epoch_rejects_inflight_connection_from_pre_rotation_config(
+    monkeypatch,
+):
+    """Saving a replacement Key invalidates a connection still initializing."""
+
+    started = threading.Event()
+    release = threading.Event()
+    errors = []
+
+    class _Connection:
+        command = ["streamable_http"]
+
+        def __init__(self, generation):
+            self.generation = generation
+            self.closed = False
+
+        def faulted(self):
+            return self.closed
+
+        def list_tools(self):
+            return [{"name": self.generation}]
+
+        def close(self):
+            self.closed = True
+            return True
+
+    def connect(config):
+        connection = _Connection(config["generation"])
+        if connection.generation == "old":
+            started.set()
+            assert release.wait(5)
+        return connection
+
+    manager = MCPManager()
+    monkeypatch.setattr(manager, "_connect", connect)
+
+    def old_call():
+        try:
+            manager.list_tools("volcengine-datapro", {"generation": "old"})
+        except Exception as error:  # noqa: BLE001 - asserted below
+            errors.append(error)
+
+    thread = threading.Thread(target=old_call)
+    thread.start()
+    assert started.wait(5)
+    manager.disconnect("volcengine-datapro")
+    release.set()
+    thread.join(5)
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], MCPError)
+    assert manager.list_tools("volcengine-datapro", {"generation": "new"}) == [
+        {"name": "new"}
+    ]
+    manager.shutdown()
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_404_reinitializes_the_session_once(monkeypatch):
+    requests = []
+    expired = False
+
+    class _Opener:
+        def open(self, request, timeout=None):
+            nonlocal expired
+            payload = json.loads(request.data)
+            requests.append(payload["method"])
+            if payload["method"] == "initialize":
+                session = "session-new" if expired else "session-old"
+                return _rpc_response(
+                    {"jsonrpc": "2.0", "id": payload["id"], "result": {}},
+                    session=session,
+                )
+            if payload["method"] == "notifications/initialized":
+                return _HTTPResponse(202)
+            if payload["method"] == "tools/list" and not expired:
+                expired = True
+                raise urllib.error.HTTPError(request.full_url, 404, "expired", {}, None)
+            return _rpc_response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {"tools": [{"name": "dataPro_search"}]},
+                }
+            )
+
+    _permit_fake_http(monkeypatch, _Opener())
+    manager = MCPManager()
+    try:
+        assert manager.list_tools(
+            "datapro",
+            {
+                "transport": "streamable_http",
+                "url": "https://dataset.example/mcp",
+            },
+        ) == [{"name": "dataPro_search"}]
+    finally:
+        manager.shutdown()
+    assert requests.count("initialize") == 2
+    assert requests[-1] == "tools/list"
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_refuses_redirect_without_leaking_headers(monkeypatch):
+    canary = "plan-key-must-not-escape"
+
+    class _Opener:
+        def open(self, request, timeout=None):
+            raise urllib.error.HTTPError(
+                request.full_url,
+                302,
+                canary,
+                {"Location": "https://other.example/mcp?key=" + canary},
+                None,
+            )
+
+    _permit_fake_http(monkeypatch, _Opener())
+    manager = MCPManager()
+    with pytest.raises(MCPError) as raised:
+        manager.list_tools(
+            "datapro",
+            {
+                "transport": "streamable_http",
+                "url": "https://dataset.example/mcp",
+                "headers": {"X-Test-Plan-Key": canary},
+            },
+        )
+    message = str(raised.value)
+    assert "redirect was refused" in message
+    assert canary not in message
+    assert canary not in repr(raised.value)
+
+
+@pytest.mark.stubbed_backend
+def test_datapro_web_route_calls_search_saves_result_and_never_projects_key(
+    tmp_path, monkeypatch, caplog
+):
+    from openai4s import datapro
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    canary = "agent-plan-route-canary-never-return"
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    runner.store.upsert_connector(
+        connector_id=datapro.CONNECTOR_ID,
+        name="Volcengine DataPro",
+        command=datapro.managed_connector_command(),
+        enabled=True,
+    )
+    calls = []
+
+    class _Manager:
+        def disconnect(self, connector_id, cache_scope=None):
+            calls.append(("disconnect", connector_id))
+
+        def call_tool(self, connector_id, config, tool, args):
+            outbound = config["headers_provider"]()
+            calls.append((connector_id, tool, args, outbound))
+            echoed_key = outbound["X-Agent-Plan-Key"]
+            code = 4011 if args.get("query") == "force 4011" else 0
+            return {
+                "is_error": False,
+                "text": "echo " + echoed_key,
+                "raw": {
+                    "content": [{"type": "text", "text": "echo " + echoed_key}],
+                    "structuredContent": {
+                        "code": code,
+                        "records": [{"title": "evidence", "echo": echoed_key}],
+                        echoed_key: "reflected-key",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(mcp_client, "manager", lambda: _Manager())
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        replies = []
+        handler._query = lambda: {}
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+
+        handler._body = lambda: {"agent_plan_key": canary}
+        handler._api("POST", "/datapro/config")
+        config_status, config_body = replies.pop()
+        assert config_status == 200
+        assert config_body["key_configured"] is True
+        assert canary not in json.dumps(config_body)
+        assert "secret://" not in json.dumps(config_body)
+        assert "X-Agent-Plan-Key" not in json.dumps(config_body)
+
+        with pytest.raises(
+            gateway_mod.GatewayError,
+            match="requires a real dataPro_search call",
+        ):
+            handler._body = lambda: {}
+            handler._api("POST", f"/connectors/{datapro.CONNECTOR_ID}/probe")
+
+        runner.store.set_connector_enabled(datapro.CONNECTOR_ID, False)
+        with pytest.raises(gateway_mod.GatewayError, match="connector is disabled"):
+            handler._body = lambda: {
+                "tool": datapro.TOOL_NAME,
+                "args": {"query": "must not run"},
+            }
+            handler._api("POST", f"/connectors/{datapro.CONNECTOR_ID}/call")
+        assert [call for call in calls if call[0] == datapro.CONNECTOR_ID] == []
+        runner.store.set_connector_enabled(datapro.CONNECTOR_ID, True)
+
+        handler._body = lambda: {"query": "find professional evidence"}
+        handler._api("POST", "/datapro/search")
+        status, body = replies.pop()
+        assert status == 200
+        assert body["structuredContent"]["code"] == 0
+        assert body["available"] is True
+        assert body["message"] == datapro.AVAILABLE_MESSAGE
+        assert body["index"]["complete"] is True
+        assert body["index"]["source_leaf_count"] == body["index"]["indexed_leaf_count"]
+        assert body["index"]["source_digest"] == body["index"]["indexed_digest"]
+        assert canary not in json.dumps(body)
+        assert "[REDACTED]" in json.dumps(body)
+        assert body["artifact"]["id"]
+
+        artifact = runner.store.get_artifact(body["artifact"]["id"])
+        assert artifact is not None
+        saved = Path(artifact["path"]).read_text(encoding="utf-8")
+        assert canary not in saved
+        assert "[REDACTED]" in saved
+        assert "find professional evidence" in saved
+        indexed = runner.store.search_datapro_index("evidence")
+        assert indexed["total"] == 1
+        assert indexed["items"][0]["artifact_id"] == body["artifact"]["id"]
+
+        # The managed generic call is not an indexing bypass.  It uses the
+        # same strict success gate and returns the same completeness receipt,
+        # even though it does not create a Web Artifact.
+        handler._body = lambda: {
+            "tool": datapro.TOOL_NAME,
+            "args": {"query": "generic professional evidence"},
+        }
+        handler._api("POST", f"/connectors/{datapro.CONNECTOR_ID}/call")
+        generic_status, generic = replies.pop()
+        assert generic_status == 200
+        assert generic["raw"]["structuredContent"]["code"] == 0
+        assert generic["index"]["complete"] is True
+        assert (
+            runner.store.search_datapro_index("generic professional evidence")["total"]
+            >= 1
+        )
+
+        # Product success is index + saved Artifact as one visible outcome.
+        # A failed upload must compensate the already-created index batch,
+        # otherwise a 502 leaves a searchable ghost result behind.
+        upload = runner.artifacts.upload
+
+        def fail_upload(*args, **kwargs):
+            raise RuntimeError("injected DataPro artifact upload failure")
+
+        monkeypatch.setattr(runner.artifacts, "upload", fail_upload)
+        handler._body = lambda: {"query": "artifact-failure-ghost-sentinel"}
+        handler._api("POST", "/datapro/search")
+        failed_status, failed_body = replies.pop()
+        assert failed_status == 502
+        assert failed_body.get("error")
+        assert (
+            runner.store.search_datapro_index("artifact-failure-ghost-sentinel")[
+                "total"
+            ]
+            == 0
+        )
+        monkeypatch.setattr(runner.artifacts, "upload", upload)
+
+        tool_calls = [call for call in calls if call[0] == datapro.CONNECTOR_ID]
+        assert len(tool_calls) == 3, "each available result needs one real tool call"
+        _, tool, args, outbound = tool_calls[0]
+        assert tool == datapro.TOOL_NAME
+        assert args == {"query": "find professional evidence"}
+        assert outbound["X-Agent-Plan-Key"] == canary
+        assert outbound["X-Hqd-Extra-Info"] == "openai4s"
+        assert canary not in caplog.text
+
+        # A credential too short for lossless exact-reflection redaction is
+        # rejected before storage or any outbound MCP call.
+        calls_before = len(calls)
+        handler._body = lambda: {"agent_plan_key": "r"}
+        with pytest.raises(gateway_mod.GatewayError, match="at least") as denied:
+            handler._api("POST", "/datapro/config")
+        assert denied.value.code == 400
+        assert len(calls) == calls_before
+    finally:
+        runner.close()
+
+
+def test_managed_product_config_routes_project_only_local_credential_state(tmp_path):
+    """Non-stubbed response-capture sources for both shared-key products."""
+
+    from openai4s import datapro
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    runner.store.upsert_connector(
+        connector_id=datapro.CONNECTOR_ID,
+        name="Volcengine DataPro",
+        command=datapro.managed_connector_command(),
+        enabled=True,
+    )
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        replies = []
+        handler._query = lambda: {}
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+
+        handler._api("GET", "/datapro/config")
+        assert replies.pop() == (
+            200,
+            {
+                "key_configured": False,
+                "ark_key_reused": False,
+                "connector_id": datapro.CONNECTOR_ID,
+                "connector_enabled": True,
+                "skill_name": datapro.SKILL_NAME,
+                "skill_enabled": True,
+            },
+        )
+
+        handler._api("GET", "/doubao-search/config")
+        assert replies.pop() == (
+            200,
+            {
+                "key_configured": False,
+                "ark_key_reused": False,
+                "provider": "doubao-search",
+                "primary": True,
+            },
+        )
+
+        handler._body = lambda: {"agent_plan_key": "local-config-test-key"}
+        handler._api("POST", "/datapro/config")
+        status, body = replies.pop()
+        assert status == 200
+        assert body == {
+            "ok": True,
+            "key_configured": True,
+            "ark_key_reused": False,
+            "connector_id": datapro.CONNECTOR_ID,
+            "connector_enabled": True,
+            "skill_name": datapro.SKILL_NAME,
+            "skill_enabled": True,
+        }
+
+        # The second product observes the same brokered credential without a
+        # network call, and its own save response remains metadata-only.
+        handler._api("GET", "/doubao-search/config")
+        assert replies.pop() == (
+            200,
+            {
+                "key_configured": True,
+                "ark_key_reused": False,
+                "provider": "doubao-search",
+                "primary": True,
+            },
+        )
+        handler._body = lambda: {"agent_plan_key": "second-local-config-test-key"}
+        handler._api("POST", "/doubao-search/config")
+        assert replies.pop() == (
+            200,
+            {
+                "ok": True,
+                "key_configured": True,
+                "ark_key_reused": False,
+                "provider": "doubao-search",
+                "primary": True,
+            },
+        )
     finally:
         runner.close()

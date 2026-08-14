@@ -17,12 +17,24 @@ class MCPStore(Protocol):
 
     def list_connectors(self) -> list[dict]: ...
 
+    def index_datapro_result(self, **kwargs: Any) -> dict[str, Any]: ...
+
 
 def _disabled(server: Any) -> str:
     return (
         f"connector {server!r} is disabled; enable it in Customize \u2192 "
         f"Connectors to use it"
     )
+
+
+def _datapro_tool_only(connector: dict) -> bool:
+    """Whether this managed connector exposes only its one allowed tool."""
+
+    return connector.get("connector_id") == "volcengine-datapro"
+
+
+def _datapro_narrow_error() -> dict[str, str]:
+    return {"error": "volcengine-datapro only permits dataPro_search"}
 
 
 class MCPService:
@@ -33,9 +45,11 @@ class MCPService:
         store: MCPStore,
         *,
         manager_factory: Callable[[], Any] | None = None,
+        frame_id: Callable[[], str | None] | None = None,
     ) -> None:
         self.store = store
         self._manager_factory = manager_factory
+        self._frame_id = frame_id or (lambda: None)
         #: Tri-state connector allowlist: None inherits, [] denies everything,
         #: a list is exactly those. Armed by
         #: `HostDispatcher.set_child_execution_policy`, the choke point every
@@ -105,17 +119,13 @@ class MCPService:
         return None
 
     def _config(self, connector: dict) -> dict:
-        config = {
-            "command": connector["command"],
-            "args": connector.get("args"),
-            # Resolved: the row holds references once migrated, and launching
-            # the server with the literal "secret://..." string as its
-            # credential fails as a broken server, not a broken lookup.
-            "env": self.store.connector_env(connector),
-        }
-        if connector.get("cwd"):
-            config["cwd"] = connector["cwd"]
-        return config
+        # One factory is shared with the Web routes so an Agent and the
+        # dedicated DataPro UI cannot drift onto different transports or
+        # credential paths.  Custom connectors retain the existing stdio
+        # config; only the fixed managed connector receives authenticated HTTP.
+        from openai4s.datapro import connector_runtime_config
+
+        return connector_runtime_config(self.store, connector)
 
     def list(self) -> list:
         """Return the public projection of enabled, permitted connectors only.
@@ -152,14 +162,24 @@ class MCPService:
             return {"error": f"connector {server!r} not found"}
         if not connector.get("enabled"):
             return {"error": _disabled(server)}
+        if connector["connector_id"] == "volcengine-datapro":
+            from openai4s import datapro
+
+            # Answer the managed connector's discovery locally.  ``mcp_tools``
+            # carries ``requires_approval = False``, decided when discovery could
+            # only fork/exec a locally configured binary; over the managed HTTP
+            # transport it opened an authenticated session that put the user's
+            # live key on the wire with no gate, and told the model whether that
+            # key was valid.  The answer is fixed anyway -- the reply was
+            # filtered down to this single tool.
+            return {"tools": [datapro.tool_descriptor()]}
         config = self._config(connector)
         try:
-            return {
-                "tools": manager_factory().list_tools(
-                    connector["connector_id"],
-                    config,
-                )
-            }
+            tools = manager_factory().list_tools(
+                connector["connector_id"],
+                config,
+            )
+            return {"tools": tools}
         except Exception as exc:  # noqa: BLE001 - preserve host soft-fail contract
             return {"error": f"mcp tools failed: {exc}"}
 
@@ -174,14 +194,44 @@ class MCPService:
             return {"error": f"connector {server!r} not found"}
         if not connector.get("enabled"):
             return {"error": f"connector {server!r} is disabled"}
+        if connector["connector_id"] == "volcengine-datapro":
+            from openai4s import datapro
+
+            if tool != "dataPro_search":
+                return {"error": "volcengine-datapro only permits dataPro_search"}
+            if not isinstance(args, dict) or set(args) != {"query"}:
+                return {"error": "dataPro_search requires exactly one string query"}
+            try:
+                args = {"query": datapro.validate_query(args.get("query"))}
+            except ValueError as error:
+                return {"error": str(error)}
         config = self._config(connector)
         try:
-            return manager_factory().call_tool(
+            secret_before = ""
+            if connector["connector_id"] == "volcengine-datapro":
+                secret_before = datapro.resolve_agent_plan_key(self.store)
+            result = manager_factory().call_tool(
                 connector["connector_id"],
                 config,
                 tool,
                 args,
             )
+            if connector["connector_id"] == "volcengine-datapro":
+                secret_after = datapro.resolve_agent_plan_key(self.store)
+                safe = datapro.redact_mcp_result(result, secret_before)
+                if secret_after and secret_after != secret_before:
+                    safe = datapro.redact_secret(safe, secret_after)
+                receipt = datapro.index_successful_search(
+                    self.store,
+                    query=args["query"],
+                    result=safe,
+                    frame_id=self._frame_id(),
+                    secrets=(secret_before, secret_after),
+                )
+                if receipt is not None:
+                    safe["index"] = receipt
+                return safe
+            return result
         except Exception as exc:  # noqa: BLE001 - preserve host soft-fail contract
             return {"error": f"mcp_call({server}.{tool}) failed: {exc}"}
 
@@ -196,6 +246,8 @@ class MCPService:
             return {"error": f"connector {server!r} not found"}
         if not connector.get("enabled"):
             return {"error": _disabled(server)}
+        if _datapro_tool_only(connector):
+            return _datapro_narrow_error()
         try:
             return manager_factory().list_resources(
                 connector["connector_id"],
@@ -216,6 +268,8 @@ class MCPService:
             return {"error": f"connector {server!r} not found"}
         if not connector.get("enabled"):
             return {"error": f"connector {server!r} is disabled"}
+        if _datapro_tool_only(connector):
+            return _datapro_narrow_error()
         try:
             return manager_factory().read_resource(
                 connector["connector_id"],
@@ -236,6 +290,8 @@ class MCPService:
             return {"error": f"connector {server!r} not found"}
         if not connector.get("enabled"):
             return {"error": _disabled(server)}
+        if _datapro_tool_only(connector):
+            return _datapro_narrow_error()
         try:
             return manager_factory().list_prompts(
                 connector["connector_id"],
@@ -256,6 +312,8 @@ class MCPService:
             return {"error": f"connector {server!r} not found"}
         if not connector.get("enabled"):
             return {"error": f"connector {server!r} is disabled"}
+        if _datapro_tool_only(connector):
+            return _datapro_narrow_error()
         try:
             return manager_factory().get_prompt(
                 connector["connector_id"],

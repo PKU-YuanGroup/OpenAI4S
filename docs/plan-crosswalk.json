@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "19b6f70152132f5040cbb1c5389ee3b22913eeb3b763d9bba2339133fc53449b"
+      "evidence_digest": "6f8a258448ba90e847d60330b2e03865f27cde6fd85f16f4f1882ff7bbaef5b8"
     },
     {
       "source": "R2",
@@ -163,7 +163,7 @@
       "tests": "tests/test_host_network_capability.py,tests/test_egress_surface.py,tests/test_egress.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "0de531dca21c66d291f0d165aca92f8bb993c3e2abc6ceb92f5552c635c1db5c"
+      "evidence_digest": "4c773a3f342607cfaed877e7a628be12882394a716acca2cd61c5206830f95d6"
     },
     {
       "source": "R2",
@@ -370,7 +370,7 @@
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "9f828b2fedb63598066cf657883b11b91e87c9445c8be8d1a37c3a93883c0e44"
+      "evidence_digest": "97ca5d4083638b08192f12865440d28feb42a5082ea9a1db9384060b6f114004"
     },
     {
       "source": "R4",
@@ -468,7 +468,7 @@
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "9f828b2fedb63598066cf657883b11b91e87c9445c8be8d1a37c3a93883c0e44"
+      "evidence_digest": "97ca5d4083638b08192f12865440d28feb42a5082ea9a1db9384060b6f114004"
     },
     {
       "source": "R5",
@@ -524,7 +524,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "92da810153009db01ab24290271b79e876c8e9eaf2cfa271bf618c803d733ad6"
+      "evidence_digest": "736afa942985e7f56b1c887a9428972da21d43b72775672f079bd5cc6f507f7c"
     },
     {
       "source": "R5",
@@ -593,7 +593,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6ff1c40ca39b790d222a7862af38c1cc5d394f55c2538c6a1b79f7a454e380cd"
+      "evidence_digest": "f449a869768ed1b315cb56e5c6f17de28af29eaffe27aa3a224b4f34129273e0"
     },
     {
       "source": "R6",
@@ -607,7 +607,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "3c0604623579d7eba42bb5043c9925174d3d9f1866b6b15b7aa3217aa4b07fd7"
+      "evidence_digest": "2a5587e1991641a1d6aa473ec863d7b1c8e6978fde7739f7a60077b7cdba25cf"
     },
     {
       "source": "R6",
@@ -718,7 +718,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "92da810153009db01ab24290271b79e876c8e9eaf2cfa271bf618c803d733ad6"
+      "evidence_digest": "736afa942985e7f56b1c887a9428972da21d43b72775672f079bd5cc6f507f7c"
     },
     {
       "source": "R7",

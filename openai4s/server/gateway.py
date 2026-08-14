@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
-from openai4s import memory_budget
+from openai4s import datapro, memory_budget
 from openai4s.agent.actions import NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
@@ -65,7 +65,13 @@ from openai4s.execution import (
 )
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
-from openai4s.llm import PROVIDERS, chat, get_model_capabilities, provider_specs
+from openai4s.llm import (
+    PROVIDERS,
+    chat,
+    get_model_capabilities,
+    llm_failure_code,
+    provider_specs,
+)
 from openai4s.observability import (
     carry_context,
     correlation_id,
@@ -5334,7 +5340,9 @@ class SessionRunner:
             ) from error
 
     @staticmethod
-    def _friendly_error(exc: Exception, safe: dict | None = None) -> str:
+    def _friendly_error(
+        exc: Exception, safe: dict | None = None, *, language: str = "zh"
+    ) -> str:
         """The next step to offer, chosen from CONTROLLED signals only.
 
         This used to classify by substring-matching `str(exc)` and to end with
@@ -5354,17 +5362,63 @@ class SessionRunner:
 
         status = getattr(exc, "status", None)
         code = str(getattr(exc, "error_code", "") or "")
+        failure_code = llm_failure_code(exc)
+        zh = language == "zh"
+        if failure_code == "llm_request_burst":
+            if getattr(exc, "output_committed", False):
+                return (
+                    "**触发了模型服务的突发流量保护。** 这一轮已经产生部分输出，系统为避免重复执行没有自动重试；"
+                    "这不是 API Key 配置问题。请稍后在当前会话继续，或临时切换模型。"
+                    if zh
+                    else "**The model provider's burst-traffic protection was triggered.** "
+                    "This turn had already produced output, so it was not retried "
+                    "automatically to avoid duplicate execution. This is not an API-key "
+                    "configuration problem. Continue this session later or temporarily "
+                    "switch models."
+                )
+            return (
+                "**触发了模型服务的突发流量保护。** 系统已自动放慢请求并退避重试；"
+                "这不是 API Key 配置问题。若仍未恢复，请稍后在当前会话继续，或临时切换模型。"
+                if zh
+                else "**The model provider's burst-traffic protection was triggered.** "
+                "The request was slowed down and retried automatically; this is not "
+                "an API-key configuration problem. If it still does not recover, "
+                "continue this session later or temporarily switch models."
+            )
+        if failure_code == "llm_upstream_overloaded":
+            return (
+                "**模型服务当前过载。** 系统已自动退避重试；这不是 API Key 配置问题。"
+                "请稍后在当前会话继续，或临时切换模型。"
+                if zh
+                else "**The model provider is currently overloaded.** The request was "
+                "retried with backoff; this is not an API-key configuration problem. "
+                "Continue this session later or temporarily switch models."
+            )
         if status == 401 or code in ("invalid_api_key", "unauthorized"):
             return (
-                "**LLM 认证失败(API Key 无效或缺失)。** 请在 Customize → Models "
-                "填写有效的 API Key,或在 `.env` 设置 `OPENAI4S_LLM_API_KEY` 后重启。"
+                "**LLM 认证失败（API Key 无效或缺失）。** 请在 Customize → Models "
+                "填写有效的 API Key，或在 `.env` 设置 `OPENAI4S_LLM_API_KEY` 后重启。"
+                if zh
+                else "**LLM authentication failed (the API key is missing or invalid).** "
+                "Enter a valid key in Customize → Models, or set "
+                "`OPENAI4S_LLM_API_KEY` in `.env` and restart."
             )
-        if status == 429 or code == "rate_limit":
-            return "**触发限流(429)。** 请稍后重试或更换模型。"
+        if failure_code == "llm_rate_limited":
+            return (
+                "**模型服务正在限流。** 系统已自动退避重试；若仍未恢复，请稍后在当前会话继续或更换模型。"
+                if zh
+                else "**The model provider is rate-limiting requests.** Automatic "
+                "backoff retries were attempted; if it still does not recover, "
+                "continue this session later or switch models."
+            )
         if status == 408:
             return (
                 "**LLM 请求超时。** 可能是网络不稳或模型响应慢——请重试;必要时在 "
                 "`.env` 调大 `OPENAI4S_LLM_TIMEOUT`。"
+                if zh
+                else "**The LLM request timed out.** The network may be unstable or "
+                "the model may be slow. Try again, or increase "
+                "`OPENAI4S_LLM_TIMEOUT` in `.env`."
             )
         if isinstance(exc, TransportError) and status is None:
             # A transport error with no HTTP status never reached the service:
@@ -5372,13 +5426,20 @@ class SessionRunner:
             return (
                 "**无法连接到 LLM 服务(或请求中断)。** 请检查网络与 "
                 "`OPENAI4S_LLM_BASE_URL`(Customize → Network 可确认联网是否开启)。"
+                if zh
+                else "**The LLM service could not be reached, or the request was "
+                "interrupted.** Check the network and `OPENAI4S_LLM_BASE_URL`; "
+                "Customize → Network shows whether network access is enabled."
             )
         if isinstance(exc, LLMError):
             return (
                 "**LLM 调用失败。** 请在 Customize → Models 确认模型与 API Key "
                 "配置后重试。"
+                if zh
+                else "**The LLM call failed.** Check the model and API key in "
+                "Customize → Models, then try again."
             )
-        return "**这一轮出错了。** " + str(
+        return ("**这一轮出错了。** " if zh else "**This turn failed.** ") + str(
             (safe or {}).get("error") or INTERNAL_ERROR_MESSAGE
         )
 
@@ -5930,10 +5991,16 @@ class SessionRunner:
                 # after composing the prose would mean the prose came from
                 # somewhere else, which is exactly how `str(exc)` got onto
                 # three surfaces.
+                stable_failure_code = llm_failure_code(e)
                 safe, _status_code = public_exception(
-                    e, surface="web:turn", request_id=correlation_id()
+                    e,
+                    surface="web:turn",
+                    request_id=correlation_id(),
+                    error_code=stable_failure_code,
                 )
-                err_text = self._friendly_error(e, safe)
+                err_text = self._friendly_error(
+                    e, safe, language=response_language(user_text)
+                )
                 failure_meta = {
                     "request_id": str(safe.get("request_id") or correlation_id()),
                     "code": str(safe.get("code") or "internal_error"),
@@ -8074,6 +8141,90 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         providers=provider_specs,
     )
 
+    def _disconnect_managed_datapro_session() -> None:
+        """Invalidate DataPro only for this live Store generation."""
+
+        from openai4s.mcp_client import manager as _mcp_manager
+
+        _mcp_manager().disconnect(
+            datapro.CONNECTOR_ID,
+            cache_scope=datapro.runtime_cache_scope(store),
+        )
+
+    def _disconnect_datapro_if_credential_changed(previous: str) -> None:
+        """Drop a cached session only when its effective credential moved."""
+
+        if datapro.resolve_agent_plan_key(store) != previous:
+            _disconnect_managed_datapro_session()
+
+    def _disconnect_datapro_if_auth_context_changed(
+        previous_credential: str, previous_provider: str
+    ) -> None:
+        """Drop a session when either credential resolution input moved."""
+
+        provider = (
+            str(store.get_setting("llm_provider") or cfg.llm.provider or "")
+            .strip()
+            .lower()
+        )
+        if (
+            provider != previous_provider
+            or datapro.resolve_agent_plan_key(store) != previous_credential
+        ):
+            _disconnect_managed_datapro_session()
+
+    def _save_shared_agent_plan_key(value: Any) -> None:
+        """Save the one Ark Agent Plan credential used by managed products.
+
+        DataPro and Doubao Search intentionally share this boundary.  Keeping
+        the active Ark profile update here means either UI password field has
+        the same zero-friction semantics, without ever returning the secret.
+        """
+
+        previous = datapro.resolve_agent_plan_key(store)
+        datapro.save_agent_plan_key(store, value)
+
+        # Keep an active Ark profile coherent with the live key.  Otherwise a
+        # credential saved through a managed-product field would work only
+        # until that same model profile was reactivated.
+        # Gated on the endpoint, not just the protocol name: overwriting the
+        # profile key destroys the previous one through `_forget_key`, so an
+        # ark-protocol profile pointed at another vendor's endpoint would lose
+        # its credential irrecoverably and then send a DataPro key there.
+        #
+        # The gate reads the *profile being rotated*, not the global settings.
+        # A profile carries its own provider and base_url, and the active one
+        # can disagree with the settings row (it is edited independently, and
+        # the settings are only refreshed on activation) -- so checking the
+        # settings would authorise destroying a credential belonging to an
+        # endpoint nobody verified.
+        active_id = str(store.get_setting("active_model_profile") or "").strip()
+        profile = next(
+            (
+                item
+                for item in store.list_model_profiles()
+                if item.get("id") == active_id and not item.get("deleted_at")
+            ),
+            None,
+        )
+        if (
+            active_id
+            and profile is not None
+            and str(profile.get("provider") or "").strip().lower() == "ark"
+            and datapro.is_volcengine_endpoint(str(profile.get("base_url") or ""))
+        ):
+            try:
+                model_profiles.edit(active_id, {"api_key": value})
+            except ModelProfileError:
+                # The live brokered Ark key was already updated.  A stale or
+                # tombstoned profile id must not turn that save into failure.
+                pass
+
+        # A Streamable HTTP MCP session may be bound to the old account/key.
+        # Either managed-product password field rotates the same credential,
+        # so invalidate this Store's session when the effective key changed.
+        _disconnect_datapro_if_credential_changed(previous)
+
     def _project_skill_customization(project_id: str) -> SkillCustomizationService:
         project_id = str(project_id or "").strip()
         if not project_id or store.get_project(project_id) is None:
@@ -8083,6 +8234,29 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             scope="project",
             project_id=project_id,
         )
+
+    def _datapro_config_payload() -> dict[str, Any]:
+        connector = store.get_connector(datapro.CONNECTOR_ID)
+        return {
+            **datapro.credential_state(store),
+            "connector_id": datapro.CONNECTOR_ID,
+            "connector_enabled": bool(connector and connector.get("enabled")),
+            "skill_name": datapro.SKILL_NAME,
+            "skill_enabled": datapro.SKILL_NAME not in _disabled_skills,
+        }
+
+    def _doubao_search_config_payload() -> dict[str, Any]:
+        # Lazy by design: the direct stdlib client is an owning service, while
+        # this compatibility facade only projects its public configuration.
+        from openai4s.doubao_search import DoubaoSearchService
+
+        service = DoubaoSearchService(store)
+        return {
+            **datapro.credential_state(store),
+            "key_configured": service.configured(),
+            "provider": "doubao-search",
+            "primary": True,
+        }
 
     def _skill_history_payload(
         service: SkillCustomizationService,
@@ -9082,6 +9256,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method in ("POST", "PUT", "PATCH"):
                     b = self._body()
+                    previous_datapro_credential = datapro.resolve_agent_plan_key(store)
+                    previous_provider = (
+                        str(store.get_setting("llm_provider") or cfg.llm.provider or "")
+                        .strip()
+                        .lower()
+                    )
+                    requested_provider = (
+                        str(b["provider"]).strip().lower()
+                        if "provider" in b and b["provider"] is not None
+                        else previous_provider
+                    )
+                    provider_changed = requested_provider != previous_provider
                     for field, key in (
                         ("provider", "llm_provider"),
                         ("model", "llm_model"),
@@ -9093,10 +9279,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         store.set_secret_setting(
                             "llm_api_key", _clean_api_key(b["api_key"]), scope="llm"
                         )
+                    # A live key belongs to its provider.  Switching protocols
+                    # without a replacement must not reinterpret (for example)
+                    # an OpenAI key as an Ark Agent Plan key and send it to
+                    # Volcengine.  The dedicated Agent Plan key, if any, stays
+                    # independent and becomes DataPro's fallback.
+                    if provider_changed and not _clean_api_key(b.get("api_key")):
+                        store.set_secret_setting("llm_api_key", "", scope="llm")
                     if b.get("clear_api_key"):
                         store.set_secret_setting("llm_api_key", "", scope="llm")
                     if b.get("model"):
                         _default_model["id"] = str(b["model"]).strip()
+                    _disconnect_datapro_if_auth_context_changed(
+                        previous_datapro_credential, previous_provider
+                    )
                     self._json(
                         {"ok": True, "has_api_key": bool(runner.effective_api_key())}
                     )
@@ -9126,7 +9322,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json(
                     store.search(query)
                     if query.strip()
-                    else {"sessions": [], "artifacts": []}
+                    else {"sessions": [], "artifacts": [], "datapro": []}
                 )
                 return
             if sub in ("", "/"):
@@ -9149,6 +9345,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method == "GET":
                     self._json({"default_model_id": _default_model["id"]})
                 else:
+                    previous_datapro_credential = datapro.resolve_agent_plan_key(store)
+                    previous_provider = (
+                        str(store.get_setting("llm_provider") or cfg.llm.provider or "")
+                        .strip()
+                        .lower()
+                    )
                     chosen = str(self._body().get("model_id") or "").strip()
                     if chosen:
                         _default_model["id"] = chosen
@@ -9178,6 +9380,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             store.set_setting("llm_model", effective)
                     elif chosen:
                         store.set_setting("llm_model", chosen)
+                    _disconnect_datapro_if_auth_context_changed(
+                        previous_datapro_credential, previous_provider
+                    )
                     self._json({"default_model_id": _default_model["id"]})
                 return
 
@@ -9231,12 +9436,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)/activate", sub)
             if m and method == "POST":
+                previous_datapro_credential = datapro.resolve_agent_plan_key(store)
+                previous_provider = (
+                    str(store.get_setting("llm_provider") or cfg.llm.provider or "")
+                    .strip()
+                    .lower()
+                )
                 try:
                     payload, effective_model = model_profiles.activate(m.group(1))
                 except ModelProfileError as exc:
                     self._json({"error": str(exc)}, exc.status_code)
                     return
                 _default_model["id"] = effective_model or _default_model["id"]
+                _disconnect_datapro_if_auth_context_changed(
+                    previous_datapro_credential, previous_provider
+                )
                 self._json(
                     {
                         **payload,
@@ -9246,6 +9460,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)", sub)
             if m and method in ("PUT", "PATCH"):
+                previous_datapro_credential = datapro.resolve_agent_plan_key(store)
+                previous_provider = (
+                    str(store.get_setting("llm_provider") or cfg.llm.provider or "")
+                    .strip()
+                    .lower()
+                )
                 try:
                     profile, effective_model = model_profiles.edit(
                         m.group(1), self._body()
@@ -9255,11 +9475,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if effective_model:
                     _default_model["id"] = effective_model
+                _disconnect_datapro_if_auth_context_changed(
+                    previous_datapro_credential, previous_provider
+                )
                 self._json(profile)
                 return
             m = re.fullmatch(r"/model-profiles/([^/]+)", sub)
             if m and method == "DELETE":
+                deleting_active_profile = str(
+                    store.get_setting("active_model_profile") or ""
+                ) == m.group(1)
                 model_profiles.delete(m.group(1))
+                if deleting_active_profile:
+                    _disconnect_managed_datapro_session()
                 self._json({"ok": True})
                 return
 
@@ -11129,6 +11357,263 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"ok": True})
                     return
 
+            # ---- Doubao Search (primary, direct API, never falls back) ----
+            if sub == "/doubao-search/config":
+                if method == "GET":
+                    self._json(_doubao_search_config_payload())
+                    return
+                if method == "POST":
+                    body = self._body()
+                    try:
+                        _save_shared_agent_plan_key(body.get("agent_plan_key"))
+                    except ValueError as error:
+                        raise GatewayError(400, str(error)) from error
+                    self._json({"ok": True, **_doubao_search_config_payload()})
+                    return
+
+            if sub == "/doubao-search/search" and method == "POST":
+                body = self._body()
+                query_value = body.get("query")
+                if not isinstance(query_value, str):
+                    raise GatewayError(400, "query must be a string")
+                query = query_value.strip()
+                if not query:
+                    raise GatewayError(400, "query is required")
+                if len(query) > 100:
+                    raise GatewayError(400, "query exceeds 100 characters")
+                num_results = body.get("num_results", 8)
+                if type(num_results) is not int or not 1 <= num_results <= 50:
+                    raise GatewayError(
+                        400, "num_results must be an integer between 1 and 50"
+                    )
+
+                from openai4s.doubao_search import (
+                    DoubaoSearchAuthError,
+                    DoubaoSearchError,
+                    DoubaoSearchService,
+                )
+
+                service = DoubaoSearchService(store)
+                secret_before = datapro.resolve_agent_plan_key(store)
+                try:
+                    searched = service.search(query, num_results=num_results)
+                except DoubaoSearchAuthError:
+                    raise GatewayError(
+                        401,
+                        "豆包搜索鉴权失败；请检查 Agent Plan Key、额度或套餐权限。",
+                        "doubao_search_auth_failed",
+                    ) from None
+                except DoubaoSearchError as error:
+                    safe, status = public_exception(
+                        error,
+                        surface="doubao-search:search",
+                        request_id=getattr(self, "_correlation_id", ""),
+                        status=502,
+                        error_code="doubao_search_failed",
+                    )
+                    self._json(safe, status)
+                    return
+
+                if not isinstance(searched, Mapping):
+                    raise GatewayError(
+                        502,
+                        "豆包搜索返回了无效响应。",
+                        "doubao_search_invalid_response",
+                    )
+                secret_after = datapro.resolve_agent_plan_key(store)
+                safe_result: Any = dict(searched)
+                safe_query: Any = query
+                for secret in sorted(
+                    {value for value in (secret_before, secret_after) if value},
+                    key=len,
+                    reverse=True,
+                ):
+                    safe_result = datapro.redact_secret(safe_result, secret)
+                    safe_query = datapro.redact_secret(safe_query, secret)
+                if not isinstance(safe_result, Mapping):
+                    raise GatewayError(
+                        502,
+                        "豆包搜索返回了无效响应。",
+                        "doubao_search_invalid_response",
+                    )
+                if searched.get("source") != "doubao":
+                    # This dedicated product route must never disguise a
+                    # fallback engine as a successful Doubao Search call.
+                    raise GatewayError(
+                        502,
+                        "豆包搜索返回了非豆包来源的响应。",
+                        "doubao_search_source_mismatch",
+                    )
+                raw_results = safe_result.get("results")
+                if not isinstance(raw_results, list):
+                    raise GatewayError(
+                        502,
+                        "豆包搜索返回了无效结果列表。",
+                        "doubao_search_invalid_response",
+                    )
+                results = []
+                for item in raw_results:
+                    if not isinstance(item, Mapping):
+                        continue
+                    url_value = item.get("url")
+                    if not isinstance(url_value, str):
+                        continue
+                    url = url_value.strip()
+                    parsed_url = urlparse(url)
+                    if (
+                        parsed_url.scheme not in {"http", "https"}
+                        or not parsed_url.netloc
+                    ):
+                        continue
+                    title_value = item.get("title")
+                    title = (
+                        title_value.strip()
+                        if isinstance(title_value, str) and title_value.strip()
+                        else url
+                    )
+                    results.append({**dict(item), "title": title, "url": url})
+                available = bool(results)
+                self._json(
+                    {
+                        **dict(safe_result),
+                        "query": safe_query,
+                        "source": "doubao",
+                        "count": len(results),
+                        "results": results,
+                        "available": available,
+                        "message": (
+                            "豆包搜索可用" if available else "豆包搜索未返回可用结果"
+                        ),
+                    }
+                )
+                return
+
+            # ---- Volcengine DataPro (managed Streamable HTTP MCP) ----
+            if sub == "/datapro/config":
+                if method == "GET":
+                    self._json(_datapro_config_payload())
+                    return
+                if method in ("POST", "PUT", "PATCH"):
+                    body = self._body()
+                    key = body.get("agent_plan_key")
+                    try:
+                        _save_shared_agent_plan_key(key)
+                    except ValueError as error:
+                        raise GatewayError(400, str(error)) from error
+
+                    store.set_connector_enabled(datapro.CONNECTOR_ID, True)
+                    self._json({"ok": True, **_datapro_config_payload()})
+                    return
+
+            if sub == "/datapro/search" and method == "POST":
+                body = self._body()
+                try:
+                    query = datapro.validate_query(body.get("query"))
+                except ValueError as error:
+                    raise GatewayError(400, str(error)) from error
+                connector = store.get_connector(datapro.CONNECTOR_ID)
+                if connector is None:
+                    raise GatewayError(503, "DataPro connector is not installed")
+                if not connector.get("enabled"):
+                    raise GatewayError(409, "DataPro connector is disabled")
+
+                secret = datapro.resolve_agent_plan_key(store)
+                if not secret:
+                    raise GatewayError(400, "Agent Plan Key is not configured")
+
+                frame_id = str(body.get("frame_id") or "").strip() or None
+                if frame_id:
+                    _require_canonical_session_root(frame_id)
+                    _require_session_writable(frame_id, "saving a DataPro query result")
+
+                from openai4s.mcp_client import manager
+
+                receipt = None
+                artifact = None
+                try:
+                    called = manager().call_tool(
+                        datapro.CONNECTOR_ID,
+                        datapro.connector_runtime_config(store, connector),
+                        datapro.TOOL_NAME,
+                        {"query": query},
+                    )
+                    result = datapro.public_search_result(called, secret)
+                    source_result = datapro.redact_mcp_result(called, secret)
+                    current_secret = datapro.resolve_agent_plan_key(store)
+                    if current_secret and current_secret != secret:
+                        result = datapro.redact_secret(result, current_secret)
+                        source_result = datapro.redact_secret(
+                            source_result, current_secret
+                        )
+                    safe_query = datapro.redact_secret(query, secret)
+                    if current_secret and current_secret != secret:
+                        safe_query = datapro.redact_secret(safe_query, current_secret)
+                    receipt = datapro.index_successful_search(
+                        store,
+                        query=safe_query,
+                        result=result,
+                        frame_id=frame_id,
+                        secrets=(secret, current_secret),
+                        source_result=source_result,
+                    )
+                    if receipt is not None:
+                        result = {**result, "index": receipt}
+                    # Only a strict code-0 response is worth saving.  The upload
+                    # used to be unconditional while the index was gated, so a
+                    # transport-level success carrying e.g. code 4011 still wrote
+                    # a `datapro-search-*.json` into the workspace and broadcast
+                    # `artifact_created` -- the UI then rendered "已保存" beside
+                    # the error text, and every retry left another dead file.
+                    if datapro.is_successful_search(result):
+                        artifact = runner.artifacts.upload(
+                            datapro.result_artifact_payload(
+                                query=safe_query,
+                                result=result,
+                                frame_id=frame_id,
+                            )
+                        )
+                    # `receipt` can now be an explicit incomplete receipt with no
+                    # batch_id (the index hit a capacity ceiling), so link only
+                    # a batch that actually exists.
+                    if (
+                        isinstance(receipt, dict)
+                        and receipt.get("batch_id")
+                        and artifact
+                        and artifact.get("id")
+                    ):
+                        store.link_datapro_index_artifact(
+                            receipt["batch_id"], artifact["id"]
+                        )
+                except Exception as error:  # noqa: BLE001
+                    # The product route promises that an available result is
+                    # both indexed and saved. Compensate either half if upload
+                    # or linking fails, so a 502 cannot leave a palette-visible
+                    # ghost batch (or an orphaned result Artifact).
+                    artifact_id = (
+                        artifact.get("id") if isinstance(artifact, dict) else None
+                    )
+                    if artifact_id:
+                        try:
+                            runner.artifacts.delete(artifact_id)
+                        except Exception:  # noqa: BLE001 - preserve root failure
+                            pass
+                    if isinstance(receipt, dict) and receipt.get("batch_id"):
+                        try:
+                            store.delete_datapro_index_batch(receipt["batch_id"])
+                        except Exception:  # noqa: BLE001 - preserve root failure
+                            pass
+                    safe, status = public_exception(
+                        error,
+                        surface="datapro:search",
+                        request_id=getattr(self, "_correlation_id", ""),
+                        status=502,
+                        error_code="datapro_failed",
+                    )
+                    self._json(safe, status)
+                    return
+                self._json({**result, "artifact": artifact})
+                return
+
             # ---- connectors (MCP servers) ----
             if sub == "/connectors" and method == "GET":
                 self._json({"connectors": self._connectors_payload(store)})
@@ -11141,6 +11626,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"error": "name and command required"}, 400)
                     return
                 cid = b.get("connector_id") or _skill_slug(nm)
+                if cid == datapro.CONNECTOR_ID:
+                    raise GatewayError(403, "DataPro is a managed connector")
                 # Drop any cached process first: it was spawned from the old
                 # command/env and would keep serving from them. Only DELETE
                 # disconnected, so editing a connector left the previous
@@ -11175,25 +11662,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # Disabling wrote the row and left the child running. A
                     # connector the user has switched off should not still be a
                     # live process holding whatever it holds.
-                    from openai4s.mcp_client import manager as _mcp_manager
+                    if m.group(1) == datapro.CONNECTOR_ID:
+                        # The process-wide manager may host another Store with
+                        # its own DataPro account/session. A local disable must
+                        # revoke only this Store generation's connection.
+                        _disconnect_managed_datapro_session()
+                    else:
+                        from openai4s.mcp_client import manager as _mcp_manager
 
-                    _mcp_manager().disconnect(m.group(1))
+                        _mcp_manager().disconnect(m.group(1))
                 self._json({"ok": True})
                 return
             m = re.fullmatch(r"/connectors/([^/]+)/probe", sub)
             if m and method == "POST":
+                if m.group(1) == datapro.CONNECTOR_ID:
+                    raise GatewayError(
+                        400,
+                        "DataPro availability requires a real dataPro_search call",
+                    )
                 c = store.get_connector(m.group(1))
                 if not c:
                     self._json({"error": "connector not found"}, 404)
                     return
                 from openai4s.mcp_client import manager
 
-                mcfg = {
-                    "command": c["command"],
-                    "args": c.get("args"),
-                    # Resolved — the row holds references once migrated.
-                    "env": store.connector_env(c),
-                }
+                mcfg = datapro.connector_runtime_config(store, c)
                 self._json(manager().probe(mcfg))
                 return
             m = re.fullmatch(r"/connectors/([^/]+)/call", sub)
@@ -11202,21 +11695,53 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if not c:
                     self._json({"error": "connector not found"}, 404)
                     return
+                if not c.get("enabled"):
+                    raise GatewayError(409, "connector is disabled")
                 from openai4s.mcp_client import manager
 
                 b = self._body()
-                mcfg = {
-                    "command": c["command"],
-                    "args": c.get("args"),
-                    # Resolved — the row holds references once migrated.
-                    "env": store.connector_env(c),
-                }
-                try:
-                    self._json(
-                        manager().call_tool(
-                            c["connector_id"], mcfg, b.get("tool"), b.get("args") or {}
+                call_args = b.get("args") or {}
+                frame_id = None
+                if c["connector_id"] == datapro.CONNECTOR_ID:
+                    frame_id = str(b.get("frame_id") or "").strip() or None
+                    if frame_id:
+                        _require_canonical_session_root(frame_id)
+                        _require_session_writable(frame_id, "indexing a DataPro result")
+                    if b.get("tool") != datapro.TOOL_NAME:
+                        raise GatewayError(400, "DataPro only permits dataPro_search")
+                    args = b.get("args")
+                    if not isinstance(args, dict) or set(args) != {"query"}:
+                        raise GatewayError(
+                            400,
+                            "dataPro_search requires exactly one string query",
                         )
+                    try:
+                        call_args = {"query": datapro.validate_query(args.get("query"))}
+                    except ValueError as error:
+                        raise GatewayError(400, str(error)) from error
+                mcfg = datapro.connector_runtime_config(store, c)
+                try:
+                    secret_before = ""
+                    if c["connector_id"] == datapro.CONNECTOR_ID:
+                        secret_before = datapro.resolve_agent_plan_key(store)
+                    result = manager().call_tool(
+                        c["connector_id"], mcfg, b.get("tool"), call_args
                     )
+                    if c["connector_id"] == datapro.CONNECTOR_ID:
+                        secret_after = datapro.resolve_agent_plan_key(store)
+                        result = datapro.redact_mcp_result(result, secret_before)
+                        if secret_after and secret_after != secret_before:
+                            result = datapro.redact_secret(result, secret_after)
+                        receipt = datapro.index_successful_search(
+                            store,
+                            query=call_args["query"],
+                            result=result,
+                            frame_id=frame_id,
+                            secrets=(secret_before, secret_after),
+                        )
+                        if receipt is not None:
+                            result["index"] = receipt
+                    self._json(result)
                 except Exception as e:  # noqa: BLE001
                     # 502, not the 200 this answered with. An MCP server is a
                     # subprocess this daemon spawned and talked to; when that
@@ -11237,6 +11762,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/connectors/([^/]+)", sub)
             if m and method == "DELETE":
+                if m.group(1) == datapro.CONNECTOR_ID:
+                    raise GatewayError(403, "DataPro is a managed connector")
                 from openai4s.mcp_client import manager
 
                 manager().disconnect(m.group(1))
@@ -11718,8 +12245,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             out = []
             for c in store.list_connectors():
                 cmd = c.get("command")
-                display = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
-                out.append({**public_connector(c), "command_display": display})
+                managed_datapro = c.get("connector_id") == datapro.CONNECTOR_ID
+                if managed_datapro:
+                    display = "Streamable HTTP · " + datapro.ENDPOINT
+                else:
+                    display = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+                out.append(
+                    {
+                        **public_connector(c),
+                        "command_display": display,
+                        "managed": managed_datapro,
+                        "transport": (
+                            "streamable_http" if managed_datapro else "stdio"
+                        ),
+                    }
+                )
             return out
 
         def _compute_providers(self) -> list[dict]:
@@ -12321,15 +12861,24 @@ class _GatewayHTTPServer(ThreadingHTTPServer):
             self.runner.close()
         finally:
             try:
-                # Local jobs are process groups this daemon started. Closed in
-                # its own `finally` so a runner that raises on the way down
-                # cannot leave them orphaned, and after the runner because a
-                # cell may still be watching one.
-                manager = getattr(self.RequestHandlerClass, "jobs_manager", None)
-                if manager is not None:
-                    manager.close()
+                # The process-wide MCP manager caches live connections by id.
+                # Close it with this Store generation so a later in-process
+                # daemon cannot reuse a DataPro header-provider closure bound
+                # to the previous SecretBroker (and therefore its credential).
+                from openai4s.mcp_client import manager as _mcp_manager
+
+                _mcp_manager().shutdown()
             finally:
-                super().server_close()
+                try:
+                    # Local jobs are process groups this daemon started. Closed
+                    # in its own `finally` so either runner or MCP teardown
+                    # cannot leave them orphaned, and after the runner because
+                    # a cell may still be watching one.
+                    manager = getattr(self.RequestHandlerClass, "jobs_manager", None)
+                    if manager is not None:
+                        manager.close()
+                finally:
+                    super().server_close()
 
 
 def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
@@ -12388,10 +12937,17 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                 f"{', '.join(_report.migrated)}",
                 file=sys.stderr,
             )
-        for _failure in _report.failed:
+        if _report.failed:
             print(
-                f"[openai4s] could not migrate {_failure['key']}: "
-                f"{_failure['error']} — it remains stored in plaintext",
+                "[openai4s] one or more settings credentials could not be "
+                "migrated — they remain stored in plaintext",
+                file=sys.stderr,
+            )
+        if _report.reentry_required:
+            print(
+                "[openai4s] one or more settings credentials must be saved "
+                "again: their legacy system credentials have no Store namespace "
+                "and were not read",
                 file=sys.stderr,
             )
 
@@ -12410,7 +12966,13 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         for _failure in _pr["failed"]:
             print(
                 f"[openai4s] could not migrate profile {_failure['id']}: "
-                f"{_failure['error']} — its key remains in plaintext",
+                f"({_failure['error']}) — its key remains in plaintext",
+                file=sys.stderr,
+            )
+        for _profile_id in _pr["reentry_required"]:
+            print(
+                f"[openai4s] model profile {_profile_id} needs its credential "
+                f"saved again; its prior reference was not read",
                 file=sys.stderr,
             )
 
@@ -12424,7 +12986,13 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         for _failure in _cr["failed"]:
             print(
                 f"[openai4s] could not migrate connector {_failure['id']}: "
-                f"{_failure['error']} — its env remains in plaintext",
+                f"({_failure['error']}) — its env remains in plaintext",
+                file=sys.stderr,
+            )
+        for _connector_id in _cr["reentry_required"]:
+            print(
+                f"[openai4s] connector {_connector_id} needs its credential "
+                f"environment saved again; its prior reference was not read",
                 file=sys.stderr,
             )
     except Exception:  # noqa: BLE001 - never block startup on this
@@ -12439,6 +13007,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     try:
         _seed_example_project(cfg)
         _seed_example_connector(cfg)
+        _seed_datapro_connector(cfg)
         handler = make_handler(cfg, hub, runner)
         httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     except BaseException:
@@ -12634,6 +13203,29 @@ def _seed_example_connector(cfg: Config) -> None:
             enabled=True,
         )
     except Exception:  # noqa: BLE001
+        pass
+
+
+def _seed_datapro_connector(cfg: Config) -> None:
+    """Register the single managed Volcengine DataPro connector.
+
+    Only public transport metadata is persisted.  The Agent Plan Key and both
+    outbound headers are resolved inside ``openai4s.datapro`` at request time.
+    An existing row keeps the user's enabled/disabled choice across restarts.
+    """
+
+    store = get_store(cfg.db_path)
+    if store.get_connector(datapro.CONNECTOR_ID):
+        return
+    try:
+        store.upsert_connector(
+            connector_id=datapro.CONNECTOR_ID,
+            name="Volcengine DataPro",
+            description="Professional dataset search through dataPro_search.",
+            command=datapro.managed_connector_command(),
+            enabled=True,
+        )
+    except Exception:  # noqa: BLE001 - optional connector must not block startup
         pass
 
 

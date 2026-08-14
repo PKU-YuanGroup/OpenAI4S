@@ -576,6 +576,31 @@ def test_the_frozen_artifact_exists_and_parses():
     json.loads(ARTIFACT.read_text("utf-8"))
 
 
+def test_the_managed_datapro_routes_are_frozen_from_real_local_responses(frozen):
+    """A newly covered route is informational drift to the generic checker.
+
+    These entries are part of this integration's release contract, so pin them
+    explicitly.  The offline suite can truthfully capture configuration success
+    and local search validation; an upstream search success remains live-only
+    and must never be fabricated by a stub for this artifact.
+    """
+    assert {
+        "GET /datapro/config [ok]",
+        "POST /datapro/config [ok]",
+        "POST /datapro/search [error]",
+    } <= set(frozen["routes"])
+
+
+def test_the_managed_doubao_config_routes_are_frozen_from_local_responses(frozen):
+    """Only configuration shapes are local; real search success stays live-only."""
+
+    assert {
+        "GET /doubao-search/config [ok]",
+        "POST /doubao-search/config [ok]",
+        "POST /doubao-search/search [error]",
+    } <= set(frozen["routes"])
+
+
 def test_every_frozen_route_is_a_route_the_server_actually_has(frozen):
     """A schema for a route that no longer exists is worse than no schema: it
     documents a surface the server does not serve."""
