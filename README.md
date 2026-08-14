@@ -99,7 +99,7 @@ host.save_artifact(plot(frames))             # ...only "<DataFrame 100000×20>" 
 - **🔌 One-line multi-provider** — `ark` (doubao · glm · kimi · deepseek · minimax) plus official `chatgpt · claude · gemini`, behind a single `host.llm`; switch from the UI.
 - **🖥️ Scientific workbench** — live streaming, versioned artifacts, provenance, an Action Timeline surface, and a **read-only-by-default Notebook**. An explicit developer flag enables multiline Python/R input against the shared kernels.
 - **🔐 Hardened local execution** — strict child-environment allowlists, durable approvals, one-shot generation-bound `host.bash` capabilities, and OS sandbox adapters (Seatbelt on macOS, bubblewrap on Linux) with visible degraded/fail-closed modes.
-- **🔬 34 bundled Skills** — GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …), retrosynthesis planning, and research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
+- **🔬 35 bundled Skills** — GPU/model science Skills (AlphaFold2 · ESMFold2 · Boltz · Chai-1 · OpenFold3 · ProteinMPNN · ESM-2 · Evo2 · Borzoi · scGPT · scVI · DiffDock …), DataPro professional-dataset search, retrosynthesis planning, and research-workflow Skills. Skills are **recipes of code**, not JSON schemas; user-authored Skills stay under the data directory and cannot shadow bundled trust.
 - **☁️ BYOC remote compute** — with a configured, reachable provider, dispatch GPU jobs via `ssh:<alias>` or the bundled **NVIDIA NIM** integration. General remote compute remains a Prototype surface; `host.fold` uses a strict no-fabrication policy.
 - **🔗 Read-only session sharing** — publish a session as a snapshot anyone with the link can view and import, through a relay **you** run. The daemon never binds a public port; it dials out. Memories, permission state, and keys never leave, and residual secrets fail the publish closed. → [Web sharing](docs/webshare.md)
 - **🔎 Source-attributed retrieval** — seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex). Retrieved records carry where they came from and when, without the API key that fetched them.
@@ -114,8 +114,8 @@ A capability map of the current tree — what is implemented and reachable, plan
 | plane | what's implemented |
 |---|---|
 | **Control & orchestration** | class-based native `Tool`s · append-only Action Ledger · plan/review with a durable state machine · context compaction that archives the raw slices it summarizes · concurrent sub-agent delegation (fanout 48, depth 4) a user can stop mid-flight · enforced Specialist allowlists a child cannot widen · MCP connectors · cross-session memory |
-| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 34 Skills · a FIFO execution coordinator with ABA-safe watchdog recovery |
-| **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Tavily-keyed or keyless `web_search` |
+| **Scientific execution** | persistent Python **and** R kernels · synchronous mid-cell `host` RPC · object-level data lineage · versioned artifacts · environment provenance recorded per kernel *generation*, never borrowed from the daemon · background execution · 35 Skills · a FIFO execution coordinator with ABA-safe watchdog recovery |
+| **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · Tavily and keyless search as backups · managed DataPro professional-dataset search |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
 | **Ops, safety & release** | `/api/v1` and a startup credential · Seatbelt/bubblewrap sandbox adapters with visible degraded and fail-closed modes · durable approvals that deny by default when unattended · redacted diagnostics · revocable telemetry · environments as a transaction · a 10-workflow/20-case benchmark against the real Store, kernels, and dispatcher · a staged release pipeline that verifies artifacts before anything becomes public |
@@ -160,7 +160,7 @@ The build is ad-hoc signed but **not notarized**, so Gatekeeper refuses it the f
 **First run — point it at a model, then at search.** Launching the app opens the workbench at `http://127.0.0.1:8760/`. No key ships, so:
 
 1. **Model API** — open **Settings ⚙ → Models**, pick a protocol (**Ark-compatible** for Doubao/GLM/Kimi/DeepSeek/MiniMax, or **OpenAI-** / **Anthropic-compatible**), paste your **API Key**, click **Add**, then **Set active**. Cheapest path: the `ark` protocol on Volcengine Ark's ¥9.9/mo plan.
-2. **Search API** *(optional, recommended)* — open **Settings ⚙ → Network**, keep **Allow network access** on, register at **[tavily.com](https://tavily.com)**, and paste the key into **Search API key (Tavily)** → **Save**. Without a key, web search still falls back to keyless scrapers.
+2. **Search API** *(optional, recommended)* — open **Settings ⚙ → Network**, keep **Allow network access** on, and paste your Ark **Agent Plan Key** into the primary **Doubao Search Custom** card → **Save credential**. If the active Ark model already uses that key, OpenAI4S reuses it automatically. Tavily and keyless engines remain backup options; the dedicated Doubao health check never reports a fallback result as Doubao.
 
 Full walkthrough (install → Gatekeeper → model → search → R kernel): **[Startup guide](docs/startup-guide.md)**.
 
@@ -202,10 +202,10 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 
 | doc | what's inside |
 |---|---|
-| [**Startup guide**](docs/startup-guide.md) | macOS `.dmg` walkthrough: install, Gatekeeper, and configuring the model + Tavily search keys |
+| [**Startup guide**](docs/startup-guide.md) | macOS `.dmg` walkthrough: install, Gatekeeper, model setup, and one-key Doubao Search authorization (with Tavily/keyless backups) |
 | [**Architecture**](docs/architecture.md) | the hybrid action router, Action Ledger, `host` RPC, and lazy kernels |
 | [**Backend extension guide**](docs/backend-extension-guide.md) | where new Tool classes, host services, repositories, and session behaviour belong |
-| [**Skills**](docs/skills.md) | the 34 bundled Skills + how to write your own |
+| [**Skills**](docs/skills.md) | the 35 bundled Skills + how to write your own |
 | [**Remote compute**](docs/compute.md) | BYOC GPU jobs, `host.fold`, auto-provisioning |
 | [**Science connectors**](docs/science-connectors.md) | the seven public databases, their filters, and retrieval provenance |
 | [**Web app**](docs/webapp.md) | UI features, Action Timeline, read-only Notebook, artifacts, and implementation status |

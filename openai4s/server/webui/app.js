@@ -394,6 +394,62 @@ Object.assign(I18N.zh, {
   "cust.connectors.namePlaceholder": "名称",
   "cust.connectors.test": "测试",
   "cust.connectors.testing": "测试中…",
+  "cust.datapro.title": "火山方舟专业数据集 DataPro",
+  "cust.datapro.desc": "保存 Agent Plan Key 后直接调用 dataPro_search；已配置的 Ark API Key 会自动复用。",
+  "cust.datapro.connectorToggle": "启用/停用 DataPro 连接器",
+  "cust.datapro.connectorOn": "已启用 DataPro 连接器。",
+  "cust.datapro.connectorOff": "已停用 DataPro 连接器，智能体不再访问该服务。",
+  "cust.datapro.keyLabel": "Agent Plan Key",
+  "cust.datapro.keyPlaceholder": "输入 Agent Plan Key",
+  "cust.datapro.keyPlaceholderSet": "已保存；输入新 Key 可替换",
+  "cust.datapro.keyPlaceholderArk": "已复用 Ark API Key；输入新 Key 可替换",
+  "cust.datapro.keyConfigured": "凭证已保存",
+  "cust.datapro.keyArkReused": "已复用 Ark API Key",
+  "cust.datapro.keyMissing": "尚未配置 Agent Plan Key",
+  "cust.datapro.saveKey": "保存凭证",
+  "cust.datapro.keyRequired": "请输入 Agent Plan Key",
+  "cust.datapro.keySaved": "Agent Plan Key 已安全保存",
+  "cust.datapro.queryLabel": "查询专业数据集",
+  "cust.datapro.queryPlaceholder": "输入要检索的问题",
+  "cust.datapro.search": "调用专业数据集",
+  "cust.datapro.searching": "查询中…",
+  "cust.datapro.queryRequired": "请输入查询文本",
+  "cust.datapro.available": "专业数据集可用",
+  "cust.datapro.indexed": "已完整索引本次返回的 {0} 条记录（{1} 个内容叶节点）",
+  "cust.datapro.indexFailed": "本次返回内容索引失败，专业数据集暂不可用",
+  "cust.datapro.auth4011": "Key 无效、额度不足，或者专业数据集 Harness 未开启。",
+  "cust.datapro.unavailable": "专业数据集不可用（code {0}）",
+  "cust.datapro.requestFailed": "专业数据集查询失败：{0}",
+  "cust.datapro.result": "查询结果",
+  "cust.datapro.noResult": "尚未查询。",
+  "cust.datapro.enableSkill": "导入/启用 volcengine-datapro Skill",
+  "cust.datapro.enablingSkill": "启用中…",
+  "cust.datapro.skillEnabled": "volcengine-datapro Skill 已启用",
+  "cust.datapro.skillEnabledToast": "volcengine-datapro Skill 与 DataPro connector 已启用",
+  "cust.datapro.artifact": "已保存：{0}",
+  "cust.doubao.title": "豆包搜索 Custom 版",
+  "cust.doubao.primary": "主选",
+  "cust.doubao.desc": "联网搜索主选项；与 Ark 和 DataPro 共用同一个 Agent Plan Key。只有真实返回非空豆包结果才会标记可用。",
+  "cust.doubao.keyLabel": "Agent Plan Key（一次授权）",
+  "cust.doubao.keyPlaceholder": "输入 Agent Plan Key",
+  "cust.doubao.keyPlaceholderSet": "已保存；输入新 Key 可替换",
+  "cust.doubao.keyPlaceholderArk": "已复用 Ark API Key；输入新 Key 可替换",
+  "cust.doubao.keyConfigured": "凭证已保存",
+  "cust.doubao.keyArkReused": "已复用 Ark API Key",
+  "cust.doubao.keyMissing": "尚未配置 Agent Plan Key",
+  "cust.doubao.saveKey": "保存凭证",
+  "cust.doubao.keyRequired": "请输入 Agent Plan Key",
+  "cust.doubao.keySaved": "Agent Plan Key 已安全保存，可同时用于豆包搜索和 DataPro",
+  "cust.doubao.queryLabel": "查询豆包搜索",
+  "cust.doubao.queryPlaceholder": "输入要联网检索的问题（最多 100 个字符）",
+  "cust.doubao.search": "调用豆包搜索",
+  "cust.doubao.searching": "搜索中…",
+  "cust.doubao.queryRequired": "请输入查询文本",
+  "cust.doubao.available": "豆包搜索可用",
+  "cust.doubao.empty": "豆包搜索未返回可用结果",
+  "cust.doubao.requestFailed": "豆包搜索失败：{0}",
+  "cust.doubao.result": "搜索结果",
+  "cust.doubao.noResult": "尚未搜索。",
   "cust.general.apiKeyConfigured": "✅ 已配置",
   "cust.general.apiKeyMissing": "⚠️ 尚未配置 API Key — 发送消息会失败",
   "cust.general.configureBtn": "配置 →",
@@ -474,8 +530,8 @@ Object.assign(I18N.zh, {
   "cust.models.protocol.ark": "ark 兼容协议",
   "cust.models.protocol.gemini": "Gemini 兼容协议",
   "cust.models.protocol.openaiResponses": "OpenAI Responses 协议",
-  "cust.search.name": "搜索 API Key（Tavily）",
-  "cust.search.desc": "用于联网搜索的 Tavily 密钥；接入点固定为 api.tavily.com。",
+  "cust.search.name": "备用搜索 API Key（Tavily）",
+  "cust.search.desc": "Tavily 是备用搜索选项；接入点固定为 api.tavily.com。豆包搜索的专用测试不会回退到这里。",
   "cust.search.set": "已配置",
   "cust.search.unset": "未配置",
   "cust.search.ph": "输入 Tavily API Key",
@@ -857,9 +913,11 @@ Object.assign(I18N.zh, {
   "palette.empty": "没有匹配项",
   "palette.group.artifacts": "产物",
   "palette.group.commands": "命令",
+  "palette.group.datapro": "专业数据集",
   "palette.group.sessions": "会话",
   "palette.group.skills": "技能",
-  "palette.searchPlaceholder": "搜索会话、产物、技能，或执行命令…",
+  "palette.datapro.result": "DataPro 查询结果",
+  "palette.searchPlaceholder": "搜索会话、产物、专业数据集、技能，或执行命令…",
   "perm.badge.subAgent": "子智能体",
   "perm.badge.dangerous": "高风险",
   "perm.btn.allow": "允许",
@@ -1134,6 +1192,9 @@ Object.assign(I18N.zh, {
   "toolLabel.writeFile": "写入文件中",
   "turn.failed": "这一轮失败了，请重试。",
   "turn.failedCommitted": "这一轮失败了，但它已经产出了输出或执行过工具——直接重试会重复已经发生的操作。请先检查结果再决定。",
+  "turn.failure.llmRequestBurst": "模型服务触发了突发流量保护。这不是 API Key 配置问题，请稍后在当前会话继续，或临时切换模型。",
+  "turn.failure.llmRateLimited": "模型服务正在限流。请稍后在当前会话继续，或临时切换模型。",
+  "turn.failure.llmUpstreamOverloaded": "模型服务当前过载。这不是 API Key 配置问题，请稍后在当前会话继续，或临时切换模型。",
   "turn.supportId": "支持 ID：{0}",
   "upload.dropping": "正在上传拖入的文件…",
   "upload.failed": "上传失败：{0}",
@@ -1323,6 +1384,62 @@ Object.assign(I18N.en, {
   "cust.connectors.namePlaceholder": "Name",
   "cust.connectors.test": "Test",
   "cust.connectors.testing": "Testing…",
+  "cust.datapro.title": "Volcengine Ark Professional Dataset DataPro",
+  "cust.datapro.desc": "Save one Agent Plan Key and call dataPro_search directly; an existing Ark API Key is reused automatically.",
+  "cust.datapro.connectorToggle": "Enable / disable the DataPro connector",
+  "cust.datapro.connectorOn": "DataPro connector enabled.",
+  "cust.datapro.connectorOff": "DataPro connector disabled; the agent can no longer reach it.",
+  "cust.datapro.keyLabel": "Agent Plan Key",
+  "cust.datapro.keyPlaceholder": "Enter Agent Plan Key",
+  "cust.datapro.keyPlaceholderSet": "Saved; enter a new key to replace it",
+  "cust.datapro.keyPlaceholderArk": "Using the Ark API Key; enter a new key to replace it",
+  "cust.datapro.keyConfigured": "Credential saved",
+  "cust.datapro.keyArkReused": "Using the Ark API Key",
+  "cust.datapro.keyMissing": "Agent Plan Key is not configured",
+  "cust.datapro.saveKey": "Save credential",
+  "cust.datapro.keyRequired": "Enter an Agent Plan Key",
+  "cust.datapro.keySaved": "Agent Plan Key saved securely",
+  "cust.datapro.queryLabel": "Search the professional dataset",
+  "cust.datapro.queryPlaceholder": "Enter a research question",
+  "cust.datapro.search": "Call professional dataset",
+  "cust.datapro.searching": "Searching…",
+  "cust.datapro.queryRequired": "Enter query text",
+  "cust.datapro.available": "Professional dataset available",
+  "cust.datapro.indexed": "Fully indexed all {0} records returned by this query ({1} content leaf nodes)",
+  "cust.datapro.indexFailed": "Indexing this returned content failed; the professional dataset is not yet available",
+  "cust.datapro.auth4011": "The Key is invalid, quota is insufficient, or the professional dataset Harness is not enabled.",
+  "cust.datapro.unavailable": "Professional dataset unavailable (code {0})",
+  "cust.datapro.requestFailed": "Professional dataset query failed: {0}",
+  "cust.datapro.result": "Query result",
+  "cust.datapro.noResult": "No query has been run yet.",
+  "cust.datapro.enableSkill": "Import/enable volcengine-datapro Skill",
+  "cust.datapro.enablingSkill": "Enabling…",
+  "cust.datapro.skillEnabled": "volcengine-datapro Skill enabled",
+  "cust.datapro.skillEnabledToast": "volcengine-datapro Skill and DataPro connector enabled",
+  "cust.datapro.artifact": "Saved: {0}",
+  "cust.doubao.title": "Doubao Search Custom",
+  "cust.doubao.primary": "Primary",
+  "cust.doubao.desc": "The primary web-search option. It shares one Agent Plan Key with Ark and DataPro, and is marked available only after a real non-empty Doubao response.",
+  "cust.doubao.keyLabel": "Agent Plan Key (one-time authorization)",
+  "cust.doubao.keyPlaceholder": "Enter Agent Plan Key",
+  "cust.doubao.keyPlaceholderSet": "Saved; enter a new key to replace it",
+  "cust.doubao.keyPlaceholderArk": "Using the Ark API Key; enter a new key to replace it",
+  "cust.doubao.keyConfigured": "Credential saved",
+  "cust.doubao.keyArkReused": "Using the Ark API Key",
+  "cust.doubao.keyMissing": "Agent Plan Key is not configured",
+  "cust.doubao.saveKey": "Save credential",
+  "cust.doubao.keyRequired": "Enter an Agent Plan Key",
+  "cust.doubao.keySaved": "Agent Plan Key saved securely for both Doubao Search and DataPro",
+  "cust.doubao.queryLabel": "Query Doubao Search",
+  "cust.doubao.queryPlaceholder": "Enter a web-search query (up to 100 characters)",
+  "cust.doubao.search": "Call Doubao Search",
+  "cust.doubao.searching": "Searching…",
+  "cust.doubao.queryRequired": "Enter query text",
+  "cust.doubao.available": "Doubao Search available",
+  "cust.doubao.empty": "Doubao Search returned no usable result",
+  "cust.doubao.requestFailed": "Doubao Search failed: {0}",
+  "cust.doubao.result": "Search results",
+  "cust.doubao.noResult": "No search has been run yet.",
   "cust.general.apiKeyConfigured": "✅ Configured",
   "cust.general.apiKeyMissing": "⚠️ API Key not configured — sending messages will fail",
   "cust.general.configureBtn": "Configure →",
@@ -1403,8 +1520,8 @@ Object.assign(I18N.en, {
   "cust.models.protocol.ark": "Ark-compatible protocol",
   "cust.models.protocol.gemini": "Gemini-compatible protocol",
   "cust.models.protocol.openaiResponses": "OpenAI Responses protocol",
-  "cust.search.name": "Search API key (Tavily)",
-  "cust.search.desc": "Tavily key for web search; the endpoint is fixed to api.tavily.com.",
+  "cust.search.name": "Backup search API key (Tavily)",
+  "cust.search.desc": "Tavily is the backup search option at the fixed api.tavily.com endpoint. The dedicated Doubao test never falls back to it.",
   "cust.search.set": "Configured",
   "cust.search.unset": "Not configured",
   "cust.search.ph": "Enter Tavily API key",
@@ -1786,9 +1903,11 @@ Object.assign(I18N.en, {
   "palette.empty": "No matches",
   "palette.group.artifacts": "Artifacts",
   "palette.group.commands": "Commands",
+  "palette.group.datapro": "Professional datasets",
   "palette.group.sessions": "Sessions",
   "palette.group.skills": "Skills",
-  "palette.searchPlaceholder": "Search sessions, artifacts, skills, or run a command…",
+  "palette.datapro.result": "DataPro query result",
+  "palette.searchPlaceholder": "Search sessions, artifacts, professional datasets, skills, or run a command…",
   "perm.badge.subAgent": "Subagent",
   "perm.badge.dangerous": "High risk",
   "perm.btn.allow": "Allow",
@@ -2063,6 +2182,9 @@ Object.assign(I18N.en, {
   "toolLabel.writeFile": "Writing file",
   "turn.failed": "This turn failed. Please try again.",
   "turn.failedCommitted": "This turn failed after it had already produced output or run a tool — retrying would repeat work that already happened. Check the result before deciding.",
+  "turn.failure.llmRequestBurst": "The model provider's burst-traffic protection was triggered. This is not an API-key configuration problem. Continue this session later or temporarily switch models.",
+  "turn.failure.llmRateLimited": "The model provider is rate-limiting requests. Continue this session later or temporarily switch models.",
+  "turn.failure.llmUpstreamOverloaded": "The model provider is currently overloaded. This is not an API-key configuration problem. Continue this session later or temporarily switch models.",
   "turn.supportId": "Support ID: {0}",
   "upload.dropping": "Uploading dropped files…",
   "upload.failed": "Upload failed: {0}",
@@ -3699,21 +3821,35 @@ function lastTerminalFailure() {
   const last = rows[rows.length - 1];
   if (!last) return null;
   const box = last.querySelector(".msg-failure-meta");
-  return box ? { request_id: box.dataset.requestId || "", output_committed: box.dataset.committed === "1" } : null;
+  return box ? { request_id: box.dataset.requestId || "", code: box.dataset.failureCode || "", output_committed: box.dataset.committed === "1" } : null;
+}
+function failureCodeHint(code) {
+  const key = ({
+    llm_request_burst: "turn.failure.llmRequestBurst",
+    llm_rate_limited: "turn.failure.llmRateLimited",
+    llm_upstream_overloaded: "turn.failure.llmUpstreamOverloaded",
+  })[String(code || "")];
+  return key ? t(key) : "";
 }
 function failureMeta(failure) {
   const box = el("div", "msg-failure-meta");
   const bits = [];
+  const cause = failureCodeHint(failure.code);
+  if (cause) bits.push(cause);
   if (failure.output_committed) bits.push(t("turn.failedCommitted"));
   if (failure.request_id) bits.push(t("turn.supportId", String(failure.request_id).slice(0, 96)));
   box.textContent = bits.join(" ");
   box.dataset.requestId = failure.request_id ? String(failure.request_id).slice(0, 96) : "";
+  box.dataset.failureCode = failure.code ? String(failure.code).slice(0, 64) : "";
   if (failure.output_committed) box.dataset.committed = "1";
   return box;
 }
 function failureHint(detail) {
   const committed = !!(detail && detail.output_committed);
-  const base = t(committed ? "turn.failedCommitted" : "turn.failed");
+  const cause = failureCodeHint(detail && detail.code);
+  const base = committed
+    ? [t("turn.failedCommitted"), cause].filter(Boolean).join(" ")
+    : (cause || t("turn.failed"));
   const raw = (detail && detail.request_id) || S.pendingRequestId || "";
   const id = raw ? String(raw).slice(0, 96) : "";
   return id ? base + " " + t("turn.supportId", id) : base;
@@ -8136,6 +8272,48 @@ function palActions() {
     { group: t("palette.group.commands"), label: t("palette.action.backHome"), icon: "arrow-left", run: () => showDashboard() },
   ];
 }
+function dataproPaletteSummary(hit) {
+  const parts = [];
+  if (hit && hit.dataset_type) parts.push(publicText(hit.dataset_type, 60));
+  if (hit && hit.json_pointer) parts.push(publicText(hit.json_pointer, 80));
+  if (hit && hit.content != null) {
+    let content = hit.content;
+    if (typeof content !== "string") {
+      try { content = JSON.stringify(content); } catch { content = String(content); }
+    }
+    if (content) parts.push(publicText(content, 180));
+  }
+  return parts.join(" · ");
+}
+function openDataproSearchHit(hit) {
+  closePalette();
+  if (hit && hit.artifact_id) {
+    const view = {
+      id: String(hit.artifact_id),
+      filename: t("palette.datapro.result") + ".json",
+      content_type: "application/json",
+      root_frame_id: hit.root_frame_id || null,
+      project_id: hit.project_id || null,
+    };
+    // The dock lives inside #workspace, which the dashboard hides, and
+    // openConversation resets S.openTabs/S.dockArtifact -- so the viewer has to
+    // be opened *after* the owning session, exactly like the artifact hit does.
+    // Opening it directly made a click from the dashboard render into a 0x0
+    // node, and a cross-session hit render in the wrong session's dock.
+    if (hit.root_frame_id && hit.root_frame_id !== S.currentId) {
+      openConversation(hit.root_frame_id, hit.project_id).then(() => openViewer(view));
+      return;
+    }
+    if (!hit.root_frame_id && !S.currentId) {
+      // No session to open: the fullscreen modal renders over the dashboard.
+      openArtifact(view);
+      return;
+    }
+    openViewer(view);
+    return;
+  }
+  openCust("connectors");
+}
 async function palSearch(query) {
   const q = (query || "").trim().toLowerCase();
   const gen = (PAL.gen = (PAL.gen || 0) + 1);  // discard out-of-order responses
@@ -8152,6 +8330,13 @@ async function palSearch(query) {
       const r = await api("/search?q=" + encodeURIComponent(q));
       (r.sessions || []).slice(0, 8).forEach(s => items.push({ group: t("conv.title.default"), label: s.name || s.task_summary || t("conv.title.default"), icon: "message-square", run: () => { closePalette(); openConversation(s.id, s.project_id); } }));
       (r.artifacts || []).slice(0, 8).forEach(a => items.push({ group: t("palette.group.artifacts"), label: a.filename, sub: a.content_type || "", icon: "file", run: () => { closePalette(); if (a.root_frame_id) openConversation(a.root_frame_id, a.project_id).then(() => dockTab("files")); } }));
+      (r.datapro || []).slice(0, 8).forEach(hit => items.push({
+        group: t("palette.group.datapro"),
+        label: publicText((hit && hit.query) || t("palette.datapro.result"), 140),
+        sub: dataproPaletteSummary(hit),
+        icon: "search",
+        run: () => openDataproSearchHit(hit),
+      }));
     } catch {}
   }
   if (gen !== PAL.gen) return;  // a newer keystroke superseded this response
@@ -8481,17 +8666,173 @@ async function specialistEditor(name) {
   const save = el("button", "solid-btn", t("specialist.saveBtn")); save.onclick = async () => { const nm = nameIn.value.trim(); if (!nm) { hint(t("toast.specialist.enterName"), true); return; } save.disabled = true; save.textContent = t("common.saving"); const b = { name: nm, description: descIn.value, system_prompt: spIn.value }; try { if (name) await api(`/specialists/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(b) }); else await api("/specialists", { method: "POST", body: JSON.stringify(b) }); closeModalEl($("#modal")); hint(t("toast.specialist.saved", nm)); custTab("specialists"); } catch (e) { save.disabled = false; save.textContent = t("specialist.saveBtn"); hint(t("artifact.save.err", apiErrorText(e)), true); } };
   const fa = el("div", "form-actions"); fa.appendChild(save); form.appendChild(fa); body.appendChild(form); openModalEl($("#modal"));
 }
+
+const DATAPRO_CONNECTOR_ID = "volcengine-datapro";
+function dataproResultText(response) {
+  if (!response || typeof response !== "object") return String(response || "");
+  const result = response.structuredContent != null ? response.structuredContent : response.content;
+  if (typeof result === "string") return result;
+  if (result == null) return "";
+  try { return JSON.stringify(result, null, 2); } catch { return String(result); }
+}
+function dataproResponseCode(response) {
+  const structured = response && response.structuredContent;
+  if (structured && typeof structured.code === "number") return structured.code;
+  return null;
+}
+function dataproIndexComplete(response) {
+  const index = response && response.index;
+  return !!(index && index.complete === true
+    && Number.isInteger(index.entry_count) && index.entry_count >= 0
+    && Number.isInteger(index.source_leaf_count) && index.source_leaf_count >= 0
+    && Number.isInteger(index.indexed_leaf_count) && index.indexed_leaf_count >= 0
+    && index.source_leaf_count === index.indexed_leaf_count
+    && typeof index.source_digest === "string" && index.source_digest.length > 0
+    && index.source_digest === index.indexed_digest);
+}
+function dataproCard(config, configError) {
+  const state = {
+    keyConfigured: !!(config && config.key_configured),
+    arkKeyReused: !!(config && config.ark_key_reused),
+    connectorEnabled: !!(config && config.connector_enabled),
+    skillEnabled: !!(config && config.skill_enabled),
+  };
+  const card = el("section", "datapro-card");
+  const heading = el("div", "datapro-head");
+  const headingText = el("div");
+  headingText.appendChild(el("div", "datapro-title", t("cust.datapro.title")));
+  headingText.appendChild(el("div", "datapro-desc", t("cust.datapro.desc")));
+  heading.appendChild(headingText);
+  const skill = el("button", "outline-btn small", state.skillEnabled ? t("cust.datapro.skillEnabled") : t("cust.datapro.enableSkill"));
+  skill.dataset.action = "datapro-enable-skill";
+  skill.disabled = state.skillEnabled && state.connectorEnabled;
+  skill.onclick = async () => {
+    skill.disabled = true; skill.textContent = t("cust.datapro.enablingSkill");
+    try {
+      if (!state.connectorEnabled) {
+        await api(`/connectors/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: true }) });
+      }
+      await api(`/skills/catalog/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: true }) });
+      state.connectorEnabled = true; state.skillEnabled = true; S.skillsCatalog = null;
+      skill.textContent = t("cust.datapro.skillEnabled");
+      hint(t("cust.datapro.skillEnabledToast"));
+    } catch (error) {
+      skill.disabled = false; skill.textContent = t("cust.datapro.enableSkill");
+      hint(t("toast.failed", apiErrorText(error)), true);
+    }
+  };
+  heading.appendChild(skill);
+  // The managed row is filtered out of the connector list below, and DELETE is
+  // refused with 403, so without this toggle a connector seeded enabled on every
+  // boot could not be turned off anywhere in the UI.
+  const power = el("button", "toggle" + (state.connectorEnabled ? " on" : ""));
+  power.dataset.action = "datapro-toggle-connector";
+  power.title = t("cust.datapro.connectorToggle");
+  power.onclick = async () => {
+    const on = power.classList.toggle("on");
+    try {
+      await api(`/connectors/${encodeURIComponent(DATAPRO_CONNECTOR_ID)}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: on }) });
+      state.connectorEnabled = on;
+      skill.disabled = state.skillEnabled && on;
+      hint(on ? t("cust.datapro.connectorOn") : t("cust.datapro.connectorOff"));
+    } catch (error) {
+      power.classList.toggle("on", !on);
+      hint(t("toast.failed", apiErrorText(error)), true);
+    }
+  };
+  heading.appendChild(power);
+  card.appendChild(heading);
+
+  const credentials = el("div", "datapro-field");
+  credentials.appendChild(el("label", "skill-lbl", t("cust.datapro.keyLabel")));
+  const credentialRow = el("div", "datapro-input-row");
+  const keyInput = el("input", "cust-input");
+  keyInput.id = "datapro-plan-key"; keyInput.type = "password"; keyInput.autocomplete = "off";
+  keyInput.autocapitalize = "off"; keyInput.spellcheck = false;
+  keyInput.placeholder = state.arkKeyReused ? t("cust.datapro.keyPlaceholderArk") : (state.keyConfigured ? t("cust.datapro.keyPlaceholderSet") : t("cust.datapro.keyPlaceholder"));
+  const saveKey = el("button", "solid-btn small", t("cust.datapro.saveKey"));
+  saveKey.dataset.action = "datapro-save-key";
+  const keyState = el("div", "datapro-credential-state", configError ? t("cust.datapro.requestFailed", apiErrorText(configError)) : (state.arkKeyReused ? t("cust.datapro.keyArkReused") : (state.keyConfigured ? t("cust.datapro.keyConfigured") : t("cust.datapro.keyMissing"))));
+  keyState.classList.toggle("bad", !!configError || (!state.keyConfigured && !state.arkKeyReused));
+  saveKey.onclick = async () => {
+    let secret = keyInput.value.trim();
+    keyInput.value = "";
+    if (!secret) { hint(t("cust.datapro.keyRequired"), true); return; }
+    saveKey.disabled = true; const request = api("/datapro/config", { method: "POST", body: JSON.stringify({ agent_plan_key: secret }) });
+    secret = "";
+    try {
+      const saved = await request;
+      state.keyConfigured = !!(saved && saved.key_configured); state.arkKeyReused = !!(saved && saved.ark_key_reused);
+      keyInput.placeholder = state.arkKeyReused ? t("cust.datapro.keyPlaceholderArk") : t("cust.datapro.keyPlaceholderSet");
+      keyState.textContent = state.arkKeyReused ? t("cust.datapro.keyArkReused") : t("cust.datapro.keyConfigured");
+      keyState.classList.remove("bad"); hint(t("cust.datapro.keySaved"));
+    } catch (error) {
+      keyState.textContent = t("cust.datapro.requestFailed", apiErrorText(error)); keyState.classList.add("bad");
+    } finally {
+      keyInput.value = ""; saveKey.disabled = false;
+    }
+  };
+  keyInput.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); saveKey.click(); } };
+  credentialRow.appendChild(keyInput); credentialRow.appendChild(saveKey);
+  credentials.appendChild(credentialRow); credentials.appendChild(keyState); card.appendChild(credentials);
+
+  const queryField = el("div", "datapro-field");
+  queryField.appendChild(el("label", "skill-lbl", t("cust.datapro.queryLabel")));
+  const query = el("textarea", "datapro-query"); query.id = "datapro-query"; query.rows = 3; query.maxLength = 10000; query.placeholder = t("cust.datapro.queryPlaceholder");
+  const queryActions = el("div", "datapro-query-actions");
+  const status = el("div", "datapro-status"); status.dataset.dataproStatus = ""; status.setAttribute("aria-live", "polite");
+  const search = el("button", "solid-btn small", t("cust.datapro.search")); search.dataset.action = "datapro-search";
+  queryActions.appendChild(status); queryActions.appendChild(search); queryField.appendChild(query); queryField.appendChild(queryActions); card.appendChild(queryField);
+
+  const output = el("div", "datapro-output"); output.appendChild(el("div", "skill-lbl", t("cust.datapro.result")));
+  const indexStatus = el("div", "datapro-index-status hidden"); indexStatus.dataset.dataproIndexStatus = ""; indexStatus.setAttribute("aria-live", "polite"); output.appendChild(indexStatus);
+  const result = el("pre", "datapro-result", t("cust.datapro.noResult")); result.dataset.dataproResult = ""; output.appendChild(result);
+  const artifact = el("button", "outline-btn small datapro-artifact hidden"); artifact.dataset.dataproArtifact = ""; output.appendChild(artifact); card.appendChild(output);
+  search.onclick = async () => {
+    const text = query.value.trim();
+    if (!text) { hint(t("cust.datapro.queryRequired"), true); return; }
+    search.disabled = true; search.textContent = t("cust.datapro.searching"); status.textContent = t("cust.datapro.searching"); status.className = "datapro-status"; indexStatus.textContent = ""; indexStatus.className = "datapro-index-status hidden"; result.textContent = t("cust.datapro.noResult"); artifact.classList.add("hidden"); artifact.onclick = null;
+    try {
+      const body = { query: text }; if (S.currentId) body.frame_id = S.currentId;
+      const response = await api("/datapro/search", { method: "POST", body: JSON.stringify(body) });
+      const code = dataproResponseCode(response);
+      const indexed = code === 0 && dataproIndexComplete(response);
+      status.textContent = indexed ? t("cust.datapro.available") : (code === 0 ? t("cust.datapro.indexFailed") : (code === 4011 ? t("cust.datapro.auth4011") : (response.message || t("cust.datapro.unavailable", code == null ? "?" : code))));
+      status.className = "datapro-status " + (indexed ? "ok" : "bad");
+      if (indexed) {
+        indexStatus.textContent = t("cust.datapro.indexed", response.index.entry_count, response.index.source_leaf_count);
+        indexStatus.className = "datapro-index-status ok";
+      }
+      result.textContent = dataproResultText(response) || t("cust.datapro.noResult");
+      const savedArtifact = response && response.artifact;
+      if (savedArtifact) {
+        artifact.classList.remove("hidden"); artifact.disabled = !savedArtifact.id;
+        artifact.textContent = t("cust.datapro.artifact", savedArtifact.filename || savedArtifact.id || "artifact");
+        artifact.onclick = savedArtifact.id ? () => openViewer(savedArtifact) : null;
+      } else {
+        artifact.classList.add("hidden"); artifact.onclick = null;
+      }
+    } catch (error) {
+      status.textContent = t("cust.datapro.requestFailed", apiErrorText(error)); status.className = "datapro-status bad"; result.textContent = t("cust.datapro.noResult"); artifact.classList.add("hidden"); artifact.onclick = null;
+    } finally {
+      search.disabled = false; search.textContent = t("cust.datapro.search");
+    }
+  };
+  query.onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); search.click(); } };
+  return card;
+}
 async function custConnectors(c) { try {
-  const d = await api("/connectors"); const conns = (d && d.connectors) || [];
+  const [d, datapro] = await Promise.all([api("/connectors"), api("/datapro/config").then(config => ({ config })).catch(error => ({ config: {}, error }))]); const conns = (d && d.connectors) || [];
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.connectors"), t("cust.connectors.desc")));
-  conns.forEach(k => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, k.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", k.connector_id)); info.appendChild(nm); info.appendChild(el("div", "ds", (k.description || "") + "  ·  " + (k.command_display || ""))); row.appendChild(info);
+  c.appendChild(dataproCard(datapro.config, datapro.error));
+  conns.filter(k => k.connector_id !== DATAPRO_CONNECTOR_ID).forEach(k => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, k.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", k.connector_id)); info.appendChild(nm); info.appendChild(el("div", "ds", (k.description || "") + "  ·  " + (k.command_display || ""))); row.appendChild(info);
     const pb = el("button", "outline-btn small", t("cust.connectors.test")); pb.onclick = async () => { pb.disabled = true; pb.textContent = t("cust.connectors.testing"); try { const r = await api(`/connectors/${k.connector_id}/probe`, { method: "POST" }); hint(r.ok ? (t("toast.connectors.probeOk", (r.tools || []).map(t => t.name).join("、"))) : (t("toast.failed", (r.error || "")))); } catch (e) { hint(t("toast.connectors.testFailed", apiErrorText(e)), true); } pb.disabled = false; pb.textContent = t("cust.connectors.test"); }; row.appendChild(pb);
     const tg = el("button", "toggle" + (k.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { await api(`/connectors/${k.connector_id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: on }) }); } catch {} }; row.appendChild(tg);
     const db = el("button", "icon-ghost"); db.title = t("common.delete"); db.innerHTML = icon("trash-2", 15); db.onclick = async () => { if (!confirm(t("cust.connectors.deleteConfirm", k.name))) return; try { await api(`/connectors/${k.connector_id}`, { method: "DELETE" }); custTab("connectors"); } catch {} }; row.appendChild(db); c.appendChild(row); });
   // directory (one-click add)
   c.appendChild(el("div", "cust-subhead", t("cust.connectors.fromDirectory")));
   let dir = { directory: [] }; try { dir = await api("/connectors/directory"); } catch {}
-  (dir.directory || []).forEach(item => { if (conns.some(k => k.connector_id === item.id)) return; const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", item.name)); info.appendChild(el("div", "ds", item.description || "")); row.appendChild(info); const add = el("button", "outline-btn small", t("common.add")); add.onclick = async () => { try { await api("/connectors", { method: "POST", body: JSON.stringify({ connector_id: item.id, name: item.name, description: item.description, command: item.command }) }); hint(t("toast.connectors.added", item.name)); custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; row.appendChild(add); c.appendChild(row); });
+  (dir.directory || []).forEach(item => { if (item.id === DATAPRO_CONNECTOR_ID || conns.some(k => k.connector_id === item.id)) return; const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", item.name)); info.appendChild(el("div", "ds", item.description || "")); row.appendChild(info); const add = el("button", "outline-btn small", t("common.add")); add.onclick = async () => { try { await api("/connectors", { method: "POST", body: JSON.stringify({ connector_id: item.id, name: item.name, description: item.description, command: item.command }) }); hint(t("toast.connectors.added", item.name)); custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; row.appendChild(add); c.appendChild(row); });
   // custom add
   const add = el("div", "cust-row"); const ai = el("div", "info"); ai.appendChild(el("div", "nm", t("cust.connectors.customAddName"))); const ad = el("div", "job-submit"); const nameIn = el("input", "cust-input"); nameIn.placeholder = t("cust.connectors.namePlaceholder"); nameIn.style.flex = "0 0 120px"; const cmdIn = el("input", "cust-input"); cmdIn.placeholder = t("cust.connectors.cmdPlaceholder"); const go = el("button", "solid-btn small", t("common.add")); go.onclick = async () => { const nm = nameIn.value.trim(); const cmd = cmdIn.value.trim(); if (!nm || !cmd) return; try { await api("/connectors", { method: "POST", body: JSON.stringify({ name: nm, command: cmd.split(/\s+/) }) }); nameIn.value = cmdIn.value = ""; custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; ad.appendChild(nameIn); ad.appendChild(cmdIn); ad.appendChild(go); ai.appendChild(ad); add.appendChild(ai); c.appendChild(add);
 } catch (e) { c.textContent = t("versions.load.err", e.message); } }
@@ -8599,7 +8940,98 @@ async function showJobOutput(id) {
   const load = async () => { if (S._modalMode !== mode || $("#modal").classList.contains("hidden")) return; let d; try { d = await api(`/compute/jobs/${id}`); } catch (e) { body.innerHTML = t("job.outputLoadFailed"); return; } if (S._modalMode !== mode) return; body.innerHTML = ""; const pre = el("pre", "job-output", d.output || t("job.outputEmpty")); body.appendChild(pre); if (d.status === "running" || d.status === "queued") setTimeout(load, 1200); };
   load();
 }
-// Global web-search API key (Tavily). The endpoint is fixed; only the key is
+function doubaoSearchResultText(response) {
+  const results = response && Array.isArray(response.results) ? response.results : [];
+  return results.map((item, index) => {
+    const title = item && typeof item.title === "string" ? item.title.trim() : "";
+    const url = item && typeof item.url === "string" ? item.url.trim() : "";
+    const snippet = item && typeof item.snippet === "string" ? item.snippet.trim() : "";
+    return [`${index + 1}. ${title || url}`, url, snippet].filter(Boolean).join("\n");
+  }).filter(Boolean).join("\n\n");
+}
+function doubaoSearchCard(config, configError) {
+  const state = {
+    keyConfigured: !!(config && config.key_configured),
+    arkKeyReused: !!(config && config.ark_key_reused),
+  };
+  const card = el("section", "datapro-card doubao-search-card");
+  const heading = el("div", "datapro-head");
+  const headingText = el("div");
+  const title = el("div", "datapro-title");
+  title.appendChild(document.createTextNode(t("cust.doubao.title") + " "));
+  title.appendChild(el("span", "pill", t("cust.doubao.primary")));
+  headingText.appendChild(title);
+  headingText.appendChild(el("div", "datapro-desc", t("cust.doubao.desc")));
+  heading.appendChild(headingText); card.appendChild(heading);
+
+  const credentials = el("div", "datapro-field");
+  credentials.appendChild(el("label", "skill-lbl", t("cust.doubao.keyLabel")));
+  const credentialRow = el("div", "datapro-input-row");
+  const keyInput = el("input", "cust-input");
+  keyInput.id = "doubao-search-plan-key"; keyInput.type = "password"; keyInput.autocomplete = "off";
+  keyInput.autocapitalize = "off"; keyInput.spellcheck = false;
+  keyInput.placeholder = state.arkKeyReused ? t("cust.doubao.keyPlaceholderArk") : (state.keyConfigured ? t("cust.doubao.keyPlaceholderSet") : t("cust.doubao.keyPlaceholder"));
+  const saveKey = el("button", "solid-btn small", t("cust.doubao.saveKey"));
+  saveKey.dataset.action = "doubao-search-save-key";
+  const keyState = el("div", "datapro-credential-state", configError ? t("cust.doubao.requestFailed", apiErrorText(configError)) : (state.arkKeyReused ? t("cust.doubao.keyArkReused") : (state.keyConfigured ? t("cust.doubao.keyConfigured") : t("cust.doubao.keyMissing"))));
+  keyState.classList.toggle("bad", !!configError || (!state.keyConfigured && !state.arkKeyReused));
+  saveKey.onclick = async () => {
+    let secret = keyInput.value.trim();
+    keyInput.value = "";
+    if (!secret) { hint(t("cust.doubao.keyRequired"), true); return; }
+    saveKey.disabled = true;
+    const request = api("/doubao-search/config", { method: "POST", body: JSON.stringify({ agent_plan_key: secret }) });
+    secret = "";
+    try {
+      const saved = await request;
+      state.keyConfigured = !!(saved && saved.key_configured); state.arkKeyReused = !!(saved && saved.ark_key_reused);
+      keyInput.placeholder = state.arkKeyReused ? t("cust.doubao.keyPlaceholderArk") : t("cust.doubao.keyPlaceholderSet");
+      keyState.textContent = state.arkKeyReused ? t("cust.doubao.keyArkReused") : t("cust.doubao.keyConfigured");
+      keyState.classList.remove("bad"); hint(t("cust.doubao.keySaved"));
+    } catch (error) {
+      keyState.textContent = t("cust.doubao.requestFailed", apiErrorText(error)); keyState.classList.add("bad");
+    } finally {
+      keyInput.value = ""; saveKey.disabled = false;
+    }
+  };
+  keyInput.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); saveKey.click(); } };
+  credentialRow.appendChild(keyInput); credentialRow.appendChild(saveKey);
+  credentials.appendChild(credentialRow); credentials.appendChild(keyState); card.appendChild(credentials);
+
+  const queryField = el("div", "datapro-field");
+  queryField.appendChild(el("label", "skill-lbl", t("cust.doubao.queryLabel")));
+  const query = el("textarea", "datapro-query"); query.id = "doubao-search-query"; query.rows = 3; query.maxLength = 100; query.placeholder = t("cust.doubao.queryPlaceholder");
+  const queryActions = el("div", "datapro-query-actions");
+  const status = el("div", "datapro-status"); status.dataset.doubaoSearchStatus = ""; status.setAttribute("aria-live", "polite");
+  const search = el("button", "solid-btn small", t("cust.doubao.search")); search.dataset.action = "doubao-search-run";
+  queryActions.appendChild(status); queryActions.appendChild(search); queryField.appendChild(query); queryField.appendChild(queryActions); card.appendChild(queryField);
+
+  const output = el("div", "datapro-output"); output.appendChild(el("div", "skill-lbl", t("cust.doubao.result")));
+  const result = el("pre", "datapro-result", t("cust.doubao.noResult")); result.dataset.doubaoSearchResult = ""; output.appendChild(result); card.appendChild(output);
+  search.onclick = async () => {
+    const text = query.value.trim();
+    if (!text) { hint(t("cust.doubao.queryRequired"), true); return; }
+    search.disabled = true; search.textContent = t("cust.doubao.searching"); status.textContent = t("cust.doubao.searching"); status.className = "datapro-status"; result.textContent = t("cust.doubao.noResult");
+    try {
+      // This product check is intentionally dedicated: the backend must not
+      // satisfy it with Tavily or any keyless fallback engine.
+      const response = await api("/doubao-search/search", { method: "POST", body: JSON.stringify({ query: text }) });
+      const results = response && Array.isArray(response.results) ? response.results : [];
+      const available = !!(response && response.available === true && response.source === "doubao" && Number.isInteger(response.count) && response.count === results.length && results.length > 0);
+      status.textContent = available ? t("cust.doubao.available") : (response.message || t("cust.doubao.empty"));
+      status.className = "datapro-status " + (available ? "ok" : "bad");
+      result.textContent = doubaoSearchResultText(response) || t("cust.doubao.noResult");
+    } catch (error) {
+      status.textContent = t("cust.doubao.requestFailed", apiErrorText(error)); status.className = "datapro-status bad"; result.textContent = t("cust.doubao.noResult");
+    } finally {
+      search.disabled = false; search.textContent = t("cust.doubao.search");
+    }
+  };
+  query.onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); search.click(); } };
+  return card;
+}
+
+// Backup web-search API key (Tavily). The endpoint is fixed; only the key is
 // user-editable. Persisted server-side and read by webtools at search time.
 async function searchKeyRow(c) {
   let sc = {}; try { sc = await api("/search/config"); } catch {}
@@ -8612,7 +9044,29 @@ async function searchKeyRow(c) {
   const sub = el("div", "job-submit"); sub.appendChild(kin); sub.appendChild(sv); info.appendChild(sub);
   row.appendChild(info); c.appendChild(row);
 }
-async function custNetwork(c) { try { const d = await api("/preferences/builtin-allowlist"); c.innerHTML = ""; c.appendChild(hdr(t("cust.network.title"), t("cust.network.desc"))); const master = el("div", "cust-row"); const mi = el("div", "info"); mi.appendChild(el("div", "nm", t("cust.network.allowName"))); mi.appendChild(el("div", "ds", d.enabled ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc"))); master.appendChild(mi); const tg = el("button", "toggle" + (d.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/network/status", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(r.enabled ? t("toast.network.enabled") : t("toast.network.disabled")); } catch {} }; master.appendChild(tg); c.appendChild(master); await searchKeyRow(c); ((d && d.groups) || []).forEach(g => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, g.name || g.label)); info.appendChild(nm); const box = el("div", "ds"); (g.domains || []).slice(0, 12).forEach(dm => box.appendChild(el("span", "pill", dm))); info.appendChild(box); row.appendChild(info); c.appendChild(row); }); await telemetryRow(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+async function custNetwork(c) { try {
+  const [d, doubao] = await Promise.all([
+    api("/preferences/builtin-allowlist"),
+    api("/doubao-search/config").then(config => ({ config })).catch(error => ({ config: {}, error })),
+  ]);
+  c.innerHTML = ""; c.appendChild(hdr(t("cust.network.title"), t("cust.network.desc")));
+  c.appendChild(doubaoSearchCard(doubao.config, doubao.error));
+  const master = el("div", "cust-row"); const mi = el("div", "info");
+  mi.appendChild(el("div", "nm", t("cust.network.allowName")));
+  mi.appendChild(el("div", "ds", d.enabled ? t("cust.network.enabledDesc") : t("cust.network.disabledDesc")));
+  master.appendChild(mi);
+  const tg = el("button", "toggle" + (d.enabled ? " on" : ""));
+  tg.onclick = async () => { const on = tg.classList.toggle("on"); try { const r = await api("/network/status", { method: "PUT", body: JSON.stringify({ enabled: on }) }); hint(r.enabled ? t("toast.network.enabled") : t("toast.network.disabled")); } catch {} };
+  master.appendChild(tg); c.appendChild(master);
+  await searchKeyRow(c);
+  ((d && d.groups) || []).forEach(g => {
+    const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm");
+    nm.appendChild(el("span", null, g.name || g.label)); info.appendChild(nm);
+    const box = el("div", "ds"); (g.domains || []).slice(0, 12).forEach(dm => box.appendChild(el("span", "pill", dm)));
+    info.appendChild(box); row.appendChild(info); c.appendChild(row);
+  });
+  await telemetryRow(c);
+} catch (e) { c.textContent = t("versions.load.err", e.message); } }
 
 async function telemetryRow(c) {
   let d; try { d = await api("/telemetry/consent"); } catch { return; }

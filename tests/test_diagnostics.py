@@ -437,10 +437,18 @@ def test_the_access_token_never_reaches_the_bundle(cfg, tmp_path):
 
     assert _TOKEN.encode() not in blob, blob[:400]
     # The banner is an unstructured line, so the archive keeps its shape rather
-    # than its content. `redact_url` still runs -- it is what makes the *local*
-    # log safe to read -- and this asserts the outer boundary on top of it.
-    assert b"8760" not in blob
-    assert b"lines" in blob
+    # than its content. Inspect the log member itself: `report.json` contains
+    # legitimate numeric facts such as migration timestamps, and an epoch can
+    # coincidentally contain the four digits of the listening port.
+    with zipfile.ZipFile(target) as archive:
+        members = [name for name in archive.namelist() if name.startswith("logs/log-")]
+        assert members == ["logs/log-0001.json"]
+        log_blob = archive.read(members[0])
+    assert b"http://127.0.0.1:8760" not in log_blob
+    records = [json.loads(line) for line in log_blob.decode("utf-8").splitlines()]
+    assert len(records) == 1
+    assert set(records[0]) == {"archive_note", "lines", "classes", "fingerprint"}
+    assert records[0]["lines"] == 1
     assert _TOKEN not in redact_url(_LISTEN_LINE.split(" ")[3])
 
 

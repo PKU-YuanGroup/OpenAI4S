@@ -451,6 +451,70 @@ def test_openai_chat_sse_error_event_is_not_an_empty_success(monkeypatch):
         )
 
 
+def test_openai_request_burst_event_preserves_typed_failure(monkeypatch):
+    blocking_calls = []
+
+    def error(_url, _payload, _headers, _timeout, on_event):
+        on_event(
+            {
+                "error": {
+                    "code": "RequestBurstTooFast",
+                    "type": "TooManyRequests",
+                    "message": "private upstream detail",
+                }
+            }
+        )
+
+    monkeypatch.setattr(llm.transport, "post_sse", error)
+    monkeypatch.setattr(
+        llm.transport, "post_json", lambda *_args: blocking_calls.append(1)
+    )
+    cfg = _cfg()
+    cfg.provider = "ark"
+
+    with pytest.raises(llm.TransportError) as raised:
+        llm.chat(
+            [{"role": "user", "content": "Continue the task."}],
+            cfg,
+            on_delta=lambda _text: None,
+        )
+
+    exc = raised.value
+    assert exc.status == 429
+    assert exc.error_code == "RequestBurstTooFast"
+    assert exc.retryable is True
+    assert exc.output_committed is False
+    assert blocking_calls == [], "a typed SSE failure must not start a JSON fallback"
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"), [(401, False), (429, True), (503, True)]
+)
+def test_exhausted_typed_stream_failure_never_gets_a_second_blocking_budget(
+    monkeypatch, status, retryable
+):
+    blocking_calls = []
+
+    def typed_failure(*_args):
+        raise llm.TransportError(
+            "private typed failure", status=status, retryable=retryable
+        )
+
+    monkeypatch.setattr(llm.transport, "post_sse", typed_failure)
+    monkeypatch.setattr(
+        llm.transport, "post_json", lambda *_args: blocking_calls.append(1)
+    )
+
+    with pytest.raises(llm.TransportError):
+        llm.chat(
+            [{"role": "user", "content": "Hello."}],
+            _cfg(),
+            on_delta=lambda _text: None,
+        )
+
+    assert blocking_calls == []
+
+
 def _assert_stream_fallback(monkeypatch, fake_sse):
     cap = _install(monkeypatch, _text_body("fallback"))
     monkeypatch.setattr(llm.transport, "post_sse", fake_sse)
@@ -475,3 +539,15 @@ def test_openai_stream_read_error_falls_back_before_first_event(monkeypatch):
         raise llm.LLMError("connection reset while reading stream")
 
     _assert_stream_fallback(monkeypatch, broken_sse)
+
+
+@pytest.mark.parametrize("status", [400, 404, 405, 406, 415, 422, 501])
+def test_openai_nonretryable_stream_compatibility_refusal_falls_back_once(
+    monkeypatch, status
+):
+    def unsupported(*_args):
+        raise llm.TransportError(
+            "streaming request shape unsupported", status=status, retryable=False
+        )
+
+    _assert_stream_fallback(monkeypatch, unsupported)

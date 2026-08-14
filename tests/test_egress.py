@@ -66,9 +66,25 @@ def test_allowlist_permits_science_and_package_domains(monkeypatch):
         "pypi.org",
         "files.pythonhosted.org",
         "bioconductor.org",
+        "open.feedcoopapi.com",
         "duckduckgo.com",
     ):
         assert egress.domain_allowed(d), d
+
+    # The authenticated Doubao Search exception is deliberately one host,
+    # never its parent, sibling, or child host that could receive the bearer key.
+    assert not egress.domain_allowed("feedcoopapi.com")
+    assert not egress.domain_allowed("other.feedcoopapi.com")
+    assert not egress.domain_allowed("child.open.feedcoopapi.com")
+    assert egress.domain_allowed("datapro.hqd.cn-beijing.volces.com")
+    assert not egress.domain_allowed("child.datapro.hqd.cn-beijing.volces.com")
+
+    # Re-approving an exact managed origin cannot downgrade it into the normal
+    # runtime base-domain policy.
+    egress.grant_domain("open.feedcoopapi.com")
+    egress.grant_domain("datapro.hqd.cn-beijing.volces.com")
+    assert not egress.domain_allowed("child.open.feedcoopapi.com")
+    assert not egress.domain_allowed("child.datapro.hqd.cn-beijing.volces.com")
 
 
 def test_allowlist_suffix_match_covers_subdomains(monkeypatch):

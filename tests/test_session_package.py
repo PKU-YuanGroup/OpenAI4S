@@ -364,8 +364,10 @@ def test_session_package_filters_provider_secrets_binary_large_and_env_variants(
 ):
     store, domain, _project, root, _artifact, _checkpoint, workspace = _source(tmp_path)
     configured = "custom-secret-without-provider-prefix-123456"
+    agent_plan = "custom-agent-plan-secret-654321"
     try:
         store.set_setting("llm_api_key", configured)
+        store.set_setting("agent_plan_key", agent_plan)
         root_workspace = workspace(root, root)
         secret_payloads = {
             ".env.local": b"OPENAI_API_KEY=not-exported\n",
@@ -378,6 +380,7 @@ def test_session_package_filters_provider_secrets_binary_large_and_env_variants(
             ),
             "binary.bin": b"\x00\xffprefix ark-qrstuvwxyz012345 suffix",
             "configured.txt": configured.encode("utf-8"),
+            "agent-plan.txt": agent_plan.encode("utf-8"),
             "large.txt": b"x" * (4 << 20) + b" Bearer zyxwvutsrqponmlk",
         }
         for name, payload in secret_payloads.items():

@@ -76,6 +76,10 @@ from openai4s.storage.connectors import (
     forget_connector_env,
     resolve_connector_env,
 )
+from openai4s.storage.datapro_index import (
+    DataProIndexRepository,
+    create_datapro_index_schema,
+)
 from openai4s.storage.delegation import DelegationProjectionRepository
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.kernels import KernelGenerationRepository
@@ -757,6 +761,8 @@ _VIEW_ONLY_TABLES = frozenset(
         # Interpreter, prefix and the complete installed-package manifest of
         # every kernel generation in the database.
         "env_snapshots",
+        "datapro_index_batches",
+        "datapro_index_entries",
         # `frames` is deliberately NOT here. Cross-session frame enumeration is a
         # real leak, but the plan does not list it and `tests/test_store.py`
         # documents direct `SELECT * FROM frames` as allowed -- so closing it is a
@@ -1005,6 +1011,11 @@ class Store:
             ),
             get_project=lambda project_id: self.get_project(project_id),
         )
+        self._datapro_index = DataProIndexRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._artifacts = ArtifactRepository(
             self._conn,
             self._lock,
@@ -1021,6 +1032,7 @@ class Store:
             get_env_snapshot=lambda snapshot_id: self.get_env_snapshot(snapshot_id),
             identify_file=lambda path: _file_identity(path),
             paths_match=lambda left, right: _same_file_path(left, right),
+            delete_related=self._datapro_index.delete_for_artifact,
         )
         self._notes = NotesRepository(
             self._conn,
@@ -1160,10 +1172,32 @@ class Store:
                         "annotation_admission_ledger",
                         self._apply_annotation_admission_ledger,
                     ),
+                    16: ("datapro_content_index", self._apply_datapro_content_index),
+                    17: (
+                        "datapro_content_index_repair",
+                        self._apply_datapro_content_index_repair,
+                    ),
                 },
             )
             if report["migrated"]:
                 harden_db(self.db_path)
+
+    def _apply_datapro_content_index(self, conn: sqlite3.Connection) -> None:
+        """Version 16: lossless local indexing for DataPro responses."""
+
+        create_datapro_index_schema(conn)
+
+    def _apply_datapro_content_index_repair(self, conn: sqlite3.Connection) -> None:
+        """Version 17: repair an early v16 database stamped without its tables.
+
+        During development the v16 DDL briefly ran outside the numbered
+        migration and was later moved into its correct transaction. A local
+        database opened between those revisions can therefore carry the v16
+        marker while missing one or both tables. Reapplying idempotent DDL under
+        v17 makes that state recoverable without deleting user data.
+        """
+
+        create_datapro_index_schema(conn)
 
     def _apply_annotation_admission_ledger(self, conn: sqlite3.Connection) -> None:
         """Version 15: a durable record of each admission attempt.
@@ -1805,14 +1839,11 @@ class Store:
         ledger. Not a trade to make silently.
         """
         with self._lock:
-            # No-op today: the schema declares zero REFERENCES/FOREIGN KEY
-            # clauses, so there is nothing to enforce. Set anyway, and by
-            # policy rather than by accident: the pragma is per-connection and
-            # OFF by default, so the day someone adds a foreign key it would
-            # otherwise be silently unenforced — the constraint would read as
-            # documentation. Adding real constraints to these tables needs a
-            # rebuild (SQLite has no ALTER TABLE ADD CONSTRAINT) and orphan
-            # cleanup first; this only ensures they would bite once they exist.
+            # DataPro entries reference their batch with ON DELETE CASCADE. The
+            # pragma is per-connection and OFF by default, so set it by policy
+            # rather than leaving the first real foreign key as documentation.
+            # Lifecycle repositories still delete both rows explicitly: that
+            # keeps upgraded/externally-opened databases correct too.
             self._conn.execute("PRAGMA foreign_keys = ON")
 
     # --- secrets ---------------------------------------------------------
@@ -1904,6 +1935,19 @@ class Store:
             self._conn.close()
             self._closed = True
         _discard_store(self)
+        # A managed DataPro HTTP connection retains a just-in-time header
+        # provider closed over this Store and a bounded set of sent secrets for
+        # reflection redaction.  Once the Store generation ends, neither may
+        # remain in the process-wide MCP cache.  Resolve the scope from object
+        # identity (never credential material), and crucially do not create an
+        # MCP manager for the many Stores that never used a connector.
+        from openai4s import datapro
+        from openai4s.mcp_client import disconnect_if_initialized
+
+        disconnect_if_initialized(
+            datapro.CONNECTOR_ID,
+            cache_scope=datapro.runtime_cache_scope(self),
+        )
 
     # --- frames ----------------------------------------------------------
     def new_frame(
@@ -3869,10 +3913,90 @@ class Store:
     def delete_unreserved_annotation(self, annotation_id: str) -> bool:
         return self._annotations.delete_unreserved(annotation_id)
 
+    # --- complete DataPro content index -------------------------------
+    def index_datapro_result(
+        self,
+        query: str,
+        structured_content: Mapping[str, Any],
+        frame_id: str | None = None,
+        artifact_id: str | None = None,
+        occurrence_id: str | None = None,
+        source_content: Any | None = None,
+    ) -> dict[str, Any]:
+        """Atomically index every field returned by one successful search."""
+
+        scope = self.resolve_frame_scope(frame_id)
+        return self._datapro_index.ingest(
+            query=str(query),
+            structured_content=structured_content,
+            project_id=str(scope["project_id"] or "default"),
+            root_frame_id=(
+                str(scope["root_frame_id"]) if scope.get("root_frame_id") else None
+            ),
+            artifact_id=artifact_id,
+            occurrence_id=occurrence_id,
+            source_content=source_content,
+        )
+
+    def link_datapro_index_artifact(
+        self, batch_id: str, artifact_id: str | None
+    ) -> dict[str, Any]:
+        """Bind a batch to its saved result, refusing a dead Artifact.
+
+        `ingest` commits the batch with `artifact_id` NULL, and the Artifact is
+        created and linked afterwards. A delete landing in that window matched
+        nothing -- the batch was not yet attributed to the Artifact -- and this
+        UPDATE then pointed it at an id that no longer exists, resurrecting
+        state the delete was supposed to remove. Nothing would collect it
+        again, because `delete_for_artifact` only ever runs once per Artifact,
+        so the batch stayed palette-visible forever.
+
+        Linking to a missing Artifact therefore drops the batch instead: its
+        owner is gone, so the index content has no lifecycle left to share.
+        """
+
+        if artifact_id is not None and self.get_artifact(artifact_id) is None:
+            self._datapro_index.delete_batch(batch_id)
+            raise KeyError(f"no such artifact {artifact_id!r}")
+        return self._datapro_index.link_artifact(batch_id, artifact_id)
+
+    def search_datapro_index(
+        self,
+        query: str,
+        limit: int = 20,
+        frame_id: str | None = None,
+        project_id: str | None = None,
+        include_context: bool = False,
+    ) -> dict[str, Any]:
+        """Search literal DataPro text globally or within an explicit scope."""
+
+        root_frame_id: str | None = None
+        resolved_project = project_id
+        if frame_id is not None:
+            scope = self.resolve_frame_scope(
+                frame_id, fallback_project=project_id or "default"
+            )
+            root_frame_id = (
+                str(scope["root_frame_id"]) if scope.get("root_frame_id") else None
+            )
+            resolved_project = str(scope["project_id"] or "default")
+        return self._datapro_index.search(
+            query,
+            limit=limit,
+            project_id=resolved_project,
+            root_frame_id=root_frame_id,
+            include_context=include_context,
+        )
+
+    def get_datapro_index_batch(self, batch_id: str) -> dict[str, Any] | None:
+        return self._datapro_index.get_batch(batch_id)
+
+    def delete_datapro_index_batch(self, batch_id: str) -> None:
+        self._datapro_index.delete_batch(batch_id)
+
     # --- global search (command palette) --------------------------------
     def search(self, query: str, limit: int = 20) -> dict:
-        """Search sessions (name/task_summary) + artifacts (filename) for the
-        ⌘K command palette."""
+        """Search sessions, artifacts, and indexed DataPro content for ⌘K."""
         q = f"%{query.strip()}%"
         with self._lock:
             frames = self._conn.execute(
@@ -3907,6 +4031,11 @@ class Store:
                 }
                 for r in arts
             ],
+            # Command-palette hits need the child record and Artifact link, not
+            # a potentially-megabyte wrapper copied onto every matching child.
+            "datapro": self.search_datapro_index(
+                query, limit=limit, include_context=False
+            )["items"],
         }
 
     # --- agents / specialists -------------------------------------------
@@ -4321,9 +4450,9 @@ class Store:
                 if guard.denied:
                     raise PermissionError(
                         f"host.query: {', '.join(guard.denied)} is not readable "
-                        f"from agent SQL. Artifact rows are available through the "
-                        f"session-scoped views my_artifacts, my_artifact_versions "
-                        f"and my_lineage_edges."
+                        f"from agent SQL. Scoped rows are available through "
+                        f"my_artifacts, my_artifact_versions and "
+                        f"my_lineage_edges."
                     ) from error
                 raise
             finally:
@@ -4339,7 +4468,11 @@ class Store:
             out: dict[str, list[str]] = {}
             for t in tables:
                 name = t["name"]
-                if name in QUERY_DENYLIST or name.startswith("sqlite_"):
+                if (
+                    name in QUERY_DENYLIST
+                    or name.startswith("sqlite_")
+                    or name in {"datapro_index_batches", "datapro_index_entries"}
+                ):
                     continue
                 cols = self._conn.execute(f"PRAGMA table_info({name})").fetchall()
                 out[name] = [c["name"] for c in cols]

@@ -215,6 +215,42 @@ class SessionDeletionRepository:
                     f"group_id IN {self._marks(group_ids)}",
                     group_ids,
                 )
+        # A saved DataPro result has the same lifecycle as its owning session,
+        # project, or Artifact. Delete entries first because legacy installs
+        # may have opened the database with foreign-key enforcement disabled.
+        datapro_clauses: list[str] = []
+        datapro_params: tuple[Any, ...] = ()
+        if roots:
+            datapro_clauses.append(f"root_frame_id IN {self._marks(roots)}")
+            datapro_params += roots
+        if artifacts:
+            datapro_clauses.append(f"artifact_id IN {self._marks(artifacts)}")
+            datapro_params += artifacts
+        if project_id is not None:
+            datapro_clauses.append("project_id=?")
+            datapro_params += (project_id,)
+        if datapro_clauses:
+            batch_ids = self._unique(
+                row["batch_id"]
+                for row in self._connection.execute(
+                    "SELECT batch_id FROM datapro_index_batches WHERE "
+                    + " OR ".join(datapro_clauses),
+                    datapro_params,
+                ).fetchall()
+            )
+            if batch_ids:
+                self._delete_counted(
+                    deleted_rows,
+                    "datapro_index_entries",
+                    f"batch_id IN {self._marks(batch_ids)}",
+                    batch_ids,
+                )
+                self._delete_counted(
+                    deleted_rows,
+                    "datapro_index_batches",
+                    f"batch_id IN {self._marks(batch_ids)}",
+                    batch_ids,
+                )
         if roots:
             root_where = f"root_frame_id IN {self._marks(roots)}"
             for table in (

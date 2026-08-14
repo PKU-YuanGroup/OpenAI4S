@@ -105,6 +105,19 @@ def _probe_detail(error: Exception, public: dict) -> str:
     """
     status = getattr(error, "status", None)
     code = str(getattr(error, "error_code", "") or "")
+    from openai4s.llm import llm_failure_code
+
+    failure_code = llm_failure_code(error)
+    if failure_code == "llm_request_burst":
+        return (
+            "the provider's burst-traffic protection was triggered; the "
+            "credential is not the problem, so wait briefly and probe again"
+        )
+    if failure_code == "llm_upstream_overloaded":
+        return (
+            "the provider is currently overloaded; this is not a configuration "
+            "problem, so wait briefly and probe again"
+        )
     if status == 401 or code in ("invalid_api_key", "unauthorized"):
         return (
             "the provider rejected the credential; check the API key for this "
@@ -117,7 +130,7 @@ def _probe_detail(error: Exception, public: dict) -> str:
         )
     if status == 404 or code in ("model_not_found", "not_found"):
         return "the provider does not have a model by that name at this endpoint"
-    if status == 429 or code == "rate_limited":
+    if failure_code == "llm_rate_limited":
         return "the provider is rate-limiting this credential; try again shortly"
     if isinstance(status, int) and 500 <= status < 600:
         return (
@@ -616,6 +629,13 @@ class ModelProfileService:
             )
             if profile is None:
                 return None
+            provider_changed = bool(
+                protocol is not None
+                and protocol != str(profile.get("provider") or "").strip().lower()
+            )
+            replacement_key = (
+                clean_api_key(body.get("api_key")) if body.get("api_key") else ""
+            )
             for field in ("name", "base_url", "model"):
                 if field in body and body[field] is not None:
                     profile[field] = (
@@ -625,11 +645,17 @@ class ModelProfileService:
                     )
             if protocol is not None:
                 profile["provider"] = protocol
+            # Credentials are provider-bound.  Keeping a Claude/OpenAI key
+            # while changing only the protocol to Ark would make the next
+            # activation (and the managed DataPro fallback) send that old key
+            # to Volcengine.  A real replacement is the sole case where a
+            # cross-provider edit may retain a configured credential.
+            if provider_changed and not replacement_key:
+                self._forget_key(profile)
+                profile["api_key"] = ""
             if body.get("api_key"):
                 self._forget_key(profile)
-                profile["api_key"] = self._store_key(
-                    profile_id, clean_api_key(body["api_key"])
-                )
+                profile["api_key"] = self._store_key(profile_id, replacement_key)
             if body.get("clear_api_key"):
                 self._forget_key(profile)
                 profile["api_key"] = ""
@@ -697,6 +723,10 @@ class ModelProfileService:
             self._forget_key(profile)
         if self.store.get_setting("active_model_profile") == profile_id:
             self.store.set_setting("active_model_profile", "")
+            # The live value is a provider credential copied by activate().
+            # Tombstoning its owner must not leave that copy available to the
+            # LLM transport or the Ark-backed managed connectors.
+            self.store.set_secret_setting("llm_api_key", "", scope="llm")
 
     def migrate_profile_keys(self) -> dict:
         """Move any plaintext profile key behind a reference.
@@ -706,14 +736,32 @@ class ModelProfileService:
         cannot be stored keeps its plaintext and keeps working.
         """
         migrated: list[str] = []
+        reentry_required: list[str] = []
         failed: list[dict] = []
 
         def convert(profiles: list[dict[str, Any]]) -> None:
             for profile in profiles:
                 raw = str(profile.get("api_key") or "")
-                if not raw or is_ref(raw):
-                    continue
                 profile_id = str(profile.get("id") or "")
+                if not raw:
+                    continue
+                if is_ref(raw):
+                    # `describe` reaches the secret backend: a locked keychain
+                    # times out, a hand-edited ref fails to parse. Outside a
+                    # guard, one such profile aborted the whole conversion and
+                    # left every later profile's key in plaintext.
+                    try:
+                        description = self.store.secrets.describe(raw)
+                    except Exception as e:  # noqa: BLE001 - one bad profile must
+                        # not strand the others; its ref stays as it is.
+                        if profile_id:
+                            failed.append({"id": profile_id, "error": type(e).__name__})
+                        continue
+                    if profile_id and (
+                        description["reentry_required"] or not description["configured"]
+                    ):
+                        reentry_required.append(profile_id)
+                    continue
                 if not profile_id:
                     continue
                 try:
@@ -721,10 +769,14 @@ class ModelProfileService:
                     migrated.append(profile_id)
                 except Exception as e:  # noqa: BLE001 - one bad key must not
                     # strand the others, and the plaintext stays authoritative.
-                    failed.append({"id": profile_id, "error": str(e)[:200]})
+                    failed.append({"id": profile_id, "error": type(e).__name__})
 
         self.store.mutate_model_profiles(convert)
-        return {"migrated": migrated, "failed": failed}
+        return {
+            "migrated": migrated,
+            "reentry_required": reentry_required,
+            "failed": failed,
+        }
 
 
 def migrate_provider_alias(

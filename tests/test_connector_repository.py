@@ -209,3 +209,88 @@ def test_enabled_toggle_delete_and_store_facade_feed_mcp_service(tmp_path):
     assert store.get_connector("science") is None
     with sqlite3.connect(store.db_path) as independent:
         assert independent.execute("SELECT COUNT(*) FROM connectors").fetchone() == (0,)
+
+
+def test_datapro_connector_persists_no_key_or_headers_and_resolves_broker_late(
+    tmp_path,
+):
+    from openai4s import datapro
+    from openai4s.security.secret_broker import is_ref
+    from openai4s.storage.connectors import public_connector
+
+    canary = "agent-plan-key-db-canary"
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    connector = store.upsert_connector(
+        connector_id=datapro.CONNECTOR_ID,
+        name="Volcengine DataPro",
+        description="Professional dataset search.",
+        command=datapro.managed_connector_command(),
+        enabled=True,
+    )
+    datapro.save_agent_plan_key(store, canary)
+
+    raw_setting = store.get_setting(datapro.AGENT_PLAN_KEY_SETTING)
+    assert is_ref(raw_setting)
+    assert canary not in str(connector)
+    assert "X-Agent-Plan-Key" not in str(connector)
+    assert "X-Hqd-Extra-Info" not in str(connector)
+    assert canary not in str(public_connector(connector))
+
+    runtime = datapro.connector_runtime_config(store, connector)
+    assert "headers" not in runtime
+    headers = runtime["headers_provider"]()
+    assert headers == {
+        "X-Agent-Plan-Key": canary,
+        "X-Hqd-Extra-Info": "openai4s",
+    }
+
+    with sqlite3.connect(store.db_path) as independent:
+        command, args, env = independent.execute(
+            "SELECT command,args,env FROM connectors WHERE connector_id=?",
+            (datapro.CONNECTOR_ID,),
+        ).fetchone()
+    assert canary not in "".join((command, args, env))
+    assert "X-Agent-Plan-Key" not in "".join((command, args, env))
+
+
+def test_agent_plan_key_mirror_reads_the_profile_not_the_settings(tmp_path):
+    """The gate must inspect the profile whose credential is being replaced.
+
+    `activate()` is what copies a profile's provider/base_url into the settings
+    row, so an edited-but-not-reactivated profile disagrees with them. Gating on
+    the settings therefore authorised overwriting -- and, through `_forget_key`,
+    destroying -- a credential belonging to an endpoint nobody checked.
+    """
+
+    from openai4s import datapro
+
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    # Settings claim a Volcengine Ark setup...
+    store.set_setting("llm_provider", "ark")
+    store.set_setting("llm_base_url", "https://ark.cn-beijing.volces.com/api/plan/v3")
+    store.set_setting("active_model_profile", "mp-corp")
+    # ...while the active profile actually points at another vendor.
+    store.mutate_model_profiles(
+        lambda profiles: profiles.append(
+            {
+                "id": "mp-corp",
+                "name": "corporate gateway",
+                "provider": "ark",
+                "base_url": "https://internal-llm-gw.corp/v1",
+                "api_key": "corp-key-must-survive",
+            }
+        )
+    )
+
+    profile = next(
+        item for item in store.list_model_profiles() if item["id"] == "mp-corp"
+    )
+    eligible = str(
+        profile.get("provider") or ""
+    ).strip().lower() == "ark" and datapro.is_volcengine_endpoint(
+        str(profile.get("base_url") or "")
+    )
+    assert eligible is False, "a non-Volcengine profile must never be rotated"
+
+    # The same predicate against the settings row would have said yes.
+    assert datapro.is_volcengine_endpoint(str(store.get_setting("llm_base_url") or ""))

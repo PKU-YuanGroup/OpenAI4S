@@ -109,6 +109,12 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # request, for which job, or whether the answer reached the client.
         # After a lost response that is the only question worth asking.
         "annotation_admission_ledger",
+        # Successful DataPro structured content is stored losslessly and
+        # projected into literal-search entries without a field whitelist.
+        "datapro_content_index",
+        # Repairs the short-lived development state where v16 could be
+        # stamped even though its index tables were absent.
+        "datapro_content_index_repair",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -476,6 +482,78 @@ def test_the_database_is_untouched_after_a_failed_alter(tmp_path, monkeypatch):
         assert probe.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
     finally:
         probe.close()
+
+
+def test_v16_datapro_tables_are_created_only_inside_the_migration_transaction(
+    tmp_path, monkeypatch
+):
+    """A failed v16 upgrade must leave a genuinely v15 database behind.
+
+    ``Store`` executes its compatibility baseline before numbered migrations.
+    Putting the new tables in that baseline would create them outside the v16
+    backup/transaction, so a later failure left user_version at 15 while the
+    v16 schema had already leaked onto disk.
+    """
+
+    db = tmp_path / "v15.db"
+    seeded = Store(db)
+    seeded.close()
+    conn = sqlite3.connect(str(db))
+    conn.execute("DROP TABLE datapro_index_entries")
+    conn.execute("DROP TABLE datapro_index_batches")
+    conn.execute("DELETE FROM schema_migrations WHERE version=16")
+    conn.execute("PRAGMA user_version=15")
+    conn.commit()
+    conn.close()
+
+    def create_then_fail(self, connection):
+        del self
+        connection.execute("CREATE TABLE datapro_index_batches(leaked TEXT)")
+        raise RuntimeError("injected v16 failure")
+
+    monkeypatch.setattr(Store, "_apply_datapro_content_index", create_then_fail)
+    with pytest.raises(MigrationError, match="injected v16 failure"):
+        Store(db)
+
+    probe = sqlite3.connect(str(db))
+    try:
+        assert probe.execute("PRAGMA user_version").fetchone()[0] == 15
+        tables = {
+            row[0]
+            for row in probe.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "datapro_index_batches" not in tables
+        assert "datapro_index_entries" not in tables
+    finally:
+        probe.close()
+
+
+def test_v17_repairs_a_v16_database_missing_datapro_index_tables(tmp_path):
+    db = tmp_path / "missing-v16-datapro-tables.db"
+    seeded = Store(db)
+    seeded.close()
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("DROP TABLE datapro_index_entries")
+        conn.execute("DROP TABLE datapro_index_batches")
+        conn.execute("DELETE FROM schema_migrations WHERE version=17")
+        conn.execute("PRAGMA user_version=16")
+        conn.commit()
+    finally:
+        conn.close()
+
+    repaired = Store(db)
+    try:
+        assert repaired.schema_state()["version"] == SCHEMA_VERSION
+        receipt = repaired.index_datapro_result(
+            query="repair probe",
+            structured_content={"code": 0, "items": [{"marker": "repaired"}]},
+        )
+        assert receipt["complete"] is True
+    finally:
+        repaired.close()
 
 
 # --------------------------------------------------------------------------

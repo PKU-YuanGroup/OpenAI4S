@@ -75,6 +75,33 @@ class TransportError(LLMError):
         }
 
 
+# Provider error codes are untrusted strings, not a public protocol.  Only
+# exact values named here may influence a user-facing classification; the raw
+# value remains on ``TransportError.error_code`` for private diagnostics.
+_REQUEST_BURST_CODES = frozenset({"RequestBurstTooFast"})
+_UPSTREAM_OVERLOADED_CODES = frozenset({"ServerOverloaded"})
+
+
+def llm_failure_code(exc: BaseException) -> str | None:
+    """Return a stable, locally controlled LLM failure classification.
+
+    Never return the provider's raw ``error.code``.  Providers do not treat
+    that field as a closed enum, and some proxies have put whole sentences in
+    it.  Consumers such as the gateway and browser may safely branch on the
+    small vocabulary returned here without parsing exception prose.
+    """
+
+    raw_code = getattr(exc, "error_code", None)
+    code = raw_code if type(raw_code) is str else ""
+    if code in _REQUEST_BURST_CODES:
+        return "llm_request_burst"
+    if code in _UPSTREAM_OVERLOADED_CODES:
+        return "llm_upstream_overloaded"
+    if getattr(exc, "status", None) == 429:
+        return "llm_rate_limited"
+    return None
+
+
 # 408 request timeout, 429 rate limit, 5xx server-side. 5xx is retryable for a
 # *whole-response* POST because nothing was committed; a stream that already
 # emitted events is vetoed by output_committed instead of by status.

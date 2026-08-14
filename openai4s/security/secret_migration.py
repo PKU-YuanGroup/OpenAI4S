@@ -20,6 +20,13 @@ error. So the check reads the value back and compares it.
 Nothing here logs a secret. Progress is reported as references and a short hash
 prefix, which is enough to correlate an entry with a row and useless to anyone
 who obtains the log.
+
+A failure is reported as the exception's *type name*, never ``str(exc)``. The
+message text of a backend error is not ours to reason about: it is produced by
+``security``/``secret-tool``/sqlite and can be changed by any of them, so
+"today's messages happen not to contain the value" is an audit that expires the
+next time one of those is upgraded. The type name is enough to tell a locked
+keychain from a malformed reference, and cannot carry a credential at all.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ def fingerprint(secret: str) -> str:
 class MigrationReport:
     migrated: list[str] = field(default_factory=list)
     already: list[str] = field(default_factory=list)
+    reentry_required: list[str] = field(default_factory=list)
     empty: list[str] = field(default_factory=list)
     failed: list[dict] = field(default_factory=list)
 
@@ -46,36 +54,64 @@ class MigrationReport:
         return {
             "migrated": list(self.migrated),
             "already_migrated": list(self.already),
+            "reentry_required": list(self.reentry_required),
             "empty": list(self.empty),
             "failed": list(self.failed),
             "ok": not self.failed,
         }
 
 
-# Settings keys holding a credential outright. `scope` groups them in the
+# Settings columns holding a credential outright. `scope` groups them in the
 # keychain so a user can see what an entry is for.
+#
+# The first element is a *column name*, never a credential, and it is reported
+# and logged as such. It is called `setting` rather than `key` on purpose: in a
+# module about credentials, `key` reads as "the secret", and both a human and a
+# taint analysis will believe it -- CodeQL flagged the log lines that printed
+# it for exactly that reason.
 SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
     ("llm_api_key", "llm"),
     ("tavily_api_key", "search"),
+    ("agent_plan_key", "agent_plan"),
 )
 
 
 def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
     """Move each plaintext settings credential behind a reference."""
     report = MigrationReport()
-    for key, scope in SETTINGS_SECRETS:
-        value = store.get_setting(key)
+    for setting, scope in SETTINGS_SECRETS:
+        value = store.get_setting(setting)
         if not value:
-            report.empty.append(key)
+            report.empty.append(setting)
             continue
         if is_ref(value):
-            report.already.append(key)
+            try:
+                described = broker.describe(value)
+            except Exception as e:  # noqa: BLE001 - one bad key must not strand
+                # `describe` reads the backend: a locked keychain (the CLI times
+                # out after 10s) or a hand-edited ref raises here, and this ran
+                # outside the per-key guard, so it aborted the whole pass -- and
+                # with it `migrate_profile_keys` and `migrate_connector_env`,
+                # which share one `try` at the call site.
+                report.failed.append({"setting": setting, "error": type(e).__name__})
+                continue
+            if described["reentry_required"] or not described["configured"]:
+                # A v1 system slot is process-global and contains no evidence
+                # of which data directory owns it. Reading it to "migrate"
+                # would reproduce the cross-Store disclosure this boundary is
+                # meant to close. A matching v2 ref whose backend value was
+                # revoked likewise needs re-entry rather than "already".
+                report.reentry_required.append(setting)
+            else:
+                report.already.append(setting)
             continue
         try:
-            _migrate_one(store, broker, key=key, scope=scope, name=key, value=value)
-            report.migrated.append(key)
+            _migrate_one(
+                store, broker, key=setting, scope=scope, name=setting, value=value
+            )
+            report.migrated.append(setting)
         except Exception as e:  # noqa: BLE001 - one bad key must not strand the rest
-            report.failed.append({"key": key, "error": str(e)[:300]})
+            report.failed.append({"setting": setting, "error": type(e).__name__})
     return report
 
 
@@ -109,11 +145,25 @@ def migrate_connector_env(store) -> dict:
     could drift from it.
     """
     migrated: list[str] = []
+    reentry_required: list[str] = []
     failed: list[dict] = []
     for connector in store.list_connectors():
         env = connector.get("env")
         if not isinstance(env, dict) or not env:
             continue
+        refs = [str(value or "") for value in env.values() if is_ref(str(value or ""))]
+        try:
+            needs_reentry = any(
+                (description := store.secrets.describe(ref))["reentry_required"]
+                or not description["configured"]
+                for ref in refs
+            )
+        except Exception as e:  # noqa: BLE001 - one bad connector must not
+            # strand the others; describe() reaches the backend and can raise.
+            failed.append({"id": connector["connector_id"], "error": type(e).__name__})
+            continue
+        if refs and needs_reentry:
+            reentry_required.append(str(connector["connector_id"]))
         if all(is_ref(str(v or "")) or not v for v in env.values()):
             continue
         try:
@@ -129,8 +179,12 @@ def migrate_connector_env(store) -> dict:
             migrated.append(connector["connector_id"])
         except Exception as e:  # noqa: BLE001 - one bad connector must not
             # strand the others; its plaintext stays and it keeps working.
-            failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
-    return {"migrated": migrated, "failed": failed}
+            failed.append({"id": connector["connector_id"], "error": type(e).__name__})
+    return {
+        "migrated": migrated,
+        "reentry_required": reentry_required,
+        "failed": failed,
+    }
 
 
 def resolve_setting(store, broker: SecretBroker, key: str) -> str:

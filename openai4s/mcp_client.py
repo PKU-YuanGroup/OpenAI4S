@@ -1,9 +1,11 @@
-"""Minimal MCP (Model Context Protocol) stdio client — pure stdlib.
+"""Minimal MCP (Model Context Protocol) client — pure stdlib.
 
-Speaks newline-delimited JSON-RPC 2.0 to a spawned MCP server process, enough to
-power the Connectors control plane: handshake (initialize + initialized), tools,
-resources, and prompts. A process-wide MCPManager caches one live connection per
-connector id so repeated calls reuse the same server.
+Speaks newline-delimited JSON-RPC 2.0 to a spawned MCP server process, or lazily
+dispatches to the Streamable HTTP sibling transport, enough to power the
+Connectors control plane: handshake (initialize + initialized), tools, resources,
+and prompts. A process-wide MCPManager caches one live connection per connector
+id and non-secret runtime scope so repeated calls reuse the same logical server
+session without sharing a credential-bound session across Store generations.
 
 Sampling and server-initiated requests are deliberately outside this client.
 """
@@ -23,6 +25,13 @@ import time
 from collections import deque
 from collections.abc import Mapping
 from typing import Any, Callable
+
+from openai4s.mcp_protocol import (
+    MAX_FRAME_BYTES,
+    MCPError,
+    MCPOversizedResponse,
+    MCPTimeout,
+)
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -65,9 +74,10 @@ def _deadline_default() -> float:
     return min(max(value, MIN_TIMEOUT_S), MAX_TIMEOUT_S)
 
 
-#: Largest single JSON-RPC line accepted. `readline()` has no size bound, so one
-#: newline-free multi-gigabyte line was a single allocation in the daemon.
-_MAX_FRAME_BYTES = 4 * 1024 * 1024
+#: Compatibility alias retained for focused tests and the bounded stdio reader.
+#: The public limit lives in ``mcp_protocol`` so sibling transports do not
+#: reach into this facade's private implementation.
+_MAX_FRAME_BYTES = MAX_FRAME_BYTES
 #: Bounded diagnostic tail. stderr used to go to DEVNULL: no deadlock, and also
 #: no way to say why a connector failed.
 _STDERR_TAIL_LINES = 200
@@ -269,33 +279,6 @@ _CONNECTOR_RUNTIME_ENV = frozenset(
         "NODE_EXTRA_CA_CERTS",
     }
 )
-
-
-class MCPError(RuntimeError):
-    pass
-
-
-class MCPTimeout(MCPError):
-    """A request outlived its deadline.
-
-    A subclass so every existing `except MCPError` still catches it and the
-    soft-fail wrappers in `host/mcp.py` keep their exact message shapes.
-    """
-
-
-class MCPOversizedResponse(MCPError):
-    """The connector answered, and the answer was too large to accept.
-
-    Deliberately a sibling of `MCPTimeout` and not a subclass of it. The two
-    states differ in the one way that matters to the caller above: a connector
-    that missed its deadline is one the next caller should not inherit
-    mid-conversation, and a connector that replied promptly with four megabytes
-    is working. Reported as a timeout, the second was torn down and respawned
-    for doing its job -- and the agent was told it had waited, which is not
-    what happened and not a thing it can act on.
-    """
-
-    error_code = "response_too_large"
 
 
 def _connector_environment(
@@ -806,19 +789,49 @@ class MCPConnection:
 
 
 class MCPManager:
-    """One live connection per connector id (lazily connected, cached)."""
+    """One live connection per connector id and runtime cache scope."""
 
     def __init__(self) -> None:
-        self._conns: dict[str, MCPConnection] = {}
+        self._conns: dict[tuple[str, str], MCPConnection] = {}
         #: Live probes. They are not cached by connector id -- a probe is
         #: deliberately a fresh connection -- but they are still children this
         #: process owns, and `shutdown` has to be able to reach them.
         self._probes: set[MCPConnection] = set()
         self._lock = threading.Lock()
-        #: One lock per connector id, so a connect is single-flighted without
+        #: One lock per connector id/scope, so a connect is single-flighted without
         #: the *global* lock being held across it. `self._lock` guards this
         #: dict and the two above; it is never held while a child is spawned.
-        self._connect_locks: dict[str, threading.Lock] = {}
+        self._connect_locks: dict[tuple[str, str], threading.Lock] = {}
+        #: Generations invalidate connections that were still initializing
+        #: while shutdown or a connector-specific disconnect ran.  Without
+        #: them an old DataPro Store's header-provider closure could finish
+        #: late and write itself back into the process-wide cache.
+        self._lifecycle_epoch = 0
+        self._connector_epochs: dict[tuple[str, str], int] = {}
+
+    @staticmethod
+    def _cache_scope(config: dict | None) -> str:
+        """Return the non-secret runtime partition carried by one config.
+
+        The empty scope preserves the historical behavior for stdio/custom
+        connectors. Managed integrations may supply an opaque Store-generation
+        identity; a credential or its fingerprint must never be used here.
+        """
+
+        if not config or config.get("cache_scope") in (None, ""):
+            return ""
+        scope = config.get("cache_scope")
+        if (
+            not isinstance(scope, str)
+            or len(scope) > 256
+            or any(character in scope for character in ("\r", "\n", "\x00"))
+        ):
+            raise MCPError("connector cache scope is invalid")
+        return scope
+
+    @classmethod
+    def _cache_key(cls, connector_id: str, config: dict | None) -> tuple[str, str]:
+        return (str(connector_id), cls._cache_scope(config))
 
     @staticmethod
     def _argv(config: dict) -> list[str]:
@@ -833,10 +846,35 @@ class MCPManager:
         return argv
 
     def _connect(self, config: dict) -> MCPConnection:
+        transport = str(config.get("transport") or "stdio").strip().lower()
+        if transport in ("streamable_http", "streamable-http"):
+            # Lazy to keep the default stdio import path free of networking
+            # setup and to avoid a module cycle: the HTTP transport shares the
+            # MCP error classes and deadline constants defined above.
+            from openai4s.mcp_http import MCPHTTPConnection
+
+            return MCPHTTPConnection(
+                config.get("url"),
+                headers=config.get("headers"),
+                headers_provider=config.get("headers_provider"),
+                timeout=(
+                    _deadline_default()
+                    if config.get("timeout") is None
+                    else config.get("timeout")
+                ),
+            )
+        if transport != "stdio":
+            raise MCPError("unsupported MCP connector transport")
         env = _connector_environment(config.get("env"))
         return MCPConnection(self._argv(config), env=env, cwd=config.get("cwd"))
 
-    def _evict(self, connector_id: str, conn: MCPConnection) -> bool:
+    def _evict(
+        self,
+        connector_id: str,
+        conn: MCPConnection,
+        *,
+        cache_scope: str = "",
+    ) -> bool:
         """Drop `conn` from the cache -- but only if it is still the cached one.
 
         A compare-and-swap, not a `pop` by id: between the fault and this call
@@ -844,10 +882,11 @@ class MCPManager:
         connected child, and evicting by id alone would close that healthy
         newcomer, turning one bad request into a respawn loop for every caller.
         """
+        cache_key = self._cache_key(connector_id, {"cache_scope": cache_scope})
         with self._lock:
-            if self._conns.get(connector_id) is not conn:
+            if self._conns.get(cache_key) is not conn:
                 return False
-            del self._conns[connector_id]
+            del self._conns[cache_key]
         # Outside the lock: `close()` waits on a TERM->KILL and joins two reader
         # threads, and every other connector queues behind this same lock.
         conn.close()
@@ -871,6 +910,7 @@ class MCPManager:
         name or bad arguments must not restart the server the agent is talking
         to -- that is the connector working, not failing.
         """
+        cache_scope = self._cache_scope(config)
         conn = self.get(connector_id, config)
         try:
             return call(conn)
@@ -878,7 +918,7 @@ class MCPManager:
             # Nothing will ever consume the reply this request may still get,
             # and a server that missed its deadline is not one the next caller
             # should inherit mid-conversation.
-            if self._evict(connector_id, conn):
+            if self._evict(connector_id, conn, cache_scope=cache_scope):
                 raise MCPTimeout(
                     f"{exc}; connector dropped, the next call reconnects"
                 ) from None
@@ -893,15 +933,18 @@ class MCPManager:
             # dropped, which a dedicated `raise` clause would have prevented.
             # That is the whole reason the class is not a `MCPTimeout`.
             if conn.faulted():
-                self._evict(connector_id, conn)
+                self._evict(connector_id, conn, cache_scope=cache_scope)
             raise
 
-    def _connect_lock(self, connector_id: str) -> threading.Lock:
+    def _connect_lock(
+        self, connector_id: str, *, cache_scope: str = ""
+    ) -> threading.Lock:
+        cache_key = self._cache_key(connector_id, {"cache_scope": cache_scope})
         with self._lock:
-            lock = self._connect_locks.get(connector_id)
+            lock = self._connect_locks.get(cache_key)
             if lock is None:
                 lock = threading.Lock()
-                self._connect_locks[connector_id] = lock
+                self._connect_locks[cache_key] = lock
             return lock
 
     def get(self, connector_id: str, config: dict) -> MCPConnection:
@@ -914,35 +957,55 @@ class MCPManager:
         hanging server stalled every other connector in the process, including
         ones that were already connected and merely being looked up.
 
-        Single-flighted per connector instead: two callers asking for the same
-        id still produce one child, because the second waits on that id's lock
-        and adopts what the first cached. Callers asking for *different* ids do
-        not wait on each other at all. The global lock is taken only for dict
-        reads and writes, and is never held across a spawn.
+        Single-flighted per connector and runtime scope instead: two callers
+        asking for the same pair still produce one connection, because the
+        second waits on that pair's lock and adopts what the first cached.
+        Callers asking for a different id or scope do not wait on each other at
+        all. The global lock is taken only for dict reads and writes, and is
+        never held across a spawn.
         """
+        cache_scope = self._cache_scope(config)
+        cache_key = self._cache_key(connector_id, config)
         stale: MCPConnection | None = None
         with self._lock:
-            conn = self._conns.get(connector_id)
+            conn = self._conns.get(cache_key)
             if conn is not None:
                 if not conn.faulted():
                     return conn
-                del self._conns[connector_id]
+                del self._conns[cache_key]
                 stale = conn
         if stale is not None:
             # Outside the lock, like `_evict`: `close()` waits on a TERM->KILL
             # and joins two reader threads.
             stale.close()
-        with self._connect_lock(connector_id):
-            # Re-checked under the per-connector lock: another caller may have
-            # connected while this one waited, and adopting it is the whole
-            # point of single-flighting.
+        with self._connect_lock(connector_id, cache_scope=cache_scope):
+            # Re-checked under the per-connector/scope lock: another caller may
+            # have connected while this one waited, and adopting it is the
+            # whole point of single-flighting.
             with self._lock:
-                conn = self._conns.get(connector_id)
+                conn = self._conns.get(cache_key)
                 if conn is not None and not conn.faulted():
                     return conn
+                lifecycle_epoch = self._lifecycle_epoch
+                connector_epoch = self._connector_epochs.get(cache_key, 0)
             made = self._connect(config)
             with self._lock:
-                self._conns[connector_id] = made
+                valid = (
+                    lifecycle_epoch == self._lifecycle_epoch
+                    and connector_epoch == self._connector_epochs.get(cache_key, 0)
+                )
+                if valid:
+                    self._conns[cache_key] = made
+            if not valid:
+                # A new Store generation or a credential/config edit won the
+                # race while this connection initialized.  It must never be
+                # published after that boundary, even if a new generation has
+                # already cached its own connection under the same id.
+                made.close()
+                raise MCPError(
+                    "MCP connector initialization was invalidated by disconnect or "
+                    "shutdown"
+                )
             return made
 
     def probe(self, config: dict) -> dict:
@@ -1015,10 +1078,48 @@ class MCPManager:
             connector_id, config, lambda c: c.get_prompt(name, arguments)
         )
 
-    def disconnect(self, connector_id: str) -> None:
+    def disconnect(self, connector_id: str, cache_scope: str | None = None) -> None:
+        """Drop one connector's cached session(s).
+
+        ``cache_scope=None`` retains the legacy one-argument behavior and
+        invalidates every runtime scope for this connector. Passing a scope
+        invalidates only that Store generation, so its credential rotation
+        cannot interrupt another concurrently hosted Store.
+        """
+
+        connector_id = str(connector_id)
         with self._lock:
-            conn = self._conns.pop(connector_id, None)
-        if conn is not None:
+            if cache_scope is None:
+                keys = {
+                    key
+                    for mapping in (
+                        self._conns,
+                        self._connect_locks,
+                        self._connector_epochs,
+                    )
+                    for key in mapping
+                    if key[0] == connector_id
+                }
+                # Preserve the old unscoped epoch even when there is no live
+                # entry. This also makes a one-argument disconnect before the
+                # first custom-connector call deterministic.
+                keys.add((connector_id, ""))
+            else:
+                keys = {
+                    self._cache_key(
+                        connector_id,
+                        {"cache_scope": cache_scope},
+                    )
+                }
+            conns = []
+            for cache_key in keys:
+                self._connector_epochs[cache_key] = (
+                    self._connector_epochs.get(cache_key, 0) + 1
+                )
+                conn = self._conns.pop(cache_key, None)
+                if conn is not None:
+                    conns.append(conn)
+        for conn in conns:
             conn.close()
 
     def shutdown(self) -> list[str]:
@@ -1029,12 +1130,14 @@ class MCPManager:
         next `serve` started against orphans still holding whatever they held.
         """
         with self._lock:
+            self._lifecycle_epoch += 1
             conns = list(self._conns.values()) + list(self._probes)
             self._conns.clear()
             self._probes.clear()
             # A per-connector lock outlives its connection otherwise, and a
             # long-lived daemon accumulates one per id it ever spoke to.
             self._connect_locks.clear()
+            self._connector_epochs.clear()
         survivors: list[str] = []
         for c in conns:
             if not c.close():
@@ -1051,6 +1154,25 @@ def manager() -> MCPManager:
     if _MANAGER is None:
         _MANAGER = MCPManager()
     return _MANAGER
+
+
+def disconnect_if_initialized(
+    connector_id: str, *, cache_scope: str | None = None
+) -> bool:
+    """Disconnect from the process manager without creating one.
+
+    Store teardown uses this narrow hook: most Stores never touched MCP, so
+    closing one must not instantiate process-wide connector state merely to
+    discover that there is nothing to release.  ``True`` means an existing
+    manager received the scoped invalidation; it does not imply a connection
+    had already been cached.
+    """
+
+    current = _MANAGER
+    if current is None:
+        return False
+    current.disconnect(connector_id, cache_scope=cache_scope)
+    return True
 
 
 def example_server_config() -> dict:

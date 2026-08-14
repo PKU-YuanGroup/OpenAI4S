@@ -79,6 +79,29 @@ def test_kernel_loads_bundled_skill_guidance_through_sdk(session):
     assert "from example_stats.kernel import" in loaded["content"]
 
 
+def test_kernel_loads_narrow_datapro_skill_for_the_managed_connector(session):
+    _cfg, _disp, kernel = session
+    loaded = _emit(kernel, "host.load_skill('volcengine-datapro')")
+
+    assert loaded["name"] == "volcengine-datapro"
+    content = loaded["content"]
+    assert 'host.mcp.tools("volcengine-datapro")' in content
+    assert '"dataPro_search"' in content
+    assert "host.mcp.call(" in content
+    assert '{"query": query}' in content
+    assert "type(code) is int and code == 0" in content
+    assert 'result.get("index")' in content
+    assert 'index.get("complete") is True' in content
+    assert (
+        'index.get("source_leaf_count") == index.get("indexed_leaf_count")' in content
+    )
+    assert 'index.get("source_digest") == index.get("indexed_digest")' in content
+    assert "Key 无效、额度不足，或者专业数据集 Harness 未开启。" in content
+    assert "datapro.hqd.cn-beijing.volces.com" not in content
+    assert "X-Agent-Plan-Key" not in content
+    assert "X-Hqd-Extra-Info" not in content
+
+
 # --- customize -----------------------------------------------------------
 
 
