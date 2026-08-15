@@ -519,6 +519,52 @@
         "type": "object"
       }
     },
+    "DELETE /auth/me/llm-key [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /auth/me/llm-key [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "provider",
+          "removed"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -6236,6 +6282,67 @@
         "required": [
           "team_mode",
           "user"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /auth/me/llm-key [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /auth/me/llm-key [ok]": {
+      "schema": {
+        "properties": {
+          "keys": {
+            "items": {
+              "properties": {
+                "configured": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "configured",
+                "created_at",
+                "provider",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
         ],
         "type": "object"
       }
@@ -16170,6 +16277,39 @@
         "type": "object"
       }
     },
+    "PATCH /auth/me/llm-key [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /auth/redeem-invite [error]": {
       "schema": {
         "properties": {
@@ -21751,6 +21891,39 @@
       }
     },
     "POST /auth/me [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /auth/me/llm-key [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -30731,6 +30904,12 @@
           },
           "status": {
             "type": "integer"
+          },
+          "supported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -32501,6 +32680,52 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /auth/me/llm-key [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /auth/me/llm-key [ok]": {
+      "schema": {
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "configured",
+          "ok",
+          "provider"
         ],
         "type": "object"
       }

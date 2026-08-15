@@ -218,6 +218,18 @@
         404
       ]
     },
+    "/auth/me/llm-key": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/auth/redeem-invite": {
       "content_types": [
         "application/json"
