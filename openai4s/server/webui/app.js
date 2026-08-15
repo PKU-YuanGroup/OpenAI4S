@@ -5564,6 +5564,16 @@ function outputBlock(box, text, opts) {
   }
   box.appendChild(out);
 }
+function searchResultHttpUrl(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const lower = raw.toLowerCase();
+  // Rebuild the scheme from a literal so untrusted result data can only reach
+  // the URL suffix. This preserves mixed-case HTTP(S) inputs without allowing
+  // javascript:, data:, or protocol-relative URLs to control the href scheme.
+  if (lower.startsWith("https://")) return "https://" + raw.slice(8);
+  if (lower.startsWith("http://")) return "http://" + raw.slice(7);
+  return "";
+}
 function stepBody(step) {
   const k = step.kind, inp = step.input || {}, out = step.output || {};
   const box = el("div", "s-inner");
@@ -5584,13 +5594,10 @@ function stepBody(step) {
     if (inp.query) box.appendChild(el("div", "s-q", "“" + inp.query + "”"));
     (out.results || []).forEach(r => {
       const row = el("div", "s-res");
-      const u = typeof r.url === "string" ? r.url.trim() : "";
-      // Only turn a result into a link when its scheme is safe to navigate to;
-      // a javascript:/data: URL in an href would run on click (XSS). The scheme
-      // test is inlined at the assignment so it acts as the guard on `u`.
-      const a = el(/^https?:\/\//i.test(u) ? "a" : "div", "s-res-t");
+      const safeUrl = searchResultHttpUrl(r.url);
+      const a = el(safeUrl ? "a" : "div", "s-res-t");
       a.textContent = r.title || r.url || t("step.search.emptyResult");
-      if (/^https?:\/\//i.test(u)) { a.href = u; a.target = "_blank"; a.rel = "noopener noreferrer"; }
+      if (safeUrl) { a.href = safeUrl; a.target = "_blank"; a.rel = "noopener noreferrer"; }
       row.appendChild(a);
       if (r.url) row.appendChild(el("div", "s-res-u", r.url));
       if (r.snippet) row.appendChild(el("div", "s-res-s", r.snippet));

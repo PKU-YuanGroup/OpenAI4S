@@ -130,7 +130,7 @@ try {
   }
 
   const boundary = await page.evaluate(() => {
-    const out = { executed: [], scriptTags: 0, imgTags: 0, missing: [] };
+    const out = { executed: [], scriptTags: 0, imgTags: 0, missing: [], searchUrls: null };
     window.__xssProbe = () => out.executed.push("fired");
     const host = document.createElement("div");
     host.style.display = "none";
@@ -159,6 +159,17 @@ try {
         + 'Error: <script>window.__xssProbe()<\/script>',
       );
     }
+    if (typeof searchResultHttpUrl !== "function") {
+      out.missing.push("searchResultHttpUrl");
+    } else {
+      out.searchUrls = {
+        https: searchResultHttpUrl(" HTTPS://Example.com/A?X=Y "),
+        http: searchResultHttpUrl("hTtP://Example.com/A"),
+        javascript: searchResultHttpUrl("javascript:window.__xssProbe()"),
+        data: searchResultHttpUrl("data:text/html,<script>window.__xssProbe()<\/script>"),
+        relative: searchResultHttpUrl("//evil.example/path"),
+      };
+    }
     out.scriptTags = host.querySelectorAll("script").length;
     out.imgTags = host.querySelectorAll("img").length;
     return out;
@@ -177,6 +188,14 @@ try {
       `hostile markup became live nodes (script=${boundary.scriptTags} img=${boundary.imgTags}) — `
       + "escaping regressed",
     );
+  }
+  if (!boundary.searchUrls
+      || boundary.searchUrls.https !== "https://Example.com/A?X=Y"
+      || boundary.searchUrls.http !== "http://Example.com/A"
+      || boundary.searchUrls.javascript !== ""
+      || boundary.searchUrls.data !== ""
+      || boundary.searchUrls.relative !== "") {
+    throw new Error(`search result URL scheme boundary regressed: ${JSON.stringify(boundary.searchUrls)}`);
   }
 
   const projects = await api("/projects");

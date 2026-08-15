@@ -572,6 +572,19 @@ def test_review_is_a_streamed_step_with_manual_and_session_controls() -> None:
     assert 'turnDone("failed")' in manual_source
 
 
+def test_search_result_links_pin_the_http_scheme_before_writing_href() -> None:
+    sanitizer = _extract_js_function(APP_JS, "searchResultHttpUrl")
+    body = _extract_js_function(APP_JS, "stepBody")
+
+    assert 'lower.startsWith("https://")' in sanitizer
+    assert 'lower.startsWith("http://")' in sanitizer
+    assert 'return "https://" + raw.slice(8)' in sanitizer
+    assert 'return "http://" + raw.slice(7)' in sanitizer
+    assert "searchResultHttpUrl(r.url)" in body
+    assert "a.href = safeUrl" in body
+    assert "a.href = u" not in body
+
+
 def test_context_menus_remain_scrollable_inside_the_viewport() -> None:
     rule = re.search(r"\.ctx-menu\s*\{(?P<body>[^}]+)\}", STYLE_CSS)
     assert rule, "style.css must define .ctx-menu"
@@ -1975,6 +1988,38 @@ import shutil
 import subprocess
 
 NODE = shutil.which("node")
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_search_result_http_url_rejects_executable_and_relative_schemes() -> None:
+    source = _extract_js_function(APP_JS, "searchResultHttpUrl")
+    cases = [
+        [" https://Example.com/A?X=Y ", "https://Example.com/A?X=Y"],
+        ["HTTPS://Example.com/A?X=Y", "https://Example.com/A?X=Y"],
+        ["hTtP://Example.com/A", "http://Example.com/A"],
+        ["javascript:alert(1)", ""],
+        ["data:text/html,<script>alert(1)</script>", ""],
+        ["//evil.example/path", ""],
+        ["ftp://evil.example/path", ""],
+        ["https:/missing-slash.example", ""],
+        [None, ""],
+        [42, ""],
+    ]
+    script = (
+        source
+        + "\nconst cases = "
+        + json.dumps(cases)
+        + ";\nconsole.log(JSON.stringify(cases.map(([input]) => "
+        + "searchResultHttpUrl(input))));"
+    )
+    out = subprocess.run(
+        [NODE, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr[:800]
+    assert json.loads(out.stdout) == [expected for _, expected in cases]
 
 
 def _drive(program: str) -> dict:
