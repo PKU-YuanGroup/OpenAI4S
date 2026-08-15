@@ -1548,3 +1548,34 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
 .team-admin-table th{font-weight:600;text-align:left;border-bottom:.5px solid var(--border);padding:5px 8px}
 .team-admin-table td{border-bottom:.5px solid var(--border);padding:5px 8px;font-family:var(--mono);font-size:12px}
 .team-admin-empty{color:var(--text-300);font-size:12px;padding:4px 8px}
+
+/* ---- where a session runs (M3b-6) ---- */
+.compute-badge { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 9px;
+  border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--fg-2);
+  font-size:12px; cursor:pointer; white-space:nowrap; max-width:220px; }
+.compute-badge:hover { border-color:var(--accent); color:var(--fg); }
+.compute-badge .cb-label { overflow:hidden; text-overflow:ellipsis; }
+/* Waiting reads as in-progress, ready reads as settled. Deliberately not red:
+   queueing for a node is the system working, not a fault. */
+.compute-badge.waiting { color:var(--warn, #b8860b); border-style:dashed; }
+.compute-badge.ready { color:var(--fg-2); }
+
+.compute-lost { display:flex; align-items:flex-start; gap:10px; margin:10px 16px 0;
+  padding:11px 13px; border-radius:10px; border:1px solid var(--danger);
+  background:color-mix(in srgb, var(--danger) 8%, transparent); font-size:13px; }
+.compute-lost .cl-text { flex:1; min-width:0; }
+.compute-lost .cl-body { margin-top:3px; color:var(--fg-2); line-height:1.5; }
+.compute-lost .cl-dismiss { flex:none; align-self:center; height:28px; padding:0 12px;
+  border-radius:8px; border:1px solid var(--line); background:var(--panel); cursor:pointer; }
+
+.run-location { display:flex; flex-direction:column; gap:8px; padding:4px 2px; }
+.run-location .rl-option { text-align:left; padding:11px 13px; border-radius:10px;
+  border:1px solid var(--line); background:var(--panel); cursor:pointer; }
+.run-location .rl-option:hover { border-color:var(--accent); }
+.run-location .rl-option.current { border-color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 8%, transparent); }
+.run-location .rl-name { font-weight:600; }
+.run-location .rl-hint { margin-top:3px; font-size:12px; color:var(--fg-2); }
+.run-location .rl-empty { padding:10px 2px; font-size:13px; color:var(--fg-2); }
+.run-location .rl-release { margin-top:4px; height:32px; border-radius:8px;
+  border:1px solid var(--line); background:var(--panel); color:var(--danger); cursor:pointer; }

@@ -363,6 +363,18 @@ Nothing here submits synchronously. A request writes a durable row; the reconcil
 | `GET /orchestration/jobs/{id}/logs` | `{allocation_id, stdout, stderr}` — the tail (64 KiB) of what the job wrote. |
 | `GET /orchestration/profiles` | `{cluster, configured, profiles: [{name, cpus, memory_mb, gpus, walltime_s, nodes}]}`. The queue and service-class each profile maps to are **not** in this payload: they live in `cluster.toml` and nowhere else. |
 
+### Where a session runs (cluster sessions)
+
+A session's kernel is on the daemon by default. Asking for it to be on a granted resource instead is these three routes, and the answer they exist for is `readiness`: a cluster session is not one boolean but four conditions (INV-5), so the payload names the one that is outstanding. "Queued for a node", "waiting for the worker to dial in" and "starting the kernel" are three different waits with three different expected durations, and one spinner for all of them is how a user concludes the product is broken.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /sessions/{id}/compute` | `{session_id, location}` — `location:"local"` with `workload:null` when this session runs on the daemon, which is the default and is not an error. On a cluster session: `readiness:{ready, blocked_on, allocation_granted, worker_registered, workspace_ready, kernel_ready}`, `workload:{id, profile, phase, desired_state, reason, execution_epoch}`, `allocation:{allocation_id, epoch, phase, reason}`, `lease:{idle_ttl_s, max_lifetime_s, last_active_at, created_at, released_at}`, and `state_lost_epochs` — the epochs whose kernel memory was lost to a node failure. Someone else's session is `404`, not `403`. |
+| `POST /sessions/{id}/compute` | Body `{profile}`. `201` with the same status payload. A profile the operator has not configured is `400 unknown_profile` rather than a guess: guessing is how a session lands on resources its owner never chose. A daemon with no worker listener answers `409 not_configured` and says which variable turns one on — the feature is off by default because a listener on every laptop that will never run a cluster job is an attack surface, not a convenience. |
+| `POST /sessions/{id}/compute/release` | Records the desire to stop and ends the lease; the reconciler runs the cancel barrier. `{ok, session_id}`. |
+
+`state_lost_epochs` is what the UI turns into a banner. When a node dies the kernel's memory dies with it — variables, imports, the seed somebody set three cells ago — and the session continues on a new epoch. Saying so is mandatory (INV-11): the results afterwards look exactly like results from the session that was lost.
+
 ### Permissions
 
 | Method & path | Behavior |

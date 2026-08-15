@@ -1814,6 +1814,31 @@
         200
       ]
     },
+    "/sessions/([^/]+)/compute": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404,
+        409
+      ]
+    },
+    "/sessions/([^/]+)/compute/release": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        409
+      ]
+    },
     "/sessions/([^/]+)/replay": {
       "content_types": [
         "application/json"

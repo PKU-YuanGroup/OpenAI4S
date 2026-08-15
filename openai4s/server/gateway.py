@@ -83,6 +83,7 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
+    compute_session_routes,
     compute_tasks,
     contract,
     file_routes,
@@ -2909,11 +2910,76 @@ class SessionRunner:
             interval_s = float(os.environ.get("OPENAI4S_RECONCILE_INTERVAL", "5"))
         except ValueError:
             interval_s = 5.0
+        # A worker listener, a session manager and a lease reclaimer — all
+        # three only when an operator has asked for them. A daemon with no
+        # OPENAI4S_WORKER_LISTEN binds nothing, starts no extra thread, and
+        # is byte-for-byte the single-user daemon it was (INV-1): a listener
+        # on by default would be an attack surface on every laptop that
+        # will never run a cluster job.
+        self.compute_sessions = None
+        self.worker_gateway = None
+        self.lease_reclaimer = None
+        prepare_attempt = None
+        on_state_lost = None
+        try:
+            from openai4s.orchestration.bootstrap import (
+                BootstrapAuthority,
+                load_or_mint_secret,
+            )
+            from openai4s.orchestration.reclaimer import LeaseReclaimer
+            from openai4s.orchestration.session import (
+                AttemptPreparer,
+                ComputeSessionManager,
+            )
+            from openai4s.orchestration.worker_gateway import gateway_from_environment
+
+            authority = BootstrapAuthority(load_or_mint_secret(self.cfg.data_dir))
+            worker_gateway = gateway_from_environment(authority)
+            if worker_gateway is not None:
+                worker_gateway.start()
+                self.worker_gateway = worker_gateway
+                manager = ComputeSessionManager(
+                    store=self.store,
+                    gateway=worker_gateway,
+                    authority=authority,
+                    workspace_root=self.cfg.data_dir / "cluster-workspaces",
+                    on_event=self._on_orchestration_event,
+                )
+                self.compute_sessions = manager
+                prepare_attempt = AttemptPreparer(
+                    authority=authority,
+                    listen_address=lambda: worker_gateway.address,
+                    runtime_dir=manager.runtime_dir,
+                    advertise_host=os.environ.get("OPENAI4S_WORKER_ADVERTISE") or None,
+                )
+
+                # The reconciler decides a session was lost; the manager is
+                # what a browser asks. Wiring them here rather than letting
+                # either import the other keeps the loop testable without a
+                # session manager and the manager testable without a loop.
+                def on_state_lost(workload, allocation, _m=manager):
+                    _m.note_state_lost(workload.id, epoch=allocation.epoch)
+
+                self.lease_reclaimer = LeaseReclaimer(
+                    leases=self.store.leases,
+                    workloads=self.store.workloads,
+                    on_event=self._on_orchestration_event,
+                )
+                self.lease_reclaimer.start()
+        except Exception as exc:  # noqa: BLE001 — never block boot on this
+            print(
+                f"[openai4s] cluster sessions unavailable: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         self.reconciler = Reconciler(
             store=self.store.workloads,
             backends=self.orchestration_backends,
             default_backend=self.default_backend,
             interval_s=max(0.05, interval_s),
+            prepare_attempt=prepare_attempt,
+            on_state_lost=on_state_lost,
             on_event=self._on_orchestration_event,
         )
         # Started on demand, not on construction. Most daemons (and every
@@ -2934,6 +3000,13 @@ class SessionRunner:
         Idempotent: `Reconciler.start` returns immediately when a thread
         already exists, so every submission may call this.
         """
+        for attr in ("lease_reclaimer", "worker_gateway"):
+            component = getattr(self, attr, None)
+            if component is not None:
+                try:
+                    component.stop()
+                except Exception:  # noqa: BLE001
+                    pass
         reconciler = getattr(self, "reconciler", None)
         if reconciler is not None:
             reconciler.start()
@@ -9707,6 +9780,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if governance_routes.handle(self, method, sub, q, _team_auth, store):
                 return
             if orchestration_routes.handle(self, method, sub, q, store, runner):
+                return
+            if compute_session_routes.handle(self, method, sub, q, store, runner):
                 return
             if file_routes.handle(self, method, sub, q, _file_area, _team_auth):
                 return
