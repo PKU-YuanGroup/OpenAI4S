@@ -83,7 +83,13 @@ def handle(
         name = (q.get("name") or [""])[0]
         overwrite = (q.get("overwrite") or ["0"])[0] in ("1", "true", "yes")
         try:
-            target = file_area.resolve_upload_target(directory, name)
+            identity = getattr(self, "_team_identity", None)
+            owner = (
+                identity.username
+                if identity is not None and not identity.is_admin
+                else None
+            )
+            target = file_area.resolve_upload_target(directory, name, owner=owner)
         except FileAreaError as error:
             _refuse(self, error)
             return True

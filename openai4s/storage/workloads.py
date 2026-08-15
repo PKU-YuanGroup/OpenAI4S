@@ -290,6 +290,48 @@ class WorkloadRepository:
             )
             self._connection.commit()
 
+    def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
+        """Retire the dead allocation and start the next epoch, atomically.
+
+        Two writes, one commit. Split, the window between them is not
+        theoretical: the allocation goes terminal, the process dies, and the
+        workload comes back still on the old epoch -- so the next tick calls
+        `create_allocation(workload_id, epoch)` with an epoch that already
+        has a row, hits `UNIQUE (workload_id, epoch)`, and raises. Every
+        subsequent tick raises identically, so the session never recovers
+        and the failure repeats forever with no state that can move.
+
+        Swapping the order does not fix it: bumping the epoch first leaves
+        the *old* allocation still in the active set, and INV-3's partial
+        unique index then refuses the replacement instead. The window has to
+        close, not move.
+        """
+        now = self._clock_ms()
+        with self._lock:
+            self._connection.execute(
+                "UPDATE allocations SET phase=?, reason=?, observed_json=?,"
+                " released_at=? WHERE id=?",
+                (
+                    allocation.phase.value,
+                    allocation.reason.value if allocation.reason else None,
+                    json.dumps(allocation.diagnostics or {}, ensure_ascii=False),
+                    now,
+                    allocation.id,
+                ),
+            )
+            self._connection.execute(
+                "UPDATE workloads SET phase=?, execution_epoch=?,"
+                " reason=COALESCE(?, reason), updated_at=? WHERE id=?",
+                (
+                    workload.phase.value,
+                    workload.execution_epoch,
+                    workload.reason.value if workload.reason else None,
+                    now,
+                    workload.id,
+                ),
+            )
+            self._connection.commit()
+
     def request_stop(self, workload_id: str, *, reason: Reason) -> bool:
         """Ask for cancellation. The reconciler runs the barrier; this only
         records the desire, so a cancel is durable across a restart."""

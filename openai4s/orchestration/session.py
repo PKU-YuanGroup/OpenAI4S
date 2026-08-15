@@ -60,6 +60,11 @@ from openai4s.orchestration.reconciler import (
 #: Where the worker is told to dial. Read by `kernel/worker.py`.
 CONNECT_ENV = "OPENAI4S_WORKER_CONNECT"
 
+#: A multi-node job's per-rank credential path, with `{rank}` still in it.
+#: The resource plane's own launcher expands it, because which variable
+#: holds a node's rank is that plane's vocabulary and not this layer's.
+CREDENTIAL_PATH_TEMPLATE_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH_TEMPLATE"
+
 #: How long a credential is good for. Long enough to survive a queue wait
 #: that the site's scheduler decides, short enough that one recovered from
 #: a log months later is worthless. The queue wait is the reason this is
@@ -225,6 +230,7 @@ class AttemptPreparer:
                 "OPENAI4S_WORKER_LISTEN on the daemon"
             )
         host, port = address
+        runtime_dir = self._runtime_dir(workload)
         # The bind address is not necessarily the reachable one: binding
         # 0.0.0.0 is how you accept from anywhere, and "0.0.0.0" is not a
         # place a compute node can dial. An operator who has not said which
@@ -235,18 +241,41 @@ class AttemptPreparer:
             host if host not in ("0.0.0.0", "", "::") else _default_advertise_host()
         )
 
-        credential = self._authority.issue(
-            allocation_id=allocation.id,
-            epoch=workload.execution_epoch,
-            ttl_s=self._ttl_s,
-        )
-        path = write_credential_file(credential, self._runtime_dir(workload))
+        # One credential per rank (M4-3). A multi-node job places a worker
+        # on every node and each one must present its own: a single rank-0
+        # credential is single-use, so on a two-node job exactly one node
+        # could ever register and gang readiness could never be satisfied.
+        ranks = max(1, int(workload.spec.profile.nodes))
+        paths: list[str] = []
+        for rank in range(ranks):
+            credential = self._authority.issue(
+                allocation_id=allocation.id,
+                epoch=workload.execution_epoch,
+                rank=rank,
+                ttl_s=self._ttl_s,
+            )
+            paths.append(str(write_credential_file(credential, runtime_dir)))
 
         environment = dict(workload.spec.environment)
         environment[CONNECT_ENV] = f"{reachable}:{port}"
         # The path, never the signature: a job's environment is readable by
         # anyone who can ask the resource plane about the job (INV-9).
-        environment[CREDENTIAL_PATH_ENV] = str(path)
+        #
+        # Rank 0's path is the plain variable, so a single-node job -- every
+        # job today -- sees exactly what it saw before. A multi-node job also
+        # gets a template it can expand per node, and the *name* of the
+        # variable holding the rank, because which variable that is belongs
+        # to the resource plane and naming it here would put a scheduler's
+        # vocabulary in the orchestration core (INV-2).
+        environment[CREDENTIAL_PATH_ENV] = paths[0]
+        if ranks > 1:
+            environment[CREDENTIAL_PATH_TEMPLATE_ENV] = str(
+                runtime_dir
+                / (
+                    f"bootstrap-{allocation.id}-{workload.execution_epoch}"
+                    f"-r{{rank}}.json"
+                )
+            )
         return WorkloadSpec(
             kind=workload.spec.kind,
             profile=workload.spec.profile,
@@ -441,7 +470,14 @@ class ComputeSessionManager:
         runtime.epoch = workload.execution_epoch
         if len(arrivals) < expected:
             return False
-        registration = arrivals[0]
+        # Rank 0, not "whichever arrived first". One interpreter runs the
+        # cell and the rest are its peers, and which one that is has to be
+        # the same node the user's code thinks it is -- a distributed job
+        # whose driver is chosen by network timing is a job whose results
+        # depend on network timing.
+        registration = next(
+            (r for r in arrivals if int(getattr(r, "rank", 0)) == 0), arrivals[0]
+        )
         runtime.registration = registration
         if self._kernel_factory is not None:
             runtime.kernel = self._kernel_factory(registration)
@@ -537,6 +573,7 @@ class ComputeSessionManager:
 
 __all__ = [
     "CONNECT_ENV",
+    "CREDENTIAL_PATH_TEMPLATE_ENV",
     "CREDENTIAL_TTL_S",
     "DEFAULT_IDLE_TTL_S",
     "DEFAULT_MAX_LIFETIME_S",

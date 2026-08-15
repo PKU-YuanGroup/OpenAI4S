@@ -88,6 +88,10 @@ class WorkloadStore(Protocol):
 
     def save_workload(self, workload: Workload) -> None: ...
 
+    def open_recovery_epoch(
+        self, allocation: Allocation, workload: Workload
+    ) -> None: ...
+
 
 @dataclass
 class TickReport:
@@ -458,21 +462,24 @@ class Reconciler:
             )
             return False
 
-        # The dead allocation is durable first. It has to leave the active
-        # set before a replacement can exist at all (INV-3 is a partial
-        # unique index over exactly that set), and writing it first is also
-        # what makes this step safe to repeat: a tick that dies here comes
-        # back to a workload with no live allocation and simply submits.
+        # Retiring the dead allocation and starting the next epoch is ONE
+        # durable fact. Written separately, the window between them strands
+        # the workload permanently: the allocation goes terminal, the
+        # process dies, the workload comes back still on the old epoch, and
+        # the next tick's `create_allocation` hits UNIQUE (workload_id,
+        # epoch) -- every tick after it identically, with no state left that
+        # can move. Swapping the order only moves the window: bump first and
+        # the old allocation is still in the active set, so INV-3's index
+        # refuses the replacement instead.
         allocation.phase = observed.phase
         allocation.reason = observed.reason or Reason.WORKER_LOST
         allocation.diagnostics = dict(observed.diagnostics)
-        self._store.save_allocation(allocation)
 
         lost_epoch = workload.execution_epoch
         workload.execution_epoch = lost_epoch + 1
         workload.phase = Phase.PENDING
         workload.reason = Reason.KERNEL_STATE_LOST
-        self._store.save_workload(workload)
+        self._store.open_recovery_epoch(allocation, workload)
         report.advanced += 1
         if self._on_state_lost is not None:
             try:

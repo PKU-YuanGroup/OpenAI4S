@@ -96,6 +96,14 @@ class _MemoryStore:
     def save_workload(self, workload: Workload) -> None:
         return None
 
+    def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
+        # One durable fact in the real store; here the objects *are* the
+        # rows, so both mutations are already visible and this is a no-op
+        # with a name. It exists so the Protocol is satisfied by something
+        # a scenario actually runs, rather than by a duck type that would
+        # only fail when a scenario reached recovery.
+        return None
+
 
 class _ScriptedBackend:
     """A resource plane that answers from a script, one entry per call.

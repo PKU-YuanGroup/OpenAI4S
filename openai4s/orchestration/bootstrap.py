@@ -357,7 +357,14 @@ def write_credential_file(
     target_dir = Path(directory).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
     harden_dir(target_dir)
-    path = target_dir / f"bootstrap-{credential.allocation_id}-{credential.epoch}.json"
+    # The rank is in the name, not merely in the payload: a multi-node job
+    # writes one credential per rank into the same shared workspace, and
+    # without it rank N overwrites rank N-1 and only one node can ever
+    # register.
+    path = target_dir / (
+        f"bootstrap-{credential.allocation_id}-{credential.epoch}"
+        f"-r{credential.rank}.json"
+    )
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(credential.to_json())

@@ -380,3 +380,29 @@ STALE_EPOCH  STALE_SPEC_REVISION  DUPLICATE_SUBMISSION  KERNEL_STATE_LOST
 | 浏览器 smoke + admission-fault | 通过 |
 
 **一条值得记下来的排查:** 两次全量各有 3 条相同的红——`test_biosecurity_web_parity`、`test_model_binding_recovery`、`test_model_revision_binding`——单跑全绿。三条都基于 `inspect.getsource(gateway_mod.SessionRunner.*)`，而两次运行期间我都在编辑 `gateway.py`：`getsource` 在**调用时**按代码对象记下的行号去读磁盘，文件行数一变，读回来的就是错位的切片。在临时副本上复现确认了该机制（编辑后 `getsource` 确实返回了错位内容），随后在**静置树**上重跑全量，三条全绿。教训比结论更有用：源码内省型断言的"绿"只对读取那一刻的磁盘成立，所以里程碑收尾的那一遍全量必须在不动树的前提下跑。
+
+## 附录 F:外部审查(2026-08-15)确认并修复的 13 项
+
+一次外部审查在自测与 CI 全绿的分支上提了 13 条。**13 条全部经独立复核为真**(12 条并行核实 + 1 条我自验),按严重度修复如下。每条的守卫都用"拆掉它、看对应测试变红"验证过。
+
+| # | 缺陷 | 修法要点 |
+|---|---|---|
+| 1 | `POST /frames` 带别人的 project_id 即入伙,而入伙就是 `DELETE /projects/{id}` 的全部授权 | 建会话需授权(未被认领的播种项目仍开放,"认领"= 有成员行,刻意不含"有谁的会话",否则第一次越权入伙反而把项目锁死);破坏性动词改为要求**真成员行** |
+| 2 | INV-8 只覆盖 `BACKEND_SUBMISSION_UNKNOWN` 这个原因码 | 谓词改为持久**状态**:`SUBMITTING` 且无 handle 就是"结果没被记录下来的提交";提交前行已落库,所以"submit 成功但 save 前崩"这个最常见窗口原先根本不进 INV-8 分支,而无 handle 的 observe 永远答 SUBMITTING,取消屏障于是判定"什么都没放上去"并把仍在跑的作业标成已取消 |
+| 3 | `--export` 的**值**未校验,`{"X":"1,ALL"}` 让作业继承 daemon 环境(即 LLM 密钥所在) | 在校验 key 的同一收口校验 value(逗号/换行/NUL/关键字);拼装后再查一遍,防止将来新字段绕过 dataclass |
+| 4 | `host.query` 在团队模式下可读全员 `messages`/`execution_log`/`frames` | 会话/执行一族按团队模式纳入受限视图(`my_messages` 等);团队模式关闭时表集合与从前逐字节相同(INV-1) |
+| 5 | `/shares` 全局:任何成员可列全组分享 URL、撤销任何人的快照 | share 继承其所投影会话的可见性判定,放在守卫而非两个 handler 里;列表在 handler 侧过滤 |
+| 6 | `/memory?project_id=` 绕过项目守卫(守卫匹配路径,scope 在参数里) | 增加按 scope 的守卫并在五个 handler 调用;`all`/`global` 两个实例级层收归管理员 |
+| 7 | 文件区只判"路径在 data_roots 内",`overwrite=1` 可覆盖他人文件 | 按构造分区:成员写入 `<root>/<用户名>/`。事后判权不可能——所有文件都是 daemon 的 uid 写的 |
+| 8 | 恢复的两次写之间崩溃 → 下一 tick 撞 `UNIQUE (workload_id, epoch)`,**永远**恢复不了 | 退休旧 allocation 与开启新 epoch 合并为一次事务。注意:仅调换顺序不行,那只是把窗口从 UNIQUE 移到 INV-3 的部分唯一索引 |
+| 9 | M3b 从未接线:无生产 `attach_worker`、无 `kernel_factory`、`touch()` 从不被调用,且 `ensure_reconciler()` 每次提交都把监听器关掉 | 在 `_spawn_kernel`(会话内核唯一创建点)路由远端内核;在 Cell 边界续租;teardown 挪回 `close()` |
+| 10 | nonce 与 epoch 栅栏只在内存——"重启即失效"的理由是错的 | 栅栏落盘(0600、原子写、在告知调用方之前写)。重启带走的是 worker 的**连接**,不是那份还在共享文件系统上、还在 24h TTL 内的凭据文件 |
+| 11 | 任何成员可 `POST /config/llm` 改 `llm_base_url`,把全员 LLM 流量导向自己 | 实例级配置的写操作收归管理员(读保留,UI 要显示当前模型) |
+| 12 | gang 只签 rank 0 的凭据;`attach_worker` 用 `arrivals[0]` 而非 rank 0 | 每 rank 一份凭据(文件名带 rank,否则互相覆盖);驱动内核的固定为 rank 0——由网络时序决定谁是 driver 的分布式作业,其结果也由网络时序决定 |
+| 13 | 删会话只删归属行,集群作业继续跑 | 删除服务增加独立的 `release_compute` 协作者(不是塞进 `drop_runtime`——那正是本仓"守卫只接了几个调用点之一"的老毛病);记录持久停止请求而非当场执行,于是调度器不可达时删除也不会留下无人取消的作业 |
+
+**审查的方法论批评也是对的**,并已回应:鉴权原先是"这个路径匹不匹配那两条正则",于是凡不是 `/frames/{id}` 或 `/projects/{id}` 的面都还是单用户 API——1/5/6/7/11 是同一个形状的五个实例。决策现在集中在 `openai4s/server/team_policy.py`,写成关于资源的谓词。调用点仍须主动去问(没有机制能强迫一条新路由去问),但至少只有一个模型要读、一处规则要改。
+
+**两处过程教训,记下来比结论有用:**
+- 我的 denylist 改动一度**丢失**:一次为证伪而做的 `git stash`/`pop` 把它带走了,而我当时只检查了**另一个**文件就认定"已还原"。还原必须按内容验,不能按假设。
+- 两个修复里各有一个 bug,都是被"属主仍能访问"这半边断言抓住的:身份字典的键写成了 `user_id`(仓库读的是 `id`),以及 `my_messages` join 到了可空的 `frame_id`。**永远为空的受限视图和拒绝一切的守卫,从外面看与正常工作的守卫一模一样。**

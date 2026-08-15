@@ -92,8 +92,60 @@ class FileArea:
             raise FileAreaError(404, "path not found", "path_not_found")
         return candidate
 
-    def resolve_upload_target(self, directory: str, name: str) -> Path:
-        """Where an upload may land: an allowlisted dir + a plain filename."""
+    def _scoped_upload_dir(self, directory: str, owner: str) -> str:
+        """This member's subtree, created on demand.
+
+        Computed from the identity and never from the client: a
+        caller-supplied "whose directory is this" would be the same
+        authorization the scoping replaces.
+        """
+        safe = "".join(ch for ch in str(owner) if ch.isalnum() or ch in "-_.")
+        if not safe:
+            raise FileAreaError(400, "invalid upload owner", "invalid_owner")
+        text = str(directory or "").strip()
+        base: Path | None = None
+        if text:
+            candidate = self.resolve(text)
+            for root in self.roots:
+                if candidate == root or root in candidate.parents:
+                    base = root
+                    break
+        if base is None:
+            self._require_configured()
+            base = self.roots[0]
+        scoped = base / safe
+        try:
+            scoped.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FileAreaError(500, f"cannot create upload area: {exc}") from exc
+        # A request that already targets inside this member's subtree keeps
+        # its own sub-path; anything else is redirected to the subtree root.
+        if text:
+            candidate = self.resolve(text)
+            if candidate == scoped or scoped in candidate.parents:
+                return str(candidate)
+        return str(scoped)
+
+    def resolve_upload_target(
+        self, directory: str, name: str, *, owner: str | None = None
+    ) -> Path:
+        """Where an upload may land: an allowlisted dir + a plain filename.
+
+        `owner` scopes the *writable* area in team mode. Containment inside
+        the roots says where a file may live; it says nothing about whose it
+        is, and every file here is written by the daemon's own uid -- so
+        "is this yours?" cannot be answered after the fact and an
+        `overwrite=1` was a cross-user clobber of anything a colleague had
+        put in the shared area.
+
+        Scoping by construction is the only version of this that works:
+        each member writes under `<root>/<their name>/`. Reads stay shared,
+        which is what the file area is for. `owner` is None for the
+        single-user daemon and for an admin, and both then behave exactly as
+        before (INV-1).
+        """
+        if owner:
+            directory = self._scoped_upload_dir(directory, owner)
         parent = self.resolve(directory)
         if not parent.is_dir():
             raise FileAreaError(404, "upload directory not found", "path_not_found")

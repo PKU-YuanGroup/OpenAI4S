@@ -95,6 +95,7 @@ def daemon(tmp_path: Path):
     (root / "hello.txt").write_bytes(b"hello world")
     node = _TeamDaemon(tmp_path / "home", data_roots=[root])
     node.seed_user("alice", "fake-pw-a")
+    node.seed_user("bob", "fake-pw-b")
     node.seed_user("visitor", "fake-pw-v", role="guest")
     node.root = root
     try:
@@ -166,12 +167,20 @@ def test_traversal_is_404_over_http(daemon):
 
 
 def test_upload_round_trip_and_conflict(daemon):
+    """Uploads land in the member's own subtree of the root.
+
+    Not decoration: every file here is written by the daemon's uid, so
+    "is this yours?" cannot be answered after the fact -- the writable area
+    has to be scoped by construction or `overwrite=1` is a cross-user
+    clobber of anything a colleague put in the shared area.
+    """
     cookie = _login(daemon, "alice", "fake-pw-a")
+    mine = daemon.root / "alice"
     status, raw = _upload(daemon, cookie, str(daemon.root), "up.bin", b"A" * 4096)
     assert status == 201, raw[:300]
-    assert (daemon.root / "up.bin").read_bytes() == b"A" * 4096
+    assert (mine / "up.bin").read_bytes() == b"A" * 4096
     # no temp file left behind
-    assert [p.name for p in daemon.root.glob(".up.bin.upload-*")] == []
+    assert [p.name for p in mine.glob(".up.bin.upload-*")] == []
 
     status, _ = _upload(daemon, cookie, str(daemon.root), "up.bin", b"B")
     assert status == 409
@@ -179,7 +188,34 @@ def test_upload_round_trip_and_conflict(daemon):
         daemon, cookie, str(daemon.root), "up.bin", b"B", extra_q="&overwrite=1"
     )
     assert status == 201
-    assert (daemon.root / "up.bin").read_bytes() == b"B"
+    assert (mine / "up.bin").read_bytes() == b"B"
+
+
+def test_one_member_cannot_overwrite_anothers_upload(daemon):
+    """The defect: containment inside the roots says where a file may live,
+    never whose it is, so `overwrite=1` reached across users."""
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+
+    status, _ = _upload(daemon, alice, str(daemon.root), "shared.csv", b"alice data")
+    assert status == 201
+    victim = daemon.root / "alice" / "shared.csv"
+    assert victim.read_bytes() == b"alice data"
+
+    # bob aims at her file by its full path, with overwrite
+    status, _ = _upload(
+        daemon,
+        bob,
+        str(daemon.root / "alice"),
+        "shared.csv",
+        b"bob was here",
+        extra_q="&overwrite=1",
+    )
+    assert victim.read_bytes() == b"alice data", "bob overwrote alice's file"
+    # his bytes went to his own area, if anywhere
+    stray = daemon.root / "bob" / "shared.csv"
+    if stray.exists():
+        assert stray.read_bytes() == b"bob was here"
 
 
 def test_upload_outside_root_is_404(daemon):
