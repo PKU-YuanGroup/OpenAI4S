@@ -87,6 +87,7 @@ from openai4s.storage.governance import (
     create_governance_schema,
 )
 from openai4s.storage.kernels import KernelGenerationRepository
+from openai4s.storage.leases import LeaseRepository, create_lease_schema
 from openai4s.storage.memories import MemoryRepository
 from openai4s.storage.metadata import (
     DERIVABLE_HOST_CALLS,
@@ -1016,6 +1017,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._leases = LeaseRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1241,6 +1247,10 @@ class Store:
                         "orchestration_workloads",
                         self._apply_orchestration_workloads,
                     ),
+                    22: (
+                        "orchestration_leases",
+                        self._apply_orchestration_leases,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1280,6 +1290,16 @@ class Store:
         """
 
         create_workload_schema(conn)
+
+    def _apply_orchestration_leases(self, conn: sqlite3.Connection) -> None:
+        """Version 22: session leases and session↔workload bindings (M3b-4).
+
+        Additive; a single-user install gets two empty tables and no
+        behaviour change (INV-1). Nothing writes to them until a session
+        actually asks for a cluster kernel.
+        """
+
+        create_lease_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -1964,6 +1984,11 @@ class Store:
         """Cluster workloads and allocations (M3a). Also the reconciler's
         WorkloadStore: the Protocol it needs is exactly this surface."""
         return self._workloads
+
+    @property
+    def leases(self) -> LeaseRepository:
+        """Session leases and session↔workload bindings (M3b-4)."""
+        return self._leases
 
     @property
     def secrets(self):

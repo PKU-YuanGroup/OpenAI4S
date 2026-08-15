@@ -46,6 +46,8 @@ from openai4s.orchestration.models import (
     ResourceProfile,
     SubmissionToken,
     Workload,
+    WorkloadKind,
+    WorkloadSpec,
 )
 from openai4s.orchestration.ports import (
     AllocationBackend,
@@ -59,6 +61,13 @@ from openai4s.orchestration.ports import (
 #: job's state feels live, long enough that a thousand workloads do not turn
 #: the scheduler into our own denial of service.
 DEFAULT_INTERVAL_S = 5.0
+
+#: How many times a SESSION may be recovered before it is left failed.
+#: Not unbounded: a node that kills every worker it is handed would
+#: otherwise be resubmitted to forever, and an infinite retry against a
+#: broken node is indistinguishable from a working system right up until
+#: somebody reads the accounting.
+DEFAULT_MAX_RECOVERIES = 3
 
 
 class WorkloadStore(Protocol):
@@ -107,6 +116,9 @@ class Reconciler:
         backends: dict[str, AllocationBackend],
         default_backend: str = "local",
         profile_for: Callable[[Workload], ResourceProfile] | None = None,
+        prepare_attempt: Callable[[Workload, Allocation], WorkloadSpec] | None = None,
+        max_recoveries: int = DEFAULT_MAX_RECOVERIES,
+        on_state_lost: Callable[[Workload, Allocation], None] | None = None,
         interval_s: float = DEFAULT_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
         on_event: Callable[[str, dict], None] | None = None,
@@ -115,6 +127,14 @@ class Reconciler:
         self._backends = backends
         self._default_backend = default_backend
         self._profile_for = profile_for or (lambda w: w.spec.profile)
+        # What is actually submitted for one attempt, derived from the
+        # durable spec. The default is the identity, so a BATCH workload —
+        # and every existing caller — is unchanged. A SESSION needs this
+        # seam because its bootstrap credential is bound to (allocation,
+        # epoch) and therefore cannot exist until an attempt does.
+        self._prepare_attempt = prepare_attempt or (lambda w, a: w.spec)
+        self._max_recoveries = max_recoveries
+        self._on_state_lost = on_state_lost
         self._interval_s = interval_s
         self._clock = clock
         self._on_event = on_event or (lambda kind, payload: None)
@@ -248,7 +268,7 @@ class Reconciler:
         )
         result = backend.submit(
             allocation=allocation,
-            spec=workload.spec,
+            spec=self._prepare_attempt(workload, allocation),
             profile=self._profile_for(workload),
         )
         if isinstance(result, (Created, Existing)):
@@ -314,7 +334,7 @@ class Reconciler:
         # safe *because* we asked, not because we assumed.
         result = backend.submit(
             allocation=allocation,
-            spec=workload.spec,
+            spec=self._prepare_attempt(workload, allocation),
             profile=self._profile_for(workload),
         )
         if isinstance(result, (Created, Existing)):
@@ -358,6 +378,8 @@ class Reconciler:
         self._store.save_allocation(allocation)
 
         if observed.phase.is_terminal:
+            if self._recover_session(workload, allocation, observed, report):
+                return
             workload.phase = observed.phase
             workload.reason = observed.reason
             self._store.save_workload(workload)
@@ -382,6 +404,79 @@ class Reconciler:
                 "workload_phase",
                 {"workload_id": workload.id, "phase": observed.phase.value},
             )
+
+    # --- recovery ---------------------------------------------------------
+
+    def _recover_session(
+        self,
+        workload: Workload,
+        allocation: Allocation,
+        observed: Observation,
+        report: TickReport,
+    ) -> bool:
+        """An interactive session lost its resource but is still wanted.
+
+        M3b-5, and it is two invariants at once. INV-6: the allocation that
+        died stays dead, with its own terminal phase and its own reason —
+        recovery is a *new epoch*, never a rewrite of what happened. INV-11:
+        the kernel's memory went with it, and the user is told so, because
+        a session that silently reconnects to a fresh interpreter and keeps
+        answering produces results indistinguishable from the ones it can
+        no longer reproduce.
+
+        Returns True when this observation was handled as a recovery, in
+        which case the workload is emphatically *not* terminal.
+        """
+        if workload.spec.kind is not WorkloadKind.SESSION:
+            return False
+        if workload.desired_state is not DesiredState.RUNNING:
+            # A session being torn down that also lost its node has not
+            # been "recovered" into anything; the cancel barrier owns it.
+            return False
+        if workload.execution_epoch >= self._max_recoveries:
+            self._emit(
+                "session_recovery_exhausted",
+                {
+                    "workload_id": workload.id,
+                    "epoch": workload.execution_epoch,
+                    "limit": self._max_recoveries,
+                },
+            )
+            return False
+
+        # The dead allocation is durable first. It has to leave the active
+        # set before a replacement can exist at all (INV-3 is a partial
+        # unique index over exactly that set), and writing it first is also
+        # what makes this step safe to repeat: a tick that dies here comes
+        # back to a workload with no live allocation and simply submits.
+        allocation.phase = observed.phase
+        allocation.reason = observed.reason or Reason.WORKER_LOST
+        allocation.diagnostics = dict(observed.diagnostics)
+        self._store.save_allocation(allocation)
+
+        lost_epoch = workload.execution_epoch
+        workload.execution_epoch = lost_epoch + 1
+        workload.phase = Phase.PENDING
+        workload.reason = Reason.KERNEL_STATE_LOST
+        self._store.save_workload(workload)
+        report.advanced += 1
+        if self._on_state_lost is not None:
+            try:
+                self._on_state_lost(workload, allocation)
+            except Exception as exc:  # noqa: BLE001 - a listener must not
+                # strand the workload it was told about.
+                self.last_error = f"{workload.id}: on_state_lost: {exc}"
+        self._emit(
+            "session_kernel_state_lost",
+            {
+                "workload_id": workload.id,
+                "allocation_id": allocation.id,
+                "lost_epoch": lost_epoch,
+                "epoch": workload.execution_epoch,
+                "reason": (observed.reason.value if observed.reason else None),
+            },
+        )
+        return True
 
     # --- the cancel barrier -----------------------------------------------
 

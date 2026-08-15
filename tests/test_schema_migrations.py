@@ -126,6 +126,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Cluster workloads and allocations (M3a). Carries the partial unique
         # index that enforces one live allocation per workload.
         "orchestration_workloads",
+        # Session leases and session↔workload bindings (M3b-4). Two empty
+        # tables on a single-user install.
+        "orchestration_leases",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
