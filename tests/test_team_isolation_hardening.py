@@ -392,3 +392,73 @@ def test_login_bucket_trim_actually_drops_idle_entries():
     clock["t"] = 3600.0  # an hour later every bucket has refilled
     service._take_login_token("someone-new", "10.0.0.1")
     assert len(service._buckets) < 100
+
+
+# -- escalation paths an external review found (2026-08-15) -------------------
+
+
+def test_posting_a_frame_into_another_users_project_is_not_a_join(daemon):
+    """The escalation the M2 hardening test missed because it never planted a
+    foreign session: participation is "a membership row OR a session of mine
+    in this project", so creating a session anywhere was a self-join -- and
+    participation was the whole authorization for DELETE /projects/{id}."""
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+
+    status, raw = _post(
+        daemon.port, "/api/v1/projects", {"name": "alice-lab"}, cookie=alice
+    )
+    assert status == 200, raw[:200]
+    pid = str(_body(raw)["project_id"])
+
+    status, raw = _post(daemon.port, "/api/v1/frames", {"project_id": pid}, cookie=bob)
+    assert status == 404, "bob joined a project he was never added to"
+
+    status, _ = _get(daemon.port, f"/api/v1/projects/{pid}", cookie=bob)
+    assert status == 404
+    status, _ = _delete(daemon, f"/api/v1/projects/{pid}", bob)
+    assert status == 404, "bob could delete another team's project"
+
+    # and alice still owns hers
+    status, _ = _get(daemon.port, f"/api/v1/projects/{pid}", cookie=alice)
+    assert status == 200
+
+
+def test_a_session_owner_still_cannot_destroy_the_project(daemon):
+    """Reading is participation; destroying is membership. Even a legitimate
+    participant who is not a member must not delete the project -- the union
+    is one unauthorized POST away from being granted."""
+    alice = _login(daemon, "alice", "fake-pw-a")
+    pid = _pid(daemon)  # the seeded project: unclaimed, so anyone may work in it
+    _create_session(daemon, alice)
+
+    status, _ = _get(daemon.port, f"/api/v1/projects/{pid}", cookie=alice)
+    assert status == 200, "a participant lost read access"
+    status, raw = _delete(daemon, f"/api/v1/projects/{pid}", alice)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "not_a_member"
+
+
+def test_a_member_cannot_repoint_the_group_llm_endpoint(daemon):
+    """Not merely "overwrite the group key": the same write sets
+    llm_base_url, so one member can point every other user's provider
+    traffic at a host they control -- delivering everyone's prompts and the
+    group credential in the outgoing Authorization header."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    root = _login(daemon, "root", "fake-pw-r")
+
+    for path, body in (
+        ("/api/v1/config/llm", {"base_url": "http://attacker.example/v1"}),
+        ("/api/v1/config/llm", {"api_key": "sk-attacker"}),
+        ("/api/v1/models/default", {"model_id": "whatever"}),
+    ):
+        status, raw = _post(daemon.port, path, body, cookie=bob)
+        assert status == 403, f"{path} accepted a member's write: {raw[:200]}"
+        assert _body(raw).get("code") == "admin_only"
+
+    # reads still work for a member -- the UI needs to show the active model
+    status, _ = _get(daemon.port, "/api/v1/config/llm", cookie=bob)
+    assert status == 200
+    # and an admin is unaffected
+    status, _ = _post(daemon.port, "/api/v1/config/llm", {"model": "m"}, cookie=root)
+    assert status == 200

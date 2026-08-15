@@ -177,6 +177,32 @@ class GovernanceRepository:
             ).fetchall()
         return [{"project_id": r[0], "role": r[1]} for r in rows]
 
+    def project_is_claimed(self, project_id: str | None) -> bool:
+        """Has anybody made this project theirs yet?
+
+        Claimed means it has a **membership** row -- deliberately not "has
+        somebody's session in it". Every project a user creates gets a
+        creator membership row, so the ones that belong to someone are
+        exactly the ones this returns True for. The seeded `default` and
+        example projects have no members and never will unless somebody
+        adds one, so they stay open: they are the shared scratch space a
+        fresh install hands everybody, and closing them behind the first
+        person to use them would make team mode arrive broken.
+
+        Using session ownership here instead would also defeat the purpose.
+        Session ownership is half of the participation union that creating a
+        session grants, so treating it as a claim would let the first
+        unauthorized join lock the project for everyone after it.
+        """
+        if not project_id:
+            return False
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM project_members WHERE project_id=? LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        return row is not None
+
     def is_project_participant(self, project_id: str | None, user_id: str) -> bool:
         """May this user address a project at all (M2-1 authz)?
 

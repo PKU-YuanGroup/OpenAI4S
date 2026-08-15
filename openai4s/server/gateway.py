@@ -92,6 +92,7 @@ from openai4s.server import (
     local_auth,
     orchestration_routes,
     retrieval_source,
+    team_policy,
     team_routes,
     ws_frames,
 )
@@ -2797,6 +2798,34 @@ class SessionRunner:
     def delete_session(self, root_frame_id: str) -> dict[str, Any]:
         return self.deletions.delete_session(root_frame_id)
 
+    def _may_create_session_in(self, project_id: str, user_id: str) -> bool:
+        """Whether this user may put a session in this project.
+
+        An unclaimed project -- no members, nobody else's sessions -- stays
+        open, which is what keeps a fresh install's seeded `default` project
+        usable before anybody has organised anything. A project somebody
+        has claimed needs participation.
+        """
+        from openai4s.server import team_policy
+
+        if not getattr(self.cfg, "team_mode", False):
+            return True
+        try:
+            user = self.store.team.get_user(user_id)
+        except Exception:  # noqa: BLE001
+            user = None
+        if user is None:
+            return True  # service/loopback identity, or team mode not seeded
+        if str(user.get("role") or "") == "admin":
+            return True
+
+        class _Id:
+            def __init__(self, uid: str) -> None:
+                self.user_id = uid
+                self.is_admin = False
+
+        return team_policy.may_create_session_in(self.store, _Id(user_id), project_id)
+
     def create_session(
         self,
         project_id: str,
@@ -2836,6 +2865,16 @@ class SessionRunner:
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is in progress")
             if self.store.get_project(project_id) is None:
+                raise GatewayError(404, "project not found")
+            if owner_user_id and not self._may_create_session_in(
+                project_id, owner_user_id
+            ):
+                # Creating a session here also *joins* the project, because
+                # participation is "a membership row OR a session of mine in
+                # it". Unauthorized, that is a self-join: name somebody
+                # else's project, post a frame, and become a participant of
+                # it. 404 rather than 403, matching the project guard --
+                # which projects exist is itself protected.
                 raise GatewayError(404, "project not found")
             fid = self.store.new_frame(
                 kind="turn",
@@ -9144,6 +9183,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     kept.append(a)
             return kept
 
+        def _team_guard_instance_config(self, method: str, sub: str) -> None:
+            """Refuse a member's write to instance-global configuration (M4).
+
+            Not merely "overwrite the group's API key". The same request
+            writes `llm_base_url`, so one member can point *every* user's
+            provider traffic at a host they control -- which hands them
+            everyone's prompts, session content and tool output, and the
+            group credential in the outgoing Authorization header. There is
+            no per-user variant of that setting to fall back on, which is
+            what makes it an operator's action rather than a preference.
+
+            403 rather than the frame guard's 404: these are management
+            surfaces whose existence is not a secret, and the UI already
+            reads `admin_only` to decide which Customize panes to show.
+            """
+            if not team_policy.is_instance_config(method, sub):
+                return
+            if team_policy.may_change_instance_config(self):
+                return
+            raise GatewayError(403, "admin only", "admin_only")
+
         def _team_guard_project(self, method: str, sub: str) -> None:
             """Refuse a project-addressed route to a non-participant (M2-1).
             404, matching the frame guard: which projects exist is protected.
@@ -9158,6 +9218,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             pid = unquote(m.group(1))
             if not store.governance.is_project_participant(pid, identity.user_id):
                 raise GatewayError(404, "project not found")
+            # Reading is participation; changing or destroying is membership.
+            # Participation is a union that includes "owns a session here",
+            # and any member can create a session anywhere they can name --
+            # so trusting it for DELETE hands one member the power to erase
+            # another team's project, with every member's sessions,
+            # artifacts and workspaces inside it.
+            if method in ("DELETE", "PUT", "PATCH", "POST") and not (
+                team_policy.may_administer_project(store, identity, pid)
+            ):
+                raise GatewayError(403, "project membership required", "not_a_member")
 
         def _team_scope_guard(self, method: str, sub: str) -> None:
             """Refuse frame- and artifact-addressed routes whose session this
@@ -9986,6 +10056,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # in that project (bare /projects list is filtered at its handler).
             self._team_scope_guard(method, sub)
             self._team_guard_project(method, sub)
+            self._team_guard_instance_config(method, sub)
             if sub == "/sessions/verify" and method == "POST":
                 # Verification before import, so a recipient can check what
                 # they were handed without first admitting it to their
