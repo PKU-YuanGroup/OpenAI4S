@@ -343,3 +343,40 @@ STALE_EPOCH  STALE_SPEC_REVISION  DUPLICATE_SUBMISSION  KERNEL_STATE_LOST
 - 2026-08-15 · M4-4 harness 场景的形态 · "规范 §50 二十条中可离线复现的 ≥12 条" · 规范本身不在仓库内，§50 的二十条无法逐条引用；按 §0.1 决策优先级，从**在仓库内**的东西推导：附录 C 的原因码与 §2 的不变量。落地 12 条，覆盖 INV-3/4/6/8/11 与取消屏障。**关键取舍：** 这些场景驱动的是**真的** `Reconciler`（backend 被脚本化），而不是在 harness 里把 reconciler 的规则重写一遍——后者是拿模型验模型，会在模型与代码共有的每一个缺陷上保持绿色，而那正是"把问题理解错了"所产生的全部缺陷。这与 harness README 里"generic runner 不导入生产运行时"是相容的：那里已有先例（action-routing eval 就在录制输入上调用生产函数），判据是"这条边界有没有活的东西需要替身去顶"，而 reconciler 的输入是一行 workload 和一个 observation，都是数据。
 - 2026-08-15 · M4-4 "声明失败的用例在成功时判负"是被验证过的 · 计划要求 · 把 `recovery.is_bounded_rather_than_endless` 的观测改成每次都成功，该场景确实变红（`terminal_reason: expected 'LOST:NODE_FAILED', got 'PENDING:KERNEL_STATE_LOST'`），随后原样还原并以 sha256 相同确认。写下来是因为"绿了"本身不能证明一个门禁真的会红。
 - 2026-08-15 · M4-4 写场景时被真实轨迹纠正 · 我最初写的 4 条期望是错的 · 其中 3 条错在 `allocation_draining` 出现了两次——那是屏障在资源平面尚未跟上时**可重入**的真实轨迹（每 tick 一次 drain，直到它承认资源已消失）。改的是期望而不是脚本，并把这一点写进那条场景的 task 描述：这正是场景库该记录下来的东西。
+
+---
+
+## 附录 E:M3b / M4 收尾核对(执行代理填写,2026-08-15)
+
+**M3b DoD**
+
+- [x] 离线假 Slurm 下同一会话跨多轮复用同一 kernel 变量:`tests/test_cluster_session_e2e.py::test_variables_survive_across_turns`——假 sbatch 真的把作业跑起来，真 worker 经真 socket 拨回，`import math` 与列表跨三次 `execute` 存活。
+- [x] idle 到期资源确实释放:同文件 `test_a_lapsed_lease_takes_the_resource_back`——内核在整段时间里都在应答（那恰恰**不算**用户活跃），到期后 reconciler 走完屏障，假调度器的 `in_queue` 归 0。
+- [x] 恢复后 UI 明示状态丢失:`test_recovery_tells_the_session_its_kernel_memory_is_gone` + `/sessions/{id}/compute` 的 `state_lost_epochs` + 前端 `#compute-lost` 横幅（按丢失 epoch 集合去重，再丢一次会再抬起来）。
+- [x] `tests/test_kernel.py` 全量 + 整套绿:整套 exit 0（静置树上跑，见下条）。
+- [x] 浏览器冒烟绿:`node tests/browser_smoke.mjs` 与 `node tests/browser_admission_fault.mjs` 均通过（免凭据 daemon + `OPENAI4S_NOTEBOOK_REPL=1`，独立 data dir，跑完即清）。
+
+**M4**
+
+- [x] M4-1 个人 LLM key(`tests/test_user_llm_keys.py`,11 例)
+- [x] M4-2 DISTRIBUTED = allocation 内 srun job step(`tests/test_orchestration_distributed.py`)
+- [x] M4-3 gang 就绪 `registered == expected`(同文件，真 socket 多 rank)
+- [x] M4-4 harness 场景 12 条(`harness/scenarios/orchestration/`,`--tier pr --offline` 15/15)
+- [x] M4-5 relay 公网后手:文档 `docs/team-server.md`(中英)——并明确它**不是**访问实验室服务器的路
+- [x] M4-6 CHECKPOINT 占位:接口 + 501 拒绝语义(`tests/test_orchestration_session.py`、`tests/test_compute_session_routes.py`)
+
+**§10 全局门禁(最终树 2a42baf)**
+
+| 门禁 | 结果 |
+|---|---|
+| `uv run pytest` 全套 | exit 0 |
+| `uv run pre-commit run --all-files` | 全项 Passed |
+| `uv run mypy` | Success（8 files） |
+| `capture_response_contract.py --check` | 183/183 |
+| `capture_response_schemas.py` 再生 + 两条覆盖测试 | 绿；diff 纯增量、仅新路由，无 `/environments` 本机漂移 |
+| `harness.cli run --tier pr --offline` | 15/15 |
+| `check_directory_readmes.py` | 107 目录、883 文件，双语齐全 |
+| `source_secret_scan.py` | 通过（1127 文件） |
+| 浏览器 smoke + admission-fault | 通过 |
+
+**一条值得记下来的排查:** 两次全量各有 3 条相同的红——`test_biosecurity_web_parity`、`test_model_binding_recovery`、`test_model_revision_binding`——单跑全绿。三条都基于 `inspect.getsource(gateway_mod.SessionRunner.*)`，而两次运行期间我都在编辑 `gateway.py`：`getsource` 在**调用时**按代码对象记下的行号去读磁盘，文件行数一变，读回来的就是错位的切片。在临时副本上复现确认了该机制（编辑后 `getsource` 确实返回了错位内容），随后在**静置树**上重跑全量，三条全绿。教训比结论更有用：源码内省型断言的"绿"只对读取那一刻的磁盘成立，所以里程碑收尾的那一遍全量必须在不动树的前提下跑。
