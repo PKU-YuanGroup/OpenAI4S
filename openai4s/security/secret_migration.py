@@ -20,6 +20,13 @@ error. So the check reads the value back and compares it.
 Nothing here logs a secret. Progress is reported as references and a short hash
 prefix, which is enough to correlate an entry with a row and useless to anyone
 who obtains the log.
+
+A failure is reported as the exception's *type name*, never ``str(exc)``. The
+message text of a backend error is not ours to reason about: it is produced by
+``security``/``secret-tool``/sqlite and can be changed by any of them, so
+"today's messages happen not to contain the value" is an audit that expires the
+next time one of those is upgraded. The type name is enough to tell a locked
+keychain from a malformed reference, and cannot carry a credential at all.
 """
 
 from __future__ import annotations
@@ -27,7 +34,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
-from openai4s.security.secret_broker import SecretBroker, is_ref
+from openai4s.security.secret_broker import (
+    SecretBroker,
+    SecretBrokerError,
+    is_ref,
+    make_ref,
+)
 
 
 def fingerprint(secret: str) -> str:
@@ -54,8 +66,14 @@ class MigrationReport:
         }
 
 
-# Settings keys holding a credential outright. `scope` groups them in the
+# Settings columns holding a credential outright. `scope` groups them in the
 # keychain so a user can see what an entry is for.
+#
+# The first element is a *column name*, never a credential, and it is reported
+# and logged as such. It is called `setting` rather than `key` on purpose: in a
+# module about credentials, `key` reads as "the secret", and both a human and a
+# taint analysis will believe it -- CodeQL flagged the log lines that printed
+# it for exactly that reason.
 SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
     ("llm_api_key", "llm"),
     ("tavily_api_key", "search"),
@@ -63,13 +81,28 @@ SETTINGS_SECRETS: tuple[tuple[str, str], ...] = (
 )
 
 
+def scope_for_setting(key: str) -> str:
+    """Which scope a settings credential is filed under, or "" if it is not one.
+
+    `resolve_setting` is handed only a key, but a secret is addressed by
+    scope *and* name, so without this table there is no way to ask a backend
+    whether it holds one. Threading a scope through every caller would work
+    too and would be one more thing each of them could get wrong; the mapping
+    is already declared here and is the same mapping migration uses.
+    """
+    for candidate, scope in SETTINGS_SECRETS:
+        if candidate == key:
+            return scope
+    return ""
+
+
 def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
     """Move each plaintext settings credential behind a reference."""
     report = MigrationReport()
-    for key, scope in SETTINGS_SECRETS:
-        value = store.get_setting(key)
+    for setting, scope in SETTINGS_SECRETS:
+        value = store.get_setting(setting)
         if not value:
-            report.empty.append(key)
+            report.empty.append(setting)
             continue
         if is_ref(value):
             try:
@@ -80,7 +113,7 @@ def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
                 # outside the per-key guard, so it aborted the whole pass -- and
                 # with it `migrate_profile_keys` and `migrate_connector_env`,
                 # which share one `try` at the call site.
-                report.failed.append({"key": key, "error": str(e)[:300]})
+                report.failed.append({"setting": setting, "error": type(e).__name__})
                 continue
             if described["reentry_required"] or not described["configured"]:
                 # A v1 system slot is process-global and contains no evidence
@@ -88,15 +121,17 @@ def migrate_settings_secrets(store, broker: SecretBroker) -> MigrationReport:
                 # would reproduce the cross-Store disclosure this boundary is
                 # meant to close. A matching v2 ref whose backend value was
                 # revoked likewise needs re-entry rather than "already".
-                report.reentry_required.append(key)
+                report.reentry_required.append(setting)
             else:
-                report.already.append(key)
+                report.already.append(setting)
             continue
         try:
-            _migrate_one(store, broker, key=key, scope=scope, name=key, value=value)
-            report.migrated.append(key)
+            _migrate_one(
+                store, broker, key=setting, scope=scope, name=setting, value=value
+            )
+            report.migrated.append(setting)
         except Exception as e:  # noqa: BLE001 - one bad key must not strand the rest
-            report.failed.append({"key": key, "error": str(e)[:300]})
+            report.failed.append({"setting": setting, "error": type(e).__name__})
     return report
 
 
@@ -145,7 +180,7 @@ def migrate_connector_env(store) -> dict:
             )
         except Exception as e:  # noqa: BLE001 - one bad connector must not
             # strand the others; describe() reaches the backend and can raise.
-            failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
+            failed.append({"id": connector["connector_id"], "error": type(e).__name__})
             continue
         if refs and needs_reentry:
             reentry_required.append(str(connector["connector_id"]))
@@ -164,7 +199,7 @@ def migrate_connector_env(store) -> dict:
             migrated.append(connector["connector_id"])
         except Exception as e:  # noqa: BLE001 - one bad connector must not
             # strand the others; its plaintext stays and it keeps working.
-            failed.append({"id": connector["connector_id"], "error": str(e)[:200]})
+            failed.append({"id": connector["connector_id"], "error": type(e).__name__})
     return {
         "migrated": migrated,
         "reentry_required": reentry_required,
@@ -172,18 +207,65 @@ def migrate_connector_env(store) -> dict:
     }
 
 
-def resolve_setting(store, broker: SecretBroker, key: str) -> str:
+def _injected(broker: SecretBroker, key: str, scope: str) -> str:
+    """What a read-only backend holds for a settings row that does not exist.
+
+    Environment injection is the one backend the app can never write to: its
+    `put` refuses by design, and `migrate_settings_secrets` has nothing to
+    migrate because there is no plaintext to move. So on a fresh install
+    nothing ever puts the reference row there, and without this lookup the
+    injected variable is dead — `OPENAI4S_SECRET_LLM_LLM_API_KEY` would
+    resolve empty and the UI would report the model as unconfigured, with
+    nothing raised anywhere to say why.
+
+    Restricted to a read-only backend on purpose. Behind a writable one an
+    empty row is the app's own answer: `Store.set_secret_setting(key, "")`
+    clears the row *and* deletes the stored value, and it swallows a failure of
+    that delete so the row still gets cleared. Consulting the backend anyway
+    would turn that swallowed failure into a revoked credential coming back to
+    life. A read-only backend cannot have been written or cleared by the app,
+    so what it holds is the operator's standing answer rather than a leftover.
+
+    The reference is built with this Store's namespace whenever there is one,
+    i.e. the same v2 reference `put` would have written had it been allowed to.
+    That matters because the namespace decides which variable is consulted: a
+    v1 reference reaches only the plain `OPENAI4S_SECRET_<SCOPE>_<NAME>`, while
+    the refusal an operator actually sees when they try to save a key from the
+    UI names the *namespaced* `OPENAI4S_SECRET_V2_<NS>_<SCOPE>_<NAME>`. Built
+    the v1 way, following that instruction to the letter still resolved to
+    nothing — the same silent dead end this function exists to close, moved to
+    a different spelling. The v2 path tries the namespaced variable and falls
+    back to the plain one, so both work.
+    """
+    if not scope or not broker.read_only:
+        return ""
+    try:
+        return broker.get(make_ref(scope, key, broker.namespace)) or ""
+    except SecretBrokerError:
+        # An unusable scope/name is a configuration answer of "nothing here",
+        # not a reason to fail a read that has a legitimate empty result.
+        return ""
+
+
+def resolve_setting(
+    store, broker: SecretBroker, key: str, *, scope: str | None = None
+) -> str:
     """Read a settings value that may be a reference or a legacy plaintext.
 
     Both shapes must work: an install that has not migrated yet, one that has,
     and one where migration failed for a single key all have to keep running.
     The caller does not need to know which it is looking at.
+
+    A third shape has no row at all — see `_injected`. The row still wins when
+    it holds something, so this only ever adds an answer where there was none.
     """
     value = store.get_setting(key)
     if not value:
-        return ""
+        return _injected(broker, key, scope or scope_for_setting(key))
     if not is_ref(value):
         return value
+    # A ref names its own scope and name, so it is already a complete address:
+    # if the environment supplies that exact pair, `broker.get` finds it here.
     resolved = broker.get(value)
     return resolved or ""
 
@@ -195,4 +277,5 @@ __all__ = [
     "migrate_connector_env",
     "migrate_settings_secrets",
     "resolve_setting",
+    "scope_for_setting",
 ]

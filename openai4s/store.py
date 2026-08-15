@@ -1864,16 +1864,23 @@ class Store:
                 self._secret_broker = broker
             return broker
 
-    def get_secret_setting(self, key: str) -> str:
+    def get_secret_setting(self, key: str, *, scope: str | None = None) -> str:
         """Read a credential setting, whether it is a reference or legacy plaintext.
 
         Both shapes have to work: an install that has not migrated, one that
         has, and one where migration failed for a single key must all keep
         running. Callers do not need to know which they are looking at.
+
+        Nor does a caller need a row: a credential the operator injected into
+        the daemon's environment resolves with no row at all, which is the only
+        way a deployment that takes its credentials from the environment can
+        ever have one. `scope` is optional because the known settings
+        credentials are already mapped in `SETTINGS_SECRETS`; pass it for a key
+        that is not.
         """
         from openai4s.security.secret_migration import resolve_setting
 
-        return resolve_setting(self, self.secrets, key)
+        return resolve_setting(self, self.secrets, key, scope=scope)
 
     def set_secret_setting(self, key: str, value: str, *, scope: str) -> str:
         """Store a credential through the broker, recording only its reference.
@@ -1881,6 +1888,13 @@ class Store:
         Returns the reference. An empty value clears both the reference and the
         stored secret — a cleared key must not linger in the keychain where the
         UI reports it as gone.
+
+        One thing a clear cannot do is unset an operator-injected credential:
+        the environment owns that value, `delete` on that backend is a no-op by
+        design, and `get_secret_setting` keeps resolving it afterwards. That is
+        the same boundary `put` states outright, so it is reported rather than
+        hidden — the settings route answers with the `has_api_key` it re-reads
+        after the write, which stays true.
         """
         from openai4s.security.secret_broker import is_ref
 

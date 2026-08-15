@@ -140,6 +140,39 @@ def test_the_report_records_every_boundary_posture(cfg):
         assert key in report
 
 
+def test_an_unresolvable_secret_broker_does_not_overwrite_the_schema_probe(
+    cfg, monkeypatch
+):
+    """A SecretBroker fails closed where there is no secure store — a headless
+    Linux server without libsecret, a container — which is exactly the kind of
+    host `doctor` gets run on. Sharing the schema probe's `except` made that
+    absence overwrite a schema state that had already been read, so the report
+    blamed the wrong probe and dropped `secret_store` altogether."""
+    from openai4s.security.secret_broker import SecretStoreUnavailable
+    from openai4s.store import Store
+
+    message = "refusing to handle credentials without a secure store"
+
+    def _unresolvable(self):
+        raise SecretStoreUnavailable(message)
+
+    monkeypatch.setattr(Store, "secrets", property(_unresolvable))
+
+    report = security_posture(cfg)
+
+    # The schema probe succeeded, so it still reports a schema — not the other
+    # probe's failure.
+    assert report["schema"]["expected"] == report["schema"]["version"]
+    assert report["schema"].get("status") != "unavailable"
+    # And the secret store names its own failure instead of going missing.
+    assert report["secret_store"] == {
+        "status": "unavailable",
+        "error_type": "RuntimeError",
+    }
+    # `_probe_failure`, not `str(e)`: this lands in a shareable archive.
+    assert message not in json.dumps(report)
+
+
 def test_the_environment_report_does_not_leak_a_home_directory():
     """A version report is for a public issue; a path is a username."""
     import json as _json

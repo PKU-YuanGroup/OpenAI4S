@@ -755,7 +755,7 @@ class ModelProfileService:
                     except Exception as e:  # noqa: BLE001 - one bad profile must
                         # not strand the others; its ref stays as it is.
                         if profile_id:
-                            failed.append({"id": profile_id, "error": str(e)[:200]})
+                            failed.append({"id": profile_id, "error": type(e).__name__})
                         continue
                     if profile_id and (
                         description["reentry_required"] or not description["configured"]
@@ -769,7 +769,7 @@ class ModelProfileService:
                     migrated.append(profile_id)
                 except Exception as e:  # noqa: BLE001 - one bad key must not
                     # strand the others, and the plaintext stays authoritative.
-                    failed.append({"id": profile_id, "error": str(e)[:200]})
+                    failed.append({"id": profile_id, "error": type(e).__name__})
 
         self.store.mutate_model_profiles(convert)
         return {

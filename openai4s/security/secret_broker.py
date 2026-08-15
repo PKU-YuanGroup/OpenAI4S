@@ -675,6 +675,30 @@ class SecretBroker:
             # Never delete an ownerless v1 system slot. Another data directory
             # may still be the installation legitimately using it.
 
+    @property
+    def read_only(self) -> bool:
+        """Whether the operator, not the app, owns what this backend holds.
+
+        A caller needs this to know what an *absent* row means. Behind a
+        writable backend an empty row is the app's own answer — the value was
+        never set, or was cleared through the UI. Behind a read-only one the
+        row was never the answer at all: the app cannot write there, so the
+        environment is the only thing that could have supplied a value.
+        """
+        return bool(self._backend.read_only)
+
+    @property
+    def namespace(self) -> str | None:
+        """This Store's secret namespace, or None when there is no Store.
+
+        Exposed so a caller that has to build a reference for a row that does
+        not exist yet can build the *same* v2 reference `put` would have
+        written, rather than the v1 compatibility form — which addresses a
+        different variable and would miss the one the app's own error message
+        tells an operator to set.
+        """
+        return self._namespace
+
     def describe(self, ref: str) -> dict:
         """Metadata for an API response. Never the value."""
         _version, _namespace, scope, name = parse_ref(ref)

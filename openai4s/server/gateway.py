@@ -8351,9 +8351,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     # and did not appear. It showed up in a terminal, which is exactly why it
     # survived: the configuration that hides it is the one nobody develops in.
     if _auth_token:
+        # Rendered, not echoed. A wildcard bind names interfaces rather than an
+        # address, so `http://0.0.0.0:8760/` is a URL nothing dials -- and a
+        # container has no other way to be reachable, which makes the one line
+        # an operator needs the one line that was wrong for them.
+        _reachable = "localhost" if cfg.host in ("0.0.0.0", "::", "") else cfg.host
         print(
             f"[openai4s] access token required.\n"
-            f"  open: http://{cfg.host}:{cfg.port}/?token={_auth_token}",
+            f"  open: http://{_reachable}:{cfg.port}/?token={_auth_token}",
             file=sys.stderr,
             flush=True,
         )
@@ -12932,16 +12937,17 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
                 f"{', '.join(_report.migrated)}",
                 file=sys.stderr,
             )
-        for _failure in _report.failed:
+        if _report.failed:
             print(
-                f"[openai4s] could not migrate {_failure['key']}: "
-                f"{_failure['error']} — it remains stored in plaintext",
+                "[openai4s] one or more settings credentials could not be "
+                "migrated — they remain stored in plaintext",
                 file=sys.stderr,
             )
-        for _key in _report.reentry_required:
+        if _report.reentry_required:
             print(
-                f"[openai4s] {_key} must be saved again: its legacy system "
-                f"credential has no Store namespace and was not read",
+                "[openai4s] one or more settings credentials must be saved "
+                "again: their legacy system credentials have no Store namespace "
+                "and were not read",
                 file=sys.stderr,
             )
 
@@ -12960,7 +12966,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         for _failure in _pr["failed"]:
             print(
                 f"[openai4s] could not migrate profile {_failure['id']}: "
-                f"{_failure['error']} — its key remains in plaintext",
+                f"({_failure['error']}) — its key remains in plaintext",
                 file=sys.stderr,
             )
         for _profile_id in _pr["reentry_required"]:
@@ -12980,7 +12986,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         for _failure in _cr["failed"]:
             print(
                 f"[openai4s] could not migrate connector {_failure['id']}: "
-                f"{_failure['error']} — its env remains in plaintext",
+                f"({_failure['error']}) — its env remains in plaintext",
                 file=sys.stderr,
             )
         for _connector_id in _cr["reentry_required"]:

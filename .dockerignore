@@ -1,0 +1,57 @@
+# Build context for the image built by ./Dockerfile.
+#
+# The image installs a wheel built from this tree, so the context needs the
+# packaged sources and nothing else. Two entries are load-bearing rather than
+# cosmetic:
+#
+#   .env        — a real, git-ignored credential file. `git` never sees it, so
+#                 nothing else in this repository stops it from being copied
+#                 into a layer and shipped inside a published image.
+#   .venv       — a host virtualenv carries absolute paths and host-arch
+#                 binaries. Copied in, it shadows nothing but costs hundreds of
+#                 megabytes and invalidates the layer cache on every local run.
+#
+# The rest is size and cache hygiene: readme-gifs-hd/ alone is ~89 MB, tests/
+# ~18 MB, and neither is installed.
+
+# secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# version control and host environments
+.git
+.gitignore
+.venv
+venv
+node_modules
+
+# caches and build outputs
+#
+# `**/` on everything that nests. A pattern without a separator is matched
+# against the whole path relative to the context root, so a bare `__pycache__`
+# excludes only one at the top level — and there isn't one — while the 6 MB
+# spread through openai4s/, skills/ and scripts/ rides along and busies the
+# layer cache on every stray .pyc.
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+dist
+build
+.build
+**/*.isorted
+
+# not installed by the wheel
+readme-gifs-hd
+assets
+tests
+harness
+epibench_eval
+.github
+docs/*.png
+
+# macOS
+**/.DS_Store

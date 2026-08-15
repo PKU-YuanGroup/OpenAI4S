@@ -602,14 +602,30 @@ def security_posture(cfg: Any) -> dict:
         # exception text into a shareable archive, path, command and all. The
         # type is the part that is bounded and the part that is actionable.
         report["permissions"] = _probe_failure(e)
+    store = None
     try:
         from openai4s.store import get_store
 
         store = get_store(cfg.db_path)
         report["schema"] = store.schema_state()
-        report["secret_store"] = store.secrets.posture()
     except Exception as e:  # noqa: BLE001
+        # The database never opened, so neither probe below it ran. Both keys
+        # record that same failure rather than one of them going missing.
         report["schema"] = _probe_failure(e)
+        report["secret_store"] = _probe_failure(e)
+    if store is not None:
+        # Its own clause, deliberately: `store.secrets` resolves a SecretBroker,
+        # which fails closed on a host with no secure store -- every headless
+        # Linux server without libsecret, every container. Sharing the schema
+        # probe's `except` meant that on exactly the hosts an operator runs
+        # `doctor` on, an absent secret store overwrote a schema state that had
+        # already been read successfully, so the report blamed the schema probe
+        # for the secret store's absence and dropped `secret_store` entirely --
+        # a misattributed failure in the one file the bundle always ships.
+        try:
+            report["secret_store"] = store.secrets.posture()
+        except Exception as e:  # noqa: BLE001
+            report["secret_store"] = _probe_failure(e)
     for name, env in (
         ("kernel_sandbox", "OPENAI4S_KERNEL_SANDBOX"),
         ("compute_confinement", "OPENAI4S_COMPUTE_CONFINEMENT"),

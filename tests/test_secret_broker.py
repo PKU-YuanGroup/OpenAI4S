@@ -503,7 +503,7 @@ def test_an_unverifiable_write_leaves_the_plaintext_alone(store):
 
     report = migrate_settings_secrets(store, broken)
     assert report.migrated == []
-    assert [f["key"] for f in report.failed] == ["llm_api_key"]
+    assert [f["setting"] for f in report.failed] == ["llm_api_key"]
     assert store.get_setting("llm_api_key") == _CANARY, "plaintext must survive"
 
 
@@ -519,7 +519,7 @@ def test_one_bad_key_does_not_strand_the_others(store):
 
     report = migrate_settings_secrets(store, broker)
     assert report.migrated == ["tavily_api_key"]
-    assert [f["key"] for f in report.failed] == ["llm_api_key"]
+    assert [f["setting"] for f in report.failed] == ["llm_api_key"]
 
 
 def test_empty_settings_are_skipped(store, broker):
@@ -1033,3 +1033,181 @@ def test_one_undescribable_profile_ref_does_not_strand_the_others(store, tmp_pat
     saved = {p["id"]: p for p in store.list_model_profiles()}
     assert is_ref(saved["mp-plain"]["api_key"])
     assert _CANARY not in json.dumps(store.list_model_profiles())
+
+
+@pytest.mark.stubbed_backend
+def test_migration_failures_report_a_type_name_never_exception_text(store, tmp_path):
+    """A backend error's message text must never reach the failure report.
+
+    The text is produced by `security`/`secret-tool`/sqlite, so "today's
+    messages happen not to contain the value" is an audit that expires the next
+    time one of those is upgraded. Report the type, which cannot carry one.
+    """
+
+    service = _profiles(store, tmp_path)
+    store.mutate_model_profiles(
+        lambda profiles: profiles.append(
+            {"id": "mp-bad", "name": "bad ref", "api_key": "secret://v1/llm"}
+        )
+    )
+
+    report = service.migrate_profile_keys()
+
+    assert [entry["id"] for entry in report["failed"]] == ["mp-bad"]
+    reported = report["failed"][0]["error"]
+    assert reported == "SecretBrokerError", reported
+    # A bare identifier: no message, no punctuation, nothing to smuggle a value in.
+    assert reported.isidentifier()
+
+
+# --------------------------------------------------------------------------
+# environment injection with no row: the only shape a server can be in
+# --------------------------------------------------------------------------
+
+
+def _env_broker(store, monkeypatch, **variables):
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    monkeypatch.setenv("OPENAI4S_SECRET_ENV", "1")
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+    return SecretBroker(store, mode="env", backends=[EnvInjectionBackend()])
+
+
+def test_an_injected_credential_resolves_with_no_row_at_all(store, monkeypatch):
+    """The reported gap, and the one deployment shape this backend exists for.
+
+    Nothing can put the reference row there: `put` refuses by design and
+    migration has no plaintext to move. So a resolver that stops at an empty
+    row makes the injected variable unreachable on every fresh install — and
+    nothing raises, the key just reads as unconfigured.
+    """
+    broker = _env_broker(store, monkeypatch, OPENAI4S_SECRET_LLM_LLM_API_KEY=_CANARY)
+    assert store.get_setting("llm_api_key") in (None, "")
+    assert resolve_setting(store, broker, "llm_api_key") == _CANARY
+
+
+def test_the_store_facade_resolves_it_too(store, monkeypatch):
+    """What every real caller goes through — the gateway's effective_api_key,
+    `llm/resolve.py`, onboarding — is this method, not `resolve_setting`."""
+    store._secret_broker = _env_broker(
+        store, monkeypatch, OPENAI4S_SECRET_LLM_LLM_API_KEY=_CANARY
+    )
+    assert store.get_secret_setting("llm_api_key") == _CANARY
+
+
+def test_every_settings_credential_is_addressable_this_way(store, monkeypatch):
+    """Not just the LLM key: the scope table is what makes a key resolvable
+    from the environment, so a key missing from it is silently unreachable."""
+    store._secret_broker = _env_broker(
+        store, monkeypatch, OPENAI4S_SECRET_SEARCH_TAVILY_API_KEY="tvly-injected"
+    )
+    assert store.get_secret_setting("tavily_api_key") == "tvly-injected"
+
+
+def test_resolution_from_the_environment_still_writes_nothing(store, monkeypatch):
+    """The whole claim of this backend: a snapshot of the data directory
+    carries no credential. Resolving one must not be what puts it there."""
+    store._secret_broker = _env_broker(
+        store, monkeypatch, OPENAI4S_SECRET_LLM_LLM_API_KEY=_CANARY
+    )
+    assert store.get_secret_setting("llm_api_key") == _CANARY
+    assert _CANARY not in json.dumps(
+        [dict(r) for r in store._conn.execute("SELECT * FROM settings")]
+    )
+
+
+def test_a_row_still_wins_over_the_environment(store, monkeypatch):
+    """Purely additive: this only answers where there was no answer, so an
+    install that already resolves a key cannot change behaviour under it."""
+    broker = _env_broker(
+        store, monkeypatch, OPENAI4S_SECRET_LLM_LLM_API_KEY="sk-from-env"
+    )
+    store.set_setting("llm_api_key", "sk-in-the-row")
+    assert resolve_setting(store, broker, "llm_api_key") == "sk-in-the-row"
+
+
+def test_a_writable_backend_does_not_answer_for_an_empty_row(store):
+    """Why the fallback is read-only-only, stated as the failure it prevents.
+
+    Clearing a key deletes the stored value and clears the row, and it swallows
+    a failed delete so the row still gets cleared. If an empty row sent the
+    reader to the backend anyway, that swallowed failure would become a revoked
+    credential coming back to life.
+    """
+
+    class _DeleteSilentlyFails(MemoryBackend):
+        def delete(self, namespace, scope, name):
+            return None
+
+    store._secret_broker = SecretBroker(store, mode="auto", backends=[MemoryBackend()])
+    store._secret_broker._backend = _DeleteSilentlyFails()
+    store.set_secret_setting("llm_api_key", _CANARY, scope="llm")
+
+    store.set_secret_setting("llm_api_key", "", scope="llm")
+    # The namespaced reference `put` actually wrote. A v1 ref would read as
+    # absent here for a reason that has nothing to do with the delete, and the
+    # precondition would pass by accident while proving nothing.
+    assert (
+        store.secrets.get(make_ref("llm", "llm_api_key", store.secrets.namespace))
+        == _CANARY
+    ), "precondition: the value survived the delete"
+    assert store.get_secret_setting("llm_api_key") == ""
+
+
+def test_the_namespaced_variable_the_ui_names_is_the_one_that_resolves(
+    store, monkeypatch
+):
+    """Follow the refusal's own instruction and it has to work.
+
+    Per-Store namespacing gave the same credential two spellings, and the two
+    are reached by different references: a v1 ref consults only the plain
+    `OPENAI4S_SECRET_<SCOPE>_<NAME>`, while the error an operator actually sees
+    when the UI refuses to save a key names the namespaced
+    `OPENAI4S_SECRET_V2_<NS>_<SCOPE>_<NAME>`. Building the row-less lookup the
+    v1 way left an operator who did exactly as instructed resolving nothing —
+    the same silent dead end, moved to a different variable.
+    """
+    from openai4s.security.secret_broker import EnvInjectionBackend, store_namespace
+
+    namespace = store_namespace(store)
+    variable = EnvInjectionBackend.namespaced_var_name(namespace, "llm", "llm_api_key")
+
+    # The instruction is not restated here, it is read out of the refusal.
+    writable = SecretBroker(store, mode="auto", backends=[MemoryBackend()])
+    store._secret_broker = writable
+    try:
+        EnvInjectionBackend().put(namespace, "llm", "llm_api_key", _CANARY)
+    except SecretBrokerError as refusal:
+        assert variable in str(refusal), refusal
+    else:  # pragma: no cover - put must refuse
+        raise AssertionError("the read-only backend accepted a write")
+
+    store._secret_broker = _env_broker(store, monkeypatch, **{variable: _CANARY})
+    assert store.get_secret_setting("llm_api_key") == _CANARY
+
+
+def test_the_plain_variable_keeps_resolving_alongside_it(store, monkeypatch):
+    """The namespaced form is additive: deployments already shipping the plain
+    name — every manifest in `deploy/`, every `docker run -e …` in the docs —
+    must not stop working when a Store starts namespacing its secrets."""
+    from openai4s.security.secret_broker import EnvInjectionBackend
+
+    store._secret_broker = _env_broker(
+        store,
+        monkeypatch,
+        **{EnvInjectionBackend.var_name("llm", "llm_api_key"): _CANARY},
+    )
+    assert store.get_secret_setting("llm_api_key") == _CANARY
+
+
+def test_a_key_outside_the_scope_table_is_not_guessed_at(store, monkeypatch):
+    """A scope cannot be inferred from a key, and inventing one would address
+    a different secret than the one migration would have written."""
+    broker = _env_broker(
+        store, monkeypatch, OPENAI4S_SECRET_LLM_SOME_OTHER_KEY="sk-unrelated"
+    )
+    assert resolve_setting(store, broker, "some_other_key") == ""
+    assert (
+        resolve_setting(store, broker, "some_other_key", scope="llm") == "sk-unrelated"
+    )

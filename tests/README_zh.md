@@ -98,6 +98,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_cli_stop_slow_daemon.py`](test_cli_stop_slow_daemon.py) | 针对一个退出耗时超过宽限期的 daemon 执行 `openai4s stop`。旧代码把轮询结果直接丢弃：无条件清掉 pidfile 并打印 "daemon stopped"，把一个仍占着端口的活 daemon 变成孤儿，`status` 却说 "not running"。测试驱动真实的忽略 SIGTERM 的子进程：超时后 pidfile 保留、退出码非零，`--force` 升级为 SIGKILL；bind 失败的 `serve` 打印一条清晰错误，而不是在成功横幅之后崩出 traceback。 |
 | [`test_compute_nvidia.py`](test_compute_nvidia.py) | NVIDIA BYOC provider，每一次 `docker` 调用都被假的子进程层截住，所以不需要 Docker、GPU 或网络。安全的那一半是两阶段 secret 清洗：provider 的顶层代码在被 import 时，不能读到形似凭据、或带已知前缀的环境变量。 |
 | [`test_config.py`](test_config.py) | 分层配置，而且基本围着同一类 bug 转：从模板里抄来的占位 API key 绝不能被当成真 key，无论它是从环境变量来的还是显式传进来的，也不能挡住真正的按 provider 配置的 key。 |
+| [`test_container_deployment.py`](test_container_deployment.py) | `Dockerfile`、`compose.yaml` 与 Kubernetes 清单，被钉在赋予这些值意义的代码上：探针路径钉在网关自己的免鉴权集合上，端口钉在 `Config` 的默认值上，注入的 API key 变量则通过 `LLMConfig` 真正解析一遍而不是照名字信任它。配置自己不会失败——变量改名或路由挪位只会在以后、在别人身上停止工作。有两项是因为「一次看似合理的修改就会把它反过来」而被断言的：单副本（存储是 SQLite）与只发布到 loopback 的端口。它还覆盖了跨容器重启的单例问题：只看 pid 存活分不出陈旧 pidfile 与被复用的 pid，于是一个被杀掉的容器从此起不来。 |
 | [`test_connector_repository.py`](test_connector_repository.py) | MCP connector 的那些行：JSON 规范化、排序、启用与停用，以及把它们喂给 Host MCP 服务的 `Store` 门面。 |
 | [`test_context_policy_web.py`](test_context_policy_web.py) | 两个测试。超大的上下文输出会变成一个去过重的 Artifact 版本，而不是又一份拷贝；compaction 的 payload 会被链回会话历史，而不是被丢掉。 |
 | [`test_data_background_tools.py`](test_data_background_tools.py) | data 与 background 这两类 Tool。有两条策略是被断言出来的，而不是假定的：`query` 严格只读，没有任何能把它放宽的审批路径；提交后台任务要过闸门，中断它则始终可用。 |
@@ -306,6 +307,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_startup_no_implicit_install.py`](test_startup_no_implicit_install.py) | `serve` 只诊断环境，绝不修改它。 |
 | [`test_startup_no_implicit_side_effects.py`](test_startup_no_implicit_side_effects.py) | 全新数据目录上启动：不建立任何出站连接、不拉起任何子进程、不执行任何 cell、不落任何会话——在 `socket.connect` 与 `subprocess.Popen` 两个边界上设卡，并以 `OPENAI4S_SEED_DEMO=1` 作为正向对照。 |
 | [`test_unstarted_worker_admission.py`](test_unstarted_worker_admission.py) | 线程根本没起来的 worker，不能把整个会话一直占着；而且这套回滚本身出错时也得撑住：ticket 要释放，job 要真正终结而不是只从登记表里抹掉，plan 行要回到它自己那条路线还能重新认领的状态，并且整个过程不依赖去渲染一个可能拒绝被渲染的异常。 |
+| [`test_update_contributors.py`](test_update_contributors.py) | Community Contributors 生成器会把已公开署名的非 commit 贡献者保留在按提交数排序的 API 用户之后，按登录名大小写无关地去重，并拒绝同时出现在排除名单里的署名登录名；API 返回空时仍会失败即拒绝，不会把贡献者墙改写成只剩维护名单。头像临时刷新失败时会保留该现有贡献者已提交的 PNG，同时继续清理已离开的身份，并如实报告本次刷新了 0 张而不是给出一个看起来正常的数字。断言直接写出署名登录名字面量——从被测常量反推出来的期望，在该常量为空时同样会通过。另外钉住两处链接完整性回归：登录名大小写与已提交文件名不一致时，文件会被保留、并回退到远端头像，而不是为一个刚被清理掉的文件写出本地 `<img src>`；以及未鉴权的 `github.com/<login>.png` 回退路径不会把仓库 token 带过那次跨主机跳转。 |
 | [`test_diagnostic_archive_boundary.py`](test_diagnostic_archive_boundary.py) | 可分享的诊断 ZIP 里不会带出任何未知内容：归档边界默认拒绝，结构化日志行只保留通过校验的元数据，非结构化行只保留条数、分类和指纹。 |
 | [`test_diagnostics.py`](test_diagnostics.py) | 诊断包可以安全贴进公开 issue，包括夹在日志句子中间的 token。 |
 | [`test_evidence_verification.py`](test_evidence_verification.py) | 导出的包无需 daemon 即可校验，四种篡改都被抓到——含 payload 与其记录 hash 被一起改写。 |
