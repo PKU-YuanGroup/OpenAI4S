@@ -4517,6 +4517,72 @@
         "type": "object"
       }
     },
+    "DELETE /sessions/([^/]+)/compute [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /sessions/([^/]+)/compute/release [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /sessions/([^/]+)/replay [error]": {
       "schema": {
         "properties": {
@@ -13994,6 +14060,85 @@
         "type": "object"
       }
     },
+    "GET /sessions/([^/]+)/compute [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /sessions/([^/]+)/compute [ok]": {
+      "schema": {
+        "properties": {
+          "location": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "workload": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "location",
+          "session_id",
+          "workload"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /sessions/([^/]+)/compute/release [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /sessions/([^/]+)/replay [error]": {
       "schema": {
         "properties": {
@@ -19990,6 +20135,72 @@
         "required": [
           "api_key_configured",
           "endpoint"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /sessions/([^/]+)/compute [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /sessions/([^/]+)/compute/release [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -30503,6 +30714,59 @@
         "type": "object"
       }
     },
+    "POST /sessions/([^/]+)/compute [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /sessions/([^/]+)/compute/release [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      }
+    },
     "POST /sessions/([^/]+)/replay [error]": {
       "schema": {
         "properties": {
@@ -36208,6 +36472,72 @@
         "required": [
           "api_key_configured",
           "endpoint"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /sessions/([^/]+)/compute [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /sessions/([^/]+)/compute/release [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
