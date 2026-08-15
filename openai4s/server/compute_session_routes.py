@@ -24,7 +24,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from openai4s.orchestration.models import Reason, ResourceProfile
+from openai4s.orchestration.models import (
+    Reason,
+    RecoveryStrategy,
+    ResourceProfile,
+    UnsupportedRecoveryStrategy,
+)
 
 from . import contract
 
@@ -95,6 +100,10 @@ def _status_json(manager: Any, store: Any, session_id: str) -> dict:
     if workload is not None:
         payload["workload"] = {
             "id": workload.id,
+            # Named rather than implied: a recovery restores the workspace
+            # and not the kernel's memory, and a client showing a banner
+            # needs to say which of those it is promising (M4-6).
+            "recovery": RecoveryStrategy.WORKSPACE_ONLY.value,
             "profile": workload.spec.profile.name,
             "phase": workload.phase.value,
             "desired_state": workload.desired_state.value,
@@ -195,6 +204,43 @@ def handle(
             self._json({"ok": False, "error": "profile is required"}, 400)
             return True
 
+        # Checked before the profile, deliberately. Whether this version
+        # can honour a recovery strategy has nothing to do with how the
+        # site is configured, so a user who asked for CHECKPOINT should be
+        # told that whichever profile they named — fixing the profile would
+        # not have helped, and answering "unknown profile" sends them to do
+        # exactly that.
+        requested_recovery = str(
+            body.get("recovery") or RecoveryStrategy.WORKSPACE_ONLY.value
+        )
+        try:
+            strategy = RecoveryStrategy(requested_recovery)
+            if not strategy.supported:
+                raise UnsupportedRecoveryStrategy(strategy)
+        except (ValueError, UnsupportedRecoveryStrategy) as exc:
+            detail = (
+                str(exc)
+                if isinstance(exc, UnsupportedRecoveryStrategy)
+                else str(UnsupportedRecoveryStrategy(requested_recovery))
+            )
+            # 501, not 400: the request is well-formed and the strategy is a
+            # real one this product names — it is this version that cannot
+            # honour it. A 400 would tell the user they made a mistake.
+            self._json(
+                {
+                    "ok": False,
+                    "code": "recovery_unsupported",
+                    "error": detail,
+                    "supported": [
+                        candidate.value
+                        for candidate in RecoveryStrategy
+                        if candidate.supported
+                    ],
+                },
+                501,
+            )
+            return True
+
         cluster = getattr(runner, "cluster_config", None)
         try:
             site = cluster.profile(profile_name) if cluster is not None else None
@@ -211,12 +257,15 @@ def handle(
         profile: ResourceProfile = site.resources
 
         identity = _identity(self)
+        # The manager refuses it too, and that is not redundant: the route
+        # is one caller of a manager the CLI and tests also reach.
         workload = manager.request_session(
             session_id=session_id,
             owner_user_id=identity.user_id if identity else "local",
             project_id=getattr(identity, "project_id", None),
             profile=profile,
             backend=getattr(runner, "cluster_backend_name", "cluster"),
+            recovery=strategy,
         )
         ensure = getattr(runner, "ensure_reconciler", None)
         if callable(ensure):

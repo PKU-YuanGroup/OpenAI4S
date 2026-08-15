@@ -46,7 +46,9 @@ from openai4s.orchestration.bootstrap import (
 from openai4s.orchestration.models import (
     Allocation,
     Phase,
+    RecoveryStrategy,
     ResourceProfile,
+    UnsupportedRecoveryStrategy,
     Workload,
     WorkloadKind,
     WorkloadSpec,
@@ -329,9 +331,20 @@ class ComputeSessionManager:
         # Which plane runs a session is the composition layer's decision.
         backend: str,
         environment: dict[str, str] | None = None,
+        recovery: RecoveryStrategy | str = RecoveryStrategy.WORKSPACE_ONLY,
     ) -> Workload:
         """Ask for a cluster kernel for this chat session, or return the
         workload already backing it."""
+        # Refused before anything durable happens (M4-6). A workload
+        # created and then rejected would leave a row an operator has to
+        # reason about for a request that was never honoured.
+        try:
+            strategy = RecoveryStrategy(recovery)
+        except ValueError:
+            raise UnsupportedRecoveryStrategy(recovery) from None
+        if not strategy.supported:
+            raise UnsupportedRecoveryStrategy(strategy)
+
         existing = self._store.leases.workload_for_session(session_id)
         if existing:
             found = self._store.workloads.get_workload(existing)

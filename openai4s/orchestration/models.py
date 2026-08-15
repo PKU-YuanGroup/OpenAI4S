@@ -258,6 +258,48 @@ class TaskSpec:
                 raise ValueError(f"{name} must be positive")
 
 
+class RecoveryStrategy(str, Enum):
+    """What is restored when a session's resource goes away (M4-6).
+
+    `WORKSPACE_ONLY` is what this version does and all it claims: the files
+    survive because they were always on the shared filesystem, and the
+    kernel's memory does not. `CHECKPOINT` is declared here and refused at
+    every entry point, on purpose — the alternative to a named, refusing
+    placeholder is a field that silently means WORKSPACE_ONLY, and a user
+    who selected "checkpoint" and got a fresh interpreter has been told
+    something untrue about results they may publish.
+
+    The refusal is the feature until a real implementation exists. A
+    checkpoint of a Python interpreter is not a thing this system can honour
+    by trying harder: it needs process-level snapshotting (CRIU or
+    equivalent) that the cluster must also support, and half of one would
+    restore some state and quietly drop the rest, which is the worst of the
+    three possible behaviours.
+    """
+
+    WORKSPACE_ONLY = "WORKSPACE_ONLY"
+    CHECKPOINT = "CHECKPOINT"
+
+    @property
+    def supported(self) -> bool:
+        return self is RecoveryStrategy.WORKSPACE_ONLY
+
+
+class UnsupportedRecoveryStrategy(ValueError):
+    """Raised for a strategy this version declares but cannot honour."""
+
+    def __init__(self, strategy: "RecoveryStrategy | str") -> None:
+        name = getattr(strategy, "value", strategy)
+        super().__init__(
+            f"recovery strategy {name} is not supported yet: this version "
+            f"restores the workspace, and the kernel's memory is lost on "
+            f"recovery (KERNEL_STATE_LOST). Selecting it and receiving a "
+            f"fresh interpreter would be a claim about your results that is "
+            f"not true, so it is refused rather than approximated."
+        )
+        self.strategy = name
+
+
 @dataclass(frozen=True)
 class TaskResult:
     """A finished step: what it was, and what it wrote.
@@ -350,6 +392,7 @@ __all__ = [
     "Observation",
     "Phase",
     "Reason",
+    "RecoveryStrategy",
     "ResourceProfile",
     "SubmissionToken",
     "TaskHandle",
@@ -357,5 +400,6 @@ __all__ = [
     "TaskSpec",
     "Workload",
     "WorkloadKind",
+    "UnsupportedRecoveryStrategy",
     "WorkloadSpec",
 ]

@@ -681,3 +681,53 @@ def test_the_reason_a_session_was_reclaimed_survives_the_backend(store, manager)
     # and the attempt keeps the plane's own account of what became of it
     allocation = store.workloads.list_allocations(workload.id)[-1]
     assert allocation.reason is Reason.USER_CANCELLED
+
+
+# -- M4-6: a declared strategy this version cannot honour ---------------------
+
+
+def test_checkpoint_recovery_is_refused_rather_than_approximated(store, manager):
+    """The refusal is the feature. A field that silently means
+    WORKSPACE_ONLY tells a user who selected "checkpoint" and received a
+    fresh interpreter something untrue about results they may publish."""
+    from openai4s.orchestration.models import (
+        RecoveryStrategy,
+        UnsupportedRecoveryStrategy,
+    )
+
+    with pytest.raises(UnsupportedRecoveryStrategy, match="not supported yet"):
+        manager.request_session(
+            session_id="s1",
+            owner_user_id="u1",
+            profile=PROFILE,
+            backend="fake",
+            recovery=RecoveryStrategy.CHECKPOINT,
+        )
+    # and nothing durable was created for a request that was not honoured
+    assert store.leases.workload_for_session("s1") is None
+    assert store.workloads.list_workloads() == []
+
+
+def test_an_unknown_strategy_is_refused_the_same_way(store, manager):
+    from openai4s.orchestration.models import UnsupportedRecoveryStrategy
+
+    with pytest.raises(UnsupportedRecoveryStrategy):
+        manager.request_session(
+            session_id="s1",
+            owner_user_id="u1",
+            profile=PROFILE,
+            backend="fake",
+            recovery="MAGIC",
+        )
+
+
+def test_the_supported_strategy_is_the_default(store, manager):
+    """A caller that names nothing gets what this version actually does."""
+    workload = manager.request_session(
+        session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    assert workload is not None
+    from openai4s.orchestration.models import RecoveryStrategy
+
+    assert RecoveryStrategy.WORKSPACE_ONLY.supported
+    assert not RecoveryStrategy.CHECKPOINT.supported

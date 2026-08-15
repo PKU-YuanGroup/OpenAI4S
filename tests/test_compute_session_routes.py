@@ -23,6 +23,7 @@ import pytest
 
 from tests.test_team_auth_routes import (  # noqa: F401  (fixture reuse)
     _fast_pbkdf2,
+    _free_port,
     _get,
     _login,
     _post,
@@ -126,3 +127,71 @@ def test_releasing_a_session_that_never_had_a_resource(daemon):
     )
     assert status == 409
     assert _body(raw)["code"] == "not_configured"
+
+
+def _put(port: int, path: str, body: dict, cookie: str, method: str = "POST"):
+    payload = json.dumps(body).encode("utf-8")
+    head = (
+        "\r\n".join(
+            [
+                f"{method} {path} HTTP/1.1",
+                f"Host: 127.0.0.1:{port}",
+                "Content-Type: application/json",
+                f"Content-Length: {len(payload)}",
+                f"Cookie: {cookie}",
+                "Connection: close",
+            ]
+        )
+        + "\r\n\r\n"
+    ).encode("ascii")
+    return _speak(port, head + payload)
+
+
+@pytest.fixture()
+def listening_daemon(tmp_path, monkeypatch):
+    """A daemon that actually has a worker listener, so the requests that a
+    default install refuses at the door get as far as the code under test."""
+    monkeypatch.setenv("OPENAI4S_WORKER_LISTEN", f"127.0.0.1:{_free_port()}")
+    node = _TeamDaemon(tmp_path)
+    node.seed_user("alice", "fake-pw-a")
+    try:
+        yield node
+    finally:
+        node.close()
+
+
+def test_checkpoint_recovery_answers_501_not_400(listening_daemon):
+    """The request is well-formed and the strategy is one this product
+    names; it is this version that cannot honour it. A 400 would tell the
+    user they made a mistake."""
+    daemon = listening_daemon
+    assert (
+        daemon.runner.compute_sessions is not None
+    ), "the listener did not come up, so this would be testing the 409 path"
+    cookie = _login(daemon, "alice", "fake-pw-a")
+    session_id = _session_of(daemon, "alice")
+    status, raw = _put(
+        daemon.port,
+        f"/api/v1/sessions/{session_id}/compute",
+        {"profile": "gpu-interactive", "recovery": "CHECKPOINT"},
+        cookie,
+    )
+    assert status == 501, raw[:300]
+    body = _body(raw)
+    assert body["code"] == "recovery_unsupported"
+    assert body["supported"] == ["WORKSPACE_ONLY"]
+    assert "not true" in body["error"]
+
+
+def test_an_unconfigured_profile_is_refused_rather_than_guessed(listening_daemon):
+    daemon = listening_daemon
+    cookie = _login(daemon, "alice", "fake-pw-a")
+    session_id = _session_of(daemon, "alice")
+    status, raw = _put(
+        daemon.port,
+        f"/api/v1/sessions/{session_id}/compute",
+        {"profile": "no-such-profile"},
+        cookie,
+    )
+    assert status == 400
+    assert _body(raw)["code"] == "unknown_profile"
