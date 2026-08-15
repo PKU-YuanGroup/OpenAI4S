@@ -311,6 +311,45 @@ def test_a_releasing_allocation_still_counts_as_active():
     assert backend.submits == 1, "no new allocation may start during teardown"
 
 
+def test_cancelling_an_allocation_that_was_never_placed_terminates():
+    """The hang this found: an allocation row exists but no submission ever
+    returned a handle. A backend asked about an allocation it has never seen
+    answers SUBMITTING — not terminal — so the barrier would re-enter every
+    tick and never finish, leaving the workload stuck in RELEASING forever."""
+    store, backend = _Store(), _FakeBackend()
+    workload = store.add(_workload())
+    allocation = store.create_allocation(workload.id, 0)
+    assert allocation.handle is None
+    workload.desired_state = DesiredState.STOPPED
+    rec = _reconciler(store, backend)
+
+    report = rec.tick()
+    assert store.workloads[workload.id].phase is Phase.CANCELLED
+    assert report.cancelled == 1
+    assert backend.submits == 0
+
+
+def test_cancelling_an_unknown_submission_asks_before_concluding():
+    """The one case where 'no handle' does NOT mean 'nothing was placed'
+    (INV-8): the submission may have landed and simply not told us. Marking
+    it cancelled without asking would leave a real job running unattended."""
+    store, backend = _Store(), _FakeBackend()
+    workload = store.add(_workload())
+    allocation = store.create_allocation(workload.id, 0)
+    allocation.reason = Reason.BACKEND_SUBMISSION_UNKNOWN
+    store.save_allocation(allocation)
+    workload.desired_state = DesiredState.STOPPED
+
+    backend.token_lookup = ExternalHandle(backend="fake", external_id="42")
+    backend.observations = [Observation(phase=Phase.CANCELLED)]
+    rec = _reconciler(store, backend)
+    rec.tick()
+
+    assert backend.token_lookups == 1, "it must ask before concluding"
+    assert backend.cancels == 1, "the job it found must actually be cancelled"
+    assert store.workloads[workload.id].phase is Phase.CANCELLED
+
+
 def test_cancelling_a_workload_with_no_allocation_is_immediate():
     store, backend = _Store(), _FakeBackend()
     workload = store.add(_workload(desired_state=DesiredState.STOPPED))

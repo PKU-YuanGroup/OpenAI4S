@@ -305,6 +305,11 @@ def handle(
             )
         except Exception:  # noqa: BLE001
             pass
+        # The loop is started on demand, so a daemon that never runs a batch
+        # job never polls for one.
+        ensure = getattr(runner, "ensure_reconciler", None)
+        if callable(ensure):
+            ensure()
         # 202: accepted, not started. The reconciler submits on its next
         # tick, and saying "created" here would promise a resource we have
         # not been granted.

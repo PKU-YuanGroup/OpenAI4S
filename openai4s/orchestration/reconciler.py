@@ -143,6 +143,15 @@ class Reconciler:
             try:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 — a tick must never kill the loop
+                if _store_is_gone(exc):
+                    # Not a transient error to log forever: the database this
+                    # loop exists to reconcile has been closed, so the world
+                    # it was built for is over. A daemon shutdown that races
+                    # the thread otherwise produces an endless stream of
+                    # "closed database" lines and keeps a thread alive past
+                    # the process state it depends on.
+                    self._stop.set()
+                    return
                 self._emit("reconcile_error", {"error": str(exc)})
             self._stop.wait(self._interval_s)
 
@@ -391,6 +400,49 @@ class Reconciler:
             {"workload_id": workload.id, "allocation_id": allocation.id},
         )
 
+        if allocation.handle is None:
+            # Nothing was ever placed on a resource plane — the allocation row
+            # exists but no submission returned a handle. There is nothing to
+            # release, and waiting for a terminal observation would wait
+            # forever: a backend asked about an allocation it has never seen
+            # answers SUBMITTING, which is not terminal, so every tick would
+            # re-enter this barrier and none would finish it.
+            #
+            # The one case that is NOT "nothing was placed" is a submission
+            # whose outcome we never learned (INV-8). Ask before concluding —
+            # otherwise a cancel could mark a workload finished while its job
+            # runs on unattended.
+            if allocation.reason is Reason.BACKEND_SUBMISSION_UNKNOWN:
+                found = backend.find_by_token(allocation.submission_token)
+                if found is not None:
+                    allocation.handle = found
+                    self._store.save_allocation(allocation)
+                    self._emit(
+                        "allocation_adopted",
+                        {
+                            "workload_id": workload.id,
+                            "allocation_id": allocation.id,
+                            "during": "cancel",
+                        },
+                    )
+            if allocation.handle is None:
+                allocation.phase = Phase.CANCELLED
+                allocation.reason = reason
+                self._store.save_allocation(allocation)
+                workload.phase = Phase.CANCELLED
+                workload.reason = reason
+                self._store.save_workload(workload)
+                report.cancelled += 1
+                self._emit(
+                    "workload_terminal",
+                    {
+                        "workload_id": workload.id,
+                        "phase": Phase.CANCELLED.value,
+                        "reason": reason.value,
+                    },
+                )
+                return
+
         # 4. release the resource.
         if allocation.phase is not Phase.RELEASING:
             allocation.phase = Phase.RELEASING
@@ -472,6 +524,16 @@ class Reconciler:
             self._on_event(kind, payload)
         except Exception:  # noqa: BLE001 — a listener must not break the loop
             pass
+
+
+def _store_is_gone(exc: BaseException) -> bool:
+    """Is this the database having been closed under us?
+
+    Matched on the message because sqlite3 raises a plain ProgrammingError
+    for it; narrow enough that a genuine programming error still surfaces as
+    one rather than quietly stopping the loop.
+    """
+    return "closed database" in str(exc).lower()
 
 
 def new_token() -> SubmissionToken:

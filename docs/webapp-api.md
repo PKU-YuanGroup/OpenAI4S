@@ -348,6 +348,21 @@ When `annotation_ids` are sent, **both** branches additionally carry `annotation
 | `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}`. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
 
+### Cluster batch jobs (orchestration)
+
+Long unattended work: submitted here, executed by whatever resource plane the daemon has (this machine by default, a scheduler when `cluster.toml` configures one). The API is deliberately backend-neutral — a response names an `allocation_id`, never the scheduler's job id, and a `profile` name, never a queue (INV-2, decision D5).
+
+Nothing here submits synchronously. A request writes a durable row; the reconciler loop does the talking on its next pass. That is what makes a cancel survive a daemon restart, and what keeps one submission from being attempted twice by a request thread that goes away mid-flight.
+
+| Method & path | Behavior |
+| --- | --- |
+| `POST /orchestration/jobs` | Body `{command: [...], profile?, backend?, workdir?, environment?, project_id?}`. `202 {id, phase, ...}` — accepted, not started; `201` would promise a resource that has not been granted. `command` **must** be a list: a string is refused with `400 invalid_command`, because splitting a command line is where quoting bugs become injection. Unknown profile → `400 unknown_profile`; unknown backend → `400 unknown_backend` with the available ones. |
+| `GET /orchestration/jobs` | `{jobs: [...]}`, filtered to the caller's own unless they are an admin. `project_id`, `limit` and `all=0` (hide terminal) narrow it. |
+| `GET /orchestration/jobs/{id}` | One job plus its `allocation` (the live attempt) and `allocations` (every epoch). Someone else's job is `404`, not `403` — which jobs exist is itself information about what a colleague is working on. |
+| `POST /orchestration/jobs/{id}/cancel` | Records the desire to stop and returns `{ok, reason}`; the reconciler runs the cancel barrier. `409 already_final` when the job has already ended. An admin cancelling another user's job is recorded as `ADMIN_CANCELLED` rather than `USER_CANCELLED`. |
+| `GET /orchestration/jobs/{id}/logs` | `{allocation_id, stdout, stderr}` — the tail (64 KiB) of what the job wrote. |
+| `GET /orchestration/profiles` | `{cluster, configured, profiles: [{name, cpus, memory_mb, gpus, walltime_s, nodes}]}`. The queue and service-class each profile maps to are **not** in this payload: they live in `cluster.toml` and nowhere else. |
+
 ### Permissions
 
 | Method & path | Behavior |

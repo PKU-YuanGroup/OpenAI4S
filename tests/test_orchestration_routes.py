@@ -81,7 +81,19 @@ def _await_phase(daemon, job_id: str, cookie: str, *, timeout_s: float = 20.0):
         if Phase(last["phase"]).is_terminal:
             return last
         time.sleep(0.2)
-    raise AssertionError(f"job never reached terminal; last={last}")
+    # Self-explaining on failure. A bare "never reached terminal" sent the
+    # last investigation into guesswork; the allocation's own phase and the
+    # backend's view are what actually answer "stuck where?".
+    allocation = daemon.store.workloads.active_allocation(job_id)
+    backend = (daemon.runner.orchestration_backends or {}).get("local")
+    raise AssertionError(
+        f"job never reached terminal in {timeout_s}s.\n"
+        f"  workload: {last}\n"
+        f"  allocation: {allocation}\n"
+        f"  backend: {backend.diagnostics() if backend else None}\n"
+        f"  reconciler alive: "
+        f"{getattr(daemon.runner.reconciler, '_thread', None) is not None}"
+    )
 
 
 # -- the full local lifecycle -------------------------------------------------

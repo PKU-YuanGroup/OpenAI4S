@@ -2916,7 +2916,27 @@ class SessionRunner:
             interval_s=max(0.05, interval_s),
             on_event=self._on_orchestration_event,
         )
-        self.reconciler.start()
+        # Started on demand, not on construction. Most daemons (and every
+        # test that never submits a job) have nothing for this loop to do,
+        # and a thread per SessionRunner that polls a database forever is
+        # both overhead and noise. It starts here only when a previous run
+        # left work in flight — a restart must resume those — and otherwise
+        # when the first job is submitted.
+        try:
+            if self.store.workloads.workloads_needing_attention():
+                self.reconciler.start()
+        except Exception:  # noqa: BLE001 — never block boot on this
+            pass
+
+    def ensure_reconciler(self) -> None:
+        """Start the orchestration loop if it is not already running.
+
+        Idempotent: `Reconciler.start` returns immediately when a thread
+        already exists, so every submission may call this.
+        """
+        reconciler = getattr(self, "reconciler", None)
+        if reconciler is not None:
+            reconciler.start()
 
     def _on_orchestration_event(self, kind: str, payload: dict) -> None:
         """Orchestration events are daemon-level, not session-level.
