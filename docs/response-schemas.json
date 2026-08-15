@@ -14113,6 +14113,84 @@
             "type": "array"
           },
           "datapro": {
+            "items": {
+              "properties": {
+                "artifact_id": {
+                  "type": "null"
+                },
+                "batch_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "properties": {
+                    "code": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "properties": {
+                        "records": {
+                          "items": {
+                            "properties": {
+                              "gene": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "gene"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "records"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "data"
+                  ],
+                  "type": "object"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "dataset_type": {
+                  "type": "null"
+                },
+                "entry_id": {
+                  "type": "string"
+                },
+                "json_pointer": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "query": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "batch_id",
+                "content",
+                "created_at",
+                "dataset_type",
+                "entry_id",
+                "json_pointer",
+                "project_id",
+                "query",
+                "root_frame_id"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "sessions": {
@@ -14404,6 +14482,67 @@
       "schema": {
         "properties": {
           "shares": {
+            "items": {
+              "properties": {
+                "bundle_sha256": {
+                  "type": "string"
+                },
+                "counts": {
+                  "properties": {},
+                  "required": [],
+                  "type": "object"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "expires_at": {
+                  "type": "null"
+                },
+                "projection_id": {
+                  "type": "string"
+                },
+                "revoked_at": {
+                  "type": "null"
+                },
+                "share_id": {
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "type": "integer"
+                },
+                "snapshot_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "bundle_sha256",
+                "counts",
+                "created_at",
+                "expires_at",
+                "projection_id",
+                "revoked_at",
+                "share_id",
+                "size_bytes",
+                "snapshot_id",
+                "status",
+                "title",
+                "updated_at",
+                "url"
+              ],
+              "type": "object"
+            },
             "type": "array"
           }
         },
