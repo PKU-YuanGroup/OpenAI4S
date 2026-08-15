@@ -1,0 +1,288 @@
+"""Bootstrap credentials for a worker that dials in (plan M3b-2).
+
+A worker placed by a scheduler has to prove, over a socket the daemon did
+not initiate, that it is the worker this daemon asked for. The credential
+that proves it is an HMAC over the facts that make it *this* attempt:
+
+    (allocation_id, epoch, rank, expires_at, nonce)
+
+signed with a per-daemon secret that never leaves the machine. Each field
+is there because leaving it out permits something:
+
+* ``allocation_id`` — without it a credential is transferable between jobs.
+* ``epoch`` — without it a credential from a *previous* incarnation still
+  works, and INV-7's whole point is that an old epoch is refused.
+* ``rank`` — a multi-node allocation has several workers and they are not
+  interchangeable; M4's gang readiness counts them.
+* ``expires_at`` — a queued job may sit for hours, but a credential that
+  never expires is a credential that leaks eventually.
+* ``nonce`` — consumed at registration, so a captured credential cannot be
+  replayed by a second connection.
+
+**The credential travels as a file, never as an environment variable.** The
+file is 0600 in the session's runtime directory and the scheduler is given
+only its *path* — which is why `SlurmBroker` refuses credential-shaped
+environment names outright. A job's environment is visible to anyone who
+can read `/proc/<pid>/environ` or `scontrol show job`; a 0600 file is
+visible to the user who owns it.
+
+Verification is constant-time and, on success, single-use: `consume`
+records the nonce, and a second presentation of the same credential is
+refused even though its signature is still perfectly valid.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from openai4s.security.permissions import FILE_MODE, harden_dir, harden_file
+
+#: Filename of the per-daemon signing secret, under the data dir.
+SECRET_FILENAME = "worker-bootstrap-secret"
+
+#: Default credential lifetime. Long enough to cover a start-up that waits
+#: on a shared filesystem and a slow interpreter; short enough that a
+#: credential found in a stale workspace is already useless.
+DEFAULT_TTL_S = 3600
+
+#: The environment variable the job script reads. Deliberately named for a
+#: *path*: `SlurmBroker` refuses names matching SECRET/TOKEN/KEY/CREDENTIAL,
+#: and this must pass that filter because what it carries is a filename.
+CREDENTIAL_PATH_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH"
+
+
+class BootstrapError(RuntimeError):
+    """A credential was absent, malformed, expired, replayed or forged."""
+
+
+def load_or_mint_secret(data_dir: Path | str) -> bytes:
+    """The daemon's signing secret, created 0600 on first use.
+
+    Published through `os.link`, the one filesystem operation that can only
+    succeed once, so two daemons starting together settle on a single secret
+    instead of each holding its own — the same reasoning (and the same
+    failure) as the access token in `server/local_auth.py`.
+    """
+    directory = Path(data_dir).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    harden_dir(directory)
+    path = directory / SECRET_FILENAME
+
+    existing = _read_secret(path)
+    if existing is not None:
+        return existing
+
+    candidate = secrets.token_bytes(32)
+    temporary = path.with_name(f".{path.name}.tmp-{secrets.token_hex(8)}")
+    try:
+        # 0o600 in the open() itself rather than a chmod afterwards: the mode
+        # is on the inode before a single byte of the secret exists.
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(candidate)
+            handle.flush()
+            os.fsync(handle.fileno())
+        harden_file(temporary)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            published = False
+        else:
+            published = True
+    finally:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+
+    if published:
+        return candidate
+    settled = _read_secret(path)
+    if settled is None:
+        raise BootstrapError(f"{path} exists but is empty; remove it and start again")
+    return settled
+
+
+def _read_secret(path: Path) -> bytes | None:
+    try:
+        data = path.read_bytes()
+    except (OSError, ValueError):
+        return None
+    return data or None
+
+
+@dataclass(frozen=True)
+class BootstrapCredential:
+    """What a worker presents. The signature covers every other field."""
+
+    allocation_id: str
+    epoch: int
+    rank: int
+    expires_at: float
+    nonce: str
+    signature: str
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "allocation_id": self.allocation_id,
+            "epoch": self.epoch,
+            "rank": self.rank,
+            "expires_at": self.expires_at,
+            "nonce": self.nonce,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps({**self.payload(), "signature": self.signature})
+
+    @staticmethod
+    def from_json(text: str) -> BootstrapCredential:
+        try:
+            data = json.loads(text)
+            return BootstrapCredential(
+                allocation_id=str(data["allocation_id"]),
+                epoch=int(data["epoch"]),
+                rank=int(data["rank"]),
+                expires_at=float(data["expires_at"]),
+                nonce=str(data["nonce"]),
+                signature=str(data["signature"]),
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            raise BootstrapError(f"malformed credential: {exc}") from exc
+
+
+def _sign(secret: bytes, payload: dict[str, Any]) -> str:
+    # sort_keys so the signed bytes do not depend on dict ordering: a
+    # signature that verifies only when the fields happen to be in the same
+    # order is a signature that fails in production and passes in tests.
+    message = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+class BootstrapAuthority:
+    """Issues credentials, verifies them once, and refuses stale epochs."""
+
+    def __init__(self, secret: bytes, *, clock=time.time) -> None:
+        self._secret = secret
+        self._clock = clock
+        self._lock = threading.Lock()
+        #: Consumed nonces. In memory by design: a daemon restart invalidates
+        #: every outstanding credential anyway, because the workers that held
+        #: them lost their connection with it.
+        self._consumed: set[str] = set()
+        #: allocation_id -> the only epoch we will now accept (INV-7).
+        self._current_epoch: dict[str, int] = {}
+
+    def issue(
+        self,
+        *,
+        allocation_id: str,
+        epoch: int,
+        rank: int = 0,
+        ttl_s: int = DEFAULT_TTL_S,
+    ) -> BootstrapCredential:
+        payload = {
+            "allocation_id": allocation_id,
+            "epoch": int(epoch),
+            "rank": int(rank),
+            "expires_at": self._clock() + ttl_s,
+            "nonce": secrets.token_urlsafe(24),
+        }
+        with self._lock:
+            # Issuing for an epoch fences every earlier one: recovery mints a
+            # new epoch, and the worker from the old one must not be able to
+            # register afterwards.
+            known = self._current_epoch.get(allocation_id)
+            if known is None or epoch > known:
+                self._current_epoch[allocation_id] = int(epoch)
+        return BootstrapCredential(signature=_sign(self._secret, payload), **payload)
+
+    def verify(self, credential: BootstrapCredential) -> None:
+        """Raise unless this credential is ours, current, and unused."""
+        expected = _sign(self._secret, credential.payload())
+        if not hmac.compare_digest(expected, credential.signature):
+            raise BootstrapError("credential signature does not verify")
+        if credential.expires_at <= self._clock():
+            raise BootstrapError("credential has expired")
+        with self._lock:
+            current = self._current_epoch.get(credential.allocation_id)
+            if current is not None and credential.epoch < current:
+                # INV-7: an old epoch's worker is refused, by the same rule
+                # that refuses its callbacks.
+                raise BootstrapError(
+                    f"STALE_EPOCH: allocation {credential.allocation_id} is at "
+                    f"epoch {current}, credential carries {credential.epoch}"
+                )
+            if credential.nonce in self._consumed:
+                raise BootstrapError("credential has already been used")
+
+    def consume(self, credential: BootstrapCredential) -> None:
+        """Verify and burn, atomically enough that two connections presenting
+        the same credential cannot both win."""
+        with self._lock:
+            if credential.nonce in self._consumed:
+                raise BootstrapError("credential has already been used")
+            # Signature and expiry first, so a replay of a forged credential
+            # is refused as forged rather than as replayed.
+            expected = _sign(self._secret, credential.payload())
+            if not hmac.compare_digest(expected, credential.signature):
+                raise BootstrapError("credential signature does not verify")
+            if credential.expires_at <= self._clock():
+                raise BootstrapError("credential has expired")
+            current = self._current_epoch.get(credential.allocation_id)
+            if current is not None and credential.epoch < current:
+                raise BootstrapError(
+                    f"STALE_EPOCH: allocation {credential.allocation_id} is at "
+                    f"epoch {current}, credential carries {credential.epoch}"
+                )
+            self._consumed.add(credential.nonce)
+
+    def fence_epoch(self, allocation_id: str, epoch: int) -> None:
+        """Declare the epoch now in force, refusing everything older."""
+        with self._lock:
+            self._current_epoch[allocation_id] = int(epoch)
+
+
+def write_credential_file(
+    credential: BootstrapCredential, directory: Path | str
+) -> Path:
+    """Write the credential 0600 and return its path — the only thing the
+    scheduler is ever told."""
+    target_dir = Path(directory).expanduser()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    harden_dir(target_dir)
+    path = target_dir / f"bootstrap-{credential.allocation_id}-{credential.epoch}.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, FILE_MODE)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(credential.to_json())
+        handle.flush()
+        os.fsync(handle.fileno())
+    harden_file(path)
+    return path
+
+
+def read_credential_file(path: Path | str) -> BootstrapCredential:
+    return BootstrapCredential.from_json(
+        Path(path).expanduser().read_text(encoding="utf-8")
+    )
+
+
+__all__ = [
+    "CREDENTIAL_PATH_ENV",
+    "DEFAULT_TTL_S",
+    "SECRET_FILENAME",
+    "BootstrapAuthority",
+    "BootstrapCredential",
+    "BootstrapError",
+    "load_or_mint_secret",
+    "read_credential_file",
+    "write_credential_file",
+]

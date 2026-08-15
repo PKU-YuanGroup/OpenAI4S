@@ -11,6 +11,8 @@
 
 | 文件 | 是什么 |
 |---|---|
+| [`bootstrap.py`](bootstrap.py) | 被调度器放到某个节点上的 worker 用来证明"我就是这个 daemon 要的那个 worker"的凭据：对 `(allocation_id, epoch, rank, expires_at, nonce)` 的 HMAC，用每 daemon 一份的 0600 密钥签名，密钥经 `os.link` 发布，于是两个 daemon 不会各铸一份。每个字段都有理由——没有 `epoch`，上一个化身的凭据仍然有效，而这正是 INV-7 禁止的；没有 `nonce`，被截获的凭据可以重放。它以**文件**形式传递，只把路径告诉调度器，这也正是 broker 拒绝凭据形状环境变量名的原因：作业的环境，任何能跑 `scontrol show job` 的人都读得到。 |
+| [`worker_gateway.py`](worker_gateway.py) | 这些 worker 拨回来的地方。除非 `OPENAI4S_WORKER_LISTEN` 明说，否则不开——默认开着的监听器，对每一台永远不会跑集群作业的笔记本都是一个攻击面。由 worker 做客户端，因为计算节点通常谁也连不上而 daemon 通常连得上；凭据在交换任何一个协议字节**之前**就被校验并烧掉：这条 socket 承载 `host_call` 流量，先服务后检查的监听器，在"后"的那段时间里就是一个远程执行面。拒绝只说 "refused"——过期、重放、伪造是同一个词，因为差别本身就是一个 oracle。会合按 `(allocation, epoch)` 归键，于是上一个 epoch 的迟到者满足不了当前 epoch 的等待。 |
 | [`local/`](./local/) | 默认 backend：本机。每个安装都有它，所以 INV-8 的对账在那里是真正实现而不是打桩——否则这条不变量在 CI 里没有的集群之外就没被测过。 |
 | [`reconciler.py`](reconciler.py) | 那个循环：周期性地把 desired 与 observed 对比一遍，每个 workload 每 tick 至多走一步，而且每一步都写成可重复执行的——因为"tick 跑到一半死掉"是 daemon 真正会遇到的唯一失败模式。`Unknown` 的提交永不盲目重试；下一个 tick 先问 `find_by_token`（INV-8）。观察到 `BACKEND_UNAVAILABLE` 什么都不动，于是调度器重启不会变成一片 workload 集体死亡。取消屏障写成一个方法，好让计划钉死的顺序——fence → 取消任务 → drain → 释放 → 观察终态 → 标记终态——是一段能读的顺序，而不是从"调用恰好写在哪儿"里浮现出来的顺序；而且它可重入，因为走不了第二遍的屏障，在 backend 第一次迟滞时就会把 workload 卡死。 |
 | [`slurm/`](./slurm/) | Slurm backend——唯一被允许叫出调度器名字的目录，也正是它让上面那条规则可被检查而不是停留在愿望上。泄漏守卫按名字跳过它，所以调度器的词出现在别处就是缺陷。 |
