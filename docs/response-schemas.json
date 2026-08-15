@@ -12729,7 +12729,10 @@
                   "type": "string"
                 },
                 "reason": {
-                  "type": "null"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 }
               },
               "required": [
