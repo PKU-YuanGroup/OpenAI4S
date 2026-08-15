@@ -86,8 +86,18 @@ class Phase(str, Enum):
     def is_active_allocation(self) -> bool:
         """Counts against INV-3's one-active-allocation-per-workload rule.
 
-        Deliberately the same set the partial unique index in the schema
-        uses; the index is the enforcement, this is the readable copy.
+        The same set the schema's partial unique index uses; the index is
+        the enforcement, this is the readable copy.
+
+        ``RELEASING`` is in the set, which is a deliberate departure from
+        the plan's appendix A draft (recorded in appendix D). INV-3 exists
+        so two allocations cannot hold resources at once, and an allocation
+        being torn down still holds one — excluding it would let a new
+        submission start while the old job is still dying, which is the
+        exact double-allocation the invariant forbids. It also kept the
+        cancel barrier from finding its own allocation on the second pass,
+        so a lagging backend produced a workload marked cancelled while its
+        job was still running.
         """
         return self in _ACTIVE_PHASES
 
@@ -96,7 +106,13 @@ _TERMINAL_PHASES = frozenset(
     {Phase.COMPLETED, Phase.FAILED, Phase.CANCELLED, Phase.LOST}
 )
 _ACTIVE_PHASES = frozenset(
-    {Phase.SUBMITTING, Phase.PENDING, Phase.GRANTED, Phase.ACTIVE}
+    {
+        Phase.SUBMITTING,
+        Phase.PENDING,
+        Phase.GRANTED,
+        Phase.ACTIVE,
+        Phase.RELEASING,
+    }
 )
 
 
