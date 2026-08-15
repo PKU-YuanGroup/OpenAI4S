@@ -123,6 +123,7 @@ from openai4s.storage.team import (
     create_session_owners_schema,
     create_team_schema,
 )
+from openai4s.storage.workloads import WorkloadRepository, create_workload_schema
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -681,6 +682,11 @@ QUERY_DENYLIST = frozenset(
         "invites",
         "usage_ledger",
         "quotas",
+        # Orchestration state: submission tokens are credentials of a sort
+        # (they are what INV-8 reconciliation matches on), and a workload's
+        # spec carries another user's command line.
+        "workloads",
+        "allocations",
         "host_call_log",
         "permission_rules",
         "permission_requests",
@@ -1005,6 +1011,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._workloads = WorkloadRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1226,6 +1237,10 @@ class Store:
                     18: ("team_users", self._apply_team_users),
                     19: ("session_owners", self._apply_session_owners),
                     20: ("team_governance", self._apply_team_governance),
+                    21: (
+                        "orchestration_workloads",
+                        self._apply_orchestration_workloads,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1255,6 +1270,16 @@ class Store:
         """
 
         create_session_owners_schema(conn)
+
+    def _apply_orchestration_workloads(self, conn: sqlite3.Connection) -> None:
+        """Version 21: workloads and allocations (M3a-8).
+
+        Carries the partial unique index that IS INV-3: a second live
+        allocation for one workload is refused by the database, in the
+        window between a check and an insert that no Python guard covers.
+        """
+
+        create_workload_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -1933,6 +1958,12 @@ class Store:
     def governance(self) -> GovernanceRepository:
         """Team-mode governance: members, invites, usage, quotas (M2)."""
         return self._governance
+
+    @property
+    def workloads(self) -> WorkloadRepository:
+        """Cluster workloads and allocations (M3a). Also the reconciler's
+        WorkloadStore: the Protocol it needs is exactly this surface."""
+        return self._workloads
 
     @property
     def secrets(self):

@@ -123,6 +123,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "session_owners",
         # Team governance: membership, invites, usage ledger, quotas (M2).
         "team_governance",
+        # Cluster workloads and allocations (M3a). Carries the partial unique
+        # index that enforces one live allocation per workload.
+        "orchestration_workloads",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

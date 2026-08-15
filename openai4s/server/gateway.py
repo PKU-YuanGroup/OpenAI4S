@@ -89,6 +89,7 @@ from openai4s.server import (
     governance_routes,
     kernel_routes,
     local_auth,
+    orchestration_routes,
     retrieval_source,
     team_routes,
     ws_frames,
@@ -2191,6 +2192,16 @@ class SessionRunner:
             tunnel=None,
         )
         self._share_router = ShareRouter(self.shares, _load_share_assets())
+
+        # Cluster orchestration (M3a). Lazy in spirit: the local backend
+        # spawns nothing until a workload asks, the cluster backend is only
+        # constructed when cluster.toml configures one, and the reconciler
+        # thread starts only when there is a backend for it to drive.
+        self.orchestration_backends: dict[str, Any] = {}
+        self.default_backend = "local"
+        self.cluster_config = None
+        self.reconciler = None
+        self._init_orchestration()
         self.deletions = SessionDeletionService(
             self.store,
             data_dir=self.cfg.data_dir,
@@ -2851,6 +2862,73 @@ class SessionRunner:
             with self._lock:
                 self._deleting_projects.discard(project_id)
 
+    def _init_orchestration(self) -> None:
+        """Build the backends this daemon can reach, and start the loop.
+
+        Kept out of __init__ proper so a failure here — a malformed
+        cluster.toml above all — degrades to "local only" with a printed
+        reason rather than refusing to boot. An operator's typo in a cluster
+        file should not take the workbench down.
+        """
+        from openai4s.orchestration.local import LocalBackend
+        from openai4s.orchestration.reconciler import Reconciler
+
+        log_dir = self.cfg.data_dir / "orchestration-logs"
+        self.orchestration_backends["local"] = LocalBackend(log_dir=log_dir)
+
+        try:
+            from openai4s.orchestration.slurm import (
+                ClusterConfigError,
+                SlurmBackend,
+                load_cluster_config,
+            )
+
+            cluster = load_cluster_config(self.cfg.data_dir)
+            self.cluster_config = cluster
+            if cluster.configured:
+                self.orchestration_backends["cluster"] = SlurmBackend(
+                    cluster=cluster, log_dir=str(log_dir)
+                )
+        except ClusterConfigError as exc:
+            print(
+                f"[openai4s] cluster.toml ignored: {exc}", file=sys.stderr, flush=True
+            )
+        except Exception as exc:  # noqa: BLE001 — never block boot on this
+            print(
+                f"[openai4s] cluster configuration unavailable: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        # The cadence is the plan's 5s by default. It is settable because
+        # every end-to-end test of this subsystem otherwise spends its life
+        # waiting for the next tick — and a test suite that takes minutes to
+        # say "the batch pipeline works" gets run less often, which is the
+        # expensive kind of slow.
+        try:
+            interval_s = float(os.environ.get("OPENAI4S_RECONCILE_INTERVAL", "5"))
+        except ValueError:
+            interval_s = 5.0
+        self.reconciler = Reconciler(
+            store=self.store.workloads,
+            backends=self.orchestration_backends,
+            default_backend=self.default_backend,
+            interval_s=max(0.05, interval_s),
+            on_event=self._on_orchestration_event,
+        )
+        self.reconciler.start()
+
+    def _on_orchestration_event(self, kind: str, payload: dict) -> None:
+        """Orchestration events are daemon-level, not session-level.
+
+        There is no root_frame_id to broadcast on for a batch job, so these
+        are logged rather than pushed at a WebSocket — inventing a session
+        to carry them would put one user's job events on another user's
+        stream.
+        """
+        if kind in ("reconcile_error", "workload_terminal"):
+            print(f"[openai4s] orchestration {kind}: {payload}", file=sys.stderr)
+
     def close(self) -> None:
         """Stop the sweeper, turns, background workers, and all session slots."""
 
@@ -2858,6 +2936,16 @@ class SessionRunner:
             if self._closed:
                 return
             self._closed = True
+        reconciler = getattr(self, "reconciler", None)
+        if reconciler is not None:
+            reconciler.stop()
+        for backend in (getattr(self, "orchestration_backends", None) or {}).values():
+            closer = getattr(backend, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: BLE001
+                    pass
         recovery = getattr(self, "recovery", None)
         if recovery is not None:
             recovery.stop()
@@ -9597,6 +9685,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._send(200, payload, "application/json; charset=utf-8")
                 return
             if governance_routes.handle(self, method, sub, q, _team_auth, store):
+                return
+            if orchestration_routes.handle(self, method, sub, q, store, runner):
                 return
             if file_routes.handle(self, method, sub, q, _file_area, _team_auth):
                 return
