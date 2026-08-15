@@ -124,6 +124,7 @@ from openai4s.storage.team import (
     create_session_owners_schema,
     create_team_schema,
 )
+from openai4s.storage.user_keys import UserKeyRepository, create_user_key_schema
 from openai4s.storage.workloads import WorkloadRepository, create_workload_schema
 
 _SCHEMA = """
@@ -1022,6 +1023,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._user_keys = UserKeyRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1251,6 +1257,7 @@ class Store:
                         "orchestration_leases",
                         self._apply_orchestration_leases,
                     ),
+                    23: ("user_llm_keys", self._apply_user_llm_keys),
                 },
             )
             if report["migrated"]:
@@ -1300,6 +1307,16 @@ class Store:
         """
 
         create_lease_schema(conn)
+
+    def _apply_user_llm_keys(self, conn: sqlite3.Connection) -> None:
+        """Version 23: per-user LLM credential references (M4-1, D7).
+
+        Additive, and it holds references rather than keys — the secrets
+        themselves stay in the SecretBroker, so this table copied off the
+        machine names slots it cannot open.
+        """
+
+        create_user_key_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -1984,6 +2001,11 @@ class Store:
         """Cluster workloads and allocations (M3a). Also the reconciler's
         WorkloadStore: the Protocol it needs is exactly this surface."""
         return self._workloads
+
+    @property
+    def user_keys(self) -> UserKeyRepository:
+        """Per-user LLM credential references (M4-1)."""
+        return self._user_keys
 
     @property
     def leases(self) -> LeaseRepository:

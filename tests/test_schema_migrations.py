@@ -129,6 +129,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Session leases and session↔workload bindings (M3b-4). Two empty
         # tables on a single-user install.
         "orchestration_leases",
+        # Per-user LLM credential *references* (M4-1). The keys themselves
+        # stay in the SecretBroker.
+        "user_llm_keys",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

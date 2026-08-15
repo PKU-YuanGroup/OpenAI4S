@@ -33,7 +33,24 @@ _REDEEM = contract.RouteSpec(
     "auth.redeem_invite", "POST", r"/auth/redeem-invite", mutates=True
 )
 
-ROUTES = contract.validate_routes((_LOGIN, _LOGOUT, _ME, _REDEEM))
+#: A user's own LLM credential (M4-1, decision D7's second half). Under
+#: `/auth/` because it is self-service: it is the only credential surface a
+#: member reaches without being an admin, and putting it beside `me` is what
+#: keeps it out of the admin `/team/*` group where an admin could set
+#: somebody else's.
+_MY_KEY = contract.RouteSpec(
+    "auth.me.llm_key", "GET", r"/auth/me/llm-key", mutates=False
+)
+_SET_MY_KEY = contract.RouteSpec(
+    "auth.me.llm_key.set", "PUT", r"/auth/me/llm-key", mutates=True
+)
+_CLEAR_MY_KEY = contract.RouteSpec(
+    "auth.me.llm_key.clear", "DELETE", r"/auth/me/llm-key", mutates=True
+)
+
+ROUTES = contract.validate_routes(
+    (_CLEAR_MY_KEY, _LOGIN, _LOGOUT, _ME, _MY_KEY, _REDEEM, _SET_MY_KEY)
+)
 
 _PATH_PREFIX = "/auth/"
 
@@ -53,6 +70,69 @@ def _json_with_cookie(self, obj: dict, cookie: str, code: int = 200) -> None:
         "application/json; charset=utf-8",
         extra={"Set-Cookie": cookie},
     )
+
+
+def _handle_my_llm_key(self, method: str, sub: str, store: Any, identity: Any) -> bool:
+    """A user's own key: set it, clear it, or ask whether one is set.
+
+    The value is write-only. `GET` answers whether a key exists and when it
+    was set, never what it is — a credential a screen can display is a
+    credential a screenshot leaks, and the user who typed it does not need
+    it read back.
+    """
+    from openai4s.storage.user_keys import USER_KEY_SCOPE, secret_name
+
+    if _MY_KEY.match(method, sub):
+        records = store.user_keys.list_for_user(identity.user_id)
+        self._json({"keys": [record.public() for record in records]})
+        return True
+
+    body = self._body() or {}
+    provider = str(body.get("provider") or "").strip().lower()
+    if not provider:
+        self._json({"error": "provider is required"}, 400)
+        return True
+
+    if _CLEAR_MY_KEY.match(method, sub):
+        removed = store.user_keys.delete(identity.user_id, provider)
+        _audit_key_change(store, identity, provider, "user_llm_key_clear")
+        # Clearing is not an error when there was nothing to clear: the
+        # user's intent -- "do not use my key" -- is satisfied either way.
+        self._json({"ok": True, "removed": bool(removed), "provider": provider})
+        return True
+
+    secret = str(body.get("api_key") or "")
+    if not secret.strip():
+        self._json({"error": "api_key is required"}, 400)
+        return True
+    try:
+        ref = store.secrets.put(
+            USER_KEY_SCOPE, secret_name(identity.user_id, provider), secret
+        )
+    except Exception as exc:  # noqa: BLE001
+        # A broker that cannot store it must not leave a row pointing at a
+        # slot that was never written: the next turn would then refuse with
+        # "configured but unreadable" for a key that was never accepted.
+        self._json(
+            {"error": f"could not store the key: {exc}", "code": "secret_store"}, 503
+        )
+        return True
+    store.user_keys.set_ref(identity.user_id, provider, ref)
+    _audit_key_change(store, identity, provider, "user_llm_key_set")
+    self._json({"ok": True, "provider": provider, "configured": True})
+    return True
+
+
+def _audit_key_change(store: Any, identity: Any, provider: str, action: str) -> None:
+    try:
+        store.team.audit(
+            actor=identity.username,
+            action=action,
+            user_id=identity.user_id,
+            target=provider,
+        )
+    except Exception:  # noqa: BLE001 — auditing must not fail the request
+        pass
 
 
 def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
@@ -95,6 +175,16 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
         team_auth.logout(_cookie_token(self))
         _json_with_cookie(self, {"ok": True}, team_auth.clear_cookie_header())
         return True
+    if (
+        _MY_KEY.match(method, sub)
+        or _SET_MY_KEY.match(method, sub)
+        or (_CLEAR_MY_KEY.match(method, sub))
+    ):
+        identity = getattr(self, "_team_identity", None)
+        if team_auth is None or identity is None:
+            self._json({"error": "team mode is disabled", "code": "team_off"}, 403)
+            return True
+        return _handle_my_llm_key(self, method, sub, store, identity)
     if _REDEEM.match(method, sub):
         if team_auth is None:
             self._json({"error": "team mode is disabled", "code": "team_off"}, 403)

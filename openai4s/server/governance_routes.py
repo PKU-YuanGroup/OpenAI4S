@@ -119,6 +119,15 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
             self._json({"error": "no such user"}, 404)
             return True
         store.team.set_disabled(user["id"], True)
+        # Their own LLM credentials go with the account (M4-1). A key that
+        # outlives the account it belongs to is a key nobody is watching,
+        # and the row is the only thing that would ever have named its slot
+        # again — leaving it behind makes the credential unreachable *and*
+        # unrevocable, which is the worst of both.
+        try:
+            store.user_keys.delete_all_for_user(user["id"])
+        except Exception:  # noqa: BLE001 — disabling must still land
+            pass
         store.team.audit(
             actor=_actor(self),
             action="user_disable",

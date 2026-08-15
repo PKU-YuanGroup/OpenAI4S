@@ -5559,12 +5559,74 @@ class SessionRunner:
         # was recorded rather than enforced.
         pinned = self._pinned_llm_config(st)
         if pinned is not None:
-            return pinned
-        return resolve_llm_config(
-            self.cfg.llm,
-            self.store,
-            model_override=(st.model if (st is not None and st.model) else None),
+            return self._apply_user_llm_key(pinned, st)
+        return self._apply_user_llm_key(
+            resolve_llm_config(
+                self.cfg.llm,
+                self.store,
+                model_override=(st.model if (st is not None and st.model) else None),
+            ),
+            st,
         )
+
+    def _apply_user_llm_key(self, cfg, st: "SessionState | None"):
+        """Swap in the session owner's own credential, if they have one (M4-1).
+
+        Applied here rather than at each call site because this method is the
+        single place a Web turn's LLM configuration is decided — the turn
+        loop, the reviewer and every other provider request downstream all
+        read what it returns. A per-call-site override is how one of them
+        ends up billing the group for a user who thought they were paying
+        their own way.
+
+        The override is per *provider*: a user with their own Anthropic
+        account and no OpenAI key runs on their key for one and the group's
+        for the other, which is the ordinary arrangement rather than an
+        exotic one. Absence of a row is the fallback, so a single-user
+        install and a team member with no key of their own are the same code
+        path as before (INV-1).
+
+        A configured-but-unreadable key is a refusal, not a silent fallback:
+        the user asked for their own credential to be used, and quietly
+        charging the group instead is a decision they did not make. A
+        *lookup* that fails for infrastructural reasons is different, and
+        falls back — availability over bookkeeping, matching the quota gate.
+        """
+        if st is None or not getattr(st, "root_frame_id", ""):
+            return cfg
+        provider = getattr(cfg, "provider", "") or ""
+        if not provider:
+            return cfg
+        try:
+            owner = self.store.team.session_owner(st.root_frame_id)
+        except Exception:  # noqa: BLE001 — no ownership record, no override
+            return cfg
+        if not owner:
+            return cfg
+        try:
+            record = self.store.user_keys.get(owner["user_id"], provider)
+        except Exception:  # noqa: BLE001
+            return cfg
+        if record is None:
+            return cfg
+        try:
+            secret = self.store.secrets.get(record.secret_ref)
+        except Exception:  # noqa: BLE001
+            # A reference the broker will not even parse — a row from a
+            # database moved between machines, or a backend that changed
+            # under it. Same answer as an empty slot: the user asked for
+            # their key, and we cannot honour it.
+            secret = None
+        if not secret:
+            raise GatewayError(
+                409,
+                f"your own {provider} key is configured but could not be read; "
+                f"set it again or remove it to fall back to the shared key",
+                "user_key_unreadable",
+            )
+        from dataclasses import replace
+
+        return replace(cfg, api_key=secret)
 
     def _pinned_llm_config(self, st: "SessionState | None"):
         """The configuration this session named, or None when it named none.

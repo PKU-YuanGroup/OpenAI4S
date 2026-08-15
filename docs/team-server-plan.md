@@ -331,3 +331,7 @@ STALE_EPOCH  STALE_SPEC_REVISION  DUPLICATE_SUBMISSION  KERNEL_STATE_LOST
 - 2026-08-15 · M3b-4 leases 表 · 附录 A DDL 无 session↔workload 映射 · 新增 `session_workloads(session_id PK, workload_id UNIQUE)`。理由：集群内核必须能从聊天会话双向找到（正向答"我的内核好了吗"，反向答"该给谁的时间线写状态丢失"）；把 session_id 塞进 spec_json 会让两个方向都变成 JSON 表扫描，且配对无法被约束强制。
 - 2026-08-15 · M3b-5 恢复次数 · 计划未定义上限 · `DEFAULT_MAX_RECOVERIES = 3`（可注入）。理由：一个把每个交给它的 worker 都弄死的节点，否则会被无限重投；无限重试在有人去读账单之前，与一个正常工作的系统完全无法区分。
 - 2026-08-15 · M3b-7 发现的真缺陷:取消原因被 backend 覆盖 · `workload.reason = observed.reason or reason` · 改为 `workload.reason = reason`（allocation 仍记 `observed.reason or reason`）。两行记的是两件事：allocation 记资源平面说这次尝试**遭遇了什么**（被抢占就是被抢占，那是它的历史），workload 记**我们为何**结束它——而后者只有我们知道：调度器被问到一个按我们指令取消的作业，只能答"cancelled"。让它的答案胜出，会使租约回收、管理员取消与用户取消统统上报 USER_CANCELLED：对用户谎称是他自己取消了系统收回的会话，对审计 GPU 释放的运维给出一个纯属虚构的原因。M3a 的用例恰好都用 USER_CANCELLED 请求取消，于是这个缺陷在那时不可见。
+- 2026-08-15 · M3b-6 契约扫描器再次误捕 · `sub.startswith("/sessions/")` 内联 · 同 M1 的守卫正则一样提为模块常量；顺带修了 `server/README.md` 里两行表格被并成一行（kernel_routes 的描述落在 orchestration_routes 那一行里，kernel_routes 自己那格是空的）——README 门禁只查"文件被提到"，所以它一直是绿的。
+- 2026-08-15 · M4-1 密钥槽位名 · 计划未定义 · broker 的引用会变成 keychain account 名并进日志，因此只允许 `[A-Za-z0-9-_.]`；`user_id:provider` 里的冒号会在 `put` 处被拒，表现为一个本身没有任何问题的请求返回 503。改用 `.` 连接。
+- 2026-08-15 · M4-1 读不出来的个人密钥 · 计划未定义 · 判为**拒绝该轮**（409 `user_key_unreadable`）而不是静默回落到组 key：用户明确要求用自己的凭据，悄悄改记到组里是一个他没有做过的决定。区别对待"查找本身出故障"（回落，可用性优先，与配额门一致）与"配置了但槽位是空的"（拒绝）。
+- 2026-08-15 · M4-1 账号禁用与密钥 · 计划未定义 · 禁用用户即清空其全部个人密钥行。理由：数据库里那一行是唯一还会指向该槽位的东西，留着它等于让凭据既不可达又不可撤销。
