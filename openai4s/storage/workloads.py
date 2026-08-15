@@ -258,12 +258,29 @@ class WorkloadRepository:
         return [self._row_to_workload(r) for r in rows]
 
     def save_workload(self, workload: Workload) -> None:
+        """Persist observed state — phase, epoch, reason — and NOT intent.
+
+        `desired_state` is deliberately absent from this UPDATE. It is the
+        *user's* statement of what they want; the reconciler is the actuator,
+        not its author. Writing it back from a reconciler's in-memory copy is
+        a lost update with a specific, expensive shape: a tick that loaded
+        the row before a cancel arrived writes RUNNING back over STOPPED, and
+        the cancel is silently dropped — the user sees a job they cancelled
+        keep running, with nothing anywhere recording that their request was
+        overwritten. Intent is written only by `request_stop` and by
+        creation.
+        """
         with self._lock:
             self._connection.execute(
-                "UPDATE workloads SET desired_state=?, phase=?,"
-                " execution_epoch=?, reason=?, updated_at=? WHERE id=?",
+                # COALESCE on `reason` for a related reason: writing NULL
+                # means "I have nothing to report", not "forget what you
+                # were told". `request_stop` records *why* a user asked for a
+                # stop; a reconciler pass that observed nothing new would
+                # otherwise erase it, and the audit trail would say a job
+                # ended for no stated cause. A real reason still overwrites.
+                "UPDATE workloads SET phase=?, execution_epoch=?,"
+                " reason=COALESCE(?, reason), updated_at=? WHERE id=?",
                 (
-                    workload.desired_state.value,
                     workload.phase.value,
                     workload.execution_epoch,
                     workload.reason.value if workload.reason else None,

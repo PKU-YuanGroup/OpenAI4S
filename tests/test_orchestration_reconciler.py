@@ -602,3 +602,47 @@ def test_an_untracked_allocation_is_lost_not_completed(local_backend):
     observed = local_backend.observe(allocation)
     assert observed.phase is Phase.LOST
     assert observed.reason is Reason.WORKER_LOST
+
+
+# -- intent is not the reconciler's to write ---------------------------------
+
+
+def test_a_reconciler_save_cannot_overwrite_a_users_cancel(tmp_path):
+    """The lost update that dropped cancels in the full suite.
+
+    A tick loads a workload, the user cancels while it is mid-pass, and the
+    tick then saves. If that save writes `desired_state` from its own stale
+    copy, the cancel is gone — the job keeps running and nothing records
+    that the request was overwritten. Driven against the real repository,
+    because the defect is in what the UPDATE names.
+    """
+    from openai4s.config import Config
+    from openai4s.orchestration.models import DesiredState, Phase, Reason
+    from openai4s.store import get_store
+
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=("true",),
+    )
+    workload = store.workloads.create_workload(spec=spec, owner_user_id="u1")
+
+    # a tick loads it (desired_state is RUNNING at this instant)
+    in_flight = store.workloads.get_workload(workload.id)
+    assert in_flight.desired_state is DesiredState.RUNNING
+
+    # the user cancels while that pass is still running
+    assert store.workloads.request_stop(workload.id, reason=Reason.USER_CANCELLED)
+
+    # the tick finishes and writes what it observed
+    in_flight.phase = Phase.ACTIVE
+    store.workloads.save_workload(in_flight)
+
+    # the cancel must have survived
+    after = store.workloads.get_workload(workload.id)
+    assert (
+        after.desired_state is DesiredState.STOPPED
+    ), "the reconciler overwrote the user's cancel with its own stale copy"
+    assert after.phase is Phase.ACTIVE, "observed state should still be saved"
+    assert after.reason is Reason.USER_CANCELLED

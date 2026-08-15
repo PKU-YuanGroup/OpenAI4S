@@ -187,6 +187,11 @@ class Reconciler:
             except Exception as exc:  # noqa: BLE001
                 # One bad workload must not stop the other 99.
                 report.errors.append(f"{workload.id}: {exc}")
+                # Also recorded on the loop itself: a per-workload failure was
+                # invisible to `last_error`, which only saw exceptions that
+                # escaped `tick()` — so a workload failing identically on
+                # every pass looked exactly like a healthy loop.
+                self.last_error = f"{workload.id}: {type(exc).__name__}: {exc}"
                 self._emit(
                     "reconcile_error", {"workload_id": workload.id, "error": str(exc)}
                 )
