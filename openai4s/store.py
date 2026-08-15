@@ -689,6 +689,16 @@ QUERY_DENYLIST = frozenset(
         # spec carries another user's command line.
         "workloads",
         "allocations",
+        # Cluster sessions (M3b/M4). `user_llm_keys` holds a broker reference
+        # and every user's id -- the two fields `UserKeyRecord.public()`
+        # deliberately withholds from a route, so leaving the table readable
+        # would hand the agent exactly what the API refuses. `leases` and
+        # `session_workloads` map sessions to workloads and to each other,
+        # which is the same "who is working on what" that INV-13 protects
+        # everywhere else.
+        "user_llm_keys",
+        "leases",
+        "session_workloads",
         "host_call_log",
         "permission_rules",
         "permission_requests",
@@ -789,6 +799,9 @@ _SCOPED_VIEWS = frozenset(
         "my_lineage_edges",
         "my_frames",
         "my_env_snapshots",
+        # The conversation/execution family, scoped the same way (team mode).
+        "my_messages",
+        "my_execution_log",
     }
 )
 
@@ -816,6 +829,24 @@ _VIEW_ONLY_TABLES = frozenset(
     }
 )
 
+#: The same rule, applied to the conversation and execution family, and only
+#: when team mode is on.
+#:
+#: In a single-user install "every session in this database" is the user's own
+#: work, and `tests/test_store.py` documents reading it. In team mode it is
+#: every colleague's prompts, the model's replies, and the code they ran --
+#: which is INV-13 on the most sensitive surface the product has, reachable
+#: from a single agent `SELECT`. So the closure is conditional: the
+#: single-user path keeps the behaviour it has always had (INV-1), and a team
+#: daemon reads these through the scoped views or not at all.
+_TEAM_VIEW_ONLY_TABLES = frozenset(
+    {
+        "frames",
+        "messages",
+        "execution_log",
+    }
+)
+
 
 class _QueryAuthorizer:
     """SQLite's own answer to "may this statement touch that table?".
@@ -836,8 +867,15 @@ class _QueryAuthorizer:
     interface, so matching on it would work until it did not.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, view_only: frozenset[str] | None = None) -> None:
         self.denied: list[str] = []
+        # Which base tables are reachable only through a scoped view. Passed
+        # in rather than read from a module constant because the answer
+        # depends on the deployment: a team daemon closes the conversation
+        # family that a single-user one leaves open (INV-1).
+        self._view_only = (
+            _VIEW_ONLY_TABLES if view_only is None else frozenset(view_only)
+        )
 
     def _deny(self, what: str) -> int:
         if what not in self.denied:
@@ -880,7 +918,7 @@ class _QueryAuthorizer:
             return self._deny(table)
         if table in QUERY_DENYLIST:
             return self._deny(table)
-        if table in _VIEW_ONLY_TABLES:
+        if table in self._view_only:
             # Permitted only as the underlying read of a trusted scoped view.
             if (source or "").lower() in _SCOPED_VIEWS:
                 return sqlite3.SQLITE_OK
@@ -4567,12 +4605,42 @@ class Store:
                 SELECT s.* FROM main.env_snapshots s
                   JOIN main.frames f ON f.frame_id = s.frame_id
                  WHERE f.frame_id = {root_sql} OR f.root_frame_id = {root_sql}""",
+            # Both tables carry `root_frame_id` themselves, so this is a
+            # filter and not a join. The join was tried first and returned
+            # nothing: a message's `frame_id` is nullable (a turn's messages
+            # are keyed by the root), so joining on it dropped every row --
+            # a scoped view that is always empty is indistinguishable from a
+            # working guard until somebody asserts the owner can still read.
+            f"""CREATE TEMP VIEW my_messages AS
+                SELECT * FROM main.messages
+                 WHERE root_frame_id = {root_sql}""",
+            f"""CREATE TEMP VIEW my_execution_log AS
+                SELECT * FROM main.execution_log
+                 WHERE root_frame_id = {root_sql}""",
         )
         for name in _SCOPED_VIEWS:
             conn.execute(f"DROP VIEW IF EXISTS temp.{name}")
         for statement in statements:
             conn.execute(statement)
         self._view_scope = (root, project)
+
+    def _query_view_only(self) -> frozenset[str]:
+        """Which base tables `host.query` may reach only through a view.
+
+        Team mode adds the conversation/execution family. Off, the set is
+        byte-identical to what it has always been, which is what keeps a
+        single-user install's documented `SELECT * FROM frames` working
+        (INV-1). Read from the environment rather than from a Config
+        because `Store` is constructed in places that have no Config, and a
+        guard that silently loosened when its config was unavailable would
+        be the wrong failure.
+        """
+        import os
+
+        flag = (os.environ.get("OPENAI4S_TEAM_MODE") or "").strip().lower()
+        if flag in ("1", "true", "yes", "on"):
+            return _VIEW_ONLY_TABLES | _TEAM_VIEW_ONLY_TABLES
+        return _VIEW_ONLY_TABLES
 
     def query(
         self,
@@ -4616,7 +4684,7 @@ class Store:
         # by rule and not by keyword.
         conn = self._conn
         with self._lock:
-            guard = _QueryAuthorizer()
+            guard = _QueryAuthorizer(view_only=self._query_view_only())
             try:
                 # Views first, with the guard off: creating them is a privileged
                 # setup step, not part of the caller's statement.
