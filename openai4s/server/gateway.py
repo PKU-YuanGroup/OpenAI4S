@@ -2040,6 +2040,13 @@ referenced by filename), limitations, and cited sources (URLs).
 The task is NOT complete until you call `host.submit_output({...}, [...])` — \
 prose alone never ends an exploration."""
 
+#: How long a cell may wait for this session's cluster worker to dial in.
+#: Short on purpose: the queue wait belongs to the reconciler and to the
+#: readiness projection, not to a request thread. A worker that has not
+#: arrived yet leaves the session local for this attempt and is asked for
+#: again on the next one.
+_REMOTE_ATTACH_TIMEOUT_S = 5.0
+
 _EXPLORE_NUDGE = (
     "[system] Explore mode: the investigation is not finished — no "
     "host.submit_output(...) call has run. Continue with the next "
@@ -4049,6 +4056,84 @@ class SessionRunner:
         self._wire_delegation(st)
         return dispatcher
 
+    def _touch_compute_lease(self, st: "SessionState") -> None:
+        """Renew this session's cluster lease, if it has one."""
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None:
+            return
+        session_id = getattr(st, "root_frame_id", "") or ""
+        if not session_id:
+            return
+        try:
+            manager.touch(session_id)
+        except Exception:  # noqa: BLE001 — a lease must never fail a cell
+            pass
+
+    def _remote_kernel_factory(self, st: "SessionState", disp):
+        """A factory for this session's cluster kernel, or None for local.
+
+        None is the answer for every session on a daemon with no worker
+        listener, every session that never asked for a cluster, and every
+        session whose allocation is not yet granted — so the default install
+        takes the identical path it always took (INV-1).
+
+        The wait is bounded and short. A worker that has not dialled in yet
+        is not an error: the reconciler is still placing the job, readiness
+        says which condition is outstanding, and the next execution asks
+        again. Blocking a cell for the length of a queue wait would be worse
+        than saying "not ready".
+        """
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None:
+            return None
+        session_id = getattr(st, "root_frame_id", "") or ""
+        if not session_id:
+            return None
+        try:
+            workload_id = self.store.leases.workload_for_session(session_id)
+        except Exception:  # noqa: BLE001 — no binding, no cluster kernel
+            return None
+        if not workload_id:
+            return None
+
+        runtime = manager.runtime(session_id)
+        if runtime is None or runtime.registration is None:
+            try:
+                attached = manager.attach_worker(
+                    session_id, timeout_s=_REMOTE_ATTACH_TIMEOUT_S
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[openai4s] cluster worker attach failed for {session_id}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return None
+            if not attached:
+                return None
+            runtime = manager.runtime(session_id)
+        if runtime is None or runtime.registration is None:
+            return None
+
+        transport = getattr(runtime.registration, "transport", None)
+        if transport is None:
+            return None
+
+        def build() -> Kernel:
+            kernel = Kernel(
+                dispatcher=disp,
+                cwd=str(manager.workspace_for(workload_id)),
+                mode="repl",
+                transport_factory=lambda: transport,
+            )
+            manager.bind_kernel(session_id, kernel)
+            return kernel
+
+        # The epoch is in the key so a recovery — a new epoch, a new worker —
+        # is a different kernel rather than a reused lease pointing at a
+        # socket whose far end is gone.
+        return build, ("cluster", workload_id, str(runtime.epoch))
+
     def _spawn_kernel(self, st: SessionState) -> KernelLease:
         """Ensure Python matches the selected environment, build-first.
 
@@ -4073,8 +4158,24 @@ class SessionRunner:
             "env_name": env.name,
         }
 
-        def factory() -> Kernel:
-            return Kernel(dispatcher=disp, **kernel_options)
+        # A session that asked to run on a cluster gets its cells executed by
+        # the worker that dialled in for it, not by a child of this daemon
+        # (M3b-3). Resolved here because `_spawn_kernel` is the one place a
+        # session's Python kernel is created — wiring it at any other call
+        # site would leave the others quietly local, which is exactly how
+        # this feature shipped unreachable the first time.
+        remote = self._remote_kernel_factory(st, disp)
+        if remote is not None:
+            remote_factory, remote_key = remote
+            env_key = remote_key
+
+            def factory() -> Kernel:
+                return remote_factory()
+
+        else:
+
+            def factory() -> Kernel:
+                return Kernel(dispatcher=disp, **kernel_options)
 
         previous_lease = st.kernels.lease("python")
         try:
@@ -4261,6 +4362,14 @@ class SessionRunner:
         execution attempt, so a spawn failure remains recoverable and auditable.
         """
         self._ensure_runtime(st)
+        # A user is executing something. That -- and an explicit renewal --
+        # is the ONLY thing that renews a cluster lease (M3b-4): a worker
+        # being alive is not a user being present, so nothing in the
+        # transport, the watchdog or the reclaimer's own probe may reach
+        # this. Placed at the Cell boundary because it is the narrowest
+        # point that every user execution passes through and no background
+        # machinery does.
+        self._touch_compute_lease(st)
         if language == "r":
             return self._ensure_r_kernel(st)
         if language == "python":

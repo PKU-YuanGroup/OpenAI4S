@@ -507,6 +507,24 @@ class ComputeSessionManager:
         )
         return stopped
 
+    def bind_kernel(self, session_id: str, kernel: Any) -> bool:
+        """Record the Kernel a caller built over this session's worker.
+
+        The manager deliberately does not construct it. A session's kernel is
+        bound to that session's Host dispatcher, and this layer has no
+        business knowing what a dispatcher is — the `kernel_factory`
+        constructor argument exists for tests that have no dispatcher at all.
+        Production hands the finished object back here so `readiness()` can
+        answer the fourth condition (INV-5) from something that exists rather
+        than from something that was arranged.
+        """
+        runtime = self._runtimes.get(session_id)
+        if runtime is None:
+            return False
+        runtime.kernel = kernel
+        runtime.kernel_ready = kernel is not None
+        return True
+
     def runtime(self, session_id: str) -> SessionRuntime | None:
         return self._runtimes.get(session_id)
 
