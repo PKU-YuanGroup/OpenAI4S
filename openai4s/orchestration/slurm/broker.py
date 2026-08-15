@@ -39,6 +39,18 @@ _SAFE_TOKEN_RE = re.compile(r"\A[A-Za-z0-9_.:@-]{1,180}\Z")
 #: Environment variables a submission may carry. An allowlist, because the
 #: alternative is inheriting a daemon environment that holds API keys.
 _ENV_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+#: What an environment *value* may contain. `--export` takes a
+#: comma-separated list with no escaping, so a comma in a value does not
+#: quote -- it adds list elements. `--export=X=1,ALL` is how a member turns
+#: their own job into one that inherits the daemon's whole environment,
+#: which is where this product's LLM credentials live. Newlines and NULs go
+#: too: they are how a value stops being one argument.
+_ENV_VALUE_RE = re.compile(r"\A[^,\r\n\x00]{0,4096}\Z")
+
+#: The list elements `--export` treats as instructions rather than as
+#: variables. Checked after assembly as well, so a future field that skips
+#: the dataclass cannot reintroduce the same thing.
+_EXPORT_KEYWORDS = frozenset({"all", "none", "nil"})
 _CREDENTIAL_HINT_RE = re.compile(
     r"(SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|CREDENTIAL|PRIVATE)", re.IGNORECASE
 )
@@ -82,6 +94,41 @@ class SlurmCommandError(RuntimeError):
         self.unreachable = unreachable
 
 
+def _assert_no_export_keyword(assembled: str) -> None:
+    """A belt on the joined string, in case a future field skips the
+    dataclass that validated its parts."""
+    for element in assembled.split(","):
+        head = element.split("=", 1)[0].strip().lower()
+        if head in _EXPORT_KEYWORDS:
+            raise ValueError(f"refusing an --export list containing {head!r} (INV-9)")
+
+
+def _validate_env_value(key: str, value: str) -> None:
+    """INV-9's other half: a *value* can be an instruction.
+
+    Keys were validated from the start, values were not, and `--export` is a
+    comma-separated list with no escaping -- so `{"X": "1,ALL"}` assembles
+    into `--export=X=1,ALL` and the scheduler propagates the submitting
+    process's entire environment to the job. That environment is the
+    daemon's, and the daemon's is where the LLM credentials are. The name
+    rule refused a credential-shaped variable; this one refuses a value that
+    turns the whole list into one.
+    """
+    text = str(value)
+    if not _ENV_VALUE_RE.fullmatch(text):
+        raise ValueError(
+            f"refusing an environment value for {key!r} containing a comma, "
+            f"newline or NUL (INV-9): --export is a comma-separated list "
+            f"with no escaping, so a comma adds list elements rather than "
+            f"quoting them"
+        )
+    if text.strip().lower() in _EXPORT_KEYWORDS:
+        raise ValueError(
+            f"refusing the environment value {text!r} for {key!r} (INV-9): "
+            f"--export reads it as an instruction, not as a value"
+        )
+
+
 @dataclass(frozen=True)
 class StepSpec:
     """A validated job step. Same discipline as `SubmitSpec`: every field
@@ -102,7 +149,7 @@ class StepSpec:
         for name in ("tasks", "nodes", "cpus_per_task"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        for key in self.environment:
+        for key, value in self.environment.items():
             if not _ENV_NAME_RE.fullmatch(key):
                 raise ValueError(f"invalid environment variable name {key!r}")
             if _CREDENTIAL_HINT_RE.search(key):
@@ -110,6 +157,7 @@ class StepSpec:
                     f"refusing to put {key!r} in a step environment "
                     f"(INV-9: pass a path to a 0600 file instead)"
                 )
+            _validate_env_value(key, value)
 
 
 @dataclass(frozen=True)
@@ -148,7 +196,7 @@ class SubmitSpec:
             raise ValueError("gpus cannot be negative")
         if not self.script.strip():
             raise ValueError("script is required")
-        for key in self.environment:
+        for key, value in self.environment.items():
             if not _ENV_NAME_RE.fullmatch(key):
                 raise ValueError(f"invalid environment variable name {key!r}")
             if _CREDENTIAL_HINT_RE.search(key):
@@ -157,6 +205,7 @@ class SubmitSpec:
                     f"(INV-9): a credential belongs in an 0600 file whose "
                     f"*path* is passed instead"
                 )
+            _validate_env_value(key, value)
 
 
 @dataclass(frozen=True)
@@ -267,6 +316,7 @@ class SlurmBroker:
             # ALL means inherit; we name exactly what we want instead, so the
             # daemon's environment (which holds API keys) is not the default.
             pairs = ",".join(f"{k}={v}" for k, v in sorted(spec.environment.items()))
+            _assert_no_export_keyword(pairs)
             argv.append(f"--export={pairs}")
         else:
             argv.append("--export=NONE")
@@ -311,6 +361,7 @@ class SlurmBroker:
             argv.append(f"--chdir={spec.workdir}")
         if spec.environment:
             pairs = ",".join(f"{k}={v}" for k, v in sorted(spec.environment.items()))
+            _assert_no_export_keyword(pairs)
             argv.append(f"--export={pairs}")
         argv.append("--")
         argv.extend(spec.command)

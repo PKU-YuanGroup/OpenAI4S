@@ -247,12 +247,26 @@ class Reconciler:
             self._submit_new(workload, backend, report)
             return
 
-        if allocation.phase is Phase.SUBMITTING and allocation.reason is (
-            Reason.BACKEND_SUBMISSION_UNKNOWN
-        ):
+        if allocation.phase is Phase.SUBMITTING and allocation.handle is None:
             # INV-8: last tick's submission may or may not have landed. Ask
             # before doing anything else — this is the only path allowed to
             # decide that a fresh submission is safe.
+            #
+            # The predicate is the durable *state*, not the reason code. "In
+            # SUBMITTING with no handle" IS the definition of a submission
+            # whose outcome we never recorded; BACKEND_SUBMISSION_UNKNOWN is
+            # only the subset where the backend was still there to tell us.
+            # Keying on the reason left the commonest window open: the row is
+            # persisted before `backend.submit` is called, so a process that
+            # dies between a successful submit and `save_allocation` leaves a
+            # handle-less row with no reason at all — and `observe` on a
+            # handle-less allocation answers SUBMITTING forever, so it never
+            # advanced and the cancel barrier concluded "nothing was placed"
+            # while the job kept its GPU.
+            #
+            # A row that genuinely never reached the backend answers None to
+            # `find_by_token` and is submitted — the same outcome, one query
+            # later.
             self._reconcile_unknown(workload, allocation, backend, report)
             return
 
@@ -533,19 +547,34 @@ class Reconciler:
             # whose outcome we never learned (INV-8). Ask before concluding —
             # otherwise a cancel could mark a workload finished while its job
             # runs on unattended.
-            if allocation.reason is Reason.BACKEND_SUBMISSION_UNKNOWN:
+            # Asked for every handle-less allocation, not only the ones
+            # whose reason names it: the same crash window applies here, and
+            # concluding "nothing was placed" about a job that is running is
+            # how a cancel leaves a GPU held by something nobody is watching.
+            found = None
+            try:
                 found = backend.find_by_token(allocation.submission_token)
-                if found is not None:
-                    allocation.handle = found
-                    self._store.save_allocation(allocation)
-                    self._emit(
-                        "allocation_adopted",
-                        {
-                            "workload_id": workload.id,
-                            "allocation_id": allocation.id,
-                            "during": "cancel",
-                        },
-                    )
+            except Exception as exc:  # noqa: BLE001
+                # Undecidable. Leave the barrier un-concluded rather than
+                # mark a workload cancelled on a question we could not ask;
+                # the next tick re-enters, which is what every step here is
+                # written to tolerate.
+                self._emit(
+                    "cancel_reconcile_failed",
+                    {"workload_id": workload.id, "error": str(exc)},
+                )
+                return
+            if found is not None:
+                allocation.handle = found
+                self._store.save_allocation(allocation)
+                self._emit(
+                    "allocation_adopted",
+                    {
+                        "workload_id": workload.id,
+                        "allocation_id": allocation.id,
+                        "during": "cancel",
+                    },
+                )
             if allocation.handle is None:
                 allocation.phase = Phase.CANCELLED
                 allocation.reason = reason

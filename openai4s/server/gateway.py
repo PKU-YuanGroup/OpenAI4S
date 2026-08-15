@@ -2226,6 +2226,7 @@ class SessionRunner:
                 self.hub, "drop_frame", lambda _root_frame_id: None
             ),
             revoke_shares=self.shares.revoke_for_session,
+            release_compute=self._release_session_compute,
         )
         self.sidecar_manifests = GenerationSidecarRecorder(self.store)
         self.workbench = SessionWorkbenchStateService(
@@ -2983,7 +2984,14 @@ class SessionRunner:
             )
             from openai4s.orchestration.worker_gateway import gateway_from_environment
 
-            authority = BootstrapAuthority(load_or_mint_secret(self.cfg.data_dir))
+            authority = BootstrapAuthority(
+                load_or_mint_secret(self.cfg.data_dir),
+                # The fence outlives the process. A credential file sits on
+                # the shared filesystem the job was given and stays valid for
+                # its whole TTL, so an in-memory nonce set un-burns every
+                # outstanding credential on restart.
+                state_path=self.cfg.data_dir / "worker-bootstrap-state.json",
+            )
             worker_gateway = gateway_from_environment(authority)
             if worker_gateway is not None:
                 worker_gateway.start()
@@ -4098,6 +4106,22 @@ class SessionRunner:
         # dispatcher (and without starting Python).
         self._wire_delegation(st)
         return dispatcher
+
+    def _release_session_compute(self, root_frame_id: str) -> None:
+        """Give a deleted session's cluster resource back.
+
+        Recorded rather than executed: `release` writes the durable stop
+        request and ends the lease, and the reconciler's cancel barrier does
+        the talking on its next tick. That is what makes the release survive
+        a daemon restart -- deleting a session while the scheduler is
+        unreachable must not leave a job nobody will ever cancel.
+        """
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None or not root_frame_id:
+            return
+        from openai4s.orchestration.models import Reason
+
+        manager.release(root_frame_id, reason=Reason.USER_CANCELLED)
 
     def _touch_compute_lease(self, st: "SessionState") -> None:
         """Renew this session's cluster lease, if it has one."""

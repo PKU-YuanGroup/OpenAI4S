@@ -170,16 +170,97 @@ def _sign(secret: bytes, payload: dict[str, Any]) -> str:
 class BootstrapAuthority:
     """Issues credentials, verifies them once, and refuses stale epochs."""
 
-    def __init__(self, secret: bytes, *, clock=time.time) -> None:
+    def __init__(
+        self,
+        secret: bytes,
+        *,
+        clock=time.time,
+        state_path: Path | str | None = None,
+    ) -> None:
         self._secret = secret
         self._clock = clock
         self._lock = threading.Lock()
-        #: Consumed nonces. In memory by design: a daemon restart invalidates
-        #: every outstanding credential anyway, because the workers that held
-        #: them lost their connection with it.
+        #: Consumed nonces, and the epoch fence per allocation (INV-7).
+        #:
+        #: Durable, and the reasoning that said otherwise was wrong: "a
+        #: restart invalidates every outstanding credential anyway, because
+        #: the workers that held them lost their connection". The connection
+        #: is gone; the *credential file* is not. It sits on the shared
+        #: filesystem the job was given, still inside its 24h life, and a
+        #: fresh daemon with an empty set admits it -- so a burned
+        #: credential un-burns itself on restart, and an epoch fenced by a
+        #: recovery stops being fenced. Both are exactly what INV-7 and the
+        #: single-use rule exist to prevent, and neither survived a process
+        #: boundary.
         self._consumed: set[str] = set()
-        #: allocation_id -> the only epoch we will now accept (INV-7).
         self._current_epoch: dict[str, int] = {}
+        self._state_path = Path(state_path) if state_path else None
+        self._load_state()
+
+    # --- durable fence ----------------------------------------------------
+
+    def _load_state(self) -> None:
+        """Read the fence back. A missing or unreadable file is an empty
+        fence, not a crash: refusing to boot because a cache is corrupt
+        would trade a replay window for an outage, and the file is rewritten
+        on the next issue anyway."""
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            data = json.loads(self._state_path.read_text("utf-8"))
+        except Exception:  # noqa: BLE001
+            return
+        now = self._clock()
+        consumed = data.get("consumed")
+        if isinstance(consumed, dict):
+            # nonce -> expiry. Pruned on load, so the file cannot grow
+            # without bound across a long-lived install: a nonce past its
+            # credential's expiry is refused by the expiry check anyway.
+            self._consumed = {
+                str(nonce)
+                for nonce, expires in consumed.items()
+                if _as_float(expires) > now
+            }
+            self._consumed_expiry = {
+                str(nonce): _as_float(expires)
+                for nonce, expires in consumed.items()
+                if _as_float(expires) > now
+            }
+        epochs = data.get("epochs")
+        if isinstance(epochs, dict):
+            self._current_epoch = {
+                str(allocation): int(epoch) for allocation, epoch in epochs.items()
+            }
+
+    def _save_state(self) -> None:
+        """Rewrite the fence, atomically and 0600.
+
+        Called with the lock held. Best-effort: a write that fails must not
+        fail the registration it was recording, because refusing a worker
+        that presented a valid credential is a worse outcome than a fence
+        that has to be rebuilt.
+        """
+        if self._state_path is None:
+            return
+        payload = {
+            "consumed": getattr(self, "_consumed_expiry", {}),
+            "epochs": self._current_epoch,
+        }
+        tmp = self._state_path.with_suffix(".tmp")
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(
+                os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, self._state_path)
+        except Exception:  # noqa: BLE001
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
 
     def issue(
         self,
@@ -203,6 +284,7 @@ class BootstrapAuthority:
             known = self._current_epoch.get(allocation_id)
             if known is None or epoch > known:
                 self._current_epoch[allocation_id] = int(epoch)
+                self._save_state()
         return BootstrapCredential(signature=_sign(self._secret, payload), **payload)
 
     def verify(self, credential: BootstrapCredential) -> None:
@@ -244,11 +326,27 @@ class BootstrapAuthority:
                     f"epoch {current}, credential carries {credential.epoch}"
                 )
             self._consumed.add(credential.nonce)
+            expiry = getattr(self, "_consumed_expiry", None)
+            if expiry is None:
+                expiry = self._consumed_expiry = {}
+            expiry[credential.nonce] = float(credential.expires_at)
+            # Written before the caller is told the credential was accepted:
+            # a crash between "burned" and "recorded as burned" is the one
+            # ordering that reopens the replay this fence exists to close.
+            self._save_state()
 
     def fence_epoch(self, allocation_id: str, epoch: int) -> None:
         """Declare the epoch now in force, refusing everything older."""
         with self._lock:
             self._current_epoch[allocation_id] = int(epoch)
+            self._save_state()
+
+
+def _as_float(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def write_credential_file(

@@ -399,3 +399,50 @@ def test_restarting_a_remote_worker_says_it_cannot_rather_than_pretending(
     caller's move is recovery, and it can only make it if it is told."""
     with pytest.raises(RuntimeError, match="placed and reconnected"):
         remote_kernel.restart()
+
+
+def test_a_burned_credential_stays_burned_across_a_restart(tmp_path):
+    """The reasoning that made this in-memory was wrong: a restart takes the
+    worker's *connection*, not its credential file. That file is on the
+    shared filesystem the job was given and stays valid for its whole TTL,
+    so a fresh daemon with an empty set re-admits it."""
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+
+    first = BootstrapAuthority(secret, state_path=state)
+    credential = first.issue(allocation_id="alloc_1", epoch=0)
+    first.consume(credential)
+
+    # the daemon restarts: same data dir, same secret, new object
+    second = BootstrapAuthority(secret, state_path=state)
+    with pytest.raises(BootstrapError, match="already been used"):
+        second.consume(credential)
+
+
+def test_an_epoch_fence_survives_a_restart(tmp_path):
+    """INV-7 across a process boundary: a recovery fenced epoch 0, and the
+    worker from it must still be refused by the daemon that comes back."""
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+
+    first = BootstrapAuthority(secret, state_path=state)
+    stale = first.issue(allocation_id="alloc_1", epoch=0)
+    first.issue(allocation_id="alloc_1", epoch=1)  # recovery
+
+    second = BootstrapAuthority(secret, state_path=state)
+    with pytest.raises(BootstrapError, match="STALE_EPOCH"):
+        second.consume(stale)
+
+
+def test_the_fence_file_is_owner_only_and_survives_a_corrupt_read(tmp_path):
+    """A corrupt fence is an empty fence, not an outage: refusing to boot
+    over it would trade a replay window for a dead daemon."""
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=state)
+    authority.consume(authority.issue(allocation_id="alloc_1", epoch=0))
+    assert oct(state.stat().st_mode)[-3:] == "600"
+
+    state.write_text("{ not json")
+    revived = BootstrapAuthority(secret, state_path=state)
+    revived.consume(revived.issue(allocation_id="alloc_2", epoch=0))
