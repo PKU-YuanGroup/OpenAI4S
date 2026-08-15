@@ -35,8 +35,12 @@ from typing import Any
 
 #: Memory scopes that are not a project: the whole-instance tiers. A member
 #: writing here writes standing context into every other user's turns, which
-#: is an operator's decision and not a member's.
-GLOBAL_MEMORY_SCOPES = frozenset({"__all__", "__global__", "global", "all"})
+#: is an operator's decision and not a member's. Imported rather than spelled
+#: out, so a rename in the repository cannot silently open the tier.
+from openai4s.storage.memories import ALL_PROJECTS as _ALL_PROJECTS
+from openai4s.storage.memories import GLOBAL_SCOPE as _GLOBAL_SCOPE
+
+GLOBAL_MEMORY_SCOPES = frozenset({_ALL_PROJECTS, _GLOBAL_SCOPE})
 
 
 def _identity(handler: Any) -> Any:
@@ -216,8 +220,18 @@ def may_overwrite_file(identity: Any, owner_user_id: str | None) -> bool:
 
 
 def _as_dict(identity: Any) -> dict[str, Any]:
+    """The shape `TeamRepository` reads a user in.
+
+    The key is `id`, not `user_id`. Writing the obvious one made every
+    ownership comparison in `session_visible_to` fail, so every share --
+    including the caller's own -- came back invisible: fail-closed, and
+    still wrong. A predicate that refuses everything looks exactly like a
+    working guard from the outside, which is why the test that caught it
+    checks the owner still has access rather than only that the stranger
+    does not.
+    """
     return {
-        "user_id": getattr(identity, "user_id", ""),
+        "id": getattr(identity, "user_id", ""),
         "username": getattr(identity, "username", ""),
         "role": getattr(identity, "role", ""),
         "kind": getattr(identity, "kind", "user"),

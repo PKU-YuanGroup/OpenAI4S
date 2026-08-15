@@ -457,6 +457,10 @@ _TEAM_SCOPE_ARTIFACT = re.compile(r"/artifacts/([^/]+)(?:/.*)?")
 #: was scanned as a route and published `/projects/([^/]+)(?:/.*)?` as an
 #: endpoint. A guard that matches every project path is not an endpoint.
 _TEAM_SCOPE_PROJECT = re.compile(r"/projects/([^/]+)(?:/.*)?")
+#: Same rule again, for shares (M2 hardening, external review #5). A share is
+#: addressed by its own id, so the frame matcher above never saw it and
+#: `GET /shares` listed -- and `DELETE /shares/{id}` revoked -- every user's.
+_TEAM_SCOPE_SHARE = re.compile(r"/shares/([^/]+)")
 
 #: The guest gate's copy of the replay matcher (M2-3/D3). The *route* itself
 #: is dispatched with the inline scannable form in `_api` (which is what the
@@ -9183,6 +9187,56 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     kept.append(a)
             return kept
 
+        def _team_guard_memory_scope(self, scope: str | None) -> None:
+            """Standing context is injected into other people's turns.
+
+            The project guard matches `/projects/{id}` in the *path*, and
+            memory carries its scope in `?project_id=` or a JSON body -- so
+            every project-addressed-by-parameter route was outside it by
+            construction. The write side is the worse half: a member could
+            put text into another project's standing context, which then
+            rides into every turn its members run.
+            """
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return
+            if not team_policy.may_use_memory_scope(store, identity, scope):
+                # 404 + the project guard's wording: non-membership must be
+                # indistinguishable from non-existence.
+                raise GatewayError(404, "project not found")
+
+        def _team_guard_share(self, method: str, sub: str) -> None:
+            """A share belongs to the session it projects (external review #5).
+
+            Addressed by `share_id`, so the frame matcher never covered it:
+            any member could list every share URL in the org and revoke or
+            republish anybody's snapshot. Guarded here rather than in the
+            two handlers, because patching handlers one at a time is how
+            this class of defect keeps recurring in this file.
+
+            404, matching the frame guard: which shares exist is itself the
+            protected fact.
+            """
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return
+            m = _TEAM_SCOPE_SHARE.fullmatch(sub.split("?")[0])
+            if not m:
+                return
+            try:
+                row = store.get_share(unquote(m.group(1)))
+            except Exception:  # noqa: BLE001 — undecidable is refused
+                raise GatewayError(404, "unknown share") from None
+            if row is None:
+                return  # a share that does not exist answers as it always did
+            root = str(row.get("root_frame_id") or "")
+            if identity.is_admin:
+                if root:
+                    self._team_audit_admin_private_read(root)
+                return
+            if not team_policy.may_use_share(store, identity, row):
+                raise GatewayError(404, "unknown share")
+
         def _team_guard_instance_config(self, method: str, sub: str) -> None:
             """Refuse a member's write to instance-global configuration (M4).
 
@@ -10057,6 +10111,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self._team_scope_guard(method, sub)
             self._team_guard_project(method, sub)
             self._team_guard_instance_config(method, sub)
+            self._team_guard_share(method, sub)
             if sub == "/sessions/verify" and method == "POST":
                 # Verification before import, so a recipient can check what
                 # they were handed without first admitting it to their
@@ -10118,7 +10173,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json(runner.share_status())
                 return
             if sub == "/shares" and method == "GET":
-                self._json({"shares": runner.shares.list_all()})
+                shares = runner.shares.list_all()
+                identity = getattr(self, "_team_identity", None)
+                if _team_auth is not None and identity is not None:
+                    # No id in the path, so the guard above cannot help:
+                    # filtered here the way artifacts are. A share URL is a
+                    # capability -- anyone holding it reads the session --
+                    # so listing every one of them is handing them out.
+                    visible = []
+                    for entry in shares:
+                        row = None
+                        try:
+                            row = store.get_share(str(entry.get("share_id") or ""))
+                        except Exception:  # noqa: BLE001
+                            row = None
+                        if identity.is_admin or team_policy.may_use_share(
+                            store, identity, row
+                        ):
+                            visible.append(entry)
+                    shares = visible
+                self._json({"shares": shares})
                 return
             share_create = re.fullmatch(r"/frames/([^/]+)/shares", sub)
             if share_create and method == "POST":
@@ -12975,6 +13049,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # feature (Customize -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
+                self._team_guard_memory_scope(pid)
                 self._json(
                     {
                         "enabled": _memory_enabled(store),
@@ -13035,6 +13110,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if sub == "/memory" and method == "POST":
                 b = self._body()
                 scope = _memory_scope(store, b.get("project_id"))
+                self._team_guard_memory_scope(scope)
                 try:
                     # Refused before the row exists, not trimmed after: see
                     # MemoryRepository.add. The code travels so a client can
@@ -13054,6 +13130,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # feature (Customize -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
+                self._team_guard_memory_scope(pid)
                 if sub.endswith("categories"):
                     self._json({"categories": store.memory_blocks(project_id=pid)})
                 else:
