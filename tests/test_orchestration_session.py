@@ -630,3 +630,42 @@ def test_releasing_a_session_asks_for_a_stop_and_ends_the_lease(store, manager):
     assert reloaded.desired_state is DesiredState.STOPPED
     assert store.leases.get(workload.id).released_at is not None
     assert manager.touch("s1") is False
+
+
+def test_the_reason_a_session_was_reclaimed_survives_the_backend(store, manager):
+    """A resource plane asked about a job it cancelled on our instruction
+    can only say "cancelled". Letting that answer win made every teardown
+    report USER_CANCELLED — telling a user they cancelled a session the
+    system took back, and telling an operator auditing released GPUs
+    something that was simply not true."""
+    workload = manager.request_session(
+        session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    backend = FakeBackend()
+    reconciler = Reconciler(
+        store=store.workloads,
+        backends={"fake": backend},
+        default_backend="fake",
+        prepare_attempt=AttemptPreparer(
+            authority=manager._authority,
+            listen_address=lambda: ("127.0.0.1", 8799),
+            runtime_dir=manager.runtime_dir,
+        ),
+    )
+    reconciler.tick()
+    store.workloads.request_stop(workload.id, reason=Reason.SESSION_IDLE_TIMEOUT)
+
+    # what the plane says about the attempt: it was cancelled, and that is
+    # all it can know
+    backend.next_phase = Phase.CANCELLED
+    backend.next_reason = Reason.USER_CANCELLED
+    for _ in range(3):
+        reconciler.tick()
+
+    reloaded = store.workloads.get_workload(workload.id)
+    assert reloaded.phase is Phase.CANCELLED
+    assert reloaded.reason is Reason.SESSION_IDLE_TIMEOUT
+
+    # and the attempt keeps the plane's own account of what became of it
+    allocation = store.workloads.list_allocations(workload.id)[-1]
+    assert allocation.reason is Reason.USER_CANCELLED

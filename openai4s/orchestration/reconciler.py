@@ -579,6 +579,19 @@ class Reconciler:
             return
 
         # 6. mark terminal, once the resource plane agrees it is gone.
+        #
+        # The two rows record two different facts, and conflating them
+        # loses the one that matters. The *allocation* records what the
+        # resource plane says became of the attempt — if it was preempted a
+        # second before our cancel reached it, that is its history and it
+        # is worth keeping. The *workload* records why we ended it, which
+        # only we know: a scheduler asked about a job it cancelled on our
+        # instruction can say "cancelled" and nothing more. Letting its
+        # answer win here made an idle-reclaimed session, an
+        # admin-cancelled one and a user-cancelled one all report
+        # USER_CANCELLED — telling a user they cancelled a session the
+        # system took back, and telling an operator auditing released GPUs
+        # something that was simply not true.
         allocation.phase = observed.phase
         allocation.reason = observed.reason or reason
         allocation.diagnostics = dict(observed.diagnostics)
@@ -586,7 +599,7 @@ class Reconciler:
         workload.phase = (
             Phase.CANCELLED if observed.phase is Phase.CANCELLED else observed.phase
         )
-        workload.reason = observed.reason or reason
+        workload.reason = reason
         self._store.save_workload(workload)
         report.cancelled += 1
         self._emit(
