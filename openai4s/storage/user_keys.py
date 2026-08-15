@@ -124,7 +124,20 @@ class UserKeyRepository:
             for r in rows
         ]
 
-    def delete(self, user_id: str, provider: str) -> bool:
+    def delete(self, user_id: str, provider: str, *, secrets: Any = None) -> bool:
+        """Clear one key: the broker's value first, then the row.
+
+        The row is a *reference*; deleting only it left the provider key
+        persisted in the keychain with nothing left in the product that
+        named the slot -- "cleared" reported to the user, credential still
+        on disk. The broker value goes first, so a crash between the two
+        leaves a row pointing at an empty slot (which the turn refuses with
+        `user_key_unreadable`, visibly) rather than a live key with no row
+        (which nothing would ever find again).
+        """
+        record = self.get(user_id, provider)
+        if record is not None and secrets is not None:
+            _delete_secret(secrets, record.secret_ref)
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM user_llm_keys WHERE user_id=? AND provider=?",
@@ -133,19 +146,34 @@ class UserKeyRepository:
             self._conn.commit()
             return cur.rowcount > 0
 
-    def delete_all_for_user(self, user_id: str) -> int:
+    def delete_all_for_user(self, user_id: str, *, secrets: Any = None) -> int:
         """Every provider at once — what disabling or deleting a user owes.
 
         A credential that outlives the account it belongs to is a credential
         nobody is watching, and the row is the only thing that would ever
-        have named its slot again.
+        have named its slot again -- so the broker values go too, before the
+        rows that name them.
         """
+        if secrets is not None:
+            for record in self.list_for_user(user_id):
+                _delete_secret(secrets, record.secret_ref)
         with self._lock:
             cur = self._conn.execute(
                 "DELETE FROM user_llm_keys WHERE user_id=?", (user_id,)
             )
             self._conn.commit()
             return cur.rowcount
+
+
+def _delete_secret(secrets: Any, ref: str) -> None:
+    """Best-effort broker deletion. A slot that is already gone, or a broker
+    that cannot delete (read-only env backend), must not stop the row from
+    being cleared -- the row is what makes the key *usable*, so removing it
+    is the part that has to succeed."""
+    try:
+        secrets.delete(ref)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 #: The broker scope per-user keys live under. One scope, distinct names, so

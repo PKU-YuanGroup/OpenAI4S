@@ -125,7 +125,7 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         # again — leaving it behind makes the credential unreachable *and*
         # unrevocable, which is the worst of both.
         try:
-            store.user_keys.delete_all_for_user(user["id"])
+            store.user_keys.delete_all_for_user(user["id"], secrets=store.secrets)
         except Exception:  # noqa: BLE001 — disabling must still land
             pass
         store.team.audit(

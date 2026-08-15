@@ -60,6 +60,48 @@ curl -X PUT .../api/v1/team/quotas -d '{"scope":"user","scope_id":"...",
 Only kinds with a real enforcement point may be set. A limit nobody
 consults is worse than no limit, because somebody will plan around it.
 
+## 2b. The file area
+
+`OPENAI4S_DATA_ROOTS` is a colon-separated allowlist of directories, and D8
+names three kinds of root: a **read-only datasets** area, project areas,
+and **personal scratch**. The policy rides on the same value:
+
+```bash
+export OPENAI4S_DATA_ROOTS=/lab/datasets=ro:/lab/scratch
+```
+
+`=ro` makes a root read-only for everyone, admins included — the point of
+a read-only root is that the reference data every analysis reads cannot
+drift. A writable root gets a fixed namespace: each member uploads into
+`<root>/users/<username>/`, computed from their identity and never from
+the request, and another member's `users/<name>/` is not readable —
+shared space stays shared; scratch is personal. That is a fixed
+namespace rather than a guess, so "is this another member's area?" is a
+question about a path and not about whether a directory called `alice` is
+a person or a dataset.
+
+## 2c. What only an admin can do
+
+Team mode adds accounts; it does not turn every daemon-level surface into
+a per-user one. Some things are done *to the instance*, and those are the
+operator's regardless of who is logged in:
+
+- writing instance configuration — the LLM provider, its endpoint and
+  credential, model profiles, the default model. Rewriting `llm_base_url`
+  points every user's traffic at a host of the writer's choosing;
+- the legacy compute-job runner (`/compute/jobs`), which executes
+  `bash -c <command>` as the daemon's own uid — reads included, since a
+  job's row is somebody's command line;
+- registering remote compute, installing packages into the venv every
+  kernel shares, configuring connectors that carry the group's
+  credentials, publishing skills into the directory every member's agent
+  loads recipes from, resetting standing permission rules, and creating a
+  *global* permission rule (a member may create rules scoped to their own
+  session or a project they participate in).
+
+Members keep every read the UI needs. The full list is
+`openai4s/server/team_policy.py`, and a route not on it is a member's.
+
 ## 3. Cluster sessions (optional)
 
 Two things have to be true before a session can run on a scheduler: the

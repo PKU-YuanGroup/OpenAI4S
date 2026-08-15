@@ -541,3 +541,104 @@ def test_memory_scoped_by_query_parameter_is_still_a_project(daemon):
     # and alice is unaffected in her own project
     status, _ = _get(daemon.port, f"/api/v1/memory?project_id={pid}", cookie=alice)
     assert status == 200
+
+
+# -- a second external review (2026-08-15) --------------------------------------
+
+
+def test_a_member_cannot_run_commands_as_the_daemon(daemon):
+    """`POST /compute/jobs` runs `bash -c <command>` as the daemon's own uid,
+    unsandboxed. In a single-user install that is the user's machine; in
+    team mode it was arbitrary command execution for every member. The
+    whole surface is admin-only, reads included: a job's row carries the
+    command line another member typed."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    root = _login(daemon, "root", "fake-pw-r")
+
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/compute/jobs",
+        {"command": "id > /tmp/pwned", "kind": "bash"},
+        cookie=bob,
+    )
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "admin_only"
+    status, _ = _get(daemon.port, "/api/v1/compute/jobs", cookie=bob)
+    assert status == 403
+    status, _ = _post(
+        daemon.port, "/api/v1/compute/jobs/whatever/cancel", {}, cookie=bob
+    )
+    assert status == 403
+
+    # the operator keeps it -- this is their machine
+    status, _ = _get(daemon.port, "/api/v1/compute/jobs", cookie=root)
+    assert status == 200
+
+
+def test_a_member_cannot_mutate_the_shared_instance(daemon):
+    """Registering a remote compute provider, installing into the venv every
+    kernel shares, configuring a connector that carries the group's
+    credentials, publishing a skill every member's agent loads recipes
+    from: each is done to everybody, so each is the operator's."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    for path, body in (
+        ("/api/v1/compute/remote", {"name": "x", "provider": "ssh"}),
+        ("/api/v1/kernel/install", {"packages": ["requests"]}),
+        ("/api/v1/connectors", {"name": "x"}),
+        ("/api/v1/skills", {"name": "x", "body": "# x"}),
+        ("/api/v1/skills/import", {"url": "http://example.invalid"}),
+        ("/api/v1/permissions/reset", {}),
+    ):
+        status, raw = _post(daemon.port, path, body, cookie=bob)
+        assert status == 403, f"{path}: {status} {raw[:160]}"
+        assert _body(raw).get("code") == "admin_only", path
+
+
+def test_a_member_cannot_plant_a_global_permission_rule(daemon):
+    """A standing rule is authorization for future actions, and a global one
+    is authorization for everybody's. The default scope is `global`, so an
+    unqualified POST from a member would have planted an "allow" that
+    every other user's agent then honoured."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    for body in (
+        {"tool": "*", "pattern": "*", "decision": "allow"},  # scope defaults
+        {"scope": "global", "tool": "*", "pattern": "*", "decision": "allow"},
+    ):
+        status, raw = _post(daemon.port, "/api/v1/permissions", body, cookie=bob)
+        assert status == 403, raw[:200]
+        assert _body(raw).get("code") == "admin_only"
+
+    # and not for a project he is not in
+    alice = _login(daemon, "alice", "fake-pw-a")
+    status, raw = _post(
+        daemon.port, "/api/v1/projects", {"name": "alice-lab"}, cookie=alice
+    )
+    pid = str(_body(raw)["project_id"])
+    status, _ = _post(
+        daemon.port,
+        "/api/v1/permissions",
+        {"scope": "project", "scope_id": pid, "tool": "*", "decision": "allow"},
+        cookie=bob,
+    )
+    assert status == 404
+
+
+def test_search_does_not_leak_another_users_datapro_hits(daemon):
+    """Two of three result families were filtered; the third -- indexed
+    DataPro content, exactly the query-matched scientific text -- rode
+    through unchanged."""
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    fid = _create_session(daemon, alice)
+    daemon.store._datapro_index.ingest(
+        query="cohort",
+        structured_content={"code": 0, "data": {"records": [{"gene": "ALICEMARKER9"}]}},
+        project_id=_pid(daemon),
+        root_frame_id=fid,
+    )
+    status, raw = _get(daemon.port, "/api/v1/search?q=ALICEMARKER9", cookie=bob)
+    assert status == 200
+    assert b"ALICEMARKER9" not in raw, "bob's search returned alice's DataPro row"
+
+    status, raw = _get(daemon.port, "/api/v1/search?q=ALICEMARKER9", cookie=alice)
+    assert b"ALICEMARKER9" in raw, "the owner lost her own hit"

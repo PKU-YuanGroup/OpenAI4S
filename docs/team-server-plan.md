@@ -406,3 +406,20 @@ STALE_EPOCH  STALE_SPEC_REVISION  DUPLICATE_SUBMISSION  KERNEL_STATE_LOST
 **两处过程教训,记下来比结论有用:**
 - 我的 denylist 改动一度**丢失**:一次为证伪而做的 `git stash`/`pop` 把它带走了,而我当时只检查了**另一个**文件就认定"已还原"。还原必须按内容验,不能按假设。
 - 两个修复里各有一个 bug,都是被"属主仍能访问"这半边断言抓住的:身份字典的键写成了 `user_id`(仓库读的是 `id`),以及 `my_messages` join 到了可空的 `frame_id`。**永远为空的受限视图和拒绝一切的守卫,从外面看与正常工作的守卫一模一样。**
+
+## 附录 G:第二次外部审查(Codex,基线 `23a20b4...eabecbb`)8 项的处置
+
+基线早于附录 F 的修复,所以 8 项里 3 项已在 F 中闭合。其余 5 项全部核实为真并修复;每道守卫都用"拆掉它、对应测试变红"验证过(只读根有两道检查,两道都拆才红——那是纵深,不是测试弱)。
+
+| # | 结论 | 处置 |
+|---|---|---|
+| 1 项目 CRUD | 已由 F-#1 闭合(建会话需授权;破坏性动词需真成员行)。Codex 建议"项目 CRUD 一律管理员",**未采纳**:D-决策与 M2-1 让创建者成为成员并管理自己的项目;成员制已闭合升权路径。记录于此供审阅者权衡 | 无新改动 |
+| 2 host.query | 已由 F-#4 闭合(会话/执行一族纳入团队模式受限视图;三张新表进 denylist) | 无新改动 |
+| 3 `/compute/jobs` RCE | **属实,critical**:成员经旧 JobManager 以 daemon uid 跑 `bash -c`。顺带同类:`/permissions` 缺省 `scope="global"`——成员可给全员植入常设放行;`/kernel/install` 往共享 venv 装包;`/compute/remote`、`/connectors` 配置带凭据;`/skills`、`/skills/import` 往全员 agent 都加载的目录发布 recipe | 策略表新增 `DAEMON_OPERATION_*`(全动词管理员)与 `INSTANCE_MUTATION_*`(写动词管理员;连接器的 `/call`、`/probe` 是"使用"不是"配置",保留给成员);`/permissions` 按 scope 判:global 仅管理员,project/conversation 需可达 |
+| 4 文件区 | 写半边已由 F-#7 闭合;**读半边与只读根属实**:D8 明写"只读 datasets 区 + 个人 scratch",而根无策略、Bob 仍能下载 Alice 的上传 | `OPENAI4S_DATA_ROOTS` 支持 `path=ro`(对所有人只读,含管理员);个人区命名空间化为 `<root>/users/<name>/`,他人个人区读即 404,共享区仍共享 |
+| 5 分享 | 已由 F-#5 闭合 | 无新改动 |
+| 6 `/search` datapro | **属实**:三族结果只过滤了两族 | 第三族按同一 `session_visible_to` 过滤(命中项自带 `root_frame_id`,已验证) |
+| 7 reviewer 台账 | **属实**:M2 加固把配额**检查**接到了 reviewer,却没接**用量**,台账永不前进 | 抽出唯一记账函数 `record_session_llm_usage`,turn ledger 与 reviewer 共用——同一事实两个写者会漂,一个函数两处调用不会 |
+| 8 个人密钥残留 | **属实**:清除只删引用行,broker 里的值留着 | 仓储层拥有整个生命周期:先删 broker 值再删行(顺序刻意:崩在中间留下"指向空槽的行"会被 `user_key_unreadable` 可见地拒绝,而"没有行的活密钥"没人再找得到);禁用账号同理 |
+
+**审阅者应知的一处判断:** Codex 拒绝了"管理员读私有会话的全局视图缺审计"这一项(判为正确性问题而非安全问题)。我同意其定性,本轮**未处理**,留待后续。

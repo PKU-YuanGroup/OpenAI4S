@@ -183,6 +183,43 @@ INSTANCE_CONFIG_PATHS = frozenset(
 #: Prefixes under which every addressed resource is instance-global too.
 INSTANCE_CONFIG_PREFIXES = ("/model-profiles/",)
 
+#: Daemon-level operations: things done *as the daemon* on the machine it
+#: runs on, with no session and no owner. Admin-only in every verb, reads
+#: included, because the read is another member's data too -- a compute
+#: job's row carries the command line somebody typed.
+#:
+#: - `/compute/jobs`: the legacy JobManager runs `bash -c <command>` as the
+#:   daemon's own uid, unsandboxed. In a single-user install that is the
+#:   user's own machine; in team mode it is arbitrary command execution as
+#:   the daemon for every member. This is the finding that put this table
+#:   here.
+DAEMON_OPERATION_PATHS = frozenset({"/compute/jobs"})
+DAEMON_OPERATION_PREFIXES = ("/compute/jobs/",)
+
+#: Instance-global mutations beyond configuration: registering a remote
+#: compute provider (credentials, code on another host), installing
+#: packages into the venv every kernel shares, configuring a connector that
+#: carries the group's credentials, publishing a skill into the directory
+#: every member's agent loads recipes from, and resetting standing
+#: permission rules. Members keep the reads and the *uses* (a connector
+#: `/call` or `/probe` is using what an admin set up); what they must not
+#: have is the write.
+INSTANCE_MUTATION_PATHS = frozenset(
+    {
+        "/compute/remote",
+        "/kernel/install",
+        "/connectors",
+        "/skills",
+        "/skills/import",
+        "/permissions/reset",
+    }
+)
+INSTANCE_MUTATION_PREFIXES = ("/compute/remote/",)
+#: `/connectors/{id}` and `/connectors/{id}/enabled` are configuration;
+#: `/connectors/{id}/call` and `/probe` are use. Enumerated by suffix so the
+#: distinction is a rule and not an accident of prefix length.
+CONNECTOR_USE_SUFFIXES = ("/call", "/probe")
+
 
 def is_instance_config(method: str, path: str) -> bool:
     """Only mutating verbs. Members keep the reads the UI needs to render
@@ -192,6 +229,34 @@ def is_instance_config(method: str, path: str) -> bool:
     if path in INSTANCE_CONFIG_PATHS:
         return True
     return any(path.startswith(prefix) for prefix in INSTANCE_CONFIG_PREFIXES)
+
+
+def is_daemon_operation(method: str, path: str) -> bool:
+    """Every verb: the surface has no owner to scope a read to."""
+    if path in DAEMON_OPERATION_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in DAEMON_OPERATION_PREFIXES)
+
+
+def is_instance_mutation(method: str, path: str) -> bool:
+    if method.upper() in ("GET", "HEAD", "OPTIONS"):
+        return False
+    if path in INSTANCE_MUTATION_PATHS:
+        return True
+    if any(path.startswith(prefix) for prefix in INSTANCE_MUTATION_PREFIXES):
+        return True
+    if path.startswith("/connectors/"):
+        return not path.endswith(CONNECTOR_USE_SUFFIXES)
+    return False
+
+
+def is_admin_only_surface(method: str, path: str) -> bool:
+    """The union a route guard asks about."""
+    return (
+        is_instance_config(method, path)
+        or is_daemon_operation(method, path)
+        or is_instance_mutation(method, path)
+    )
 
 
 def may_change_instance_config(handler: Any) -> bool:
@@ -239,12 +304,20 @@ def _as_dict(identity: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "CONNECTOR_USE_SUFFIXES",
+    "DAEMON_OPERATION_PATHS",
+    "DAEMON_OPERATION_PREFIXES",
     "GLOBAL_MEMORY_SCOPES",
     "INSTANCE_CONFIG_PATHS",
     "INSTANCE_CONFIG_PREFIXES",
+    "INSTANCE_MUTATION_PATHS",
+    "INSTANCE_MUTATION_PREFIXES",
     "enabled",
     "is_admin",
+    "is_admin_only_surface",
+    "is_daemon_operation",
     "is_instance_config",
+    "is_instance_mutation",
     "may_administer_project",
     "may_change_instance_config",
     "may_create_session_in",

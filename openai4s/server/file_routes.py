@@ -41,6 +41,18 @@ def _refuse(self, error: FileAreaError) -> None:
     self._json({"error": str(error), "code": error.code}, error.status)
 
 
+def _reader(self) -> str | None:
+    """The member a read is scoped to, or None for admin / single-user.
+
+    Shared space stays shared; another member's personal area does not.
+    An admin sees everything, matching the rest of the team surface.
+    """
+    identity = getattr(self, "_team_identity", None)
+    if identity is None or identity.is_admin:
+        return None
+    return str(identity.username)
+
+
 def _guest_blocked(self, team_auth: Any) -> bool:
     if team_auth is None:
         return False
@@ -62,7 +74,7 @@ def handle(
             return True
         raw = (q.get("path") or [""])[0]
         try:
-            target = file_area.resolve_download(raw)
+            target = file_area.resolve_download(raw, reader=_reader(self))
         except FileAreaError as error:
             _refuse(self, error)
             return True
@@ -159,7 +171,11 @@ def handle(
             return True
         raw = (q.get("path") or [""])[0]
         try:
-            payload = file_area.list_dir(raw) if raw else file_area.list_roots()
+            payload = (
+                file_area.list_dir(raw, reader=_reader(self))
+                if raw
+                else file_area.list_roots()
+            )
         except FileAreaError as error:
             _refuse(self, error)
             return True

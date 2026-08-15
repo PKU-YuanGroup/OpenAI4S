@@ -469,32 +469,12 @@ class RuntimeActionLedger:
         """
         if not usage:
             return
-        try:
-            governance = getattr(self.store, "governance", None)
-            team = getattr(self.store, "team", None)
-            if governance is None or team is None:
-                return
-            scope = self.store.resolve_frame_scope(self.root_frame_id)
-            root = scope["root_frame_id"]
-            owner = team.session_owner(root)
-            if owner is None:
-                return
-            project = owner["project_id"] or scope.get("project_id")
-            for kind, key in (
-                ("llm_input_tokens", "input_tokens"),
-                ("llm_output_tokens", "output_tokens"),
-            ):
-                amount = usage.get(key) or 0
-                if amount:
-                    governance.record_usage(
-                        user_id=owner["user_id"],
-                        kind=kind,
-                        amount=float(amount),
-                        project_id=project,
-                        ref=root,
-                    )
-        except Exception:  # noqa: BLE001 — metering must not break the turn
-            pass
+        # One metering hook, shared with the reviewer's provider path: a
+        # second copy of this loop is how review calls came to bill only the
+        # per-frame counters and never the ledger the quota check reads.
+        from openai4s.storage.governance import record_session_llm_usage
+
+        record_session_llm_usage(self.store, self.root_frame_id, usage)
 
     def _reply_accounting(
         self, reply: ModelReply

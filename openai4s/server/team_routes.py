@@ -94,7 +94,9 @@ def _handle_my_llm_key(self, method: str, sub: str, store: Any, identity: Any) -
         return True
 
     if _CLEAR_MY_KEY.match(method, sub):
-        removed = store.user_keys.delete(identity.user_id, provider)
+        removed = store.user_keys.delete(
+            identity.user_id, provider, secrets=store.secrets
+        )
         _audit_key_change(store, identity, provider, "user_llm_key_clear")
         # Clearing is not an error when there was nothing to clear: the
         # user's intent -- "do not use my key" -- is satisfied either way.

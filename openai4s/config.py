@@ -340,18 +340,49 @@ class ShareConfig:
         return f"https://{share_id}.{domain}/"
 
 
+#: Suffix that marks a data root read-only: `OPENAI4S_DATA_ROOTS=/data/sets=ro:/scratch`.
+#: `=` rather than `:` because `:` is the list separator. D8 names a
+#: "read-only datasets area" as one of the three kinds of root; without a
+#: way to say so, every root was writable and a member could put files
+#: into -- or over -- the reference datasets everybody analyses.
+DATA_ROOT_READONLY_SUFFIX = "=ro"
+DATA_ROOT_READWRITE_SUFFIX = "=rw"
+
+#: The subdirectory of a writable root that holds members' personal areas
+#: (`<root>/users/<username>/`). A fixed namespace, so "is this another
+#: member's scratch?" is a question about a path and not a guess about
+#: whether a directory named `alice` is a person or a dataset.
+DATA_ROOT_USERS_DIR = "users"
+
+
 def _data_roots() -> list[Path]:
     """Parse OPENAI4S_DATA_ROOTS (colon-separated allowlist of directories for
     the team file area). Empty/unset -> [] = the file routes stay disabled and
-    single-user behavior is untouched (INV-1)."""
+    single-user behavior is untouched (INV-1).
+
+    Root policy rides on the same value: `path=ro` is a read-only root. The
+    policy is kept alongside the path (see `data_root_policies`) so callers
+    that only want the paths keep getting a plain list."""
+    return [path for path, _writable in data_root_policies()]
+
+
+def data_root_policies() -> list[tuple[Path, bool]]:
+    """`(path, writable)` for every configured root."""
     raw = os.environ.get("OPENAI4S_DATA_ROOTS", "").strip()
     if not raw:
         return []
-    roots: list[Path] = []
+    roots: list[tuple[Path, bool]] = []
     for part in raw.split(":"):
         part = part.strip()
+        if not part:
+            continue
+        writable = True
+        if part.endswith(DATA_ROOT_READONLY_SUFFIX):
+            part, writable = part[: -len(DATA_ROOT_READONLY_SUFFIX)], False
+        elif part.endswith(DATA_ROOT_READWRITE_SUFFIX):
+            part = part[: -len(DATA_ROOT_READWRITE_SUFFIX)]
         if part:
-            roots.append(Path(part).expanduser())
+            roots.append((Path(part).expanduser(), writable))
     return roots
 
 

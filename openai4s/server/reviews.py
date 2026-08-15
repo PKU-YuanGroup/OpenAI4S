@@ -482,6 +482,14 @@ class ReviewService:
                 input_tokens=usage.get("input_tokens", 0) or 0,
                 output_tokens=usage.get("output_tokens", 0) or 0,
             )
+            # The governance ledger too (M2-5). The reviewer reaches the
+            # provider through its own port; the pre-call quota check was
+            # wired to it in the M2 hardening, but the *usage* was not, so
+            # the ledger that check reads never advanced -- a member could
+            # review forever against a limit that could not fill.
+            from openai4s.storage.governance import record_session_llm_usage
+
+            record_session_llm_usage(self.store, root_frame_id, usage)
             summary = result.get("summary") or "No issues found"
             self.store.update_step(
                 step_id,

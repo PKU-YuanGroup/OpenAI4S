@@ -505,3 +505,47 @@ __all__ = [
     "create_governance_schema",
     "invite_digest",
 ]
+
+
+def record_session_llm_usage(store: Any, root_frame_id: str, usage: Any) -> None:
+    """Charge one provider call's tokens to the session's owner (M2-5).
+
+    The single metering hook for every LLM call the daemon makes on a
+    session's behalf. It exists as a function rather than as code inside
+    the turn ledger because the reviewer reaches the provider through its
+    own port, and it was billing only the legacy per-frame counters -- so a
+    member could run reviews forever without the ledger the quota check
+    reads ever advancing. Two writers of the same fact drift; one function
+    called from two places does not.
+
+    With no ownership row it reads and never writes (INV-1). Metering must
+    never break the call it meters, so every failure here is swallowed.
+    """
+    if not usage:
+        return
+    try:
+        governance = getattr(store, "governance", None)
+        team = getattr(store, "team", None)
+        if governance is None or team is None:
+            return
+        scope = store.resolve_frame_scope(root_frame_id)
+        root = scope["root_frame_id"]
+        owner = team.session_owner(root)
+        if owner is None:
+            return
+        project = owner["project_id"] or scope.get("project_id")
+        for kind, key in (
+            ("llm_input_tokens", "input_tokens"),
+            ("llm_output_tokens", "output_tokens"),
+        ):
+            amount = usage.get(key) or 0
+            if amount:
+                governance.record_usage(
+                    user_id=owner["user_id"],
+                    kind=kind,
+                    amount=float(amount),
+                    project_id=project,
+                    ref=root,
+                )
+    except Exception:  # noqa: BLE001 — metering must not break the call
+        pass

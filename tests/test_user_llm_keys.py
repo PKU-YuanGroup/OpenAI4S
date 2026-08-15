@@ -281,3 +281,51 @@ def test_team_mode_off_has_no_such_route(tmp_path):
         assert status in (403, 404)
     finally:
         node.close()
+
+
+def test_clearing_a_key_deletes_the_broker_value_too(daemon):
+    """The row is a reference. Deleting only it left the provider key in
+    the broker with nothing in the product that named the slot: "cleared"
+    reported to the user, credential still on disk."""
+    alice = _login(daemon, "alice", "fake-pw-a")
+    provider = daemon.runner.cfg.llm.provider
+    _request(
+        daemon.port,
+        "PUT",
+        "/api/v1/auth/me/llm-key",
+        {"provider": provider, "api_key": "sk-alice-transient"},
+        alice,
+    )
+    user_id = daemon.store.team.get_user_by_username("alice")["id"]
+    ref = daemon.store.user_keys.get(user_id, provider).secret_ref
+    assert daemon.store.secrets.get(ref) == "sk-alice-transient"
+
+    status, _ = _request(
+        daemon.port, "DELETE", "/api/v1/auth/me/llm-key", {"provider": provider}, alice
+    )
+    assert status == 200
+    assert daemon.store.secrets.get(ref) in (
+        None,
+        "",
+    ), "the broker still holds a key the product says is cleared"
+
+
+def test_disabling_an_account_deletes_its_broker_values(daemon):
+    alice = _login(daemon, "alice", "fake-pw-a")
+    root = _login(daemon, "root", "fake-pw-r")
+    provider = daemon.runner.cfg.llm.provider
+    _request(
+        daemon.port,
+        "PUT",
+        "/api/v1/auth/me/llm-key",
+        {"provider": provider, "api_key": "sk-alice-transient"},
+        alice,
+    )
+    user_id = daemon.store.team.get_user_by_username("alice")["id"]
+    ref = daemon.store.user_keys.get(user_id, provider).secret_ref
+
+    status, _ = _post(
+        daemon.port, f"/api/v1/team/users/{user_id}/disable", {}, cookie=root
+    )
+    assert status == 200
+    assert daemon.store.secrets.get(ref) in (None, "")

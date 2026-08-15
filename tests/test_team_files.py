@@ -175,7 +175,7 @@ def test_upload_round_trip_and_conflict(daemon):
     clobber of anything a colleague put in the shared area.
     """
     cookie = _login(daemon, "alice", "fake-pw-a")
-    mine = daemon.root / "alice"
+    mine = daemon.root / "users" / "alice"
     status, raw = _upload(daemon, cookie, str(daemon.root), "up.bin", b"A" * 4096)
     assert status == 201, raw[:300]
     assert (mine / "up.bin").read_bytes() == b"A" * 4096
@@ -199,23 +199,85 @@ def test_one_member_cannot_overwrite_anothers_upload(daemon):
 
     status, _ = _upload(daemon, alice, str(daemon.root), "shared.csv", b"alice data")
     assert status == 201
-    victim = daemon.root / "alice" / "shared.csv"
+    victim = daemon.root / "users" / "alice" / "shared.csv"
     assert victim.read_bytes() == b"alice data"
 
     # bob aims at her file by its full path, with overwrite
     status, _ = _upload(
         daemon,
         bob,
-        str(daemon.root / "alice"),
+        str(daemon.root / "users" / "alice"),
         "shared.csv",
         b"bob was here",
         extra_q="&overwrite=1",
     )
     assert victim.read_bytes() == b"alice data", "bob overwrote alice's file"
     # his bytes went to his own area, if anywhere
-    stray = daemon.root / "bob" / "shared.csv"
+    stray = daemon.root / "users" / "bob" / "shared.csv"
     if stray.exists():
         assert stray.read_bytes() == b"bob was here"
+
+
+def test_one_member_cannot_read_anothers_personal_area(daemon):
+    """D8: datasets and project areas are shared; personal scratch is not.
+    The write half was scoped first; without this, bob could still
+    *download* everything alice had uploaded."""
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    _upload(daemon, alice, str(daemon.root), "private.csv", b"alice private")
+    target = daemon.root / "users" / "alice" / "private.csv"
+    assert target.exists()
+
+    status, _ = _get(daemon.port, f"/api/v1/files/download?path={target}", cookie=bob)
+    assert status == 404, "bob downloaded alice's personal file"
+    status, _ = _get(daemon.port, f"/api/v1/files?path={target.parent}", cookie=bob)
+    assert status == 404, "bob listed alice's personal area"
+
+    # alice reads her own; a shared file is readable by both
+    status, _ = _get(daemon.port, f"/api/v1/files/download?path={target}", cookie=alice)
+    assert status == 200
+    shared = daemon.root / "reference.csv"
+    shared.write_bytes(b"everyone's dataset")
+    status, _ = _get(daemon.port, f"/api/v1/files/download?path={shared}", cookie=bob)
+    assert status == 200, "shared space stopped being shared"
+
+
+def test_a_read_only_root_refuses_every_write(tmp_path, monkeypatch):
+    """D8 names a read-only datasets area. `path=ro` is how an operator says
+    so, and it refuses admins too: the point of a read-only root is that
+    the reference data every analysis reads cannot drift."""
+    datasets = tmp_path / "datasets"
+    scratch = tmp_path / "scratch"
+    datasets.mkdir()
+    scratch.mkdir()
+    (datasets / "cohort.csv").write_bytes(b"reference")
+    monkeypatch.setenv("OPENAI4S_DATA_ROOTS", f"{datasets}=ro:{scratch}")
+    node = _TeamDaemon(tmp_path, data_roots=[datasets, scratch])
+    node.seed_user("root", "fake-pw-r", role="admin")
+    node.seed_user("alice", "fake-pw-a")
+    try:
+        alice = _login(node, "alice", "fake-pw-a")
+        root = _login(node, "root", "fake-pw-r")
+        # readable by a member
+        status, _ = _get(
+            node.port,
+            f"/api/v1/files/download?path={datasets / 'cohort.csv'}",
+            cookie=alice,
+        )
+        assert status == 200
+        # not writable by anyone
+        for cookie in (alice, root):
+            status, raw = _upload(
+                node, cookie, str(datasets), "cohort.csv", b"x", extra_q="&overwrite=1"
+            )
+            assert status == 403, raw[:200]
+            assert (datasets / "cohort.csv").read_bytes() == b"reference"
+        # a member with no directory in mind lands in the writable root
+        status, _ = _upload(node, alice, "", "note.txt", b"mine")
+        assert status == 201
+        assert (scratch / "users" / "alice" / "note.txt").read_bytes() == b"mine"
+    finally:
+        node.close()
 
 
 def test_upload_outside_root_is_404(daemon):

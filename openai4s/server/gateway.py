@@ -8959,11 +8959,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
 
     _team_auth = _TeamAuthService(store) if cfg.team_mode else None
+    from openai4s.config import data_root_policies as _data_root_policies
     from openai4s.server.file_area import FileArea as _FileArea
 
     # The team file area (M1-8). Dormant with no roots; independent of
     # team_mode so a single-user install can also mount data directories.
-    _file_area = _FileArea(list(cfg.data_roots))
+    _file_area = _FileArea(
+        list(cfg.data_roots),
+        # D8's read-only datasets area rides on the same env value as the
+        # paths (`path=ro`); the plain list keeps its old shape for INV-1.
+        policies=_data_root_policies(),
+    )
     #: Reachable without a login in team mode. The login page and the login
     #: POST are the recovery path; /auth/status and /health answer with mode
     #: strings only; /static assets are the login page's css/js (the app
@@ -9262,7 +9268,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 raise GatewayError(404, "unknown share")
 
         def _team_guard_instance_config(self, method: str, sub: str) -> None:
-            """Refuse a member's write to instance-global configuration (M4).
+            """Refuse a member's reach into instance-global surfaces (M4).
+
+            Three families, all in one guard so a new one is a line in
+            `team_policy` and not a new call site: configuration writes,
+            daemon-level operations (`/compute/jobs`, which runs
+            `bash -c <command>` as the daemon's own uid -- arbitrary command
+            execution for every member until this guard existed), and
+            instance-global mutations such as installing packages into the
+            shared venv or publishing a skill every member's agent loads.
 
             Not merely "overwrite the group's API key". The same request
             writes `llm_base_url`, so one member can point *every* user's
@@ -9276,7 +9290,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             surfaces whose existence is not a secret, and the UI already
             reads `admin_only` to decide which Customize panes to show.
             """
-            if not team_policy.is_instance_config(method, sub):
+            path = sub.split("?")[0]
+            if not team_policy.is_admin_only_surface(method, path):
                 return
             if team_policy.may_change_instance_config(self):
                 return
@@ -10417,6 +10432,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             str(a["root_frame_id"]), _user
                         )
                     ]
+                    # The third family. Two of three were filtered and the
+                    # third -- indexed DataPro content, which is exactly the
+                    # query-matched *scientific* text -- rode through
+                    # unchanged. Same predicate, same fail-closed shape: a
+                    # hit with no root to check against is not shown.
+                    payload["datapro"] = [
+                        d
+                        for d in payload.get("datapro", [])
+                        if d.get("root_frame_id")
+                        and store.team.session_visible_to(
+                            str(d["root_frame_id"]), _user
+                        )
+                    ]
                 self._json(payload)
                 return
             if sub in ("", "/"):
@@ -11450,6 +11478,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(scope_id), "changing Session permissions"
                     )
+                # A standing rule is authorization for *future* actions, and
+                # a global one is authorization for everybody's. In team
+                # mode a member may write rules for what they can reach --
+                # their own session, a project they participate in -- and
+                # nothing wider: the default scope is `global`, so an
+                # unqualified POST from a member would otherwise plant an
+                # "allow" that every other user's agent then honours.
+                _identity = getattr(self, "_team_identity", None)
+                if (
+                    _team_auth is not None
+                    and _identity is not None
+                    and (not _identity.is_admin)
+                ):
+                    if scope == "global":
+                        raise GatewayError(
+                            403, "global permission rules are admin only", "admin_only"
+                        )
+                    if scope == "project" and not team_policy.may_read_project(
+                        store, _identity, str(scope_id or "")
+                    ):
+                        raise GatewayError(404, "project not found")
+                    if scope == "conversation" and not team_policy.may_use_session(
+                        store, _identity, str(scope_id or "")
+                    ):
+                        raise GatewayError(404, "session not found")
                 rid = store.set_permission_rule(
                     scope=scope,
                     scope_id=scope_id or "",
