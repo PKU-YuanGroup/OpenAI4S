@@ -91,8 +91,10 @@ def _await_phase(daemon, job_id: str, cookie: str, *, timeout_s: float = 20.0):
         f"  workload: {last}\n"
         f"  allocation: {allocation}\n"
         f"  backend: {backend.diagnostics() if backend else None}\n"
-        f"  reconciler alive: "
-        f"{getattr(daemon.runner.reconciler, '_thread', None) is not None}"
+        f"  reconciler: running={daemon.runner.reconciler.running()} "
+        f"ticks={daemon.runner.reconciler.ticks} "
+        f"last_error={daemon.runner.reconciler.last_error!r} "
+        f"exited={daemon.runner.reconciler.exited_reason!r}"
     )
 
 

@@ -120,12 +120,29 @@ class Reconciler:
         self._on_event = on_event or (lambda kind, payload: None)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        #: Observable liveness. "Is there a thread object" is not the same
+        #: question as "is this loop running", and answering the first one
+        #: while meaning the second sent one investigation down a dead end.
+        self.ticks = 0
+        self.last_error: str | None = None
+        self.exited_reason: str | None = None
 
     # --- the loop ---------------------------------------------------------
 
+    def running(self) -> bool:
+        """Is the loop actually ticking? Not 'does a thread object exist'."""
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
     def start(self) -> None:
-        if self._thread is not None:
+        # `running()` rather than `_thread is not None`: a loop that exited on
+        # its own leaves the attribute set, and treating that as "already
+        # started" means it can never be restarted — the daemon goes quiet
+        # and every later submission waits forever for a tick that will not
+        # come.
+        if self.running():
             return
+        self._thread = None
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, name="orchestration-reconciler", daemon=True
@@ -141,8 +158,10 @@ class Reconciler:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                self.ticks += 1
                 self.tick()
             except Exception as exc:  # noqa: BLE001 — a tick must never kill the loop
+                self.last_error = f"{type(exc).__name__}: {exc}"
                 if _store_is_gone(exc):
                     # Not a transient error to log forever: the database this
                     # loop exists to reconcile has been closed, so the world
@@ -150,10 +169,12 @@ class Reconciler:
                     # the thread otherwise produces an endless stream of
                     # "closed database" lines and keeps a thread alive past
                     # the process state it depends on.
+                    self.exited_reason = "store closed"
                     self._stop.set()
                     return
                 self._emit("reconcile_error", {"error": str(exc)})
             self._stop.wait(self._interval_s)
+        self.exited_reason = self.exited_reason or "stopped"
 
     # --- one pass ---------------------------------------------------------
 
