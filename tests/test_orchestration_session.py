@@ -99,10 +99,22 @@ class FakeGateway:
         self.arrivals = {}
 
     def arrive(self, allocation_id, epoch, registration="reg"):
-        self.arrivals[(allocation_id, int(epoch))] = registration
+        self.arrivals.setdefault((allocation_id, int(epoch)), []).append(registration)
 
     def await_worker(self, allocation_id, epoch, *, timeout_s):
-        return self.arrivals.pop((allocation_id, int(epoch)), None)
+        found = self.await_workers(
+            allocation_id, epoch, expected=1, timeout_s=timeout_s
+        )
+        return found[0] if found else None
+
+    def await_workers(self, allocation_id, epoch, *, expected, timeout_s):
+        have = self.arrivals.get((allocation_id, int(epoch))) or []
+        if len(have) < expected:
+            # The real one hands back the partial set rather than nothing,
+            # so a caller can say "3 of 4" instead of "not ready".
+            return list(have)
+        self.arrivals.pop((allocation_id, int(epoch)), None)
+        return list(have)
 
 
 @pytest.fixture()

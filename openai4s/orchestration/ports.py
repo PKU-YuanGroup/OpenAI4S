@@ -35,6 +35,8 @@ from openai4s.orchestration.models import (
     Reason,
     ResourceProfile,
     SubmissionToken,
+    TaskResult,
+    TaskSpec,
     WorkloadSpec,
 )
 
@@ -130,7 +132,23 @@ class AllocationBackend(Protocol):
         ...
 
 
+@runtime_checkable
+class TaskRunner(Protocol):
+    """A backend that can run work inside an allocation it already granted.
+
+    Separate from `AllocationBackend` and optional, because not every
+    resource plane has the concept and a Protocol nobody can implement is
+    a Protocol that gets implemented badly. A caller asks
+    `isinstance(backend, TaskRunner)` and says so plainly when the answer
+    is no, rather than falling back to submitting a second allocation —
+    which is exactly what INV-4 forbids.
+    """
+
+    def run_task(self, allocation: Allocation, spec: TaskSpec) -> TaskResult: ...
+
+
 __all__ = [
+    "TaskRunner",
     "AllocationBackend",
     "Created",
     "Existing",

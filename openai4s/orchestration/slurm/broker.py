@@ -83,6 +83,36 @@ class SlurmCommandError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class StepSpec:
+    """A validated job step. Same discipline as `SubmitSpec`: every field
+    here is already safe for argv, and the environment is filtered by the
+    same credential-shaped-name rule — a step's environment is as readable
+    as a job's."""
+
+    command: tuple[str, ...]
+    tasks: int = 1
+    nodes: int = 1
+    cpus_per_task: int = 1
+    workdir: str | None = None
+    environment: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.command:
+            raise ValueError("a step needs a command")
+        for name in ("tasks", "nodes", "cpus_per_task"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
+        for key in self.environment:
+            if not _ENV_NAME_RE.fullmatch(key):
+                raise ValueError(f"invalid environment variable name {key!r}")
+            if _CREDENTIAL_HINT_RE.search(key):
+                raise ValueError(
+                    f"refusing to put {key!r} in a step environment "
+                    f"(INV-9: pass a path to a 0600 file instead)"
+                )
+
+
+@dataclass(frozen=True)
 class SubmitSpec:
     """A validated submission. Every field here is already safe for argv."""
 
@@ -258,6 +288,37 @@ class SlurmBroker:
                 "sbatch returned no job id", command=("sbatch",), stderr=stdout[:500]
             )
         return job_id
+
+    def build_step_argv(self, job_id: str, spec: "StepSpec") -> list[str]:
+        """`srun --jobid=<existing>` — a step, never a new allocation.
+
+        The `--jobid` is the whole point and is not optional: an `srun`
+        without one *allocates*, which would turn an interactive task into a
+        second job holding a second set of resources. That is precisely what
+        INV-4 forbids, and it is a one-flag difference between the correct
+        behaviour and the expensive one.
+        """
+        if not _SAFE_TOKEN_RE.fullmatch(job_id):
+            raise ValueError(f"refusing an unsafe job id: {job_id!r}")
+        argv = [
+            "srun",
+            f"--jobid={job_id}",
+            f"--ntasks={int(spec.tasks)}",
+            f"--nodes={int(spec.nodes)}",
+            f"--cpus-per-task={int(spec.cpus_per_task)}",
+        ]
+        if spec.workdir:
+            argv.append(f"--chdir={spec.workdir}")
+        if spec.environment:
+            pairs = ",".join(f"{k}={v}" for k, v in sorted(spec.environment.items()))
+            argv.append(f"--export={pairs}")
+        argv.append("--")
+        argv.extend(spec.command)
+        return argv
+
+    def run_step(self, job_id: str, spec: "StepSpec") -> str:
+        """Run a step and return what it wrote. Blocking, like `srun` is."""
+        return self._run(self.build_step_argv(job_id, spec))
 
     # --- observation ------------------------------------------------------
 

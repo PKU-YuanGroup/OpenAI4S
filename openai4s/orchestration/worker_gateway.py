@@ -31,6 +31,7 @@ import json
 import os
 import socket
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -106,7 +107,13 @@ class WorkerGateway:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._waiters: dict[tuple[str, int], threading.Event] = {}
-        self._arrived: dict[tuple[str, int], Registration] = {}
+        # A *list* per attempt, not one registration. A multi-node job
+        # places one worker per rank and all of them present a credential
+        # for the same (allocation, epoch); keyed by that pair alone, rank 1
+        # silently replaced rank 0 and a two-node session looked like a
+        # one-node session that worked. Gang readiness (M4-3) is counting
+        # these, so losing them is losing the count.
+        self._arrived: dict[tuple[str, int], list[Registration]] = {}
         self.rejected = 0
         self.accepted = 0
 
@@ -222,7 +229,7 @@ class WorkerGateway:
         key = (credential.allocation_id, credential.epoch)
         with self._lock:
             self.accepted += 1
-            self._arrived[key] = registration
+            self._arrived.setdefault(key, []).append(registration)
             waiter = self._waiters.get(key)
         if waiter is not None:
             waiter.set()
@@ -268,22 +275,48 @@ class WorkerGateway:
         cannot satisfy a wait for the current one — the same fencing the
         credential check enforces, applied to the rendezvous.
         """
+        arrivals = self.await_workers(
+            allocation_id, epoch, expected=1, timeout_s=timeout_s
+        )
+        return arrivals[0] if arrivals else None
+
+    def await_workers(
+        self, allocation_id: str, epoch: int, *, expected: int, timeout_s: float
+    ) -> list[Registration]:
+        """Block until `expected` workers for this exact attempt have dialled in.
+
+        M4-3, gang readiness: a multi-node session is ready when every rank
+        has registered, not when the first one has. Returning early on rank
+        0 is how a distributed run starts against a job whose other nodes
+        are still being placed — the failure then surfaces inside the user's
+        computation, where it looks like their bug.
+
+        Returns what actually arrived on timeout rather than raising, so a
+        caller can say "3 of 4" instead of "not ready", which is the
+        difference between a diagnosis and a spinner.
+        """
         key = (allocation_id, int(epoch))
-        with self._lock:
-            already = self._arrived.pop(key, None)
-            if already is not None:
-                return already
-            waiter = self._waiters.get(key)
-            if waiter is None:
-                waiter = threading.Event()
-                self._waiters[key] = waiter
-        if not waiter.wait(timeout=timeout_s):
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while True:
             with self._lock:
-                self._waiters.pop(key, None)
-            return None
-        with self._lock:
-            self._waiters.pop(key, None)
-            return self._arrived.pop(key, None)
+                have = list(self._arrived.get(key) or ())
+                if len(have) >= expected:
+                    self._arrived.pop(key, None)
+                    self._waiters.pop(key, None)
+                    return have
+                waiter = self._waiters.get(key)
+                if waiter is None:
+                    waiter = threading.Event()
+                    self._waiters[key] = waiter
+                waiter.clear()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not waiter.wait(timeout=remaining):
+                with self._lock:
+                    self._waiters.pop(key, None)
+                    # Hand back the partial set. It is the caller's to
+                    # release, and pretending nothing arrived would strand
+                    # workers that are connected and waiting.
+                    return list(self._arrived.pop(key, []) or [])
 
 
 def gateway_from_environment(

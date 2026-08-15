@@ -200,6 +200,47 @@ class SlurmBackend:
             )
         return Created(handle=self._handle(job_id))
 
+    # --- tasks inside an allocation (M4-2) --------------------------------
+
+    def run_task(self, allocation: Any, spec: Any) -> Any:
+        """Run a step inside the resource this workload already holds.
+
+        INV-4, enforced rather than documented: with no live handle there
+        is nothing to run *inside*, and the tempting fallback — submit one
+        — is the exact behaviour the invariant forbids. An interactive task
+        that quietly allocates turns one session into two jobs, one of
+        which nobody is watching and both of which are billed. So this
+        refuses and says why.
+        """
+        from openai4s.orchestration.models import TaskHandle, TaskResult
+        from openai4s.orchestration.slurm.broker import StepSpec
+
+        handle = getattr(allocation, "handle", None)
+        job_id = handle.external_id if handle else None
+        if not job_id:
+            raise RuntimeError(
+                "this workload holds no granted resource, so there is nothing "
+                "to run inside; a task must never allocate one of its own "
+                "(INV-4)"
+            )
+        step = StepSpec(
+            command=tuple(spec.command),
+            tasks=spec.tasks,
+            nodes=spec.nodes,
+            cpus_per_task=spec.cpus_per_task,
+            workdir=spec.workdir,
+            environment=dict(spec.environment),
+        )
+        output = self._broker.run_step(job_id, step)
+        return TaskResult(
+            handle=TaskHandle(
+                allocation_id=allocation.id,
+                step_id=f"{job_id}.step",
+                tasks=spec.tasks,
+            ),
+            output=output,
+        )
+
     # --- observation ------------------------------------------------------
 
     def observe(self, allocation: Allocation) -> Observation:

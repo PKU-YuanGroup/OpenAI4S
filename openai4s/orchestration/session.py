@@ -87,6 +87,14 @@ class SessionReadiness:
     worker_registered: bool = False
     workspace_ready: bool = False
     kernel_ready: bool = False
+    #: Gang readiness (M4-3). A multi-node session is ready when *every*
+    #: rank has registered, not when the first one has: starting a
+    #: distributed run against a job whose other nodes are still being
+    #: placed surfaces the failure inside the user's computation, where it
+    #: looks like their bug. Carried as counts rather than folded into the
+    #: boolean so "3 of 4 nodes" is something the UI can say.
+    workers_expected: int = 1
+    workers_registered: int = 0
 
     @property
     def ready(self) -> bool:
@@ -95,7 +103,24 @@ class SessionReadiness:
             and self.worker_registered
             and self.workspace_ready
             and self.kernel_ready
+            and self.gang_complete
         )
+
+    @property
+    def gang_complete(self) -> bool:
+        """Whether every rank is in — a refinement of `worker_registered`,
+        not a second condition beside it.
+
+        A single-node session is the overwhelmingly common case and gang
+        adds nothing to it, so below two expected workers this is exactly
+        the boolean it refines. Making the count authoritative in both
+        cases would have meant every hand-built readiness had to carry a
+        number nobody has, which is how a defaulted 0 turns a ready session
+        into a stuck one.
+        """
+        if self.workers_expected <= 1:
+            return self.worker_registered
+        return self.workers_registered >= self.workers_expected
 
     @property
     def blocked_on(self) -> str | None:
@@ -104,7 +129,7 @@ class SessionReadiness:
             return "allocation"
         if not self.workspace_ready:
             return "workspace"
-        if not self.worker_registered:
+        if not self.worker_registered or not self.gang_complete:
             return "worker"
         if not self.kernel_ready:
             return "kernel"
@@ -118,6 +143,8 @@ class SessionReadiness:
             "worker_registered": self.worker_registered,
             "workspace_ready": self.workspace_ready,
             "kernel_ready": self.kernel_ready,
+            "workers_expected": self.workers_expected,
+            "workers_registered": self.workers_registered,
         }
 
 
@@ -129,6 +156,10 @@ class SessionRuntime:
     workload_id: str
     epoch: int = 0
     registration: Any = None
+    #: Every rank that dialled in for this attempt. `registration` stays the
+    #: rank the kernel is driven through (rank 0), because one interpreter
+    #: runs the cell and the rest are its peers.
+    registrations: list[Any] = field(default_factory=list)
     kernel: Any = None
     kernel_ready: bool = False
     state_lost_epochs: list[int] = field(default_factory=list)
@@ -351,11 +382,17 @@ class ComputeSessionManager:
             Phase.ACTIVE,
         )
         runtime = self._runtimes.get(session_id)
+        workload = self._store.workloads.get_workload(workload_id)
+        expected = 1
+        if workload is not None:
+            expected = max(1, int(workload.spec.profile.nodes))
         return SessionReadiness(
             allocation_granted=granted,
             worker_registered=bool(runtime and runtime.registration is not None),
             workspace_ready=self.workspace_for(workload_id).is_dir(),
             kernel_ready=bool(runtime and runtime.kernel_ready),
+            workers_expected=expected,
+            workers_registered=len(runtime.registrations) if runtime else 0,
         )
 
     def attach_worker(self, session_id: str, *, timeout_s: float = 60.0) -> bool:
@@ -372,17 +409,27 @@ class ComputeSessionManager:
         allocation = self._store.workloads.active_allocation(workload_id)
         if workload is None or allocation is None:
             return False
-        registration = self._gateway.await_worker(
-            allocation.id, workload.execution_epoch, timeout_s=timeout_s
+        expected = max(1, int(workload.spec.profile.nodes))
+        arrivals = self._gateway.await_workers(
+            allocation.id,
+            workload.execution_epoch,
+            expected=expected,
+            timeout_s=timeout_s,
         )
-        if registration is None:
-            return False
         runtime = self._runtimes.setdefault(
             session_id,
             SessionRuntime(session_id=session_id, workload_id=workload_id),
         )
-        runtime.registration = registration
+        # Record the partial set even when it is short. A caller that threw
+        # away three of four registrations would leave those workers
+        # connected, waiting, and unreleasable — and the UI would have no
+        # way to say "3 of 4" rather than "not ready".
+        runtime.registrations = list(arrivals)
         runtime.epoch = workload.execution_epoch
+        if len(arrivals) < expected:
+            return False
+        registration = arrivals[0]
+        runtime.registration = registration
         if self._kernel_factory is not None:
             runtime.kernel = self._kernel_factory(registration)
             runtime.kernel_ready = True
@@ -412,6 +459,7 @@ class ComputeSessionManager:
         runtime = self._runtimes.get(session_id)
         if runtime is not None:
             runtime.registration = None
+            runtime.registrations = []
             runtime.kernel = None
             runtime.kernel_ready = False
             if epoch not in runtime.state_lost_epochs:

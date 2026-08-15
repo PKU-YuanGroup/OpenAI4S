@@ -231,6 +231,60 @@ class WorkloadSpec:
             raise ValueError("spec_revision starts at 1")
 
 
+@dataclass(frozen=True)
+class TaskSpec:
+    """Work run *inside* an allocation this workload already holds.
+
+    INV-4 is the whole reason this type exists separately from
+    `WorkloadSpec`: an interactive task must never implicitly create an
+    allocation. A distributed run is a step within a resource already
+    granted — asking for a new one behind the user's back is how a session
+    quietly becomes two jobs, one of which nobody is watching and both of
+    which are billed.
+    """
+
+    command: tuple[str, ...]
+    tasks: int = 1
+    nodes: int = 1
+    cpus_per_task: int = 1
+    workdir: str | None = None
+    environment: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.command:
+            raise ValueError("a task needs a command")
+        for name in ("tasks", "nodes", "cpus_per_task"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive")
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    """A finished step: what it was, and what it wrote.
+
+    Both, because a distributed step is blocking — the caller that asked
+    for it is the caller that wants its output, and making them fetch it
+    separately means a log that can be lost between the two calls.
+    """
+
+    handle: "TaskHandle"
+    output: str = ""
+
+
+@dataclass(frozen=True)
+class TaskHandle:
+    """A running step, named the way its resource plane names it.
+
+    Wrapped for the same reason `ExternalHandle` is: a raw step id passed
+    around as a string is how a scheduler's vocabulary reaches modules that
+    are supposed to be unable to name it (INV-2).
+    """
+
+    allocation_id: str
+    step_id: str
+    tasks: int = 1
+
+
 @dataclass
 class Workload:
     """One durable unit of asked-for work, across however many attempts."""
@@ -298,6 +352,9 @@ __all__ = [
     "Reason",
     "ResourceProfile",
     "SubmissionToken",
+    "TaskHandle",
+    "TaskResult",
+    "TaskSpec",
     "Workload",
     "WorkloadKind",
     "WorkloadSpec",
