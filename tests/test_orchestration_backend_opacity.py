@@ -24,7 +24,9 @@ Slurm-shaped hole.
 from __future__ import annotations
 
 import ast
+import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -120,20 +122,45 @@ def test_core_imports_never_reach_a_backend(path: Path):
 
 def test_core_is_importable_without_any_backend_module():
     """The runtime form of the same claim: importing the contract must not
-    drag in an implementation."""
-    import importlib
-    import sys
+    drag in an implementation.
 
-    for name in list(sys.modules):
-        if name.startswith("openai4s.orchestration"):
-            del sys.modules[name]
-    module = importlib.import_module("openai4s.orchestration")
-    loaded = {name for name in sys.modules if name.startswith("openai4s.orchestration")}
-    leaked = sorted(n for n in loaded if _PATH_RE.search(n))
+    In a **subprocess**, and that is not fastidiousness. The first version
+    did this in-process by deleting `openai4s.orchestration*` from
+    `sys.modules` and re-importing — which left two live copies of every
+    enum in the interpreter: modules imported before the purge (storage,
+    which holds `DesiredState` from import time) kept the old classes while
+    everything imported after got new ones. `is` comparisons across that
+    seam are then false between values that print identically, so the
+    reconciler stopped recognising `DesiredState.STOPPED` and silently
+    never ran its cancel barrier. Two unrelated tests failed in the full
+    suite and passed alone, and the cause was this test.
+
+    A fresh interpreter is also the stronger claim: "importing the contract
+    loads no backend" is about a clean process, not about one this test has
+    already rearranged.
+    """
+    import subprocess
+
+    probe = (
+        "import sys, json;"
+        "import openai4s.orchestration as m;"
+        "loaded=[n for n in sys.modules if n.startswith('openai4s.orchestration')];"
+        "print(json.dumps({'loaded': loaded,"
+        " 'has_port': hasattr(m, 'AllocationBackend'),"
+        " 'has_token': hasattr(m, 'SubmissionToken')}))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(_REPO),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    result = json.loads(completed.stdout.strip().splitlines()[-1])
+    leaked = sorted(n for n in result["loaded"] if _PATH_RE.search(n))
     assert not leaked, f"importing the contract loaded {leaked}"
-    # and it really did load something worth guarding
-    assert hasattr(module, "AllocationBackend")
-    assert hasattr(module, "SubmissionToken")
+    assert result["has_port"] and result["has_token"]
 
 
 def test_the_guard_would_actually_catch_a_leak(tmp_path):
