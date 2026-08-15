@@ -5586,14 +5586,11 @@ function stepBody(step) {
       const row = el("div", "s-res");
       const u = typeof r.url === "string" ? r.url.trim() : "";
       // Only turn a result into a link when its scheme is safe to navigate to;
-      // a javascript:/data: URL in an href would run on click (XSS). The check
-      // is a single guarded assignment rather than a repeated inline test, so
-      // the only value that can reach `href` is one the anchored scheme test
-      // already accepted -- and so static analysis can see that barrier too.
-      const safeUrl = /^https?:\/\//i.test(u) ? u : "";
-      const a = el(safeUrl ? "a" : "div", "s-res-t");
+      // a javascript:/data: URL in an href would run on click (XSS). The scheme
+      // test is inlined at the assignment so it acts as the guard on `u`.
+      const a = el(/^https?:\/\//i.test(u) ? "a" : "div", "s-res-t");
       a.textContent = r.title || r.url || t("step.search.emptyResult");
-      if (safeUrl) { a.href = safeUrl; a.target = "_blank"; a.rel = "noopener noreferrer"; }
+      if (/^https?:\/\//i.test(u)) { a.href = u; a.target = "_blank"; a.rel = "noopener noreferrer"; }
       row.appendChild(a);
       if (r.url) row.appendChild(el("div", "s-res-u", r.url));
       if (r.snippet) row.appendChild(el("div", "s-res-s", r.snippet));
