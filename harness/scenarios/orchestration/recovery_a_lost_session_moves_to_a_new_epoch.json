@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "recovery.a_lost_session_moves_to_a_new_epoch",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "A node failure loses the kernel's memory and says so.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "workload": {
+        "kind": "SESSION"
+      },
+      "submits": [
+        {
+          "result": "created"
+        },
+        {
+          "result": "created"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "LOST",
+          "reason": "NODE_FAILED"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "PENDING:KERNEL_STATE_LOST",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submitted",
+      "session_kernel_state_lost",
+      "allocation_submitted",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "id": "alloc.unknown_submission_resubmits_only_after_asking",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "Nothing carries the token, so submitting again cannot double-allocate.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "submits": [
+        {
+          "result": "unknown"
+        },
+        {
+          "result": "created"
+        }
+      ],
+      "find_by_token": [
+        null
+      ],
+      "observations": [
+        {
+          "phase": "ACTIVE"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "ACTIVE",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submission_unknown",
+      "workload_phase",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

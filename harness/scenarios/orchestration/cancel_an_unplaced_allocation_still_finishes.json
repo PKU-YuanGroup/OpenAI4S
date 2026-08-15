@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "id": "cancel.an_unplaced_allocation_still_finishes",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "Nothing was placed, so the barrier concludes instead of re-entering forever.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "stop_at_tick": 0,
+      "submits": [],
+      "observations": []
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "CANCELLED:USER_CANCELLED",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "stop_requested",
+      "workload_releasing",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}
