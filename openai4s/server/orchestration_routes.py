@@ -212,11 +212,18 @@ def handle(
         owner = None
         if identity is not None and not identity.is_admin:
             owner = identity.user_id
+        try:
+            limit = contract.int_param(
+                q.get("limit"), 100, name="limit", minimum=1, maximum=500
+            )
+        except contract.QueryParamError as exc:
+            self._json({"error": str(exc), "code": exc.code}, 400)
+            return True
         workloads = store.workloads.list_workloads(
             owner_user_id=owner,
             project_id=(q.get("project_id") or [None])[0],
             include_terminal=(q.get("all") or ["1"])[0] not in ("0", "false"),
-            limit=int((q.get("limit") or ["100"])[0]),
+            limit=limit,
         )
         self._json(
             {

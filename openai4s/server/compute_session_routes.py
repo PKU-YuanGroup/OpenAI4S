@@ -257,12 +257,20 @@ def handle(
         profile: ResourceProfile = site.resources
 
         identity = _identity(self)
+        # From the *session*, not from the identity. `TeamIdentity` is a
+        # frozen dataclass of (user_id, username, role, kind) with no
+        # `project_id` and no `__getattr__`, so the `getattr(identity,
+        # "project_id", None)` this used to read was a constant None dressed
+        # as a lookup: every cluster-session workload was created unscoped,
+        # and `GET /orchestration/jobs?project_id=…` matched none of them.
+        frame = store.get_frame(session_id) or {}
+        project_id = frame.get("project_id") or None
         # The manager refuses it too, and that is not redundant: the route
         # is one caller of a manager the CLI and tests also reach.
         workload = manager.request_session(
             session_id=session_id,
             owner_user_id=identity.user_id if identity else "local",
-            project_id=getattr(identity, "project_id", None),
+            project_id=project_id,
             profile=profile,
             backend=getattr(runner, "cluster_backend_name", "cluster"),
             recovery=strategy,

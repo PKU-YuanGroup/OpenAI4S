@@ -582,9 +582,55 @@ def route_families(source: str | None = None) -> set[str]:
     }
 
 
+class QueryParamError(ValueError):
+    """A client-supplied query parameter that is not what it claims to be.
+
+    Carries the wire shape so a route can answer 400 instead of letting a
+    bare `int()` raise into the gateway's catch-all, which prints a
+    traceback and answers 500 -- telling the caller the server is broken
+    when the request was.
+    """
+
+    def __init__(self, name: str, message: str, code: str = "invalid_query_param"):
+        super().__init__(message)
+        self.name = name
+        self.code = code
+
+
+def int_param(
+    values: Any,
+    default: int | None = None,
+    *,
+    name: str = "limit",
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    """One query parameter as an int, clamped, or `QueryParamError`.
+
+    `values` is the raw `parse_qs` list, so callers pass `q.get("limit")`
+    directly. The clamp runs *after* parsing, which is the ordering the
+    hand-rolled copies got wrong: their repository-side `max(1, min(...))`
+    sat downstream of a throw that never reached it.
+    """
+    raw = (values or [None])[0]
+    if raw is None or raw == "":
+        return default
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        raise QueryParamError(name, f"{name} must be an integer") from None
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
 __all__ = [
     "API_ROOT",
+    "QueryParamError",
     "RouteSpec",
+    "int_param",
     "declared_http_routes",
     "http_routes",
     "is_complete_matcher",

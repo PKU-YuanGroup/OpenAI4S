@@ -276,11 +276,23 @@ class AttemptPreparer:
                     f"-r{{rank}}.json"
                 )
             )
+        # The workload-keyed workspace, which is the one everything on this
+        # side means by "the workspace": `runtime_dir` writes the bootstrap
+        # credential there, `readiness` tests it, and the gateway builds the
+        # Kernel with it as cwd. `workload.spec.workdir` was frozen from the
+        # *session*-keyed directory, because `request_session` had to name a
+        # directory before an id existed -- so the worker ran in one place
+        # while every check looked at another, and a cell writing a relative
+        # path put the file where artifact capture never looked.
+        # `runtime_dir` is `<workspace>/.openai4s`, so its parent is the
+        # workspace itself -- no new plumbing, and it cannot drift from the
+        # directory the credential was just written into.
+        workspace = runtime_dir.parent
         return WorkloadSpec(
             kind=workload.spec.kind,
             profile=workload.spec.profile,
             command=workload.spec.command or worker_launch_command(python=self._python),
-            workdir=workload.spec.workdir,
+            workdir=str(workspace),
             environment=environment,
             spec_revision=workload.spec.spec_revision,
         )
@@ -531,6 +543,14 @@ class ComputeSessionManager:
             return False
         stopped = self._store.workloads.request_stop(workload_id, reason=reason)
         self._store.leases.release(workload_id)
+        # Drop the binding too. `request_stop` writes intent, not phase, so
+        # the workload stays non-terminal while the cancel barrier tears it
+        # down -- and `request_session` short-circuits on any non-terminal
+        # workload it finds bound to the session. Leaving the row meant the
+        # next request handed the user back the resource that was being
+        # released, with a lease already marked released and therefore
+        # impossible to renew.
+        self._store.leases.unbind_session(session_id)
         runtime = self._runtimes.pop(session_id, None)
         if runtime is not None and runtime.kernel is not None:
             try:

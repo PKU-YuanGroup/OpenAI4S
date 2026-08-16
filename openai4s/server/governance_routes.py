@@ -247,11 +247,15 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         return True
 
     if _USAGE.match(method, sub):
-        since = (q.get("since_ms") or [None])[0]
+        try:
+            since = contract.int_param(q.get("since_ms"), None, name="since_ms")
+        except contract.QueryParamError as exc:
+            self._json({"error": str(exc), "code": exc.code}, 400)
+            return True
         self._json(
             {
                 "usage": store.governance.usage_summary(
-                    since_ms=int(since) if since else None,
+                    since_ms=since,
                     user_id=(q.get("user_id") or [None])[0],
                     project_id=(q.get("project_id") or [None])[0],
                 )
@@ -259,7 +263,13 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         )
         return True
     if _AUDIT.match(method, sub):
-        limit = int((q.get("limit") or ["200"])[0])
+        try:
+            limit = contract.int_param(
+                q.get("limit"), 200, name="limit", minimum=1, maximum=1000
+            )
+        except contract.QueryParamError as exc:
+            self._json({"error": str(exc), "code": exc.code}, 400)
+            return True
         self._json(
             {
                 "audit": store.team.list_audit(

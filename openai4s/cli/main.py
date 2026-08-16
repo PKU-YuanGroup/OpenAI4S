@@ -1623,7 +1623,14 @@ def _read_new_password(args) -> tuple[str, str | None]:
     import secrets as _secrets
 
     if getattr(args, "password_stdin", False):
-        pw = sys.stdin.readline().rstrip("\n")
+        # `\r\n` as well as `\n`: a CRLF pipe (a Windows-authored secrets
+        # file, a CI runner, `printf 'pw\r\n'`) otherwise stores the hash of
+        # `pw\r`, and the account is then permanently unloginnable with the
+        # password that was supplied -- behind a login error that is
+        # deliberately indistinguishable from a wrong one, so nothing points
+        # at the cause. Docker's own `--password-stdin` trims `\r` for the
+        # same reason.
+        pw = sys.stdin.readline().rstrip("\r\n")
         if not pw:
             raise ValueError("empty password on stdin")
         return pw, None
@@ -1672,13 +1679,23 @@ def cmd_user(args) -> int:
                 print(f"error: no such user {args.username!r}", file=sys.stderr)
                 return 2
             store.team.set_disabled(user["id"], True)
+            # What the HTTP route does, on the path an operator uses when the
+            # daemon is down. Leaving the row behind made the credential
+            # unreachable *and* unrevocable: nothing in the product would
+            # ever name that keychain slot again, while a turn in one of this
+            # user's sessions still resolves it by owner and bills their
+            # personal provider key.
+            cleared = store.user_keys.delete_all_for_user(
+                user["id"], secrets=store.secrets
+            )
             store.team.audit(
                 actor="cli",
                 action="user_disable",
                 user_id=user["id"],
                 target=args.username,
             )
-            print(f"disabled {args.username} (live sessions revoked)")
+            keys = f", {cleared} LLM key(s) cleared" if cleared else ""
+            print(f"disabled {args.username} (live sessions revoked{keys})")
         elif action == "reset-password":
             user = store.team.get_user_by_username(args.username)
             if user is None:
