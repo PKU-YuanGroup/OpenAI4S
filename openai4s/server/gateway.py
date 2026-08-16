@@ -3057,14 +3057,18 @@ class SessionRunner:
 
         Idempotent: `Reconciler.start` returns immediately when a thread
         already exists, so every submission may call this.
+
+        It starts things and stops nothing. This method used to open by
+        calling `.stop()` on `lease_reclaimer` and `worker_gateway` — both
+        started once in `_init_orchestration` and restarted nowhere. So the
+        *first* submission closed the listening socket every remote worker
+        dials into: `WorkerGateway.stop()` nulls `_server`, `address` then
+        returns None, and `AttemptPreparer` refuses the allocation with "a
+        cluster session needs a worker listener" on every tick afterwards.
+        The first cluster session was never placed, and no idle lease was
+        ever reclaimed, for the life of the daemon. Shutdown belongs in
+        `close()`, which is where it is.
         """
-        for attr in ("lease_reclaimer", "worker_gateway"):
-            component = getattr(self, attr, None)
-            if component is not None:
-                try:
-                    component.stop()
-                except Exception:  # noqa: BLE001
-                    pass
         reconciler = getattr(self, "reconciler", None)
         if reconciler is not None:
             reconciler.start()
@@ -3090,6 +3094,18 @@ class SessionRunner:
         reconciler = getattr(self, "reconciler", None)
         if reconciler is not None:
             reconciler.stop()
+        # The worker listener and the lease sweeper are daemon-lifetime
+        # components: started once in `_init_orchestration`, stopped here and
+        # nowhere else. `ensure_reconciler` used to stop them on every
+        # submission, which is what left a daemon unable to place its first
+        # cluster session.
+        for attr in ("lease_reclaimer", "worker_gateway"):
+            component = getattr(self, attr, None)
+            if component is not None:
+                try:
+                    component.stop()
+                except Exception:  # noqa: BLE001
+                    pass
         for backend in (getattr(self, "orchestration_backends", None) or {}).values():
             closer = getattr(backend, "close", None)
             if callable(closer):
@@ -9363,8 +9379,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 except Exception:  # noqa: BLE001 - unknown ids fall through
                     artifact = None
                 if artifact is not None:
-                    root = artifact.get("root_frame_id")
-                    if root and not store.team.session_visible_to(root, user):
+                    # Resolved through the same helper the byte guard uses,
+                    # and failing closed the same way. Reading `root_frame_id`
+                    # raw and testing `if root and ...` meant a NULL root --
+                    # which `POST /uploads` with no `frame_id` produces, and
+                    # the column permits -- short-circuited the `and` and ran
+                    # no check at all. The metadata and destructive verbs
+                    # (/edit, /rename, DELETE, /versions, /lineage) never
+                    # reach `_serve_artifact`, so this is their only guard.
+                    root = self._team_root_of_artifact_meta(artifact)
+                    if root is None or not store.team.session_visible_to(root, user):
                         raise GatewayError(404, "artifact not found")
 
         def _team_admit(self, method: str, path: str) -> bool:
@@ -11531,6 +11555,36 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         str(rule.get("scope_id") or ""),
                         "deleting Session permissions",
                     )
+                # The same scope rule POST applies, on the verb that destroys
+                # rather than creates. Guarding only the create left the
+                # asymmetry open: a member cannot write a global rule, but
+                # could delete the admin's -- and the ids arrive through a
+                # route they legitimately pass, since
+                # `/frames/{own}/permissions` returns the global tier
+                # alongside the session's. `resolve()` treats any matching
+                # deny as an absolute veto, so deleting a global deny is how
+                # a standing refusal becomes an allow for everyone.
+                _identity = getattr(self, "_team_identity", None)
+                if (
+                    rule
+                    and _team_auth is not None
+                    and _identity is not None
+                    and (not _identity.is_admin)
+                ):
+                    _scope = str(rule.get("scope") or "")
+                    _scope_id = str(rule.get("scope_id") or "")
+                    if _scope == "global":
+                        raise GatewayError(
+                            403, "global permission rules are admin only", "admin_only"
+                        )
+                    if _scope == "project" and not team_policy.may_read_project(
+                        store, _identity, _scope_id
+                    ):
+                        raise GatewayError(404, "project not found")
+                    if _scope == "conversation" and not team_policy.may_use_session(
+                        store, _identity, _scope_id
+                    ):
+                        raise GatewayError(404, "session not found")
                 store.delete_permission_rule(m.group(1))
                 self._json({"ok": True})
                 return
@@ -13269,6 +13323,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         f"({MEMORY_GLOBAL_SCOPE!r} or a project id)",
                         "memory_scope_required",
                     )
+                # The same guard the three reading routes get. Unguarded, an
+                # edit *rewrites* instance-wide standing context, and standing
+                # context is injected into every other member's turns -- a
+                # write here is a write into somebody else's prompts, which is
+                # the sentence `may_use_memory_scope` exists to enforce.
+                self._team_guard_memory_scope(scope)
                 try:
                     edited = store.update_memory(
                         m.group(1),
@@ -13300,6 +13360,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         f"{MEMORY_ALL_PROJECTS!r} for the cross-project view)",
                         "memory_scope_required",
                     )
+                # As above. The scope was the caller's to *state* and nobody's
+                # to *check*: the cross-project view deletes by id with no
+                # project predicate at all, and the ids come free with a read
+                # of the caller's own project, because `resolve()` returns the
+                # global tier alongside it. A member could delete standing
+                # context they are not permitted to read.
+                self._team_guard_memory_scope(scope)
                 if not store.delete_memory(m.group(1), project_id=scope):
                     raise GatewayError(
                         404,

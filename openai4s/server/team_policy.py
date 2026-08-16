@@ -177,6 +177,18 @@ INSTANCE_CONFIG_PATHS = frozenset(
         "/datapro/config",
         "/doubao-search/config",
         "/telemetry/consent",
+        # Three that enumeration missed, all writing a process-global or
+        # instance-global switch rather than anything owned:
+        #   `/network/status` sets `os.environ["OPENAI4S_ALLOW_NETWORK"]` in
+        #     the daemon every member's kernel runs inside, so one member
+        #     turns egress on (or off) for everyone;
+        #   `/share/settings` opens the outbound relay tunnel for the whole
+        #     daemon, which publishes this instance to the internet;
+        #   `/memory/enabled` switches standing-context injection for every
+        #     user's turns.
+        "/network/status",
+        "/share/settings",
+        "/memory/enabled",
     }
 )
 
@@ -214,7 +226,16 @@ INSTANCE_MUTATION_PATHS = frozenset(
         "/permissions/reset",
     }
 )
-INSTANCE_MUTATION_PREFIXES = ("/compute/remote/",)
+#: `/skills/` and `/agents/` are prefixes, not bare paths, because the
+#: authoring surface is addressed by name while the bare-path entries covered
+#: only the collection. `POST /skills` was refused while
+#: `PUT /skills/<existing-name>` rewrote the recipe body every member's agent
+#: loads and executes -- and `skill_customization` is one process-wide
+#: instance writing at global scope, so there is no per-user variant of that
+#: write to fall back on. Every non-GET route under either prefix
+#: (`{name}`, `{name}/rollback`, `catalog/{name}/enabled`,
+#: `agents/{name}/enabled`) writes instance-global state; the reads stay open.
+INSTANCE_MUTATION_PREFIXES = ("/compute/remote/", "/skills/", "/agents/")
 #: `/connectors/{id}` and `/connectors/{id}/enabled` are configuration;
 #: `/connectors/{id}/call` and `/probe` are use. Enumerated by suffix so the
 #: distinction is a rule and not an accident of prefix length.

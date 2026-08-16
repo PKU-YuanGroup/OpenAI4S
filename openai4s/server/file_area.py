@@ -165,8 +165,27 @@ class FileArea:
         caller-supplied "whose directory is this" would be the same
         authorization the scoping replaces.
         """
-        safe = "".join(ch for ch in str(owner) if ch.isalnum() or ch in "-_.")
-        if not safe:
+        # The write side must name the directory the read side looks in.
+        # This used to *filter* the username into a directory name while
+        # `personal_area_owner` compared the raw one, so the two disagreed
+        # for any name containing anything else: `alice@lab.org` wrote to
+        # `users/alicelab.org/` and was then 404'd from her own uploads, and
+        # a second account filtering to the same string shared her area
+        # outright. `.` also survived the filter, so an owner named `..`
+        # produced `<root>/users/..`, which `resolve()` collapses back to the
+        # writable root -- containment passed and the upload landed beside
+        # everybody else's files, the exact clobber this scoping prevents.
+        #
+        # No rewriting, then: a name that cannot be a directory segment is
+        # refused. `storage.team.validate_username` keeps real accounts
+        # inside this set, so the refusal is a backstop and not a gate
+        # anybody meets.
+        safe = str(owner)
+        if (
+            not safe
+            or safe in (".", "..")
+            or not all(ch.isalnum() or ch in "-_." for ch in safe)
+        ):
             raise FileAreaError(400, "invalid upload owner", "invalid_owner")
         text = str(directory or "").strip()
         base: Path | None = None

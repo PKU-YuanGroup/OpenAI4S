@@ -672,6 +672,13 @@ QUERY_DENYLIST = frozenset(
         "settings",
         "connectors",
         "memories",
+        # Same class as `connectors`: `managed_endpoints.credential` is a
+        # plaintext bearer token for a local model endpoint, and it was
+        # readable with one `SELECT credential FROM managed_endpoints` from
+        # any agent cell -- in single-user installs as well as team ones. A
+        # credential the API never returns must not be reachable through the
+        # query surface that goes around the API.
+        "managed_endpoints",
         # Team-mode identity (INV-9 hygiene): password hashes, login-token
         # hashes, and the governance audit trail are never agent-readable.
         "users",
@@ -839,11 +846,38 @@ _VIEW_ONLY_TABLES = frozenset(
 #: from a single agent `SELECT`. So the closure is conditional: the
 #: single-user path keeps the behaviour it has always had (INV-1), and a team
 #: daemon reads these through the scoped views or not at all.
+#:
+#: Longer than the conversation triple because the conversation is stored in
+#: more than one shape. `compaction_archives.compacted` is a JSON dump of the
+#: very message rows `messages` is closed for, so closing one and not the
+#: other closed nothing: `SELECT compacted FROM compaction_archives` returned
+#: a colleague's prompts verbatim. The rest are the same question asked of
+#: other per-session or per-project content -- review comments (which are
+#: also injected into turns), plans, notes, step records, share capabilities,
+#: and the command lines on compute jobs, a surface `team_policy` already
+#: makes admin-only *for reads* over HTTP.
+#:
+#: There is no `my_*` view for these yet, so in team mode they are unreadable
+#: rather than row-scoped. That is the deliberate direction: a table nobody
+#: has scoped is refused, not served whole.
 _TEAM_VIEW_ONLY_TABLES = frozenset(
     {
         "frames",
         "messages",
         "execution_log",
+        "compaction_archives",
+        "annotations",
+        "annotation_admissions",
+        "plans",
+        "notes",
+        "folders",
+        "projects",
+        "frame_steps",
+        "shares",
+        "compute_jobs",
+        "compute_job_events",
+        "custom_skills",
+        "agents",
     }
 )
 
@@ -4634,11 +4668,18 @@ class Store:
         because `Store` is constructed in places that have no Config, and a
         guard that silently loosened when its config was unavailable would
         be the wrong failure.
-        """
-        import os
 
-        flag = (os.environ.get("OPENAI4S_TEAM_MODE") or "").strip().lower()
-        if flag in ("1", "true", "yes", "on"):
+        Reading the env is fine; *re-implementing the truthiness rule* was
+        not. This used to accept only ("1","true","yes","on") while
+        `Config.team_mode` accepts everything outside
+        ("0","false","no","off",""), so `OPENAI4S_TEAM_MODE=enabled` -- or
+        `y`, or `2` -- booted a daemon with login forced and ownership
+        filtering on while this guard returned the single-user set and
+        `host.query` read every member's prompts. One rule, one place.
+        """
+        from openai4s.config import _env_flag
+
+        if _env_flag("OPENAI4S_TEAM_MODE", False):
             return _VIEW_ONLY_TABLES | _TEAM_VIEW_ONLY_TABLES
         return _VIEW_ONLY_TABLES
 

@@ -126,6 +126,34 @@ def _user_row(row: Any) -> dict:
 
 _USER_COLS = "id, username, display_name, role, disabled, created_at"
 
+#: A username is not only a login: the file area names each member's personal
+#: directory `<root>/users/<username>/`, so the name has to survive being a
+#: path segment. Validating it here -- at the one place accounts are made --
+#: is what keeps that true for the CLI, the invite redemption and the admin
+#: route alike. The alternative, sanitizing at the point of use, was what let
+#: a write land in a directory the read side then refused, and let a name of
+#: `..` resolve back to the shared root.
+_USERNAME_MAX = 64
+_USERNAME_ALLOWED = "-_."
+
+
+def validate_username(username: str) -> str:
+    """The stripped name, or ValueError naming what is wrong with it."""
+    name = username.strip()
+    if not name:
+        raise ValueError("username must be non-empty")
+    if len(name) > _USERNAME_MAX:
+        raise ValueError(f"username must be at most {_USERNAME_MAX} characters")
+    if name in (".", ".."):
+        raise ValueError("username must not be '.' or '..'")
+    bad = sorted({ch for ch in name if not (ch.isalnum() or ch in _USERNAME_ALLOWED)})
+    if bad:
+        raise ValueError(
+            "username may contain only letters, digits, '-', '_' and '.'; "
+            f"found {''.join(bad)!r}"
+        )
+    return name
+
 
 class TeamRepository:
     """Accounts, login sessions, and the team audit log."""
@@ -151,9 +179,7 @@ class TeamRepository:
         role: str = "member",
         display_name: str | None = None,
     ) -> dict:
-        username = username.strip()
-        if not username:
-            raise ValueError("username must be non-empty")
+        username = validate_username(username)
         if role not in _ROLES:
             raise ValueError(f"role must be one of {_ROLES}, got {role!r}")
         if not password:
@@ -524,4 +550,5 @@ __all__ = [
     "create_team_schema",
     "hash_password",
     "token_digest",
+    "validate_username",
 ]
