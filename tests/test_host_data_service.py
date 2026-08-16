@@ -91,16 +91,27 @@ class FakeStore:
     def set_priority(self, artifact_id, priority):
         self.calls.append(("set_priority", artifact_id, priority))
 
-    def frame_detail(self, frame_id, *, page, page_size):
-        self.calls.append(("frame_detail", frame_id, page, page_size))
+    # `visible_to_user_id` is recorded rather than ignored: these doubles are
+    # how the tests below assert that the host path *passes* a scope at all,
+    # which is the thing it did not do.
+    def frame_detail(self, frame_id, *, page, page_size, visible_to_user_id=None):
+        self.calls.append(
+            ("frame_detail", frame_id, page, page_size, visible_to_user_id)
+        )
         return self.frame_details.get(frame_id)
 
-    def search_frames(self, pattern, *, project_id, limit):
-        self.calls.append(("search_frames", pattern, project_id, limit))
+    def search_frames(self, pattern, *, project_id, limit, visible_to_user_id=None):
+        self.calls.append(
+            ("search_frames", pattern, project_id, limit, visible_to_user_id)
+        )
         return [{"frame_id": "search"}]
 
-    def browse_frames(self, *, project_id, status, roots_only, limit):
-        self.calls.append(("browse_frames", project_id, status, roots_only, limit))
+    def browse_frames(
+        self, *, project_id, status, roots_only, limit, visible_to_user_id=None
+    ):
+        self.calls.append(
+            ("browse_frames", project_id, status, roots_only, limit, visible_to_user_id)
+        )
         return [{"frame_id": "browse"}]
 
     def producing_cell_for_version(self, version_id):

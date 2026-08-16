@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from openai4s import execution_principal
 from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
 
 
@@ -45,9 +46,23 @@ class HostDataStore(Protocol):
 
     def set_priority(self, artifact_id: str, priority: int) -> dict | None: ...
 
-    def frame_detail(self, frame_id: str, *, page: int, page_size: int): ...
+    def frame_detail(
+        self,
+        frame_id: str,
+        *,
+        page: int,
+        page_size: int,
+        visible_to_user_id: str | None = ...,
+    ): ...
 
-    def search_frames(self, pattern: str, *, project_id: str, limit: int): ...
+    def search_frames(
+        self,
+        pattern: str,
+        *,
+        project_id: str,
+        limit: int,
+        visible_to_user_id: str | None = ...,
+    ): ...
 
     def browse_frames(
         self,
@@ -56,6 +71,7 @@ class HostDataStore(Protocol):
         status: str | None,
         roots_only: bool,
         limit: int,
+        visible_to_user_id: str | None = ...,
     ): ...
 
     def producing_cell_for_version(self, version_id: str) -> dict | None: ...
@@ -647,13 +663,23 @@ class HostDataService:
                 f"{sorted(FRAME_STATUSES)}"
             )
         store = self._store()
+        # One rule for all three shapes, resolved before a row is read.
+        # `browse` already had a scoping parameter and this path never passed
+        # it; `search` and `detail` had none at all, and both return cell code
+        # and stdout -- so filtering afterwards would mean the bytes had
+        # already been loaded and only the presentation was scoped. In team
+        # mode with no principal this raises rather than widening (INV-13).
+        viewer = self._visibility_filter()
         if frame_id:
             detail = store.frame_detail(
                 frame_id,
                 page=int(spec.get("page", 0)),
                 page_size=int(spec.get("page_size", 50)),
+                visible_to_user_id=viewer,
             )
             if detail is None:
+                # Same sentence for "no such frame" and "not yours": which
+                # sessions exist is itself what INV-13 protects.
                 raise KeyError(f"no such frame {frame_id!r}")
             return detail
         if pattern:
@@ -664,6 +690,7 @@ class HostDataService:
                     pattern,
                     project_id=project_id,
                     limit=int(spec.get("limit", 50)),
+                    visible_to_user_id=viewer,
                 ),
             }
         return {
@@ -673,8 +700,22 @@ class HostDataService:
                 status=status,
                 roots_only=bool(spec.get("roots_only", True)),
                 limit=int(spec.get("limit", 50)),
+                visible_to_user_id=viewer,
             ),
         }
+
+    def _visibility_filter(self) -> str | None:
+        """The user id these reads are scoped to, or None for unrestricted.
+
+        None means "no filtering" here, which is safe only because it is
+        never reached by guessing: `resolve()` refuses an execution that
+        carries no principal, and an unrestricted answer requires an
+        *explicit* single-user, service or admin principal.
+        """
+        principal = execution_principal.resolve()
+        if principal.unrestricted:
+            return None
+        return principal.user_id
 
     def lineage_get(self, version_id: str) -> dict:
         store = self._store()

@@ -2506,21 +2506,33 @@ class Store:
         )
 
     def frame_detail(
-        self, frame_id: str, *, page: int = 0, page_size: int = 50
+        self,
+        frame_id: str,
+        *,
+        page: int = 0,
+        page_size: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> dict | None:
         return self._frames.frame_detail(
             frame_id,
             page=page,
             page_size=page_size,
+            visible_to_user_id=visible_to_user_id,
         )
 
     def search_frames(
-        self, pattern: str, *, project_id: str | None = "default", limit: int = 50
+        self,
+        pattern: str,
+        *,
+        project_id: str | None = "default",
+        limit: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         return self._frames.search_frames(
             pattern,
             project_id=project_id,
             limit=limit,
+            visible_to_user_id=visible_to_user_id,
         )
 
     # --- execution_log ---------------------------------------------------

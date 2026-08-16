@@ -29,6 +29,7 @@ from typing import Any, Callable, Mapping, Sequence
 from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
 from openai4s.host.delegation_policy import child_execution_policy
+from openai4s.observability import carry_context
 
 FANOUT_CAP = 48
 SESSION_CAP = 1000
@@ -1056,16 +1057,32 @@ class DelegationRunner:
             self._tree.register(child)
             children.append(child)
 
+        # A pooled thread starts with whatever context it was created in --
+        # `ThreadPoolExecutor.submit` copies nothing -- so a child would run
+        # with no execution principal and no correlation id. The principal
+        # matters most: a sub-agent reads user data through the same `host.*`
+        # surface its parent does, and `resolve()` refuses an execution that
+        # carries none, so without this every delegated read in team mode
+        # fails closed. A child runs as its parent, never wider.
+        #
+        # One wrapper *per child*, not one for the fan-out: `carry_context`
+        # captures a single `Context`, and a `Context` cannot be entered
+        # twice concurrently -- sharing one across a fan-out raises "cannot
+        # enter context: already entered" in every sibling but the first.
         if not wait:
             for child in children:
-                child.set_future(self._pool.submit(self._run_one, child))
+                child.set_future(self._pool.submit(carry_context(self._run_one), child))
             handles = [child.snapshot() for child in children]
             return handles if is_list else handles[0]
 
         if len(children) == 1:
+            # On the caller's own thread, which already has the context.
             results = [self._run_one(children[0])]
         else:
-            futures = [self._pool.submit(self._run_one, child) for child in children]
+            futures = [
+                self._pool.submit(carry_context(self._run_one), child)
+                for child in children
+            ]
             for child, future in zip(children, futures):
                 child.set_future(future)
             results = [future.result() for future in futures]

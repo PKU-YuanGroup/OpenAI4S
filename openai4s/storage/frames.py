@@ -19,6 +19,56 @@ from openai4s.execution.dependencies import (
 from openai4s.storage.deletion import SessionDeletionRepository
 
 
+def visible_session_clause(user_id: str, *, table: str = "frames") -> tuple[str, list]:
+    """The one team-mode visibility rule, as SQL over a frames-shaped table.
+
+    Returns `(clause, params)` for a WHERE conjunct. One function because
+    `browse`, `search` and `frame_detail` must answer the same question:
+    three spellings of a visibility rule is three chances for one of them
+    to be wrong, and the two that had no rule at all were reachable from
+    `host.frames` with a colleague's frame id.
+
+    Three properties worth stating, because each was a defect:
+
+    **Scoped by the root session, not the frame.** Ownership is recorded
+    per session in `session_owners`; a child frame has no row of its own.
+    Matching on `frame_id` therefore hid every child frame from its own
+    owner while `frame_detail` — which takes any frame id — had no rule at
+    all. `COALESCE(root_frame_id, frame_id)` is the session a row belongs
+    to.
+
+    **A global guest never widens.** `session_visible_to` returns False for
+    any account whose *global* role is guest, before it consults
+    `project_members`. This clause omitted that, so an admin adding a guest
+    to a project with the default `member` row listed them every
+    project-visibility session — which they were then 404'd from opening.
+    A listing that names sessions the caller cannot open is the leak INV-13
+    describes, not a cosmetic inconsistency.
+
+    **A session with no owner row is admin-only.** Pre-team history and
+    demo seeds have none, and "we do not know whose this is" must not
+    resolve to "everyone's".
+
+    Filtered in SQL rather than after the read: keyset pagination reports
+    `has_more` from row counts, so a post-read filter turns a full page of
+    hidden rows into a phantom end-of-list — and for `search` and
+    `frame_detail` the rows carry cell code and stdout, which a post-read
+    filter would have already loaded.
+    """
+    session = f"COALESCE({table}.root_frame_id, {table}.frame_id)"
+    clause = (
+        "(NOT EXISTS (SELECT 1 FROM users gu WHERE gu.id = ? AND gu.role = 'guest')"
+        " AND EXISTS (SELECT 1 FROM session_owners so"
+        f" WHERE so.session_id = {session} AND ("
+        "so.user_id = ? OR ("
+        "so.visibility = 'project' AND so.project_id IS NOT NULL"
+        " AND EXISTS (SELECT 1 FROM project_members pm"
+        " WHERE pm.project_id = so.project_id AND pm.user_id = ?"
+        " AND pm.role = 'member')))))"
+    )
+    return clause, [user_id, user_id, user_id]
+
+
 class FrameRepository:
     """Own the persisted conversation hierarchy on a Store connection.
 
@@ -644,24 +694,9 @@ class FrameRepository:
         if roots_only:
             clauses.append("parent_id IS NULL")
         if visible_to_user_id is not None:
-            # Team mode (INV-13/D4): a non-admin caller sees their own
-            # sessions plus fellow members' 'project'-visibility sessions in
-            # projects where the caller is a *member* (guests never widen).
-            # Filtered in SQL, not post-hoc — the keyset pagination above
-            # reports has_more from row counts, and a post-read filter would
-            # turn a full page of hidden rows into a phantom "end of list".
-            # A session with no row (pre-team history, demo seeds) is
-            # admin-only by construction here.
-            clauses.append(
-                "EXISTS (SELECT 1 FROM session_owners so "
-                "WHERE so.session_id = frames.frame_id AND ("
-                "so.user_id = ? OR ("
-                "so.visibility = 'project' AND so.project_id IS NOT NULL "
-                "AND EXISTS (SELECT 1 FROM project_members pm "
-                "WHERE pm.project_id = so.project_id AND pm.user_id = ? "
-                "AND pm.role = 'member'))))"
-            )
-            params.extend([visible_to_user_id, visible_to_user_id])
+            clause, clause_params = visible_session_clause(visible_to_user_id)
+            clauses.append(clause)
+            params.extend(clause_params)
         if before is not None:
             before_created, before_id = before
             clauses.append("(created_at < ? OR (created_at = ? AND frame_id < ?))")
@@ -684,14 +719,27 @@ class FrameRepository:
         *,
         page: int = 0,
         page_size: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> dict | None:
-        """Return frame metadata, paged cells, and direct children."""
+        """Return frame metadata, paged cells, and direct children.
+
+        `visible_to_user_id` scopes by the same rule the listings use. It is
+        applied to the *first* query, so a frame this caller may not see
+        returns None before any cell code or stdout is read -- the rows this
+        method returns are the most sensitive in the database.
+        """
+        scope_clause = ""
+        scope_params: list = []
+        if visible_to_user_id is not None:
+            scope_clause, scope_params = visible_session_clause(visible_to_user_id)
+            scope_clause = " AND " + scope_clause
         with self._lock:
             frame = self._connection.execute(
-                "SELECT * FROM frames WHERE frame_id=?",
-                (frame_id,),
+                f"SELECT * FROM frames WHERE frame_id=?{scope_clause}",
+                (frame_id, *scope_params),
             ).fetchone()
             if frame is None:
+                # Indistinguishable from "no such frame", deliberately.
                 return None
             total = self._connection.execute(
                 "SELECT COUNT(*) AS n FROM execution_log WHERE frame_id=?",
@@ -726,13 +774,31 @@ class FrameRepository:
         *,
         project_id: str | None = "default",
         limit: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
-        """Regex-search frame names and cell code/stdout."""
+        """Regex-search frame names and cell code/stdout.
+
+        `visible_to_user_id` narrows the *outer* query, so the per-row
+        `SELECT code,stdout` below never runs for a session this caller may
+        not see. That ordering is the whole point here: this method reads
+        the code somebody wrote and the output it printed, and a filter
+        applied to the returned matches would have read them first.
+
+        Note `project_id="all"` drops the project clause entirely, which is
+        exactly how `host.frames(pattern=..., project_id="all")` became a
+        regex search over every tenant's cells.
+        """
         regex = re.compile(pattern, re.IGNORECASE)
         clauses, params = [], []
         if project_id and project_id != "all":
             clauses.append("f.project_id=?")
             params.append(project_id)
+        if visible_to_user_id is not None:
+            clause, clause_params = visible_session_clause(
+                visible_to_user_id, table="f"
+            )
+            clauses.append(clause)
+            params.extend(clause_params)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._lock:
             rows = self._connection.execute(

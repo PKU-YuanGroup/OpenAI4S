@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
-from openai4s import datapro, memory_budget
+from openai4s import datapro, execution_principal, memory_budget
 from openai4s.agent.actions import NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
@@ -1608,6 +1608,15 @@ class MessageJob:
         # the 202 and the job result nameless while `run_message` minted its
         # own for the socket. Two ids for one turn is worse than none.
         self.request_id: str = correlation_id() or new_correlation_id()
+        # Captured on the request thread, for the same reason as the id above:
+        # the turn runs on a worker thread, a ContextVar does not follow a
+        # bare `threading.Thread`, and the turn is where `host.frames` and
+        # every delegated child actually read user data. Held on the ticket
+        # rather than on the session's `HostDispatcher` -- the dispatcher is
+        # built once and serves every turn, so an identity stored there would
+        # be one turn's caller answering another turn's authorization
+        # question.
+        self.principal = execution_principal.current()
         # The model configuration this job was ACCEPTED under. `submit_message`
         # froze the identity at send, but onto the *frame* -- and the frame's pin
         # is mutable by design, because `POST /frames/{id}/model-binding` is the
@@ -5325,6 +5334,12 @@ class SessionRunner:
             # `run_message` mints a second id and the socket disagrees with the
             # 202 about which request just failed.
             token = set_correlation_id(job.request_id)
+            # And under the identity its ticket was issued to. Re-set from the
+            # ticket rather than relied upon from `carry_context`, for the same
+            # reason as the id: a queued turn is dequeued by whichever thread
+            # gets there, which may be a later request's, and inheriting *that*
+            # request's identity would run one member's turn as another.
+            principal_token = execution_principal.set_principal(job.principal)
             #: Filled inside the lease, published after it. Both halves
             #: matter: the side effects must happen while this turn still owns
             #: the session, and the completion must not become visible while
@@ -5467,6 +5482,10 @@ class SessionRunner:
                         job.finish(error=outcome["error"])
                 self._exit_turn_scope(job.job_id)
                 reset_correlation_id(token)
+                try:
+                    execution_principal.reset(principal_token)
+                except Exception:  # noqa: BLE001 — never fail a finished turn
+                    pass
 
         try:
             # Durable correlation BEFORE the worker exists.
@@ -9450,6 +9469,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             `self._team_identity` bound; False -> a response was sent."""
             identity = self._team_identity_from_request()
             self._team_identity = identity
+            # Bind the execution principal for this request thread as well.
+            # `_team_identity` answers "who is this HTTP request"; the
+            # principal is the same answer in the form everything *past* the
+            # handler can read -- the turn thread, the kernel RPC, a
+            # delegated sub-agent -- none of which take a handler.
+            # `_route` resets it in its finally, so one request cannot leave
+            # its identity set for the next one on this thread.
+            self._principal_token = execution_principal.set_principal(
+                execution_principal.for_identity(identity)
+            )
             if identity is not None:
                 return True
             if path in _TEAM_EXEMPT_PATHS or (
@@ -9996,6 +10025,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     status=getattr(self, "_last_status", None),
                 )
                 reset_correlation_id(correlation_token)
+                # Same reason the correlation id is reset here: this thread
+                # serves the next request too, and an identity left bound is
+                # one request answering another request's authorization
+                # question.
+                token = getattr(self, "_principal_token", None)
+                if token is not None:
+                    self._principal_token = None
+                    try:
+                        execution_principal.reset(token)
+                    except Exception:  # noqa: BLE001 — never fail a response
+                        pass
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
