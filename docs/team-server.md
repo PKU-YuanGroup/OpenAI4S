@@ -165,6 +165,24 @@ its path (INV-9). A job's environment is readable by anyone who can ask
 the scheduler about the job, so the submission environment refuses
 credential-shaped variable names outright.
 
+**The channel itself is plaintext, so put this port on a trusted
+network.** The credential authenticates the *worker* to the daemon, once.
+It does not authenticate the daemon to the worker, and it does not
+encrypt or integrity-protect anything after the handshake — and what
+follows on that same socket is the kernel protocol and Host RPC: the code
+being run, its output, and the results of `host.*` calls. An on-path peer
+on the cluster network can therefore read those frames, and can stand in
+front of the daemon for a worker that is dialling out. Run the listener on
+a network where that peer does not exist, or tunnel it. Treat
+`0.0.0.0:8761` as "reachable from the compute nodes", not as "safe to
+expose"; server-authenticated TLS for this socket is not implemented yet.
+
+Two bounds worth knowing about the same port: at most
+`MAX_PENDING_HANDSHAKES` (64) connections may be mid-handshake at once and
+the rest are closed immediately, because the thread is allocated before
+the credential is checked; and the handshake deadline is a *total* one, so
+a peer that dribbles bytes cannot hold a slot indefinitely.
+
 ### Leases
 
 A cluster session holds real resources, so it has two clocks: an idle TTL

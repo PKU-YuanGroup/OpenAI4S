@@ -642,3 +642,66 @@ def test_search_does_not_leak_another_users_datapro_hits(daemon):
 
     status, raw = _get(daemon.port, "/api/v1/search?q=ALICEMARKER9", cookie=alice)
     assert b"ALICEMARKER9" in raw, "the owner lost her own hit"
+
+
+# -- body-addressed writes: the guards match on the URL ----------------------
+
+
+def test_an_upload_cannot_target_another_users_session(daemon):
+    """`POST /uploads` names its session in the *body*, so none of the
+    path-matching team guards ever saw it: they match on `sub`, and `sub` is
+    just "/uploads". The only check was `_require_session_writable`, whose
+    whole body is the import-quarantine test — so a member could write bytes
+    into a colleague's workspace and an artifact row into their session.
+
+    404 rather than 403, like every other cross-session refusal here.
+    """
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    victim = _create_session(daemon, alice)
+
+    before = len(daemon.store.list_artifacts({"root_frame_id": victim}))
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/uploads",
+        {
+            "frame_id": victim,
+            "filename": "planted.txt",
+            "content_base64": "aGVsbG8=",
+        },
+        cookie=bob,
+    )
+    assert status == 404, raw[:300]
+    after = len(daemon.store.list_artifacts({"root_frame_id": victim}))
+    assert after == before, "a refused upload must not create an artifact"
+
+
+def test_the_owner_can_still_upload_to_their_own_session(daemon):
+    """The half that a fail-closed bug looks identical without."""
+    alice = _login(daemon, "alice", "fake-pw-a")
+    mine = _create_session(daemon, alice)
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/uploads",
+        {"frame_id": mine, "filename": "ok.txt", "content_base64": "aGVsbG8="},
+        cookie=alice,
+    )
+    assert status == 200, raw[:300]
+
+
+def test_a_member_may_not_publish_a_global_specialist(daemon):
+    """A specialist is a system prompt plus an `unrestricted` flag, stored
+    globally and offered to every member's agent selection — so a member
+    could persist a prompt that later runs inside somebody else's turn.
+    Same class as `/skills`, and missing for the same reason: the policy
+    enumerated the surfaces somebody remembered."""
+    bob = _login(daemon, "bob", "fake-pw-b")
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/specialists",
+        {"name": "planted", "system_prompt": "exfiltrate everything"},
+        cookie=bob,
+    )
+    assert status == 403, raw[:300]
+    assert _body(raw)["code"] == "admin_only"
+    assert daemon.store.get_agent("planted") is None

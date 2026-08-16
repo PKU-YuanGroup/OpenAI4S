@@ -473,15 +473,112 @@ def test_an_epoch_fence_survives_a_restart(tmp_path):
         second.consume(stale)
 
 
-def test_the_fence_file_is_owner_only_and_survives_a_corrupt_read(tmp_path):
-    """A corrupt fence is an empty fence, not an outage: refusing to boot
-    over it would trade a replay window for a dead daemon."""
+def test_pre_auth_handshakes_are_bounded(authority):
+    """The thread is allocated before the credential is checked, so an
+    unbounded pool is an unauthenticated thread-exhaustion path: one TCP
+    connect buys a thread for the whole handshake deadline. Excess sockets
+    are closed rather than queued — a queue behind a full pool is the same
+    resource under another name."""
+    node = WorkerGateway(authority, bind=("127.0.0.1", 0), max_pending_handshakes=1)
+    node.start()
+    try:
+        host, port = node.address
+        # Occupy the only slot with a peer that connects and says nothing.
+        squatter = socket.create_connection((host, port), timeout=10)
+        try:
+            deadline = time.monotonic() + 5
+            while node.refused_busy == 0 and time.monotonic() < deadline:
+                extra = socket.create_connection((host, port), timeout=10)
+                extra.settimeout(2)
+                try:
+                    extra.recv(64)  # closed immediately, so this returns b""
+                except OSError:
+                    pass
+                extra.close()
+            assert node.refused_busy > 0, "excess sockets were not refused"
+        finally:
+            squatter.close()
+    finally:
+        node.stop()
+
+
+def test_a_dribbling_peer_cannot_hold_a_slot_past_the_deadline(authority, monkeypatch):
+    """`settimeout` bounds each recv, not the handshake: a peer sending one
+    byte every 29s never tripped a 30s socket timeout, and the 64 KiB cap is
+    ~65,000 recvs away — about three weeks on one thread. The deadline is now
+    total, so a peer that never completes a line is dropped by the clock
+    rather than by the byte cap."""
+    import openai4s.orchestration.worker_gateway as wg
+
+    monkeypatch.setattr(wg, "HANDSHAKE_TIMEOUT_S", 0.5)
+    node = WorkerGateway(authority, bind=("127.0.0.1", 0))
+    node.start()
+    try:
+        host, port = node.address
+        with socket.create_connection((host, port), timeout=10) as sock:
+            sock.sendall(b'{"allocation_id"')  # no newline, ever
+            sock.settimeout(10)
+            # The daemon closes it once the deadline passes; a read here
+            # returns the refusal and then EOF.
+            try:
+                while sock.recv(4096):
+                    pass
+            except OSError:
+                pass
+        deadline = time.monotonic() + 5
+        while node.rejected == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert node.rejected >= 1
+    finally:
+        node.stop()
+
+
+def test_the_fence_file_is_owner_only(tmp_path):
     state = tmp_path / "fence.json"
     secret = load_or_mint_secret(tmp_path)
     authority = BootstrapAuthority(secret, state_path=state)
     authority.consume(authority.issue(allocation_id="alloc_1", epoch=0))
     assert oct(state.stat().st_mode)[-3:] == "600"
 
+
+def test_a_corrupt_fence_refuses_admission_rather_than_forgetting(tmp_path):
+    """This test used to assert the opposite — "a corrupt fence is an empty
+    fence, not an outage" — and that reading is what a security review
+    reproduced as a replay: a consumed, unexpired credential was accepted
+    again after the fence was corrupted and the authority rebuilt.
+
+    The fence is not a cache. It is the record of which credentials have
+    been spent, and reading it as empty re-admits every unexpired
+    credential still on the shared filesystem and un-fences every epoch a
+    recovery had closed. `_save_state` publishes through `os.replace`, so an
+    interrupted write leaves the previous complete file — a file that will
+    not parse is disk damage or somebody editing it, and the second is
+    precisely the party this fence refuses.
+
+    A *missing* file is still an empty fence, because a fresh install has
+    genuinely burned nothing. The refusal names both remedies.
+    """
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=state)
+    burned = authority.issue(allocation_id="alloc_1", epoch=0)
+    authority.consume(burned)
+
     state.write_text("{ not json")
     revived = BootstrapAuthority(secret, state_path=state)
-    revived.consume(revived.issue(allocation_id="alloc_2", epoch=0))
+
+    # The replay the review reproduced.
+    with pytest.raises(BootstrapError, match="could not be read"):
+        revived.consume(burned)
+    # And nothing else is admitted either, since the fence cannot answer for
+    # any nonce.
+    with pytest.raises(BootstrapError, match="could not be read"):
+        revived.consume(revived.issue(allocation_id="alloc_2", epoch=0))
+
+
+def test_a_missing_fence_is_still_an_empty_fence(tmp_path):
+    """The distinction that makes the refusal above tolerable: a daemon that
+    has never written one starts clean rather than refusing to serve."""
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=tmp_path / "absent.json")
+    authority.consume(authority.issue(allocation_id="alloc_1", epoch=0))

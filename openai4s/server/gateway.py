@@ -13722,8 +13722,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 frame_id = b.get("frame_id")
                 if frame_id:
                     frame = store.get_frame(str(frame_id)) or {}
+                    root = str(frame.get("root_frame_id") or frame_id)
+                    # The session is named in the *body*, so none of the
+                    # path-matching team guards ever saw this route: they
+                    # match on `sub`, and `sub` is just "/uploads". The only
+                    # check here was `_require_session_writable`, whose whole
+                    # body is the import-quarantine test -- so a member could
+                    # POST a colleague's frame id and write bytes into their
+                    # workspace and an artifact row into their session.
+                    #
+                    # Resolved to the canonical root first, because ownership
+                    # is recorded per session and a child frame id would
+                    # otherwise resolve to nothing and check nothing.
+                    identity = getattr(self, "_team_identity", None)
+                    if identity is not None and not team_policy.may_use_session(
+                        store, identity, root
+                    ):
+                        # 404, like every other cross-session refusal here:
+                        # which sessions exist is itself protected.
+                        raise GatewayError(404, "session not found")
                     _require_session_writable(
-                        str(frame.get("root_frame_id") or frame_id),
+                        root,
                         "uploading a Session Artifact",
                     )
                 return runner.artifacts.upload(
