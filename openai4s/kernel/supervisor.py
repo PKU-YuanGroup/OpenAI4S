@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Hashable
 
-from openai4s.kernel.manager import KernelInterruptUnavailable
+from openai4s.kernel.errors import KernelInterruptUnavailable
 
 KernelFactory = Callable[[], Any]
 

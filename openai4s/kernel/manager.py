@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.kernel.environment import build_kernel_environment
+from openai4s.kernel.errors import KernelBusyError, KernelInterruptUnavailable
 from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
 from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
 from openai4s.kernel.transport import KernelTransport, PipeTransport
@@ -91,22 +92,12 @@ class _StderrTail:
         return bool(self._buf)
 
 
-class KernelBusyError(RuntimeError):
-    """The worker protocol is owned by an in-flight cell transaction."""
-
-
-class KernelInterruptUnavailable(RuntimeError):
-    """This kernel cannot be interrupted at all — not "the attempt failed".
-
-    A local kernel is interrupted with a signal to a pid we hold. A remote
-    one has no pid here, so delivery depends on the allocation having been
-    given a signal path; when it was not, there is nothing to try and no
-    later attempt that would work. Its own type because every caller of
-    `interrupt()` wraps it in `except Exception: pass` -- correctly, for the
-    transient errors interruption really is best-effort about -- so a bare
-    RuntimeError was swallowed by all of them, and the cancel API answered
-    `interrupted: true` for a cell still running on the cluster.
-    """
+# Re-exported, not redefined: both live in `kernel/errors.py` so that
+# `supervisor` -- which this module reaches through the watchdog -- can catch
+# them without importing a partially-initialised `manager`. Every existing
+# `from openai4s.kernel.manager import KernelBusyError` keeps working.
+KernelBusyError = KernelBusyError
+KernelInterruptUnavailable = KernelInterruptUnavailable
 
 
 class Kernel:
