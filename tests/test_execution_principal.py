@@ -144,9 +144,7 @@ def test_the_owner_still_sees_their_own(store, team_mode):
 
 def test_an_admin_sees_everything(store, team_mode):
     _seed(store)
-    admin = ep.Principal(
-        user_id="u_admin", username="root", role="admin", kind="user"
-    )
+    admin = ep.Principal(user_id="u_admin", username="root", role="admin", kind="user")
     with ep.scope(admin):
         names = {
             f.get("name")
@@ -186,9 +184,7 @@ def test_a_guest_is_restricted_even_with_a_member_row(store, team_mode):
     guest = store.team.create_user(username="gwen", password="pw-g", role="guest")
     store.governance.set_member("p", guest["id"], role="member")
     with ep.scope(
-        ep.Principal(
-            user_id=guest["id"], username="gwen", role="guest", kind="user"
-        )
+        ep.Principal(user_id=guest["id"], username="gwen", role="guest", kind="user")
     ):
         names = {
             f.get("name")

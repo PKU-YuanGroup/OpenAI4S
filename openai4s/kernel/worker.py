@@ -131,6 +131,18 @@ def _connect_remote_protocol():
         answer = _json.loads(reply.split(b"\n", 1)[0].decode("utf-8"))
         if not answer.get("ok"):
             raise OSError(f"daemon refused this worker: {answer.get('error')}")
+        # The generation the Host admitted this connection under. A local
+        # worker learns it from `OPENAI4S_KERNEL_GENERATION` in its
+        # environment; a remote one has no such environment, so the
+        # handshake response is where it arrives. Published on `sys` for
+        # `main()` to hand to the Host it builds -- before the Host and its
+        # BashExecutor exist, so the executor is constructed knowing it
+        # rather than guessing `worker:<pid>` and being refused.
+        generation = answer.get("generation")
+        if generation:
+            sys._openai4s_remote_generation = str(  # type: ignore[attr-defined]
+                generation
+            )
     except Exception as exc:  # noqa: BLE001
         print(f"worker bootstrap failed: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(70) from exc
@@ -537,10 +549,38 @@ def _install_host(ns: dict) -> None:
         # analysis). An analysis kernel is spliced without frames/query/mcp/
         # delegate — those symbols are genuinely absent (AttributeError).
         mode = os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
-        ns["host"] = build_host(host_call, mode=mode)
+        # A remote worker has no OPENAI4S_KERNEL_GENERATION -- the transport
+        # branch of `Kernel._spawn` never builds a child environment -- so it
+        # takes the value the Host handed back on the handshake. Passed at
+        # construction because `BashExecutor` resolves its fallback once, in
+        # `__init__`, and a value set afterwards would arrive too late.
+        generation = getattr(sys, "_openai4s_remote_generation", None)
+        ns["host"] = build_host(host_call, mode=mode, generation=generation)
         ns["openai4s"] = ns["host"]  # openai4s alias
     except Exception as e:  # noqa: BLE001 - keep kernel alive
+        # `log` frames are dropped by the manager, so this was a silent
+        # failure: on a source checkout a remote worker runs
+        # `python -u <path>/kernel/worker.py`, `sys.path[0]` is the kernel
+        # directory, `import openai4s.sdk.host` raises, and the cell then ran
+        # with no `host` at all and nothing said so. Leave a marker the cell
+        # itself trips over, so "host is missing" fails where it is used
+        # instead of looking like the agent forgot to call it.
         _write_frame({"type": "log", "msg": f"host sdk unavailable: {e}"})
+        detail = (
+            f"the host SDK could not be imported in this worker ({e}). "
+            "A remote worker needs openai4s importable on its PYTHONPATH; "
+            "see docs/team-server.md."
+        )
+
+        class _HostUnavailable:
+            def __getattr__(self, name):
+                raise RuntimeError(detail)
+
+            def __call__(self, *a, **k):
+                raise RuntimeError(detail)
+
+        ns["host"] = _HostUnavailable()
+        ns["openai4s"] = ns["host"]
     # provenance: monkeypatch readers/writers to track object-level lineage.
     try:
         from openai4s.kernel import provenance

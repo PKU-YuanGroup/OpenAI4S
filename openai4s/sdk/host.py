@@ -490,6 +490,7 @@ class _Host:
         host_call: Callable[[str, list], Any],
         denied: frozenset[str] = frozenset(),
         bash_authorizer: Callable[[str, list], Any] | None = None,
+        generation: str | None = None,
     ):
         # Wrap the raw RPC so every SDK call encodes its args for the wire
         # (snake->camel + drop-None) exactly once, transparently to accessors.
@@ -508,6 +509,7 @@ class _Host:
         self._bash = BashExecutor(
             self._call,
             authorization_call=_encoded_bash_authorizer,
+            generation=generation,
         )
         self.skills = _Skills(self._call)
         # query/mcp are control-plane; only attach when not denied so that a
@@ -1158,8 +1160,16 @@ def build_host(
     mode: str = "repl",
     *,
     bash_authorizer: Callable[[str, list], Any] | None = None,
+    generation: str | None = None,
 ) -> _Host:
     """Assemble the host.* facade for a kernel.
+
+    `generation` is the worker's `authorization_generation`, which
+    `host.bash` binds its one-shot token to. A local worker gets it from
+    `OPENAI4S_KERNEL_GENERATION`; a remote one has no such environment and
+    receives it on the handshake response instead, so it must be passed in
+    *here* -- the BashExecutor reads its fallback once, at construction, and
+    a value supplied afterwards would arrive too late.
 
     capability gate = splice trimming, not a runtime if-check. The `repl`
     (control-plane) kernel is spliced with the full OPENAI4S surface; the analysis
@@ -1171,11 +1181,12 @@ def build_host(
     ./handoff/*.json instead of host.query/host.frames.
     """
     if mode == "repl":
-        return _Host(host_call, bash_authorizer=bash_authorizer)
+        return _Host(host_call, bash_authorizer=bash_authorizer, generation=generation)
     if mode in ("python", "analysis", "r", "R"):
         return _Host(
             host_call,
             denied=_ANALYSIS_DENY,
             bash_authorizer=bash_authorizer,
+            generation=generation,
         )
     raise ValueError(f"build_host: unknown kernel mode {mode!r}")

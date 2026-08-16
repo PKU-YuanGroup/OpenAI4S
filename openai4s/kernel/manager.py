@@ -147,6 +147,13 @@ class Kernel:
         self._protocol_transaction_lock = threading.Lock()
         self._action_context_local = threading.local()
         self.generation = 0  # bumped on every (re)spawn
+        # Minted here for a local worker, which learns it through
+        # `_child_env`. A remote worker cannot: the transport branch of
+        # `_spawn` returns before any child environment is built, and by the
+        # time this runs its bootstrap credential was already issued. So for
+        # a cluster kernel the Host mints the value during the *handshake*
+        # instead and the caller replaces this one -- see
+        # `adopt_authorization_generation`.
         self.authorization_generation = f"kernel:{uuid.uuid4()}"
         # A worker that cannot bound its own output between top-level
         # expressions (r_worker.R) sinks to a fifo per cell and lets the host
@@ -435,6 +442,31 @@ class Kernel:
         """Serializable OS-boundary state for status APIs and the UI."""
 
         return self._sandbox.status.to_dict()
+
+    def adopt_authorization_generation(self, generation: str) -> None:
+        """Use the generation a remote worker was admitted under.
+
+        Only meaningful for a transport-backed kernel, and only with a value
+        that came from a `Registration` -- which exists solely for a peer
+        that presented a valid, unburned, in-epoch bootstrap credential. The
+        Host minted it in the handshake and echoed it to the worker there,
+        so this is the two ends agreeing on the Host's own value, not the
+        Host accepting the worker's.
+
+        Refused on a local kernel: there the environment already carries a
+        generation the child was started with, and replacing it afterwards
+        would leave the running worker authorizing against one string while
+        the Host checked another.
+        """
+        text = str(generation or "")
+        if not text:
+            return
+        if self.transport_factory is None:
+            raise RuntimeError(
+                "a local kernel's generation comes from its child environment "
+                "and must not be replaced after the worker has started"
+            )
+        self.authorization_generation = text
 
     def interrupt(self) -> None:
         """Deliver ONE SIGINT to the worker ( exec_interrupt).

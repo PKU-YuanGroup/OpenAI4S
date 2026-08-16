@@ -195,9 +195,48 @@ def test_the_refusal_says_nothing_about_why(gateway, authority):
     assert first == second == {"ok": False, "error": "refused"}
 
 
+def test_the_handshake_hands_back_an_authorization_generation(gateway, authority):
+    """`host.bash` binds its one-shot token to the worker's generation. A
+    local worker gets one through `_child_env`; the transport branch of
+    `Kernel._spawn` returns before any child environment exists, so a remote
+    worker had none and every `host.bash` on a cluster session was refused.
+    The Host mints it after the credential verifies and echoes it here —
+    which also keeps it out of the submission, where an environment variable
+    would land in the scheduler's job record (INV-9)."""
+    credential = authority.issue(allocation_id="alloc_1", epoch=0)
+    answer = _dial(gateway, credential.to_json())
+    assert answer["ok"] is True
+    assert answer["generation"].startswith("kernel:")
+
+
+def test_each_authenticated_connection_gets_its_own_generation(gateway, authority):
+    """Re-auth, a new epoch and a recovery must not share one: a worker from
+    the epoch before a recovery would otherwise keep authorizing against the
+    generation the new one is using."""
+    first = _dial(gateway, authority.issue(allocation_id="a", epoch=0).to_json())
+    second = _dial(gateway, authority.issue(allocation_id="a", epoch=1).to_json())
+    assert first["generation"] != second["generation"]
+
+
+def test_a_refused_peer_is_told_no_generation(gateway):
+    """It is minted after the credential verifies, so there is nothing to
+    leak to a peer that never authenticated."""
+    answer = _dial(gateway, json.dumps({"allocation_id": "x"}))
+    assert "generation" not in answer
+
+
+def test_a_local_kernel_refuses_to_adopt_a_generation(tmp_path):
+    """The child was started with one in its environment; replacing it
+    afterwards would leave the worker authorizing against one string while
+    the Host checked another."""
+    kernel = Kernel(cwd=str(tmp_path))
+    with pytest.raises(RuntimeError, match="child environment"):
+        kernel.adopt_authorization_generation("kernel:something-else")
+
+
 def test_a_replayed_credential_cannot_open_a_second_connection(gateway, authority):
     credential = authority.issue(allocation_id="alloc_1", epoch=0)
-    assert _dial(gateway, credential.to_json()) == {"ok": True}
+    assert _dial(gateway, credential.to_json())["ok"] is True
     assert _dial(gateway, credential.to_json()) == {"ok": False, "error": "refused"}
     assert gateway.accepted == 1
 
@@ -206,7 +245,7 @@ def test_await_worker_is_keyed_by_epoch(gateway, authority):
     """A straggler from a previous epoch must not satisfy a wait for the
     current one — the rendezvous is fenced exactly like the credential."""
     credential = authority.issue(allocation_id="alloc_1", epoch=0)
-    assert _dial(gateway, credential.to_json()) == {"ok": True}
+    assert _dial(gateway, credential.to_json())["ok"] is True
 
     assert gateway.await_worker("alloc_1", 1, timeout_s=0.3) is None
     registration = gateway.await_worker("alloc_1", 0, timeout_s=2)

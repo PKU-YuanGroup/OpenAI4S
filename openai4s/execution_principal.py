@@ -120,16 +120,12 @@ class Principal:
 
 #: The daemon nobody logged into. Its operator is whoever started it, so it
 #: is unrestricted -- but it says so by being this value, not by being absent.
-SINGLE_USER = Principal(
-    user_id="", username="local", role="admin", kind="single_user"
-)
+SINGLE_USER = Principal(user_id="", username="local", role="admin", kind="single_user")
 
 #: The loopback management CLI (decision D2): admin-equivalent, and named
 #: `cli` in the audit trail so the machine path and a human account stay
 #: separable.
-SERVICE = Principal(
-    user_id="service:cli", username="cli", role="admin", kind="service"
-)
+SERVICE = Principal(user_id="service:cli", username="cli", role="admin", kind="service")
 
 
 _principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVar(

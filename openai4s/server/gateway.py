@@ -4211,6 +4211,16 @@ class SessionRunner:
         if transport is None:
             return None
 
+        # The generation this worker was admitted under. Minted by the Host
+        # in the handshake and echoed to the worker there, so both ends agree
+        # without the value ever riding in the job's environment (where it
+        # would land in the scheduler's record). Adopting it from the
+        # Registration is safe because a Registration exists only for a peer
+        # that presented a valid, unburned, in-epoch credential -- and it is
+        # the *Host's* own value either way, so `host.bash`'s check is not
+        # relaxed, merely answerable.
+        admitted_generation = str(getattr(runtime.registration, "generation", "") or "")
+
         def build() -> Kernel:
             kernel = Kernel(
                 dispatcher=disp,
@@ -4218,6 +4228,8 @@ class SessionRunner:
                 mode="repl",
                 transport_factory=lambda: transport,
             )
+            if admitted_generation:
+                kernel.adopt_authorization_generation(admitted_generation)
             manager.bind_kernel(session_id, kernel)
             return kernel
 

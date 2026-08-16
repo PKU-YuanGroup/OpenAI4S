@@ -32,6 +32,7 @@ import os
 import socket
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -63,6 +64,13 @@ class Registration:
     rank: int
     transport: OutboundTcpTransport
     peer: str
+    #: The `authorization_generation` this connection was admitted under,
+    #: minted by the Host after the credential verified and echoed to the
+    #: worker in the handshake response. It is on the Registration because
+    #: that is the object the daemon trusts: it exists only for a peer that
+    #: presented a valid, unburned, in-epoch credential, so a Kernel built
+    #: from one may adopt the value without asking anything further.
+    generation: str = ""
 
 
 def parse_listen(spec: str | None) -> tuple[str, int] | None:
@@ -199,8 +207,30 @@ class WorkerGateway:
             self._note_rejection(peer, exc)
             return
 
+        # Minted here, once the credential has verified, and handed back in
+        # the same breath. `host.bash` binds its one-shot authorization to
+        # the worker's generation, and a remote worker had no way to learn
+        # one: the local path gets it through `_child_env`, which the
+        # transport branch of `Kernel._spawn` returns before ever reaching.
+        # So every `host.bash` from a cluster session was refused with
+        # "worker generation does not match the active Host generation".
+        #
+        # The Host is the one minting it, so the check is not relaxed: it
+        # still compares against a value only the Host chose. Delivering it
+        # on the handshake response rather than in the job's environment
+        # also keeps it out of the submission -- an environment variable
+        # rides in `--export` and lands in the scheduler's job record, where
+        # a credential-shaped value is exactly what INV-9 keeps out.
+        #
+        # Fresh per authenticated connection, so a re-auth, a new epoch and
+        # a recovery each get their own: reusing one across attempts would
+        # let a worker from the epoch before a recovery keep authorizing
+        # against the generation the new one is using.
+        generation = f"kernel:{uuid.uuid4()}"
         try:
-            conn.sendall((json.dumps({"ok": True}) + "\n").encode())
+            conn.sendall(
+                (json.dumps({"ok": True, "generation": generation}) + "\n").encode()
+            )
         except OSError:
             try:
                 conn.close()
@@ -225,6 +255,7 @@ class WorkerGateway:
             rank=credential.rank,
             transport=transport,
             peer=peer,
+            generation=generation,
         )
         key = (credential.allocation_id, credential.epoch)
         with self._lock:
