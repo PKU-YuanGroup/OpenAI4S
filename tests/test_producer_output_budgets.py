@@ -796,6 +796,139 @@ def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
         kernel.shutdown()
 
 
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+@pytest.mark.parametrize(
+    ("raise_condition", "expected_error", "interrupted"),
+    [
+        (
+            "signalCondition(structure(list(message = 'forced'), "
+            "class = c('interrupt', 'condition')))",
+            "Interrupted",
+            True,
+        ),
+        (
+            "stop('forced')",
+            "openai4s r_worker internal error: forced",
+            False,
+        ),
+    ],
+    ids=("interrupted", "internal-error"),
+)
+def test_r_top_level_fallback_preserves_host_capture(
+    tmp_path, raise_condition, expected_error, interrupted
+):
+    """Both outer fallbacks return output already drained by the host.
+
+    A timed SIGINT can land inside ``.oai4s_run`` and exercise its normal
+    response. Replace the dispatcher for one frame instead: it writes known
+    bytes to the real host FIFOs, restores itself, then raises outside the
+    cell handler so the top-level interrupt/error fallback must respond.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        setup = f"""
+.oai4s_saved_handle_line <- .oai4s_handle_line
+.oai4s_handle_line <- function(line) {{
+  frame <- jsonlite::fromJSON(line, simplifyVector = TRUE)
+  if (is.null(frame$sink_out)) {{
+    # Only an execute frame carries sinks. Hand anything else back rather than
+    # crash on fifo(NULL): the self-restore below runs on the FIRST call, so an
+    # assertion failing before it would otherwise leave this patch installed to
+    # swallow teardown's shutdown frame, and kernel.shutdown() would spend its
+    # whole 5 s budget before SIGKILLing a worker that never saw the request.
+    return(.oai4s_saved_handle_line(line))
+  }}
+  assign('.oai4s_handle_line', .oai4s_saved_handle_line, envir = globalenv())
+  out_con <- fifo(as.character(frame$sink_out), open = 'wb', blocking = TRUE)
+  err_con <- fifo(as.character(frame$sink_err), open = 'wb', blocking = TRUE)
+  writeBin(charToRaw('fallback stdout\\n'), out_con)
+  writeBin(charToRaw('fallback stderr\\n'), err_con)
+  flush(out_con); flush(err_con)
+  close(out_con); close(err_con)
+  {raise_condition}
+}}
+"""
+        primed = kernel.execute(setup)
+        assert primed["error"] is None, primed
+
+        result = kernel.execute("ignored")
+
+        usage = result["usage"]
+        assert result["interrupted"] is interrupted
+        assert result["error"] == expected_error
+        assert result["sink_capture"] is True
+        assert result["stdout"] == "fallback stdout\n"
+        assert result["stderr"] == "fallback stderr\n"
+        # The byte counters are the host's and are real; the worker's own three
+        # are not measured on this path. `peak_rss_kb` says so with null rather
+        # than 0 -- a fabricated zero beside real numbers reads as measured, and
+        # lands in execution_log.peak_rss_kb as one. wall_s/cpu_s cannot say it
+        # yet: .oai4s_num renders NULL as 0, so they remain the one place this
+        # frame still asserts a measurement it did not take.
+        assert usage == {
+            "wall_s": 0.0,
+            "cpu_s": 0.0,
+            "peak_rss_kb": None,
+            **sink_drain.channel_counters(seen=16, retained=16, prefix="stdout_"),
+            **sink_drain.channel_counters(seen=16, retained=16, prefix="stderr_"),
+        }
+
+        after = kernel.execute("cat('still here\\n')")
+        assert after["stdout"] == "still here\n"
+        assert after["usage"]["stdout_truncated"] is False
+    finally:
+        kernel.shutdown()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_an_interrupt_escaping_oai4s_run_still_reports_the_host_capture(tmp_path):
+    """The fallback shape production actually produces, driven end to end.
+
+    The test above replaces the dispatcher, so it opens the fifos itself and
+    closes them before raising -- the host's readers then end on EOF. The real
+    escape cannot do that: ``out_con``/``msg_con`` are locals of the
+    ``.oai4s_run`` frame the condition unwound, and ``.oai4s_unwind_sinks()``
+    pops sink levels without closing connections. Reach it the way a user does
+    -- ``.oai4s_run`` autoprints a visible value at a ``tryCatch`` that handles
+    ``error`` but not ``interrupt`` -- so the sinks are still live and the cell
+    really wrote through them. Deterministic: the condition is signalled by the
+    print method, not by a timed SIGINT.
+    """
+    from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
+    try:
+        primed = kernel.execute(
+            "print.oai4sprobe <- function(x, ...) {\n"
+            "  cat('written through the live sink\\n')\n"
+            "  signalCondition(structure(list(message = 'ctrl-c'),"
+            " class = c('interrupt', 'condition')))\n"
+            "}\n"
+            "probe <- function() structure(list(), class = 'oai4sprobe')\n"
+        )
+        assert primed["error"] is None, primed
+
+        result = kernel.execute("probe()")
+
+        assert result["interrupted"] is True
+        assert result["error"] == "Interrupted"
+        # The point of the fix: what the cell wrote before the escape survives,
+        # and it is the host that has it.
+        assert result["sink_capture"] is True
+        assert result["stdout"] == "written through the live sink\n"
+        assert result["usage"]["stdout_seen_bytes"] == 30
+        assert result["usage"]["stdout_truncated"] is False
+        # Not a measurement this path took -- absent, not zero.
+        assert result["usage"]["peak_rss_kb"] is None
+
+        after = kernel.execute("cat('still here\\n')")
+        assert after["stdout"] == "still here\n"
+    finally:
+        kernel.shutdown()
+
+
 # --- the kernel's own stderr pipe ------------------------------------------
 
 

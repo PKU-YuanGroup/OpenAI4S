@@ -205,7 +205,7 @@
       "tests": "tests/test_producer_output_budgets.py,tests/test_workspace_streaming_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "c9c1df579d6be1089fb722bd8a59b4adae642fa79028cc9e1aea45cb658d55a4"
+      "evidence_digest": "8987487f897a29cad6fc5f2118beb58d24030b719495b85a6b585b36be928f9f"
     },
     {
       "source": "R2",
@@ -384,7 +384,7 @@
       "tests": "tests/test_producer_output_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1aad112f659babfc96161cf7bcd734b14db43ef4e1d17966bb231f3784b59c8c"
+      "evidence_digest": "e24f18625e37a6cc5d6e26ce790aefcfc60886ee3e42b75d945aa4fb626dbba5"
     },
     {
       "source": "R4",
@@ -774,7 +774,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "7a9698b7652b2df3d1176a66cb30d97a0137b5aab63802bbcf37a748b8f05b97"
+      "evidence_digest": "1249690185807f6750690c04ab90d01a92240e3ef614b35b50adb45d0c1be09d"
     },
     {
       "source": "R7",

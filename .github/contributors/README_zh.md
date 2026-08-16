@@ -3,13 +3,15 @@
 [English](README.md)
 
 每位贡献者一张 PNG，裁成四角透明的圆形，由根 README 的贡献者墙引用。这些图片由
-`scripts/update_contributors.py` 从 GitHub contributors API 生成，OpenAI4S 的运行
-时不会读取本目录。
+`scripts/update_contributors.py` 从 GitHub contributors API 与一份维护中的、已公开
+署名的非 commit 贡献者名单生成，OpenAI4S 的运行时不会读取本目录。
 
 ## 文件
 
 | 文件 | 职责 |
 | --- | --- |
+| `ClarenceYC.png` | 贡献者 `ClarenceYC` 的可直接渲染头像。 |
+| `EQSTLab.png` | 贡献者 `EQSTLab` 的可直接渲染头像。 |
 | `Grace-xyx.png` | 贡献者 `Grace-xyx` 的可直接渲染头像。 |
 | `HowardLi1984.png` | 贡献者 `HowardLi1984` 的可直接渲染头像。 |
 | `Linmj-Judy.png` | 贡献者 `Linmj-Judy` 的可直接渲染头像。 |
@@ -18,6 +20,7 @@
 | `YuyangSunshine.png` | 贡献者 `YuyangSunshine` 的可直接渲染头像。 |
 | `jiangzx25.png` | 贡献者 `jiangzx25` 的可直接渲染头像。 |
 | `riiiiiiin.png` | 贡献者 `riiiiiiin` 的可直接渲染头像。 |
+| `stau-7001.png` | 贡献者 `stau-7001` 的可直接渲染头像。 |
 | `wangyu-sd.png` | 贡献者 `wangyu-sd` 的可直接渲染头像。 |
 | `yusowa0716.png` | 贡献者 `yusowa0716` 的可直接渲染头像。 |
 

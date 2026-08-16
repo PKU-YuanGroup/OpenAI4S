@@ -572,6 +572,19 @@ def test_review_is_a_streamed_step_with_manual_and_session_controls() -> None:
     assert 'turnDone("failed")' in manual_source
 
 
+def test_search_result_links_pin_the_http_scheme_before_writing_href() -> None:
+    sanitizer = _extract_js_function(APP_JS, "searchResultHttpUrl")
+    body = _extract_js_function(APP_JS, "stepBody")
+
+    assert 'lower.startsWith("https://")' in sanitizer
+    assert 'lower.startsWith("http://")' in sanitizer
+    assert 'return "https://" + raw.slice(8)' in sanitizer
+    assert 'return "http://" + raw.slice(7)' in sanitizer
+    assert "searchResultHttpUrl(r.url)" in body
+    assert "a.href = safeUrl" in body
+    assert "a.href = u" not in body
+
+
 def test_context_menus_remain_scrollable_inside_the_viewport() -> None:
     rule = re.search(r"\.ctx-menu\s*\{(?P<body>[^}]+)\}", STYLE_CSS)
     assert rule, "style.css must define .ctx-menu"
@@ -663,21 +676,40 @@ def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
     earlier = _extract_js_function(APP_JS, "loadEarlierActionTimeline")
     loader = _extract_js_function(APP_JS, "loadWorkbenchState")
     card = _extract_js_function(APP_JS, "actionTimelineCard")
+    details = _extract_js_function(APP_JS, "actionTimelineDetails")
+    append_details = _extract_js_function(APP_JS, "appendActionTimelineDetails")
+    row = _extract_js_function(APP_JS, "actionTimelineLedgerRow")
+    selector = _extract_js_function(APP_JS, "selectActionTimelineGroup")
+    ledger = _extract_js_function(APP_JS, "actionTimelineLedger")
+    creator = _extract_js_function(APP_JS, "createActionTimelineView")
+    virtualizer = _extract_js_function(APP_JS, "reconcileActionTimelineWindow")
+    viewport = _extract_js_function(APP_JS, "actionTimelineViewportScrolled")
+    keyboard = _extract_js_function(APP_JS, "actionTimelineLedgerKeydown")
+    updater = _extract_js_function(APP_JS, "updateActionTimelineLedger")
+    history = _extract_js_function(APP_JS, "syncActionTimelineHistoryState")
+    inspector = _extract_js_function(APP_JS, "actionTimelineInspector")
     renderer = _extract_js_function(APP_JS, "renderActionTimeline")
     events = _extract_js_function(APP_JS, "onEvent")
 
     assert "dock-timeline" in INDEX_HTML
     assert "action_timeline" in events and "action-timeline" in events
     assert "ACTION_TIMELINE_PAGE_SIZE = 500" in APP_JS
-    assert "ACTION_TIMELINE_MAX_GROUPS = 2000" in APP_JS
+    assert "ACTION_TIMELINE_ROW_HEIGHT = 46" in APP_JS
+    assert "ACTION_TIMELINE_MAX_GROUPS" not in APP_JS
+    assert '"timeline.historyLimit"' not in APP_JS
+    assert "history_limit_reached" not in APP_JS
     assert ".slice(-ACTION_TIMELINE_PAGE_SIZE)" in sanitizer
+    assert ".slice(-50)" in sanitizer
+    assert "events: (group.events || []).map" in sanitizer
+    assert "publicList(event.resource_keys, 64, 160)" in sanitizer
+    assert "publicList(event.artifacts, 32, 200)" in sanitizer
     for field in ("first_ordinal", "last_ordinal", "has_more_before", "has_more_after"):
         assert field in sanitizer
     assert "new Map()" in merger
-    assert "deduped.set(key(group), group)" in merger
+    assert "deduped.set(group.group_id, group)" in merger
     assert "(incoming.groups || []).concat(current.groups || [])" in merger
     assert "(current.groups || []).concat(incoming.groups || [])" in merger
-    assert "all.slice(-ACTION_TIMELINE_MAX_GROUPS)" in merger
+    assert ".slice(" not in merger
     assert 'direction === "before"' in merger
     assert "currentFirst <= incomingFirst" in merger
     assert "first_ordinal: groups.length ? groups[0].ordinal : null" in merger
@@ -685,19 +717,21 @@ def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
         'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(timeline), "latest")'
         in loader
     )
-    assert (
-        'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(m), "latest")'
-        in events
-    )
+    assert 'mergeActionTimelines(S.actionTimeline, incoming, "latest")' in events
+    assert "incoming.branch_id === currentBranch" in events
     assert "before_ordinal=${first}&limit=${ACTION_TIMELINE_PAGE_SIZE}" in earlier
-    assert (
-        'mergeActionTimelines(S.actionTimeline, sanitizeActionTimeline(page), "before")'
-        in earlier
-    )
-    assert "if (timeline.has_more_before)" in renderer
-    assert 'data-action", "load-earlier-timeline"' in renderer
-    assert 't(loading ? "timeline.loadingEarlier" : "timeline.loadEarlier")' in renderer
-    assert "workbenchErrors.timelineHistory" in renderer
+    assert "branch_id=${encodeURIComponent(branchId)}" in earlier
+    assert 'mergeActionTimelines(current, incoming, "before")' in earlier
+    assert "scrollHeight: view.scroll.scrollHeight" in earlier
+    assert "scrollTop: view.scroll.scrollTop" in earlier
+    assert "prependSnapshot" in earlier and "updateActionTimelineLedger" in earlier
+    assert "actionTimelineFilterScrollSnapshot(view)" in earlier
+    assert "view.pendingPrependRestore = pendingPrependRestore" in earlier
+    assert "options.filterChanged || pendingPrependRestore" in updater
+    assert "if (timeline.has_more_before)" in history
+    assert 'data-action", "load-earlier-timeline"' in history
+    assert 't(loading ? "timeline.loadingEarlier" : "timeline.loadEarlier")' in history
+    assert "workbenchErrors.timelineHistory" in history
     assert APP_JS.count('"timeline.loadEarlier"') >= 2
     for kind in (
         "native_tool",
@@ -711,19 +745,329 @@ def test_action_timeline_is_a_safe_allowlisted_projection() -> None:
         assert f"timeline.kind.{kind}" in APP_JS
     # Raw provider/audit payloads may be inspected only while deriving a tiny
     # Artifact-name allowlist; the stored group/event projection must not copy
-    # these fields and the card must never render them.
+    # these fields and neither the ledger nor its inspector may render them.
     assert "arguments:" not in sanitizer
     assert "wire_id:" not in sanitizer
     assert "tool_call_id:" not in sanitizer
     assert "assistant_content:" not in sanitizer
     assert "input_tokens" in sanitizer and "output_tokens" in sanitizer
-    assert 'timelineMeta(t("timeline.cost"), timelineCost(group.cost))' in card
-    assert 'timelineMeta(t("timeline.tokens")' in card
+    for key in (
+        "owner",
+        "permission",
+        "resources",
+        "artifacts",
+        "generation",
+        "replay",
+        "duration",
+        "tokens",
+        "cost",
+    ):
+        assert f'timelineMeta(t("timeline.{key}")' in append_details
+    assert "details.latest.error" in append_details
+    assert "appendActionTimelineDetails(panel, group)" in inspector
+    assert "appendActionTimelineDetails(card, group)" in card
+
+    # The session view is a semantic table. Every action row is reconciled by
+    # the durable group id; ordinal and array position are display/order only.
+    assert 'el("table", "timeline-ledger")' in creator
+    assert 'el("thead")' in creator and 'el("tbody", "timeline-ledger-body")' in creator
+    assert "timelineOrdinal(group.ordinal)" in row
+    assert '"#" + ordinalText' in row
+    assert "reusableRows.get(group.group_id)" in virtualizer
+    assert "row.dataset.groupId = group.group_id" in row
+    assert 'el("button", "timeline-row-button", title)' in row
+    assert 'row.setAttribute("role", "button")' not in row
+    assert 'titleButton.setAttribute("aria-expanded"' in row
+    assert "entry.turnBoundary" in virtualizer
+    assert '" turn-boundary"' in row
+    assert "actionTimelineLedger(groups, branchScope, rootFrameScope)" in renderer
+    assert "actionTimelineCard(group)" not in renderer
+    assert "root.dataset.timelineBranch" in renderer
+    assert "entries.slice(start, end)" in virtualizer
+    assert "translateY(${index * ACTION_TIMELINE_ROW_HEIGHT}px)" in virtualizer
+    assert "clientHeight" in virtualizer and "ACTION_TIMELINE_OVERSCAN" in virtualizer
+    assert "view.tbody.style.height" in updater
+    assert "snapshot.scrollTop + delta" in updater and "snapshot.followTail" in updater
+    assert "view.followTail" in updater and "view.followTail" in viewport
+    assert "loadEarlierActionTimeline()" in viewport
+    assert "view.scroll.scrollTop <= ACTION_TIMELINE_TOP_THRESHOLD" in viewport
+    assert 'updateActionTimelineLedger({ direction: "latest" })' in events
+    assert (
+        "renderActionTimeline()"
+        not in events.split("action_timeline", 1)[1].split("execution_queue", 1)[0]
+    )
+    assert "focusTarget.focus({ preventScroll: true })" in virtualizer
+    for key in ("ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"):
+        assert key in keyboard
+    assert "S.actionTimelineSelectedGroupId" in inspector
+    assert "selectActionTimelineGroup(groupId, branchScope, false)" in row
+    assert "S.actionTimelineSelectedGroupId = groupId" in selector
+    side_order = (
+        "side.appendChild(renderBranchPanel()); "
+        "side.appendChild(renderDelegationPanel()); "
+        "side.appendChild(renderComputeTasksPanel()); "
+        "side.appendChild(renderContextPanel()); "
+        "side.appendChild(renderSecurityPanel())"
+    )
+    assert side_order in renderer
     for forbidden in ("arguments", "wire_id", "tool_call_id", "assistant_content"):
-        assert forbidden not in card
-        assert forbidden not in renderer
-    assert "textContent" not in card or "innerHTML" not in card
-    assert ".timeline-card" in STYLE_CSS
+        for public_renderer in (
+            card,
+            details,
+            append_details,
+            row,
+            ledger,
+            creator,
+            virtualizer,
+            updater,
+            inspector,
+            renderer,
+        ):
+            assert forbidden not in public_renderer
+    assert "innerHTML" not in inspector
+    for key in (
+        "timeline.column.ordinal",
+        "timeline.column.kind",
+        "timeline.column.action",
+        "timeline.turnBoundary",
+        "timeline.inspector",
+        "timeline.inspector.close",
+        "timeline.row.open",
+    ):
+        assert APP_JS.count(f'"{key}"') >= 3
+    assert ".timeline-card" in STYLE_CSS  # recovery + project-level timeline
+    assert ".timeline-ledger" in STYLE_CSS
+    assert ".timeline-inspector" in STYLE_CSS
+    assert ".timeline-ledger-scroll{max-height:clamp" in STYLE_CSS
+    assert "overflow:auto" in STYLE_CSS
+    assert ".timeline-ledger-row{position:absolute" in STYLE_CSS
+    assert ".timeline-ledger-row.turn-boundary td{border-top:3px" in STYLE_CSS
+
+
+def test_action_timeline_search_and_turn_folding_are_loaded_scope_and_keyed() -> None:
+    search_doc = _extract_js_function(APP_JS, "actionTimelineSearchDocument")
+    search_index = _extract_js_function(APP_JS, "syncActionTimelineSearchIndex")
+    search_groups = _extract_js_function(APP_JS, "searchActionTimelineGroups")
+    change_search = _extract_js_function(APP_JS, "changeActionTimelineSearch")
+    toolbar = _extract_js_function(APP_JS, "createActionTimelineToolbar")
+    toolbar_sync = _extract_js_function(APP_JS, "syncActionTimelineSearchToolbar")
+    entries = _extract_js_function(APP_JS, "actionTimelineLedgerEntries")
+    toggle = _extract_js_function(APP_JS, "toggleActionTimelineTurn")
+    turn_row = _extract_js_function(APP_JS, "actionTimelineTurnSummaryRow")
+    turn_toggle = _extract_js_function(APP_JS, "actionTimelineTurnToggle")
+    updater = _extract_js_function(APP_JS, "updateActionTimelineLedger")
+    virtualizer = _extract_js_function(APP_JS, "reconcileActionTimelineWindow")
+    viewport = _extract_js_function(APP_JS, "actionTimelineViewportScrolled")
+    model = _extract_js_function(APP_JS, "actionTimelineOverviewModel")
+    hit = _extract_js_function(APP_JS, "actionTimelineOverviewHit")
+    creator = _extract_js_function(APP_JS, "createActionTimelineView")
+    opener = _extract_js_function(APP_JS, "openConversation")
+
+    # The local index is deliberately narrow: only the four projected fields
+    # named by the product contract, across every projected event.
+    for field in ("title", "kind", "resource_keys", "artifacts"):
+        assert field in search_doc
+    for forbidden in ("owner", "permission", "error", "canonical_arguments", "wire"):
+        assert forbidden not in search_doc
+    assert 'join("\\u0000")' in search_doc
+    assert "new Map()" in search_index and "group.group_id" in search_index
+    assert "cached.group === group" in search_index
+    assert ".includes(view.searchNeedle)" in search_groups
+
+    assert 'el("form", "timeline-toolbar")' in toolbar
+    assert 'setAttribute("role", "search")' in toolbar
+    assert 'input.type = "search"' in toolbar
+    assert 'el("label", "timeline-search-label"' in toolbar
+    assert 'setAttribute("aria-live", "polite")' in toolbar
+    assert "event => event.preventDefault()" in toolbar
+    assert "timeline.search.scope" in toolbar_sync
+    assert "loadedCount" in toolbar_sync and "matchCount" in toolbar_sync
+    assert (
+        "searchMatchCount" in toolbar_sync
+        and "timeline.search.matchesInSelection" in toolbar_sync
+    )
+    assert (
+        "filterChanged: true" in change_search
+        and "view.autoLoadArmed = false" in change_search
+    )
+    assert "!view.searchNeedle" in viewport
+
+    # Collapsed summaries are virtual fixed-height entries keyed by turn_id;
+    # durable action rows continue to be keyed only by group_id.
+    assert 'entries.push({ type: "turn", turnId' in entries
+    assert 'entries.push({ type: "group", group' in entries
+    assert "view.collapsedTurns.has(turnId)" in entries
+    assert "view.searchNeedle" in entries  # search temporarily reveals matches
+    assert "view.collapsedTurns.add(turnId)" in toggle
+    assert "view.collapsedTurns.delete(turnId)" in toggle
+    assert "row.dataset.turnId = entry.turnId" in turn_row
+    assert "delete row.dataset.groupId" in turn_row
+    assert 'el("button", "timeline-turn-toggle")' in turn_toggle
+    assert 'setAttribute("aria-expanded"' in turn_toggle
+    assert "event.stopPropagation()" in turn_toggle
+    assert "reusableTurns.get(entry.turnId)" in virtualizer
+    assert "reusableRows.get(group.group_id)" in virtualizer
+    assert "entries.length * ACTION_TIMELINE_ROW_HEIGHT" in updater
+    assert "snapshot.scrollTop + delta" in updater
+
+    # Search controls the painted items, while the loaded groups continue to
+    # define the truthful time axis and omitted-prefix position.
+    assert "domainGroups = groups" in model
+    assert "domainGroups.forEach" in model
+    assert "drawableItems" in model and "item.rank = rank" in model
+    assert "model.items[candidateRank]" in hit
+    assert "view.allGroups[candidateRank]" not in hit
+    assert "drawActionTimelineOverview(view, searchGroups, force, allGroups)" in updater
+    assert "searchActionTimelineGroups(view, allGroups)" in updater
+    assert "filteredActionTimelineGroups(view, searchGroups)" in updater
+    assert "actionTimelineLedgerEntries(view, groups)" in updater
+
+    # View-local state survives tab detaches but is discarded with the view on
+    # session/root or branch scope changes. It is never persisted globally.
+    for state in (
+        "searchQuery",
+        "searchNeedle",
+        "searchIndex",
+        "collapsedTurns",
+        "entries",
+    ):
+        assert state in creator
+    assert (
+        "firstVisible" in creator
+        and "view.start"
+        not in creator.split('scroll.addEventListener("keydown"', 1)[1].split(
+            "table.addEventListener", 1
+        )[0]
+    )
+    assert "destroyActionTimelineView()" in opener
+    assert "S.actionTimeline = null" in opener
+    assert "localStorage" not in change_search and "localStorage" not in toggle
+    for interaction in (change_search, toggle):
+        assert "fetch(" not in interaction and "api(" not in interaction
+        assert "loadEarlierActionTimeline" not in interaction
+
+    for key in (
+        "timeline.search.label",
+        "timeline.search.placeholder",
+        "timeline.search.scope",
+        "timeline.search.matches",
+        "timeline.search.clear",
+        "timeline.turn.collapse",
+        "timeline.turn.expand",
+        "timeline.turn.summary",
+        "timeline.ledger.keyboard",
+    ):
+        assert APP_JS.count(f'"{key}"') >= 3
+    assert ".timeline-toolbar{" in STYLE_CSS
+    assert ".timeline-ledger-row.search-match td{" in STYLE_CSS
+    assert ".timeline-turn-toggle{" in STYLE_CSS
+    assert ".timeline-turn-toggle:focus-visible{" in STYLE_CSS
+    assert ".timeline-turn-summary" in STYLE_CSS
+
+
+def test_action_timeline_overview_is_truthful_interactive_and_constant_dom() -> None:
+    latest = _extract_js_function(APP_JS, "latestActionTimelineAttempt")
+    span = _extract_js_function(APP_JS, "actionTimelineSpan")
+    model = _extract_js_function(APP_JS, "actionTimelineOverviewModel")
+    creator = _extract_js_function(APP_JS, "createActionTimelineOverview")
+    painter = _extract_js_function(APP_JS, "renderActionTimelineOverviewPaths")
+    hover = _extract_js_function(APP_JS, "actionTimelineOverviewPointerMove")
+    tooltip = _extract_js_function(APP_JS, "showActionTimelineOverviewTooltip")
+    overlap = _extract_js_function(APP_JS, "actionTimelineSelectionOverlaps")
+    commit = _extract_js_function(APP_JS, "commitActionTimelineOverviewSelection")
+    wheel = _extract_js_function(APP_JS, "actionTimelineOverviewWheel")
+    begin_gesture = _extract_js_function(APP_JS, "beginActionTimelineOverviewGesture")
+    gesture = _extract_js_function(APP_JS, "moveActionTimelineOverviewGesture")
+    keydown = _extract_js_function(APP_JS, "actionTimelineOverviewKeydown")
+    controls = _extract_js_function(APP_JS, "syncActionTimelineOverviewControls")
+    reveal = _extract_js_function(APP_JS, "revealActionTimelineOverviewGroup")
+    view_creator = _extract_js_function(APP_JS, "createActionTimelineView")
+
+    assert ".slice(-1)[0]" in latest
+    assert "times.allocated, times.started" in span
+    assert "times.started, times.response" in span
+    assert "times.response, times.finished" in span
+    assert "times.finished == null" in span
+    assert "times.capture" in span
+    assert "markerAt: running ? times.allocated : null" in span
+    assert "end: running ? latestKnown : times.finished" in span
+    assert "if (!running" in span and "segments" in span
+    assert "Date.now()" not in span
+    assert "byId.set(item.groupId, item)" in model
+    assert (
+        "groups.map(group => actionTimelineSpan(group, 0, 1)).filter(Boolean)" in model
+    )
+    assert "item.rank = rank" in model and "item.laneCount = laneCount" in model
+    assert 'svgElement("svg"' in creator
+    assert "timeline-overview-phase queue" in creator
+    assert "timeline-overview-phase ttft" in creator
+    assert "timeline-overview-phase decode" in creator
+    assert "model.items.forEach" in painter
+    assert "replaceChildren" not in painter
+    assert "ACTION_TIMELINE_OVERVIEW_HOVER_DELAY" in hover
+    assert "const ACTION_TIMELINE_OVERVIEW_HOVER_DELAY = 500;" in APP_JS
+    assert "setTimeout" in hover
+    assert "timelineOverviewExactTime" in tooltip
+    assert "timelineOverviewExactDuration" in tooltip
+    assert "item.start <= right && item.end >= left" in overlap
+    assert "latestKnown" in span and "Date.now()" not in span
+    assert "Math.floor" in commit and "Math.ceil" in commit
+    assert "filterChanged: true" in commit
+    assert "Math.exp" in wheel and "preventDefault" in wheel
+    assert "event.ctrlKey" in begin_gesture and "? 2 : event.button" in begin_gesture
+    assert "gesture.button === 2" in gesture
+    assert "startViewStart" in gesture and "startViewEnd" in gesture
+    assert (
+        "timelineOverviewXToDomainTime(gesture.startViewStart, gesture.startViewEnd"
+        in gesture
+    )
+    assert (
+        "event.shiftKey" in keydown
+        and "commitActionTimelineOverviewSelection" in keydown
+    )
+    assert "actionTimelineOverviewVisualExtent" in reveal
+    for interaction in (commit, wheel, begin_gesture, gesture):
+        assert "loadEarlierActionTimeline" not in interaction
+        assert "fetch(" not in interaction and "api(" not in interaction
+    assert "timeline.has_more_before" in controls
+    assert "includesLoadedStart" in controls
+    assert "overview.dataStart == null || includesLoadedStart" in controls
+    # The latch arms only when the load actually took the history lock.
+    # Arming it unconditionally survived every early return in
+    # loadEarlierActionTimeline, and the next repaint then stole focus.
+    assert (
+        "overview.restoreFocusAfterPrefix = !!S._timelineHistoryLoading" in view_creator
+    )
+    assert "overview.restoreFocusAfterPrefix = true" not in view_creator
+    assert "loadEarlierActionTimeline()" in view_creator
+    assert 'data-action", "load-omitted-timeline"' in creator
+    assert (
+        'prefixButton = el("button", "timeline-overview-prefix hidden", "…")' in creator
+    )
+    assert 'overview.svg.addEventListener("wheel"' in view_creator
+    assert 'overview.svg.addEventListener("contextmenu"' in view_creator
+    assert 'overview.tooltip.addEventListener("pointerenter"' in view_creator
+    assert "allGroups" in _extract_js_function(APP_JS, "updateActionTimelineLedger")
+    assert "filteredActionTimelineGroups" in _extract_js_function(
+        APP_JS, "updateActionTimelineLedger"
+    )
+    for forbidden in ("arguments", "wire_id", "tool_call_id", "assistant_content"):
+        for public_renderer in (span, model, creator, painter, hover, tooltip):
+            assert forbidden not in public_renderer
+    for key in (
+        "timeline.overview",
+        "timeline.overview.queue",
+        "timeline.overview.ttft",
+        "timeline.overview.decode",
+        "timeline.overview.clear",
+        "timeline.overview.omitted",
+    ):
+        assert APP_JS.count(f'"{key}"') >= 3
+    assert ".timeline-overview{" in STYLE_CSS
+    assert ".timeline-overview-phase.queue" in STYLE_CSS
+    assert ".timeline-overview-prefix{" in STYLE_CSS
+    assert ".timeline-overview-selection{" in STYLE_CSS
+    assert "pointer-events:auto;user-select:text" in STYLE_CSS
 
 
 def test_notebook_live_input_appends_cells_and_keeps_history_read_only() -> None:
@@ -1646,6 +1990,38 @@ import subprocess
 NODE = shutil.which("node")
 
 
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_search_result_http_url_rejects_executable_and_relative_schemes() -> None:
+    source = _extract_js_function(APP_JS, "searchResultHttpUrl")
+    cases = [
+        [" https://Example.com/A?X=Y ", "https://Example.com/A?X=Y"],
+        ["HTTPS://Example.com/A?X=Y", "https://Example.com/A?X=Y"],
+        ["hTtP://Example.com/A", "http://Example.com/A"],
+        ["javascript:alert(1)", ""],
+        ["data:text/html,<script>alert(1)</script>", ""],
+        ["//evil.example/path", ""],
+        ["ftp://evil.example/path", ""],
+        ["https:/missing-slash.example", ""],
+        [None, ""],
+        [42, ""],
+    ]
+    script = (
+        source
+        + "\nconst cases = "
+        + json.dumps(cases)
+        + ";\nconsole.log(JSON.stringify(cases.map(([input]) => "
+        + "searchResultHttpUrl(input))));"
+    )
+    out = subprocess.run(
+        [NODE, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr[:800]
+    assert json.loads(out.stdout) == [expected for _, expected in cases]
+
+
 def _drive(program: str) -> dict:
     """Run the shipped ticket functions, lifted from app.js, under node.
 
@@ -2280,3 +2656,59 @@ def test_a_legacy_202_without_ids_still_leaves_the_turn_running() -> None:
     assert state["before"] == {"running": True, "resume": 1}
     assert state["stale"] is False, "an idless terminal could never close the turn"
     assert state["running"] is False
+
+
+def test_action_timeline_ledger_row_reports_state_it_cannot_fabricate() -> None:
+    """The row must not present unknown state as a known value.
+
+    Three of these were regressions against the card the ledger replaced:
+    status and the attempt error were reduced to an icon colour, an absent
+    usage row printed a fabricated ``0``, and a time brush resolved through the
+    paint model so an action with no execution attempt vanished from the list.
+    """
+
+    row = _extract_js_function(APP_JS, "actionTimelineLedgerRow")
+    overlap = _extract_js_function(APP_JS, "actionTimelineSelectionOverlaps")
+    filtered = _extract_js_function(APP_JS, "filteredActionTimelineGroups")
+    epoch = _extract_js_function(APP_JS, "timelineEpochMs")
+    duration = _extract_js_function(APP_JS, "timelineDurationMs")
+    search_doc = _extract_js_function(APP_JS, "actionTimelineSearchDocument")
+    creator = _extract_js_function(APP_JS, "createActionTimelineView")
+    renderer = _extract_js_function(APP_JS, "renderActionTimeline")
+    history = _extract_js_function(APP_JS, "syncActionTimelineHistoryState")
+
+    # Unknown token usage stays unknown; a real 0 and an absent row differ.
+    assert 'group.usage ? String(timelineTokenTotal(group.usage)) : "—"' in row
+    # Status and the attempt error reach text, not just a colour class.
+    assert "timeline-ledger-status" in row and "statusNoteworthy" in row
+    assert "latest.error" in row or "rowError" in row
+    assert ".timeline-ledger-status" in STYLE_CSS
+
+    # A time filter asks when an action happened, not whether it was painted.
+    assert "group.created_at" in overlap and "if (!item) return false" not in overlap
+    assert "selection, group)" in filtered
+
+    # One timestamp parser, shared, and never one Date cannot represent.
+    assert "Date.parse" in epoch and "TIMELINE_MAX_EPOCH_MS" in epoch
+    assert "const parse = timelineEpochMs" in duration
+
+    # Search covers the Kind label the placeholder advertises.
+    assert "timelineKind(group" in search_doc
+    assert 't("timeline.kind." + kind)' in search_doc
+    assert "cached.lang === LANG" in _extract_js_function(
+        APP_JS, "syncActionTimelineSearchIndex"
+    )
+
+    # The CSS strips implicit table roles, so they are declared explicitly.
+    for role in ('"role", "table"', '"role", "rowgroup"', '"role", "columnheader"'):
+        assert role in creator
+    assert '"role", "row"' in row and '"role", "cell"' in row
+
+    # Any render that does not re-append the region must destroy the view.
+    assert "else {" in renderer and "destroyActionTimelineView();" in renderer
+    # The history slot is measured with its previous reservation still applied.
+    # Clearing it first reads 0 on an already-reserved slot, collapsing the band
+    # during a prepend and moving the compensated row -- browser_smoke's
+    # "history prepend N moved the visible anchor" case.
+    assert "const previousHeight = target.getBoundingClientRect().height" in history
+    assert 'target.replaceChildren(); target.style.minHeight = ""' in history
