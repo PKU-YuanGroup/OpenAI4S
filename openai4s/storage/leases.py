@@ -33,6 +33,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from openai4s.storage.migrations import apply_ddl_script
+
 LEASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS leases (
     workload_id    TEXT PRIMARY KEY,
@@ -54,7 +56,7 @@ CREATE TABLE IF NOT EXISTS session_workloads (
 
 def create_lease_schema(conn: sqlite3.Connection) -> None:
     """Idempotent DDL, called from the numbered Store migration."""
-    conn.executescript(LEASE_SCHEMA)
+    apply_ddl_script(conn, LEASE_SCHEMA)
 
 
 @dataclass(frozen=True)

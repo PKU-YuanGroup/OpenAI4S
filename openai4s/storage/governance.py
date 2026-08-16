@@ -28,6 +28,8 @@ import secrets
 import sqlite3
 from typing import Any, Callable
 
+from openai4s.storage.migrations import apply_ddl_script
+
 #: Invite lifetime default (seconds): one week.
 INVITE_TTL_S = 7 * 24 * 3600
 
@@ -93,7 +95,7 @@ CREATE TABLE IF NOT EXISTS quotas (
 
 def create_governance_schema(conn: sqlite3.Connection) -> None:
     """Idempotent DDL, called from the numbered Store migration."""
-    conn.executescript(GOVERNANCE_SCHEMA)
+    apply_ddl_script(conn, GOVERNANCE_SCHEMA)
 
 
 def invite_digest(token: str) -> str:

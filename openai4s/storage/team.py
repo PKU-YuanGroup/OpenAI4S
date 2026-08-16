@@ -33,6 +33,8 @@ import sqlite3
 import uuid
 from typing import Any, Callable
 
+from openai4s.storage.migrations import apply_ddl_script
+
 #: PBKDF2-HMAC-SHA256 iteration count for new hashes (plan M1-2). Recorded
 #: per-row so this constant can move without a migration.
 PBKDF2_ITERATIONS = 600_000
@@ -93,12 +95,12 @@ CREATE INDEX IF NOT EXISTS ix_session_owners_user ON session_owners(user_id);
 
 def create_team_schema(conn: sqlite3.Connection) -> None:
     """Idempotent DDL, called from the numbered Store migration."""
-    conn.executescript(TEAM_SCHEMA)
+    apply_ddl_script(conn, TEAM_SCHEMA)
 
 
 def create_session_owners_schema(conn: sqlite3.Connection) -> None:
     """Idempotent DDL for session ownership (M1-6), its own numbered step."""
-    conn.executescript(SESSION_OWNERS_SCHEMA)
+    apply_ddl_script(conn, SESSION_OWNERS_SCHEMA)
 
 
 def hash_password(password: str, salt: bytes, iterations: int | None = None) -> bytes:

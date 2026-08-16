@@ -38,6 +38,7 @@ from openai4s.orchestration.models import (
     WorkloadKind,
     WorkloadSpec,
 )
+from openai4s.storage.migrations import apply_ddl_script
 
 #: The phases that hold a resource. Kept in sync with
 #: `Phase.is_active_allocation` by a test rather than by hope — they are the
@@ -86,7 +87,7 @@ CREATE INDEX IF NOT EXISTS ix_allocations_workload ON allocations(workload_id);
 
 def create_workload_schema(conn: sqlite3.Connection) -> None:
     """Idempotent DDL, called from the numbered Store migration."""
-    conn.executescript(WORKLOAD_SCHEMA)
+    apply_ddl_script(conn, WORKLOAD_SCHEMA)
 
 
 class ActiveAllocationExists(RuntimeError):
