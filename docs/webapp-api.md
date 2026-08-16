@@ -360,12 +360,20 @@ Nothing here submits synchronously. A request writes a durable row; the reconcil
 
 | Method & path | Behavior |
 | --- | --- |
-| `POST /orchestration/jobs` | Body `{command: [...], profile?, backend?, workdir?, environment?, project_id?}`. `202 {id, phase, ...}` — accepted, not started; `201` would promise a resource that has not been granted. `command` **must** be a list: a string is refused with `400 invalid_command`, because splitting a command line is where quoting bugs become injection. Unknown profile → `400 unknown_profile`; unknown backend → `400 unknown_backend` with the available ones. |
+| `POST /orchestration/jobs` | Body `{command: [...], profile?, backend?, workdir?, environment?, project_id?}`. `202 {id, phase, ...}` — accepted, not started; `201` would promise a resource that has not been granted. `command` **must** be a list: a string is refused with `400 invalid_command`, because splitting a command line is where quoting bugs become injection. Unknown profile → `400 unknown_profile`; unknown backend → `400 unknown_backend` with the available ones. In team mode the `local` backend is **admin only** (`403 admin_only`, with the refused `backend` named) — see below. |
 | `GET /orchestration/jobs` | `{jobs: [...]}`, filtered to the caller's own unless they are an admin. `project_id`, `limit` and `all=0` (hide terminal) narrow it. |
 | `GET /orchestration/jobs/{id}` | One job plus its `allocation` (the live attempt) and `allocations` (every epoch). Someone else's job is `404`, not `403` — which jobs exist is itself information about what a colleague is working on. |
 | `POST /orchestration/jobs/{id}/cancel` | Records the desire to stop and returns `{ok, reason}`; the reconciler runs the cancel barrier. `409 already_final` when the job has already ended. An admin cancelling another user's job is recorded as `ADMIN_CANCELLED` rather than `USER_CANCELLED`. |
 | `GET /orchestration/jobs/{id}/logs` | `{allocation_id, stdout, stderr}` — the tail (64 KiB) of what the job wrote. |
 | `GET /orchestration/profiles` | `{cluster, configured, profiles: [{name, cpus, memory_mb, gpus, walltime_s, nodes}]}`. The queue and service-class each profile maps to are **not** in this payload: they live in `cluster.toml` and nowhere else. |
+
+**Which backends a member may name.** Privilege here is a property of the *backend*, not of the route. A scheduler backend hands the work to the site's scheduler, which runs it under the submitting user's own account and accounting — so a member submitting to a cluster is submitting as themselves, and keeps it. The built-in `local` backend runs `Popen(argv)` as the **daemon's** uid, outside the kernel sandbox, with the daemon's filesystem access: in team mode that is every tenant's sessions, the access-token file and the group LLM credential. It is therefore admin only, by the same rule that makes `/compute/jobs` admin only.
+
+The check runs *after* the backend name is validated and *before* anything is written, so a misspelled backend still reads as `400 unknown_backend` rather than a permission problem, and a refused submission leaves no workload row and no audit entry behind.
+
+A single-user daemon is unaffected (INV-1): without team mode there is no member/operator distinction, because the person running the daemon is the operator.
+
+Note what this does **not** do: it does not put `LocalBackend` inside the kernel sandbox. That sandbox degrades visibly rather than failing closed on hosts that cannot give it namespaces, and a privilege boundary that is sometimes absent is worse than a refusal. Member-submitted local work wants a separate, fail-closed `local-sandboxed` backend designed as one.
 
 ### Where a session runs (cluster sessions)
 

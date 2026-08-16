@@ -54,6 +54,7 @@ export OPENAI4S_DATA_ROOTS=/lab/datasets=ro:/lab/scratch
 
 - 写实例配置——LLM 提供方、它的端点与凭据、模型 profile、默认模型。改一下 `llm_base_url`，全员的流量就指向了写的人选的主机；
 - 旧的 compute-job 运行器（`/compute/jobs`），它以 daemon 自己的 uid 执行 `bash -c <command>`——读也不给，因为一条作业行就是某个人敲下的命令；
+- 向 **`local` backend** 提交批处理作业（`POST /orchestration/jobs`），理由相同：它以 daemon 的身份、在 kernel 沙箱之外执行该 argv。成员保留*集群* backend，因为调度器会以成员自己的账号运行作业——特权属于 backend 而非路由，所以 `{"backend": "cluster"}` 是成员可以做的，`{"backend": "local"}` 不是；
 - 注册远程算力、往所有内核共用的 venv 里装包、配置携带组凭据的连接器、往每位成员的 agent 都会加载的目录里发布 skill、重置常设权限规则，以及创建**全局**权限规则（成员可以为自己的会话、或自己参与的项目建规则）。
 
 成员保留 UI 需要的每一项读取。完整清单在 `openai4s/server/team_policy.py`；不在其上的路由就是成员的。

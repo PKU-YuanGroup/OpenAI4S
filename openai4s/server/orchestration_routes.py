@@ -79,6 +79,41 @@ def _may_see(self, workload: Any) -> bool:
     return workload.owner_user_id == identity.user_id
 
 
+#: Backends that execute as the daemon process itself rather than handing the
+#: work to a scheduler that runs it under the submitting user's own account.
+#:
+#: `LocalBackend` runs `Popen(argv)` as the daemon's uid, outside the kernel
+#: sandbox, with the daemon's filesystem access -- which in team mode is every
+#: tenant's sessions, the access-token file and the group LLM credential. That
+#: is the hazard `team_policy.DAEMON_OPERATION_PATHS` already names for
+#: `/compute/jobs`, and it is a property of the *backend*, not of the route:
+#: a member submitting to a scheduler is submitting as themselves, and keeps
+#: it.
+#:
+#: Deliberately not solved by wrapping `LocalBackend` in the kernel sandbox.
+#: The sandbox degrades visibly rather than failing closed on hosts that
+#: cannot give it namespaces, and a privilege boundary that sometimes is not
+#: there is worse than a refusal. Member-submitted local work wants its own
+#: fail-closed `local-sandboxed` backend, designed as such.
+PRIVILEGED_BACKENDS = frozenset({"local"})
+
+
+def backend_for(runner: Any, body: Any) -> str:
+    """Which backend a submission names, defaults resolved the same way the
+    handler resolves them -- so the guard and the execution cannot disagree
+    about what was asked for."""
+    return str(body.get("backend") or getattr(runner, "default_backend", "local"))
+
+
+def _may_submit_to(self, backend: str) -> bool:
+    identity = _identity(self)
+    if identity is None or identity.is_admin:
+        # Team mode off (the single-user daemon is its own operator), or an
+        # operator. Both keep the behaviour they have always had (INV-1).
+        return True
+    return backend not in PRIVILEGED_BACKENDS
+
+
 def _job_json(workload: Any, allocation: Any = None) -> dict:
     """The wire shape. `allocation_id` is the public identity of a running
     attempt; the backend's own job id stays inside (INV-2)."""
@@ -279,9 +314,7 @@ def handle(
             self._json({"error": str(exc), "code": "invalid_spec"}, 400)
             return True
 
-        backend = str(
-            body.get("backend") or getattr(runner, "default_backend", "local")
-        )
+        backend = backend_for(runner, body)
         available = getattr(runner, "orchestration_backends", {}) or {}
         if available and backend not in available:
             self._json(
@@ -291,6 +324,22 @@ def handle(
                     "available": sorted(available),
                 },
                 400,
+            )
+            return True
+        # After the name is known to be real, so an unknown backend still
+        # reads as a typo rather than as a refusal; before anything is
+        # written, so a refused submission leaves no workload behind.
+        if not _may_submit_to(self, backend):
+            self._json(
+                {
+                    "error": (
+                        f"the {backend!r} backend runs jobs as the daemon and is "
+                        f"admin only; submit to a cluster backend instead"
+                    ),
+                    "code": "admin_only",
+                    "backend": backend,
+                },
+                403,
             )
             return True
 

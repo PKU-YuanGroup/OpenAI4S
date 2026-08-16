@@ -92,6 +92,13 @@ operator's regardless of who is logged in:
 - the legacy compute-job runner (`/compute/jobs`), which executes
   `bash -c <command>` as the daemon's own uid — reads included, since a
   job's row is somebody's command line;
+- submitting a batch job to the **`local` backend**
+  (`POST /orchestration/jobs`), for the same reason: it runs the argv as
+  the daemon, outside the kernel sandbox. Members keep the *cluster*
+  backends, where the scheduler runs the job under their own account —
+  the privilege is a property of the backend, not of the route, so
+  `{"backend": "cluster"}` is a member's call and `{"backend": "local"}`
+  is not;
 - registering remote compute, installing packages into the venv every
   kernel shares, configuring connectors that carry the group's
   credentials, publishing skills into the directory every member's agent

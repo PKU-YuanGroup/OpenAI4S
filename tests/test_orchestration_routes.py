@@ -47,6 +47,10 @@ def _fast_reconciler(monkeypatch):
 def daemon(tmp_path: Path):
     node = _TeamDaemon(tmp_path)
     node.seed_user("root", "fake-pw-r", role="admin")
+    # A *second* operator, so "an admin may see and cancel a job that is not
+    # theirs" stays a real claim now that the local backend's jobs are always
+    # owned by an admin. With one admin account it would be tautological.
+    node.seed_user("ops", "fake-pw-o", role="admin")
     node.seed_user("alice", "fake-pw-a")
     node.seed_user("bob", "fake-pw-b")
     try:
@@ -102,7 +106,7 @@ def _await_phase(daemon, job_id: str, cookie: str, *, timeout_s: float = 20.0):
 
 
 def test_submit_runs_and_completes_through_the_routes(daemon):
-    cookie = _login(daemon, "alice", "fake-pw-a")
+    cookie = _login(daemon, "root", "fake-pw-r")
     status, raw = _submit(
         daemon, cookie, [sys.executable, "-c", "print('batch output here')"]
     )
@@ -127,7 +131,7 @@ def test_submit_runs_and_completes_through_the_routes(daemon):
 
 
 def test_a_failing_job_ends_failed_not_completed(daemon):
-    cookie = _login(daemon, "alice", "fake-pw-a")
+    cookie = _login(daemon, "root", "fake-pw-r")
     status, raw = _submit(daemon, cookie, [sys.executable, "-c", "raise SystemExit(7)"])
     assert status == 202
     final = _await_phase(daemon, _body(raw)["id"], cookie)
@@ -135,7 +139,7 @@ def test_a_failing_job_ends_failed_not_completed(daemon):
 
 
 def test_cancel_reaches_terminal(daemon):
-    cookie = _login(daemon, "alice", "fake-pw-a")
+    cookie = _login(daemon, "root", "fake-pw-r")
     status, raw = _submit(
         daemon, cookie, [sys.executable, "-c", "import time; time.sleep(120)"]
     )
@@ -152,7 +156,7 @@ def test_cancel_reaches_terminal(daemon):
 
 
 def test_cancelling_a_finished_job_is_a_conflict(daemon):
-    cookie = _login(daemon, "alice", "fake-pw-a")
+    cookie = _login(daemon, "root", "fake-pw-r")
     status, raw = _submit(daemon, cookie, [sys.executable, "-c", "pass"])
     job_id = _body(raw)["id"]
     _await_phase(daemon, job_id, cookie)
@@ -168,9 +172,12 @@ def test_cancelling_a_finished_job_is_a_conflict(daemon):
 
 
 def test_jobs_are_owned_and_invisible_to_others(daemon):
-    a = _login(daemon, "alice", "fake-pw-a")
+    # Owned by `root` because the local backend is admin-only; the claim
+    # under test is the ownership rule, which is about the *owner* and not
+    # about the role, so a member who is not the owner is the right probe.
+    owner = _login(daemon, "root", "fake-pw-r")
     b = _login(daemon, "bob", "fake-pw-b")
-    status, raw = _submit(daemon, a, [sys.executable, "-c", "pass"])
+    status, raw = _submit(daemon, owner, [sys.executable, "-c", "pass"])
     job_id = _body(raw)["id"]
 
     # 404 rather than 403: which jobs exist says what a colleague is working on
@@ -189,23 +196,25 @@ def test_jobs_are_owned_and_invisible_to_others(daemon):
     status, raw = _get(daemon.port, "/api/v1/orchestration/jobs", cookie=b)
     assert job_id not in raw.decode("utf-8", "replace")
 
-    # the admin sees everything, and cancelling someone else's job is
-    # recorded as an ADMIN cancellation rather than a user one
-    r = _login(daemon, "root", "fake-pw-r")
-    status, raw = _get(daemon.port, f"/api/v1/orchestration/jobs/{job_id}", cookie=r)
+    # A *different* operator sees it. Checking this with the owning admin
+    # would prove nothing about the admin override.
+    ops = _login(daemon, "ops", "fake-pw-o")
+    status, raw = _get(daemon.port, f"/api/v1/orchestration/jobs/{job_id}", cookie=ops)
     assert status == 200
 
 
 def test_admin_cancellation_is_attributed_to_the_admin(daemon):
-    a = _login(daemon, "alice", "fake-pw-a")
-    r = _login(daemon, "root", "fake-pw-r")
+    owner = _login(daemon, "root", "fake-pw-r")
+    ops = _login(daemon, "ops", "fake-pw-o")
     status, raw = _submit(
-        daemon, a, [sys.executable, "-c", "import time; time.sleep(60)"]
+        daemon, owner, [sys.executable, "-c", "import time; time.sleep(60)"]
     )
     job_id = _body(raw)["id"]
 
+    # ADMIN_CANCELLED is "an admin cancelled somebody else's job", so the
+    # canceller has to be an admin who is not the owner.
     status, raw = _post(
-        daemon.port, f"/api/v1/orchestration/jobs/{job_id}/cancel", {}, cookie=r
+        daemon.port, f"/api/v1/orchestration/jobs/{job_id}/cancel", {}, cookie=ops
     )
     assert status == 200
     assert _body(raw)["reason"] == "ADMIN_CANCELLED"
@@ -214,10 +223,70 @@ def test_admin_cancellation_is_attributed_to_the_admin(daemon):
 
 
 def test_submission_is_audited(daemon):
-    cookie = _login(daemon, "alice", "fake-pw-a")
+    cookie = _login(daemon, "root", "fake-pw-r")
     _submit(daemon, cookie, [sys.executable, "-c", "pass"])
     rows = daemon.store.team.list_audit(action="workload_submit")
-    assert rows and rows[0]["actor"] == "alice"
+    assert rows and rows[0]["actor"] == "root"
+
+
+# -- the privileged backend ---------------------------------------------------
+
+
+def test_a_member_may_not_submit_to_the_local_backend(daemon):
+    """`LocalBackend` runs the argv as the daemon's own uid, outside the
+    kernel sandbox, with the daemon's filesystem access -- every tenant's
+    sessions, the access-token file, the group LLM credential. In team mode
+    that is an operator's action, the same call `/compute/jobs` already is."""
+    cookie = _login(daemon, "alice", "fake-pw-a")
+    status, raw = _submit(daemon, cookie, [sys.executable, "-c", "pass"])
+    assert status == 403, raw[:300]
+    payload = _body(raw)
+    assert payload["code"] == "admin_only"
+    assert payload["backend"] == "local"
+
+
+def test_the_refusal_happens_before_anything_is_written(daemon):
+    """A refused submission must leave no workload behind — otherwise the
+    listing grows rows for jobs that were never accepted, and the audit log
+    disagrees with the database."""
+    cookie = _login(daemon, "alice", "fake-pw-a")
+    _submit(daemon, cookie, [sys.executable, "-c", "pass"])
+    assert daemon.store.workloads.list_workloads(limit=50) == []
+    assert daemon.store.team.list_audit(action="workload_submit") == []
+
+
+def test_naming_the_local_backend_explicitly_is_refused_too(daemon):
+    """The default is resolved before the check, so `{"backend": "local"}`
+    and an omitted backend are the same request and get the same answer."""
+    cookie = _login(daemon, "alice", "fake-pw-a")
+    status, raw = _submit(
+        daemon, cookie, [sys.executable, "-c", "pass"], backend="local"
+    )
+    assert status == 403
+    assert _body(raw)["code"] == "admin_only"
+
+
+def test_an_admin_may_submit_to_the_local_backend(daemon):
+    cookie = _login(daemon, "root", "fake-pw-r")
+    status, raw = _submit(daemon, cookie, [sys.executable, "-c", "pass"])
+    assert status == 202, raw[:300]
+
+
+def test_a_single_user_daemon_keeps_the_local_backend(tmp_path: Path):
+    """INV-1. There is no member/operator distinction without team mode --
+    the person running the daemon *is* the operator -- so the privileged
+    backend stays theirs and the behaviour is byte-identical to before."""
+    node = _TeamDaemon(tmp_path, team_mode=False)
+    try:
+        status, raw = _post(
+            node.port,
+            "/api/v1/orchestration/jobs",
+            {"command": [sys.executable, "-c", "pass"]},
+            cookie=f"os_token={node.token}",
+        )
+        assert status == 202, raw[:300]
+    finally:
+        node.close()
 
 
 # -- input handling -----------------------------------------------------------
@@ -246,6 +315,10 @@ def test_an_empty_command_is_refused(daemon):
 
 
 def test_an_unknown_backend_is_refused_with_the_available_ones(daemon):
+    """Asked as a member, deliberately: the name is validated before the
+    privilege check, so misspelling a backend says it does not exist rather
+    than that you may not use it. The other answer would send the caller to
+    an admin for a permission that would not have helped."""
     cookie = _login(daemon, "alice", "fake-pw-a")
     status, raw = _submit(
         daemon, cookie, [sys.executable, "-c", "pass"], backend="mars"
@@ -274,7 +347,7 @@ def test_an_unknown_job_is_404(daemon):
 
 def test_the_api_never_exposes_a_backend_job_id(daemon):
     """INV-2: allocation_id is the public identity of an attempt."""
-    cookie = _login(daemon, "alice", "fake-pw-a")
+    cookie = _login(daemon, "root", "fake-pw-r")
     status, raw = _submit(daemon, cookie, [sys.executable, "-c", "pass"])
     job_id = _body(raw)["id"]
     final = _await_phase(daemon, job_id, cookie)
@@ -288,7 +361,7 @@ def test_the_api_never_exposes_a_backend_job_id(daemon):
 def test_one_live_allocation_per_workload_is_enforced_by_the_database(daemon):
     """INV-3 is the partial unique index, not a Python check — the failure
     it prevents happens between a check and an insert."""
-    cookie = _login(daemon, "alice", "fake-pw-a")
+    cookie = _login(daemon, "root", "fake-pw-r")
     status, raw = _submit(
         daemon, cookie, [sys.executable, "-c", "import time; time.sleep(30)"]
     )
