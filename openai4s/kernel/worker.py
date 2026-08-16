@@ -558,29 +558,38 @@ def _install_host(ns: dict) -> None:
         ns["host"] = build_host(host_call, mode=mode, generation=generation)
         ns["openai4s"] = ns["host"]  # openai4s alias
     except Exception as e:  # noqa: BLE001 - keep kernel alive
-        # `log` frames are dropped by the manager, so this was a silent
-        # failure: on a source checkout a remote worker runs
-        # `python -u <path>/kernel/worker.py`, `sys.path[0]` is the kernel
-        # directory, `import openai4s.sdk.host` raises, and the cell then ran
-        # with no `host` at all and nothing said so. Leave a marker the cell
-        # itself trips over, so "host is missing" fails where it is used
-        # instead of looking like the agent forgot to call it.
         _write_frame({"type": "log", "msg": f"host sdk unavailable: {e}"})
-        detail = (
-            f"the host SDK could not be imported in this worker ({e}). "
-            "A remote worker needs openai4s importable on its PYTHONPATH; "
-            "see docs/team-server.md."
-        )
+        # A marker, but only for a worker that was *supposed* to have a host.
+        #
+        # `log` frames are dropped by the manager, so this failure was silent
+        # where it matters most: a remote worker runs
+        # `python -u <path>/kernel/worker.py`, so `sys.path[0]` is the kernel
+        # directory, `import openai4s.sdk.host` raises on a source checkout,
+        # and the cell then ran with no `host` at all and nothing said so.
+        # Raising where `host` is *used* turns that into a message naming
+        # PYTHONPATH.
+        #
+        # Scoped to the remote case because absence is a real contract
+        # elsewhere: the Jupyter bridge deliberately exposes no `host` (it is
+        # not a second outer loop), and `'host' in globals()` being False is
+        # what its tests assert. Installing a raising stand-in there would
+        # turn a documented absence into a present-but-broken name.
+        if (os.environ.get(_CONNECT_ENV) or "").strip():
+            detail = (
+                f"the host SDK could not be imported in this worker ({e}). "
+                "A remote worker needs openai4s importable on its PYTHONPATH; "
+                "see docs/team-server.md."
+            )
 
-        class _HostUnavailable:
-            def __getattr__(self, name):
-                raise RuntimeError(detail)
+            class _HostUnavailable:
+                def __getattr__(self, name):
+                    raise RuntimeError(detail)
 
-            def __call__(self, *a, **k):
-                raise RuntimeError(detail)
+                def __call__(self, *a, **k):
+                    raise RuntimeError(detail)
 
-        ns["host"] = _HostUnavailable()
-        ns["openai4s"] = ns["host"]
+            ns["host"] = _HostUnavailable()
+            ns["openai4s"] = ns["host"]
     # provenance: monkeypatch readers/writers to track object-level lineage.
     try:
         from openai4s.kernel import provenance
