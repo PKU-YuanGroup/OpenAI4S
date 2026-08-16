@@ -83,11 +83,17 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
+    compute_session_routes,
     compute_tasks,
     contract,
+    file_routes,
+    governance_routes,
     kernel_routes,
     local_auth,
+    orchestration_routes,
     retrieval_source,
+    team_policy,
+    team_routes,
     ws_frames,
 )
 from openai4s.server.action_timeline import ActionTimelineService
@@ -163,6 +169,7 @@ from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.storage.connectors import public_connector
+from openai4s.storage.governance import QuotaExceeded
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
@@ -439,6 +446,28 @@ _TERMINAL_ADMISSION_STATES = frozenset({"sent", "released"})
 _CONSUMED_ANNOTATION_STATES = frozenset({"sent", "resolved", "dismissed"})
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+#: The team scope guard's matchers (M1-6). Compiled here, deliberately NOT in
+#: the inline `re.fullmatch(r"...", sub)` form: the contract scanner reads
+#: that form as a *route*, and a guard that matches every frame path is not a
+#: route — inlining it published `/artifacts/([^/]+)(?:/.*)?` as an endpoint.
+_TEAM_SCOPE_FRAME = re.compile(r"/frames/([^/]+)(?:/.*)?")
+_TEAM_SCOPE_ARTIFACT = re.compile(r"/artifacts/([^/]+)(?:/.*)?")
+#: Same rule, same reason (M2 project participation guard): written inline it
+#: was scanned as a route and published `/projects/([^/]+)(?:/.*)?` as an
+#: endpoint. A guard that matches every project path is not an endpoint.
+_TEAM_SCOPE_PROJECT = re.compile(r"/projects/([^/]+)(?:/.*)?")
+#: Same rule again, for shares (M2 hardening, external review #5). A share is
+#: addressed by its own id, so the frame matcher above never saw it and
+#: `GET /shares` listed -- and `DELETE /shares/{id}` revoked -- every user's.
+_TEAM_SCOPE_SHARE = re.compile(r"/shares/([^/]+)")
+
+#: The guest gate's copy of the replay matcher (M2-3/D3). The *route* itself
+#: is dispatched with the inline scannable form in `_api` (which is what the
+#: contract inventory discovers); this compiled twin exists because the guest
+#: gate consults the same pattern and a gate is not a route. Keep the two
+#: spellings identical.
+_REPLAY_ROUTE = re.compile(r"/sessions/([^/]+)/replay")
 
 #: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
 #: not a subtraction. The rule used to be "anything that is not `/api/v1/` and
@@ -1330,6 +1359,13 @@ class WSHub:
         buf["event_bytes"] = sum(buf["event_sizes"])
 
     def broadcast(self, root_frame_id: str | None, obj: dict) -> None:
+        if root_frame_id is None:
+            # No caller passes None today, and a None fan-out would reach
+            # every connection regardless of subscription — in team mode that
+            # is a cross-user leak by construction (M1-7). Dropped rather than
+            # asserted: a future caller's bug should lose one event, not the
+            # daemon.
+            return
         with self._lock:
             if root_frame_id:
                 # Stamped under the hub lock, so the number a client sees is the
@@ -2009,6 +2045,13 @@ referenced by filename), limitations, and cited sources (URLs).
 The task is NOT complete until you call `host.submit_output({...}, [...])` — \
 prose alone never ends an exploration."""
 
+#: How long a cell may wait for this session's cluster worker to dial in.
+#: Short on purpose: the queue wait belongs to the reconciler and to the
+#: readiness projection, not to a request thread. A worker that has not
+#: arrived yet leaves the session local for this attempt and is asked for
+#: again on the next one.
+_REMOTE_ATTACH_TIMEOUT_S = 5.0
+
 _EXPLORE_NUDGE = (
     "[system] Explore mode: the investigation is not finished — no "
     "host.submit_output(...) call has run. Continue with the next "
@@ -2094,9 +2137,10 @@ class SessionRunner:
                 ),
                 emitter_for=lambda root_frame_id: self.hub.emitter(root_frame_id),
                 llm_config_for=lambda state: self._llm_cfg(state),
-                review_evidence=lambda evidence, config: review_evidence(
-                    evidence, config
-                ),
+                review_evidence=lambda evidence, config, root_frame_id: (
+                    self.enforce_llm_quota(root_frame_id),
+                    review_evidence(evidence, config),
+                )[1],
                 providers=lambda: PROVIDERS,
                 clean_api_key=lambda value: _clean_api_key(value),
                 resolve_profile_key=lambda profile: _resolve_profile_key(
@@ -2161,6 +2205,16 @@ class SessionRunner:
             tunnel=None,
         )
         self._share_router = ShareRouter(self.shares, _load_share_assets())
+
+        # Cluster orchestration (M3a). Lazy in spirit: the local backend
+        # spawns nothing until a workload asks, the cluster backend is only
+        # constructed when cluster.toml configures one, and the reconciler
+        # thread starts only when there is a backend for it to drive.
+        self.orchestration_backends: dict[str, Any] = {}
+        self.default_backend = "local"
+        self.cluster_config = None
+        self.reconciler = None
+        self._init_orchestration()
         self.deletions = SessionDeletionService(
             self.store,
             data_dir=self.cfg.data_dir,
@@ -2172,6 +2226,7 @@ class SessionRunner:
                 self.hub, "drop_frame", lambda _root_frame_id: None
             ),
             revoke_shares=self.shares.revoke_for_session,
+            release_compute=self._release_session_compute,
         )
         self.sidecar_manifests = GenerationSidecarRecorder(self.store)
         self.workbench = SessionWorkbenchStateService(
@@ -2748,20 +2803,105 @@ class SessionRunner:
     def delete_session(self, root_frame_id: str) -> dict[str, Any]:
         return self.deletions.delete_session(root_frame_id)
 
-    def create_session(self, project_id: str, *, model: str | None = None) -> str:
-        """Create a root frame atomically with project-deletion admission."""
+    def _may_create_session_in(self, project_id: str, user_id: str) -> bool:
+        """Whether this user may put a session in this project.
 
+        An unclaimed project -- no members, nobody else's sessions -- stays
+        open, which is what keeps a fresh install's seeded `default` project
+        usable before anybody has organised anything. A project somebody
+        has claimed needs participation.
+        """
+        from openai4s.server import team_policy
+
+        if not getattr(self.cfg, "team_mode", False):
+            return True
+        try:
+            user = self.store.team.get_user(user_id)
+        except Exception:  # noqa: BLE001
+            user = None
+        if user is None:
+            return True  # service/loopback identity, or team mode not seeded
+        if str(user.get("role") or "") == "admin":
+            return True
+
+        class _Id:
+            def __init__(self, uid: str) -> None:
+                self.user_id = uid
+                self.is_admin = False
+
+        return team_policy.may_create_session_in(self.store, _Id(user_id), project_id)
+
+    def create_session(
+        self,
+        project_id: str,
+        *,
+        model: str | None = None,
+        owner_user_id: str | None = None,
+    ) -> str:
+        """Create a root frame atomically with project-deletion admission.
+
+        ``owner_user_id`` (team mode, M1-6) records the session's owner in
+        the same locked section as the frame insert, so no enumeration can
+        observe the frame before its ownership row exists.
+        """
+
+        if owner_user_id:
+            # Session-creation quota (M2-6). By frozen decision, a *broken*
+            # quota check admits the request and leaves an audit row —
+            # availability over bookkeeping.
+            try:
+                self.store.governance.check_quota(
+                    user_id=owner_user_id,
+                    project_id=project_id,
+                    kind="sessions_created",
+                )
+            except QuotaExceeded as e:
+                raise GatewayError(429, str(e), "QUOTA_EXCEEDED") from e
+            except Exception as e:  # noqa: BLE001
+                try:
+                    self.store.team.audit(
+                        actor=owner_user_id,
+                        action="quota_check_failed",
+                        detail=str(e)[:200],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         with self._lock:
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is in progress")
             if self.store.get_project(project_id) is None:
                 raise GatewayError(404, "project not found")
-            return self.store.new_frame(
+            if owner_user_id and not self._may_create_session_in(
+                project_id, owner_user_id
+            ):
+                # Creating a session here also *joins* the project, because
+                # participation is "a membership row OR a session of mine in
+                # it". Unauthorized, that is a self-join: name somebody
+                # else's project, post a frame, and become a participant of
+                # it. 404 rather than 403, matching the project guard --
+                # which projects exist is itself protected.
+                raise GatewayError(404, "project not found")
+            fid = self.store.new_frame(
                 kind="turn",
                 project_id=project_id,
                 model=model,
                 status="ready",
             )
+            if owner_user_id:
+                self.store.team.set_session_owner(
+                    fid, owner_user_id, project_id=project_id
+                )
+                try:
+                    self.store.governance.record_usage(
+                        user_id=owner_user_id,
+                        kind="sessions_created",
+                        amount=1,
+                        project_id=project_id,
+                        ref=fid,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            return fid
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
         with self._lock:
@@ -2774,6 +2914,172 @@ class SessionRunner:
             with self._lock:
                 self._deleting_projects.discard(project_id)
 
+    def _init_orchestration(self) -> None:
+        """Build the backends this daemon can reach, and start the loop.
+
+        Kept out of __init__ proper so a failure here — a malformed
+        cluster.toml above all — degrades to "local only" with a printed
+        reason rather than refusing to boot. An operator's typo in a cluster
+        file should not take the workbench down.
+        """
+        from openai4s.orchestration.local import LocalBackend
+        from openai4s.orchestration.reconciler import Reconciler
+
+        log_dir = self.cfg.data_dir / "orchestration-logs"
+        self.orchestration_backends["local"] = LocalBackend(log_dir=log_dir)
+
+        try:
+            from openai4s.orchestration.slurm import (
+                ClusterConfigError,
+                SlurmBackend,
+                load_cluster_config,
+            )
+
+            cluster = load_cluster_config(self.cfg.data_dir)
+            self.cluster_config = cluster
+            if cluster.configured:
+                self.orchestration_backends["cluster"] = SlurmBackend(
+                    cluster=cluster, log_dir=str(log_dir)
+                )
+        except ClusterConfigError as exc:
+            print(
+                f"[openai4s] cluster.toml ignored: {exc}", file=sys.stderr, flush=True
+            )
+        except Exception as exc:  # noqa: BLE001 — never block boot on this
+            print(
+                f"[openai4s] cluster configuration unavailable: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        # The cadence is the plan's 5s by default. It is settable because
+        # every end-to-end test of this subsystem otherwise spends its life
+        # waiting for the next tick — and a test suite that takes minutes to
+        # say "the batch pipeline works" gets run less often, which is the
+        # expensive kind of slow.
+        try:
+            interval_s = float(os.environ.get("OPENAI4S_RECONCILE_INTERVAL", "5"))
+        except ValueError:
+            interval_s = 5.0
+        # A worker listener, a session manager and a lease reclaimer — all
+        # three only when an operator has asked for them. A daemon with no
+        # OPENAI4S_WORKER_LISTEN binds nothing, starts no extra thread, and
+        # is byte-for-byte the single-user daemon it was (INV-1): a listener
+        # on by default would be an attack surface on every laptop that
+        # will never run a cluster job.
+        self.compute_sessions = None
+        self.worker_gateway = None
+        self.lease_reclaimer = None
+        prepare_attempt = None
+        on_state_lost = None
+        try:
+            from openai4s.orchestration.bootstrap import (
+                BootstrapAuthority,
+                load_or_mint_secret,
+            )
+            from openai4s.orchestration.reclaimer import LeaseReclaimer
+            from openai4s.orchestration.session import (
+                AttemptPreparer,
+                ComputeSessionManager,
+            )
+            from openai4s.orchestration.worker_gateway import gateway_from_environment
+
+            authority = BootstrapAuthority(
+                load_or_mint_secret(self.cfg.data_dir),
+                # The fence outlives the process. A credential file sits on
+                # the shared filesystem the job was given and stays valid for
+                # its whole TTL, so an in-memory nonce set un-burns every
+                # outstanding credential on restart.
+                state_path=self.cfg.data_dir / "worker-bootstrap-state.json",
+            )
+            worker_gateway = gateway_from_environment(authority)
+            if worker_gateway is not None:
+                worker_gateway.start()
+                self.worker_gateway = worker_gateway
+                manager = ComputeSessionManager(
+                    store=self.store,
+                    gateway=worker_gateway,
+                    authority=authority,
+                    workspace_root=self.cfg.data_dir / "cluster-workspaces",
+                    on_event=self._on_orchestration_event,
+                )
+                self.compute_sessions = manager
+                prepare_attempt = AttemptPreparer(
+                    authority=authority,
+                    listen_address=lambda: worker_gateway.address,
+                    runtime_dir=manager.runtime_dir,
+                    advertise_host=os.environ.get("OPENAI4S_WORKER_ADVERTISE") or None,
+                )
+
+                # The reconciler decides a session was lost; the manager is
+                # what a browser asks. Wiring them here rather than letting
+                # either import the other keeps the loop testable without a
+                # session manager and the manager testable without a loop.
+                def on_state_lost(workload, allocation, _m=manager):
+                    _m.note_state_lost(workload.id, epoch=allocation.epoch)
+
+                self.lease_reclaimer = LeaseReclaimer(
+                    leases=self.store.leases,
+                    workloads=self.store.workloads,
+                    on_event=self._on_orchestration_event,
+                )
+                self.lease_reclaimer.start()
+        except Exception as exc:  # noqa: BLE001 — never block boot on this
+            print(
+                f"[openai4s] cluster sessions unavailable: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        self.reconciler = Reconciler(
+            store=self.store.workloads,
+            backends=self.orchestration_backends,
+            default_backend=self.default_backend,
+            interval_s=max(0.05, interval_s),
+            prepare_attempt=prepare_attempt,
+            on_state_lost=on_state_lost,
+            on_event=self._on_orchestration_event,
+        )
+        # Started on demand, not on construction. Most daemons (and every
+        # test that never submits a job) have nothing for this loop to do,
+        # and a thread per SessionRunner that polls a database forever is
+        # both overhead and noise. It starts here only when a previous run
+        # left work in flight — a restart must resume those — and otherwise
+        # when the first job is submitted.
+        try:
+            if self.store.workloads.workloads_needing_attention():
+                self.reconciler.start()
+        except Exception:  # noqa: BLE001 — never block boot on this
+            pass
+
+    def ensure_reconciler(self) -> None:
+        """Start the orchestration loop if it is not already running.
+
+        Idempotent: `Reconciler.start` returns immediately when a thread
+        already exists, so every submission may call this.
+        """
+        for attr in ("lease_reclaimer", "worker_gateway"):
+            component = getattr(self, attr, None)
+            if component is not None:
+                try:
+                    component.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+        reconciler = getattr(self, "reconciler", None)
+        if reconciler is not None:
+            reconciler.start()
+
+    def _on_orchestration_event(self, kind: str, payload: dict) -> None:
+        """Orchestration events are daemon-level, not session-level.
+
+        There is no root_frame_id to broadcast on for a batch job, so these
+        are logged rather than pushed at a WebSocket — inventing a session
+        to carry them would put one user's job events on another user's
+        stream.
+        """
+        if kind in ("reconcile_error", "workload_terminal"):
+            print(f"[openai4s] orchestration {kind}: {payload}", file=sys.stderr)
+
     def close(self) -> None:
         """Stop the sweeper, turns, background workers, and all session slots."""
 
@@ -2781,6 +3087,16 @@ class SessionRunner:
             if self._closed:
                 return
             self._closed = True
+        reconciler = getattr(self, "reconciler", None)
+        if reconciler is not None:
+            reconciler.stop()
+        for backend in (getattr(self, "orchestration_backends", None) or {}).values():
+            closer = getattr(backend, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: BLE001
+                    pass
         recovery = getattr(self, "recovery", None)
         if recovery is not None:
             recovery.stop()
@@ -3266,6 +3582,61 @@ class SessionRunner:
         ):
             return fn(st.cancel)
 
+    def enforce_llm_quota(self, root_frame_id: str) -> None:
+        """Team-mode LLM quota (M2-6), consulted before a provider request.
+
+        One method rather than a closure so every LLM entry point the daemon
+        owns can share it: the turn loop's ChatModel and the reviewer, which
+        calls the provider through its own port and would otherwise be an
+        unmetered, user-triggered way around an exhausted quota.
+
+        Frozen decision: a *broken* check admits and audits — availability
+        over bookkeeping.
+        """
+        try:
+            owner = self.store.team.session_owner(root_frame_id)
+        except Exception:  # noqa: BLE001
+            owner = None
+        if owner is None:
+            return
+        try:
+            for kind in ("llm_input_tokens", "llm_output_tokens"):
+                self.store.governance.check_quota(
+                    user_id=owner["user_id"],
+                    project_id=owner["project_id"],
+                    kind=kind,
+                )
+        except QuotaExceeded:
+            raise
+        except Exception as e:  # noqa: BLE001
+            try:
+                self.store.team.audit(
+                    actor=owner["user_id"],
+                    action="quota_check_failed",
+                    detail=str(e)[:200],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def session_replay_view(self, root_frame_id: str) -> bytes:
+        """The sanitized read-only view.json bytes for a session (M2-3).
+
+        Reuses the web-share projection builder verbatim — the replay
+        surface IS the audited read-only surface, which is what makes it
+        the only data shape a guest may touch (D3) — but writes nothing:
+        no shares row, no snapshot directory, no tunnel, and no relay
+        configuration required.
+        """
+        branch = self.store.active_session_branch(root_frame_id)
+        projection = self._share_run_in_ticket(
+            root_frame_id,
+            branch,
+            lambda cancel: self.shares.builder.build(
+                root_frame_id, branch, cancel_event=cancel
+            ),
+        )
+        return self.shares.builder.serialize_view(projection)
+
     def ensure_share_tunnel(self):
         """Lazily create/start the tunnel when sharing is enabled + configured."""
 
@@ -3736,6 +4107,100 @@ class SessionRunner:
         self._wire_delegation(st)
         return dispatcher
 
+    def _release_session_compute(self, root_frame_id: str) -> None:
+        """Give a deleted session's cluster resource back.
+
+        Recorded rather than executed: `release` writes the durable stop
+        request and ends the lease, and the reconciler's cancel barrier does
+        the talking on its next tick. That is what makes the release survive
+        a daemon restart -- deleting a session while the scheduler is
+        unreachable must not leave a job nobody will ever cancel.
+        """
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None or not root_frame_id:
+            return
+        from openai4s.orchestration.models import Reason
+
+        manager.release(root_frame_id, reason=Reason.USER_CANCELLED)
+
+    def _touch_compute_lease(self, st: "SessionState") -> None:
+        """Renew this session's cluster lease, if it has one."""
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None:
+            return
+        session_id = getattr(st, "root_frame_id", "") or ""
+        if not session_id:
+            return
+        try:
+            manager.touch(session_id)
+        except Exception:  # noqa: BLE001 — a lease must never fail a cell
+            pass
+
+    def _remote_kernel_factory(self, st: "SessionState", disp):
+        """A factory for this session's cluster kernel, or None for local.
+
+        None is the answer for every session on a daemon with no worker
+        listener, every session that never asked for a cluster, and every
+        session whose allocation is not yet granted — so the default install
+        takes the identical path it always took (INV-1).
+
+        The wait is bounded and short. A worker that has not dialled in yet
+        is not an error: the reconciler is still placing the job, readiness
+        says which condition is outstanding, and the next execution asks
+        again. Blocking a cell for the length of a queue wait would be worse
+        than saying "not ready".
+        """
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None:
+            return None
+        session_id = getattr(st, "root_frame_id", "") or ""
+        if not session_id:
+            return None
+        try:
+            workload_id = self.store.leases.workload_for_session(session_id)
+        except Exception:  # noqa: BLE001 — no binding, no cluster kernel
+            return None
+        if not workload_id:
+            return None
+
+        runtime = manager.runtime(session_id)
+        if runtime is None or runtime.registration is None:
+            try:
+                attached = manager.attach_worker(
+                    session_id, timeout_s=_REMOTE_ATTACH_TIMEOUT_S
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[openai4s] cluster worker attach failed for {session_id}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return None
+            if not attached:
+                return None
+            runtime = manager.runtime(session_id)
+        if runtime is None or runtime.registration is None:
+            return None
+
+        transport = getattr(runtime.registration, "transport", None)
+        if transport is None:
+            return None
+
+        def build() -> Kernel:
+            kernel = Kernel(
+                dispatcher=disp,
+                cwd=str(manager.workspace_for(workload_id)),
+                mode="repl",
+                transport_factory=lambda: transport,
+            )
+            manager.bind_kernel(session_id, kernel)
+            return kernel
+
+        # The epoch is in the key so a recovery — a new epoch, a new worker —
+        # is a different kernel rather than a reused lease pointing at a
+        # socket whose far end is gone.
+        return build, ("cluster", workload_id, str(runtime.epoch))
+
     def _spawn_kernel(self, st: SessionState) -> KernelLease:
         """Ensure Python matches the selected environment, build-first.
 
@@ -3760,8 +4225,24 @@ class SessionRunner:
             "env_name": env.name,
         }
 
-        def factory() -> Kernel:
-            return Kernel(dispatcher=disp, **kernel_options)
+        # A session that asked to run on a cluster gets its cells executed by
+        # the worker that dialled in for it, not by a child of this daemon
+        # (M3b-3). Resolved here because `_spawn_kernel` is the one place a
+        # session's Python kernel is created — wiring it at any other call
+        # site would leave the others quietly local, which is exactly how
+        # this feature shipped unreachable the first time.
+        remote = self._remote_kernel_factory(st, disp)
+        if remote is not None:
+            remote_factory, remote_key = remote
+            env_key = remote_key
+
+            def factory() -> Kernel:
+                return remote_factory()
+
+        else:
+
+            def factory() -> Kernel:
+                return Kernel(dispatcher=disp, **kernel_options)
 
         previous_lease = st.kernels.lease("python")
         try:
@@ -3948,6 +4429,14 @@ class SessionRunner:
         execution attempt, so a spawn failure remains recoverable and auditable.
         """
         self._ensure_runtime(st)
+        # A user is executing something. That -- and an explicit renewal --
+        # is the ONLY thing that renews a cluster lease (M3b-4): a worker
+        # being alive is not a user being present, so nothing in the
+        # transport, the watchdog or the reclaimer's own probe may reach
+        # this. Placed at the Cell boundary because it is the narrowest
+        # point that every user execution passes through and no background
+        # machinery does.
+        self._touch_compute_lease(st)
         if language == "r":
             return self._ensure_r_kernel(st)
         if language == "python":
@@ -5246,12 +5735,74 @@ class SessionRunner:
         # was recorded rather than enforced.
         pinned = self._pinned_llm_config(st)
         if pinned is not None:
-            return pinned
-        return resolve_llm_config(
-            self.cfg.llm,
-            self.store,
-            model_override=(st.model if (st is not None and st.model) else None),
+            return self._apply_user_llm_key(pinned, st)
+        return self._apply_user_llm_key(
+            resolve_llm_config(
+                self.cfg.llm,
+                self.store,
+                model_override=(st.model if (st is not None and st.model) else None),
+            ),
+            st,
         )
+
+    def _apply_user_llm_key(self, cfg, st: "SessionState | None"):
+        """Swap in the session owner's own credential, if they have one (M4-1).
+
+        Applied here rather than at each call site because this method is the
+        single place a Web turn's LLM configuration is decided — the turn
+        loop, the reviewer and every other provider request downstream all
+        read what it returns. A per-call-site override is how one of them
+        ends up billing the group for a user who thought they were paying
+        their own way.
+
+        The override is per *provider*: a user with their own Anthropic
+        account and no OpenAI key runs on their key for one and the group's
+        for the other, which is the ordinary arrangement rather than an
+        exotic one. Absence of a row is the fallback, so a single-user
+        install and a team member with no key of their own are the same code
+        path as before (INV-1).
+
+        A configured-but-unreadable key is a refusal, not a silent fallback:
+        the user asked for their own credential to be used, and quietly
+        charging the group instead is a decision they did not make. A
+        *lookup* that fails for infrastructural reasons is different, and
+        falls back — availability over bookkeeping, matching the quota gate.
+        """
+        if st is None or not getattr(st, "root_frame_id", ""):
+            return cfg
+        provider = getattr(cfg, "provider", "") or ""
+        if not provider:
+            return cfg
+        try:
+            owner = self.store.team.session_owner(st.root_frame_id)
+        except Exception:  # noqa: BLE001 — no ownership record, no override
+            return cfg
+        if not owner:
+            return cfg
+        try:
+            record = self.store.user_keys.get(owner["user_id"], provider)
+        except Exception:  # noqa: BLE001
+            return cfg
+        if record is None:
+            return cfg
+        try:
+            secret = self.store.secrets.get(record.secret_ref)
+        except Exception:  # noqa: BLE001
+            # A reference the broker will not even parse — a row from a
+            # database moved between machines, or a backend that changed
+            # under it. Same answer as an empty slot: the user asked for
+            # their key, and we cannot honour it.
+            secret = None
+        if not secret:
+            raise GatewayError(
+                409,
+                f"your own {provider} key is configured but could not be read; "
+                f"set it again or remove it to fall back to the shared key",
+                "user_key_unreadable",
+            )
+        from dataclasses import replace
+
+        return replace(cfg, api_key=secret)
 
     def _pinned_llm_config(self, st: "SessionState | None"):
         """The configuration this session named, or None when it named none.
@@ -6511,6 +7062,10 @@ class SessionRunner:
                 if tool_catalog is not None
                 else with_finalize_response(control_tool_specs())
             )
+
+        def _llm_quota_gate() -> None:
+            self.enforce_llm_quota(st.root_frame_id)
+
         engine = AgentEngine(
             ChatModel(
                 llm_cfg,
@@ -6520,6 +7075,7 @@ class SessionRunner:
                 # Same signal the engine gets below, so Stop also interrupts a
                 # retry backoff rather than only the gap between turns.
                 cancellation=EventCancellation(st.cancel),
+                quota_gate=_llm_quota_gate,
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,
@@ -6767,6 +7323,25 @@ class SessionRunner:
         cell_id = self.store.log_cell(**record)
         root_frame_id = record.get("root_frame_id")
         if root_frame_id and record.get("origin") in {"agent", "user"}:
+            # Team-mode metering (M2-5): the kernel's getrusage delta for a
+            # live cell, attributed to the session owner. Origin-filtered
+            # here, so a session-package import replay is never billed. With
+            # no ownership row this reads and never writes (INV-1).
+            try:
+                usage = (record.get("result") or {}).get("usage") or {}
+                cpu_s = usage.get("cpu_s")
+                if cpu_s:
+                    owner = self.store.team.session_owner(str(root_frame_id))
+                    if owner is not None:
+                        self.store.governance.record_usage(
+                            user_id=owner["user_id"],
+                            kind="kernel_cpu_s",
+                            amount=float(cpu_s),
+                            project_id=owner["project_id"],
+                            ref=str(root_frame_id),
+                        )
+            except Exception:  # noqa: BLE001 — metering must not break a cell
+                pass
             state = self._existing_state(str(root_frame_id))
             self._capture_cursor_checkpoint_best_effort(
                 str(root_frame_id),
@@ -8375,6 +8950,42 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     if store.get_setting("network_enabled") == "0":
         os.environ["OPENAI4S_ALLOW_NETWORK"] = "0"
 
+    # Team mode (docs/team-server-plan.md M1): when ON, the team guard below
+    # replaces the single-credential token gate — every request resolves to a
+    # user (login cookie) or the loopback-CLI service identity before routing.
+    # When OFF, `_team_auth` is None and nothing in this block runs (INV-1).
+    from openai4s.server.team_auth import SERVICE_IDENTITY as _TEAM_SERVICE_IDENTITY
+    from openai4s.server.team_auth import TEAM_COOKIE as _TEAM_COOKIE
+    from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
+
+    _team_auth = _TeamAuthService(store) if cfg.team_mode else None
+    from openai4s.config import data_root_policies as _data_root_policies
+    from openai4s.server.file_area import FileArea as _FileArea
+
+    # The team file area (M1-8). Dormant with no roots; independent of
+    # team_mode so a single-user install can also mount data directories.
+    _file_area = _FileArea(
+        list(cfg.data_roots),
+        # D8's read-only datasets area rides on the same env value as the
+        # paths (`path=ro`); the plain list keeps its old shape for INV-1.
+        policies=_data_root_policies(),
+    )
+    #: Reachable without a login in team mode. The login page and the login
+    #: POST are the recovery path; /auth/status and /health answer with mode
+    #: strings only; /static assets are the login page's css/js (the app
+    #: source is public anyway, and every data route stays behind the guard).
+    _TEAM_EXEMPT_PATHS = frozenset(
+        {
+            "/health",
+            "/login",
+            _API_ROOT + "/auth/status",
+            _API_ROOT + "/auth/login",
+            # An invite holder has no account yet; the invite token is the
+            # credential, checked inside the route (M2-4).
+            _API_ROOT + "/auth/redeem-invite",
+        }
+    )
+
     # DNS-rebinding defense (CWE-346 / CWE-350): the Origin==Host guard in
     # _route() stops classic cross-origin CSRF, but DNS rebinding defeats it —
     # an attacker points evil.test at 127.0.0.1, so the browser sends
@@ -8437,6 +9048,348 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ):
                 return True
             return local_auth.matches(_presented_token(self.headers), _auth_token)
+
+        # ---- team guard (active only when OPENAI4S_TEAM_MODE is on) -----
+        def _peer_is_loopback(self) -> bool:
+            try:
+                return str(self.client_address[0]) in ("127.0.0.1", "::1")
+            except Exception:
+                return False
+
+        def _team_identity_from_request(self):
+            """Resolve this request's identity, or None.
+
+            A login cookie wins; the daemon access token presented in a
+            header *from loopback* is the CLI's admin-equivalent service
+            path (M1-4: the Bearer channel stays open for the server-side
+            management CLI, and only there — over the network the token is
+            a shared machine secret, not a person).
+            """
+            from http.cookies import SimpleCookie
+
+            jar = SimpleCookie(self.headers.get("Cookie", "") or "")
+            morsel = jar.get(_TEAM_COOKIE)
+            if morsel is not None and _team_auth is not None:
+                identity = _team_auth.resolve(morsel.value)
+                if identity is not None:
+                    return identity
+            if (
+                _auth_token
+                and local_auth.matches(_presented_token(self.headers), _auth_token)
+                and self._peer_is_loopback()
+            ):
+                return _TEAM_SERVICE_IDENTITY
+            return None
+
+        def _team_visibility_filter(self) -> str | None:
+            """The user_id session enumeration must be filtered by, or None
+            when this caller sees everything (team mode off, admin, CLI)."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return None
+            return identity.user_id
+
+        def _team_owner_user_id(self) -> str | None:
+            """Who a session created by this request belongs to (team mode)."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return None
+            return identity.user_id
+
+        def _team_identity_dict(self) -> dict | None:
+            identity = getattr(self, "_team_identity", None)
+            if identity is None:
+                return None
+            return {
+                "id": identity.user_id,
+                "role": identity.role,
+                "kind": identity.kind,
+            }
+
+        def _team_claim_imported(self, imported: dict) -> None:
+            """An imported session belongs to whoever imported it (M1-6)."""
+            owner = self._team_owner_user_id()
+            root = (imported or {}).get("root_frame_id")
+            if owner and root:
+                store.team.set_session_owner(
+                    str(root), owner, project_id=imported.get("project_id")
+                )
+
+        def _team_audit_admin_private_read(self, root: str) -> None:
+            """D4/INV-12: an admin viewing a private session they do not own
+            leaves an audit row — every view, not the first."""
+            identity = getattr(self, "_team_identity", None)
+            if identity is None:
+                return
+            try:
+                owner = store.team.session_owner(root)
+                if (
+                    owner is not None
+                    and owner["visibility"] == "private"
+                    and owner["user_id"] != identity.user_id
+                ):
+                    store.team.audit(
+                        actor=identity.username,
+                        action="admin_read_private",
+                        user_id=owner["user_id"],
+                        project_id=owner["project_id"],
+                        target=root,
+                    )
+            except Exception:  # noqa: BLE001 — auditing must not break the read
+                pass
+
+        def _team_root_of_artifact_meta(self, meta: dict | None) -> str | None:
+            """The session root a resolved artifact/version row belongs to.
+
+            Three shapes reach here, and only the first carries the root
+            directly: an `artifacts` row (`root_frame_id`), an
+            `artifact_versions` row (`frame_id`, often NULL, plus
+            `artifact_id`), and a filename match (an `artifacts` row again).
+            Reading only `root_frame_id` made the version-addressed case
+            resolve to None — which the caller then treated as "nothing to
+            check", i.e. exactly the leak the guard exists to stop.
+            """
+            if not meta:
+                return None
+            root = meta.get("root_frame_id")
+            if root:
+                return str(root)
+            fid = meta.get("frame_id")
+            if fid:
+                try:
+                    resolved = store.resolve_frame_scope(str(fid)).get("root_frame_id")
+                except Exception:  # noqa: BLE001
+                    resolved = None
+                if resolved:
+                    return str(resolved)
+            artifact_id = meta.get("artifact_id")
+            if artifact_id:
+                try:
+                    parent = store.get_artifact(str(artifact_id))
+                except Exception:  # noqa: BLE001
+                    parent = None
+                if parent and parent.get("root_frame_id"):
+                    return str(parent["root_frame_id"])
+            return None
+
+        def _team_guard_served_artifact(self, meta: dict | None) -> None:
+            """The real byte chokepoint (INV-13): enforced inside _serve_artifact
+            so it covers /preview/ (dispatched before _api) AND version- or
+            filename-addressed serves that the path-based _team_scope_guard —
+            which resolves artifact_id only, inside _api — cannot see. A guest
+            fails visibility on everything here, which is correct: a guest's
+            only data surface is the sanitized replay (D3)."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return
+            root = self._team_root_of_artifact_meta(meta)
+            if identity.is_admin:
+                if root:
+                    self._team_audit_admin_private_read(root)
+                return
+            # An artifact whose session cannot be resolved is admin-only, the
+            # same fail-closed rule an unowned session gets. Treating
+            # "unknown owner" as "no restriction" is how a version-addressed
+            # serve walked past this check.
+            if root is None or not store.team.session_visible_to(
+                root, self._team_identity_dict()
+            ):
+                raise GatewayError(404, "artifact not found")
+
+        def _team_filter_artifacts(self, artifacts: list[dict]) -> list[dict]:
+            """Keep only the artifacts whose session this caller may see
+            (project-level metadata/zip routes; INV-13). Admin keeps all and
+            audits each private one."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return artifacts
+            if identity.is_admin:
+                for a in artifacts:
+                    root = self._team_root_of_artifact_meta(a)
+                    if root:
+                        self._team_audit_admin_private_read(root)
+                return artifacts
+            user = self._team_identity_dict()
+            kept = []
+            for a in artifacts:
+                root = self._team_root_of_artifact_meta(a)
+                if root and store.team.session_visible_to(root, user):
+                    kept.append(a)
+            return kept
+
+        def _team_guard_memory_scope(self, scope: str | None) -> None:
+            """Standing context is injected into other people's turns.
+
+            The project guard matches `/projects/{id}` in the *path*, and
+            memory carries its scope in `?project_id=` or a JSON body -- so
+            every project-addressed-by-parameter route was outside it by
+            construction. The write side is the worse half: a member could
+            put text into another project's standing context, which then
+            rides into every turn its members run.
+            """
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return
+            if not team_policy.may_use_memory_scope(store, identity, scope):
+                # 404 + the project guard's wording: non-membership must be
+                # indistinguishable from non-existence.
+                raise GatewayError(404, "project not found")
+
+        def _team_guard_share(self, method: str, sub: str) -> None:
+            """A share belongs to the session it projects (external review #5).
+
+            Addressed by `share_id`, so the frame matcher never covered it:
+            any member could list every share URL in the org and revoke or
+            republish anybody's snapshot. Guarded here rather than in the
+            two handlers, because patching handlers one at a time is how
+            this class of defect keeps recurring in this file.
+
+            404, matching the frame guard: which shares exist is itself the
+            protected fact.
+            """
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return
+            m = _TEAM_SCOPE_SHARE.fullmatch(sub.split("?")[0])
+            if not m:
+                return
+            try:
+                row = store.get_share(unquote(m.group(1)))
+            except Exception:  # noqa: BLE001 — undecidable is refused
+                raise GatewayError(404, "unknown share") from None
+            if row is None:
+                return  # a share that does not exist answers as it always did
+            root = str(row.get("root_frame_id") or "")
+            if identity.is_admin:
+                if root:
+                    self._team_audit_admin_private_read(root)
+                return
+            if not team_policy.may_use_share(store, identity, row):
+                raise GatewayError(404, "unknown share")
+
+        def _team_guard_instance_config(self, method: str, sub: str) -> None:
+            """Refuse a member's reach into instance-global surfaces (M4).
+
+            Three families, all in one guard so a new one is a line in
+            `team_policy` and not a new call site: configuration writes,
+            daemon-level operations (`/compute/jobs`, which runs
+            `bash -c <command>` as the daemon's own uid -- arbitrary command
+            execution for every member until this guard existed), and
+            instance-global mutations such as installing packages into the
+            shared venv or publishing a skill every member's agent loads.
+
+            Not merely "overwrite the group's API key". The same request
+            writes `llm_base_url`, so one member can point *every* user's
+            provider traffic at a host they control -- which hands them
+            everyone's prompts, session content and tool output, and the
+            group credential in the outgoing Authorization header. There is
+            no per-user variant of that setting to fall back on, which is
+            what makes it an operator's action rather than a preference.
+
+            403 rather than the frame guard's 404: these are management
+            surfaces whose existence is not a secret, and the UI already
+            reads `admin_only` to decide which Customize panes to show.
+            """
+            path = sub.split("?")[0]
+            if not team_policy.is_admin_only_surface(method, path):
+                return
+            if team_policy.may_change_instance_config(self):
+                return
+            raise GatewayError(403, "admin only", "admin_only")
+
+        def _team_guard_project(self, method: str, sub: str) -> None:
+            """Refuse a project-addressed route to a non-participant (M2-1).
+            404, matching the frame guard: which projects exist is protected.
+            Admin passes. The bare `/projects` list is filtered at its handler,
+            not here."""
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return
+            m = _TEAM_SCOPE_PROJECT.fullmatch(sub)
+            if not m:
+                return
+            pid = unquote(m.group(1))
+            if not store.governance.is_project_participant(pid, identity.user_id):
+                raise GatewayError(404, "project not found")
+            # Reading is participation; changing or destroying is membership.
+            # Participation is a union that includes "owns a session here",
+            # and any member can create a session anywhere they can name --
+            # so trusting it for DELETE hands one member the power to erase
+            # another team's project, with every member's sessions,
+            # artifacts and workspaces inside it.
+            if method in ("DELETE", "PUT", "PATCH", "POST") and not (
+                team_policy.may_administer_project(store, identity, pid)
+            ):
+                raise GatewayError(403, "project membership required", "not_a_member")
+
+        def _team_scope_guard(self, method: str, sub: str) -> None:
+            """Refuse frame- and artifact-addressed routes whose session this
+            caller may not see (M1-6, INV-13). 404, not 403: which sessions
+            exist is itself the information being protected.
+
+            Session resolution goes through the *root* frame — a child frame
+            id must not answer differently from its root. An artifact is as
+            visible as the session that produced it. Admin reads pass, but a
+            private session leaves an audit row per view (D4). This path-based
+            guard is a first line only for artifacts: the authoritative byte
+            check is _team_guard_served_artifact inside _serve_artifact.
+            """
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return
+            if identity.is_admin:
+                if method == "GET":
+                    m = _TEAM_SCOPE_FRAME.fullmatch(sub)
+                    if m:
+                        frame = store.get_frame(m.group(1))
+                        if frame is not None:
+                            self._team_audit_admin_private_read(
+                                str(frame.get("root_frame_id") or m.group(1))
+                            )
+                return
+            user = self._team_identity_dict()
+            m = _TEAM_SCOPE_FRAME.fullmatch(sub)
+            if m:
+                frame = store.get_frame(m.group(1))
+                if frame is not None:
+                    root = frame.get("root_frame_id") or m.group(1)
+                    if not store.team.session_visible_to(root, user):
+                        raise GatewayError(404, "session not found")
+                return
+            m = _TEAM_SCOPE_ARTIFACT.fullmatch(sub)
+            if m:
+                try:
+                    artifact = store.get_artifact(unquote(m.group(1)))
+                except Exception:  # noqa: BLE001 - unknown ids fall through
+                    artifact = None
+                if artifact is not None:
+                    root = artifact.get("root_frame_id")
+                    if root and not store.team.session_visible_to(root, user):
+                        raise GatewayError(404, "artifact not found")
+
+        def _team_admit(self, method: str, path: str) -> bool:
+            """Admit or answer. True -> continue routing with
+            `self._team_identity` bound; False -> a response was sent."""
+            identity = self._team_identity_from_request()
+            self._team_identity = identity
+            if identity is not None:
+                return True
+            if path in _TEAM_EXEMPT_PATHS or (
+                method == "GET" and path.startswith("/static/")
+            ):
+                return True
+            self.close_connection = True
+            if method == "GET" and _wants_html(self.headers):
+                # A person in a browser: send them to the login page rather
+                # than a JSON refusal they cannot act on.
+                self._last_status = 303
+                self.send_response(303)
+                self.send_header("Location", "/login")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return False
+            self._json({"error": "login required", "code": "login_required"}, 401)
+            return False
 
         def _json(self, obj, code: int = 200) -> None:
             # Every error response carries a stable `code` and the request's
@@ -8513,6 +9466,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             return payload
 
         def _prepare_request_body(self, path: str, method: str) -> None:
+            if path == _API_ROOT + "/files/upload" and method == "POST":
+                # Streamed by the file route itself (M1-8): a 512 MiB upload
+                # must not transit daemon memory, so the pre-read is skipped
+                # and the handler consumes rfile in chunks. The connection is
+                # closed afterwards by _close_on_unread_request_body's
+                # not-ready rule, which is correct for a one-shot upload.
+                return
             is_session_import = (
                 path in (_API_ROOT + "/sessions/import", _API_ROOT + "/sessions/verify")
                 and method == "POST"
@@ -8719,8 +9679,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             self.close_connection = True
                             self._json({"error": "cross-origin request refused"}, 403)
                             return
+                # Team guard (OPENAI4S_TEAM_MODE): resolves every request to a
+                # user or the loopback-CLI service identity, and *replaces*
+                # the single-credential token gate below — a member's browser
+                # holds a login cookie, not the machine token. Off by default;
+                # the elif keeps the legacy gate byte-identical then (INV-1).
+                if _team_auth is not None:
+                    if not self._team_admit(method, path):
+                        return
                 # M2: token gate (only active when bound non-loopback / opt-in).
-                if _auth_token and path not in _UNAUTHENTICATED_PATHS:
+                elif _auth_token and path not in _UNAUTHENTICATED_PATHS:
                     from http.cookies import SimpleCookie
 
                     jar = SimpleCookie(self.headers.get("Cookie", "") or "")
@@ -8853,6 +9821,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             "status": "ok",
                             "model": cfg.llm.model,
                         }
+                    )
+                    return
+                if method == "GET" and path == "/login":
+                    # The team login page. Served in both modes (its script
+                    # redirects home when team mode is off), so the guard's
+                    # 303 target exists before the guard does.
+                    self._serve_file(
+                        WEBUI_DIR / "login.html", "text/html; charset=utf-8"
+                    )
+                    return
+                if method == "GET" and path == "/replay":
+                    # The read-only replay viewer (M2-3): a guest's whole UI,
+                    # and a member's quick look. Behind the login guard.
+                    self._serve_file(
+                        WEBUI_DIR / "replay.html", "text/html; charset=utf-8"
                     )
                     return
                 # static / SPA shell
@@ -9023,6 +10006,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if not path or not Path(path).is_file():
                 self._json({"error": "artifact not found"}, 404)
                 return
+            # Team scope (INV-13): the real byte chokepoint. /preview/<id> is
+            # dispatched before _api, and version-/filename-addressed serves
+            # are invisible to the path-based scope guard — both reach here.
+            self._team_guard_served_artifact(meta)
             ctype = (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
             if force_html:
                 ctype = "text/html; charset=utf-8"
@@ -9081,6 +10068,89 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         # ---- REST API ---------------------------------------------------
         def _api(self, method: str, sub: str) -> None:
             q = self._query()
+            # Team auth routes (login/logout/me). Dispatched first: they
+            # depend on no session state and must answer before any frame
+            # guard can object. Deterministic in both modes — the contract
+            # capture drives them with team mode off.
+            if team_routes.handle(self, method, sub, _team_auth, store):
+                return
+            # Guest gate (D3): a guest's whole API surface is auth + replay.
+            # Sits after the auth routes (logout must work) and before
+            # everything else, so no later route needs its own guest check.
+            _identity = getattr(self, "_team_identity", None)
+            if (
+                _team_auth is not None
+                and _identity is not None
+                and _identity.kind == "user"
+                and _identity.role == "guest"
+                and not (method == "GET" and _REPLAY_ROUTE.fullmatch(sub))
+            ):
+                self._json(
+                    {"error": "guests are replay-only", "code": "guest_readonly"},
+                    403,
+                )
+                return
+            # Read-only session replay (M2-3): the web-share sanitized view,
+            # served in place — no shares row, no snapshot, no relay. The
+            # {id} segment cannot collide with /sessions/import|verify —
+            # those carry no /replay suffix.
+            m = re.fullmatch(r"/sessions/([^/]+)/replay", sub)
+            if m and method == "GET":
+                rid = m.group(1)
+                frame = store.get_frame(rid)
+                if frame is None or (frame.get("root_frame_id") or rid) != rid:
+                    raise GatewayError(404, "session not found")
+                if _team_auth is not None:
+                    user = self._team_identity_dict()
+                    if not store.team.session_replayable_by(rid, user):
+                        raise GatewayError(404, "session not found")
+                    self._team_audit_admin_private_read(rid)
+                try:
+                    payload = runner.session_replay_view(rid)
+                except Exception as e:  # noqa: BLE001
+                    raise GatewayError(500, f"replay build failed: {e}") from e
+                self._send(200, payload, "application/json; charset=utf-8")
+                return
+            if governance_routes.handle(self, method, sub, q, _team_auth, store):
+                return
+            if orchestration_routes.handle(self, method, sub, q, store, runner):
+                return
+            if compute_session_routes.handle(self, method, sub, q, store, runner):
+                return
+            if file_routes.handle(self, method, sub, q, _file_area, _team_auth):
+                return
+            # Session visibility toggle (M2-2, D4): owner-only.
+            m = re.fullmatch(r"/frames/([^/]+)/visibility", sub)
+            if m and method == "POST":
+                if _team_auth is None:
+                    self._json(
+                        {"error": "team mode is disabled", "code": "team_off"}, 403
+                    )
+                    return
+                identity = getattr(self, "_team_identity", None)
+                visibility = str(self._body().get("visibility") or "")
+                if visibility not in ("project", "private"):
+                    self._json(
+                        {"error": "visibility must be 'project' or 'private'"}, 400
+                    )
+                    return
+                changed = identity is not None and store.team.set_session_visibility(
+                    m.group(1), visibility, user_id=identity.user_id
+                )
+                if not changed:
+                    # not the owner, or no ownership row: same 404 as the
+                    # scope guard — existence stays protected
+                    raise GatewayError(404, "session not found")
+                self._json({"ok": True, "visibility": visibility})
+                return
+            # Ownership scope (team mode): every frame-/artifact-addressed
+            # route below answers 404 unless the caller may see its session,
+            # and every /projects/<pid>/* route unless the caller participates
+            # in that project (bare /projects list is filtered at its handler).
+            self._team_scope_guard(method, sub)
+            self._team_guard_project(method, sub)
+            self._team_guard_instance_config(method, sub)
+            self._team_guard_share(method, sub)
             if sub == "/sessions/verify" and method == "POST":
                 # Verification before import, so a recipient can check what
                 # they were handed without first admitting it to their
@@ -9109,6 +10179,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     imported = runner.session_domain.session_import(payload)
                 except SessionPackageError as error:
                     raise GatewayError(400, str(error)) from error
+                self._team_claim_imported(imported)
                 self._json(imported, 201)
                 return
             if sub == "/sessions/import-url" and method == "POST":
@@ -9125,6 +10196,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(400, str(error)) from error
                 except SessionPackageError as error:
                     raise GatewayError(400, str(error)) from error
+                self._team_claim_imported(imported)
                 self._json(imported, 201)
                 return
             # ---- web shares ----
@@ -9140,7 +10212,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json(runner.share_status())
                 return
             if sub == "/shares" and method == "GET":
-                self._json({"shares": runner.shares.list_all()})
+                shares = runner.shares.list_all()
+                identity = getattr(self, "_team_identity", None)
+                if _team_auth is not None and identity is not None:
+                    # No id in the path, so the guard above cannot help:
+                    # filtered here the way artifacts are. A share URL is a
+                    # capability -- anyone holding it reads the session --
+                    # so listing every one of them is handing them out.
+                    visible = []
+                    for entry in shares:
+                        row = None
+                        try:
+                            row = store.get_share(str(entry.get("share_id") or ""))
+                        except Exception:  # noqa: BLE001
+                            row = None
+                        if identity.is_admin or team_policy.may_use_share(
+                            store, identity, row
+                        ):
+                            visible.append(entry)
+                    shares = visible
+                self._json({"shares": shares})
                 return
             share_create = re.fullmatch(r"/frames/([^/]+)/shares", sub)
             if share_create and method == "POST":
@@ -9319,11 +10410,42 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # ---- global search (⌘K command palette) ----
             if sub.split("?")[0] == "/search" and method == "GET":
                 query = (q.get("q") or [""])[0]
-                self._json(
+                payload = (
                     store.search(query)
                     if query.strip()
                     else {"sessions": [], "artifacts": [], "datapro": []}
                 )
+                if self._team_visibility_filter() is not None:
+                    # Team mode (INV-13): the command palette must not
+                    # enumerate other people's sessions or their artifacts.
+                    _user = self._team_identity_dict()
+                    payload["sessions"] = [
+                        s
+                        for s in payload.get("sessions", [])
+                        if store.team.session_visible_to(str(s.get("id")), _user)
+                    ]
+                    payload["artifacts"] = [
+                        a
+                        for a in payload.get("artifacts", [])
+                        if a.get("root_frame_id")
+                        and store.team.session_visible_to(
+                            str(a["root_frame_id"]), _user
+                        )
+                    ]
+                    # The third family. Two of three were filtered and the
+                    # third -- indexed DataPro content, which is exactly the
+                    # query-matched *scientific* text -- rode through
+                    # unchanged. Same predicate, same fail-closed shape: a
+                    # hit with no root to check against is not shown.
+                    payload["datapro"] = [
+                        d
+                        for d in payload.get("datapro", [])
+                        if d.get("root_frame_id")
+                        and store.team.session_visible_to(
+                            str(d["root_frame_id"]), _user
+                        )
+                    ]
+                self._json(payload)
                 return
             if sub in ("", "/"):
                 self._json({"service": "openai4s", "ok": True})
@@ -9533,10 +10655,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
             if sub == "/projects" and method == "GET":
+                projects = store.list_projects()
+                # Team mode (INV-13): a non-admin sees only projects they
+                # participate in — otherwise the list leaks every team's
+                # project names and agent-context prose.
+                filt = self._team_visibility_filter()
+                if filt is not None:
+                    allowed = store.governance.participant_project_ids(filt)
+                    projects = [
+                        p for p in projects if str(p.get("project_id")) in allowed
+                    ]
                 self._json(
                     {
-                        "projects": [_project_json(p) for p in store.list_projects()],
-                        "total": len(store.list_projects()),
+                        "projects": [_project_json(p) for p in projects],
+                        "total": len(projects),
                     }
                 )
                 return
@@ -9547,6 +10679,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     description=b.get("description") or "",
                     context=b.get("context") or "",
                 )
+                # Team mode: the creator becomes a member, so the project
+                # guard above lets them back into the project they just made.
+                _creator = self._team_owner_user_id()
+                if _creator:
+                    try:
+                        store.governance.set_member(p["project_id"], _creator)
+                    except Exception:  # noqa: BLE001
+                        pass
                 self._json(
                     _project_json(
                         {
@@ -9616,12 +10756,24 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/projects/([^/]+)/action-timeline", sub)
             if m and method == "GET":
                 limit = int((q.get("limit") or ["500"])[0])
-                self._json(global_views.timeline_view(unquote(m.group(1)), limit=limit))
+                self._json(
+                    global_views.timeline_view(
+                        unquote(m.group(1)),
+                        limit=limit,
+                        visible_to_user_id=self._team_visibility_filter(),
+                    )
+                )
                 return
             m = re.fullmatch(r"/projects/([^/]+)/lineage", sub)
             if m and method == "GET":
                 limit = int((q.get("limit") or ["2000"])[0])
-                self._json(global_views.lineage_view(unquote(m.group(1)), limit=limit))
+                self._json(
+                    global_views.lineage_view(
+                        unquote(m.group(1)),
+                        limit=limit,
+                        visible_to_user_id=self._team_visibility_filter(),
+                    )
+                )
                 return
             m = re.fullmatch(r"/folders/([^/]+)", sub)
             if m:
@@ -9671,6 +10823,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             roots_only=True,
                             limit=limit * 2,
                             before=cursor,
+                            visible_to_user_id=self._team_visibility_filter(),
                         )
                         if not batch:
                             break
@@ -9719,7 +10872,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if method == "POST":
                     b = self._body()
                     pid = b.get("project_id") or "default"
-                    fid = runner.create_session(pid, model=b.get("model"))
+                    fid = runner.create_session(
+                        pid,
+                        model=b.get("model"),
+                        owner_user_id=self._team_owner_user_id(),
+                    )
                     self._json(_frame_json(store.get_frame(fid), store))
                     return
             m = re.fullmatch(r"/frames/([^/]+)", sub)
@@ -10321,6 +11478,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(scope_id), "changing Session permissions"
                     )
+                # A standing rule is authorization for *future* actions, and
+                # a global one is authorization for everybody's. In team
+                # mode a member may write rules for what they can reach --
+                # their own session, a project they participate in -- and
+                # nothing wider: the default scope is `global`, so an
+                # unqualified POST from a member would otherwise plant an
+                # "allow" that every other user's agent then honours.
+                _identity = getattr(self, "_team_identity", None)
+                if (
+                    _team_auth is not None
+                    and _identity is not None
+                    and (not _identity.is_admin)
+                ):
+                    if scope == "global":
+                        raise GatewayError(
+                            403, "global permission rules are admin only", "admin_only"
+                        )
+                    if scope == "project" and not team_policy.may_read_project(
+                        store, _identity, str(scope_id or "")
+                    ):
+                        raise GatewayError(404, "project not found")
+                    if scope == "conversation" and not team_policy.may_use_session(
+                        store, _identity, str(scope_id or "")
+                    ):
+                        raise GatewayError(404, "session not found")
                 rid = store.set_permission_rule(
                     scope=scope,
                     scope_id=scope_id or "",
@@ -10616,7 +11798,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if m and method == "GET":
                 pid = m.group(1)
                 self._serve_artifact_bundle(
-                    store.list_artifacts({"project_id": pid}),
+                    self._team_filter_artifacts(
+                        store.list_artifacts({"project_id": pid})
+                    ),
                     f"project-{pid}-artifacts.zip",
                 )
                 return
@@ -10665,7 +11849,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # (frames) — powers the Files panel's "project" scope so files
                 # aren't siloed per conversation.
                 pid = m.group(1)
-                arts = store.list_artifacts({"project_id": pid})
+                arts = self._team_filter_artifacts(
+                    store.list_artifacts({"project_id": pid})
+                )
                 self._json([_artifact_json(a) for a in arts])
                 return
             m = re.fullmatch(r"/frames/([^/]+)/execution-log", sub)
@@ -11940,6 +13126,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # feature (Customize -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
+                self._team_guard_memory_scope(pid)
                 self._json(
                     {
                         "enabled": _memory_enabled(store),
@@ -12000,6 +13187,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if sub == "/memory" and method == "POST":
                 b = self._body()
                 scope = _memory_scope(store, b.get("project_id"))
+                self._team_guard_memory_scope(scope)
                 try:
                     # Refused before the row exists, not trimmed after: see
                     # MemoryRepository.add. The code travels so a client can
@@ -12019,6 +13207,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # feature (Customize -> Memory asks for it by name), but
                 # it must never be what a caller gets for saying nothing.
                 pid = (q.get("project_id") or ["default"])[0]
+                self._team_guard_memory_scope(pid)
                 if sub.endswith("categories"):
                     self._json({"categories": store.memory_blocks(project_id=pid)})
                 else:
@@ -12404,6 +13593,38 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except OSError:
                 return
             conn = WSConnection(self.wfile)
+            # Team mode (M1-7): the identity is RE-RESOLVED from the persisted
+            # handshake headers on every message, not captured once. A member
+            # who is disabled or whose password is reset (both delete their
+            # auth_sessions) then fails resolution mid-connection — so a stale
+            # long-lived socket cannot keep subscribing to new sessions or
+            # cancelling executions with authority its owner no longer has.
+
+            def _ws_user_now() -> dict | None:
+                if _team_auth is None:
+                    return None
+                identity = self._team_identity_from_request()
+                self._team_identity = identity  # keep audit helpers coherent
+                return self._team_identity_dict() if identity is not None else None
+
+            def _ws_session_visible(rid: str) -> bool:
+                if _team_auth is None:
+                    return True
+                user = _ws_user_now()
+                if user is None:
+                    # identity revoked since upgrade: deny everything
+                    return False
+                frame = store.get_frame(rid)
+                if frame is None:
+                    # An unknown id must not be pre-subscribable: frame ids
+                    # are random, and a lucky guess parked on a future
+                    # session would stream it from its first event.
+                    return bool(
+                        user.get("role") == "admin" or user.get("kind") == "service"
+                    )
+                root = frame.get("root_frame_id") or rid
+                return store.team.session_visible_to(str(root), user)
+
             hub.add(conn)
             try:
                 while conn.alive:
@@ -12427,6 +13648,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         conn.send_json({"type": "pong"})
                     elif t == "view_session":
                         rid = msg.get("root_frame_id") or msg.get("frame_id")
+                        if rid and not _ws_session_visible(str(rid)):
+                            # Same sentence as the HTTP guard's 404: which
+                            # sessions exist is itself protected (INV-13).
+                            # Refused before hub.subscribe, so the replay
+                            # buffer, pending-approval prompts, and the
+                            # queue snapshot below are all behind this one
+                            # check.
+                            conn.send_json(
+                                {
+                                    "type": "view_denied",
+                                    "frame_id": rid,
+                                    "reason": "session not found",
+                                }
+                            )
+                            continue
+                        if rid and _team_auth is not None:
+                            # A live subscription is a view too (D4): an
+                            # admin watching a private session leaves the
+                            # same audit row as an HTTP read.
+                            self._team_audit_admin_private_read(str(rid))
                         if rid:
                             # Subscription and replay share the hub's enqueue
                             # order with live broadcasts, so a new Cell event
@@ -12476,6 +13717,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                     "type": "execution_cancel_result",
                                     "ok": False,
                                     "reason": "root_frame_id is required",
+                                }
+                            )
+                            continue
+                        if not _ws_session_visible(str(rid)):
+                            # The one WS inbound that mutates: cancelling
+                            # someone else's running turn is a write, and it
+                            # answers exactly like an unknown session.
+                            conn.send_json(
+                                {
+                                    "type": "execution_cancel_result",
+                                    "ok": False,
+                                    "reason": "session not found",
                                 }
                             )
                             continue

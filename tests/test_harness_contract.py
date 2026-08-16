@@ -151,11 +151,22 @@ def test_schema_rejects_ill_typed_provider_errors(error, match):
         Scenario.from_dict(raw)
 
 
+def _run_for_surface(scenario):
+    """The same dispatch the CLI does, for the same reason: a scenario's own
+    `surface` decides which runner executes it, so a scenario cannot be
+    silently run by the wrong one because of where its file sits."""
+    if scenario.surface == "orchestration":
+        from harness.orchestration import run_orchestration_scenario
+
+        return run_orchestration_scenario(scenario, offline=True)
+    return run_scenario(scenario, offline=True)
+
+
 @pytest.mark.parametrize("path", _scenario_paths(), ids=lambda path: path.stem)
 def test_each_baseline_scenario_passes_and_is_byte_identical(path):
     scenario = load_scenario(path)
-    first = run_scenario(scenario, offline=True)
-    second = run_scenario(scenario, offline=True)
+    first = _run_for_surface(scenario)
+    second = _run_for_surface(scenario)
     assert first.passed, first.errors
     assert second.passed, second.errors
     assert first.normalized == second.normalized

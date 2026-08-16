@@ -28,13 +28,24 @@ class GlobalResearchViewService:
         self.store = store
         self.timeline = timeline
 
-    def timeline_view(self, project_id: str, *, limit: int = 500) -> dict[str, Any]:
+    def timeline_view(
+        self,
+        project_id: str,
+        *,
+        limit: int = 500,
+        visible_to_user_id: str | None = None,
+    ) -> dict[str, Any]:
         project_id = self._project(project_id)
         limit = self._limit(limit, maximum=2000)
         frames = self.store.browse_frames(
             project_id=project_id,
             roots_only=True,
             limit=500,
+            # Team mode (INV-13): a project-wide read crosses sessions, so the
+            # ownership filter has to sit inside this loop's source query —
+            # a handler-level frame guard cannot see what this view fans out
+            # to.
+            visible_to_user_id=visible_to_user_id,
         )
         groups: list[dict[str, Any]] = []
         for frame in frames:
@@ -72,10 +83,29 @@ class GlobalResearchViewService:
             "session_count": len(frames),
         }
 
-    def lineage_view(self, project_id: str, *, limit: int = 2000) -> dict[str, Any]:
+    def lineage_view(
+        self,
+        project_id: str,
+        *,
+        limit: int = 2000,
+        visible_to_user_id: str | None = None,
+    ) -> dict[str, Any]:
         project_id = self._project(project_id)
         limit = self._limit(limit, maximum=5000)
         artifacts = self.store.list_artifacts({"project_id": project_id})
+        if visible_to_user_id is not None:
+            # An artifact is as visible as the session that produced it; an
+            # artifact with no session (or a session with no ownership row)
+            # is admin-only, matching browse_frames' fail-closed rule.
+            team = getattr(self.store, "team", None)
+            user = {"id": visible_to_user_id, "role": "member", "kind": "user"}
+            artifacts = [
+                a
+                for a in artifacts
+                if team is not None
+                and a.get("root_frame_id")
+                and team.session_visible_to(str(a["root_frame_id"]), user)
+            ]
         nodes: list[dict[str, Any]] = []
         versions: dict[str, dict[str, Any]] = {}
         for artifact in artifacts:

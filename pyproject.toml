@@ -200,6 +200,11 @@ files = [
     "openai4s/agent/models.py",
     "openai4s/agent/ports.py",
     "openai4s/host_dispatch.py",
+    # The orchestration contract. Strict from birth rather than retrofitted:
+    # these two modules are the boundary a second backend is written against,
+    # and a wrong type here is discovered on a cluster at 2am.
+    "openai4s/orchestration/models.py",
+    "openai4s/orchestration/ports.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true

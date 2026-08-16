@@ -450,12 +450,20 @@ def test_the_scoped_views_are_published_once_per_scope_not_once_per_query(tmp_pa
         finally:
             store._conn.set_trace_callback(None)
 
-        assert first_round == 5, (
-            f"five identical-scope queries published {first_round} views; the "
-            f"definitions must be cached against the scope that produced them"
+        # Derived, not hard-coded: the claim is "one publication per scope",
+        # and pinning the literal count made adding a scoped view look like
+        # a caching regression. The number of views is a detail; publishing
+        # them once is the contract.
+        from openai4s.store import _SCOPED_VIEWS
+
+        expected = len(_SCOPED_VIEWS)
+        assert first_round == expected, (
+            f"five identical-scope queries published {first_round} views for "
+            f"{expected} definitions; they must be cached against the scope "
+            f"that produced them"
         )
         assert (
-            after_switch == first_round + 5
+            after_switch == first_round + expected
         ), "a scope change must republish the views"
     finally:
         store.close()

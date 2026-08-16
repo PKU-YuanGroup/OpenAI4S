@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6f8a258448ba90e847d60330b2e03865f27cde6fd85f16f4f1882ff7bbaef5b8"
+      "evidence_digest": "3986e2a5927d9a747e365a13e2cba9829f1965a4c8d96cceff7e2b5b23497359"
     },
     {
       "source": "R2",
@@ -163,7 +163,7 @@
       "tests": "tests/test_host_network_capability.py,tests/test_egress_surface.py,tests/test_egress.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4c773a3f342607cfaed877e7a628be12882394a716acca2cd61c5206830f95d6"
+      "evidence_digest": "07fb8724464b9954d8d9bb48a23f3626e2fcae7b9bcca7d41a17d8900491ec9c"
     },
     {
       "source": "R2",
@@ -205,7 +205,7 @@
       "tests": "tests/test_producer_output_budgets.py,tests/test_workspace_streaming_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4facd0b849c43e0ec8fc4eda8564a8b426f69a9b54d12567ba87240de1afb4ff"
+      "evidence_digest": "c9c1df579d6be1089fb722bd8a59b4adae642fa79028cc9e1aea45cb658d55a4"
     },
     {
       "source": "R2",
@@ -384,7 +384,7 @@
       "tests": "tests/test_producer_output_budgets.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "da32b79b84674baad7fcc31350a146a3dc42d16c8e66c30a29af4be0f9af9413"
+      "evidence_digest": "1aad112f659babfc96161cf7bcd734b14db43ef4e1d17966bb231f3784b59c8c"
     },
     {
       "source": "R4",
@@ -593,7 +593,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "f449a869768ed1b315cb56e5c6f17de28af29eaffe27aa3a224b4f34129273e0"
+      "evidence_digest": "531ec346056953cfc093292b169b339a42f02d83c5d0617d7bafa875c36e8110"
     },
     {
       "source": "R6",
@@ -607,7 +607,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "2a5587e1991641a1d6aa473ec863d7b1c8e6978fde7739f7a60077b7cdba25cf"
+      "evidence_digest": "b5cb389c0692ae2732bb8302dce059bb46d0f061e66d6f46c9cdf7efa259aa54"
     },
     {
       "source": "R6",

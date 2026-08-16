@@ -38,6 +38,7 @@ class SessionDeletionService:
         drop_runtime: Callable[[str, str], Any],
         drop_resume_window: Callable[[str], Any],
         revoke_shares: Callable[[str], Any] | None = None,
+        release_compute: Callable[[str], Any] | None = None,
     ) -> None:
         self.store = store
         self.data_dir = Path(data_dir).expanduser().resolve()
@@ -49,6 +50,15 @@ class SessionDeletionService:
         self._drop_runtime = drop_runtime
         self._drop_resume_window = drop_resume_window
         self._revoke_shares = revoke_shares or (lambda _root_frame_id: None)
+        # A deleted session's cluster resource is not deleted with it. The
+        # workload is a durable row with a job behind it, and dropping the
+        # local runtime says nothing to the scheduler -- so without this the
+        # session vanishes from the UI while the job keeps its node, its GPUs
+        # and its lease, with nothing left in the product that names it.
+        # A distinct collaborator rather than extra code inside
+        # `drop_runtime`, because folding it in there is this repo's
+        # recurring "one guard, one of several call sites" defect.
+        self._release_compute = release_compute or (lambda _root_frame_id: None)
 
     def delete_session(
         self, root_frame_id: str, *, reason: str = "frame_deleted"
@@ -59,6 +69,7 @@ class SessionDeletionService:
             if canonical != root_frame_id:
                 raise ValueError("session deletion requires a root frame id")
             self._drop_runtime(root_frame_id, reason)
+        self._release_compute_safe(root_frame_id)
         self._revoke_shares_safe(root_frame_id)
         result = self.store.delete_frame(root_frame_id)
         cleanup = self._cleanup(result)
@@ -71,6 +82,7 @@ class SessionDeletionService:
         roots = self.store.project_session_ids(project_id)
         for root_frame_id in roots:
             self._drop_runtime(root_frame_id, reason)
+            self._release_compute_safe(root_frame_id)
             self._revoke_shares_safe(root_frame_id)
         result = self.store.delete_project(project_id)
         deleted_roots = tuple(
@@ -84,6 +96,7 @@ class SessionDeletionService:
         for root_frame_id in deleted_roots:
             if root_frame_id not in roots:
                 self._drop_runtime(root_frame_id, reason)
+                self._release_compute_safe(root_frame_id)
                 self._revoke_shares_safe(root_frame_id)
         cleanup = self._cleanup(result)
         dynamic = self.dynamic_scopes.delete_project_scope(project_id)
@@ -95,6 +108,20 @@ class SessionDeletionService:
             "freed_dynamic_events": dynamic["events"],
             "freed_dynamic_manifests": dynamic["manifests"],
         }
+
+    def _release_compute_safe(self, root_frame_id: str) -> None:
+        """Ask for the cluster resource back. Never fails the deletion.
+
+        Swallowed like share revocation: a scheduler that cannot be reached
+        must not leave a user unable to delete their own session. What it
+        must also not do is leave *no* record, so the reconciler's durable
+        stop request is the mechanism -- the desire survives a restart and
+        the barrier runs on the next tick.
+        """
+        try:
+            self._release_compute(root_frame_id)
+        except Exception:  # noqa: BLE001 — deletion proceeds regardless
+            pass
 
     def _revoke_shares_safe(self, root_frame_id: str) -> None:
         try:

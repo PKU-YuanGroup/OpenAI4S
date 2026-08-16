@@ -22,6 +22,7 @@ from typing import Any, Callable
 from openai4s.kernel.environment import build_kernel_environment
 from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
 from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
+from openai4s.kernel.transport import KernelTransport, PipeTransport
 from openai4s.security.sandbox import KernelSandbox, create_kernel_sandbox
 
 _WORKER = Path(__file__).resolve().parent / "worker.py"
@@ -106,6 +107,7 @@ class Kernel:
         argv: list[str] | None = None,
         sandbox: KernelSandbox | None = None,
         capture_sinks: bool = False,
+        transport_factory: Callable[[], KernelTransport] | None = None,
     ):
         self.dispatcher = dispatcher
         self.mode = mode
@@ -121,6 +123,13 @@ class Kernel:
         # manager loop (execute/host_call routing/restart/interrupt) is reused
         # verbatim. Kept across restart() so a respawn preserves the language.
         self.argv = argv
+        # How this kernel reaches its worker. None means the local path:
+        # a child process over pipes, byte-for-byte what it always was. A
+        # factory (not an instance) because `restart()` builds a fresh one,
+        # and a transport that could only be created once would make a
+        # respawn impossible for exactly the remote case that needs it most.
+        self.transport_factory = transport_factory
+        self._transport: KernelTransport | None = None
         # The OS boundary is independent of the JSON frame protocol: it only
         # wraps the worker argv and supplies a private temp directory.  Host RPC
         # remains on the existing pipes and is still serviced by this manager's
@@ -150,73 +159,38 @@ class Kernel:
             self._sandbox.close()
             raise
 
-    def _spawn(self) -> "subprocess.Popen":
-        # Fail closed on an unsupported platform, here rather than in a warning
-        # at onboarding: every Python and R kernel passes through this method,
-        # so there is no route that reaches a subprocess without being asked.
-        # A program that warns and proceeds has made a different promise from
-        # one that refuses, and a half-working kernel is the worse outcome for
-        # a product whose claim is that its results can be trusted.
+    def _spawn(self) -> "subprocess.Popen | None":
+        """Create this kernel's transport and return its local child, if any.
+
+        Fail closed on an unsupported platform, here rather than in a warning
+        at onboarding: every Python and R kernel passes through this method,
+        so there is no route that reaches a subprocess without being asked.
+        A program that warns and proceeds has made a different promise from
+        one that refuses, and a half-working kernel is the worse outcome for
+        a product whose claim is that its results can be trusted.
+
+        The transport is where "local pipes" and "a worker that dialled in
+        from a compute node" differ; everything above this line — the single
+        frame reader, the id-routed host_response, the host-call transaction
+        lock — is identical for both and stays that way.
+        """
         from openai4s.platform_support import require_supported
 
         require_supported()
+        if self.transport_factory is not None:
+            self._transport = self.transport_factory()
+            self._stderr_tail = self._transport.stderr_tail
+            return self._transport.process
+
         command = self.argv or [self.python, "-u", str(_WORKER)]
-        proc = subprocess.Popen(
+        self._transport = PipeTransport(
             self._sandbox.wrap_command(command),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
             cwd=self.cwd,
             env=self._sandbox.apply_environment(self._child_env()),
+            stderr_tail_factory=lambda: _StderrTail(_STDERR_TAIL_BYTES),
         )
-        # Drain stderr continuously into a bounded tail. Without this, a cell
-        # whose child processes write to inherited fd2 (R `system()`, an
-        # uncaptured subprocess in python) fills the 64KB pipe and deadlocks
-        # the cell forever — nothing used to read stderr until worker death.
-        # The tail keeps the death diagnostics the old blocking read provided.
-        #
-        # Bounded in BYTES, at the read. This was `for line in stream` into a
-        # `deque(maxlen=400)`: an unbounded `readline()` whose only cap was a
-        # line COUNT applied after the allocation, so one producer emitting a
-        # single enormous line -- which is what the comment above says reaches
-        # here -- allocated all of it before any limit applied. That is the
-        # pattern `mcp_client.py` and `jobs.py` were both changed to remove,
-        # and this drain was written after those fixes without adopting them.
-        #
-        # `.buffer` because the pipe is `text=True` for the stdout protocol
-        # frames and cannot be opened per-stream; the raw reader underneath it
-        # is where a byte budget can mean bytes.
-        self._stderr_tail = _StderrTail(_STDERR_TAIL_BYTES)
-        tail = self._stderr_tail
-        # `os.read` on the descriptor, not `BufferedReader.read`. Both give
-        # bytes, and only one of them is safe here: this thread is a daemon, and
-        # a daemon parked inside a buffered read holds that buffer's lock when
-        # the interpreter finalises. The whole suite passed and then aborted
-        # with `_enter_buffered_busy: could not acquire lock ... at interpreter
-        # shutdown` -- a clean exit turned into SIGABRT by the drain alone.
-        # `os.read` also returns as soon as anything is available rather than
-        # waiting to fill the request, which is what a drain wants.
-        try:
-            stderr_fd = proc.stderr.fileno()
-        except (AttributeError, OSError, ValueError):  # pragma: no cover
-            stderr_fd = -1
-
-        def _drain(fd: int = stderr_fd, sink=tail) -> None:
-            if fd < 0:
-                return
-            try:
-                while True:
-                    chunk = os.read(fd, 8192)
-                    if not chunk:
-                        return
-                    sink.feed(chunk)
-            except Exception:  # noqa: BLE001 — EOF/close ends the drain
-                pass
-
-        threading.Thread(target=_drain, name="os-kernel-stderr", daemon=True).start()
-        return proc
+        self._stderr_tail = self._transport.stderr_tail
+        return self._transport.process
 
     def _child_env(self) -> dict:
         # Build from a strict runtime allowlist: daemon LLM/provider keys,
@@ -233,13 +207,10 @@ class Kernel:
         )
 
     def _send(self, obj: dict) -> None:
-        assert self._proc.stdin is not None
-        self._proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        self._proc.stdin.flush()
+        self._transport.write_line(json.dumps(obj, ensure_ascii=False) + "\n")
 
     def _readline(self) -> dict | None:
-        assert self._proc.stdout is not None
-        line = self._proc.stdout.readline()
+        line = self._transport.read_line()
         if not line:
             return None
         line = line.strip()
@@ -445,8 +416,14 @@ class Kernel:
             self._protocol_transaction_lock.release()
 
     @property
-    def pid(self) -> int:
-        return self._proc.pid
+    def pid(self) -> int | None:
+        """The local child's pid, or None for a worker on another machine.
+
+        None rather than a remote pid: callers record this as "a process on
+        this host", and a number that means nothing here is worse than an
+        absence a reader can see.
+        """
+        return self._proc.pid if self._proc is not None else None
 
     @property
     def sandbox_status(self) -> dict[str, Any]:
@@ -463,28 +440,50 @@ class Kernel:
         """
         import signal
 
+        # A remote worker has no pid here; its transport knows whether it
+        # can deliver an interrupt at all, and says so rather than
+        # pretending. Local kernels fall straight through to the signal path
+        # they always used.
+        proc = self._proc
+        if proc is None:
+            if not self._transport.interrupt():
+                # Nothing delivered it. Silence here would leave a cell
+                # apparently cancelled and actually running.
+                raise RuntimeError(
+                    "no way to interrupt this worker: it is remote and no "
+                    "signal delivery was configured for its allocation"
+                )
+            return
         sender = getattr(self._sandbox, "send_interrupt", None)
-        if callable(sender) and sender(self._proc.pid, signal.SIGINT):
+        if callable(sender) and sender(proc.pid, signal.SIGINT):
             return
         try:
             # Popen owns the direct child identity and synchronizes its poll /
             # signal path. Bubblewrap's numeric grandchild never reaches here;
             # KernelSandbox pins that target with a pidfd above.
-            self._proc.send_signal(signal.SIGINT)
+            proc.send_signal(signal.SIGINT)
         except (ProcessLookupError, OSError):
             pass
 
     def kill_worker(self) -> None:
-        """Kill this exact worker process without spawning or reading frames.
+        """Kill this exact worker without spawning or reading frames.
 
         This is the watchdog's last-resort escape hatch.  Keeping it on the
         manager avoids callers reaching through the private ``_proc`` field;
         recovery or abandonment remains the owner's responsibility.
+
+        ``_proc`` stays the canonical handle for a local child — it is what
+        the sandbox signals and what the watchdog's tests substitute — and
+        the transport answers only when there is no local process, which is
+        the remote case.
         """
-        try:
-            self._proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            return
+        self._transport.kill()
 
     def _service_host_call(self, frame: dict) -> None:
         call_id = frame.get("id")
@@ -539,46 +538,42 @@ class Kernel:
         against the new process — the ``Kernel`` object itself is reused so all
         references held by the session stay valid.
         """
-        old = self._proc
+        # Teardown belongs to the transport: a local child needs a shutdown
+        # frame, a wait, a kill and a reap (a restart that skipped the reap
+        # leaked a zombie every time); a remote worker has a socket to close
+        # and no pid to signal. Each sequence lives with the thing it is a
+        # sequence for.
         try:
-            old.stdin and old.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
-            old.stdin and old.stdin.flush()
+            self._transport.close(graceful=True)
         except Exception:  # noqa: BLE001
             pass
-        try:
-            old.wait(timeout=3)
-        except Exception:  # noqa: BLE001
-            try:
-                old.kill()
-                old.wait(timeout=2)  # reap so we don't leak a zombie per restart
-            except Exception:  # noqa: BLE001
-                pass
-        for stream in (old.stdin, old.stdout, old.stderr):
-            try:
-                stream and stream.close()
-            except Exception:  # noqa: BLE001
-                pass
         self.authorization_generation = f"kernel:{uuid.uuid4()}"
         self._proc = self._spawn()
+        # Every respawn bumps the generation: a lease, a watchdog or an
+        # in-flight interrupt naming the previous incarnation has to be
+        # refused, and this counter is the whole of how it is refused.
         self.generation += 1
+        if not self._transport.alive():
+            # A local child is respawned by spawning it. A remote worker is
+            # not this process's to spawn: something has to place a new one
+            # and let it dial back in. Say so, rather than returning a
+            # Kernel that looks restarted and fails on its next cell — the
+            # caller's correct move is recovery (a new epoch, state lost),
+            # and it can only make it if it is told.
+            raise RuntimeError(
+                "this worker cannot be respawned in place: it dialled in from "
+                "elsewhere, so a new one has to be placed and reconnected"
+            )
 
     def is_alive(self) -> bool:
-        return self._proc.poll() is None
+        return self._transport.alive()
 
     def shutdown(self) -> None:
         try:
-            self._send({"type": "shutdown"})
-            self._proc.wait(timeout=5)
+            self._transport.close(graceful=True)
         except Exception:  # noqa: BLE001
-            self._proc.kill()
+            self._transport.kill()
         finally:
-            # close the pipe wrappers now — a dead worker's buffered stdin
-            # otherwise raises BrokenPipeError at GC-time flush
-            for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
-                try:
-                    stream and stream.close()
-                except Exception:  # noqa: BLE001
-                    pass
             if self._sinks is not None:
                 self._sinks.close()
             self._sandbox.close()

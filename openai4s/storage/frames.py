@@ -618,6 +618,7 @@ class FrameRepository:
         roots_only: bool = True,
         limit: int = 50,
         before: tuple[int, str] | None = None,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         """Newest-first page of frames.
 
@@ -642,6 +643,25 @@ class FrameRepository:
             params.append(status)
         if roots_only:
             clauses.append("parent_id IS NULL")
+        if visible_to_user_id is not None:
+            # Team mode (INV-13/D4): a non-admin caller sees their own
+            # sessions plus fellow members' 'project'-visibility sessions in
+            # projects where the caller is a *member* (guests never widen).
+            # Filtered in SQL, not post-hoc — the keyset pagination above
+            # reports has_more from row counts, and a post-read filter would
+            # turn a full page of hidden rows into a phantom "end of list".
+            # A session with no row (pre-team history, demo seeds) is
+            # admin-only by construction here.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM session_owners so "
+                "WHERE so.session_id = frames.frame_id AND ("
+                "so.user_id = ? OR ("
+                "so.visibility = 'project' AND so.project_id IS NOT NULL "
+                "AND EXISTS (SELECT 1 FROM project_members pm "
+                "WHERE pm.project_id = so.project_id AND pm.user_id = ? "
+                "AND pm.role = 'member'))))"
+            )
+            params.extend([visible_to_user_id, visible_to_user_id])
         if before is not None:
             before_created, before_id = before
             clauses.append("(created_at < ? OR (created_at = ? AND frame_id < ?))")

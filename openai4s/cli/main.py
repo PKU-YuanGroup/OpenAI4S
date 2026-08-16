@@ -532,6 +532,20 @@ def cmd_serve(args) -> int:
         raise
     print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
     print("web UI ready. Ctrl-C to stop.")
+    if cfg.team_mode:
+        # First boot of team mode with no accounts: print the bootstrap
+        # command and start normally — never prompt, never block (M1-3).
+        try:
+            from openai4s.store import get_store
+
+            if get_store(cfg.db_path).team.count_users() == 0:
+                print(
+                    "team mode is ON but no users exist yet; create the "
+                    "first admin with:\n"
+                    "  openai4s user add <name> --role admin"
+                )
+        except Exception:
+            pass
     if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(args, "no_open", False):
 
         def _open():
@@ -1520,6 +1534,179 @@ def cmd_relay_gen_token(args) -> int:
     return 0
 
 
+def cmd_cluster(args) -> int:
+    """`openai4s cluster …` — batch jobs, through the daemon.
+
+    Through the daemon rather than the store directly, unlike `user`: a
+    submission has to reach the reconciler that will act on it, and a second
+    process writing workload rows behind the daemon's back is how two
+    reconcilers end up disagreeing about one job.
+    """
+    cfg = get_config()
+    action = args.cluster_action
+    if not _require_daemon(cfg):
+        return 1
+    try:
+        if action == "submit":
+            body = {
+                "command": list(args.command),
+                "profile": args.profile,
+            }
+            if args.backend:
+                body["backend"] = args.backend
+            if args.workdir:
+                body["workdir"] = args.workdir
+            status, rec = _daemon_request(cfg, "POST", "/orchestration/jobs", body)
+        elif action == "list":
+            status, rec = _daemon_request(cfg, "GET", "/orchestration/jobs")
+        elif action == "cancel":
+            status, rec = _daemon_request(
+                cfg, "POST", f"/orchestration/jobs/{args.job_id}/cancel", {}
+            )
+        elif action == "logs":
+            status, rec = _daemon_request(
+                cfg, "GET", f"/orchestration/jobs/{args.job_id}/logs"
+            )
+        elif action == "profiles":
+            status, rec = _daemon_request(cfg, "GET", "/orchestration/profiles")
+        else:  # pragma: no cover - argparse enforces choices
+            return 2
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(rec, indent=2))
+    elif action == "list":
+        jobs = (rec or {}).get("jobs") or []
+        for job in jobs:
+            print(
+                f"{job['id']}  {job['phase']:<10} {job['profile']:<16} "
+                f"{' '.join(job['command'])[:48]}"
+            )
+        if not jobs:
+            print("no jobs")
+    elif action == "submit":
+        print(f"submitted {rec.get('id')} ({rec.get('phase')})")
+    elif action == "logs":
+        if rec.get("stdout"):
+            print(rec["stdout"], end="")
+        if rec.get("stderr"):
+            print(rec["stderr"], end="", file=sys.stderr)
+    elif action == "profiles":
+        for profile in (rec or {}).get("profiles") or []:
+            print(
+                f"{profile['name']:<20} cpus={profile['cpus']} "
+                f"gpus={profile['gpus']} walltime={profile['walltime_s']}s"
+            )
+        if not (rec or {}).get("configured"):
+            print("(no cluster.toml configured; local backend only)")
+    else:
+        print(json.dumps(rec))
+    return 0 if 200 <= int(status) < 300 else 2
+
+
+def _team_store():
+    """Direct-store access for offline account management on the server
+    (the same template as _onboarding_service: no daemon required)."""
+    from openai4s.store import get_store
+
+    cfg = get_config()
+    cfg.ensure_dirs()
+    return get_store(cfg.db_path)
+
+
+def _read_new_password(args) -> tuple[str, str | None]:
+    """(password, generated) per M1-3: --password-stdin reads one line from
+    stdin; otherwise a random password is generated and returned for a
+    single print. The password never appears in argv or logs."""
+    import secrets as _secrets
+
+    if getattr(args, "password_stdin", False):
+        pw = sys.stdin.readline().rstrip("\n")
+        if not pw:
+            raise ValueError("empty password on stdin")
+        return pw, None
+    generated = _secrets.token_urlsafe(12)
+    return generated, generated
+
+
+def cmd_user(args) -> int:
+    action = args.user_action
+    store = _team_store()
+    try:
+        if action == "add":
+            try:
+                password, generated = _read_new_password(args)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            user = store.team.create_user(
+                username=args.username,
+                password=password,
+                role=args.role,
+                display_name=args.display_name,
+            )
+            store.team.audit(
+                actor="cli", action="user_add", user_id=user["id"], target=args.username
+            )
+            print(f"created {user['role']} {user['username']} ({user['id']})")
+            if generated is not None:
+                # printed exactly once, never stored or logged
+                print(f"initial password: {generated}")
+        elif action == "list":
+            users = store.team.list_users()
+            if getattr(args, "json", False):
+                print(json.dumps(users, indent=2))
+            else:
+                for u in users:
+                    flag = " [disabled]" if u["disabled"] else ""
+                    print(f"{u['username']:<20} {u['role']:<7} {u['id']}{flag}")
+                if not users:
+                    print(
+                        "no users; create one with: openai4s user add <name> --role admin"
+                    )
+        elif action == "disable":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            store.team.set_disabled(user["id"], True)
+            store.team.audit(
+                actor="cli",
+                action="user_disable",
+                user_id=user["id"],
+                target=args.username,
+            )
+            print(f"disabled {args.username} (live sessions revoked)")
+        elif action == "reset-password":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            try:
+                password, generated = _read_new_password(args)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            store.team.set_password(user["id"], password)
+            store.team.audit(
+                actor="cli",
+                action="user_reset_password",
+                user_id=user["id"],
+                target=args.username,
+            )
+            print(f"password reset for {args.username} (live sessions revoked)")
+            if generated is not None:
+                print(f"new password: {generated}")
+        else:  # pragma: no cover - argparse enforces choices
+            return 2
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1725,6 +1912,73 @@ def build_parser() -> argparse.ArgumentParser:
     _share_sub("disable", "disable sharing (keeps shares offline)")
     _share_sub("status", "show tunnel status")
     _share_sub("import", "import a shared session by URL").add_argument("url")
+
+    pcl = sub.add_parser("cluster", help="submit and manage batch jobs")
+    clsub = pcl.add_subparsers(dest="cluster_action", required=True)
+    cls = clsub.add_parser("submit", help="submit a batch job")
+    cls.add_argument(
+        "command",
+        nargs="+",
+        help="the command to run, as separate arguments (never one string: "
+        "splitting a command line is where quoting bugs become injection)",
+    )
+    cls.add_argument("--profile", default="cpu-interactive")
+    cls.add_argument("--backend", help="local | cluster (default: local)")
+    cls.add_argument("--workdir")
+    cls.add_argument("--json", action="store_true")
+    cls.set_defaults(fn=cmd_cluster)
+    cll = clsub.add_parser("list", help="list batch jobs")
+    cll.add_argument("--json", action="store_true")
+    cll.set_defaults(fn=cmd_cluster)
+    clc = clsub.add_parser("cancel", help="ask for a job to be cancelled")
+    clc.add_argument("job_id")
+    clc.add_argument("--json", action="store_true")
+    clc.set_defaults(fn=cmd_cluster)
+    clg = clsub.add_parser("logs", help="tail a job's output")
+    clg.add_argument("job_id")
+    clg.add_argument("--json", action="store_true")
+    clg.set_defaults(fn=cmd_cluster)
+    clp = clsub.add_parser("profiles", help="show the configured cluster profiles")
+    clp.add_argument("--json", action="store_true")
+    clp.set_defaults(fn=cmd_cluster)
+
+    puser = sub.add_parser(
+        "user",
+        help="manage team-mode accounts (direct database access, no daemon needed)",
+    )
+    usub = puser.add_subparsers(dest="user_action", required=True)
+    ua = usub.add_parser("add", help="create an account")
+    ua.add_argument("username")
+    ua.add_argument("--role", choices=("admin", "member", "guest"), default="member")
+    ua.add_argument("--display-name", dest="display_name")
+    ua.add_argument(
+        "--password-stdin",
+        dest="password_stdin",
+        action="store_true",
+        help="read the password from stdin; otherwise one is generated and "
+        "printed once (a password never goes on the command line)",
+    )
+    ua.set_defaults(fn=cmd_user)
+    ul = usub.add_parser("list", help="list accounts")
+    ul.add_argument("--json", action="store_true")
+    ul.set_defaults(fn=cmd_user)
+    ud = usub.add_parser(
+        "disable", help="disable an account and revoke its live sessions"
+    )
+    ud.add_argument("username")
+    ud.set_defaults(fn=cmd_user)
+    ur = usub.add_parser(
+        "reset-password", help="set a new password and revoke live sessions"
+    )
+    ur.add_argument("username")
+    ur.add_argument(
+        "--password-stdin",
+        dest="password_stdin",
+        action="store_true",
+        help="read the new password from stdin; otherwise one is generated "
+        "and printed once",
+    )
+    ur.set_defaults(fn=cmd_user)
 
     prelay = sub.add_parser("relay", help="run the public share relay (on a VPS)")
     rsub = prelay.add_subparsers(dest="relay_action", required=True)

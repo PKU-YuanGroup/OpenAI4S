@@ -215,6 +215,10 @@ success response body. Serializer shapes are in §4.
 | `GET /health` (not under `/api`) | Minimal public projection `{"status":"ok","model"}`. Exempt from the token gate and deliberately omits host filesystem paths. |
 | `GET /me` | Hardcoded local identity: `{"user_id":"local-dev","email":null,"provider","has_api_key","shared_api_key":false,"auth_mode":"none"}`. |
 | `GET /auth/status` | `{"authenticated":true,"auth_mode":"none"}` (always). |
+| `POST /auth/login` · `POST /auth/logout` · `GET /auth/me` | Team mode (M1). HttpOnly `SameSite=Lax` cookie; only the token's sha256 is stored. Login is rate-limited per username+IP and the bucket is charged *before* the password hash, so the limit also bounds the hashing an attacker can provoke. Wrong password, unknown user and disabled account are one sentence — the difference is the attacker's question. |
+| `GET /auth/me/llm-key` | Whether this user has a key of their own, per provider: `{keys: [{provider, configured, created_at, updated_at}]}`. Never the value — a credential a screen can display is one a screenshot leaks — and never the reference either, which names a keychain slot. |
+| `PUT /auth/me/llm-key` | Body `{provider, api_key}` (M4-1, decision D7's second half). The key goes to the `SecretBroker`; the database keeps only a reference. A broker that cannot store it answers `503 secret_store` and **writes no row**: a row pointing at a slot that was never filled would make the next turn refuse with "configured but unreadable" for a key that was never accepted. The override is per provider, so a user with their own Anthropic account and no OpenAI key runs on theirs for one and the group's for the other. |
+| `DELETE /auth/me/llm-key` | Body `{provider}` → `{ok, removed, provider}`. `removed:false` when there was nothing to clear, which is not an error: the intent — "do not use my key" — is satisfied either way. Disabling an account clears every key it had, because a credential that outlives its account is one nobody is watching. |
 | `GET /csrf` | `{"csrf_token":"local"}` (a stub; the real CSRF defense is the Origin check). |
 | `GET|POST|PUT|PATCH /config/llm` | GET → `{provider,model,base_url,has_api_key}`. Write → persists `provider`/`model`/`base_url`; `api_key` only overwrites when non-empty; `clear_api_key:true` empties it. Changing provider without a replacement key also clears the old provider-bound credential so it cannot be reinterpreted or sent to the new provider → `{"ok":true,"has_api_key"}`. The raw key is never returned. |
 | `GET /search?q=` | `{sessions:[{id,project_id,name,task_summary}], artifacts:[{id,filename,content_type,root_frame_id,project_id}], datapro:[{query,dataset_type,json_pointer,content,artifact_id,root_frame_id,project_id}]}`; empty `q` → empty lists. `datapro` searches every recursively indexed key and scalar in successful DataPro content; each hit is a logical result occurrence, so equal records at different JSON pointers remain distinct. |
@@ -347,6 +351,33 @@ When `annotation_ids` are sent, **both** branches additionally carry `annotation
 | `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously: the `paused` → `executing` transition is a compare-and-swap performed *before* the 202, so of two concurrent resumes exactly one is accepted and the other is refused with the status it lost to, instead of both being handed a job that runs the same steps. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
 | `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}`. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
+
+### Cluster batch jobs (orchestration)
+
+Long unattended work: submitted here, executed by whatever resource plane the daemon has (this machine by default, a scheduler when `cluster.toml` configures one). The API is deliberately backend-neutral — a response names an `allocation_id`, never the scheduler's job id, and a `profile` name, never a queue (INV-2, decision D5).
+
+Nothing here submits synchronously. A request writes a durable row; the reconciler loop does the talking on its next pass. That is what makes a cancel survive a daemon restart, and what keeps one submission from being attempted twice by a request thread that goes away mid-flight.
+
+| Method & path | Behavior |
+| --- | --- |
+| `POST /orchestration/jobs` | Body `{command: [...], profile?, backend?, workdir?, environment?, project_id?}`. `202 {id, phase, ...}` — accepted, not started; `201` would promise a resource that has not been granted. `command` **must** be a list: a string is refused with `400 invalid_command`, because splitting a command line is where quoting bugs become injection. Unknown profile → `400 unknown_profile`; unknown backend → `400 unknown_backend` with the available ones. |
+| `GET /orchestration/jobs` | `{jobs: [...]}`, filtered to the caller's own unless they are an admin. `project_id`, `limit` and `all=0` (hide terminal) narrow it. |
+| `GET /orchestration/jobs/{id}` | One job plus its `allocation` (the live attempt) and `allocations` (every epoch). Someone else's job is `404`, not `403` — which jobs exist is itself information about what a colleague is working on. |
+| `POST /orchestration/jobs/{id}/cancel` | Records the desire to stop and returns `{ok, reason}`; the reconciler runs the cancel barrier. `409 already_final` when the job has already ended. An admin cancelling another user's job is recorded as `ADMIN_CANCELLED` rather than `USER_CANCELLED`. |
+| `GET /orchestration/jobs/{id}/logs` | `{allocation_id, stdout, stderr}` — the tail (64 KiB) of what the job wrote. |
+| `GET /orchestration/profiles` | `{cluster, configured, profiles: [{name, cpus, memory_mb, gpus, walltime_s, nodes}]}`. The queue and service-class each profile maps to are **not** in this payload: they live in `cluster.toml` and nowhere else. |
+
+### Where a session runs (cluster sessions)
+
+A session's kernel is on the daemon by default. Asking for it to be on a granted resource instead is these three routes, and the answer they exist for is `readiness`: a cluster session is not one boolean but four conditions (INV-5), so the payload names the one that is outstanding. "Queued for a node", "waiting for the worker to dial in" and "starting the kernel" are three different waits with three different expected durations, and one spinner for all of them is how a user concludes the product is broken.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /sessions/{id}/compute` | `{session_id, location}` — `location:"local"` with `workload:null` when this session runs on the daemon, which is the default and is not an error. On a cluster session: `readiness:{ready, blocked_on, allocation_granted, worker_registered, workspace_ready, kernel_ready}`, `workload:{id, profile, phase, desired_state, reason, execution_epoch}`, `allocation:{allocation_id, epoch, phase, reason}`, `lease:{idle_ttl_s, max_lifetime_s, last_active_at, created_at, released_at}`, and `state_lost_epochs` — the epochs whose kernel memory was lost to a node failure. Someone else's session is `404`, not `403`. |
+| `POST /sessions/{id}/compute` | Body `{profile}`. `201` with the same status payload. A profile the operator has not configured is `400 unknown_profile` rather than a guess: guessing is how a session lands on resources its owner never chose. A daemon with no worker listener answers `409 not_configured` and says which variable turns one on — the feature is off by default because a listener on every laptop that will never run a cluster job is an attack surface, not a convenience. |
+| `POST /sessions/{id}/compute/release` | Records the desire to stop and ends the lease; the reconciler runs the cancel barrier. `{ok, session_id}`. |
+
+`state_lost_epochs` is what the UI turns into a banner. When a node dies the kernel's memory dies with it — variables, imports, the seed somebody set three cells ago — and the session continues on a new epoch. Saying so is mandatory (INV-11): the results afterwards look exactly like results from the session that was lost.
 
 ### Permissions
 
@@ -678,7 +709,8 @@ m.frame_id`.
 | `execution_state` | `frame_id`, `execution_id`, `owner:{kind,id}`, `status` (`queued|running|finalizing|completed|failed|cancelled`), `queue_position`, `reason` | One exact ticket changed state. |
 | `execution_queue` | authoritative snapshot fields from `GET /frames/{fid}/execution` | Queue/position projection; also sent immediately after `view_session`. |
 | `execution_owner` | `execution_id`, `owner`, previous identity, `reason` | Active writer changed. |
-| `execution_cancel_result` | scoped cancellation result | Direct reply to a WS cancellation request. |
+| `execution_cancel_result` | scoped cancellation result | Direct reply to a WS cancellation request. In team mode a cancellation aimed at a session the caller may not see answers `ok:false` with `reason:"session not found"` — the same sentence an unknown session gets, because which sessions exist is itself protected. |
+| `view_denied` | `frame_id`, `reason` | Team mode only: `view_session` named a session this login may not see (another member's, or one with no ownership row). Refused before subscription, so neither the replay buffer, pending `await_permission` prompts, nor the queue snapshot leak. The reason is always `"session not found"`. |
 | `checkpoint_created` | `branch_id`, `checkpoint_id`, `reason` | An immutable checkpoint committed. |
 | `branch_created` | `branch_id`, `from_checkpoint_id` | A checkpoint-backed branch committed. |
 | `branch_revert_conflict` | `branch_id`, `operation_id`, `target_checkpoint_id`, `reason` | Revert was recorded but not applied because the conflict check failed. |

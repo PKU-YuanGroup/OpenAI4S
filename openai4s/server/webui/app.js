@@ -33,6 +33,7 @@ const ICONS = {
   "maximize-2": '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/>',
   "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
   "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  "server": '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
   "notebook": '<path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M16 2v20"/>',
   "folder": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   "compass": '<circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3Z"/>',
@@ -1076,6 +1077,21 @@ Object.assign(I18N.zh, {
   "sessionMenu.downloadArtifacts": "下载产物",
   "sessionMenu.exportMarkdown": "导出为 Markdown",
   "sessionMenu.viewNotebook": "查看 Notebook",
+  "compute.menu.runLocation": "运行位置",
+  "compute.location.local": "本机（守护进程）",
+  "compute.location.localHint": "内核跑在这台运行 daemon 的机器上。",
+  "compute.dialog.title": "这个会话在哪里运行",
+  "compute.dialog.notConfigured": "本 daemon 未开启 worker 监听，无法在集群上运行会话。",
+  "compute.dialog.release": "释放集群资源",
+  "compute.badge.local": "本机",
+  "compute.blocked.allocation": "排队等待资源",
+  "compute.blocked.workspace": "准备工作区",
+  "compute.blocked.worker": "等待 worker 连回",
+  "compute.blocked.kernel": "启动内核",
+  "compute.badge.ready": "集群就绪",
+  "compute.lost.title": "内核状态已丢失",
+  "compute.lost.body": "这个会话的资源被回收，内核的内存随之丢失（变量、import、已加载的数据都不在了）。会话已在新的 epoch 上继续，但之前定义的东西需要重新执行。",
+  "compute.lost.dismiss": "知道了",
   "sessionMenu.moveToFolder": "移动到文件夹",
   "skill.bodyPlaceholder": "SKILL.md 正文（Markdown 配方：步骤、代码、注意事项…）",
   "skill.descPlaceholder": "一句话描述（用于技能检索）",
@@ -2066,6 +2082,21 @@ Object.assign(I18N.en, {
   "sessionMenu.downloadArtifacts": "Download artifacts",
   "sessionMenu.exportMarkdown": "Export as Markdown",
   "sessionMenu.viewNotebook": "View notebook",
+  "compute.menu.runLocation": "Run location",
+  "compute.location.local": "This machine (daemon)",
+  "compute.location.localHint": "The kernel runs on the host running the daemon.",
+  "compute.dialog.title": "Where this session runs",
+  "compute.dialog.notConfigured": "This daemon has no worker listener, so sessions cannot run on a cluster.",
+  "compute.dialog.release": "Release the cluster resource",
+  "compute.badge.local": "local",
+  "compute.blocked.allocation": "queued for a resource",
+  "compute.blocked.workspace": "preparing the workspace",
+  "compute.blocked.worker": "waiting for the worker to dial in",
+  "compute.blocked.kernel": "starting the kernel",
+  "compute.badge.ready": "cluster ready",
+  "compute.lost.title": "Kernel state was lost",
+  "compute.lost.body": "This session's resource went away and the kernel's memory went with it — variables, imports and loaded data are gone. The session continued on a new attempt, but anything defined earlier has to be run again.",
+  "compute.lost.dismiss": "Got it",
   "sessionMenu.moveToFolder": "Move to folder",
   "skill.bodyPlaceholder": "SKILL.md body (Markdown recipe: steps, code, caveats…)",
   "skill.descPlaceholder": "One-line description (used for skill retrieval)",
@@ -5074,6 +5105,10 @@ async function openConversation(fid, pid) {
   S.stepEls = {};  // fresh step registry so reopen-then-replay dedupes by step_id
   S.permCards = Object.create(null);  // fresh permission-card registry (null-proto; drop cards from the prior conversation)
   S.planReady = null; S.planStatus = null; S.planPending = false;  // fresh plan state per session
+  S.computeStatus = null;  // where the *previous* session ran says nothing about this one
+  { const badge = $("#compute-badge"); if (badge) badge.remove(); }
+  { const banner = $("#compute-lost"); if (banner) banner.remove(); }
+  refreshComputeStatus(fid);  // deliberately not awaited: a session must open even if this route does not exist
   S.annotations = []; closeAnnotDraft(); closeAnnotPop(); updateAnnotBadge();
   edacTeardown(); S._editing = null;  // stop any live editor autocomplete + clear edit state when switching sessions
   _molTeardown(); $("#dock-viewer").innerHTML = ""; renderDockTabs();
@@ -5415,6 +5450,7 @@ function sessionMenu(anchor, fid) {
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
     { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
     { label: t("sessionMenu.viewNotebook"), icon: "notebook", onClick: async () => { if (fid !== S.currentId) await openConversation(fid, frame.project_id); setActiveTab("notebook"); } },
+    { label: t("compute.menu.runLocation"), icon: "server", onClick: () => openRunLocationDialog(fid) },
     { sep: true },
     { label: t("sessionMenu.duplicate"), icon: "copy", onClick: () => duplicateSession(fid) },
     { label: t("sessionMenu.moveToFolder"), icon: "folder", onClick: () => moveToFolderAt(anchor, fid) },
@@ -5935,6 +5971,151 @@ function annotAttachment(anns) {
   anns.forEach(an => { const r = el("div", "annot-attach-row"); r.appendChild(el("span", "annot-attach-pin", String(an.number))); r.appendChild(el("span", "annot-attach-file", (an.artifact_name || "artifact"))); r.appendChild(el("span", "annot-attach-body", "· " + (an.body || ""))); list.appendChild(r); });
   box.appendChild(list);
   return box;
+}
+
+/* ---------- where a session runs (M3b-6) ----------
+   Three things the user cannot infer from a spinner:
+   WHERE the kernel is, WHICH of the four readiness conditions is still
+   outstanding, and WHETHER the kernel's memory was lost and quietly
+   replaced. The last one is not a nicety -- results produced after a
+   recovery look exactly like results from the session that was lost, so
+   INV-11 makes saying so mandatory. */
+const COMPUTE_BLOCKED_LABEL = {
+  allocation: "compute.blocked.allocation",
+  workspace: "compute.blocked.workspace",
+  worker: "compute.blocked.worker",
+  kernel: "compute.blocked.kernel",
+};
+async function loadComputeStatus(fid) {
+  if (!fid) return null;
+  try { return await api(`/sessions/${encodeURIComponent(fid)}/compute`); }
+  catch { return null; }   // a daemon without the feature is not an error state
+}
+async function refreshComputeStatus(fid) {
+  const status = await loadComputeStatus(fid);
+  if (!fid || fid !== S.currentId) return status;   // session switched mid-flight
+  S.computeStatus = status;
+  renderComputeBadge();
+  renderComputeLostBanner();
+  return status;
+}
+function renderComputeBadge() {
+  const host = $(".conv-head-actions");
+  if (!host) return;
+  let badge = $("#compute-badge");
+  const status = S.computeStatus;
+  // A local session gets no badge at all. A chip reading "local" on every
+  // session in an install that has no cluster is pure noise.
+  if (!status || status.location !== "cluster") { if (badge) badge.remove(); return; }
+  if (!badge) {
+    badge = el("button", "compute-badge"); badge.id = "compute-badge";
+    badge.onclick = () => openRunLocationDialog(S.currentId);
+    host.insertBefore(badge, host.firstChild);
+  }
+  const readiness = status.readiness || {};
+  const allocation = status.allocation || {};
+  const workload = status.workload || {};
+  badge.innerHTML = "";
+  badge.appendChild(iconEl("server", 13));
+  const ready = !!readiness.ready;
+  const blockedKey = COMPUTE_BLOCKED_LABEL[readiness.blocked_on];
+  const label = ready
+    ? `${workload.profile || t("compute.badge.ready")}`
+    : (blockedKey ? t(blockedKey) : (allocation.phase || workload.phase || "").toLowerCase());
+  badge.appendChild(el("span", "cb-label", label));
+  badge.className = "compute-badge" + (ready ? " ready" : " waiting");
+  // The phase is the tooltip rather than the label: an allocation id and a
+  // phase name are what a support conversation needs, and neither belongs
+  // in a chip somebody reads fifty times a day.
+  badge.title = [
+    workload.profile ? `profile: ${workload.profile}` : "",
+    allocation.allocation_id ? `allocation: ${allocation.allocation_id}` : "",
+    allocation.phase ? `phase: ${allocation.phase}` : "",
+    workload.reason ? `reason: ${workload.reason}` : "",
+  ].filter(Boolean).join("\n");
+}
+function renderComputeLostBanner() {
+  const status = S.computeStatus || {};
+  const epochs = status.state_lost_epochs || [];
+  const seen = S._computeLostSeen || (S._computeLostSeen = {});
+  const key = S.currentId + ":" + epochs.join(",");
+  let banner = $("#compute-lost");
+  if (!epochs.length || seen[key]) { if (banner) banner.remove(); return; }
+  if (!banner) {
+    banner = el("div", "compute-lost"); banner.id = "compute-lost";
+    const messages = $("#messages");
+    if (!messages) return;
+    messages.parentNode.insertBefore(banner, messages);
+  }
+  banner.innerHTML = "";
+  banner.appendChild(iconEl("alert-triangle", 15));
+  const text = el("div", "cl-text");
+  text.appendChild(el("strong", null, t("compute.lost.title")));
+  text.appendChild(el("div", "cl-body", t("compute.lost.body")));
+  banner.appendChild(text);
+  const dismiss = el("button", "cl-dismiss", t("compute.lost.dismiss"));
+  // Dismissal is per (session, set of lost epochs): a *further* loss
+  // raises it again rather than being swallowed by an earlier "got it".
+  dismiss.onclick = () => { seen[key] = true; banner.remove(); };
+  banner.appendChild(dismiss);
+}
+async function openRunLocationDialog(fid) {
+  const target = fid || S.currentId;
+  if (!target) return;
+  let status = null, catalog = { profiles: [] };
+  try {
+    [status, catalog] = await Promise.all([
+      loadComputeStatus(target),
+      api("/orchestration/profiles").catch(() => ({ profiles: [] })),
+    ]);
+  } catch (error) { hint(apiErrorText(error), true); return; }
+
+  const wrap = el("div", "run-location");
+  const current = (status && status.location) || "local";
+  const choose = async (profile) => {
+    try {
+      if (profile === null) await api(`/sessions/${encodeURIComponent(target)}/compute/release`, { method: "POST", body: "{}" });
+      else await api(`/sessions/${encodeURIComponent(target)}/compute`, { method: "POST", body: JSON.stringify({ profile }) });
+      closeModalEl($("#modal"));
+      await refreshComputeStatus(target);
+    } catch (error) {
+      // The 409 that means "this daemon has no listener" is the one a user
+      // will actually hit, and its body already explains itself.
+      hint(apiErrorText(error), true);
+    }
+  };
+
+  const local = el("button", "rl-option" + (current === "local" ? " current" : ""));
+  local.appendChild(el("div", "rl-name", t("compute.location.local")));
+  local.appendChild(el("div", "rl-hint", t("compute.location.localHint")));
+  local.onclick = () => (current === "local" ? closeModalEl($("#modal")) : choose(null));
+  wrap.appendChild(local);
+
+  const profiles = (catalog && catalog.profiles) || [];
+  if (!profiles.length) wrap.appendChild(el("div", "rl-empty", t("compute.dialog.notConfigured")));
+  profiles.forEach(profile => {
+    const option = el("button", "rl-option" + (current === "cluster" && status.workload && status.workload.profile === profile.name ? " current" : ""));
+    option.appendChild(el("div", "rl-name", profile.name));
+    const bits = [
+      `${profile.cpus} CPU`,
+      profile.gpus ? `${profile.gpus} GPU` : "",
+      `${Math.round((profile.memory_mb || 0) / 1024)} GiB`,
+      `${Math.round((profile.walltime_s || 0) / 3600)} h`,
+    ].filter(Boolean).join(" · ");
+    option.appendChild(el("div", "rl-hint", bits));
+    option.onclick = () => choose(profile.name);
+    wrap.appendChild(option);
+  });
+
+  if (current === "cluster") {
+    const release = el("button", "rl-release", t("compute.dialog.release"));
+    release.onclick = () => choose(null);
+    wrap.appendChild(release);
+  }
+  $("#modal-title").textContent = t("compute.dialog.title");
+  const download = $("#modal-download"); if (download) download.style.display = "none";
+  const body = $("#modal-body"); body.innerHTML = ""; body.appendChild(wrap);
+  openModalEl($("#modal"));
 }
 
 /* ---------- api-key banner (C3) ---------- */
@@ -10154,3 +10335,240 @@ document.addEventListener("click", function (e) {
   clearTimeout(btn._t);
   btn._t = setTimeout(function () { btn.classList.remove("copied"); if (lbl) lbl.textContent = lbl.getAttribute("data-o") || t("msgAction.copy"); }, 1400);
 });
+
+/* ---- Team mode (docs/team-server-plan.md M1-9) -------------------------
+ * Self-contained: with team mode off and no data roots, every element
+ * stays hidden and nothing below changes the single-user UI. */
+(function teamBootstrap() {
+  "use strict";
+  function el(id) { return document.getElementById(id); }
+
+  // Identity: redirect to /login when the session died; show the user chip
+  // and a sign-out action when team mode is on.
+  fetch(API + "/auth/me")
+    .then(function (r) {
+      if (r.status === 401) { location.replace("/login"); return null; }
+      return r.ok ? r.json() : null;
+    })
+    .then(function (me) {
+      if (!me || me.team_mode !== true || !me.user) return;
+      var chip = el("team-user");
+      if (chip) {
+        chip.textContent = me.user.username + (me.user.role === "admin" ? " (admin)" : "");
+        chip.classList.remove("hidden");
+        chip.onclick = function () {
+          if (!confirm("Sign out?")) return;
+          fetch(API + "/auth/logout", { method: "POST" })
+            .then(function () { location.replace("/login"); })
+            .catch(function () { location.replace("/login"); });
+        };
+      }
+    })
+    .catch(function () {});
+
+  // The team file area: probe once; the buttons appear only when roots exist.
+  var tfState = { path: "" };
+  function probe() {
+    fetch(API + "/files")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.roots || !d.roots.length) return;
+        ["team-files-btn", "team-files-dash"].forEach(function (id) {
+          var b = el(id);
+          if (b) { b.classList.remove("hidden"); b.onclick = function () { openPanel(); }; }
+        });
+      })
+      .catch(function () {});
+  }
+  function openPanel() {
+    el("team-files-modal").classList.remove("hidden");
+    load(tfState.path);
+  }
+  function fmtSize(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return n + " B";
+  }
+  function load(path) {
+    tfState.path = path || "";
+    var url = API + "/files" + (tfState.path ? "?path=" + encodeURIComponent(tfState.path) : "");
+    fetch(url)
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) { render(res); })
+      .catch(function () {});
+  }
+  function render(res) {
+    var crumbs = el("team-files-crumbs");
+    var list = el("team-files-list");
+    if (!crumbs || !list) return;
+    crumbs.textContent = "";
+    list.textContent = "";
+    if (!res.ok) {
+      list.textContent = (res.body && res.body.error) || "unavailable";
+      return;
+    }
+    var home = document.createElement("a");
+    home.href = "#"; home.textContent = "roots";
+    home.onclick = function (e) { e.preventDefault(); load(""); };
+    crumbs.appendChild(home);
+    if (tfState.path) {
+      crumbs.appendChild(document.createTextNode("  ›  " + tfState.path));
+    }
+    var upBtn = el("team-files-upload");
+    if (upBtn) upBtn.style.display = tfState.path ? "" : "none";
+    if (res.body.roots) {
+      res.body.roots.forEach(function (root) {
+        var row = document.createElement("div");
+        row.className = "team-files-row";
+        var a = document.createElement("a");
+        a.href = "#"; a.textContent = "📁 " + root.path;
+        a.onclick = function (e) { e.preventDefault(); load(root.path); };
+        row.appendChild(a);
+        list.appendChild(row);
+      });
+      return;
+    }
+    (res.body.entries || []).forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = "team-files-row";
+      var full = res.body.path + "/" + entry.name;
+      if (entry.dir) {
+        var a = document.createElement("a");
+        a.href = "#"; a.textContent = "📁 " + entry.name;
+        a.onclick = function (e) { e.preventDefault(); load(full); };
+        row.appendChild(a);
+      } else {
+        var link = document.createElement("a");
+        link.href = API + "/files/download?path=" + encodeURIComponent(full);
+        link.textContent = "📄 " + entry.name;
+        row.appendChild(link);
+        var size = document.createElement("span");
+        size.className = "team-files-size";
+        size.textContent = fmtSize(entry.size);
+        row.appendChild(size);
+      }
+      list.appendChild(row);
+    });
+    if (!(res.body.entries || []).length) {
+      var empty = document.createElement("div");
+      empty.className = "team-files-row";
+      empty.textContent = "(empty)";
+      list.appendChild(empty);
+    }
+  }
+  var closeBtn = el("team-files-close");
+  if (closeBtn) closeBtn.onclick = function () { el("team-files-modal").classList.add("hidden"); };
+  var uploadBtn = el("team-files-upload");
+  var uploadInput = el("team-files-input");
+  if (uploadBtn && uploadInput) {
+    uploadBtn.onclick = function () { if (tfState.path) uploadInput.click(); };
+    uploadInput.onchange = function () {
+      var file = uploadInput.files && uploadInput.files[0];
+      uploadInput.value = "";
+      if (!file || !tfState.path) return;
+      var url = API + "/files/upload?dir=" + encodeURIComponent(tfState.path) +
+        "&name=" + encodeURIComponent(file.name) + "&overwrite=1";
+      fetch(url, { method: "POST", body: file })
+        .then(function (r) {
+          if (!r.ok) return r.json().then(function (b) { alert((b && b.error) || ("upload failed (" + r.status + ")")); });
+          load(tfState.path);
+        })
+        .catch(function () { alert("upload failed"); });
+    };
+  }
+  probe();
+})();
+
+/* ---- Team governance (M2-7): guest redirect + minimal admin panel ------ */
+(function teamGovernance() {
+  "use strict";
+  function el(id) { return document.getElementById(id); }
+
+  fetch(API + "/auth/me")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (me) {
+      if (!me || me.team_mode !== true || !me.user) return;
+      if (me.user.role === "guest") {
+        // A guest's whole surface is the replay viewer (D3).
+        if (location.pathname === "/") location.replace("/replay");
+        return;
+      }
+      if (me.user.role === "admin" || me.user.kind === "service") {
+        var btn = el("team-admin");
+        if (btn) { btn.classList.remove("hidden"); btn.onclick = openAdmin; }
+      }
+    })
+    .catch(function () {});
+
+  function openAdmin() {
+    el("team-admin-modal").classList.remove("hidden");
+    loadAdmin();
+  }
+  var closeBtn = el("team-admin-close");
+  if (closeBtn) closeBtn.onclick = function () { el("team-admin-modal").classList.add("hidden"); };
+  var refreshBtn = el("team-admin-refresh");
+  if (refreshBtn) refreshBtn.onclick = function () { loadAdmin(); };
+
+  function section(parent, title) {
+    var h = document.createElement("h3");
+    h.className = "team-admin-h";
+    h.textContent = title;
+    parent.appendChild(h);
+    var box = document.createElement("div");
+    box.className = "team-admin-sec";
+    parent.appendChild(box);
+    return box;
+  }
+  function table(box, headers, rows) {
+    var t = document.createElement("table");
+    t.className = "team-admin-table";
+    var tr = document.createElement("tr");
+    headers.forEach(function (h) {
+      var th = document.createElement("th"); th.textContent = h; tr.appendChild(th);
+    });
+    t.appendChild(tr);
+    rows.forEach(function (cells) {
+      var r = document.createElement("tr");
+      cells.forEach(function (c) {
+        var td = document.createElement("td"); td.textContent = c == null ? "" : String(c); r.appendChild(td);
+      });
+      t.appendChild(r);
+    });
+    box.appendChild(t);
+    if (!rows.length) {
+      var d = document.createElement("div"); d.className = "team-admin-empty"; d.textContent = "(none)"; box.appendChild(d);
+    }
+  }
+  function jget(path) {
+    return fetch(API + path).then(function (r) { return r.ok ? r.json() : null; });
+  }
+
+  function loadAdmin() {
+    var body = el("team-admin-body");
+    body.textContent = "loading…";
+    Promise.all([
+      jget("/team/users"), jget("/team/usage"), jget("/team/audit?limit=50"),
+      jget("/team/invites"), jget("/team/quotas"),
+    ]).then(function (res) {
+      var users = (res[0] || {}).users || [];
+      var usage = (res[1] || {}).usage || [];
+      var audit = (res[2] || {}).audit || [];
+      var invites = (res[3] || {}).invites || [];
+      var quotas = (res[4] || {}).quotas || [];
+      body.textContent = "";
+      var idName = {};
+      users.forEach(function (u) { idName[u.id] = u.username; });
+      table(section(body, "Users"), ["user", "role", "state", "id"],
+        users.map(function (u) { return [u.username, u.role, u.disabled ? "disabled" : "active", u.id]; }));
+      table(section(body, "Usage"), ["user", "project", "kind", "total", "events"],
+        usage.map(function (r) { return [idName[r.user_id] || r.user_id, r.project_id, r.kind, Math.round(r.total * 100) / 100, r.events]; }));
+      table(section(body, "Quotas"), ["scope", "scope id", "kind", "limit", "window"],
+        quotas.map(function (r) { return [r.scope, r.scope_id, r.kind, r.limit_amount, r.window]; }));
+      table(section(body, "Invites"), ["prefix", "project", "by", "state"],
+        invites.map(function (r) { return [r.token_prefix, r.project_id, r.created_by, r.live ? "live" : (r.used_at ? "used/revoked" : "expired")]; }));
+      table(section(body, "Audit (latest 50)"), ["when", "actor", "action", "target"],
+        audit.map(function (r) { return [new Date(r.ts).toLocaleString(), r.actor, r.action, r.target || r.user_id || ""]; }));
+    }).catch(function () { el("team-admin-body").textContent = "failed to load"; });
+  }
+})();

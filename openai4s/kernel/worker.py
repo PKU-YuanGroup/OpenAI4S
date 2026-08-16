@@ -84,6 +84,66 @@ _MAX_CACHED_CELLS = 128  # linecache retention, evicted by counter
 # --- protocol channel setup (dup2 swap + publish) ---------------------
 
 
+#: Where a remote worker finds the daemon, and the file holding its proof.
+#: Both are plain paths/addresses on purpose: the credential itself travels
+#: as a 0600 FILE and only its path is given to the scheduler, so nothing
+#: secret ever appears in a job's environment (INV-9).
+_CONNECT_ENV = "OPENAI4S_WORKER_CONNECT"
+_CREDENTIAL_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH"
+
+
+def _connect_remote_protocol():
+    """Dial the daemon and authenticate; return (in_fd, out_fd) or None.
+
+    None is the ordinary case — a local worker inherits its pipes and this
+    whole path is skipped. When the variables ARE set, failure exits rather
+    than falling back: a worker that cannot prove who it is must not go on
+    to run cells, and a silent fallback to inherited fds on a compute node
+    would be a worker talking to nothing.
+    """
+    target = (os.environ.get(_CONNECT_ENV) or "").strip()
+    if not target:
+        return None
+    import json as _json
+    import socket as _socket
+
+    credential_path = (os.environ.get(_CREDENTIAL_ENV) or "").strip()
+    if not credential_path:
+        print(
+            f"{_CONNECT_ENV} is set but {_CREDENTIAL_ENV} is not; refusing to "
+            f"connect without a credential",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(70)
+    try:
+        with open(credential_path, encoding="utf-8") as handle:
+            credential = handle.read().strip()
+        host, _, port = target.rpartition(":")
+        sock = _socket.create_connection((host or "127.0.0.1", int(port)), timeout=60)
+        sock.sendall((credential + "\n").encode("utf-8"))
+        reply = b""
+        while b"\n" not in reply:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise OSError("daemon closed during handshake")
+            reply += chunk
+        answer = _json.loads(reply.split(b"\n", 1)[0].decode("utf-8"))
+        if not answer.get("ok"):
+            raise OSError(f"daemon refused this worker: {answer.get('error')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"worker bootstrap failed: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(70) from exc
+    sock.settimeout(None)
+    # Two independent descriptors over the one connection, so the reader and
+    # the writer can be wrapped separately exactly as the pipe path wraps
+    # its two pipes.
+    in_fd = os.dup(sock.fileno())
+    out_fd = os.dup(sock.fileno())
+    sock.detach()
+    return in_fd, out_fd
+
+
 def _setup_protocol_channels() -> None:
     """Move the real protocol streams to high fds and alias fd1->stderr.
 
@@ -92,11 +152,23 @@ def _setup_protocol_channels() -> None:
     sys._openai4s_protocol_stdin / sys._openai4s_protocol_stdout. A reserve dup of
     the input fd is stashed on sys._openai4s_proto_in_reserve for recovery.
     """
-    # Duplicate the inherited protocol fds to fresh (high) fds.
-    proto_in_fd = os.dup(0)
-    proto_out_fd = os.dup(1)
-    reserve_fd = os.dup(0)  # spare for one-shot recovery
+    remote = _connect_remote_protocol()
+    if remote is not None:
+        # A worker placed on a compute node has no inherited protocol pipes:
+        # it dialled the daemon, and both directions ride that one socket.
+        # Everything downstream — _readline_protocol, _write_frame, the
+        # host_call transaction — is unchanged, because what they consume is
+        # the pair of file objects published below, not their provenance.
+        proto_in_fd, proto_out_fd = remote
+        reserve_fd = -1
+    else:
+        # Duplicate the inherited protocol fds to fresh (high) fds.
+        proto_in_fd = os.dup(0)
+        proto_out_fd = os.dup(1)
+        reserve_fd = os.dup(0)  # spare for one-shot recovery
     for fd in (proto_in_fd, proto_out_fd, reserve_fd):
+        if fd < 0:
+            continue
         try:
             os.set_inheritable(fd, False)
         except OSError:

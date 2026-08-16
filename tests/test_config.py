@@ -58,6 +58,29 @@ def test_notebook_repl_flag_defaults_off_and_reads_env(monkeypatch):
     assert Config().notebook_repl is False
 
 
+def test_team_mode_defaults_off_and_reads_env(monkeypatch):
+    # INV-1: team mode is opt-in; unset env == single-user behavior
+    monkeypatch.delenv("OPENAI4S_TEAM_MODE", raising=False)
+    assert Config().team_mode is False
+
+    monkeypatch.setenv("OPENAI4S_TEAM_MODE", "1")
+    assert Config().team_mode is True
+    monkeypatch.setenv("OPENAI4S_TEAM_MODE", "off")
+    assert Config().team_mode is False
+
+
+def test_data_roots_parse_colon_separated(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI4S_DATA_ROOTS", raising=False)
+    assert Config().data_roots == []
+
+    a, b = tmp_path / "datasets", tmp_path / "scratch"
+    monkeypatch.setenv("OPENAI4S_DATA_ROOTS", f"{a}:{b}:")
+    assert Config().data_roots == [a, b]
+
+    monkeypatch.setenv("OPENAI4S_DATA_ROOTS", "   ")
+    assert Config().data_roots == []
+
+
 def test_placeholder_env_does_not_shadow_native_key(monkeypatch):
     # a .env copied verbatim from .env.example must not mask a real key the
     # user already exported for other tools — the placeholder is dropped

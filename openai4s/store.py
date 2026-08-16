@@ -82,7 +82,12 @@ from openai4s.storage.datapro_index import (
 )
 from openai4s.storage.delegation import DelegationProjectionRepository
 from openai4s.storage.frames import FrameRepository
+from openai4s.storage.governance import (
+    GovernanceRepository,
+    create_governance_schema,
+)
 from openai4s.storage.kernels import KernelGenerationRepository
+from openai4s.storage.leases import LeaseRepository, create_lease_schema
 from openai4s.storage.memories import MemoryRepository
 from openai4s.storage.metadata import (
     DERIVABLE_HOST_CALLS,
@@ -114,6 +119,13 @@ from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
 from openai4s.storage.snapshots import SessionSnapshotRepository
+from openai4s.storage.team import (
+    TeamRepository,
+    create_session_owners_schema,
+    create_team_schema,
+)
+from openai4s.storage.user_keys import UserKeyRepository, create_user_key_schema
+from openai4s.storage.workloads import WorkloadRepository, create_workload_schema
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -660,6 +672,33 @@ QUERY_DENYLIST = frozenset(
         "settings",
         "connectors",
         "memories",
+        # Team-mode identity (INV-9 hygiene): password hashes, login-token
+        # hashes, and the governance audit trail are never agent-readable.
+        "users",
+        "auth_sessions",
+        "team_audit_log",
+        "session_owners",
+        # Team-mode governance (M2): invites hold credential digests, and
+        # membership/metering/limits are the operator's data, not the agent's.
+        "project_members",
+        "invites",
+        "usage_ledger",
+        "quotas",
+        # Orchestration state: submission tokens are credentials of a sort
+        # (they are what INV-8 reconciliation matches on), and a workload's
+        # spec carries another user's command line.
+        "workloads",
+        "allocations",
+        # Cluster sessions (M3b/M4). `user_llm_keys` holds a broker reference
+        # and every user's id -- the two fields `UserKeyRecord.public()`
+        # deliberately withholds from a route, so leaving the table readable
+        # would hand the agent exactly what the API refuses. `leases` and
+        # `session_workloads` map sessions to workloads and to each other,
+        # which is the same "who is working on what" that INV-13 protects
+        # everywhere else.
+        "user_llm_keys",
+        "leases",
+        "session_workloads",
         "host_call_log",
         "permission_rules",
         "permission_requests",
@@ -717,6 +756,21 @@ def _strip_sql_literals(sql: str) -> str:
     return _SQL_LITERAL_RE.sub(" ", sql or "")
 
 
+#: Word-boundary matcher for the denylist pre-check. A bare substring test
+#: (`if bad in text`) denies any query that merely *contains* a denied word —
+#: harmless for a specific name like `settings`, but a real single-user
+#: regression once the team tables add generic words: `SELECT * FROM
+#: active_users` contains `users`. `\b` treats a denied table as a token, so
+#: `\busers\b` matches `FROM users`, `"users"`, `main.users`, and `users,`
+#: (every real reference) but NOT `active_users` (`_` is a word char). This
+#: only makes the cheap pre-check less aggressive; the SQLite authorizer,
+#: which denies by the *resolved* table name, stays the real enforcement, so
+#: no denied table becomes readable.
+_DENY_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in sorted(QUERY_DENYLIST)) + r")\b"
+)
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -745,6 +799,9 @@ _SCOPED_VIEWS = frozenset(
         "my_lineage_edges",
         "my_frames",
         "my_env_snapshots",
+        # The conversation/execution family, scoped the same way (team mode).
+        "my_messages",
+        "my_execution_log",
     }
 )
 
@@ -772,6 +829,24 @@ _VIEW_ONLY_TABLES = frozenset(
     }
 )
 
+#: The same rule, applied to the conversation and execution family, and only
+#: when team mode is on.
+#:
+#: In a single-user install "every session in this database" is the user's own
+#: work, and `tests/test_store.py` documents reading it. In team mode it is
+#: every colleague's prompts, the model's replies, and the code they ran --
+#: which is INV-13 on the most sensitive surface the product has, reachable
+#: from a single agent `SELECT`. So the closure is conditional: the
+#: single-user path keeps the behaviour it has always had (INV-1), and a team
+#: daemon reads these through the scoped views or not at all.
+_TEAM_VIEW_ONLY_TABLES = frozenset(
+    {
+        "frames",
+        "messages",
+        "execution_log",
+    }
+)
+
 
 class _QueryAuthorizer:
     """SQLite's own answer to "may this statement touch that table?".
@@ -792,8 +867,15 @@ class _QueryAuthorizer:
     interface, so matching on it would work until it did not.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, view_only: frozenset[str] | None = None) -> None:
         self.denied: list[str] = []
+        # Which base tables are reachable only through a scoped view. Passed
+        # in rather than read from a module constant because the answer
+        # depends on the deployment: a team daemon closes the conversation
+        # family that a single-user one leaves open (INV-1).
+        self._view_only = (
+            _VIEW_ONLY_TABLES if view_only is None else frozenset(view_only)
+        )
 
     def _deny(self, what: str) -> int:
         if what not in self.denied:
@@ -836,7 +918,7 @@ class _QueryAuthorizer:
             return self._deny(table)
         if table in QUERY_DENYLIST:
             return self._deny(table)
-        if table in _VIEW_ONLY_TABLES:
+        if table in self._view_only:
             # Permitted only as the underlying read of a trusted scoped view.
             if (source or "").lower() in _SCOPED_VIEWS:
                 return sqlite3.SQLITE_OK
@@ -955,6 +1037,31 @@ class Store:
             clock_ms=lambda: _now_ms(),
         )
         self._settings = SettingsRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._team = TeamRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._governance = GovernanceRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._workloads = WorkloadRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._leases = LeaseRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._user_keys = UserKeyRepository(
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
@@ -1177,6 +1284,18 @@ class Store:
                         "datapro_content_index_repair",
                         self._apply_datapro_content_index_repair,
                     ),
+                    18: ("team_users", self._apply_team_users),
+                    19: ("session_owners", self._apply_session_owners),
+                    20: ("team_governance", self._apply_team_governance),
+                    21: (
+                        "orchestration_workloads",
+                        self._apply_orchestration_workloads,
+                    ),
+                    22: (
+                        "orchestration_leases",
+                        self._apply_orchestration_leases,
+                    ),
+                    23: ("user_llm_keys", self._apply_user_llm_keys),
                 },
             )
             if report["migrated"]:
@@ -1186,6 +1305,64 @@ class Store:
         """Version 16: lossless local indexing for DataPro responses."""
 
         create_datapro_index_schema(conn)
+
+    def _apply_team_users(self, conn: sqlite3.Connection) -> None:
+        """Version 18: team-mode identity (users / auth_sessions / audit log).
+
+        Additive only — no existing table changes shape, so a single-user
+        install upgrades without behavioral change (INV-1). The DDL lives in
+        storage/team.py and runs inside this numbered step, never at
+        repository init (the v16/v17 lesson).
+        """
+
+        create_team_schema(conn)
+
+    def _apply_session_owners(self, conn: sqlite3.Connection) -> None:
+        """Version 19: session ownership for team mode (M1-6, INV-13).
+
+        Additive; existing sessions get no row, which the visibility rule
+        reads as admin-only rather than everyone's.
+        """
+
+        create_session_owners_schema(conn)
+
+    def _apply_orchestration_workloads(self, conn: sqlite3.Connection) -> None:
+        """Version 21: workloads and allocations (M3a-8).
+
+        Carries the partial unique index that IS INV-3: a second live
+        allocation for one workload is refused by the database, in the
+        window between a check and an insert that no Python guard covers.
+        """
+
+        create_workload_schema(conn)
+
+    def _apply_orchestration_leases(self, conn: sqlite3.Connection) -> None:
+        """Version 22: session leases and session↔workload bindings (M3b-4).
+
+        Additive; a single-user install gets two empty tables and no
+        behaviour change (INV-1). Nothing writes to them until a session
+        actually asks for a cluster kernel.
+        """
+
+        create_lease_schema(conn)
+
+    def _apply_user_llm_keys(self, conn: sqlite3.Connection) -> None:
+        """Version 23: per-user LLM credential references (M4-1, D7).
+
+        Additive, and it holds references rather than keys — the secrets
+        themselves stay in the SecretBroker, so this table copied off the
+        machine names slots it cannot open.
+        """
+
+        create_user_key_schema(conn)
+
+    def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
+        """Version 20: membership, invites, usage ledger, quotas (M2).
+
+        Additive; every table is dormant until team-mode governance uses it.
+        """
+
+        create_governance_schema(conn)
 
     def _apply_datapro_content_index_repair(self, conn: sqlite3.Connection) -> None:
         """Version 17: repair an early v16 database stamped without its tables.
@@ -1848,6 +2025,32 @@ class Store:
 
     # --- secrets ---------------------------------------------------------
     @property
+    def team(self) -> TeamRepository:
+        """Team-mode identity: users, login sessions, audit log (M1-2)."""
+        return self._team
+
+    @property
+    def governance(self) -> GovernanceRepository:
+        """Team-mode governance: members, invites, usage, quotas (M2)."""
+        return self._governance
+
+    @property
+    def workloads(self) -> WorkloadRepository:
+        """Cluster workloads and allocations (M3a). Also the reconciler's
+        WorkloadStore: the Protocol it needs is exactly this surface."""
+        return self._workloads
+
+    @property
+    def user_keys(self) -> UserKeyRepository:
+        """Per-user LLM credential references (M4-1)."""
+        return self._user_keys
+
+    @property
+    def leases(self) -> LeaseRepository:
+        """Session leases and session↔workload bindings (M3b-4)."""
+        return self._leases
+
+    @property
     def secrets(self):
         """The SecretBroker for this database, resolved once on first use.
 
@@ -2257,6 +2460,7 @@ class Store:
         roots_only: bool = True,
         limit: int = 50,
         before: tuple[int, str] | None = None,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         return self._frames.browse_frames(
             project_id=project_id,
@@ -2264,6 +2468,7 @@ class Store:
             roots_only=roots_only,
             limit=limit,
             before=before,
+            visible_to_user_id=visible_to_user_id,
         )
 
     def frame_detail(
@@ -4400,12 +4605,42 @@ class Store:
                 SELECT s.* FROM main.env_snapshots s
                   JOIN main.frames f ON f.frame_id = s.frame_id
                  WHERE f.frame_id = {root_sql} OR f.root_frame_id = {root_sql}""",
+            # Both tables carry `root_frame_id` themselves, so this is a
+            # filter and not a join. The join was tried first and returned
+            # nothing: a message's `frame_id` is nullable (a turn's messages
+            # are keyed by the root), so joining on it dropped every row --
+            # a scoped view that is always empty is indistinguishable from a
+            # working guard until somebody asserts the owner can still read.
+            f"""CREATE TEMP VIEW my_messages AS
+                SELECT * FROM main.messages
+                 WHERE root_frame_id = {root_sql}""",
+            f"""CREATE TEMP VIEW my_execution_log AS
+                SELECT * FROM main.execution_log
+                 WHERE root_frame_id = {root_sql}""",
         )
         for name in _SCOPED_VIEWS:
             conn.execute(f"DROP VIEW IF EXISTS temp.{name}")
         for statement in statements:
             conn.execute(statement)
         self._view_scope = (root, project)
+
+    def _query_view_only(self) -> frozenset[str]:
+        """Which base tables `host.query` may reach only through a view.
+
+        Team mode adds the conversation/execution family. Off, the set is
+        byte-identical to what it has always been, which is what keeps a
+        single-user install's documented `SELECT * FROM frames` working
+        (INV-1). Read from the environment rather than from a Config
+        because `Store` is constructed in places that have no Config, and a
+        guard that silently loosened when its config was unavailable would
+        be the wrong failure.
+        """
+        import os
+
+        flag = (os.environ.get("OPENAI4S_TEAM_MODE") or "").strip().lower()
+        if flag in ("1", "true", "yes", "on"):
+            return _VIEW_ONLY_TABLES | _TEAM_VIEW_ONLY_TABLES
+        return _VIEW_ONLY_TABLES
 
     def query(
         self,
@@ -4430,9 +4665,9 @@ class Store:
         """
         lowered = sql.lower()
         deny_scan = _strip_sql_literals(lowered)
-        for bad in QUERY_DENYLIST:
-            if bad in deny_scan:
-                raise PermissionError(f"host.query: table '{bad}' is not readable")
+        bad = _DENY_WORD_RE.search(deny_scan)
+        if bad is not None:
+            raise PermissionError(f"host.query: table '{bad.group(0)}' is not readable")
         stripped = lowered.lstrip()
         if not (stripped.startswith("select") or stripped.startswith("with")):
             raise ValueError("host.query only allows read-only SELECT/CTE")
@@ -4449,7 +4684,7 @@ class Store:
         # by rule and not by keyword.
         conn = self._conn
         with self._lock:
-            guard = _QueryAuthorizer()
+            guard = _QueryAuthorizer(view_only=self._query_view_only())
             try:
                 # Views first, with the guard off: creating them is a privileged
                 # setup step, not part of the caller's statement.

@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Sequence
 
 from .runner import run_scenario
+
+#: Which runner a scenario goes to. Dispatch by surface rather than by
+#: directory: a scenario's own declaration is the thing under review, and a
+#: file that moved would otherwise change how it is executed without
+#: changing a single line a reviewer reads.
+_ORCHESTRATION_SURFACE = "orchestration"
 from .schema import ScenarioValidationError, load_scenario
 
 _DEFAULT_SCENARIOS = Path(__file__).resolve().parent / "scenarios"
@@ -95,7 +101,12 @@ def _run(args: argparse.Namespace) -> int:
         if args.offline and not scenario.is_offline:
             excluded_offline.add(scenario.id)
             continue
-        results.append(run_scenario(scenario, offline=args.offline))
+        if scenario.surface == _ORCHESTRATION_SURFACE:
+            from .orchestration import run_orchestration_scenario
+
+            results.append(run_orchestration_scenario(scenario, offline=args.offline))
+        else:
+            results.append(run_scenario(scenario, offline=args.offline))
 
     found_ids = {result.scenario_id for result in results}
     for scenario_id in sorted(selected_ids - found_ids):

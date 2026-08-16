@@ -34,6 +34,9 @@
           <button class="lang-btn" data-lang="zh">中文</button>
           <button class="lang-btn" data-lang="en">EN</button>
         </div>
+        <button id="team-admin" class="outline-btn hidden"><span class="ic" data-icon="users" data-icon-size="16"></span><span>Team admin</span></button>
+        <button id="team-user" class="outline-btn hidden" title="Signed in — click to sign out"></button>
+        <button id="team-files-dash" class="outline-btn hidden"><span class="ic" data-icon="folder" data-icon-size="16"></span><span>Team files</span></button>
         <button id="dash-theme" class="icon-ghost lg" data-i18n-title="theme.toggle" title="主题" data-icon="moon" data-icon-size="20" aria-label="Theme"></button>
         <button id="dash-settings" class="icon-ghost lg" data-i18n-title="common.settings" title="设置" data-icon="settings" data-icon-size="20"></button>
         <button id="dash-import-session" class="outline-btn"><span class="ic" data-icon="cloud-upload" data-icon-size="16"></span><span data-i18n="sessionPackage.import">Import session</span></button>
@@ -68,6 +71,7 @@
         <button id="new-session" class="side-nav-item"><span class="ic" data-icon="plus" data-icon-size="16"></span><span data-i18n="ws.nav.new">New</span></button>
         <button id="customize-btn" class="side-nav-item"><span class="ic" data-icon="sliders" data-icon-size="16"></span><span data-i18n="palette.action.customize">Customize</span></button>
         <button id="files-btn" class="side-nav-item"><span class="ic" data-icon="files" data-icon-size="16"></span><span data-i18n="ws.nav.files">Files</span></button>
+        <button id="team-files-btn" class="side-nav-item hidden"><span class="ic" data-icon="folder" data-icon-size="16"></span><span>Team files</span></button>
       </nav>
       <div id="session-list" class="session-list"></div>
       <div class="side-foot">
@@ -166,6 +170,12 @@
     <label data-i18n="projModal.ctx.label">Agent Context</label><textarea id="pm-ctx" rows="3" data-i18n-ph="projModal.ctx.placeholder" placeholder="Included in every agent's prompt for this project"></textarea>
     <div class="form-actions"><button id="pm-delete" class="outline-btn danger hidden" data-i18n="common.delete">Delete</button><span class="form-actions-spacer"></span><button id="pm-cancel" class="outline-btn" data-i18n="common.cancel">Cancel</button><button id="pm-create" class="solid-btn" data-i18n="projModal.create">Create</button></div>
   </div></div></div>
+
+  <!-- Team admin modal (admins in team mode; hidden otherwise) -->
+  <div id="team-admin-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="team-admin-title"><div class="modal-box"><div class="modal-head"><span id="team-admin-title">Team admin</span><div class="modal-actions"><button id="team-admin-refresh" class="outline-btn small">Refresh</button><button id="team-admin-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close"></button></div></div><div class="modal-body"><div id="team-admin-body" class="team-admin-body"></div></div></div></div>
+
+  <!-- Team files modal (team mode / OPENAI4S_DATA_ROOTS; hidden otherwise) -->
+  <div id="team-files-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="team-files-title"><div class="modal-box small-box"><div class="modal-head"><span id="team-files-title">Team files</span><div class="modal-actions"><button id="team-files-upload" class="outline-btn small"><span class="ic" data-icon="cloud-upload" data-icon-size="14"></span><span>Upload</span></button><input id="team-files-input" type="file" style="display:none" /><button id="team-files-close" class="icon-ghost" data-icon="x" data-icon-size="16" aria-label="Close"></button></div></div><div class="modal-body"><div id="team-files-crumbs" class="team-files-crumbs"></div><div id="team-files-list" class="team-files-list"></div></div></div></div>
 
   <script src="/static/favicon.js"></script>
   <script src="/static/scientific_renderers.js"></script>

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenAI4S — session replay</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.6 -apple-system, system-ui, sans-serif; max-width: 46rem;
+         margin: 4vh auto 8vh; padding: 0 1.5rem; color: #222; }
+  h1 { font-size: 1.15rem; }
+  .bar { display: flex; gap: 8px; margin: 1em 0 1.6em; }
+  input { flex: 1; padding: .5em .7em; border: 1px solid #d4d4d8; border-radius: 6px;
+          font: inherit; background: transparent; color: inherit; }
+  button { padding: .5em 1em; border: 0; border-radius: 6px; background: #2563eb;
+           color: #fff; font: inherit; cursor: pointer; }
+  .msg { margin: 1em 0; padding: .8em 1em; border-radius: 8px; background: rgba(127,127,127,.08); }
+  .msg.user { border-left: 3px solid #2563eb; }
+  .msg .who { font-size: .75rem; font-weight: 700; text-transform: uppercase;
+              letter-spacing: .04em; color: #71717a; margin-bottom: .3em; }
+  pre { overflow-x: auto; background: rgba(127,127,127,.12); padding: .7em .9em;
+        border-radius: 6px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+  .cell-out { color: #52525b; }
+  #err { color: #dc2626; }
+  .meta { font-size: .8rem; color: #71717a; }
+  @media (prefers-color-scheme: dark) { body { background: #18181b; color: #e4e4e7; } }
+</style>
+</head>
+<body>
+<h1>OpenAI4S · Read-only session replay</h1>
+<div class="bar">
+  <input id="sid" placeholder="session id (f-…)" spellcheck="false">
+  <button id="go">Open</button>
+</div>
+<div id="err" role="alert"></div>
+<div id="meta" class="meta"></div>
+<div id="transcript"></div>
+<script src="/static/replay.js"></script>
+</body>
+</html>

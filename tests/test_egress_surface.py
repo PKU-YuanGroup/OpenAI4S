@@ -98,6 +98,14 @@ _DECLARED: dict[str, str] = {
         "only for one bounded POST, enforces network and SSRF policy, refuses "
         "redirects, and never projects the outbound authorization header."
     ),
+    "openai4s/kernel/worker.py": (
+        "a worker placed on a compute node dialling back to the daemon that "
+        "asked for it (M3b-1). The worker is the client because a compute "
+        "node is usually reachable from nothing while the daemon usually is. "
+        "Off unless the scheduler set OPENAI4S_WORKER_CONNECT, refused "
+        "outright without a credential file, and the address it dials is the "
+        "one this daemon wrote -- it is never taken from a cell or a model."
+    ),
     "openai4s/http_deadline.py": (
         "the shared stdlib HTTP deadline transport. Its custom HTTP(S) "
         "connections register only the live socket so one wall-clock watchdog "
@@ -166,9 +174,16 @@ def test_every_declaration_states_a_reason():
 
 
 def test_the_surface_is_small_enough_to_review():
-    """Eleven modules is reviewable. If this fails, the question is not how to
-    raise the bound -- it is why the surface grew."""
-    assert len(_DECLARED) <= 11
+    """Twelve modules is reviewable. If this fails, the question is not how to
+    raise the bound -- it is why the surface grew.
+
+    It grew once, from eleven, and the answer is recorded rather than left to
+    archaeology: `kernel/worker.py` dials back to the daemon when a scheduler
+    places it on a compute node (M3b-1). It is a client, not a listener; it is
+    off unless the scheduler set the address; it refuses to run at all without
+    a credential file; and the address it dials was written by this daemon,
+    never taken from a cell or a model."""
+    assert len(_DECLARED) <= 12
 
 
 def test_the_scan_finds_a_planted_call():

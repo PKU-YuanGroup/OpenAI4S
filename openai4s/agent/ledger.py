@@ -349,6 +349,7 @@ class RuntimeActionLedger:
         reply = self._reply
         message, wire_state = _sanitize_reply(reply, self.tool_resolver)
         usage, cost_usd = self._reply_accounting(reply)
+        self._record_team_usage(usage)
         self._action = action
         if isinstance(action, FinalizeAction):
             call = action.call
@@ -456,6 +457,24 @@ class RuntimeActionLedger:
                 ),
             )
         self.current_group_id = group["group_id"]
+
+    def _record_team_usage(self, usage: dict[str, int] | None) -> None:
+        """Best-effort team-mode metering (M2-5, decision D10 账本).
+
+        Attribution walks ``root_frame_id -> session root -> session owner``;
+        with no ownership row (single-user installs, unowned sessions) this
+        is two SELECTs and no write, so the off state stays inert (INV-1).
+        Accounting must never fail an action — same contract as
+        ``_reply_accounting``.
+        """
+        if not usage:
+            return
+        # One metering hook, shared with the reviewer's provider path: a
+        # second copy of this loop is how review calls came to bill only the
+        # per-frame counters and never the ledger the quota check reads.
+        from openai4s.storage.governance import record_session_llm_usage
+
+        record_session_llm_usage(self.store, self.root_frame_id, usage)
 
     def _reply_accounting(
         self, reply: ModelReply

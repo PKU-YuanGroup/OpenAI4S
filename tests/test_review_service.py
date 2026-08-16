@@ -204,7 +204,9 @@ def _service(
         ),
         emitter_for=emitter_for,
         llm_config_for=lambda _state: config,
-        review_evidence=lambda evidence, cfg: reviews["call"](evidence, cfg),
+        review_evidence=lambda evidence, cfg, root_frame_id=None: reviews["call"](
+            evidence, cfg
+        ),
         providers=lambda: provider_registry["value"],
         clean_api_key=lambda value: str(value or "").strip(),
         # A profile's api_key holds a broker reference once migrated; this
@@ -587,3 +589,52 @@ def test_submit_thread_start_failure_cleans_reservation_and_job():
         service.submit("frame", "default")
     assert service.call_inflight("frame") is False
     assert jobs == {}
+
+
+def test_a_review_advances_the_governance_ledger(tmp_path):
+    """The reviewer reaches the provider through its own port. The pre-call
+    quota check was wired to it, but the *usage* was written only to the
+    per-frame counters -- so the ledger that check reads never advanced,
+    and a member could review forever against a limit that could not fill.
+    Asserted on the real Store, because the ledger is a table."""
+    from openai4s.store import get_store
+
+    store = get_store(str(tmp_path / "state.db"))
+    try:
+        user = store.team.create_user(username="alice", password="pw", role="member")
+        fid = store.new_frame(kind="turn", project_id="p")
+        store.team.set_session_owner(fid, user["id"], project_id="p")
+
+        # a review that reports usage, through the same service and hooks
+        # the daemon uses; only the provider is fake
+        threads = ImmediateThreads()
+        review_box = {}
+        service, _store, state, events, _jobs, reviews = _service(
+            store, review_box=review_box, thread_factory=threads
+        )
+        state.root_frame_id = fid
+        reviews["call"] = lambda _evidence, cfg: {
+            "verdict": "pass",
+            "summary": "No issues found",
+            "issues": [],
+            "usage": {"input_tokens": 11, "output_tokens": 3},
+            "model": cfg.model,
+        }
+        service.run(
+            state,
+            events.append,
+            user_text="Create a report",
+            assistant_text="Report created",
+            artifact_versions_before={},
+            cell_count_before=0,
+            step_count_before=0,
+        )
+
+        totals = {
+            row["kind"]: row["total"]
+            for row in store.governance.usage_summary(user_id=user["id"])
+        }
+        assert totals.get("llm_input_tokens") == 11, totals
+        assert totals.get("llm_output_tokens") == 3, totals
+    finally:
+        store.close()

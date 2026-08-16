@@ -84,12 +84,18 @@ class ChatModel:
     tools: Sequence[Any] | Callable[..., Sequence[Any]] = ()
     stream: bool = False
     cancellation: Any = None
+    #: Team-mode quota gate (M2-6): called before every provider request;
+    #: raises to refuse. None (the default and the CLI's value) is a no-op,
+    #: so single-user behavior is untouched (INV-1).
+    quota_gate: Callable[[], None] | None = None
 
     def complete(
         self,
         messages: Sequence[Mapping[str, Any]],
         on_delta: Callable[[str], None],
     ) -> Mapping[str, Any]:
+        if self.quota_gate is not None:
+            self.quota_gate()
         if callable(self.tools):
             try:
                 source = self.tools(messages)

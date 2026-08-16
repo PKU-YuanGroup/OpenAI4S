@@ -28,6 +28,7 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 | [`cli.py`](cli.py) | 两个子命令。`run` 按 tier 挑出场景，校验并执行，一个场景打印一行，末尾再加一行摘要；`characterize` 把 r5 characterization 与 golden 比对，或者重新写出 golden。退出码是确定的。 |
 | [`faults.py`](faults.py) | 一次运行想要可重复所需要的东西：单调时钟（sleep 只是把它往前推）、按调用顺序发出的 UUID 形状标识符，以及一份故障计划。每条声明的故障只触发一次，落在指定点的第 N 次访问上；抛出的失败是结构化的，不是一个裸异常。 |
 | [`normalize.py`](normalize.py) | 把 trace 里易变的 UUID、时间、路径和端口换掉，输出用于逐字节比较的规范编码。标识符在第一次出现时才拿到占位符，所以 parent 链仍然有意义，交换两个事件也会改变输出。事件列表从不排序。 |
+| [`orchestration.py`](orchestration.py) | 另一类 runner：它驱动**真的** `Reconciler` 去对一个脚本化 backend。这是对旁边那条规则的刻意例外，理由与 action-routing eval 相同——reconciler 的决策函数没有哪条活边界需要替身去顶，它的输入就是一行 workload 和一个 observation，两者都是数据。把它的规则在这里重新实现一遍再去检查，等于拿模型验模型，在两者共有的每个缺陷上都会保持绿色。 |
 | [`runner.py`](runner.py) | 跑一个场景的脚本化循环，记录规范事件 trace，途中按计划注入故障，返回 trace digest 之前先检查声明的 invariant。这是 Harness 中与生产无关的那一半：它不导入、也不驱动任何 Agent/Gateway 运行时代码。 |
 | [`schema.py`](schema.py) | 一个场景的版本化 JSON 契约：provider step、fault、permission、expectation，以及一次运行会发出的 event envelope。校验很严格。碰到未知字段，或者 schema 版本不是当前版本，加载会直接失败，而不是被悄悄忽略。 |
 

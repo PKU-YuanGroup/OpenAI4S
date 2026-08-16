@@ -115,6 +115,23 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Repairs the short-lived development state where v16 could be
         # stamped even though its index tables were absent.
         "datapro_content_index_repair",
+        # Team-mode identity: users, login sessions, and the audit log
+        # (docs/team-server-plan.md M1-2). Additive only.
+        "team_users",
+        # Session ownership for team-mode visibility filtering (M1-6).
+        # Existing sessions get no row, which reads as admin-only.
+        "session_owners",
+        # Team governance: membership, invites, usage ledger, quotas (M2).
+        "team_governance",
+        # Cluster workloads and allocations (M3a). Carries the partial unique
+        # index that enforces one live allocation per workload.
+        "orchestration_workloads",
+        # Session leases and session↔workload bindings (M3b-4). Two empty
+        # tables on a single-user install.
+        "orchestration_leases",
+        # Per-user LLM credential *references* (M4-1). The keys themselves
+        # stay in the SecretBroker.
+        "user_llm_keys",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
