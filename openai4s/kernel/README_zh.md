@@ -19,6 +19,7 @@
 | --- | --- |
 | [`__init__.py`](__init__.py) | 对外导出 `Kernel`、`KernelBusyError`、`KernelLease` 和 `KernelSupervisor`。 |
 | [`background.py`](background.py) | `host.exec_background` 就住在这里。一个要跑很久的 Cell——训练、长仿真——会拿到属于它自己的 worker 进程，因此不会卡住前台内核，也不会卡住 Agent 这一轮。`exec_peek` 随时读出它已经积累的 stdout，不用等；`exec_interrupt` 发一次幂等的 SIGINT。这类任务看不见前台命名空间，也没有任何东西落盘。它累积的东西两头都有上限：peek 缓冲区只保留 `MAX_PEEK_CHARS` 的头部并标出截断处，不会随任务寿命一路长下去；同时最多允许十六个任务同时在跑——每个任务自带一个子进程，所以这个上限管的是进程数，而且槽位是在 spawn 之前先占住的，不是之后再补登记，否则并发的多次启动会一起通过同一次检查。 |
+| [`errors.py`](errors.py) | 内核的异常类型，放在一个什么都不 import 的模块里。`KernelInterruptUnavailable` 需要被 `supervisor` catch，而 `manager` 又经 watchdog 触达 `supervisor`——把它定义在 `manager` 里就形成了一个循环导入，且只在 `manager` 恰好先被初始化的导入顺序下才不报错。`manager` 重新导出这两个名字，原有 import 照常可用。 |
 | [`environment.py`](environment.py) | 决定内核能继承到什么。子进程环境是照着一份很短的显式允许名单造出来的，不是从 `os.environ` 抄一份，所以 provider key、云 token、agent socket 和动态加载器注入变量都停在进程边界之外。Cell 之后拉起的任何东西，`host.bash` 也算在内，继承的是同一份过滤后的环境。 |
 | [`environments.py`](environments.py) | 环境选择：让任务换到一个本来就装好了所需包的解释器，而不是每次都现装。预置的 conda 环境从 `OPENAI4S_ENV_ROOTS` 或常见安装根目录里发现，探测 `bin/python` 或 `bin/Rscript`，连同包集合一起缓存。daemon 自己的解释器始终作为合成的 `base` 环境对外提供，所以再怎么选，也不会让一个 session 落到没有 Python 内核可用。 |
 | [`guards.py`](guards.py) | 探测从一个 Cell 漏到下一个 Cell 的状态：Cell 打开却没关掉的 pyplot figure，以及少数进程级全局注册表——它们会在 Cell 之前被 pin 住，之后再做 diff。这些只是廉价的探测，不是隔离手段。对应的可选库不在时，这一项不做任何事；`OPENAI4S_GUARDS_OFF=1` 则把整套关掉。 |
