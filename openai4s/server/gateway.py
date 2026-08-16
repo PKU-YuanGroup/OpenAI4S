@@ -9391,6 +9391,60 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     if root is None or not store.team.session_visible_to(root, user):
                         raise GatewayError(404, "artifact not found")
 
+        def _team_guard_owned_resource(self, method: str, sub: str) -> None:
+            """Refuse an id-addressed resource whose owner this caller may not
+            reach (annotations, notes, folders).
+
+            These are the same defect three more times: the *collection*
+            route carries a project or frame id and is guarded, while the
+            sibling addressed by the resource's own id matches no scope
+            regex and was reachable by anybody logged in. Annotations are
+            the sharp one -- a pinned body is folded into the session's next
+            turn, so rewriting a colleague's annotation is prompt injection
+            into their run, and it kept working after they made the session
+            private because only their *reads* were being guarded.
+
+            Resolution goes id -> owner (root frame, or project) -> the same
+            predicate the rest of the surface asks, so a fourth resource of
+            this shape is a row here rather than a new guard.
+            """
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None or identity.is_admin:
+                return
+            path = sub.split("?")[0]
+            m = re.fullmatch(r"/annotations/([^/]+)", path)
+            if m:
+                if method in ("GET", "HEAD"):
+                    return
+                try:
+                    row = store.get_annotation(unquote(m.group(1)))
+                except Exception:  # noqa: BLE001
+                    row = None
+                if row is None:
+                    return  # unknown id: the handler's own 404 says so
+                root = str(row.get("root_frame_id") or "")
+                if not team_policy.may_use_session(store, identity, root):
+                    raise GatewayError(404, "annotation not found")
+                return
+            for pattern, resolve in (
+                (r"/notes/([^/]+)", store.project_of_note),
+                (r"/folders/([^/]+)", store.project_of_folder),
+            ):
+                m = re.fullmatch(pattern, path)
+                if not m:
+                    continue
+                if method in ("GET", "HEAD"):
+                    return
+                try:
+                    project_id = resolve(unquote(m.group(1)))
+                except Exception:  # noqa: BLE001 — undecidable is refused
+                    raise GatewayError(404, "not found") from None
+                if project_id is None:
+                    return  # unknown id: the handler answers for it
+                if not team_policy.may_read_project(store, identity, project_id):
+                    raise GatewayError(404, "not found")
+                return
+
         def _team_admit(self, method: str, path: str) -> bool:
             """Admit or answer. True -> continue routing with
             `self._team_identity` bound; False -> a response was sent."""
@@ -10173,6 +10227,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # in that project (bare /projects list is filtered at its handler).
             self._team_scope_guard(method, sub)
             self._team_guard_project(method, sub)
+            self._team_guard_owned_resource(method, sub)
             self._team_guard_instance_config(method, sub)
             self._team_guard_share(method, sub)
             if sub == "/sessions/verify" and method == "POST":

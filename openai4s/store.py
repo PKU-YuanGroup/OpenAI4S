@@ -3354,6 +3354,9 @@ class Store:
     def list_notes(self, project_id: str) -> list[dict]:
         return self._notes.list(project_id)
 
+    def project_of_note(self, note_id: str) -> str | None:
+        return self._notes.project_of(note_id)
+
     def delete_note(self, note_id: str) -> None:
         self._notes.delete(note_id)
 
@@ -3668,6 +3671,9 @@ class Store:
 
     def list_folders(self, project_id: str) -> list[dict]:
         return self._folders.list(project_id)
+
+    def project_of_folder(self, folder_id: str) -> str | None:
+        return self._folders.project_of(folder_id)
 
     def rename_folder(self, folder_id: str, name: str) -> None:
         self._folders.rename(folder_id, name)
