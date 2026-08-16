@@ -42,6 +42,7 @@ import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 #: The verbs the gateway can actually dispatch. Membership, not spelling: an
 #: "uppercase and alphabetic" test accepts `GTE`, `BANANA`, and the full-width
