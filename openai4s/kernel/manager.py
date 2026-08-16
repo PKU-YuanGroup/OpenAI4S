@@ -95,6 +95,20 @@ class KernelBusyError(RuntimeError):
     """The worker protocol is owned by an in-flight cell transaction."""
 
 
+class KernelInterruptUnavailable(RuntimeError):
+    """This kernel cannot be interrupted at all — not "the attempt failed".
+
+    A local kernel is interrupted with a signal to a pid we hold. A remote
+    one has no pid here, so delivery depends on the allocation having been
+    given a signal path; when it was not, there is nothing to try and no
+    later attempt that would work. Its own type because every caller of
+    `interrupt()` wraps it in `except Exception: pass` -- correctly, for the
+    transient errors interruption really is best-effort about -- so a bare
+    RuntimeError was swallowed by all of them, and the cancel API answered
+    `interrupted: true` for a cell still running on the cluster.
+    """
+
+
 class Kernel:
     def __init__(
         self,
@@ -449,7 +463,7 @@ class Kernel:
             if not self._transport.interrupt():
                 # Nothing delivered it. Silence here would leave a cell
                 # apparently cancelled and actually running.
-                raise RuntimeError(
+                raise KernelInterruptUnavailable(
                     "no way to interrupt this worker: it is remote and no "
                     "signal delivery was configured for its allocation"
                 )

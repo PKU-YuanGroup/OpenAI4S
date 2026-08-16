@@ -13,6 +13,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Hashable
 
+from openai4s.kernel.manager import KernelInterruptUnavailable
+
 KernelFactory = Callable[[], Any]
 
 
@@ -164,12 +166,16 @@ class KernelSupervisor:
                 slot = self._slots.get(name)
                 if slot is None or slot.kernel is None:
                     continue
-                count += 1
                 try:
                     slot.kernel.interrupt()
                     self._touch_slot(slot)
+                except KernelInterruptUnavailable:
+                    # Not counted: the return value is "how many kernels were
+                    # interrupted", and a worker with no signal path was not.
+                    continue
                 except Exception:  # noqa: BLE001 — interruption is best-effort
                     pass
+                count += 1
             return count
 
     def stop(
@@ -372,6 +378,13 @@ class KernelSupervisor:
             try:
                 slot.kernel.interrupt()
                 self._touch_slot(slot)
+            except KernelInterruptUnavailable:
+                # Not best-effort, and not swallowable. A remote worker with
+                # no signal path cannot be interrupted at all, and reporting
+                # success meant the cancel API answered `interrupted: true`
+                # for a cell that was still running on the cluster -- exactly
+                # the silence `Kernel.interrupt` started raising to prevent.
+                return False
             except Exception:  # noqa: BLE001 — interruption is best-effort
                 pass
             return True

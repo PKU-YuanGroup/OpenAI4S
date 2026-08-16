@@ -231,7 +231,13 @@ def _recover_protocol_in() -> None:
     so CPython refcount finalization can't slam an fd now owned by user code.
     """
     reserve = getattr(sys, "_openai4s_proto_in_reserve", None)
-    if reserve is None:
+    # `< 0` as well as None. The remote branch publishes -1 as its "no
+    # reserve" sentinel (the fd-closing loop above already tests `fd < 0`
+    # for the same value), and testing only `is None` let it through to
+    # `os.dup(-1)` -- a bare EBADF out of the read loop instead of this
+    # deliberate message, after the live wrapper had already been parked,
+    # and with no stderr tail on a remote worker to explain it.
+    if reserve is None or reserve < 0:
         raise RuntimeError("protocol IN corrupted and no reserve fd to recover")
     old = getattr(sys, "_openai4s_protocol_stdin", None)
     ident = getattr(sys, "_openai4s_protocol_ident", None)
