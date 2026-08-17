@@ -628,6 +628,25 @@ class Kernel:
         against the new process — the ``Kernel`` object itself is reused so all
         references held by the session stay valid.
         """
+        # Refused *before* anything is torn down. A remote worker is not this
+        # process's to spawn, so this can only ever fail for one -- and it
+        # used to fail after closing the transport and bumping the
+        # generation, which left the supervisor's slot and the durable
+        # `kernel_generations` row pointing at a worker whose socket was
+        # already gone, with the exception escaping before
+        # `_finish_generation` could record anything. The session's kernel
+        # was destroyed by a request that answered 500.
+        #
+        # The caller's correct move is recovery -- a new epoch, state
+        # declared lost -- and it can only make it if the kernel it has is
+        # still the one it had.
+        if self.transport_factory is not None:
+            raise RuntimeError(
+                "this worker cannot be respawned in place: it dialled in "
+                "from elsewhere, so a new one has to be placed and dial back "
+                "in. Recover the session (a new epoch) instead of restarting "
+                "its kernel."
+            )
         # Teardown belongs to the transport: a local child needs a shutdown
         # frame, a wait, a kill and a reap (a restart that skipped the reap
         # leaked a zombie every time); a remote worker has a socket to close
@@ -644,15 +663,13 @@ class Kernel:
         # refused, and this counter is the whole of how it is refused.
         self.generation += 1
         if not self._transport.alive():
-            # A local child is respawned by spawning it. A remote worker is
-            # not this process's to spawn: something has to place a new one
-            # and let it dial back in. Say so, rather than returning a
-            # Kernel that looks restarted and fails on its next cell — the
-            # caller's correct move is recovery (a new epoch, state lost),
-            # and it can only make it if it is told.
+            # A local respawn that produced a dead child. The remote case is
+            # refused at the top of this method, before the old worker is
+            # torn down, so reaching here means the fresh local process did
+            # not come up.
             raise RuntimeError(
-                "this worker cannot be respawned in place: it dialled in from "
-                "elsewhere, so a new one has to be placed and reconnected"
+                "the restarted worker is not alive: its process failed to "
+                "start or exited immediately"
             )
 
     def is_alive(self) -> bool:

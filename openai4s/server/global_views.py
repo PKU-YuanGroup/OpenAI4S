@@ -98,14 +98,33 @@ class GlobalResearchViewService:
             # artifact with no session (or a session with no ownership row)
             # is admin-only, matching browse_frames' fail-closed rule.
             team = getattr(self.store, "team", None)
-            user = {"id": visible_to_user_id, "role": "member", "kind": "user"}
-            artifacts = [
-                a
-                for a in artifacts
-                if team is not None
-                and a.get("root_frame_id")
-                and team.session_visible_to(str(a["root_frame_id"]), user)
-            ]
+            # The caller's real row, not a synthetic "member". Fabricating the
+            # role made this predicate answer a question about a different
+            # user than the one asking: `session_visible_to` short-circuits
+            # False for a *global* guest before it consults project_members,
+            # and a hardcoded "member" can never reach that branch. It is
+            # latent only because the guest gate happens to refuse this route
+            # earlier — an authorization input that is correct by luck of a
+            # check somewhere else is one narrowing away from being wrong.
+            user = None
+            if team is not None:
+                try:
+                    user = team.get_user(str(visible_to_user_id))
+                except Exception:  # noqa: BLE001 — undecidable is refused
+                    user = None
+            # An id we cannot resolve sees nothing, and falls through to the
+            # ordinary return so the payload keeps its shape rather than
+            # gaining a second one only this branch produces.
+            artifacts = (
+                []
+                if user is None
+                else [
+                    a
+                    for a in artifacts
+                    if a.get("root_frame_id")
+                    and team.session_visible_to(str(a["root_frame_id"]), user)
+                ]
+            )
         nodes: list[dict[str, Any]] = []
         versions: dict[str, dict[str, Any]] = {}
         for artifact in artifacts:

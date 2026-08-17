@@ -435,9 +435,22 @@ def test_restarting_a_remote_worker_says_it_cannot_rather_than_pretending(
     """`restart` used to reach straight into a local child's `.stdin`, which
     on this path is a `None` that never existed — an AttributeError instead
     of an answer. A remote worker is not this process's to respawn: the
-    caller's move is recovery, and it can only make it if it is told."""
-    with pytest.raises(RuntimeError, match="placed and reconnected"):
+    caller's move is recovery, and it can only make it if it is told.
+
+    And it must still *have* the kernel it was told about. The refusal used
+    to come after the transport was closed and the generation bumped, so the
+    supervisor's slot and the durable `kernel_generations` row were left
+    pointing at a worker whose socket was already gone — the exception
+    escaping before `_finish_generation` could record anything. A request
+    that answers 500 must not also destroy the session's kernel.
+    """
+    before = remote_kernel.generation
+    with pytest.raises(RuntimeError, match="cannot be respawned in place"):
         remote_kernel.restart()
+    assert remote_kernel.is_alive(), "the refusal tore down the worker it refused"
+    assert remote_kernel.generation == before, "a refused restart bumped the generation"
+    # Still usable: the caller can go on to recover the session deliberately.
+    assert remote_kernel.execute("print(1 + 1)")["stdout"].strip() == "2"
 
 
 def test_a_burned_credential_stays_burned_across_a_restart(tmp_path):

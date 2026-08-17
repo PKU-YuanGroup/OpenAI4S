@@ -26,6 +26,7 @@ science.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from openai4s.orchestration.models import (
@@ -317,6 +318,27 @@ class SlurmBackend:
     def find_by_token(self, token: SubmissionToken) -> ExternalHandle | None:
         found = self._broker.find_by_comment(token.value)
         return self._handle(found) if found else None
+
+    def log_paths(self, allocation_id: str) -> tuple[Path | None, Path | None]:
+        """Where this allocation's output went, for the log-tail route.
+
+        The route discovers this by `getattr(backend, "log_paths", None)`,
+        and only `LocalBackend` had it -- so every *cluster* job's logs route
+        answered `{"stdout": "", "stderr": ""}` with a valid allocation id,
+        which is indistinguishable from "the job has not printed anything
+        yet". The files existed the whole time: `_submit_spec` names them
+        `<log_dir>/<allocation_id>.out|.err` and hands those paths to the
+        scheduler.
+
+        Derived from the id rather than remembered, because the daemon may
+        have restarted since the job was submitted -- and a log tail that
+        only worked for jobs submitted by this process would be the same
+        empty answer for the same invisible reason.
+        """
+        if not self._log_dir:
+            return (None, None)
+        base = Path(self._log_dir)
+        return (base / f"{allocation_id}.out", base / f"{allocation_id}.err")
 
     def diagnostics(self) -> dict[str, Any]:
         return {

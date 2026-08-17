@@ -4290,10 +4290,38 @@ class SessionRunner:
         # Publish environment-dependent dispatcher hooks only after the worker
         # replacement has committed.  This preserves build-first semantics.
         disp.active_env_bin = env.bin_dir
-        disp.background_kernel_factory = lambda: Kernel(
-            dispatcher=disp,
-            **kernel_options,
-        )
+        if remote is not None:
+            # `host.exec_background` on a cluster session refuses rather than
+            # running here. The foreground kernel is the worker that dialled
+            # in; this factory builds a *local* child of the daemon, and it
+            # was wired unconditionally — eleven lines below the branch that
+            # exists to stop exactly that. So a background job launched from
+            # a cell running on a compute node ran on the head node instead,
+            # in a different workspace, with none of the allocated resources
+            # and unable to see the files the foreground cell had just
+            # written. Silently: the job worked, it simply worked somewhere
+            # else, on different data.
+            #
+            # Refusing is the honest option available here. A background
+            # kernel needs its own worker, and this session was granted one
+            # socket for one allocation; placing a second one is the resource
+            # plane's business, not something to improvise at a factory.
+            def _refuse_background() -> Kernel:
+                raise RuntimeError(
+                    "host.exec_background is not available on a cluster "
+                    "session: this session's kernel runs on an allocated "
+                    "node, and a background kernel would run on the daemon "
+                    "instead, in a different workspace. Submit a batch job "
+                    "with POST /orchestration/jobs, or release the cluster "
+                    "resource to run this session locally."
+                )
+
+            disp.background_kernel_factory = _refuse_background
+        else:
+            disp.background_kernel_factory = lambda: Kernel(
+                dispatcher=disp,
+                **kernel_options,
+            )
         if previous_lease is None or previous_lease.kernel is not lease.kernel:
             # Run outside the supervisor lock so cancellation can interrupt a
             # slow sidecar.  The caller's turn_lock still prevents execution

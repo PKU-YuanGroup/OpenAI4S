@@ -40,6 +40,24 @@ for _name in (
     "OPENAI4S_CONTEXT_WINDOW",
     "OPENAI4S_COMPACTION_TRIGGER_RATIO",
     "OPENAI4S_RECORD_TAPE",
+    # Team-server posture. `Config` reads both on *every* construction
+    # (`_env_flag("OPENAI4S_TEAM_MODE")`, `_data_roots()`), and
+    # docs/team-server.md tells operators to export them — so the developer
+    # most likely to have them set is the one running this suite. Measured
+    # rather than assumed: a green subset produced 11 failures in
+    # tests/test_gateway.py under OPENAI4S_TEAM_MODE=1 (token gate,
+    # DNS-rebind, WS upgrade, error envelopes), and OPENAI4S_DATA_ROOTS
+    # turned test_team_files.py's unconfigured-roots shape from 404 into
+    # 200. Neither is matched by the `_LLM_ENV_LEAK` regex above, which
+    # wants a MODEL/BASE_URL/API_KEY suffix — `MODE` is not `MODEL`.
+    "OPENAI4S_TEAM_MODE",
+    "OPENAI4S_DATA_ROOTS",
+    # The worker listener, for the same reason: an exported value would
+    # start a real socket in tests that assert the feature is off.
+    "OPENAI4S_WORKER_LISTEN",
+    "OPENAI4S_WORKER_CONNECT",
+    "OPENAI4S_WORKER_ADVERTISE",
+    "OPENAI4S_RECONCILE_INTERVAL",
 ):
     os.environ.pop(_name, None)
 

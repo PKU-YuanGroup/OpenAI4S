@@ -172,6 +172,55 @@ def test_waiting_for_a_gang_returns_the_partial_set_on_timeout(gateway):
         sock.close()
 
 
+def test_a_timed_out_wait_keeps_the_partial_set_for_the_next_one(gateway):
+    """The bug this closes: the timeout path used to `pop`, so the ranks that
+    had already arrived were destroyed — and `attach_worker` assigns from
+    what it is handed. With a 5s attach timeout and ranks arriving further
+    apart than that, attempt one took rank 0 and dropped it, attempt two saw
+    only rank 1, and the gang could never complete while rank 0's socket sat
+    orphaned with nothing holding a reference to close it.
+
+    A retry has to be additive, which is the only way "3 of 4, waiting for
+    the rest" can ever become "4 of 4"."""
+    node, authority = gateway
+    sockets = [_dial(node, authority.issue(allocation_id="alloc_1", epoch=0, rank=0))]
+    try:
+        first = node.await_workers("alloc_1", 0, expected=2, timeout_s=0.3)
+        assert [r.rank for r in first] == [0]
+
+        sockets.append(
+            _dial(node, authority.issue(allocation_id="alloc_1", epoch=0, rank=1))
+        )
+        second = node.await_workers("alloc_1", 0, expected=2, timeout_s=5)
+        assert sorted(r.rank for r in second) == [
+            0,
+            1,
+        ], "the rank from the first, timed-out wait was dropped"
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
+def test_an_unawaited_registration_is_reaped(gateway, monkeypatch):
+    """`_arrived` was pruned only by `await_workers`, and only for the key it
+    was called with — so a straggler from a superseded epoch, or a worker
+    whose session was released while its job queued, held a live transport,
+    its two makefile wrappers and the accepted socket for the daemon's
+    lifetime. One leaked fd triple per straggler, ending in EMFILE."""
+    import openai4s.orchestration.worker_gateway as wg
+
+    monkeypatch.setattr(wg, "ORPHAN_REGISTRATION_TTL_S", 0.0)
+    node, authority = gateway
+    sock = _dial(node, authority.issue(allocation_id="alloc_orphan", epoch=0, rank=0))
+    try:
+        # Nobody ever awaits `alloc_orphan`; a wait on any other key sweeps.
+        node.await_workers("alloc_other", 0, expected=1, timeout_s=0.2)
+        assert node.reaped >= 1
+        assert ("alloc_orphan", 0) not in node._arrived
+    finally:
+        sock.close()
+
+
 def test_a_late_rank_completes_the_gang(gateway):
     """The wait must not conclude on the first arrival — it re-checks."""
     node, authority = gateway

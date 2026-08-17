@@ -110,9 +110,41 @@ def posture(data_dir: Path, db_path: Path) -> dict:
     }
 
 
+def fsync_dir(directory: "Path") -> None:
+    """Persist a directory entry, not just the bytes behind it.
+
+    Publishing a file by `os.link`/`os.replace` is a change to the
+    *directory*; fsyncing only the file leaves a crash able to keep the
+    content and lose the name. For the two things this project publishes
+    that way -- the daemon access token and the worker bootstrap signing
+    secret -- losing the name means the next boot mints a different one and
+    invalidates every credential already issued from the old.
+
+    Lives here because both publishers need it and one of them was written
+    without it: a private copy in `server/local_auth.py` is not reachable
+    from `orchestration/bootstrap.py`, so the second implementation of the
+    same protocol simply omitted the step.
+
+    Best-effort by contract: not every filesystem lets a directory be
+    opened for fsync, and refusing to start over a durability nicety is the
+    worse trade.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 __all__ = [
     "DIR_MODE",
     "FILE_MODE",
+    "fsync_dir",
     "harden_db",
     "harden_dir",
     "harden_file",

@@ -44,7 +44,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openai4s.security.permissions import FILE_MODE, harden_dir, harden_file
+from openai4s.security.permissions import (
+    FILE_MODE,
+)
+from openai4s.security.permissions import fsync_dir as _fsync_dir
+from openai4s.security.permissions import (
+    harden_dir,
+    harden_file,
+)
 
 #: Filename of the per-daemon signing secret, under the data dir.
 SECRET_FILENAME = "worker-bootstrap-secret"
@@ -103,6 +110,15 @@ def load_or_mint_secret(data_dir: Path | str) -> bytes:
             os.unlink(temporary)
         except OSError:
             pass
+
+    # Persist the directory entry, not just the bytes behind it. Publishing
+    # is a change to the *directory*, so fsyncing only the file leaves a
+    # crash able to keep the content and lose the name -- and the next boot
+    # then mints a different signing secret, which invalidates every worker
+    # credential still sitting inside its 24h life on the shared filesystem.
+    # `local_auth.load_or_mint` has done this since it was written and this
+    # copy of the same protocol omitted it.
+    _fsync_dir(directory)
 
     if published:
         return candidate

@@ -478,7 +478,23 @@ class ComputeSessionManager:
         # away three of four registrations would leave those workers
         # connected, waiting, and unreleasable — and the UI would have no
         # way to say "3 of 4" rather than "not ready".
-        runtime.registrations = list(arrivals)
+        #
+        # Merged, not assigned, and keyed by rank. `attach_worker` is called
+        # again on every cell while the gang is incomplete, so an assignment
+        # made each retry start from whatever that call happened to see:
+        # with a 5s timeout and ranks arriving 5s apart, attempt one took
+        # rank 0, attempt two saw only rank 1 and overwrote it, and the gang
+        # could never complete. Rank is the identity because a re-dial of
+        # the same rank replaces its predecessor rather than counting twice.
+        if runtime.epoch != workload.execution_epoch:
+            # A new epoch is a new attempt: the previous epoch's workers are
+            # fenced out by the credential anyway, and carrying them here
+            # would let a dead attempt's count satisfy this one's gang.
+            runtime.registrations = []
+        by_rank = {int(getattr(r, "rank", 0)): r for r in runtime.registrations}
+        by_rank.update({int(getattr(r, "rank", 0)): r for r in arrivals})
+        runtime.registrations = [by_rank[k] for k in sorted(by_rank)]
+        arrivals = runtime.registrations
         runtime.epoch = workload.execution_epoch
         if len(arrivals) < expected:
             return False

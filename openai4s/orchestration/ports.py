@@ -131,6 +131,20 @@ class AllocationBackend(Protocol):
         """Backend health, for an operator staring at a stuck queue."""
         ...
 
+    def log_paths(self, allocation_id: str) -> tuple[Any, Any]:
+        """Where an allocation's stdout and stderr went, or `(None, None)`.
+
+        On the Protocol rather than discovered with `getattr`, because that
+        is what let the log-tail route answer empty strings for every
+        cluster job while only `LocalBackend` implemented it -- a missing
+        capability and "the job printed nothing" are the same response, and
+        the route cannot tell them apart. A backend with nowhere to point
+        returns `(None, None)` and says so; a backend that forgets to
+        implement it now fails the Protocol check instead of failing
+        quietly.
+        """
+        ...
+
 
 @runtime_checkable
 class TaskRunner(Protocol):

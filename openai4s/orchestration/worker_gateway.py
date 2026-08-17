@@ -61,6 +61,12 @@ MAX_HANDSHAKE_BYTES = 64 * 1024
 #: may end up driving.
 MAX_PENDING_HANDSHAKES = 64
 
+#: How long an arrived-but-unawaited registration is kept before it is closed
+#: and dropped. Generous, because the ordinary reason a worker waits is that
+#: its session is between attach attempts; short enough that a straggler from
+#: a superseded epoch does not hold a socket for the daemon's lifetime.
+ORPHAN_REGISTRATION_TTL_S = 15 * 60.0
+
 
 @dataclass(frozen=True)
 class Registration:
@@ -71,6 +77,9 @@ class Registration:
     rank: int
     transport: OutboundTcpTransport
     peer: str
+    #: When this worker was admitted, on the monotonic clock. Used only to
+    #: reap registrations nobody ever awaits; see `_reap_locked`.
+    arrived_at: float = 0.0
     #: The `authorization_generation` this connection was admitted under,
     #: minted by the Host after the credential verified and echoed to the
     #: worker in the handshake response. It is on the Registration because
@@ -137,6 +146,8 @@ class WorkerGateway:
         #: it did not verify" -- conflating a refused credential with a full
         #: pool would hide exactly the saturation an operator is looking for.
         self.refused_busy = 0
+        #: Registrations closed because nobody awaited them in time.
+        self.reaped = 0
         self._handshake_slots = threading.Semaphore(max(1, int(max_pending_handshakes)))
 
     # --- lifecycle --------------------------------------------------------
@@ -171,6 +182,19 @@ class WorkerGateway:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=timeout_s)
+        # Close what nobody collected. `stop()` used to close only the
+        # listening socket, so every parked registration's accepted socket
+        # and its two makefile wrappers survived the gateway that owned them
+        # -- which in a test suite is one fd triple per gateway fixture.
+        with self._lock:
+            parked = [r for group in self._arrived.values() for r in group]
+            self._arrived.clear()
+            self._waiters.clear()
+        for registration in parked:
+            try:
+                registration.transport.close(graceful=False)
+            except Exception:  # noqa: BLE001 — shutdown must not raise
+                pass
 
     def _serve(self) -> None:
         while not self._stop.is_set():
@@ -300,6 +324,7 @@ class WorkerGateway:
             transport=transport,
             peer=peer,
             generation=generation,
+            arrived_at=time.monotonic(),
         )
         key = (credential.allocation_id, credential.epoch)
         with self._lock:
@@ -342,6 +367,46 @@ class WorkerGateway:
             if total > MAX_HANDSHAKE_BYTES:
                 raise BootstrapError("handshake line too long")
         return b"".join(chunks).split(b"\n", 1)[0].decode("utf-8", "replace")
+
+    def _reap_locked(self) -> int:
+        """Close and drop arrivals nobody is going to await. Caller holds the lock.
+
+        `_arrived` was only ever pruned by `await_workers`, and only for the
+        key it was called with, so anything that arrived for a key nobody
+        waits on stayed forever — holding a live `OutboundTcpTransport`, its
+        two `makefile` wrappers and the accepted socket. Two ordinary paths
+        produce those: a recovery bumps the epoch, so a straggler from the
+        old one lands under `(alloc, old_epoch)`; and a session released
+        while its job was still queued leaves its worker dialling in to
+        nobody. One leaked fd triple per straggler, for the daemon's
+        lifetime, ending in EMFILE on the accept loop.
+
+        Age is measured from arrival rather than from last use because these
+        are by definition unused: a registration a caller took ownership of
+        was popped out of this dict.
+        """
+        if not self._arrived:
+            return 0
+        cutoff = time.monotonic() - ORPHAN_REGISTRATION_TTL_S
+        dropped = 0
+        for key in [k for k in self._arrived if k not in self._waiters]:
+            keep: list[Registration] = []
+            for registration in self._arrived.get(key) or ():
+                if registration.arrived_at > cutoff:
+                    keep.append(registration)
+                    continue
+                dropped += 1
+                try:
+                    registration.transport.close(graceful=False)
+                except Exception:  # noqa: BLE001 — reaping must not raise
+                    pass
+            if keep:
+                self._arrived[key] = keep
+            else:
+                self._arrived.pop(key, None)
+        if dropped:
+            self.reaped += dropped
+        return dropped
 
     def _note_rejection(self, peer: str, exc: BaseException) -> None:
         # stderr, not a broadcast: this is daemon-level and there is no
@@ -387,6 +452,7 @@ class WorkerGateway:
         deadline = time.monotonic() + max(0.0, timeout_s)
         while True:
             with self._lock:
+                self._reap_locked()
                 have = list(self._arrived.get(key) or ())
                 if len(have) >= expected:
                     self._arrived.pop(key, None)
@@ -401,10 +467,23 @@ class WorkerGateway:
             if remaining <= 0 or not waiter.wait(timeout=remaining):
                 with self._lock:
                     self._waiters.pop(key, None)
-                    # Hand back the partial set. It is the caller's to
-                    # release, and pretending nothing arrived would strand
-                    # workers that are connected and waiting.
-                    return list(self._arrived.pop(key, []) or [])
+                    # Hand back a *copy* of the partial set and keep it.
+                    #
+                    # This used to `pop`, which destroyed the ranks that had
+                    # already arrived — and `attach_worker` assigns rather
+                    # than merges, so the next attempt started from whatever
+                    # the second call happened to see. With a 5s attach
+                    # timeout and rank 0 at t=1s, rank 1 at t=6s: attempt one
+                    # took [r0] and dropped it, attempt two saw only [r1],
+                    # and `workers_registered >= workers_expected` was
+                    # unreachable forever — rank 0's socket orphaned with
+                    # nothing left holding a reference to close it.
+                    #
+                    # Accumulating instead makes a retry additive, which is
+                    # what "3 of 4, waiting for the rest" has to mean. The
+                    # reaper below is what stops a set nobody ever awaits
+                    # from living forever.
+                    return list(self._arrived.get(key) or ())
 
 
 def gateway_from_environment(
