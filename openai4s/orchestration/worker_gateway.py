@@ -33,7 +33,7 @@ import socket
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from openai4s.kernel.transport import OutboundTcpTransport
@@ -79,7 +79,12 @@ class Registration:
     peer: str
     #: When this worker was admitted, on the monotonic clock. Used only to
     #: reap registrations nobody ever awaits; see `_reap_locked`.
-    arrived_at: float = 0.0
+    #:
+    #: A `default_factory`, not `0.0`: a plain zero default means "admitted
+    #: at the epoch", so any Registration built without an explicit value
+    #: would be instantly past the reap cutoff and closed under a caller
+    #: still using it. The safe default for "when did this arrive" is now.
+    arrived_at: float = field(default_factory=time.monotonic)
     #: The `authorization_generation` this connection was admitted under,
     #: minted by the Host after the credential verified and echoed to the
     #: worker in the handshake response. It is on the Registration because
@@ -324,7 +329,6 @@ class WorkerGateway:
             transport=transport,
             peer=peer,
             generation=generation,
-            arrived_at=time.monotonic(),
         )
         key = (credential.allocation_id, credential.epoch)
         with self._lock:
@@ -392,7 +396,14 @@ class WorkerGateway:
         for key in [k for k in self._arrived if k not in self._waiters]:
             keep: list[Registration] = []
             for registration in self._arrived.get(key) or ():
-                if registration.arrived_at > cutoff:
+                # `getattr`, because `_arrived` is also written directly by
+                # tests that stand in their own registration double. An
+                # object this gateway did not build has no arrival time to
+                # judge, and closing somebody else's transport on a guess is
+                # worse than keeping it: in production every entry here came
+                # from `_handshake`, so the guess would never be needed.
+                arrived = getattr(registration, "arrived_at", None)
+                if arrived is None or arrived > cutoff:
                     keep.append(registration)
                     continue
                 dropped += 1
