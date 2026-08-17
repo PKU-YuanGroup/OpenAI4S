@@ -13,6 +13,8 @@ team mode off reads exactly what it always read (INV-1).
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from openai4s.store import get_store
@@ -79,3 +81,57 @@ def test_the_credential_table_is_denied_outright(store, monkeypatch):
         with pytest.raises(Exception) as caught:
             store.query(f"SELECT * FROM {table}")
         assert table in str(caught.value).lower()
+
+
+#: Base tables `host.query` may read directly, in team mode as well as
+#: single-user. Adding a name here is a security decision, not a formality:
+#: it says the whole content is the agent's own working data in every
+#: deployment.
+_DELIBERATELY_PUBLIC = {
+    # Schema bookkeeping. No user content, and the support surfaces document
+    # reading it.
+    "schema_migrations",
+}
+
+
+def test_every_table_is_classified(store):
+    """A denylist with no completeness check is a list somebody has to
+    remember to extend, and this one has been forgotten twice already: the
+    commit adding `user_llm_keys`, `leases` and `session_workloads` records
+    that they "were written and committed once -- and lost" to a stash/pop
+    with nothing detecting it, and a later review found sixteen older tables
+    readable by any agent cell, one of them holding a plaintext credential.
+
+    So the rule is mechanical now: every base table is denied, view-only, or
+    deliberately public. A migration that adds a table fails here until
+    somebody decides which -- and that decision is exactly what was being
+    skipped.
+    """
+    from openai4s.store import (
+        _TEAM_VIEW_ONLY_TABLES,
+        _VIEW_ONLY_TABLES,
+        QUERY_DENYLIST,
+    )
+
+    with sqlite3.connect(store.db_path) as conn:
+        tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+    classified = (
+        set(QUERY_DENYLIST)
+        | set(_VIEW_ONLY_TABLES)
+        | set(_TEAM_VIEW_ONLY_TABLES)
+        | _DELIBERATELY_PUBLIC
+    )
+    unclassified = sorted(tables - classified)
+    assert not unclassified, (
+        "these tables are readable by any agent cell and nobody has decided "
+        f"they should be: {unclassified}. Put each in QUERY_DENYLIST (secrets, "
+        "identity, another tenant's state), in _TEAM_VIEW_ONLY_TABLES "
+        "(per-session or per-project content), or in _DELIBERATELY_PUBLIC "
+        "above if it is genuinely the agent's own working data."
+    )

@@ -424,6 +424,84 @@ jobs:
         if: failure()
         run: cat "${RUNNER_TEMP}/openai4s-browser.log" || true
 
+  browser-team-mode:
+    name: Team mode in a real browser
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    # Its own job, not a step in `browser-smoke`, because it needs a daemon
+    # that job cannot provide: OPENAI4S_TEAM_MODE=1 plus two seeded accounts,
+    # where the smoke daemon is deliberately single-user and credential-less.
+    #
+    # It exists because `tests/browser_team_mode.mjs` was added, described in
+    # tests/README.md as "the only gate that needs its own daemon", and
+    # invoked by nothing -- which is the finding the comment in `browser-smoke`
+    # above already names: a browser file no gate invokes is not evidence of
+    # anything. This is the only end-to-end coverage of team mode as a person
+    # meets it: the login redirect, the identity chip, the admin governance
+    # panel, the guest's replay-only world, and the cross-user 404s.
+    #
+    # Chromium only: the value here is depth on one engine, not breadth. The
+    # engine matrix belongs to `browser_matrix.mjs`.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Install the zero-dependency server and browser driver
+        run: |
+          uv sync --locked
+          npm install --no-save --ignore-scripts playwright@1.54.1
+          npx playwright install --with-deps chromium
+      - name: Seed two accounts and run the team-mode walk
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-team-mode
+          OPENAI4S_TEAM_MODE: "1"
+          OPENAI4S_KERNEL_SANDBOX: "off"
+          OPENAI4S_SECRET_STORE: plaintext
+          OPENAI4S_HOST: 127.0.0.1
+          OPENAI4S_PORT: "8794"
+        run: |
+          # Generated here and passed by environment, never on argv: a
+          # password in a command line is readable from the process table,
+          # which is the same reason `user add` only takes --password-stdin.
+          admin_pw="$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')"
+          member_pw="$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')"
+
+          # Seed before the daemon starts: `user add` is direct database
+          # access and wants no daemon, and seeding first means the walk
+          # never races account creation.
+          printf '%s\n' "$admin_pw" \
+            | uv run openai4s user add erika --role admin --password-stdin
+          printf '%s\n' "$member_pw" \
+            | uv run openai4s user add mallory --password-stdin
+
+          uv run openai4s serve >"${RUNNER_TEMP}/openai4s-team-mode.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 40); do
+            # --fail treats the 401/303 of a team daemon as "not ready", so
+            # probe a path that answers before login instead.
+            if curl --fail --silent http://127.0.0.1:8794/health >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null; then
+              cat "${RUNNER_TEMP}/openai4s-team-mode.log"
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          OPENAI4S_TEAM_ADMIN_PW="$admin_pw" \
+          OPENAI4S_TEAM_MEMBER_PW="$member_pw" \
+          OPENAI4S_BROWSER_URL=http://127.0.0.1:8794 \
+            node tests/browser_team_mode.mjs
+      - name: Show daemon log after a failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/openai4s-team-mode.log" || true
+
   macos-sandbox-smoke:
     name: macOS sandbox enforcement (nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
