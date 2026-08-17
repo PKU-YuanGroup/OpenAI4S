@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -798,6 +798,10 @@ class HostDispatcher:
         # Runtime adapter for independent background kernels. Gateway/CLI set
         # this dynamically so jobs inherit the foreground workspace and env.
         self.background_kernel_factory: Callable[[], Any] | None = None
+        # Optional execution-lifetime admission supplied by the Web session.
+        # Kept as a dynamic hook so an already-created BackgroundExecutor sees
+        # the current session coordinator rather than capturing stale state.
+        self.background_execution_lease: Callable[[], Any] | None = None
         # optional replay recorder: if set, every host_call is taped.
         self.recorder: Any | None = None
         # remote-compute transport, built lazily on first compute_* call.
@@ -2108,6 +2112,11 @@ class HostDispatcher:
             self._bg_executor = BackgroundExecutor(
                 kernel_factory=self._new_background_kernel,
                 dispatcher=self,
+                lifetime_factory=lambda: (
+                    self.background_execution_lease()
+                    if self.background_execution_lease is not None
+                    else nullcontext()
+                ),
             )
         return self._bg_executor
 

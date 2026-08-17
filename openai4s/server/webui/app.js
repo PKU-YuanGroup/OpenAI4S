@@ -125,6 +125,7 @@ const S = { projects: [], sessions: [], project: null, currentId: null, ws: null
   actionTimelineSelectedGroupId: null, actionTimelineSelectedBranchId: null,
   recoveryActions: null, branchState: null, branchUndo: null, contextState: null, securityState: null, computeTasks: null,
   delegationState: null,
+  environmentStatus: null, standardProfileReadiness: null, _environmentStatusPromise: null, _environmentStatusRefreshFailed: false,
   workbenchErrors: {}, _workbenchReq: 0, _timelineHistoryReq: 0, _timelineHistoryLoading: null, _timelineView: null,
   _recoveryActionLoading: null, _branchActionLoading: null, _timelineRestoreFocusGroupId: null,
   variableInspector: { language: "python", results: {}, loading: null, error: "", request: 0 } };
@@ -235,6 +236,7 @@ try {
 } catch {}
 // Re-render the dynamic (JS-built) views currently on screen after a language switch.
 function rerenderI18n() {
+  try { renderEnvironmentReadinessBanner(); } catch {}
   try { if (!$("#dashboard").classList.contains("hidden")) loadDashboard(); } catch {}
   try { renderProjMenu(); } catch {}
   try { renderSessions(); } catch {}
@@ -355,6 +357,23 @@ Object.assign(I18N.zh, {
   "conv.title.default": "会话",
   "conv.title.rename": "重命名会话（回车保存）",
   "cust.compute.desc": "本地内核环境、预装包与加速器",
+  "environment.readiness.bannerTitle": "standard 科研环境尚未就绪",
+  "environment.readiness.bannerMissing": "缺少 {0} 个环境、{1} 个软件包；首个科研 Cell 运行前需要处理。",
+  "environment.readiness.bannerUnavailable": "当前无法确认科研环境是否就绪；未知状态不会被显示成就绪。",
+  "environment.readiness.openCompute": "查看缺项与修复命令",
+  "environment.readiness.cardTitle": "Standard profile readiness",
+  "environment.readiness.ready": "就绪：Python 与 R 的 standard 依赖均已核对。",
+  "environment.readiness.needsSetup": "需要创建缺失的 standard 环境。",
+  "environment.readiness.needsRepair": "环境存在，但缺少 standard 清单中的软件包。",
+  "environment.readiness.unavailable": "无法完成本地 readiness 检查；系统未将它猜测为就绪。",
+  "environment.readiness.missingEnvironments": "缺少环境",
+  "environment.readiness.missingPackages": "{0} 缺少的软件包",
+  "environment.readiness.remediation": "受管修复命令",
+  "environment.readiness.explicitOnly": "仅复制；必须由你显式运行，不会自动安装。",
+  "environment.readiness.copy": "复制命令",
+  "environment.readiness.copied": "修复命令已复制",
+  "environment.readiness.refresh": "刷新 readiness",
+  "environment.readiness.sendBlocked": "首个科研 Cell 已在启动前停止。请先完成 standard 环境配置。",
   "cust.compute.gpuAvailable": "可用",
   "cust.compute.gpuName": "GPU",
   "cust.compute.gpuUnavailable": "不可用（本地无 GPU；重型模型以标注的 CPU 近似替代，或走 Modal/SSH 远程算力）",
@@ -1093,6 +1112,11 @@ Object.assign(I18N.zh, {
   "prov.msg.roleUser": "User",
   "prov.review.noLineage": "暂无溯源信息（execution log 为空或未记录文件 I/O）。",
   "prov.review.producedBy": "由单元 {0} 生成",
+  "prov.review.producedByIdentity": "由 Cell {0} 生成",
+  "prov.review.producerFrame": "{0} frame · {1}",
+  "prov.review.nonCellProducer": "由非 Cell 动作生成",
+  "prov.review.sameBytesCapture": "相同字节 · capture observation",
+  "prov.review.versionCapture": "版本捕获 · capture observation",
   "prov.review.readsInputs": "读取 / 输入",
   "prov.review.saved": "已保存 · {0}",
   "prov.review.viewCode": "查看产生它的代码",
@@ -1399,6 +1423,23 @@ Object.assign(I18N.en, {
   "conv.title.default": "Session",
   "conv.title.rename": "Rename session (press Enter to save)",
   "cust.compute.desc": "Local kernel environments, preinstalled packages and accelerators",
+  "environment.readiness.bannerTitle": "The standard science environment is not ready",
+  "environment.readiness.bannerMissing": "Missing {0} environment(s) and {1} package(s); resolve these before the first science Cell runs.",
+  "environment.readiness.bannerUnavailable": "Science-environment readiness cannot be confirmed; an unknown state is not shown as ready.",
+  "environment.readiness.openCompute": "View gaps and repair command",
+  "environment.readiness.cardTitle": "Standard profile readiness",
+  "environment.readiness.ready": "Ready: the standard Python and R dependencies were checked.",
+  "environment.readiness.needsSetup": "One or more standard environments must be created.",
+  "environment.readiness.needsRepair": "The environments exist, but packages from the standard manifest are missing.",
+  "environment.readiness.unavailable": "The local readiness check could not complete; the UI does not guess that it is ready.",
+  "environment.readiness.missingEnvironments": "Missing environments",
+  "environment.readiness.missingPackages": "Packages missing from {0}",
+  "environment.readiness.remediation": "Managed repair command",
+  "environment.readiness.explicitOnly": "Copy only; you must run it explicitly. Nothing is installed automatically.",
+  "environment.readiness.copy": "Copy command",
+  "environment.readiness.copied": "Repair command copied",
+  "environment.readiness.refresh": "Refresh readiness",
+  "environment.readiness.sendBlocked": "The first science Cell was stopped before startup. Complete the standard environment setup first.",
   "cust.compute.gpuAvailable": "Available",
   "cust.compute.gpuName": "GPU",
   "cust.compute.gpuUnavailable": "Unavailable (no local GPU; heavy models fall back to annotated CPU approximations, or use Modal/SSH remote compute)",
@@ -2137,6 +2178,11 @@ Object.assign(I18N.en, {
   "prov.msg.roleUser": "User",
   "prov.review.noLineage": "No provenance information (execution log is empty or no file I/O was recorded).",
   "prov.review.producedBy": "produced by cell {0}",
+  "prov.review.producedByIdentity": "produced by Cell {0}",
+  "prov.review.producerFrame": "{0} frame · {1}",
+  "prov.review.nonCellProducer": "produced by a non-Cell action",
+  "prov.review.sameBytesCapture": "same bytes · capture observation",
+  "prov.review.versionCapture": "version capture · capture observation",
   "prov.review.readsInputs": "reads / inputs",
   "prov.review.saved": "saved · {0}",
   "prov.review.viewCode": "View the code that produced it",
@@ -4921,7 +4967,7 @@ function onEvent(m) {
         // workbench still refreshes, because the artifacts and cells that turn
         // produced are real.
         if (isStaleTurnEvent(m)) scheduleWorkbenchRefresh();
-        else { turnDone(m.status, m); scheduleWorkbenchRefresh(); }
+        else { handleEnvironmentReadinessTerminal(m); turnDone(m.status, m); scheduleWorkbenchRefresh(); }
       }
     }
     loadSessions();
@@ -7146,6 +7192,120 @@ async function cancelTurn() {
   catch (error) { hint(t("nb.action.failed", apiErrorText(error)), true); }
 }
 
+/* ---------- standard environment readiness ---------- */
+function sanitizeStandardProfileReadiness(value) {
+  if (!value || typeof value !== "object") return null;
+  const allowedStates = new Set(["ready", "needs_setup", "needs_repair", "unavailable"]);
+  const state = allowedStates.has(value.state) ? value.state : "unavailable";
+  const missingEnvironments = (Array.isArray(value.missing_environments) ? value.missing_environments : [])
+    .map(name => publicText(name, 160)).filter(Boolean);
+  const missingPackages = {};
+  const sourcePackages = value.missing_packages && typeof value.missing_packages === "object" ? value.missing_packages : {};
+  Object.keys(sourcePackages).sort().forEach(name => {
+    const environment = publicText(name, 160);
+    if (!environment) return;
+    missingPackages[environment] = (Array.isArray(sourcePackages[name]) ? sourcePackages[name] : [])
+      .map(packageName => publicText(packageName, 160)).filter(Boolean);
+  });
+  const sourceRemediation = value.remediation && typeof value.remediation === "object" ? value.remediation : null;
+  const commands = [];
+  if (sourceRemediation && sourceRemediation.requires_explicit_action === true) {
+    const candidates = Array.isArray(sourceRemediation.commands)
+      ? sourceRemediation.commands
+      : (sourceRemediation.command ? [sourceRemediation] : []);
+    candidates.forEach(candidate => {
+      if (!candidate || typeof candidate !== "object" || typeof candidate.command !== "string") return;
+      const command = candidate.command;
+      if (!command || command.length > 1000) return;
+      commands.push({ command, label: publicText(candidate.label, 120) });
+    });
+  }
+  return {
+    schema_version: Number(value.schema_version) || 0,
+    enabled: value.enabled === true,
+    ready: value.ready === true && state === "ready",
+    state,
+    reason: publicText(value.reason, 120),
+    requirements_digest: publicText(value.requirements_digest, 96),
+    missing_environments: missingEnvironments,
+    missing_packages: missingPackages,
+    remediation: sourceRemediation ? {
+      requires_explicit_action: sourceRemediation.requires_explicit_action === true,
+      commands,
+    } : null,
+  };
+}
+function environmentReadinessSummary(readiness) {
+  if (!readiness || readiness.state === "unavailable") return t("environment.readiness.bannerUnavailable");
+  const packageCount = Object.values(readiness.missing_packages || {}).reduce((count, names) => count + names.length, 0);
+  return t("environment.readiness.bannerMissing", readiness.missing_environments.length, packageCount);
+}
+function renderEnvironmentReadinessBanner() {
+  const readiness = S.standardProfileReadiness;
+  const visible = !!(readiness && readiness.enabled === true && readiness.ready !== true);
+  document.querySelectorAll(".environment-readiness-banner").forEach(banner => {
+    banner.classList.toggle("hidden", !visible);
+    if (!visible) return;
+    const title = banner.querySelector("[data-environment-readiness-title]");
+    const summary = banner.querySelector("[data-environment-readiness-summary]");
+    const action = banner.querySelector("[data-open-environment-readiness]");
+    if (title) title.textContent = t("environment.readiness.bannerTitle");
+    if (summary) summary.textContent = environmentReadinessSummary(readiness);
+    if (action) action.textContent = t("environment.readiness.openCompute");
+  });
+}
+async function refreshEnvironmentStatus() {
+  if (S._environmentStatusPromise) return S._environmentStatusPromise;
+  S._environmentStatusPromise = (async () => {
+    try {
+      const payload = await api("/environments/status");
+      S._environmentStatusRefreshFailed = false;
+      S.environmentStatus = payload && typeof payload === "object" ? payload : null;
+      S.standardProfileReadiness = sanitizeStandardProfileReadiness(
+        S.environmentStatus && S.environmentStatus.standard_profile_readiness
+      );
+    } catch (error) {
+      S._environmentStatusRefreshFailed = true;
+      // A server that predates the opt-in field behaves exactly as before. If
+      // this browser already knows the feature is enabled, however, losing the
+      // refresh cannot turn the last snapshot into a claim of readiness.
+      if (S.standardProfileReadiness && S.standardProfileReadiness.enabled === true) {
+        S.standardProfileReadiness = {
+          ...S.standardProfileReadiness,
+          ready: false,
+          state: "unavailable",
+          reason: "status_refresh_failed",
+        };
+      }
+    }
+    renderEnvironmentReadinessBanner();
+    return S.environmentStatus;
+  })();
+  try { return await S._environmentStatusPromise; }
+  finally { S._environmentStatusPromise = null; }
+}
+function isEnvironmentReadinessError(error) {
+  return !!(error && (
+    (error.status === 409 && error.code === "environment_not_ready")
+    || (error.status === 503 && error.code === "environment_readiness_unavailable")
+  ));
+}
+function handleEnvironmentReadinessTerminal(detail) {
+  const code = detail && detail.code;
+  if (!detail || detail.status !== "failed" || ![
+    "environment_not_ready",
+    "environment_readiness_unavailable",
+  ].includes(code)) return false;
+  // A control-only turn is allowed even while the scientific profile is
+  // incomplete.  If routing selected a Code Cell, the server rejects it before
+  // runtime side effects and this terminal event is the authoritative signal.
+  void refreshEnvironmentStatus().finally(() => {
+    openCust("compute");
+    hint(t("environment.readiness.sendBlocked"), true);
+  });
+  return true;
+}
+
 /* ---------- send ---------- */
 async function send(text, opts) {
   text = (text || "").trim(); opts = opts || {};
@@ -7163,6 +7323,9 @@ async function send(text, opts) {
   if (!text && !anns.length) return;              // nothing to send
   const planNow = S.planMode && !opts.execute;
   const exploreNow = S.exploreMode && !planNow && !opts.execute;
+  // Readiness is visible before send, but admission belongs to the first Code
+  // Cell. Keeping ordinary sends routable preserves native-tool and structured-
+  // finalization turns that never need a kernel.
   // Explicit skill invocation: a "/skillname" token (from the / autocomplete or
   // the Skills settings tab) is turned into a hard directive so the skill is
   // actually loaded — left as plain text the model routinely skips
@@ -7320,6 +7483,41 @@ async function send(text, opts) {
       const reloaded = await loadAnnotations(S.currentId);
       if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       refreshAllStages(); updateAnnotBadge();
+    }
+    // The preflight is advisory UX; the server remains authoritative. A
+    // readiness transition between GET and POST is surfaced by these exact
+    // contracts. Refresh the durable banner/card and give the rejected text
+    // back instead of leaving an optimistic message that never ran.
+    if (isEnvironmentReadinessError(e)) {
+      await refreshEnvironmentStatus();
+      // The POST itself proved that readiness admission is enabled. If the
+      // requested refresh also failed, retain that authoritative fact as an
+      // unavailable snapshot so the persistent banner cannot disappear and
+      // imply readiness. A successful refresh (including an explicit flag-off
+      // payload) remains authoritative and is not overwritten here.
+      if (S._environmentStatusRefreshFailed) {
+        S.standardProfileReadiness = {
+          schema_version: 1,
+          enabled: true,
+          ready: false,
+          state: "unavailable",
+          reason: "status_refresh_failed",
+          requirements_digest: null,
+          missing_environments: [],
+          missing_packages: {},
+          remediation: null,
+        };
+        renderEnvironmentReadinessBanner();
+      }
+      const composer = $("#composer");
+      if (composer && !composer.value.trim()) composer.value = text;
+      if (composer) { grow(); renderComposerRefChips(); }
+      w.remove();
+      if (ownsTurnTicket(turnTicket)) turnDone("failed");
+      openCust("compute");
+      hint(t("environment.readiness.sendBlocked"), true);
+      loadSessions();
+      return;
     }
     // The two 409s a send can end on that the user cannot resolve from
     // anywhere else in the app. Both say "choose one to continue" and both are
@@ -9766,18 +9964,41 @@ async function renderProvMessages(body) {
 function renderProvReview(body, a, lin) {
   if (!lin) { body.appendChild(el("div", "dock-empty", t("common.loading"))); return; }
   const inter = lin.interactions || []; const cell = inter.find(i => i.kind === "cell");
+  const producer = lin.producer && typeof lin.producer === "object" ? lin.producer : null;
   const mapped = lin.dependency_mappings && lin.dependency_mappings.inputs;
-  const inputs = Array.isArray(mapped) ? mapped : (cell && cell.files_read) || [];
-  if (!cell && !inputs.length) { body.appendChild(el("div", "dock-empty", t("prov.review.noLineage"))); return; }
+  const inputs = Array.isArray(mapped) ? mapped : [];
+  const cellInputs = (cell && Array.isArray(cell.files_read)) ? cell.files_read : [];
+  const captures = Array.isArray(lin.capture_observations) ? lin.capture_observations : [];
+  if (!cell && !inputs.length && !captures.length && !producer) { body.appendChild(el("div", "dock-empty", t("prov.review.noLineage"))); return; }
   const card = el("div", "prov-card");
   if (cell) {
     card.appendChild(el("div", "prov-h", t("prov.review.producedBy", (cell.cell_index != null ? cell.cell_index : "?"))));
     card.appendChild(el("div", "prov-meta", (cell.language || "python") + " · " + (cell.exit_status || cell.status || "ok") + (cell.kernel_id ? (" · " + cell.kernel_id) : "")));
     if ((cell.files_written || []).length) card.appendChild(provRow("wrote", cell.files_written));
-    if (inputs.length) card.appendChild(provRow("reads / inputs", inputs));
+    if (cellInputs.length) card.appendChild(provRow("reads / inputs", cellInputs));
     const link = el("a", "prov-link"); link.appendChild(iconEl("arrow-left", 14)); link.appendChild(el("span", null, t("prov.review.viewCode"))); link.onclick = () => { S.provMode = false; setActiveTab("notebook"); scrollToCell(cell.cell_index, cell.kernel_id); }; card.appendChild(link);
   } else if (inputs.length) card.appendChild(provRow("reads / inputs", inputs));
-  body.appendChild(card);
+  if (cell || inputs.length) body.appendChild(card);
+  captures.filter(capture => capture && (capture.capture_kind === "head_checksum_reused" || !cell)).forEach(capture => {
+    const captureCard = el("div", "prov-card");
+    const identity = publicText(capture.producing_cell_id || "unknown Cell", 96);
+    captureCard.appendChild(el("div", "prov-h", capture.cell_index != null ? t("prov.review.producedBy", capture.cell_index) : t("prov.review.producedByIdentity", identity)));
+    const captureKind = capture.capture_kind === "head_checksum_reused" ? t("prov.review.sameBytesCapture") : t("prov.review.versionCapture");
+    const frameMeta = capture.frame_id ? (" · " + t("prov.review.producerFrame", publicText(capture.frame_kind || "unknown", 32), publicText(capture.frame_id, 96))) : "";
+    captureCard.appendChild(el("div", "prov-meta", captureKind + " · " + identity + frameMeta));
+    if (Array.isArray(capture.inputs) && capture.inputs.length) captureCard.appendChild(provRow("reads / inputs", capture.inputs));
+    if (capture.cell_index != null) {
+      const link = el("a", "prov-link"); link.appendChild(iconEl("arrow-left", 14)); link.appendChild(el("span", null, t("prov.review.viewCode"))); link.onclick = () => { S.provMode = false; setActiveTab("notebook"); scrollToCell(capture.cell_index, capture.kernel_id); }; captureCard.appendChild(link);
+    }
+    body.appendChild(captureCard);
+  });
+  if (!cell && !captures.length && producer) {
+    const producerCard = el("div", "prov-card");
+    const producerHeading = producer.kind === "cell" ? t("prov.review.producedByIdentity", publicText(producer.producing_cell_id || "unknown Cell", 96)) : t("prov.review.nonCellProducer");
+    producerCard.appendChild(el("div", "prov-h", producerHeading));
+    if (producer.frame_id) producerCard.appendChild(el("div", "prov-meta", t("prov.review.producerFrame", publicText(producer.frame_kind || "unknown", 32), publicText(producer.frame_id, 96))));
+    body.appendChild(producerCard);
+  }
   const save = inter.find(i => i.kind === "save");
   if (save && save.at) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(save.at))));
 }
@@ -10484,7 +10705,111 @@ const infoRow = (name, detail) => {
   return row;
 };
 
-async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); c.appendChild(infoRow(t("cust.compute.host"), t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?"))); c.appendChild(infoRow("GPU", gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable"))); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const inst = (e.packages || []).filter(p => p.installed); c.appendChild(infoRow(t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady")), t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : "")))); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", apiErrorText(e)), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+function standardReadinessStateText(readiness) {
+  if (readiness.ready) return t("environment.readiness.ready");
+  if (readiness.state === "needs_setup") return t("environment.readiness.needsSetup");
+  if (readiness.state === "needs_repair") return t("environment.readiness.needsRepair");
+  return t("environment.readiness.unavailable");
+}
+function renderStandardProfileReadiness(readiness) {
+  const card = el("section", "standard-readiness-card state-" + readiness.state);
+  const head = el("div", "standard-readiness-head");
+  const title = el("div");
+  title.appendChild(el("div", "standard-readiness-title", t("environment.readiness.cardTitle")));
+  title.appendChild(el("div", "standard-readiness-summary", standardReadinessStateText(readiness)));
+  head.appendChild(title);
+  const refresh = el("button", "outline-btn small", t("environment.readiness.refresh"));
+  refresh.onclick = () => custTab("compute");
+  head.appendChild(refresh); card.appendChild(head);
+
+  if (readiness.missing_environments.length) {
+    const section = el("div", "standard-readiness-gap");
+    section.appendChild(el("div", "standard-readiness-label", t("environment.readiness.missingEnvironments")));
+    const list = el("ul");
+    readiness.missing_environments.forEach(name => list.appendChild(el("li", null, name)));
+    section.appendChild(list); card.appendChild(section);
+  }
+  Object.entries(readiness.missing_packages).forEach(([environment, packages]) => {
+    if (!packages.length) return;
+    const section = el("div", "standard-readiness-gap");
+    section.appendChild(el("div", "standard-readiness-label", t("environment.readiness.missingPackages", environment)));
+    const list = el("ul", "standard-readiness-packages");
+    packages.forEach(packageName => list.appendChild(el("li", null, packageName)));
+    section.appendChild(list); card.appendChild(section);
+  });
+
+  const remediation = readiness.remediation;
+  if (remediation && remediation.requires_explicit_action && remediation.commands.length) {
+    const section = el("div", "standard-readiness-remediation");
+    section.appendChild(el("div", "standard-readiness-label", t("environment.readiness.remediation")));
+    section.appendChild(el("div", "standard-readiness-explicit", t("environment.readiness.explicitOnly")));
+    remediation.commands.forEach(item => {
+      const row = el("div", "standard-readiness-command");
+      const command = el("code", null, item.command);
+      if (item.label) command.setAttribute("aria-label", item.label);
+      const copy = el("button", "outline-btn small", t("environment.readiness.copy"));
+      copy.onclick = async () => {
+        try {
+          if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("clipboard unavailable");
+          await navigator.clipboard.writeText(item.command);
+          copy.textContent = t("code.copied");
+          hint(t("environment.readiness.copied"));
+          setTimeout(() => { copy.textContent = t("environment.readiness.copy"); }, 1200);
+        } catch { hint(t("nb.action.failed"), true); }
+      };
+      row.appendChild(command); row.appendChild(copy); section.appendChild(row);
+    });
+    card.appendChild(section);
+  }
+  return card;
+}
+
+async function custCompute(c) {
+  try {
+    const [gpu, env, host] = await Promise.all([
+      api("/compute/gpu").catch(() => ({ available: false })),
+      refreshEnvironmentStatus().then(status => status || { environments: [] }),
+      api("/compute/local/hostinfo").catch(() => ({})),
+    ]);
+    c.innerHTML = "";
+    c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc")));
+    const readiness = S.standardProfileReadiness;
+    if (readiness && readiness.enabled) c.appendChild(renderStandardProfileReadiness(readiness));
+    c.appendChild(infoRow(t("cust.compute.host"), t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?")));
+    c.appendChild(infoRow("GPU", gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable")));
+    await renderRemoteGPU(c);
+    const envs = env.environments || [];
+    envs.forEach(e => {
+      const inst = (e.packages || []).filter(p => p.installed);
+      c.appendChild(infoRow(
+        t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady")),
+        t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : ""))
+      ));
+    });
+    const ins = el("div", "cust-row"); const info = el("div", "info");
+    info.appendChild(el("div", "nm", t("cust.compute.installExtraName")));
+    const dsc = el("div", "ds"); const inp = el("input");
+    inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input";
+    const btn = el("button", "outline-btn small", t("cust.compute.installBtn"));
+    btn.onclick = async () => {
+      const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return;
+      btn.disabled = true; btn.textContent = t("cust.compute.installingBtn");
+      try {
+        const r = S.currentId
+          ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) })
+          : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) });
+        hint(r.ok
+          ? t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))
+          : t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))));
+        if (r.ok) S._envSnapById = {};
+        custTab("compute");
+      } catch (e) { hint(t("toast.compute.installFailed", apiErrorText(e)), true); }
+      btn.disabled = false; btn.textContent = t("cust.compute.installBtn");
+    };
+    dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins);
+    await renderJobs(c);
+  } catch (e) { c.textContent = t("versions.load.err", e.message); }
+}
 async function renderJobs(c) {
   c.appendChild(hdr(t("cust.jobs.title"), t("cust.jobs.desc")));
   const sub = el("div", "cust-row"); const si = el("div", "info"); si.appendChild(el("div", "nm", t("cust.jobs.submitName")));
@@ -11627,7 +11952,10 @@ async function init() {
   document.querySelectorAll(".lang-btn").forEach(b => b.onclick = () => setLang(b.dataset.lang));
   applyLayout(localStorage.getItem("os-layout") || "comfortable");
   restoreColWidths(); initColResizers();
-  connectWS(); await loadModels(); refreshKeyBanner();
+  connectWS(); await loadModels(); await refreshEnvironmentStatus(); refreshKeyBanner();
+  document.querySelectorAll("[data-open-environment-readiness]").forEach(button => {
+    button.onclick = () => openCust("compute");
+  });
   $("#dash-new-project").onclick = () => openProjectModal();
   $("#dash-import-session").onclick = chooseSessionPackage;
   $("#session-package-input").onchange = async (event) => {

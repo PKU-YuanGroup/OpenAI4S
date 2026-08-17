@@ -232,6 +232,13 @@ class Agent:
     # in its parent session's workspace, not in the daemon's launch directory;
     # unset falls back to os.getcwd(), which is the CLI contract.
     workspace: str | Path | None = None
+    # Optional runtime observation owned by the embedding Web session.  A
+    # delegated Agent shares that session's workspace, so its Cell writes must
+    # be captured under the child's frame before the parent's outer sweep.
+    cell_execution_hooks: object | None = field(default=None, repr=False)
+    delegated_cell_hooks_factory: Callable[[str], object] | None = field(
+        default=None, repr=False
+    )
     _recorder: object | None = field(default=None, repr=False)
     # persistent R kernel for ```r cells — spawned lazily on first use,
     # retargeted when host.env.use() picks an R-only env, shut down with the run
@@ -275,6 +282,7 @@ class Agent:
                     parent_frame_id=self.frame_id,
                     store=self.dispatcher.store,
                     workspace=self.workspace,
+                    cell_hooks_factory=self.delegated_cell_hooks_factory,
                 )
                 self._delegation_runner = runner
                 self.dispatcher._delegate_fn = runner
@@ -374,6 +382,25 @@ class Agent:
                 self._log(f"[biosecurity] ESCALATE (advisory): {screen.reason}")
         return None
 
+    def _admit_cell(self, _action: object) -> None:
+        """Fail closed on standard-profile readiness before any local runtime.
+
+        This is deliberately a Cell boundary, not a task boundary: native
+        control tools and ``finalize_response`` do not need a Python/R worker
+        and must retain the ``LazyKernel`` zero-spawn contract.
+        """
+
+        if not self.cfg.roadmap_features.stage1_trusted_delivery:
+            return
+        from openai4s.kernel.readiness import (
+            EnvironmentReadinessError,
+            standard_profile_readiness,
+        )
+
+        readiness = standard_profile_readiness(enabled=True)
+        if readiness.get("ready") is not True:
+            raise EnvironmentReadinessError(readiness)
+
     def run(self, task: str) -> dict:
         """Run one task through the shared engine and local runtime adapters."""
         assert self.dispatcher is not None
@@ -456,6 +483,8 @@ class Agent:
                         self.dispatcher,
                         self._pre_exec_gate,
                         self._execute_r,
+                        admit_cell=self._admit_cell,
+                        cell_hooks=self.cell_execution_hooks,
                         log=self._log,
                         tool_catalog=tool_catalog,
                         prose_nudge=prose_nudge,

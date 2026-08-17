@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import itertools
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
 
 from openai4s.config import Config
+from openai4s.storage.artifact_observations import (
+    CAPTURE_KIND_HEAD_CHECKSUM_REUSED,
+    CAPTURE_KIND_SAME_CELL_MERGE,
+    CAPTURE_KIND_VERSION_CREATED,
+)
 from openai4s.storage.artifacts import ArtifactRepository
 from openai4s.store import get_store
 
@@ -280,6 +286,567 @@ def test_record_cell_reuses_provisional_version_and_merges_lineage(tmp_path):
         )
 
 
+def test_capture_observations_merge_same_cell_and_keep_producer_lineage(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    first_input = _save(
+        repository,
+        tmp_path / "input-a.txt",
+        frame_id=frame_id,
+        checksum="input-a",
+    )
+    second_input = _save(
+        repository,
+        tmp_path / "input-b.txt",
+        frame_id=frame_id,
+        checksum="input-b",
+    )
+    provisional = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type=None,
+        size_bytes=5,
+        checksum="result-hash",
+        producing_cell_id="cell-1",
+        frame_id=frame_id,
+        input_version_ids=[first_input["version_id"]],
+        reuse_matching_head=True,
+    )
+    captured = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum="result-hash",
+        producing_cell_id="cell-1",
+        frame_id=frame_id,
+        env_snapshot_id="env-cell-1",
+        snapshot_path="/snap/result.csv",
+        input_version_ids=[
+            first_input["version_id"],
+            second_input["version_id"],
+        ],
+        source={"phase": "captured"},
+        reuse_matching_head=True,
+    )
+
+    assert provisional["version_created"] is True
+    assert provisional["capture_kind"] == CAPTURE_KIND_VERSION_CREATED
+    assert captured["version_created"] is False
+    assert captured["capture_kind"] == CAPTURE_KIND_SAME_CELL_MERGE
+    assert captured["observation_id"] == provisional["observation_id"]
+    assert captured["observation_ordinal"] == provisional["observation_ordinal"]
+    assert captured["ordinal"] == captured["observation_ordinal"]
+    observations = repository.list_capture_observations(
+        version_id=captured["version_id"]
+    )
+    assert len(observations) == 1
+    assert observations[0]["capture_kind"] == CAPTURE_KIND_SAME_CELL_MERGE
+    assert observations[0]["env_snapshot_id"] == "env-cell-1"
+    assert observations[0]["source"] == '{"phase":"captured"}'
+    assert observations[0]["input_version_ids"] == [
+        first_input["version_id"],
+        second_input["version_id"],
+    ]
+
+
+def test_matching_head_dedup_is_opt_in_and_preserves_version_provenance(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    first_input = _save(
+        repository,
+        tmp_path / "input-a.txt",
+        frame_id=frame_id,
+        checksum="input-a",
+    )
+    second_input = _save(
+        repository,
+        tmp_path / "input-b.txt",
+        frame_id=frame_id,
+        checksum="input-b",
+    )
+    first = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum="same-bytes",
+        producing_cell_id="cell-1",
+        frame_id=frame_id,
+        env_snapshot_id="env-original",
+        input_version_ids=[first_input["version_id"]],
+        source={"producer": 1},
+    )
+    default_second = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum="same-bytes",
+        producing_cell_id="cell-2",
+        frame_id=frame_id,
+        env_snapshot_id="env-default",
+        input_version_ids=[first_input["version_id"]],
+        source={"producer": 2},
+    )
+    assert "version_created" not in default_second
+    assert "observation_id" not in default_second
+    assert default_second["version_id"] != first["version_id"]
+
+    original = repository.version_meta(default_second["version_id"])
+    reused = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum="same-bytes",
+        producing_cell_id="cell-3",
+        frame_id=frame_id,
+        env_snapshot_id="env-cell-3",
+        snapshot_path="/snap/cell-3-result.csv",
+        input_version_ids=[
+            first_input["version_id"],
+            second_input["version_id"],
+        ],
+        source={"producer": 3},
+        reuse_matching_head=True,
+    )
+    repeated_reuse = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum="same-bytes",
+        producing_cell_id="cell-3",
+        frame_id=frame_id,
+        env_snapshot_id="env-cell-3",
+        snapshot_path="/snap/must-not-replace-existing.csv",
+        input_version_ids=[first_input["version_id"]],
+        source={"producer": 3},
+        reuse_matching_head=True,
+    )
+
+    assert reused["version_created"] is False
+    assert reused["capture_kind"] == CAPTURE_KIND_HEAD_CHECKSUM_REUSED
+    assert reused["version_id"] == default_second["version_id"]
+    assert repeated_reuse["version_id"] == reused["version_id"]
+    assert repeated_reuse["observation_id"] == reused["observation_id"]
+    assert repeated_reuse["observation_ordinal"] == reused["observation_ordinal"]
+    assert len(repository.list_versions(first["artifact_id"])) == 2
+    after = repository.version_meta(reused["version_id"])
+    assert after["producing_cell_id"] == original["producing_cell_id"] == "cell-2"
+    assert after["frame_id"] == original["frame_id"] == frame_id
+    assert after["env_snapshot_id"] == original["env_snapshot_id"] == "env-default"
+    assert after["source"] == original["source"] == '{"producer":2}'
+    assert after["snapshot_path"] == "/snap/cell-3-result.csv"
+
+    observations = repository.list_capture_observations(
+        artifact_id=first["artifact_id"]
+    )
+    assert [row["ordinal"] for row in observations] == sorted(
+        row["ordinal"] for row in observations
+    )
+    assert len({row["ordinal"] for row in observations}) == len(observations)
+    assert observations[-1]["producing_cell_id"] == "cell-3"
+    assert observations[-1]["env_snapshot_id"] == "env-cell-3"
+    assert observations[-1]["source"] == '{"producer":3}'
+    assert observations[-1]["snapshot_path"] == "/snap/cell-3-result.csv"
+    assert observations[-1]["input_version_ids"] == [
+        first_input["version_id"],
+        second_input["version_id"],
+    ]
+    assert repository.lineage_inputs(reused["version_id"]) == [
+        {
+            "version_id": first_input["version_id"],
+            "filename": "input-a.txt",
+            "path": str(tmp_path / "input-a.txt"),
+        },
+        {
+            "version_id": second_input["version_id"],
+            "filename": "input-b.txt",
+            "path": str(tmp_path / "input-b.txt"),
+        },
+    ]
+    edge_producers = repository._connection.execute(
+        "SELECT producing_cell_id,input_version_id FROM lineage_edges "
+        "WHERE output_version_id=? ORDER BY producing_cell_id,input_version_id",
+        (reused["version_id"],),
+    ).fetchall()
+    assert [tuple(row) for row in edge_producers] == sorted(
+        [
+            ("cell-2", first_input["version_id"]),
+            ("cell-3", first_input["version_id"]),
+            ("cell-3", second_input["version_id"]),
+        ]
+    )
+
+
+def test_matching_head_from_non_cell_producer_reuses_bytes_and_observes_cell(
+    tmp_path,
+):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    original = _save(
+        repository,
+        tmp_path / "uploaded.csv",
+        frame_id=frame_id,
+        producing_cell_id=None,
+        checksum="same-uploaded-bytes",
+        is_user_upload=True,
+        snapshot_path="/snap/uploaded.csv",
+    )
+
+    observed = repository.record_cell_artifact(
+        path=str(tmp_path / "uploaded.csv"),
+        filename="uploaded.csv",
+        content_type="text/csv",
+        size_bytes=4,
+        checksum="same-uploaded-bytes",
+        producing_cell_id="cell-after-upload",
+        frame_id=frame_id,
+        env_snapshot_id="env-cell-after-upload",
+        snapshot_path="/snap/must-not-replace-upload.csv",
+        source={"producer": "cell-after-upload"},
+        reuse_matching_head=True,
+    )
+
+    assert observed["version_created"] is False
+    assert observed["capture_kind"] == CAPTURE_KIND_HEAD_CHECKSUM_REUSED
+    assert observed["artifact_id"] == original["artifact_id"]
+    assert observed["version_id"] == original["version_id"]
+    assert len(repository.list_versions(original["artifact_id"])) == 1
+    version = repository.version_meta(original["version_id"])
+    assert version["producing_cell_id"] is None
+    assert version["snapshot_path"] == "/snap/uploaded.csv"
+    observations = repository.list_capture_observations(
+        version_id=original["version_id"]
+    )
+    assert len(observations) == 1
+    assert observations[0]["producing_cell_id"] == "cell-after-upload"
+    assert observations[0]["env_snapshot_id"] == "env-cell-after-upload"
+    assert observations[0]["source"] == '{"producer":"cell-after-upload"}'
+
+
+def test_matching_head_dedup_never_searches_historical_versions(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    first = repository.record_cell_artifact(
+        path=str(tmp_path / "history.txt"),
+        filename="history.txt",
+        content_type="text/plain",
+        size_bytes=1,
+        checksum="old-head",
+        producing_cell_id="cell-1",
+        frame_id=frame_id,
+        reuse_matching_head=True,
+    )
+    current = repository.record_cell_artifact(
+        path=str(tmp_path / "history.txt"),
+        filename="history.txt",
+        content_type="text/plain",
+        size_bytes=1,
+        checksum="current-head",
+        producing_cell_id="cell-2",
+        frame_id=frame_id,
+        reuse_matching_head=True,
+    )
+    replay_old_bytes = repository.record_cell_artifact(
+        path=str(tmp_path / "history.txt"),
+        filename="history.txt",
+        content_type="text/plain",
+        size_bytes=1,
+        checksum="old-head",
+        producing_cell_id="cell-3",
+        frame_id=frame_id,
+        reuse_matching_head=True,
+    )
+
+    assert current["version_id"] != first["version_id"]
+    assert replay_old_bytes["version_created"] is True
+    assert replay_old_bytes["version_id"] not in {
+        first["version_id"],
+        current["version_id"],
+    }
+    assert len(repository.list_versions(first["artifact_id"])) == 3
+
+
+def test_concurrent_matching_head_captures_create_one_version_and_two_observations(
+    tmp_path,
+):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    barrier = threading.Barrier(2)
+    records: list[dict] = []
+    failures: list[BaseException] = []
+
+    def capture(cell_id: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            record = repository.record_cell_artifact(
+                path=str(tmp_path / "parallel.csv"),
+                filename="parallel.csv",
+                content_type="text/csv",
+                size_bytes=4,
+                checksum="same-parallel-bytes",
+                producing_cell_id=cell_id,
+                frame_id=frame_id,
+                snapshot_path=f"/snap/{cell_id}",
+                reuse_matching_head=True,
+            )
+            records.append(record)
+        except BaseException as error:  # pragma: no cover - asserted below
+            failures.append(error)
+
+    threads = [
+        threading.Thread(target=capture, args=(cell_id,))
+        for cell_id in ("cell-parallel-a", "cell-parallel-b")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    assert len(records) == 2
+    assert len({record["version_id"] for record in records}) == 1
+    artifact_id = records[0]["artifact_id"]
+    assert len(repository.list_versions(artifact_id)) == 1
+    observations = repository.list_capture_observations(artifact_id=artifact_id)
+    assert {row["producing_cell_id"] for row in observations} == {
+        "cell-parallel-a",
+        "cell-parallel-b",
+    }
+    assert sorted(row["capture_kind"] for row in observations) == [
+        CAPTURE_KIND_HEAD_CHECKSUM_REUSED,
+        CAPTURE_KIND_VERSION_CREATED,
+    ]
+
+
+def test_capture_cursor_delta_is_scope_bound_and_returns_exact_version(tmp_path):
+    store, repository = _repository(tmp_path)
+    root_a = store.new_frame(kind="turn", project_id="science", status="ready")
+    root_b = store.new_frame(kind="turn", project_id="science", status="ready")
+    first = repository.record_cell_artifact(
+        path=str(tmp_path / "a.txt"),
+        filename="a.txt",
+        content_type="text/plain",
+        size_bytes=3,
+        checksum="a-v1",
+        producing_cell_id="cell-a-1",
+        frame_id=root_a,
+        snapshot_path="/snap/a-v1",
+        reuse_matching_head=True,
+    )
+    cursor = repository.capture_observation_cursor(
+        root_frame_id=root_a,
+        project_id="science",
+    )
+    second = repository.record_cell_artifact(
+        path=str(tmp_path / "a.txt"),
+        filename="a.txt",
+        content_type="text/plain",
+        size_bytes=3,
+        checksum="a-v2",
+        producing_cell_id="cell-a-2",
+        frame_id=root_a,
+        snapshot_path="/snap/a-v2",
+        reuse_matching_head=True,
+    )
+    repository.record_cell_artifact(
+        path=str(tmp_path / "private-b.txt"),
+        filename="private-b.txt",
+        content_type="text/plain",
+        size_bytes=7,
+        checksum="private-b",
+        producing_cell_id="cell-b-1",
+        frame_id=root_b,
+        reuse_matching_head=True,
+    )
+
+    assert cursor == first["observation_ordinal"]
+    delta = repository.capture_observations_since(
+        cursor,
+        root_frame_id=root_a,
+        project_id="science",
+    )
+    assert len(delta) == 1
+    assert delta[0]["observation_id"] == second["observation_id"]
+    assert delta[0]["observation_ordinal"] == second["observation_ordinal"]
+    assert delta[0]["artifact_id"] == second["artifact_id"]
+    assert delta[0]["version_id"] == second["version_id"]
+    assert delta[0]["filename"] == "a.txt"
+    assert delta[0]["checksum"] == "a-v2"
+    assert delta[0]["size_bytes"] == 3
+    assert delta[0]["snapshot_path"] == "/snap/a-v2"
+    assert delta[0]["capture_path"] == str(tmp_path / "a.txt")
+    assert "private-b" not in repr(delta)
+    assert (
+        repository.capture_observations_since(
+            0,
+            root_frame_id=root_a,
+            project_id="other-project",
+        )
+        == []
+    )
+    with pytest.raises(ValueError, match="project_id is required"):
+        repository.capture_observations_since(
+            0,
+            root_frame_id=root_a,
+            project_id="",
+        )
+
+
+def test_observation_failure_rolls_back_version_lineage_and_artifact(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    source = _save(
+        repository,
+        tmp_path / "input.txt",
+        frame_id=frame_id,
+        checksum="input",
+    )
+    repository._connection.execute(
+        "CREATE TRIGGER fail_capture_observation BEFORE INSERT "
+        "ON artifact_capture_observations "
+        "BEGIN SELECT RAISE(ABORT, 'observation failed'); END"
+    )
+    repository._connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="observation failed"):
+        repository.record_cell_artifact(
+            path=str(tmp_path / "rolled-back.txt"),
+            filename="rolled-back.txt",
+            content_type="text/plain",
+            size_bytes=1,
+            checksum="output",
+            producing_cell_id="cell-fail-observation",
+            frame_id=frame_id,
+            input_version_ids=[source["version_id"]],
+            reuse_matching_head=True,
+        )
+
+    assert (
+        repository.artifact_by_filename("rolled-back.txt", frame_id, strict=True)
+        is None
+    )
+    assert (
+        repository._connection.execute(
+            "SELECT COUNT(*) FROM artifact_versions WHERE producing_cell_id=?",
+            ("cell-fail-observation",),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        repository._connection.execute(
+            "SELECT COUNT(*) FROM lineage_edges WHERE producing_cell_id=?",
+            ("cell-fail-observation",),
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_capture_delta_does_not_silently_drop_the_1001st_reused_cell(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    head = repository.record_cell_artifact(
+        path=str(tmp_path / "many.txt"),
+        filename="many.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="same",
+        producing_cell_id="cell-base",
+        frame_id=frame_id,
+        snapshot_path="/snap/many",
+        reuse_matching_head=True,
+    )
+    cursor = repository.capture_observation_cursor(
+        root_frame_id=frame_id,
+        project_id="science",
+    )
+    for ordinal in range(1001):
+        reused = repository.record_cell_artifact(
+            path=str(tmp_path / "many.txt"),
+            filename="many.txt",
+            content_type="text/plain",
+            size_bytes=4,
+            checksum="same",
+            producing_cell_id=f"cell-reuse-{ordinal:04d}",
+            frame_id=frame_id,
+            snapshot_path="/snap/many",
+            reuse_matching_head=True,
+        )
+        assert reused["version_id"] == head["version_id"]
+
+    delta = repository.capture_observations_since(
+        cursor,
+        root_frame_id=frame_id,
+        project_id="science",
+    )
+    assert len(delta) == 1001
+    assert delta[-1]["producing_cell_id"] == "cell-reuse-1000"
+
+
+def test_reused_head_rolls_back_snapshot_pointer_when_observation_fails(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    source = _save(
+        repository,
+        tmp_path / "input.txt",
+        frame_id=frame_id,
+        checksum="input",
+    )
+    head = repository.record_cell_artifact(
+        path=str(tmp_path / "same.txt"),
+        filename="same.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="same",
+        producing_cell_id="cell-1",
+        frame_id=frame_id,
+        reuse_matching_head=True,
+    )
+    artifact_before = repository.get_artifact(head["artifact_id"])
+    repository._connection.execute(
+        "CREATE TRIGGER fail_reused_capture BEFORE INSERT "
+        "ON artifact_capture_observations "
+        "WHEN NEW.producing_cell_id='cell-2' "
+        "BEGIN SELECT RAISE(ABORT, 'reused observation failed'); END"
+    )
+    repository._connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="reused observation failed"):
+        repository.record_cell_artifact(
+            path=str(tmp_path / "same.txt"),
+            filename="same.txt",
+            content_type="text/plain",
+            size_bytes=4,
+            checksum="same",
+            producing_cell_id="cell-2",
+            frame_id=frame_id,
+            snapshot_path="/snap/must-roll-back",
+            input_version_ids=[source["version_id"]],
+            reuse_matching_head=True,
+        )
+
+    assert len(repository.list_versions(head["artifact_id"])) == 1
+    assert repository.version_meta(head["version_id"])["snapshot_path"] is None
+    assert (
+        repository.get_artifact(head["artifact_id"])["updated_at"]
+        == artifact_before["updated_at"]
+    )
+    assert [
+        row["producing_cell_id"]
+        for row in repository.list_capture_observations(artifact_id=head["artifact_id"])
+    ] == ["cell-1"]
+    assert (
+        repository._connection.execute(
+            "SELECT COUNT(*) FROM lineage_edges WHERE producing_cell_id='cell-2'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
 def test_record_cell_rolls_back_the_whole_transaction_on_lineage_failure(tmp_path):
     _store, repository = _repository(tmp_path)
     # Binding an unsupported parameter type raises sqlite3.InterfaceError on
@@ -493,6 +1060,114 @@ def test_rename_delete_cascade_and_shared_path_reclamation(tmp_path):
         shared,
         "/snap/second",
     }
+
+
+def test_explicit_artifact_delete_cleans_observations_and_their_env_refs(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    shared_env = repository.upsert_env_snapshot(
+        {
+            "kind": "python",
+            "generation_id": "generation-shared",
+            "packages": [],
+            "package_count": 0,
+        }
+    )
+    observed_env = repository.upsert_env_snapshot(
+        {
+            "kind": "python",
+            "generation_id": "generation-observed",
+            "packages": [],
+            "package_count": 0,
+        }
+    )
+    kept = repository.record_cell_artifact(
+        path=str(tmp_path / "kept.txt"),
+        filename="kept.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="kept",
+        producing_cell_id="cell-kept",
+        frame_id=frame_id,
+        env_snapshot_id=shared_env,
+    )
+    target = repository.record_cell_artifact(
+        path=str(tmp_path / "target.txt"),
+        filename="target.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="same-target",
+        producing_cell_id="cell-target-1",
+        frame_id=frame_id,
+        env_snapshot_id=shared_env,
+        reuse_matching_head=True,
+    )
+    reused = repository.record_cell_artifact(
+        path=str(tmp_path / "target.txt"),
+        filename="target.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="same-target",
+        producing_cell_id="cell-target-2",
+        frame_id=frame_id,
+        env_snapshot_id=observed_env,
+        reuse_matching_head=True,
+    )
+    assert reused["version_id"] == target["version_id"]
+    assert (
+        len(repository.list_capture_observations(artifact_id=target["artifact_id"]))
+        == 2
+    )
+
+    repository.delete_artifact(target["artifact_id"])
+
+    assert repository.list_capture_observations(artifact_id=target["artifact_id"]) == []
+    assert repository.get_env_snapshot(observed_env) is None
+    assert repository.get_env_snapshot(shared_env) is not None
+    repository.delete_artifact(kept["artifact_id"])
+    assert repository.get_env_snapshot(shared_env) is None
+
+
+def test_generic_env_snapshot_gc_preserves_observation_only_provenance(tmp_path):
+    store, repository = _repository(tmp_path)
+    frame_id = store.new_frame(kind="turn", project_id="science", status="ready")
+    original_env = repository.upsert_env_snapshot(
+        {"kind": "python", "generation_id": "generation-original", "packages": []}
+    )
+    observed_env = repository.upsert_env_snapshot(
+        {"kind": "python", "generation_id": "generation-observed", "packages": []}
+    )
+    first = repository.record_cell_artifact(
+        path=str(tmp_path / "same.txt"),
+        filename="same.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="same",
+        producing_cell_id="cell-first",
+        frame_id=frame_id,
+        env_snapshot_id=original_env,
+        snapshot_path="/snap/same",
+        reuse_matching_head=True,
+    )
+    reused = repository.record_cell_artifact(
+        path=str(tmp_path / "same.txt"),
+        filename="same.txt",
+        content_type="text/plain",
+        size_bytes=4,
+        checksum="same",
+        producing_cell_id="cell-second",
+        frame_id=frame_id,
+        env_snapshot_id=observed_env,
+        snapshot_path="/snap/discarded-candidate",
+        reuse_matching_head=True,
+    )
+
+    assert reused["version_id"] == first["version_id"]
+    assert repository.version_meta(first["version_id"])["env_snapshot_id"] == (
+        original_env
+    )
+    assert repository.delete_env_snapshots_if_unreferenced([observed_env]) == 0
+    assert repository.get_env_snapshot(observed_env) is not None
 
 
 def test_the_transaction_refuses_a_cross_project_source_on_its_own(tmp_path):

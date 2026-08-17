@@ -576,6 +576,66 @@ def test_the_frozen_artifact_exists_and_parses():
     json.loads(ARTIFACT.read_text("utf-8"))
 
 
+def test_standard_profile_readiness_is_a_frozen_response_contract(frozen):
+    """Cell admission depends on this projection, so its keys are guarantees."""
+
+    schema = frozen["routes"]["GET /environments/status [ok]"]["schema"]
+    assert set(schema["required"]) == {
+        "environments",
+        "standard_profile_readiness",
+    }
+
+    readiness = schema["properties"]["standard_profile_readiness"]
+    assert set(readiness["required"]) == {
+        "checked_locally",
+        "enabled",
+        "environments",
+        "missing_environments",
+        "missing_packages",
+        "mutation_performed",
+        "network_contacted",
+        "profile",
+        "ready",
+        "reason",
+        "remediation",
+        "required_environments",
+        "requirements_digest",
+        "schema_version",
+        "state",
+    }
+    properties = readiness["properties"]
+    assert properties["reason"]["type"] == ["null", "string"]
+    assert properties["requirements_digest"]["type"] == ["null", "string"]
+
+    environment = properties["environments"]["items"]
+    assert set(environment["required"]) == {
+        "installed_required_package_count",
+        "issue",
+        "missing_packages",
+        "name",
+        "present",
+        "required_package_count",
+        "state",
+    }
+    assert environment["properties"]["installed_required_package_count"]["type"] == [
+        "integer",
+        "null",
+    ]
+    missing = properties["missing_packages"]["properties"]
+    assert set(missing) == {"python", "r"}
+    assert all(item["items"] == {"type": "string"} for item in missing.values())
+
+    remediation = properties["remediation"]
+    assert remediation["type"] == ["null", "object"]
+    assert set(remediation["required"]) == {
+        "apply_argv",
+        "commands",
+        "kind",
+        "plan_argv",
+        "requires_explicit_action",
+    }
+
+
 def test_the_managed_datapro_routes_are_frozen_from_real_local_responses(frozen):
     """A newly covered route is informational drift to the generic checker.
 

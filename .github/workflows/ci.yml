@@ -418,6 +418,12 @@ jobs:
             # a file this job does not invoke would reproduce that finding
             # exactly, with a green tick on top.
             node tests/browser_p1_controls.mjs
+            # Stage 1 trusted-delivery acceptance owns a second disposable
+            # daemon on a random loopback port. It drives the production
+            # completion and stored-message renderers through 100 immutable
+            # version links, verifies every downloaded checksum across reload
+            # and reopen, and proves same-head capture observations survive.
+            node tests/browser_stage1_trusted_delivery.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure

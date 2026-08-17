@@ -158,6 +158,14 @@ class SessionDeletionRepository:
                 artifacts,
             ).fetchall()
         version_ids = self._unique(row["version_id"] for row in version_rows)
+        observation_env_rows = []
+        if artifacts:
+            observation_env_rows = self._connection.execute(
+                "SELECT env_snapshot_id FROM artifact_capture_observations "
+                f"WHERE artifact_id IN {self._marks(artifacts)} "
+                "AND env_snapshot_id IS NOT NULL",
+                artifacts,
+            ).fetchall()
         cell_ids = ()
         if roots or frames:
             clauses: list[str] = []
@@ -177,7 +185,9 @@ class SessionDeletionRepository:
                 ).fetchall()
             )
         env_snapshot_ids = self._unique(
-            row["env_snapshot_id"] for row in version_rows if row["env_snapshot_id"]
+            row["env_snapshot_id"]
+            for row in (*version_rows, *observation_env_rows)
+            if row["env_snapshot_id"]
         )
         path_candidates = self._unique(
             path
@@ -253,6 +263,29 @@ class SessionDeletionRepository:
                 )
         if roots:
             root_where = f"root_frame_id IN {self._marks(roots)}"
+            # Explicit rather than relying on foreign-key cascades: older
+            # databases may have been opened with enforcement disabled, and
+            # the recovery ledger must never outlive the message it binds.
+            delivery_ids = self._unique(
+                row["delivery_id"]
+                for row in self._connection.execute(
+                    "SELECT delivery_id FROM completion_deliveries WHERE " + root_where,
+                    roots,
+                ).fetchall()
+            )
+            if delivery_ids:
+                self._delete_counted(
+                    deleted_rows,
+                    "completion_delivery_artifacts",
+                    f"delivery_id IN {self._marks(delivery_ids)}",
+                    delivery_ids,
+                )
+            self._delete_counted(
+                deleted_rows,
+                "completion_deliveries",
+                root_where,
+                roots,
+            )
             for table in (
                 "action_groups",
                 "kernel_generations",
@@ -295,6 +328,12 @@ class SessionDeletionRepository:
             )
         if artifacts:
             artifact_where = f"artifact_id IN {self._marks(artifacts)}"
+            self._delete_counted(
+                deleted_rows,
+                "artifact_capture_observations",
+                artifact_where,
+                artifacts,
+            )
             self._delete_counted(
                 deleted_rows, "artifact_versions", artifact_where, artifacts
             )
@@ -352,7 +391,10 @@ class SessionDeletionRepository:
                 "env_snapshots",
                 f"snapshot_id IN {self._marks(env_snapshot_ids)} AND NOT EXISTS "
                 "(SELECT 1 FROM artifact_versions WHERE "
-                "artifact_versions.env_snapshot_id=env_snapshots.snapshot_id)",
+                "artifact_versions.env_snapshot_id=env_snapshots.snapshot_id) "
+                "AND NOT EXISTS (SELECT 1 FROM artifact_capture_observations WHERE "
+                "artifact_capture_observations.env_snapshot_id="
+                "env_snapshots.snapshot_id)",
                 env_snapshot_ids,
             )
 

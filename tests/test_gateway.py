@@ -8,11 +8,14 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 
-from openai4s.config import Config, LLMConfig
+from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.server import gateway as gateway_mod
+from openai4s.server.artifacts import ArtifactOperationError
+from openai4s.server.urls import artifact_version_url
 from openai4s.store import get_store
 
 
@@ -1008,6 +1011,437 @@ def _cfg(tmp_path):
     )
 
 
+def _stage1_cfg(tmp_path):
+    return Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+
+
+def _readiness(*, state="ready"):
+    ready = state == "ready"
+    unavailable = state == "unavailable"
+    return {
+        "schema_version": 1,
+        "enabled": True,
+        "profile": "standard",
+        "state": state,
+        "ready": ready,
+        "reason": (
+            None
+            if ready
+            else (
+                "package_inventory_unavailable"
+                if unavailable
+                else "environment_incomplete"
+            )
+        ),
+        "checked_locally": True,
+        "network_contacted": False,
+        "mutation_performed": False,
+        "requirements_digest": "sha256:" + "a" * 64,
+        "required_environments": ["python", "r"],
+        "missing_environments": [] if ready or unavailable else ["r"],
+        "missing_packages": (
+            {} if ready or unavailable else {"python": ["numpy"], "r": ["r-base"]}
+        ),
+        "environments": [],
+        "remediation": (
+            None
+            if ready or unavailable
+            else {
+                "kind": "managed_generation_repair",
+                "plan_argv": [
+                    "openai4s",
+                    "env",
+                    "plan",
+                    "python",
+                    "r",
+                    "--repair",
+                ],
+                "apply_argv": [
+                    "openai4s",
+                    "env",
+                    "apply",
+                    "python",
+                    "r",
+                    "--repair",
+                ],
+                "commands": [
+                    {
+                        "label": "plan",
+                        "argv": [
+                            "openai4s",
+                            "env",
+                            "plan",
+                            "python",
+                            "r",
+                            "--repair",
+                        ],
+                        "command": "openai4s env plan python r --repair",
+                    },
+                    {
+                        "label": "apply",
+                        "argv": [
+                            "openai4s",
+                            "env",
+                            "apply",
+                            "python",
+                            "r",
+                            "--repair",
+                        ],
+                        "command": "openai4s env apply python r --repair",
+                    },
+                ],
+                "requires_explicit_action": True,
+            }
+        ),
+    }
+
+
+def _write_standard_generation_fixture(
+    root: Path,
+    *,
+    missing: set[tuple[str, str]] | None = None,
+) -> None:
+    """Write metadata-only current generations for production discovery.
+
+    These prefixes deliberately contain no runnable interpreter: a placeholder
+    under ``bin/`` is enough for environment discovery, while readiness reads
+    only the real conda metadata inventory. Runtime verification belongs to the
+    managed-generation acceptance, not to this response-shape fixture.
+    """
+
+    from openai4s.kernel.readiness import load_standard_profile_requirements
+
+    omitted = missing or set()
+    requirements = load_standard_profile_requirements()
+    for name in ("python", "r"):
+        generation_id = f"env-stage1-{name}"
+        environment_root = root / name
+        prefix = environment_root / "generations" / generation_id / "prefix"
+        binary = prefix / "bin" / ("Rscript" if name == "r" else "python")
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+        metadata = prefix / "conda-meta"
+        metadata.mkdir()
+        for ordinal, package in enumerate(requirements[name]):
+            if (name, package) in omitted:
+                continue
+            (metadata / f"{ordinal:02d}-{package}.json").write_text(
+                json.dumps({"name": package}), encoding="utf-8"
+            )
+        (prefix.parent / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "generation_id": generation_id,
+                    "environment": name,
+                    "state": "ready",
+                    "spec_sha256": "0" * 64,
+                    "prefix": str(prefix),
+                    "created_at": 1,
+                    "interpreter": str(binary),
+                }
+            ),
+            encoding="utf-8",
+        )
+        (environment_root / "current").write_text(
+            generation_id + "\n", encoding="utf-8"
+        )
+
+
+def _production_environment_status_route(cfg: Config) -> dict:
+    """Drive the real route so response capture observes the production DTO."""
+
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    handler.path = "/api/v1/environments/status"
+    replies: list[tuple[int, dict]] = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    try:
+        handler._api("GET", "/environments/status")
+        code, body = replies[-1]
+        assert code == 200
+        return body
+    finally:
+        runner.close()
+
+
+def test_environment_status_route_captures_flag_off_production_projection(tmp_path):
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=False),
+    )
+
+    body = _production_environment_status_route(cfg)
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["enabled"] is False
+    assert readiness["state"] == "unavailable"
+    assert readiness["reason"] == "feature_disabled"
+
+
+def test_environment_status_route_captures_ready_production_metadata(
+    tmp_path, monkeypatch
+):
+    from openai4s.kernel import environments
+
+    generation_root = tmp_path / "managed-environments"
+    _write_standard_generation_fixture(generation_root)
+    monkeypatch.setenv("OPENAI4S_ENV_GENERATIONS_ROOT", str(generation_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(tmp_path / "no-conda-envs"))
+    environments.invalidate_cache()
+    cfg = _stage1_cfg(tmp_path)
+    try:
+        body = _production_environment_status_route(cfg)
+    finally:
+        environments.invalidate_cache()
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["state"] == "ready"
+    assert readiness["missing_environments"] == []
+    assert readiness["missing_packages"] == {}
+    assert [row["required_package_count"] for row in readiness["environments"]] == [
+        32,
+        8,
+    ]
+
+
+def test_environment_status_route_captures_both_missing_package_lists(
+    tmp_path, monkeypatch
+):
+    from openai4s.kernel import environments
+
+    generation_root = tmp_path / "managed-environments"
+    _write_standard_generation_fixture(
+        generation_root,
+        missing={("python", "numpy"), ("r", "r-jsonlite")},
+    )
+    monkeypatch.setenv("OPENAI4S_ENV_GENERATIONS_ROOT", str(generation_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(tmp_path / "no-conda-envs"))
+    environments.invalidate_cache()
+    cfg = _stage1_cfg(tmp_path)
+    try:
+        body = _production_environment_status_route(cfg)
+    finally:
+        environments.invalidate_cache()
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["state"] == "needs_repair"
+    assert readiness["missing_environments"] == []
+    assert readiness["missing_packages"] == {
+        "python": ["numpy"],
+        "r": ["r-jsonlite"],
+    }
+    remediation = readiness["remediation"]
+    assert remediation["plan_argv"][-1] == "--repair"
+    assert remediation["apply_argv"][-1] == "--repair"
+
+
+def test_environment_status_route_captures_package_inventory_failure(
+    tmp_path, monkeypatch
+):
+    """The real route preserves unknown inventory as ``null``, never zero."""
+
+    from openai4s.kernel import environments
+    from openai4s.kernel import readiness as readiness_mod
+
+    generation_root = tmp_path / "managed-environments"
+    _write_standard_generation_fixture(generation_root)
+    monkeypatch.setenv("OPENAI4S_ENV_GENERATIONS_ROOT", str(generation_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(tmp_path / "no-conda-envs"))
+
+    def unavailable_inventory(*args, **kwargs):
+        del args, kwargs
+        raise OSError("fixture-local inventory failure")
+
+    monkeypatch.setattr(
+        readiness_mod.pkgscan, "collect_packages", unavailable_inventory
+    )
+    environments.invalidate_cache()
+    cfg = _stage1_cfg(tmp_path)
+    try:
+        body = _production_environment_status_route(cfg)
+    finally:
+        environments.invalidate_cache()
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["state"] == "unavailable"
+    assert readiness["reason"] == "package_inventory_unavailable"
+    assert readiness["missing_packages"] == {}
+    assert readiness["remediation"] is None
+    assert all(
+        row["installed_required_package_count"] is None
+        for row in readiness["environments"]
+    )
+
+
+def test_stage1_readiness_does_not_block_an_ordinary_control_only_turn(
+    tmp_path, monkeypatch
+):
+    """Message routing remains available when no Code Cell is selected."""
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def forbidden_readiness():
+        raise AssertionError("message admission probed scientific readiness")
+
+    monkeypatch.setattr(runner, "standard_profile_readiness", forbidden_readiness)
+    monkeypatch.setattr(
+        runner,
+        "run_message",
+        lambda *args, **kwargs: {
+            "status": "completed",
+            "frame_id": args[0],
+            "control_only": True,
+        },
+    )
+
+    try:
+        job = runner.submit_message(frame_id, "default", "answer with a control tool")
+        assert job.wait_result()["control_only"] is True
+    finally:
+        runner.close()
+
+
+def test_stage1_readiness_allows_plan_draft_but_refuses_approve_and_resume_pre_cas(
+    tmp_path, monkeypatch
+):
+    """Planning may proceed, but execution cannot strand a plan in ``executing``."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    monkeypatch.setattr(
+        runner,
+        "standard_profile_readiness",
+        lambda: _readiness(state="needs_repair"),
+    )
+    planned: list[tuple[str, bool]] = []
+
+    def plan_turn(
+        root_frame_id,
+        project_id,
+        user_text,
+        model=None,
+        plan=False,
+        annos=None,
+        explore=False,
+        frozen_binding=None,
+    ):
+        del project_id, user_text, model, annos, explore, frozen_binding
+        planned.append((root_frame_id, bool(plan)))
+        return {"status": "completed", "frame_id": root_frame_id}
+
+    monkeypatch.setattr(runner, "run_message", plan_turn)
+    try:
+        job = runner.submit_message(frame_id, "default", "draft a plan", plan=True)
+        assert job.wait_result()["status"] == "completed"
+        assert planned == [(frame_id, True)]
+
+        handler_cls = gateway_mod.make_handler(cfg, hub, runner)
+        handler = object.__new__(handler_cls)
+        handler.path = "/api/v1/frames/plan"
+        handler._query = lambda: {}
+        handler._body = lambda: {}
+        handler._json = lambda *_args, **_kwargs: None
+
+        for action, initial in (("approve", "draft"), ("resume", "paused")):
+            plan = runner.store.create_plan(
+                frame_id=frame_id,
+                project_id="default",
+                title=f"{action} me",
+                rationale="",
+                confidence="high",
+                steps=[
+                    {
+                        "id": f"{action}-step",
+                        "title": "science",
+                        "detail": "run it",
+                        "deliverables": [],
+                    }
+                ],
+                status=initial,
+            )
+            claim_name = (
+                "claim_plan_approval" if action == "approve" else "claim_plan_resume"
+            )
+            claims: list[str] = []
+
+            def must_not_claim(*_args):
+                claims.append(action)
+                raise AssertionError("readiness refusal happened after plan CAS")
+
+            monkeypatch.setattr(runner, claim_name, must_not_claim)
+            with pytest.raises(gateway_mod.GatewayError) as refused:
+                handler._api("POST", f"/frames/{frame_id}/plan/{action}")
+            assert refused.value.code == 409
+            assert refused.value.error_code == "environment_not_ready"
+            assert runner.store.get_plan(plan["plan_id"])["status"] == initial
+            assert claims == []
+            runner.store.update_plan(plan["plan_id"], status="discarded")
+    finally:
+        runner.close()
+
+
+def test_stage1_direct_notebook_cell_hits_readiness_before_any_cell_fact(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    monkeypatch.setattr(
+        runner,
+        "standard_profile_readiness",
+        lambda: _readiness(state="needs_repair"),
+    )
+    try:
+        with pytest.raises(gateway_mod.GatewayError) as refused:
+            runner.run_repl(frame_id, "default", "import missing_science_package")
+
+        assert refused.value.code == 409
+        assert refused.value.error_code == "environment_not_ready"
+        assert state.cell_index == 0
+        assert runner.store.cell_count(frame_id) == 0
+        attempts = runner.store._conn.execute(  # noqa: SLF001 - admission proof
+            "SELECT COUNT(*) FROM execution_attempts"
+        ).fetchone()[0]
+        assert attempts == 0
+        assert state.kernels.status("python")["alive"] is False
+        assert not [
+            event
+            for event in hub.events
+            if event.get("type", "").startswith("notebook_cell_")
+        ]
+    finally:
+        runner.close()
+
+
+def test_environment_status_exposes_stage1_readiness_as_a_top_level_projection(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    expected = _readiness(state="needs_repair")
+    monkeypatch.setattr(runner, "standard_profile_readiness", lambda: expected)
+    monkeypatch.setattr("openai4s.kernel.preinstall.installed_report", lambda: [])
+    monkeypatch.setattr("openai4s.kernel.preinstall.status", lambda: {"phase": "idle"})
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    try:
+        response = handler._environments_status()
+        assert set(response) == {"environments", "standard_profile_readiness"}
+        assert response["standard_profile_readiness"] is expected
+        assert response["environments"][0]["status"] == "ready"
+    finally:
+        runner.close()
+
+
 def test_permission_resolution_does_not_create_live_turn_buffer():
     hub = gateway_mod.WSHub()
     hub.broadcast(
@@ -1177,6 +1611,503 @@ def test_gateway_projects_submit_only_result_as_live_and_persisted_final_message
         if event.get("type") == "frame_update" and event.get("status") == "completed"
     )
     assert final_text_index < terminal_index
+
+
+def _install_artifact_submission(
+    monkeypatch,
+    runner,
+    *,
+    filename="result.csv",
+    content=b"sample,score\nA,1\n",
+    cell_id="cell-stage1",
+    after_capture=None,
+):
+    """Make one deterministic submitted turn without an LLM or kernel."""
+    captured: dict[str, dict] = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def finish_with_artifact(state, emit, visible):
+        del visible
+        path = state.workspace / filename
+        path.write_bytes(content)
+        record = runner._register_file(state, path, cell_id, emit)
+        assert record is not None
+        captured["record"] = record
+        if after_capture is not None:
+            after_capture(record)
+        state.dispatcher.last_output = {
+            "output": {"summary": "Scientific result is ready."},
+            "completion_bullets": ["Validated the result table"],
+        }
+        state.last_model_prose = ""
+        return "submitted"
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", finish_with_artifact)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    return captured
+
+
+def test_stage1_flag_off_keeps_legacy_completion_and_skips_delivery_ledger(
+    tmp_path, monkeypatch
+):
+    """The rollout must not change the default Artifact-bearing turn."""
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    captured = _install_artifact_submission(monkeypatch, runner)
+    try:
+        result = runner.run_message(frame_id, "default", "analyze the table")
+
+        assert result["status"] == "completed"
+        assert runner.stage1_trusted_delivery is False
+        assert runner.artifacts.trusted_delivery is False
+        assert runner.completion_delivery is None
+        legacy = "/api/artifacts/" + captured["record"]["artifact_id"].replace(
+            "/", "%2F"
+        )
+        chunks = "".join(
+            str(event.get("chunk") or "")
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+        )
+        assert legacy in chunks
+        assert "/api/v1/artifacts/" not in chunks
+        count = runner.store._conn.execute(  # noqa: SLF001 - integration proof
+            "SELECT COUNT(*) FROM completion_deliveries"
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        runner.close()
+
+
+def test_stage1_same_head_capture_is_verified_committed_then_emitted_and_reopens_once(
+    tmp_path, monkeypatch
+):
+    """A reused version is still this turn's deliverable, with durable ordering."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    artifact_path = state.workspace / "result.csv"
+    artifact_path.write_bytes(b"sample,score\nA,1\n")
+    first = runner._register_file(state, artifact_path, "cell-first", lambda _e: None)
+    assert first is not None
+    before_version_count = len(runner.store.list_versions(first["artifact_id"]))
+    captured = _install_artifact_submission(
+        monkeypatch,
+        runner,
+        cell_id="cell-second",
+    )
+
+    order: list[str] = []
+    delivery: dict[str, object] = {}
+    service = runner.completion_delivery
+    assert service is not None
+    real_build = service.build_manifest
+    real_commit = runner.store.commit_completion_delivery
+
+    def assert_no_link_was_emitted():
+        assert not [
+            event
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/" in str(event.get("chunk") or "")
+        ]
+
+    def observed_build(**kwargs):
+        assert_no_link_was_emitted()
+        verified = real_build(**kwargs)
+        order.append("verified")
+        return verified
+
+    def observed_commit(**kwargs):
+        assert order == ["verified"]
+        assert_no_link_was_emitted()
+        row = real_commit(**kwargs)
+        persisted = runner.store.list_messages(frame_id)
+        assert (
+            sum(
+                "/api/v1/artifacts/" in str(message.get("content") or "")
+                for message in persisted
+            )
+            == 1
+        )
+        delivery.update(row)
+        order.append("committed")
+        return row
+
+    monkeypatch.setattr(service, "build_manifest", observed_build)
+    monkeypatch.setattr(runner.store, "commit_completion_delivery", observed_commit)
+
+    try:
+        result = runner.run_message(frame_id, "default", "repeat the analysis")
+        assert result["status"] == "completed"
+        assert order == ["verified", "committed"]
+        assert captured["record"]["version_id"] == first["version_id"]
+        assert len(runner.store.list_versions(first["artifact_id"])) == (
+            before_version_count
+        )
+        observations = runner.store.list_artifact_capture_observations(
+            artifact_id=first["artifact_id"]
+        )
+        assert [row["producing_cell_id"] for row in observations] == [
+            "cell-first",
+            "cell-second",
+        ]
+        assert observations[-1]["capture_kind"] == "head_checksum_reused"
+
+        link_events = [
+            event
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/" in str(event.get("chunk") or "")
+        ]
+        assert len(link_events) == 1
+        assert link_events[0]["delivery_id"] == delivery["delivery_id"]
+        assert (
+            f"/api/v1/artifacts/versions/{first['version_id']}"
+            in link_events[0]["chunk"]
+        )
+        durable = runner.store.get_completion_delivery(str(delivery["delivery_id"]))
+        assert durable is not None and durable["status"] == "published"
+    finally:
+        runner.close()
+
+    reopened = get_store(cfg.db_path)
+    try:
+        linked = [
+            message
+            for message in reopened.list_messages(frame_id)
+            if "/api/v1/artifacts/" in str(message.get("content") or "")
+        ]
+        assert len(linked) == 1
+        metadata = json.loads(linked[0]["metadata"])
+        assert metadata["completion_delivery"]["delivery_id"] == (
+            delivery["delivery_id"]
+        )
+        reopened_delivery = reopened.get_completion_delivery(
+            str(delivery["delivery_id"])
+        )
+        assert reopened_delivery is not None
+        assert reopened_delivery["message_content"] == linked[0]["content"]
+    finally:
+        reopened.close()
+
+
+def test_stage1_publish_marker_fault_leaves_one_committed_message_for_recovery(
+    tmp_path, monkeypatch
+):
+    """A crash after emission is recoverable by delivery id, never a duplicate."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    publication_attempts: list[str] = []
+
+    def lose_publication_marker(delivery_id):
+        publication_attempts.append(delivery_id)
+        raise OSError("injected publication marker fault")
+
+    monkeypatch.setattr(
+        runner.store,
+        "mark_completion_delivery_published",
+        lose_publication_marker,
+    )
+    try:
+        result = runner.run_message(frame_id, "default", "deliver recoverably")
+
+        assert result["status"] == "completed"
+        assert len(publication_attempts) == 1
+        delivery_id = publication_attempts[0]
+        link_events = [
+            event
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/" in str(event.get("chunk") or "")
+        ]
+        assert len(link_events) == 1
+        assert link_events[0]["delivery_id"] == delivery_id
+        pending = runner.store.committed_completion_deliveries(root_frame_id=frame_id)
+        assert [row["delivery_id"] for row in pending] == [delivery_id]
+        assert (
+            sum(
+                "/api/v1/artifacts/" in str(message.get("content") or "")
+                for message in runner.store.list_messages(frame_id)
+            )
+            == 1
+        )
+    finally:
+        runner.close()
+
+    reopened = get_store(cfg.db_path)
+    try:
+        pending = reopened.committed_completion_deliveries(root_frame_id=frame_id)
+        assert [row["delivery_id"] for row in pending] == [delivery_id]
+        linked = [
+            message
+            for message in reopened.list_messages(frame_id)
+            if "/api/v1/artifacts/" in str(message.get("content") or "")
+        ]
+        assert len(linked) == 1
+        assert json.loads(linked[0]["metadata"])["completion_delivery"] == {
+            "delivery_id": delivery_id,
+            "manifest_sha256": pending[0]["manifest_sha256"],
+            "status": "committed",
+        }
+    finally:
+        reopened.close()
+
+
+def test_stage1_delivery_pin_rejects_delete_between_commit_and_link_emit(
+    tmp_path, monkeypatch
+):
+    """A committed exact-version claim pins its bytes before publication."""
+
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    captured = _install_artifact_submission(monkeypatch, runner)
+    commit_reached = threading.Event()
+    allow_commit_return = threading.Event()
+    real_commit = runner.store.commit_completion_delivery
+
+    def commit_then_pause(**kwargs):
+        row = real_commit(**kwargs)
+        commit_reached.set()
+        assert allow_commit_return.wait(5), "test did not release delivery commit"
+        return row
+
+    monkeypatch.setattr(runner.store, "commit_completion_delivery", commit_then_pause)
+    turn_result: dict[str, object] = {}
+
+    def run_turn():
+        try:
+            turn_result["value"] = runner.run_message(
+                frame_id, "default", "deliver before deleting"
+            )
+        except BaseException as error:  # pragma: no cover - reported below
+            turn_result["error"] = error
+
+    turn_thread = threading.Thread(target=run_turn)
+    try:
+        turn_thread.start()
+        assert commit_reached.wait(5), "turn never committed its delivery"
+        version_id = captured["record"]["version_id"]
+        version = runner.store.version_meta(version_id)
+        assert version is not None
+        assert Path(version["snapshot_path"]).is_file()
+        assert not any(
+            event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/versions/" in str(event.get("chunk") or "")
+            for event in hub.events
+        )
+
+        with pytest.raises(ArtifactOperationError) as refused:
+            runner.artifacts.delete(captured["record"]["artifact_id"])
+        assert refused.value.code == 409
+        assert "completion message" in refused.value.message
+        assert runner.store.version_meta(version_id) is not None
+        assert Path(version["snapshot_path"]).is_file()
+
+        allow_commit_return.set()
+        turn_thread.join(5)
+        assert not turn_thread.is_alive()
+        assert "error" not in turn_result
+        assert turn_result["value"]["status"] == "completed"
+        assert any(
+            event.get("type") == "text_chunk"
+            and f"/api/v1/artifacts/versions/{version_id}"
+            in str(event.get("chunk") or "")
+            for event in hub.events
+        )
+    finally:
+        allow_commit_return.set()
+        turn_thread.join(5)
+        runner.close()
+
+
+@pytest.mark.parametrize("fault", ["missing_snapshot", "hash_mismatch", "db_insert"])
+def test_stage1_artifact_delivery_faults_fail_closed_without_a_success_link(
+    tmp_path, monkeypatch, fault
+):
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def damage_snapshot(record):
+        if fault == "db_insert":
+            return
+        version = runner.store.version_meta(record["version_id"])
+        assert version is not None
+        snapshot = Path(version["snapshot_path"])
+        if fault == "missing_snapshot":
+            snapshot.unlink()
+        else:
+            snapshot.write_bytes(b"x" * int(version["size_bytes"]))
+
+    _install_artifact_submission(
+        monkeypatch,
+        runner,
+        after_capture=damage_snapshot,
+    )
+    if fault == "db_insert":
+        runner.store._conn.execute(  # noqa: SLF001 - injected transactional fault
+            "CREATE TRIGGER fail_stage1_delivery BEFORE INSERT "
+            "ON completion_deliveries BEGIN "
+            "SELECT RAISE(ABORT, 'injected stage1 delivery failure'); END"
+        )
+
+    try:
+        result = runner.run_message(frame_id, "default", "deliver the result")
+
+        assert result["status"] == "failed"
+        assert result["code"] == "artifact_delivery_unverified"
+        text_events = [
+            event for event in hub.events if event.get("type") == "text_chunk"
+        ]
+        assert text_events
+        assert all(
+            "/api/v1/artifacts/" not in str(event.get("chunk") or "")
+            for event in text_events
+        )
+        assistant = [
+            message
+            for message in runner.store.list_messages(frame_id)
+            if message.get("role") == "assistant"
+        ]
+        assert len(assistant) == 1
+        assert "no completion link was published" in assistant[0]["content"]
+        assert "/api/" not in assistant[0]["content"]
+        assert (
+            runner.store.committed_completion_deliveries(root_frame_id=frame_id) == []
+        )
+        count = runner.store._conn.execute(  # noqa: SLF001 - integration proof
+            "SELECT COUNT(*) FROM completion_deliveries WHERE root_frame_id=?",
+            (frame_id,),
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        runner.close()
+
+
+def test_stage1_commit_rechecks_snapshot_bytes_after_manifest_build(
+    tmp_path, monkeypatch
+):
+    """A verified manifest is not a capability to commit changed bytes."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    service = runner.completion_delivery
+    assert service is not None
+    real_build = service.build_manifest
+
+    def build_then_mutate(**kwargs):
+        verified = real_build(**kwargs)
+        version_id = verified.value["artifacts"][0]["version_id"]
+        version = runner.store.version_meta(version_id)
+        assert version is not None
+        snapshot = Path(version["snapshot_path"])
+        original = snapshot.read_bytes()
+        snapshot.write_bytes(bytes(byte ^ 0xFF for byte in original))
+        assert snapshot.stat().st_size == len(original)
+        return verified
+
+    monkeypatch.setattr(service, "build_manifest", build_then_mutate)
+    try:
+        result = runner.run_message(frame_id, "default", "deliver the result")
+
+        assert result["status"] == "failed"
+        assert result["code"] == "artifact_delivery_unverified"
+        assert (
+            runner.store.committed_completion_deliveries(root_frame_id=frame_id) == []
+        )
+        assert not any(
+            event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/versions/" in str(event.get("chunk") or "")
+            for event in hub.events
+        )
+    finally:
+        runner.close()
+
+
+def test_stage1_messages_route_refuses_a_corrupt_delivery_ledger(tmp_path):
+    """REST reopen validates the durable delivery before projecting prose."""
+
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = gateway_mod.SessionState(
+        frame_id,
+        "default",
+        runner.workspace_for(frame_id),
+    )
+    source = state.workspace / "reopen.csv"
+    source.write_bytes(b"sample,score\nA,1\n")
+    record = runner._register_file(state, source, "cell-reopen", lambda _event: None)
+    assert record is not None
+    service = runner.completion_delivery
+    assert service is not None
+    verified = service.build_manifest(
+        root_frame_id=frame_id,
+        project_id="default",
+        versions=[record["version_id"]],
+    )
+    delivery = runner.store.commit_completion_delivery(
+        idempotency_key="reopen-corruption:completion",
+        root_frame_id=frame_id,
+        branch_id=frame_id,
+        frame_id=frame_id,
+        content="Verified completion with an exact Artifact link.",
+        manifest=verified.value,
+        expected_manifest_sha256=verified.sha256,
+    )
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    responses: list[tuple[dict, int]] = []
+    handler._json = lambda body, code=200: responses.append((body, code))
+    handler._query = lambda: {}
+    handler.path = f"/api/v1/frames/{frame_id}/messages"
+
+    try:
+        with runner.store._lock:  # noqa: SLF001 - durable fault injection
+            runner.store._conn.execute(  # noqa: SLF001
+                "UPDATE completion_deliveries SET manifest_json='{}' "
+                "WHERE delivery_id=?",
+                (delivery["delivery_id"],),
+            )
+            runner.store._conn.commit()  # noqa: SLF001
+
+        with pytest.raises(RuntimeError, match="completion delivery"):
+            handler._api("GET", f"/frames/{frame_id}/messages")
+        assert responses == []
+    finally:
+        runner.close()
 
 
 def test_submit_message_runs_turn_in_background(tmp_path):
@@ -2884,6 +3815,13 @@ def test_lineage_serializer_producing_cell_and_inputs(tmp_path):
     assert lin["dependency_mappings"] == {
         "inputs": ["legacy.csv", "raw.csv", "edge.csv"]
     }
+    assert lin["producer"] == {
+        "kind": "cell",
+        "frame_id": fid,
+        "frame_kind": "turn",
+        "producing_cell_id": "cell-7",
+        "cell_recorded": True,
+    }
 
     empty = handler._lineage("a-does-not-exist")
     assert empty == {
@@ -2949,6 +3887,84 @@ def test_lineage_serializer_follows_latest_and_restored_version_edges(tmp_path):
     restored = handler._lineage(versions[0]["artifact_id"])
     assert restored["dependency_mappings"] == {"inputs": ["input-a.txt"]}
     assert restored["interactions"][0]["files_read"] == ["input-a.txt"]
+
+
+def test_same_byte_capture_keeps_each_cells_lineage_without_rewriting_the_first(
+    tmp_path,
+):
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    inputs = []
+    for name in ("input-first.txt", "input-second.txt"):
+        source = st.workspace / name
+        source.write_text(name, encoding="utf-8")
+        inputs.append(
+            store.save_artifact(
+                path=str(source),
+                filename=name,
+                content_type="text/plain",
+                size_bytes=source.stat().st_size,
+                checksum=hashlib.sha256(source.read_bytes()).hexdigest(),
+                frame_id=fid,
+            )
+        )
+    for index, cell_id in enumerate(("cell-first", "cell-second"), 1):
+        store.log_cell(
+            frame_id=fid,
+            root_frame_id=fid,
+            code=f"produce_from_{index}()",
+            result={"id": cell_id, "stdout": "", "stderr": "", "error": None},
+            cell_index=index,
+            files_read=[inputs[index - 1]["filename"]],
+            files_written=["same.txt"],
+        )
+
+    live = st.workspace / "same.txt"
+    live.write_bytes(b"identical")
+    snapshot = st.workspace / "same.snapshot"
+    snapshot.write_bytes(b"identical")
+    first = store.record_cell_artifact(
+        path=str(live),
+        filename="same.txt",
+        content_type="text/plain",
+        size_bytes=9,
+        checksum=hashlib.sha256(b"identical").hexdigest(),
+        producing_cell_id="cell-first",
+        frame_id=fid,
+        snapshot_path=str(snapshot),
+        input_version_ids=[inputs[0]["version_id"]],
+        reuse_matching_head=True,
+    )
+    second = store.record_cell_artifact(
+        path=str(live),
+        filename="same.txt",
+        content_type="text/plain",
+        size_bytes=9,
+        checksum=hashlib.sha256(b"identical").hexdigest(),
+        producing_cell_id="cell-second",
+        frame_id=fid,
+        snapshot_path=str(snapshot),
+        input_version_ids=[inputs[1]["version_id"]],
+        reuse_matching_head=True,
+    )
+
+    assert first["version_id"] == second["version_id"]
+    assert len(store.list_versions(first["artifact_id"])) == 1
+    lineage = handler._lineage(first["artifact_id"])
+    assert lineage["interactions"][0]["files_read"] == ["input-first.txt"]
+    assert lineage["dependency_mappings"] == {
+        "inputs": ["input-first.txt", "input-second.txt"]
+    }
+    assert [
+        observation["producing_cell_id"]
+        for observation in lineage["capture_observations"]
+    ] == ["cell-first", "cell-second"]
+    assert lineage["capture_observations"][1]["cell_index"] == 2
+    assert lineage["capture_observations"][1]["inputs"] == ["input-second.txt"]
+    assert lineage["capture_observations"][1]["frame_id"] == fid
+    assert lineage["capture_observations"][1]["frame_kind"] == "turn"
+    assert lineage["capture_observations"][1]["cell_recorded"] is True
 
 
 def test_upload_decodes_base64_or_refuses_it(tmp_path):
@@ -3105,6 +4121,12 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     assert (code, body) == (200, b"v1")
     assert ctype == store.version_meta(rec1["version_id"])["content_type"]
 
+    # Trusted completion uses a reserved exact-version namespace. It returns
+    # the same immutable bytes, but unlike the compatibility route it can
+    # never degrade to an Artifact-id or filename lookup.
+    handler._api("GET", f"/artifacts/versions/{rec1['version_id']}")
+    assert sends[-1][:2] == (200, b"v1")
+
     # artifact_id → the LATEST version's bytes (GET on a bare id is bytes,
     # not JSON — only DELETE matches the JSON route above it)
     handler._api("GET", f"/artifacts/{rec1['artifact_id']}")
@@ -3122,6 +4144,51 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     handler._api("GET", f"/artifacts/{rec1['version_id']}")
     assert sends[-1][:2] == (200, b"v1")
 
+    missing_version_trap = st.workspace / "no-such-version"
+    missing_version_trap.write_text("legacy-filename-fallback")
+    runner._register_file(st, missing_version_trap, "c4", lambda e: None)
+    handler._api("GET", "/artifacts/no-such-version")
+    assert sends[-1][:2] == (200, b"legacy-filename-fallback")
+    handler._api("GET", "/artifacts/versions/no-such-version")
+    assert sends[-1][0] == 404
+    handler._api("GET", "/artifacts/versions/%2E%2E")
+    assert sends[-1][0] == 404
+
+    # One decode, end to end: a literal "%2F" inside an opaque version id is
+    # encoded as "%252F" in the URL and must not become a path separator. The
+    # unicode/query/fragment characters exercise the rest of the URL helper's
+    # escaping contract at the same boundary.
+    opaque_version = "literal%2Fβ?#"
+    opaque_snapshot = cfg.artifacts_dir / "opaque-version"
+    opaque_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    opaque_snapshot.write_bytes(b"opaque-version-bytes")
+    with store._lock:  # noqa: SLF001 - seed an otherwise valid opaque legacy id
+        store._conn.execute(  # noqa: SLF001
+            """INSERT INTO artifact_versions(
+                   version_id, artifact_id, filename, content_type, size_bytes,
+                   checksum, path, snapshot_path, producing_cell_id, frame_id,
+                   created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                opaque_version,
+                rec1["artifact_id"],
+                "opaque.bin",
+                "application/octet-stream",
+                len(b"opaque-version-bytes"),
+                hashlib.sha256(b"opaque-version-bytes").hexdigest(),
+                str(opaque_snapshot),
+                str(opaque_snapshot),
+                "cell-opaque",
+                fid,
+                int(time.time() * 1000),
+            ),
+        )
+        store._conn.commit()  # noqa: SLF001
+    exact_url = artifact_version_url(opaque_version)
+    assert exact_url.endswith("/" + quote(opaque_version, safe=""))
+    handler._api("GET", exact_url.removeprefix("/api/v1"))
+    assert sends[-1][:2] == (200, b"opaque-version-bytes")
+
     # the wart: unknown ident answers this bytes route with a JSON envelope
     handler._api("GET", "/artifacts/no-such-ident")
     code, body, ctype = sends[-1]
@@ -3136,6 +4203,57 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     assert envelope["status"] == 404
     assert envelope["request_id"] is None
     assert ctype.startswith("application/json")
+
+
+def test_stage1_exact_get_rechecks_committed_snapshot_bytes(tmp_path):
+    """An exact URL never serves bytes that drifted after delivery commit."""
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    state = gateway_mod.SessionState(
+        frame_id,
+        "default",
+        runner.workspace_for(frame_id),
+    )
+    source = state.workspace / "committed.bin"
+    source.write_bytes(b"ORIGINAL")
+    record = runner._register_file(state, source, "cell-commit", lambda _event: None)
+    assert record is not None
+    service = runner.completion_delivery
+    assert service is not None
+    verified = service.build_manifest(
+        root_frame_id=frame_id,
+        project_id="default",
+        versions=[record["version_id"]],
+    )
+    store.commit_completion_delivery(
+        idempotency_key="exact-get:completion",
+        root_frame_id=frame_id,
+        branch_id=frame_id,
+        frame_id=frame_id,
+        content="Committed exact Artifact.",
+        manifest=verified.value,
+        expected_manifest_sha256=verified.sha256,
+    )
+    handler, sends = _bytes_handler(cfg, runner)
+    exact_path = artifact_version_url(record["version_id"]).removeprefix("/api/v1")
+
+    try:
+        handler._api("GET", exact_path)
+        assert sends[-1][:2] == (200, b"ORIGINAL")
+
+        version = store.version_meta(record["version_id"])
+        assert version is not None
+        snapshot = Path(version["snapshot_path"])
+        snapshot.write_bytes(b"MUTATED!")
+        assert snapshot.stat().st_size == len(b"ORIGINAL")
+
+        handler._api("GET", exact_path)
+        assert sends[-1][0] == 404
+        assert sends[-1][1] != b"MUTATED!"
+    finally:
+        runner.close()
 
 
 def test_preview_route_forces_html_content_type(tmp_path):

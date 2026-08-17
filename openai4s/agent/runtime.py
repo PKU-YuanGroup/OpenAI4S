@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     execute_tool_call,
+    get_tool,
     parse_tool_calls,
     run_tool_calls,
     tool_validation_error,
@@ -59,6 +60,10 @@ LogFn = Callable[..., None]
 
 def _null_log(*args: object) -> None:
     del args
+
+
+def _allow_cell(_action: CodeCell) -> None:
+    return None
 
 
 @dataclass(frozen=True)
@@ -279,6 +284,8 @@ class LocalActionExecutor:
     dispatcher: Any
     pre_exec_gate: Callable[[str, list[dict]], str | None]
     execute_r: Callable[[str], dict]
+    admit_cell: Callable[[CodeCell], None] = _allow_cell
+    cell_hooks: Any = None
     log: LogFn = _null_log
     tool_catalog: Any = None
     prose_nudge: str = NO_CODE_NUDGE
@@ -294,6 +301,10 @@ class LocalActionExecutor:
         if isinstance(action, NativeToolBatch):
             return self._execute_native(action, state)
         if isinstance(action, CodeCell):
+            # Keep the lazy runtime genuinely lazy: readiness and other local
+            # admission checks run before safety, action-context binding, or a
+            # Python/R worker can be created.
+            self.admit_cell(action)
             return self._execute_code(action, reply, state)
         return self._execute_legacy_or_nudge(reply, state)
 
@@ -320,8 +331,42 @@ class LocalActionExecutor:
                     return execute_tool_call(self.dispatcher, payload)
                 return execute_tool_call(self.dispatcher, payload, self.tool_catalog)
 
+            resolver = (
+                get_tool
+                if self.tool_catalog is None
+                else getattr(self.tool_catalog, "get", None)
+            )
+            tool = resolver(call.name) if callable(resolver) else None
+            hooks = self.cell_hooks
+            before_native = getattr(hooks, "before_native", None)
+            after_native = getattr(hooks, "after_native", None)
+
+            def execute_with_capture():
+                if (
+                    tool is None
+                    or not bool(getattr(tool, "writes_files", False))
+                    or not callable(before_native)
+                    or not callable(after_native)
+                ):
+                    return execute()
+                token = before_native(call)
+                try:
+                    result = execute()
+                except BaseException:
+                    # Preserve the writing tool's primary failure. The hook
+                    # records exact changed-file claims before raising, so an
+                    # enclosing parent capture still fails closed if durable
+                    # attribution also failed.
+                    try:
+                        after_native(call, token, None)
+                    except BaseException:
+                        pass
+                    raise
+                after_native(call, token, result)
+                return result
+
             if not callable(binder):
-                return execute()
+                return execute_with_capture()
             group_id = getattr(self.action_ledger, "current_group_id", None)
             with binder(
                 {
@@ -330,7 +375,7 @@ class LocalActionExecutor:
                     "tool_call_id": call.id,
                 }
             ):
-                return execute()
+                return execute_with_capture()
 
         if self.tool_catalog is None:
             outcome = execute_native_batch(
@@ -360,26 +405,37 @@ class LocalActionExecutor:
         if refusal is not None:
             self.log(f"[safety] cell not executed: {refusal}")
             return self._user_observation(refusal)
-        if action.language == "r":
-            result = self.execute_r(action.code)
-        else:
-            group_id = getattr(self.action_ledger, "current_group_id", None)
-            context = (
-                {
-                    "action_group_id": group_id,
-                    "action_id": f"{group_id}:action",
-                    "tool_call_id": None,
-                }
-                if group_id
-                else None
-            )
-            binder = getattr(self.kernel, "bind_action_context", None)
-            if callable(binder):
-                with binder(context):
-                    result = self.kernel.execute(action.code, origin="agent")
+        hooks = self.cell_hooks
+        token = hooks.before(action) if hooks is not None else None
+        result: dict | None = None
+        try:
+            if action.language == "r":
+                result = self.execute_r(action.code)
             else:
-                result = self.kernel.execute(action.code, origin="agent")
-            self._record_kernel_generation(state)
+                group_id = getattr(self.action_ledger, "current_group_id", None)
+                context = (
+                    {
+                        "action_group_id": group_id,
+                        "action_id": f"{group_id}:action",
+                        "tool_call_id": None,
+                    }
+                    if group_id
+                    else None
+                )
+                binder = getattr(self.kernel, "bind_action_context", None)
+                if callable(binder):
+                    with binder(context):
+                        result = self.kernel.execute(action.code, origin="agent")
+                else:
+                    result = self.kernel.execute(action.code, origin="agent")
+                self._record_kernel_generation(state)
+        except BaseException:
+            if hooks is not None:
+                hooks.after(action, token, None)
+            raise
+        if hooks is not None:
+            hooks.after(action, token, result)
+        assert result is not None
         # Recorded here, after the kernel ran — a safety-gate refusal above
         # returned already and must never count as finalize-time evidence.
         # The same goes for the R runner's spawn-failure / pre-execution

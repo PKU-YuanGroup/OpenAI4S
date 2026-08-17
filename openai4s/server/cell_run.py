@@ -8,6 +8,7 @@ transaction is only an observation; it never decides that an agent task is done.
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -40,6 +41,15 @@ def _no_attempt_allocate(
 ) -> None:
     del session, request, cell_id, action_group_id
     return None
+
+
+def _allow_cell(session: "CellSession", request: CellRequest) -> None:
+    del session, request
+
+
+def _no_capture_lease(session: "CellSession", request: CellRequest) -> Any:
+    del session, request
+    return nullcontext()
 
 
 def _no_attempt_milestone(attempt_id: str) -> None:
@@ -82,6 +92,14 @@ class CellExecutionPorts:
     capture: Callable[[CellSession, int, str, Any, EventSink, str], CaptureResult]
     emit_artifact_step: Callable[[CellSession, str, list[dict], EventSink], None]
     record_cell: Callable[..., None]
+    # Admission runs before allocating a Cell id/revision/attempt or touching a
+    # runtime. Stage 1 uses it for local environment readiness; a refusal must
+    # not materialise the very Cell whose first ImportError it is preventing.
+    admit: Callable[[CellSession, CellRequest], None] = _allow_cell
+    # Held from before admission through final capture/recording.  The Web
+    # adapter uses it to keep background writers out of a shared-workspace
+    # diff; headless/legacy callers retain the no-op default.
+    capture_lease: Callable[[CellSession, CellRequest], Any] = _no_capture_lease
     allocate_attempt: Callable[
         [CellSession, CellRequest, str, str | None], str | None
     ] = _no_attempt_allocate
@@ -146,7 +164,27 @@ class CellExecutionService:
         *,
         action_group_id: str | None = None,
     ) -> CellExecutionResult:
+        # Acquire before readiness or identity allocation.  A background race
+        # must refuse the Cell without inventing a Cell id/attempt, touching a
+        # runtime, or allowing any workspace side effect.
+        with self.ports.capture_lease(session, request):
+            return self._execute_admitted(
+                session,
+                request,
+                emit,
+                action_group_id=action_group_id,
+            )
+
+    def _execute_admitted(
+        self,
+        session: CellSession,
+        request: CellRequest,
+        emit: EventSink,
+        *,
+        action_group_id: str | None = None,
+    ) -> CellExecutionResult:
         action_group_id = action_group_id or request.action_group_id
+        self.ports.admit(session, request)
         session.cell_index += 1
         index = session.cell_index
         cell_id = self.id_factory()

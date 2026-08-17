@@ -50,7 +50,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from openai4s.capabilities import CapabilityStateService, SpecialistProfileService
 from openai4s.execution.dependencies import (
@@ -63,6 +63,9 @@ from openai4s.storage.actions import ActionLedgerRepository
 from openai4s.storage.activation import SessionActivationRepository
 from openai4s.storage.agents import AgentProfileRepository
 from openai4s.storage.annotations import AnnotationRepository
+from openai4s.storage.artifact_observations import (
+    create_artifact_observations_schema,
+)
 from openai4s.storage.artifacts import ArtifactRepository
 from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
@@ -81,6 +84,10 @@ from openai4s.storage.datapro_index import (
     create_datapro_index_schema,
 )
 from openai4s.storage.delegation import DelegationProjectionRepository
+from openai4s.storage.delivery import (
+    CompletionDeliveryRepository,
+    create_completion_delivery_schema,
+)
 from openai4s.storage.frames import FrameRepository
 from openai4s.storage.governance import (
     GovernanceRepository,
@@ -115,6 +122,7 @@ from openai4s.storage.permissions import (
 from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
+from openai4s.storage.session_imports import SessionImportRepository
 from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
@@ -730,6 +738,10 @@ QUERY_DENYLIST = frozenset(
         "checkpoint_state_snapshots",
         "snapshot_operations",
         "recovery_journal",
+        # Publication ledger binds exact manifests to final assistant messages.
+        # It is server recovery/audit state, not an agent data source.
+        "completion_deliveries",
+        "completion_delivery_artifacts",
         # SQLite's own catalogue. The denylist above protects the *contents* of
         # these tables and this one handed back their entire definition:
         # `SELECT sql FROM sqlite_master WHERE name='permission_rules'` returned
@@ -803,6 +815,7 @@ _SCOPED_VIEWS = frozenset(
     {
         "my_artifacts",
         "my_artifact_versions",
+        "my_artifact_capture_observations",
         "my_lineage_edges",
         "my_frames",
         "my_env_snapshots",
@@ -821,6 +834,7 @@ _VIEW_ONLY_TABLES = frozenset(
     {
         "artifacts",
         "artifact_versions",
+        "artifact_capture_observations",
         "lineage_edges",
         # Interpreter, prefix and the complete installed-package manifest of
         # every kernel generation in the database.
@@ -1175,6 +1189,16 @@ class Store:
             paths_match=lambda left, right: _same_file_path(left, right),
             delete_related=self._datapro_index.delete_for_artifact,
         )
+        self._completion_deliveries = CompletionDeliveryRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._session_imports = SessionImportRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._notes = NotesRepository(
             self._conn,
             self._lock,
@@ -1330,6 +1354,10 @@ class Store:
                         self._apply_orchestration_leases,
                     ),
                     23: ("user_llm_keys", self._apply_user_llm_keys),
+                    24: (
+                        "artifact_observations_and_completion_delivery",
+                        self._apply_artifact_delivery,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1389,6 +1417,18 @@ class Store:
         """
 
         create_user_key_schema(conn)
+
+    def _apply_artifact_delivery(self, conn: sqlite3.Connection) -> None:
+        """Version 24: capture observations and recoverable final delivery.
+
+        Both tables close one Artifact publication contract, so they advance
+        together: an upgraded database can either record the producing Cell
+        for reused bytes *and* bind final prose to exact versions, or it stays
+        at v23 with neither half advertised as available.
+        """
+
+        create_artifact_observations_schema(conn)
+        create_completion_delivery_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -2275,6 +2315,17 @@ class Store:
             is_example=is_example,
         )
 
+    def create_quarantined_import_session(
+        self,
+        *,
+        project_id: str,
+        quarantine_value: str,
+    ) -> dict[str, Any]:
+        return self._session_imports.create_quarantined_root(
+            project_id=project_id,
+            quarantine_value=quarantine_value,
+        )
+
     def get_project(self, project_id: str) -> dict | None:
         return self._frames.get_project(project_id)
 
@@ -2315,6 +2366,75 @@ class Store:
     def update_message_metadata(self, message_id: str, patch: dict) -> dict | None:
         return self._frames.update_message_metadata(message_id, patch)
 
+    def commit_completion_delivery(
+        self,
+        *,
+        idempotency_key: str,
+        root_frame_id: str,
+        branch_id: str | None,
+        frame_id: str | None,
+        content: str,
+        manifest: Mapping[str, Any],
+        expected_manifest_sha256: str | None = None,
+        created_at: int | None = None,
+        snapshot_verifier: Callable[[Mapping[str, Any]], object] | None = None,
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.commit_final_message(
+            idempotency_key=idempotency_key,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            frame_id=frame_id,
+            content=content,
+            manifest=manifest,
+            expected_manifest_sha256=expected_manifest_sha256,
+            created_at=created_at,
+            snapshot_verifier=snapshot_verifier,
+        )
+
+    def mark_completion_delivery_published(
+        self,
+        delivery_id: str,
+        *,
+        published_at: int | None = None,
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.mark_published(
+            delivery_id,
+            published_at=published_at,
+        )
+
+    def get_completion_delivery(self, delivery_id: str) -> dict[str, Any] | None:
+        return self._completion_deliveries.get(delivery_id)
+
+    def committed_completion_deliveries(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        branch_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        return self._completion_deliveries.committed(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            limit=limit,
+        )
+
+    def completion_deliveries_for_session(
+        self,
+        root_frame_id: str,
+        *,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        return self._completion_deliveries.for_session(
+            root_frame_id,
+            limit=limit,
+        )
+
+    def bind_imported_completion_delivery(
+        self,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.bind_imported_message(**fields)
+
     def list_messages(
         self,
         root_frame_id: str,
@@ -2325,13 +2445,17 @@ class Store:
         before_seq: int | None = None,
         newest_first: bool = False,
     ) -> list[dict]:
-        return self._frames.list_messages(
+        messages = self._frames.list_messages(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
             before_seq=before_seq,
             newest_first=newest_first,
+        )
+        return self._completion_deliveries.validate_message_projection(
+            root_frame_id,
+            messages,
         )
 
     def list_message_boundaries(
@@ -2342,11 +2466,15 @@ class Store:
         start: int = 0,
         limit: int | None = 300,
     ) -> list[dict]:
-        return self._frames.list_message_boundaries(
+        messages = self._frames.list_message_boundaries(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
+        )
+        return self._completion_deliveries.validate_message_projection(
+            root_frame_id,
+            messages,
         )
 
     def list_branch_messages(
@@ -2362,11 +2490,7 @@ class Store:
     ) -> list[dict]:
         """Project one branch's visible conversation without deleting rows."""
 
-        reader = (
-            self._frames.list_message_boundaries
-            if boundaries
-            else self._frames.list_messages
-        )
+        reader = self.list_message_boundaries if boundaries else self.list_messages
         projected = project_branch_records(
             self,
             root_frame_id,
@@ -3191,6 +3315,7 @@ class Store:
         preserve_filename: bool = False,
         preserve_content_type: bool = False,
         reuse_policy: str = "any",
+        reuse_matching_head: bool = False,
     ) -> dict:
         return self._artifacts.record_cell_artifact(
             path=path,
@@ -3209,6 +3334,59 @@ class Store:
             preserve_filename=preserve_filename,
             preserve_content_type=preserve_content_type,
             reuse_policy=reuse_policy,
+            reuse_matching_head=reuse_matching_head,
+        )
+
+    def commit_artifact_upload(self, **fields) -> dict:
+        """Thin facade for the upload repository's cross-store transaction."""
+
+        return self._artifacts.commit_artifact_upload(**fields)
+
+    def artifact_by_scope_filename(self, *args, **kwargs) -> dict | None:
+        """Thin facade for exact nullable-root upload lookup."""
+
+        return self._artifacts.artifact_by_scope_filename(*args, **kwargs)
+
+    def rollback_artifact_upload(self, **fields) -> bool:
+        """Thin facade used by durable upload-journal recovery."""
+
+        return self._artifacts.rollback_artifact_upload(**fields)
+
+    def list_artifact_capture_observations(
+        self,
+        *,
+        artifact_id: str | None = None,
+        version_id: str | None = None,
+    ) -> list[dict]:
+        return self._artifacts.list_capture_observations(
+            artifact_id=artifact_id,
+            version_id=version_id,
+        )
+
+    def artifact_capture_observation_cursor(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        project_id: str | None = None,
+    ) -> int:
+        return self._artifacts.capture_observation_cursor(
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+        )
+
+    def artifact_capture_observations_since(
+        self,
+        cursor: int,
+        *,
+        root_frame_id: str | None,
+        project_id: str,
+        limit: int = 10_000,
+    ) -> list[dict]:
+        return self._artifacts.capture_observations_since(
+            cursor,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+            limit=limit,
         )
 
     def record_artifact_restore(
@@ -3344,8 +3522,16 @@ class Store:
             frame_id=frame_id,
         )
 
-    def lineage_inputs(self, version_id: str) -> list[dict]:
-        return self._artifacts.lineage_inputs(version_id)
+    def lineage_inputs(
+        self,
+        version_id: str,
+        *,
+        producing_cell_id: str | None = None,
+    ) -> list[dict]:
+        return self._artifacts.lineage_inputs(
+            version_id,
+            producing_cell_id=producing_cell_id,
+        )
 
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]:
         return self._artifacts.lineage_edges_for(version_id, direction)
@@ -4641,6 +4827,11 @@ class Store:
             f"""CREATE TEMP VIEW my_artifact_versions AS
                 SELECT v.* FROM main.artifact_versions v
                   JOIN main.artifacts a ON a.artifact_id = v.artifact_id
+                 WHERE a.root_frame_id = {root_sql}
+                   AND a.project_id = {project_sql}""",
+            f"""CREATE TEMP VIEW my_artifact_capture_observations AS
+                SELECT o.* FROM main.artifact_capture_observations o
+                  JOIN main.artifacts a ON a.artifact_id = o.artifact_id
                  WHERE a.root_frame_id = {root_sql}
                    AND a.project_id = {project_sql}""",
             f"""CREATE TEMP VIEW my_lineage_edges AS

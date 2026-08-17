@@ -182,6 +182,20 @@
         404
       ]
     },
+    "/artifacts/versions/([^/]+)": {
+      "content_types": [
+        "application/json",
+        "application/octet-stream"
+      ],
+      "kinds": [
+        "binary",
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/auth/login": {
       "content_types": [
         "application/json"

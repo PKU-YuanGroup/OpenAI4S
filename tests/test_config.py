@@ -323,7 +323,7 @@ def test_auto_mode_selection_precedence_and_migration_are_frozen():
     assert AUTO_MODE_LEGACY_CAN_ENABLE_PERMISSION_REVIEW is False
 
 
-def test_stage0_reservations_do_not_change_legacy_config_or_have_consumers(
+def test_stage1_consumes_only_its_roadmap_flag_without_changing_legacy_config(
     monkeypatch,
 ):
     _clear_auto_mode_environment(monkeypatch)
@@ -344,14 +344,29 @@ def test_stage0_reservations_do_not_change_legacy_config_or_have_consumers(
     }
 
     package_root = Path(__file__).resolve().parents[1] / "openai4s"
-    consumers = []
+    consumers = {name: [] for name in ROADMAP_FLAGS}
+    auto_mode_consumers = []
     for path in package_root.rglob("*.py"):
         if path.name == "config.py":
             continue
         source = path.read_text(encoding="utf-8")
-        if ".roadmap_features" in source or ".auto_mode" in source:
-            consumers.append(str(path.relative_to(package_root.parent)))
-    assert consumers == []
+        relative = str(path.relative_to(package_root.parent))
+        for flag_name in ROADMAP_FLAGS:
+            if flag_name in source:
+                consumers[flag_name].append(relative)
+        if ".auto_mode" in source:
+            auto_mode_consumers.append(relative)
+
+    assert sorted(consumers.pop("stage1_trusted_delivery")) == [
+        "openai4s/agent/loop.py",
+        "openai4s/doctor.py",
+        "openai4s/host/data.py",
+        "openai4s/server/gateway.py",
+    ]
+    assert consumers == {
+        name: [] for name in ROADMAP_FLAGS if name != "stage1_trusted_delivery"
+    }
+    assert auto_mode_consumers == []
 
 
 def test_data_roots_parse_colon_separated(monkeypatch, tmp_path):

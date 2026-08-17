@@ -1,17 +1,51 @@
 # Auto Mode product and terminal-state contract
 
-Status: **Stage 0 contract only (reserved, not implemented)**.
+Status: **Stage 0 Auto Mode contract; Stage 1 trusted delivery implemented as
+default-off opt-in**.
 
 This document freezes the product truth that Stages 1–12 must implement. It is
 normative for the new Auto Mode states, but it is not evidence that those
-states exist today. Stage 0 adds inert, default-off configuration reservations;
-it does not add a state machine, database row, event, route, UI badge, reviewer
-gate, repair loop, or Guardian decision.
+states exist today. Stage 1 consumes only `stage1_trusted_delivery`; it does not
+add an Auto Mode state machine, Auto Run row/event/route/UI badge, reviewer
+gate, repair loop, or Guardian decision. Stage 2–12 roadmap flags remain inert.
 
 The existing `review:auto:<frame>` setting remains the old single-call,
 post-completion Reviewer. It records an ordinary review step after the final
 answer and does not gate completion. It must not be described as the Auto Mode
 defined here.
+
+## Stage 1 delivery boundary
+
+`OPENAI4S_STAGE1_TRUSTED_DELIVERY=1` enables three prerequisites without
+enabling Auto Mode:
+
+- completion Artifact links name exact immutable versions through the canonical
+  `/api/v1/artifacts/versions/{version_id}` helper; frozen bytes and scope/checksum
+  metadata are verified before the assistant message and delivery manifest
+  commit, and the link-bearing event is emitted afterwards with a stable
+  `delivery_id`;
+- an identical current-head checksum reuses the version but appends a durable,
+  scoped capture observation for the new producing Cell and lineage; Stage 1
+  observations remain local-only and are not yet serialized by Session
+  package, share, or export;
+- a delegated Web child is captured at its own Cell boundary. Because siblings
+  share the session workspace, asynchronous and fanout delegation are refused
+  before budget reservation while this flag is enabled; a directory snapshot
+  cannot truthfully distinguish concurrent writers. Single synchronous and
+  nested synchronous delegation remain available, and flag-off behavior is
+  unchanged;
+- the local `standard` Python/R manifest check is shown at startup and in the
+  workbench. A missing or unavailable profile blocks the first routed Code
+  Cell before pending Cell state or execution; control-only/finalize turns may
+  still complete without starting a kernel. Approved or resumed scientific
+  plans are the deliberate pre-CAS exception. Remediation is explicit through
+  `openai4s env plan python r --repair` followed by
+  `openai4s env apply python r --repair`; a failed environment apply never
+  moves that environment's active generation pointer.
+
+The flag remains off by default. It does not select `review_only`, `auto_fix`,
+or `auto_review`; create a candidate, finding, or permission decision; or alter
+the non-negotiable Reviewer/Repair/Guardian safety invariants below.
 
 ## Product modes
 
@@ -417,5 +451,5 @@ digest, run context, generation, expiry, and `max_uses=1`.
   itself after a user cancellation.
 
 See [Architecture](architecture.md), [Configuration](configuration.md), and
-the [Web App API contract](webapp-api.md) for the Stage 0 implementation
+the [Web App API contract](webapp-api.md) for the Stage 1 implementation
 boundary.

@@ -507,6 +507,74 @@ def test_send_starts_an_async_background_turn() -> None:
     ), "a 202 acknowledgement is not completion; wait for the terminal WS event"
 
 
+def test_standard_environment_readiness_is_advisory_until_a_cell_is_routed() -> None:
+    """Control-only turns stay routable; a refused Cell opens managed repair."""
+
+    send_source = _extract_js_function(APP_JS, "send")
+    refresh = _extract_js_function(APP_JS, "refreshEnvironmentStatus")
+    terminal = _extract_js_function(APP_JS, "handleEnvironmentReadinessTerminal")
+    on_event = _extract_js_function(APP_JS, "onEvent")
+    init = _extract_js_function(APP_JS, "init")
+
+    assert "environmentReadinessPreflight" not in APP_JS
+    assert 'api("/environments/status")' not in send_source
+    assert 'api("/environments/status")' in refresh
+    assert ".standard_profile_readiness" in refresh
+    assert "await refreshEnvironmentStatus()" in init
+    assert 'detail.status !== "failed"' in terminal
+    assert '"environment_not_ready"' in terminal
+    assert '"environment_readiness_unavailable"' in terminal
+    assert 'openCust("compute")' in terminal
+    assert "refreshEnvironmentStatus().finally" in terminal
+    assert "handleEnvironmentReadinessTerminal(m)" in on_event
+    assert on_event.index("handleEnvironmentReadinessTerminal(m)") < on_event.index(
+        "turnDone(m.status, m)"
+    )
+
+    for status, code in (
+        (409, "environment_not_ready"),
+        (503, "environment_readiness_unavailable"),
+    ):
+        assert f'error.status === {status} && error.code === "{code}"' in APP_JS
+    assert "if (isEnvironmentReadinessError(e))" in send_source
+    assert "await refreshEnvironmentStatus()" in send_source
+    assert "if (S._environmentStatusRefreshFailed)" in send_source
+    assert 'reason: "status_refresh_failed"' in send_source
+    assert "composer.value = text" in send_source
+
+
+def test_standard_readiness_ui_is_complete_copy_only_and_text_safe() -> None:
+    sanitize = _extract_js_function(APP_JS, "sanitizeStandardProfileReadiness")
+    banner = _extract_js_function(APP_JS, "renderEnvironmentReadinessBanner")
+    card = _extract_js_function(APP_JS, "renderStandardProfileReadiness")
+    compute = _extract_js_function(APP_JS, "custCompute")
+
+    assert INDEX_HTML.count('class="environment-readiness-banner hidden"') == 2
+    assert "readiness.enabled === true && readiness.ready !== true" in banner
+    assert "textContent" in banner and "innerHTML" not in banner
+    assert "missing_environments.forEach" in card
+    assert "Object.entries(readiness.missing_packages).forEach" in card
+    assert ".slice(" not in card, "the Compute card must show the complete missing list"
+    assert "remediation.requires_explicit_action" in card
+    assert "navigator.clipboard.writeText(item.command)" in card
+    assert "api(" not in card, "copying remediation must never execute or install it"
+    assert "innerHTML" not in card, "server-projected names and commands are text only"
+    assert "refreshEnvironmentStatus()" in compute
+    assert "renderStandardProfileReadiness(readiness)" in compute
+    assert "sourceRemediation.commands" in sanitize
+    assert "sourceRemediation.requires_explicit_action === true" in sanitize
+
+    for key in (
+        "environment.readiness.bannerTitle",
+        "environment.readiness.openCompute",
+        "environment.readiness.sendBlocked",
+        "environment.readiness.explicitOnly",
+    ):
+        assert APP_JS.count(f'"{key}":') == 2, f"{key} needs zh and en text"
+    assert ".environment-readiness-banner" in STYLE_CSS
+    assert ".standard-readiness-card" in STYLE_CSS
+
+
 def test_streaming_markdown_seals_only_complete_blocks_and_fully_renders_on_finish() -> (
     None
 ):
@@ -1451,6 +1519,14 @@ def test_provenance_caches_follow_artifact_versions_and_refresh_mutations() -> N
     assert "syncArtifactVersion((restored && restored.artifact)" in versions_source
     assert "Array.isArray(mapped)" in review_source
     assert "cell.files_read && cell.files_read.length" not in review_source
+    assert "capture.frame_id" in review_source
+    assert "capture.frame_kind" in review_source
+    assert 'capture.capture_kind === "head_checksum_reused" || !cell' in review_source
+    assert "producer.frame_id" in review_source
+    assert 'producer.kind === "cell"' in review_source
+    assert "if (capture.cell_index != null)" in review_source
+    assert 't("prov.review.producedByIdentity"' in review_source
+    assert 't("prov.review.nonCellProducer"' in review_source
 
 
 def test_session_and_project_menus_download_artifact_zip() -> None:

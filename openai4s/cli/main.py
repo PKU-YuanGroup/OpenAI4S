@@ -744,9 +744,26 @@ def cmd_url(args) -> int:
 
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
+    from openai4s.kernel.readiness import EnvironmentReadinessError
 
     cfg = get_config()
-    result = Agent(cfg=cfg, verbose=args.verbose).run(args.task)
+    try:
+        result = Agent(cfg=cfg, verbose=args.verbose).run(args.task)
+    except EnvironmentReadinessError as error:
+        # A standard-profile refusal is raised only at the first Code Cell.
+        # Keeping this adapter typed lets native tools and structured
+        # finalization run with zero kernel while retaining the existing CLI
+        # JSON/text failure contract for a scientific execution attempt.
+        payload = {
+            "error": str(error),
+            "code": error.error_code,
+            "standard_profile_readiness": error.readiness,
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"error: {payload['error']}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -1099,17 +1116,24 @@ def _env_spec(name: str) -> Path:
     return _envs_dir() / f"{name}.yml"
 
 
-def _env_verify(prefix: Path) -> tuple[str, list[str]]:
-    """Prove the generation runs before anything points at it.
+def _env_verify(prefix: Path, *, name: str | None = None) -> tuple[str, list[str]]:
+    """Prove the generation runs and satisfies standard before it is current.
 
     A build that exits 0 having produced nothing usable is the false success
     this step exists to catch, and it is the same rule the compute manager
     applies to a job that exits 0 having written no outputs. The check used to
     stop at "a file exists at that path"; it now *starts the interpreter*, in
-    both languages, because a file is not an environment.
+    both languages, because a file is not an environment.  The standard Python
+    and R generations additionally require every direct package in their
+    shipped manifests; a runnable but partial prefix is not ready.
     """
-    from openai4s.kernel.env_generations import probe_interpreter
+    from openai4s.kernel.env_generations import (
+        probe_interpreter,
+        verify_standard_environment,
+    )
 
+    if name in ("python", "r"):
+        return verify_standard_environment(prefix, name)
     return probe_interpreter(prefix)
 
 
@@ -1117,7 +1141,15 @@ def cmd_env_plan(args) -> int:
     cfg = get_config()
     tool = _find_conda_tool() or "conda"
     store = _env_store(cfg)
-    plans = [store.plan(name, _env_spec(name), tool=tool) for name in args.names]
+    plans = [
+        store.plan(
+            name,
+            _env_spec(name),
+            tool=tool,
+            force_replace=bool(getattr(args, "repair", False)),
+        )
+        for name in args.names
+    ]
     if args.json:
         print(json.dumps([p.public() for p in plans], indent=2, sort_keys=True))
     else:
@@ -1138,7 +1170,12 @@ def cmd_env_apply(args) -> int:
     failed = 0
     for name in args.names:
         spec = _env_spec(name)
-        plan = store.plan(name, spec, tool=tool)
+        plan = store.plan(
+            name,
+            spec,
+            tool=tool,
+            force_replace=bool(getattr(args, "repair", False)),
+        )
         if args.dry_run:
             if plan.changes:
                 print(f"  [{name}] would {plan.action}: {plan.reason}")
@@ -1166,7 +1203,13 @@ def cmd_env_apply(args) -> int:
             ]
 
         try:
-            result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
+            result = store.apply(
+                plan,
+                spec,
+                tool=tool,
+                build=build,
+                verify=lambda prefix, _name=name: _env_verify(prefix, name=_name),
+            )
         except EnvironmentError_ as e:
             failed += 1
             print(f"  [{name}] FAILED: {e}", file=sys.stderr)
@@ -1887,12 +1930,22 @@ def build_parser() -> argparse.ArgumentParser:
     esub = pe.add_subparsers(dest="env_action", required=True)
     ep = esub.add_parser("plan", help="what would change; touches nothing")
     ep.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ep.add_argument(
+        "--repair",
+        action="store_true",
+        help="plan a fresh verified generation even when the spec is unchanged",
+    )
     ep.add_argument("--json", action="store_true")
     ep.set_defaults(fn=cmd_env_plan)
     ea = esub.add_parser(
         "apply", help="build a new generation and switch to it if it verifies"
     )
     ea.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ea.add_argument(
+        "--repair",
+        action="store_true",
+        help="build a fresh verified generation even when the spec is unchanged",
+    )
     ea.add_argument("--dry-run", action="store_true")
     ea.set_defaults(fn=cmd_env_apply)
     el = esub.add_parser("list", help="generations, and which one is current")

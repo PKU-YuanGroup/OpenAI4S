@@ -18,7 +18,29 @@ HTML/CSS/JavaScript served directly from the working tree.
   images, CSV/TSV tables, Markdown/text, HTML/PDF previews, and 3D molecular
   structures through vendored 3Dmol. Restore verifies a trusted immutable
   snapshot and appends a fresh version plus source→restored lineage; it never
-  moves the Artifact head back onto an old row.
+  moves the Artifact head back onto an old row. With
+  `OPENAI4S_STAGE1_TRUSTED_DELIVERY=1`, completion links name the exact
+  immutable version under `/api/v1/artifacts/versions/{version_id}`. Clicking, reloading,
+  and reopening therefore resolves the same checksummed bytes even after a
+  newer head exists. A repeated same-checksum capture does not fabricate a new
+  version; its new producing Cell and lineage remain in a separate durable
+  local capture observation. The scoped lineage view projects the latest
+  version's path-free producer frame, so delegated code/native outputs show the
+  real child frame without fabricating a root Notebook Cell or view-code link.
+- **Recoverable completion delivery (opt-in)** — Stage 1 freezes and verifies
+  each linked Artifact before the final assistant message and delivery manifest
+  commit together. The link-bearing WebSocket event is emitted only afterwards
+  and carries a stable `delivery_id`. If that event is lost, reopening reads the
+  already committed message through REST; Stage 1 records a queryable
+  `committed` durable message-and-manifest fact, while `published` is the
+  best-effort emit marker. The ledger does not re-emit the socket event
+  automatically. The ordinary bounded WS sequence buffer may
+  replay it while the turn is live; after terminal/restart, REST is
+  authoritative. A failed snapshot, checksum, scope, relation, or audit check fails
+  closed and publishes no success link. Capture observations are local-only in
+  Stage 1; Session packages, share snapshots, and Artifact ZIPs do not yet carry
+  a portable observation ledger. The UI's metadata export only mirrors the
+  current local lineage response.
 - **Read-only Notebook by default** — stable Cell IDs project Python/R source,
   stdout/stderr, errors, figures, files, and retry revisions. Failed older
   revisions remain collapsed and read-only; a running Cell is updated in place.
@@ -57,10 +79,25 @@ HTML/CSS/JavaScript served directly from the working tree.
   permissions/capabilities, and always opens `Ended · view only` in a durable
   quarantine. Conversation, Notebook and files remain readable, while every
   live mutation returns 423 until the user explicitly confirms `Restart fresh`;
-  package code, hooks and Kernel generations are never replayed.
+  package code, hooks and Kernel generations are never replayed. Exact-version
+  completion deliveries travel with the package, but their source ids and URLs
+  do not: import verifies the restored snapshots, builds local manifests/URLs,
+  and atomically rebinds each local message. A missing or inconsistent
+  message/ledger relation rejects the package rather than leaving a plausible
+  link that cannot reopen.
 - **Customize and research UX** — model profiles, Skills/Specialists,
   connectors, compute, network, memory, permission rules, plan/explore modes,
   voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN.
+- **Standard environment readiness (opt-in)** — with the Stage 1 flag enabled,
+  persistent dashboard and conversation banners show when the `standard`
+  Python/R pair is missing or cannot be verified. Customize → Compute lists all
+  missing environments and packages and offers copy-only `env plan`/`env apply`
+  repair commands; the browser never installs them. A normal task may still use
+  native control tools or structured finalization. If it routes a Code Cell,
+  that Cell is refused before a pending environment switch, identity/attempt,
+  or runtime exists; the terminal event opens the Compute repair card. Direct
+  Notebook Cells use the same boundary. Approved/resumed scientific plans are
+  refused before their status transition until the check is ready.
 - **Web sharing (off by default)** — the session menu can publish a read-only
   snapshot to `https://<share-id>.<domain>/` through a relay you run, without
   binding a public port. The recipient views the conversation/Notebook/artifacts,

@@ -11,6 +11,7 @@ import os
 import platform as _pf
 import re
 import shutil
+import stat
 import threading
 import uuid
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from openai4s.artifact_restore import (
 )
 from openai4s.execution import CaptureResult
 from openai4s.server.errors import record_diagnostic
+from openai4s.storage.artifacts import ArtifactDeliveryReferenceError
 
 _JUNK_DIR_SEGMENTS = frozenset({"__pycache__", "node_modules", "site-packages", "venv"})
 _EMBEDDED_IMAGE_TYPES = frozenset(
@@ -90,6 +92,10 @@ class ArtifactSession(Protocol):
     workspace: Path
 
 
+WorkspaceFileState = tuple[int, int, int, int, int]
+WorkspaceSnapshot = dict[str, WorkspaceFileState]
+
+
 @dataclass(frozen=True)
 class PromotionTarget:
     """A minimal ArtifactSession for REST-time cell promotion.
@@ -102,6 +108,116 @@ class PromotionTarget:
     root_frame_id: str
     project_id: str
     workspace: Path
+
+
+@dataclass(frozen=True)
+class FrozenCaptureSnapshot:
+    """A fully-written immutable snapshot verified before SQLite sees it."""
+
+    path: Path
+    size_bytes: int
+    checksum: str
+
+
+@dataclass(frozen=True)
+class _DelegatedCaptureToken:
+    """Workspace baseline held across one delegated Code Cell."""
+
+    before: WorkspaceSnapshot
+
+
+@dataclass(frozen=True)
+class _DelegatedCaptureClaim:
+    """Exact live-file identity already captured under a child frame."""
+
+    fingerprint: WorkspaceFileState
+    failed: bool = False
+
+
+class DelegatedCellCaptureHooks:
+    """Bridge a child Agent's Cell boundary to the Web Artifact manager.
+
+    The Agent runtime deliberately knows only the two duck-typed calls.  Frame,
+    workspace, durable capture, and parent-sweep reconciliation stay in the
+    server-owned Artifact service.
+    """
+
+    def __init__(
+        self,
+        manager: "ArtifactManager",
+        session: ArtifactSession,
+        producer_frame_id: str,
+        emit: EventSink,
+    ) -> None:
+        self._manager = manager
+        self._session = session
+        self._producer_frame_id = producer_frame_id
+        self._emit = emit
+
+    def before(self, _action: object) -> _DelegatedCaptureToken:
+        self._manager.protect_latest(self._session)
+        return _DelegatedCaptureToken(self._manager.snapshot(self._session.workspace))
+
+    def after(
+        self,
+        action: object,
+        token: _DelegatedCaptureToken,
+        result: dict[str, Any] | None,
+    ) -> None:
+        language = str(getattr(action, "language", None) or "python")
+        producing_cell_id = None
+        if isinstance(result, dict) and result.get("id"):
+            producing_cell_id = str(result["id"])
+        self._capture(
+            token,
+            language=language,
+            producing_cell_id=producing_cell_id,
+        )
+
+    def before_native(self, action: object) -> _DelegatedCaptureToken:
+        """Open the same exact boundary for one writing native Tool call."""
+
+        return self.before(action)
+
+    def after_native(
+        self,
+        _action: object,
+        token: _DelegatedCaptureToken,
+        _result: object,
+    ) -> None:
+        """Capture a native write under the child frame, never its parent."""
+
+        self._capture(token, language="native", producing_cell_id=None)
+
+    def _capture(
+        self,
+        token: _DelegatedCaptureToken,
+        *,
+        language: str,
+        producing_cell_id: str | None,
+    ) -> None:
+        try:
+            capture = self._manager.capture(
+                self._session,
+                0,
+                producing_cell_id,
+                token.before,
+                self._emit,
+                language=language,
+                producer_frame_id=self._producer_frame_id,
+            )
+        except BaseException:
+            # The child write happened but could not be durably attributed.
+            # Mark the exact unchanged files so the parent's outer sweep fails
+            # closed instead of laundering them into parent provenance.
+            self._manager.claim_delegated_changes(
+                self._session.workspace, token.before, failed=True
+            )
+            raise
+        self._manager.claim_delegated_artifacts(
+            capture.artifacts,
+            workspace=self._session.workspace,
+        )
 
 
 def _md_fence(body: str) -> str:
@@ -181,6 +297,7 @@ class ArtifactManager:
     #: bound in practice. The ceiling is a backstop against a session that
     #: restarts its kernel thousands of times, not a tuning knob.
     _FREEZE_CACHE_MAX = 256
+    _DELEGATED_CLAIM_MAX = 10_000
 
     def __init__(
         self,
@@ -191,6 +308,7 @@ class ArtifactManager:
         broadcast: Callable[[str, dict], None],
         guess_content_type: Callable[[str], str],
         checksum: Callable[[Path], str],
+        trusted_delivery: bool = False,
     ) -> None:
         self.data_dir = data_dir
         self.store = store
@@ -198,10 +316,28 @@ class ArtifactManager:
         self.broadcast = broadcast
         self.guess_content_type = guess_content_type
         self.checksum = checksum
+        # Rollout is explicitly opt-in.  The flag-off path below remains the
+        # pre-Stage-1 record-then-backfill behavior until its gate graduates.
+        self.trusted_delivery = bool(trusted_delivery)
         # (generation_id, interpreter) -> frozen packages, or None when the
         # interpreter refused to be read. See _frozen_packages.
         self._freeze_cache: dict[tuple[str, str], list[dict[str, Any]] | None] = {}
         self._freeze_lock = threading.Lock()
+        # A delegated child is captured before the blocked parent Cell resumes.
+        # The parent's later whole-workspace sweep sees the same mtime and would
+        # otherwise add a false parent observation. Claims are exact live-file
+        # identities and remain valid through every ancestor's nested sweep; a
+        # subsequent write invalidates them by fingerprint. The map is bounded
+        # independently of session life.
+        self._delegated_claims: dict[str, dict[str, _DelegatedCaptureClaim]] = {}
+        self._delegated_claim_lock = threading.Lock()
+        self._delegated_claim_overflow: set[str] = set()
+        # Upload spans immutable bytes, a live workspace path, and SQLite.  A
+        # per-manager lock makes the journal below an exact single-writer
+        # protocol for a filename instead of allowing two HTTP workers to
+        # restore over one another after a fault.
+        self._upload_lock = threading.Lock()
+        self._recover_upload_journals()
 
     def _notify(
         self,
@@ -275,17 +411,524 @@ class ArtifactManager:
         directory = self.versions_dir()
         directory.mkdir(parents=True, exist_ok=True)
         pending = directory / f".pending-{uuid.uuid4().hex}__{safe}"
-        pending.write_bytes(data)
+        self._write_durable_upload_file(pending, data)
         return pending
+
+    @staticmethod
+    def _upload_path_exists(path: Path) -> bool:
+        return os.path.lexists(os.fspath(path))
+
+    @staticmethod
+    def _remove_upload_path(path: Path) -> None:
+        if not ArtifactManager._upload_path_exists(path):
+            return
+        if path.is_dir() and not path.is_symlink():
+            raise OSError("upload transaction path is a directory")
+        path.unlink()
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _write_durable_upload_file(path: Path, data: bytes) -> None:
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:  # pragma: no cover - OS write contract
+                    raise OSError("upload stage write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        ArtifactManager._fsync_directory(path.parent)
+
+    @staticmethod
+    def _read_upload_journal(journal: Path) -> dict[str, Any]:
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(journal, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            status = os.fstat(descriptor)
+            if not stat.S_ISREG(status.st_mode) or status.st_size > 64 * 1024:
+                raise OSError("upload journal is not a bounded regular file")
+            chunks: list[bytes] = []
+            remaining = status.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 64 * 1024))
+                if not chunk:
+                    raise OSError("upload journal ended before its recorded size")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise OSError("upload journal grew while it was read")
+            after = os.fstat(descriptor)
+            if (
+                status.st_dev != after.st_dev
+                or status.st_ino != after.st_ino
+                or status.st_size != after.st_size
+                or status.st_mtime_ns != after.st_mtime_ns
+                or status.st_ctime_ns != after.st_ctime_ns
+            ):
+                raise OSError("upload journal changed while it was read")
+            value = json.loads(b"".join(chunks).decode("utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("upload journal is not an object")
+            return value
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _upload_file_matches(path: Path, size_bytes: int, checksum: str) -> bool:
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            status = os.fstat(descriptor)
+            if not stat.S_ISREG(status.st_mode) or status.st_size != size_bytes:
+                return False
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            return digest.hexdigest() == checksum
+        except OSError:
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _describe_upload_live(path: Path) -> dict[str, Any]:
+        if not os.path.lexists(os.fspath(path)):
+            return {"had_live": False, "previous_kind": "missing"}
+        if path.is_symlink():
+            return {
+                "had_live": True,
+                "previous_kind": "symlink",
+                "previous_symlink": os.readlink(path),
+            }
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("upload target is not a regular file or symlink")
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                digest.update(chunk)
+            after = os.fstat(descriptor)
+            if (
+                before.st_dev != after.st_dev
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or size != after.st_size
+            ):
+                raise OSError("upload target changed while it was inspected")
+            return {
+                "had_live": True,
+                "previous_kind": "regular",
+                "previous_size_bytes": size,
+                "previous_checksum": digest.hexdigest(),
+            }
+        finally:
+            os.close(descriptor)
+
+    def _write_upload_journal(self, journal: Path, payload: dict[str, Any]) -> None:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        temporary = journal.with_name(journal.name + ".part")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:  # pragma: no cover - OS write contract
+                    raise OSError("upload journal write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            os.replace(temporary, journal)
+            self._fsync_directory(journal.parent)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _validated_upload_journal(self, journal: Path, payload: Any) -> dict[str, Any]:
+        if journal.is_symlink() or not journal.is_file():
+            raise ValueError("upload journal is not a regular file")
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ValueError("unsupported upload journal")
+        version_id = payload.get("version_id")
+        artifact_id = payload.get("artifact_id")
+        checksum = payload.get("checksum")
+        size_bytes = payload.get("size_bytes")
+        if (
+            not isinstance(version_id, str)
+            or not re.fullmatch(r"v-[A-Za-z0-9_-]+", version_id)
+            or journal.name != f".upload-{version_id}.json"
+            or not isinstance(artifact_id, str)
+            or not artifact_id
+            or not isinstance(checksum, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+        ):
+            raise ValueError("invalid upload journal identity")
+
+        data_root = Path(os.path.abspath(self.data_dir))
+        versions_root = Path(os.path.abspath(self.data_dir / "artifact-versions"))
+        if versions_root.is_symlink() or journal.parent != versions_root:
+            raise ValueError("upload journal directory is unsafe")
+        paths: dict[str, Path] = {}
+        for key in ("target", "staged", "pending", "final", "backup"):
+            value = payload.get(key)
+            if not isinstance(value, str) or not value:
+                raise ValueError("invalid upload journal path")
+            candidate = Path(os.path.abspath(value))
+            expected_root = versions_root if key in {"pending", "final"} else data_root
+            if not candidate.is_relative_to(expected_root):
+                raise ValueError("upload journal path escapes data directory")
+            paths[key] = candidate
+        try:
+            relative_parent = paths["target"].parent.relative_to(data_root)
+            cursor = data_root
+            for component in relative_parent.parts:
+                cursor = cursor / component
+                if cursor.is_symlink():
+                    raise ValueError("upload journal has a symlinked directory")
+            if not paths["target"].parent.is_dir():
+                raise ValueError("upload target directory is unavailable")
+        except (OSError, ValueError) as error:
+            raise ValueError("upload target directory is unsafe") from error
+        if paths["staged"].parent != paths["target"].parent:
+            raise ValueError("upload stage is not beside its target")
+        if paths["backup"].parent != paths["target"].parent:
+            raise ValueError("upload backup is not beside its target")
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", paths["target"].name or "artifact")
+        if (
+            not re.fullmatch(
+                re.escape(paths["target"].name) + r"\.[0-9a-f]{8}\.part",
+                paths["staged"].name,
+            )
+            or not re.fullmatch(
+                r"\.pending-[0-9a-f]{32}__" + re.escape(safe),
+                paths["pending"].name,
+            )
+            or paths["final"].name != f"{version_id}__{safe}"
+            or paths["backup"].name
+            != f".{paths['target'].name}.upload-{version_id}.backup"
+        ):
+            raise ValueError("upload journal path does not match its transaction")
+        if not isinstance(payload.get("had_live"), bool):
+            raise ValueError("invalid upload journal live-file state")
+        previous_kind = payload.get("previous_kind")
+        if previous_kind not in {"missing", "regular", "symlink"}:
+            raise ValueError("invalid previous upload file kind")
+        if bool(payload["had_live"]) != (previous_kind != "missing"):
+            raise ValueError("inconsistent previous upload file state")
+        if previous_kind == "regular":
+            if (
+                not isinstance(payload.get("previous_size_bytes"), int)
+                or payload["previous_size_bytes"] < 0
+                or not isinstance(payload.get("previous_checksum"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["previous_checksum"])
+            ):
+                raise ValueError("invalid previous upload checksum")
+        if previous_kind == "symlink" and not isinstance(
+            payload.get("previous_symlink"), str
+        ):
+            raise ValueError("invalid previous upload symlink")
+        previous_version_id = payload.get("previous_version_id")
+        if previous_version_id is not None and not isinstance(previous_version_id, str):
+            raise ValueError("invalid previous upload version")
+        previous_updated_at = payload.get("previous_updated_at")
+        if previous_updated_at is not None and not isinstance(previous_updated_at, int):
+            raise ValueError("invalid previous upload timestamp")
+        frame_id = payload.get("frame_id")
+        if frame_id is not None and (not isinstance(frame_id, str) or not frame_id):
+            raise ValueError("invalid upload journal frame")
+        expected_parent = (
+            Path(os.path.abspath(self.workspace_for(frame_id)))
+            if frame_id is not None
+            else data_root / "uploads"
+        )
+        if paths["target"].parent != expected_parent:
+            raise ValueError("upload journal target does not match its frame")
+        return {**payload, **paths, "journal": journal}
+
+    def _upload_path_matches_previous(
+        self, path: Path, payload: dict[str, Any]
+    ) -> bool:
+        kind = payload["previous_kind"]
+        if kind == "missing":
+            return not self._upload_path_exists(path)
+        if kind == "symlink":
+            try:
+                return (
+                    path.is_symlink()
+                    and os.readlink(path) == payload["previous_symlink"]
+                )
+            except OSError:
+                return False
+        return self._upload_file_matches(
+            path,
+            payload["previous_size_bytes"],
+            payload["previous_checksum"],
+        )
+
+    def _remove_new_upload_path(self, path: Path, payload: dict[str, Any]) -> None:
+        if not self._upload_path_exists(path):
+            return
+        if not self._upload_file_matches(
+            path, payload["size_bytes"], payload["checksum"]
+        ):
+            raise OSError("refusing to remove unverified upload transaction bytes")
+        self._remove_upload_path(path)
+
+    def _restore_upload_files(self, payload: dict[str, Any]) -> None:
+        target = payload["target"]
+        backup = payload["backup"]
+        had_live = bool(payload["had_live"])
+        if self._upload_path_exists(backup):
+            if not self._upload_path_matches_previous(backup, payload):
+                raise OSError("upload backup does not match the previous live entry")
+            self._remove_new_upload_path(target, payload)
+            os.replace(backup, target)
+            self._fsync_directory(target.parent)
+        elif not had_live and self._upload_path_exists(target):
+            self._remove_new_upload_path(target, payload)
+            self._fsync_directory(target.parent)
+        elif had_live and not self._upload_path_matches_previous(target, payload):
+            raise OSError("previous upload live entry cannot be recovered")
+
+        for key in ("staged", "pending", "final"):
+            self._remove_new_upload_path(payload[key], payload)
+        if self._upload_path_exists(backup):
+            if not self._upload_path_matches_previous(backup, payload):
+                raise OSError("refusing to remove an unverified upload backup")
+            self._remove_upload_path(backup)
+        payload["journal"].unlink(missing_ok=True)
+        self._fsync_directory(payload["journal"].parent)
+
+    def _abort_upload(self, payload: dict[str, Any]) -> None:
+        meta = self.store.version_meta(payload["version_id"])
+        if isinstance(meta, dict):
+            self.store.rollback_artifact_upload(
+                artifact_id=payload["artifact_id"],
+                version_id=payload["version_id"],
+                previous_version_id=payload.get("previous_version_id"),
+                previous_updated_at=payload.get("previous_updated_at"),
+            )
+        else:
+            artifact = self.store.get_artifact(payload["artifact_id"])
+            previous_version_id = payload.get("previous_version_id")
+            if previous_version_id is None:
+                if artifact is not None:
+                    raise RuntimeError(
+                        "upload journal does not match the current Artifact"
+                    )
+            else:
+                previous = self.store.version_meta(previous_version_id)
+                if (
+                    not isinstance(artifact, dict)
+                    or artifact.get("latest_version_id") != previous_version_id
+                    or artifact.get("updated_at") != payload.get("previous_updated_at")
+                    or not isinstance(previous, dict)
+                    or previous.get("artifact_id") != payload["artifact_id"]
+                ):
+                    raise RuntimeError(
+                        "upload journal previous head is no longer current"
+                    )
+        self._restore_upload_files(payload)
+
+    def _recover_upload_journal(self, journal: Path) -> None:
+        payload = self._validated_upload_journal(
+            journal, self._read_upload_journal(journal)
+        )
+        meta = self.store.version_meta(payload["version_id"])
+        artifact = self.store.get_artifact(payload["artifact_id"])
+        committed = bool(
+            isinstance(meta, dict)
+            and isinstance(artifact, dict)
+            and artifact.get("latest_version_id") == payload["version_id"]
+            and meta.get("artifact_id") == payload["artifact_id"]
+            and meta.get("frame_id") == payload.get("frame_id")
+            and meta.get("path") == str(payload["target"])
+            and meta.get("snapshot_path") == str(payload["final"])
+            and meta.get("size_bytes") == payload["size_bytes"]
+            and meta.get("checksum") == payload["checksum"]
+        )
+        if committed:
+            final_ok = self._upload_file_matches(
+                payload["final"], payload["size_bytes"], payload["checksum"]
+            )
+            target_ok = self._upload_file_matches(
+                payload["target"], payload["size_bytes"], payload["checksum"]
+            )
+            if final_ok and target_ok:
+                for key in ("staged", "pending"):
+                    self._remove_new_upload_path(payload[key], payload)
+                backup = payload["backup"]
+                if self._upload_path_exists(backup):
+                    if not self._upload_path_matches_previous(backup, payload):
+                        raise OSError("upload recovery backup is not exact")
+                    self._remove_upload_path(backup)
+                journal.unlink(missing_ok=True)
+                self._fsync_directory(journal.parent)
+                return
+        # An uncommitted publish, or a committed row without both promised byte
+        # copies, is not a successful upload. Restore the exact previous head
+        # and live entry instead of guessing which half should win.
+        self._abort_upload(payload)
+
+    def _recover_upload_journals(self) -> None:
+        directory = self.data_dir / "artifact-versions"
+        if directory.is_symlink():
+            raise RuntimeError("artifact upload recovery directory is unsafe")
+        if not directory.exists():
+            return
+        if not directory.is_dir():
+            raise RuntimeError("artifact upload recovery directory is unsafe")
+        for journal in sorted(directory.glob(".upload-v-*.json")):
+            try:
+                self._recover_upload_journal(journal)
+            except BaseException as error:
+                record_diagnostic(error, surface="artifacts:upload:recover")
+                # Keep the journal for an operator or the next retry and fail
+                # closed. Serving the store while an upload has two unresolved
+                # truths (SQLite and the workspace) would make the corrupt head
+                # externally visible.
+                raise RuntimeError(
+                    "artifact upload recovery could not be verified"
+                ) from None
+
+    def freeze_capture_snapshot(
+        self, filename: str, source_path: Path
+    ) -> FrozenCaptureSnapshot:
+        """Atomically freeze and verify one live output before its DB record.
+
+        A unique temporary is streamed and fsynced, then atomically renamed to
+        its immutable name.  Both the source identity and the final snapshot
+        are checked: a file changed while it was copied, a short write, or a
+        checksum disagreement leaves no snapshot and cannot reach SQLite.
+        """
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
+        token = uuid.uuid4().hex
+        directory = self.versions_dir()
+        pending = directory / f".capture-{token}.part"
+        final = directory / f"capture-{token}__{safe}"
+        source_descriptor: int | None = None
+        target_descriptor: int | None = None
+        try:
+            source_descriptor = os.open(
+                source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            before = os.fstat(source_descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("artifact source is not a regular file")
+            target_descriptor = os.open(
+                pending,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(target_descriptor, view)
+                    if written <= 0:  # pragma: no cover - OS write contract
+                        raise OSError("artifact snapshot write made no progress")
+                    view = view[written:]
+                size += len(chunk)
+                digest.update(chunk)
+            os.fsync(target_descriptor)
+            after = os.fstat(source_descriptor)
+            if (
+                before.st_dev != after.st_dev
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or size != after.st_size
+            ):
+                raise OSError("artifact source changed during snapshot freeze")
+            os.close(target_descriptor)
+            target_descriptor = None
+            os.replace(pending, final)
+            directory_descriptor = os.open(
+                directory,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+            checksum = digest.hexdigest()
+            if final.stat().st_size != size or self.checksum(final) != checksum:
+                raise OSError("artifact snapshot verification failed")
+            return FrozenCaptureSnapshot(final, size, checksum)
+        except Exception:
+            pending.unlink(missing_ok=True)
+            final.unlink(missing_ok=True)
+            raise
+        finally:
+            if target_descriptor is not None:
+                os.close(target_descriptor)
+            if source_descriptor is not None:
+                os.close(source_descriptor)
 
     def promote_version_bytes(
         self, version_id: str, filename: str, pending: Path
     ) -> Path:
-        """Give staged bytes their version-scoped name and record it."""
+        """Give staged bytes their version-scoped immutable name.
+
+        The upload repository records this path inside the same savepoint that
+        creates the version.  Committing from here would split that transaction
+        and recreate the half-committed head this helper is meant to prevent.
+        """
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
         final = self.versions_dir() / f"{version_id}__{safe}"
         os.replace(str(pending), str(final))
-        self.store.set_version_snapshot(version_id, str(final))
         return final
 
     def write_version_snapshot(
@@ -576,6 +1219,17 @@ class ArtifactManager:
         *,
         broadcast: Broadcast | None = None,
     ) -> dict:
+        """Serialize one recoverable upload transaction."""
+
+        with self._upload_lock:
+            return self._upload_locked(payload, broadcast=broadcast)
+
+    def _upload_locked(
+        self,
+        payload: dict,
+        *,
+        broadcast: Broadcast | None = None,
+    ) -> dict:
         """Decode and register one JSON/base64 upload as a versioned artifact.
 
         The ordering is the contract. This used to be
@@ -588,11 +1242,13 @@ class ArtifactManager:
         `"default"`, so an upload into a non-default-project session with the
         field omitted takes exactly that branch.
 
-        Now every refusal happens first, the bytes are staged beside the target,
-        and the live file is replaced only once the version is committed and its
-        immutable snapshot written. A failure anywhere leaves the previous live
-        bytes, the Artifact head, the checksum, the version count and the event
-        count all unchanged.
+        Now every refusal happens first and the bytes are durably staged beside
+        the target.  The immutable snapshot and live file are then published by
+        a callback inside the repository savepoint, before the new head becomes
+        visible; a durable journal lets startup either finish committed cleanup
+        or restore the previous live file after an interrupted publish.  A
+        handled failure leaves the previous live bytes, Artifact head, checksum,
+        version count and event count all unchanged.
         """
         filename = payload.get("filename") or f"upload-{uuid.uuid4().hex[:8]}"
         frame_id = payload.get("frame_id")
@@ -615,10 +1271,16 @@ class ArtifactManager:
         )
         workspace.mkdir(parents=True, exist_ok=True)
         target = workspace / Path(filename).name
+        if (
+            self._upload_path_exists(target)
+            and target.is_dir()
+            and not target.is_symlink()
+        ):
+            raise ArtifactOperationError(409, "upload target is a directory")
 
         # Both of these can refuse, and neither touches disk.
         try:
-            _explicit, _root, project_id = self.store.artifact_write_scope(
+            _explicit, root_frame_id, project_id = self.store.artifact_write_scope(
                 frame_id=frame_id, project_id=project_id
             )
         except ValueError as conflict:
@@ -629,10 +1291,10 @@ class ArtifactManager:
             # nothing to act on. The message is the repository's own and names
             # only field names.
             raise ArtifactOperationError(409, str(conflict)) from conflict
-        existing = (
-            self.store.artifact_by_filename(target.name, frame_id, strict=True)
-            if frame_id
-            else None
+        existing = self.store.artifact_by_scope_filename(
+            target.name,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
         )
 
         # Both stages happen before any row exists, so everything that can fail
@@ -643,7 +1305,7 @@ class ArtifactManager:
         staged = target.with_name(f"{target.name}.{uuid.uuid4().hex[:8]}.part")
         pending: Path | None = None
         try:
-            staged.write_bytes(raw)
+            self._write_durable_upload_file(staged, raw)
             pending = self.stage_version_bytes(target.name, raw)
         except OSError as error:
             staged.unlink(missing_ok=True)
@@ -651,8 +1313,49 @@ class ArtifactManager:
                 pending.unlink(missing_ok=True)
             record_diagnostic(error, surface="artifacts:upload:stage")
             raise ArtifactOperationError(500, "upload staging failed") from error
+        journal_payload: dict[str, Any] | None = None
+
+        def publish(version_id: str, artifact_id: str) -> str:
+            nonlocal journal_payload
+            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", target.name or "artifact")
+            final = self.versions_dir() / f"{version_id}__{safe}"
+            journal = self.versions_dir() / f".upload-{version_id}.json"
+            backup = target.with_name(f".{target.name}.upload-{version_id}.backup")
+            previous_live = self._describe_upload_live(target)
+            raw_payload: dict[str, Any] = {
+                "schema_version": 1,
+                "artifact_id": artifact_id,
+                "version_id": version_id,
+                "frame_id": frame_id,
+                "previous_version_id": (
+                    existing.get("latest_version_id") if existing else None
+                ),
+                "previous_updated_at": existing.get("updated_at") if existing else None,
+                "target": str(target),
+                "staged": str(staged),
+                "pending": str(pending),
+                "final": str(final),
+                "backup": str(backup),
+                **previous_live,
+                "size_bytes": len(raw),
+                "checksum": hashlib.sha256(raw).hexdigest(),
+            }
+            self._write_upload_journal(journal, raw_payload)
+            journal_payload = self._validated_upload_journal(journal, raw_payload)
+            promoted = self.promote_version_bytes(version_id, target.name, pending)
+            if promoted != final:
+                raise OSError("upload snapshot promotion selected an unexpected path")
+            if journal_payload["had_live"]:
+                if not self._upload_path_matches_previous(target, journal_payload):
+                    raise OSError("upload target changed before publication")
+                os.replace(str(target), str(backup))
+            os.replace(str(staged), str(target))
+            self._fsync_directory(target.parent)
+            self._fsync_directory(final.parent)
+            return str(final)
+
         try:
-            record = self.store.save_artifact(
+            record = self.store.commit_artifact_upload(
                 path=str(target),
                 filename=target.name,
                 content_type=self.guess_content_type(target.name),
@@ -660,39 +1363,66 @@ class ArtifactManager:
                 checksum=hashlib.sha256(raw).hexdigest(),
                 frame_id=frame_id,
                 project_id=project_id,
-                is_user_upload=True,
-                # Committed already pointing at bytes that exist. Between here
-                # and `promote_version_bytes` the row names the pending file,
-                # which is a worse *name* and the same bytes -- the invariant
-                # that matters holds throughout.
-                snapshot_path=str(pending),
                 artifact_id=(existing["artifact_id"] if existing else None),
+                expected_previous_version_id=(
+                    existing.get("latest_version_id") if existing else None
+                ),
+                expected_previous_updated_at=(
+                    existing.get("updated_at") if existing else None
+                ),
+                publish=publish,
             )
-        except Exception:
-            # Nothing was made visible: drop both stages and let the caller see
-            # the refusal.
-            staged.unlink(missing_ok=True)
-            pending.unlink(missing_ok=True)
-            raise
+        except BaseException as error:
+            try:
+                if journal_payload is not None:
+                    self._abort_upload(journal_payload)
+                else:
+                    staged.unlink(missing_ok=True)
+                    pending.unlink(missing_ok=True)
+            except BaseException as recovery_error:
+                record_diagnostic(
+                    recovery_error, surface="artifacts:upload:abort_recovery"
+                )
+                raise
+            if not isinstance(error, Exception):
+                raise
+            if isinstance(error, ArtifactOperationError):
+                raise
+            record_diagnostic(error, surface="artifacts:upload:commit")
+            raise ArtifactOperationError(500, "upload commit failed") from error
+
+        if journal_payload is not None:
+            try:
+                for key in ("staged", "pending"):
+                    self._remove_new_upload_path(journal_payload[key], journal_payload)
+                backup = journal_payload["backup"]
+                if self._upload_path_exists(backup):
+                    if not self._upload_path_matches_previous(backup, journal_payload):
+                        raise OSError("upload backup changed before cleanup")
+                    self._remove_upload_path(backup)
+                journal_payload["journal"].unlink(missing_ok=True)
+                self._fsync_directory(journal_payload["journal"].parent)
+            except OSError as error:
+                # The committed row, final snapshot, and live bytes are already
+                # coherent. Keeping the journal is intentional: startup will
+                # verify both copies and finish this idempotent cleanup.
+                record_diagnostic(error, surface="artifacts:upload:cleanup")
         try:
-            self.promote_version_bytes(record["version_id"], target.name, pending)
-            os.replace(str(staged), str(target))
-        except Exception:
-            staged.unlink(missing_ok=True)
-            raise
-        self._notify(
-            frame_id,
-            {
-                "type": "artifact_created",
-                "artifact": {
-                    "id": record["artifact_id"],
-                    "filename": target.name,
-                    "content_type": record.get("content_type"),
-                    "root_frame_id": frame_id,
+            self._notify(
+                frame_id,
+                {
+                    "type": "artifact_created",
+                    "artifact": {
+                        "id": record["artifact_id"],
+                        "filename": target.name,
+                        "content_type": record.get("content_type"),
+                        "root_frame_id": frame_id,
+                    },
                 },
-            },
-            broadcast,
-        )
+                broadcast,
+            )
+        except Exception as error:  # projection failure cannot undo a commit
+            record_diagnostic(error, surface="artifacts:upload:notification")
         return {
             "artifact_id": record["artifact_id"],
             "id": record["artifact_id"],
@@ -707,7 +1437,14 @@ class ArtifactManager:
     ) -> dict:
         """Delete an artifact, reclaim unreferenced files, and notify its frame."""
         artifact = self.store.get_artifact(artifact_id)
-        stale_paths = self.store.delete_artifact(artifact_id)
+        try:
+            stale_paths = self.store.delete_artifact(artifact_id)
+        except ArtifactDeliveryReferenceError as error:
+            raise ArtifactOperationError(
+                409,
+                "Artifact is still referenced by a completion message; "
+                "delete the owning session instead",
+            ) from error
         root_frame_id = artifact.get("root_frame_id") if artifact else None
         trusted_roots = [self.versions_dir()]
         if root_frame_id:
@@ -746,23 +1483,155 @@ class ArtifactManager:
         )
         return {"ok": True}
 
-    def snapshot(self, workspace: Path) -> dict[str, int]:
-        """Return mtimes for deliverables, excluding dependency/repository trees."""
+    def snapshot(self, workspace: Path) -> WorkspaceSnapshot:
+        """Return kernel-owned file identities for deliverable change detection.
+
+        An mtime alone is caller-controlled: ``os.utime`` and ``copy2`` can
+        restore it after replacing bytes. Device/inode/size plus kernel-owned
+        ctime detects both replacement and same-length in-place writes while
+        keeping the Cell boundary proportional to directory entries rather
+        than hashing every potentially multi-gigabyte scientific input.
+        """
         try:
             repo_roots = {git_dir.parent for git_dir in workspace.rglob(".git")}
         except OSError:
             repo_roots = set()
-        result: dict[str, int] = {}
+        result: WorkspaceSnapshot = {}
         for path in workspace.rglob("*"):
-            if not path.is_file() or _ignored_file(path.relative_to(workspace)):
+            if _ignored_file(path.relative_to(workspace)):
                 continue
             if repo_roots and any(root in path.parents for root in repo_roots):
                 continue
-            try:
-                result[str(path)] = path.stat().st_mtime_ns
-            except OSError:
-                pass
+            fingerprint = self._live_fingerprint(path)
+            if fingerprint is not None:
+                result[str(path)] = fingerprint
         return result
+
+    @staticmethod
+    def _live_fingerprint(path: Path) -> WorkspaceFileState | None:
+        """Identity of the exact regular live file a child already captured."""
+
+        try:
+            status = path.stat(follow_symlinks=False)
+        except OSError:
+            return None
+        if not stat.S_ISREG(status.st_mode):
+            return None
+        return (
+            int(status.st_dev),
+            int(status.st_ino),
+            int(status.st_size),
+            int(status.st_mtime_ns),
+            int(status.st_ctime_ns),
+        )
+
+    @staticmethod
+    def _claim_key(path: Path | str) -> str:
+        return os.path.abspath(os.fspath(path))
+
+    @staticmethod
+    def _claim_workspace_key(workspace: Path | str) -> str:
+        return os.path.abspath(os.fspath(workspace))
+
+    def _put_delegated_claim(
+        self,
+        path: Path,
+        *,
+        workspace: Path,
+        failed: bool,
+    ) -> None:
+        fingerprint = self._live_fingerprint(path)
+        if fingerprint is None:
+            return
+        key = self._claim_key(path)
+        workspace_key = self._claim_workspace_key(workspace)
+        with self._delegated_claim_lock:
+            claims = self._delegated_claims.setdefault(workspace_key, {})
+            if key not in claims and len(claims) >= self._DELEGATED_CLAIM_MAX:
+                # Evicting the oldest claim would make a later ancestor sweep
+                # assign that child's unchanged bytes to the ancestor. Once
+                # exact reconciliation no longer fits, this manager remains
+                # fail-closed instead of silently degrading provenance truth.
+                self._delegated_claim_overflow.add(workspace_key)
+                raise ArtifactOperationError(
+                    500, "delegated artifact claim capacity exceeded"
+                )
+            claims.pop(key, None)
+            claims[key] = _DelegatedCaptureClaim(
+                fingerprint=fingerprint,
+                failed=failed,
+            )
+
+    def claim_delegated_artifacts(
+        self, artifacts: list[dict], *, workspace: Path
+    ) -> None:
+        """Exclude unchanged child bytes from every enclosing parent sweep."""
+
+        for artifact in artifacts:
+            path = artifact.get("storage_path")
+            if path:
+                self._put_delegated_claim(
+                    Path(str(path)), workspace=workspace, failed=False
+                )
+
+    def claim_delegated_changes(
+        self,
+        workspace: Path,
+        before: WorkspaceSnapshot,
+        *,
+        failed: bool,
+    ) -> None:
+        """Claim exact changed files after a child capture failure.
+
+        A matching parent sweep must refuse rather than assign those bytes to
+        the parent.  If the parent subsequently rewrites a file, its inode/
+        size/mtime/ctime fingerprint changes and the stale claim is discarded.
+        """
+
+        after = self.snapshot(workspace)
+        for raw_path, fingerprint in after.items():
+            if before.get(raw_path) != fingerprint:
+                self._put_delegated_claim(
+                    Path(raw_path), workspace=workspace, failed=failed
+                )
+
+    def _matches_delegated_claim(
+        self,
+        path: Path,
+        *,
+        workspace: Path,
+        consume_success: bool,
+    ) -> bool:
+        key = self._claim_key(path)
+        workspace_key = self._claim_workspace_key(workspace)
+        current = self._live_fingerprint(path)
+        with self._delegated_claim_lock:
+            claims = self._delegated_claims.get(workspace_key, {})
+            claim = claims.get(key)
+            if claim is not None and current != claim.fingerprint:
+                claims.pop(key, None)
+            elif claim is not None and not claim.failed and consume_success:
+                # A nested child sweep must leave the claim for higher
+                # ancestors. The root Web sweep is the terminal consumer; once
+                # it skipped these exact bytes the entry can be reclaimed.
+                claims.pop(key, None)
+            if not claims:
+                self._delegated_claims.pop(workspace_key, None)
+        if claim is None or current != claim.fingerprint:
+            return False
+        if claim.failed:
+            raise ArtifactOperationError(500, "delegated artifact capture failed")
+        return True
+
+    def delegated_cell_hooks(
+        self,
+        session: ArtifactSession,
+        producer_frame_id: str,
+        emit: EventSink,
+    ) -> DelegatedCellCaptureHooks:
+        """Build the Web-owned capture boundary for one delegated Agent."""
+
+        return DelegatedCellCaptureHooks(self, session, producer_frame_id, emit)
 
     def register_file(
         self,
@@ -771,32 +1640,70 @@ class ArtifactManager:
         cell_id: str | None,
         emit: EventSink,
         env_snapshot_id: str | None = None,
+        *,
+        producer_frame_id: str | None = None,
     ) -> dict | None:
         """Persist one produced file as a versioned artifact and notify the UI."""
         relative = str(path.relative_to(session.workspace))
+        frozen: FrozenCaptureSnapshot | None = None
+        if self.trusted_delivery:
+            try:
+                frozen = self.freeze_capture_snapshot(relative, path)
+            except Exception as error:
+                record_diagnostic(error, surface="artifacts:capture:freeze")
+                raise ArtifactOperationError(
+                    500, "artifact snapshot freeze failed"
+                ) from error
+            size = frozen.size_bytes
+            checksum = frozen.checksum
+        else:
+            try:
+                size = path.stat().st_size
+                checksum = self.checksum(path)
+            except OSError:
+                return None
+        record_fields: dict[str, Any] = {
+            "path": str(path),
+            "filename": relative,
+            "content_type": self.guess_content_type(relative),
+            "size_bytes": size,
+            "checksum": checksum,
+            "producing_cell_id": cell_id,
+            "frame_id": producer_frame_id or session.root_frame_id,
+            "root_frame_id": session.root_frame_id,
+            "project_id": session.project_id,
+            "env_snapshot_id": env_snapshot_id,
+            "preserve_filename": True,
+            "preserve_content_type": True,
+        }
+        if frozen is not None:
+            record_fields.update(
+                snapshot_path=str(frozen.path),
+                reuse_matching_head=True,
+            )
         try:
-            size = path.stat().st_size
-            checksum = self.checksum(path)
-        except OSError:
-            return None
-        record = self.store.record_cell_artifact(
-            path=str(path),
-            filename=relative,
-            content_type=self.guess_content_type(relative),
-            size_bytes=size,
-            checksum=checksum,
-            producing_cell_id=cell_id,
-            frame_id=session.root_frame_id,
-            root_frame_id=session.root_frame_id,
-            project_id=session.project_id,
-            env_snapshot_id=env_snapshot_id,
-            preserve_filename=True,
-            preserve_content_type=True,
-        )
+            record = self.store.record_cell_artifact(**record_fields)
+        except Exception:
+            if frozen is not None:
+                frozen.path.unlink(missing_ok=True)
+            raise
         display_filename = record.get("filename") or relative
-        self.write_version_snapshot(
-            record["version_id"], display_filename, src_path=path
-        )
+        if frozen is None:
+            self.write_version_snapshot(
+                record["version_id"], display_filename, src_path=path
+            )
+        else:
+            # A checksum-equal head may already own a verified snapshot.  Its
+            # immutable version wins; the new per-capture freeze is then an
+            # unreferenced staging file and must not accumulate.
+            try:
+                persisted = self.store.version_meta(record["version_id"])
+            except Exception:  # noqa: BLE001 — keep a possibly referenced file
+                persisted = None
+            if persisted is not None and persisted.get("snapshot_path") != str(
+                frozen.path
+            ):
+                frozen.path.unlink(missing_ok=True)
         emit(
             {
                 "type": "artifact_created",
@@ -917,11 +1824,14 @@ class ArtifactManager:
         session: ArtifactSession,
         cell_index: int,
         cell_id: str | None,
-        before: dict[str, int],
+        before: WorkspaceSnapshot,
         emit: EventSink,
         language: str = "python",
         run_system_cell: Callable[[str], dict] | None = None,
         drain_remote_provenance: Callable[[], Any] | None = None,
+        *,
+        producer_frame_id: str | None = None,
+        honor_delegated_claims: bool = True,
     ) -> CaptureResult:
         figures: list[str] = []
         if language == "python" and run_system_cell is not None:
@@ -937,8 +1847,27 @@ class ArtifactManager:
                 figures = []
         after = self.snapshot(session.workspace)
         changed = [
-            Path(path) for path, mtime in after.items() if before.get(path) != mtime
+            Path(path)
+            for path, fingerprint in after.items()
+            if before.get(path) != fingerprint
         ]
+        if honor_delegated_claims:
+            workspace_key = self._claim_workspace_key(session.workspace)
+            with self._delegated_claim_lock:
+                claim_overflow = workspace_key in self._delegated_claim_overflow
+            if changed and claim_overflow:
+                raise ArtifactOperationError(
+                    500, "delegated artifact claim capacity exceeded"
+                )
+            changed = [
+                path
+                for path in changed
+                if not self._matches_delegated_claim(
+                    path,
+                    workspace=session.workspace,
+                    consume_success=producer_frame_id is None,
+                )
+            ]
         figure_set = set(figures)
         files_written: list[str] = []
         artifacts: list[dict] = []
@@ -977,7 +1906,9 @@ class ArtifactManager:
         env_snapshot_id = (
             self.capture_environment(
                 lambda: remote_entries,
-                root_frame_id=getattr(session, "root_frame_id", None),
+                root_frame_id=(
+                    producer_frame_id or getattr(session, "root_frame_id", None)
+                ),
                 language=language,
             )
             if changed
@@ -997,6 +1928,7 @@ class ArtifactManager:
                 cell_id,
                 emit,
                 env_snapshot_id=env_snapshot_id,
+                producer_frame_id=producer_frame_id,
             )
             if metadata is not None:
                 artifacts.append(metadata)

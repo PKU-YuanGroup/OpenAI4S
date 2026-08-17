@@ -238,6 +238,150 @@ def test_url_command_is_offline_and_returns_success(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "http://127.0.0.1:9876/"
 
 
+def test_stage1_run_allows_control_only_agent_before_any_readiness_probe(
+    tmp_path, monkeypatch, capsys
+):
+    from openai4s import agent as agent_module
+    from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
+
+    module = _cli_module()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    calls: list[tuple[str, object]] = []
+
+    class Agent:
+        def __init__(self, *, cfg, verbose):
+            calls.append(("construct", (cfg, verbose)))
+
+        def run(self, task):
+            calls.append(("run", task))
+            return {
+                "stop_reason": "submitted",
+                "submitted_output": {
+                    "output": {"summary": "control-only completion"},
+                    "completion_bullets": ["Answered without a science runtime"],
+                },
+                "final_message": "control-only completion",
+            }
+
+    def forbidden_readiness(**_kwargs):
+        raise AssertionError("cmd_run probed readiness before action routing")
+
+    monkeypatch.setattr(module, "get_config", lambda: cfg)
+    monkeypatch.setattr(agent_module, "Agent", Agent)
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        forbidden_readiness,
+    )
+
+    status = module.cmd_run(
+        SimpleNamespace(task="analyze data", json=True, verbose=False)
+    )
+
+    assert status == 0
+    assert calls == [
+        ("construct", (cfg, False)),
+        ("run", "analyze data"),
+    ]
+    payload = __import__("json").loads(capsys.readouterr().out)
+    assert payload["stop_reason"] == "submitted"
+    assert payload["final_message"] == "control-only completion"
+
+
+def test_stage1_run_projects_typed_first_cell_readiness_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    from openai4s import agent as agent_module
+    from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
+    from openai4s.kernel.readiness import EnvironmentReadinessError
+
+    module = _cli_module()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    readiness = {
+        "state": "needs_repair",
+        "ready": False,
+        "missing_packages": {"python": ["numpy"], "r": ["r-base"]},
+        "missing_environments": [],
+        "remediation": {
+            "plan_argv": ["openai4s", "env", "plan", "python", "r", "--repair"],
+            "apply_argv": ["openai4s", "env", "apply", "python", "r", "--repair"],
+        },
+    }
+
+    class Agent:
+        def __init__(self, *, cfg, verbose):
+            del cfg, verbose
+
+        def run(self, task):
+            del task
+            raise EnvironmentReadinessError(readiness)
+
+    monkeypatch.setattr(module, "get_config", lambda: cfg)
+    monkeypatch.setattr(agent_module, "Agent", Agent)
+
+    status = module.cmd_run(
+        SimpleNamespace(task="run a Cell", json=True, verbose=False)
+    )
+
+    assert status == 2
+    payload = __import__("json").loads(capsys.readouterr().out)
+    assert payload["code"] == "environment_not_ready"
+    assert payload["standard_profile_readiness"] == readiness
+    assert "python: numpy" in payload["error"]
+    assert "openai4s env apply python r --repair" in payload["error"]
+
+
+def test_flag_off_run_preserves_agent_execution_without_readiness_probe(
+    tmp_path, monkeypatch, capsys
+):
+    from openai4s import agent as agent_module
+    from openai4s.config import Config, LLMConfig
+
+    module = _cli_module()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    calls: list[tuple[str, object]] = []
+
+    class Agent:
+        def __init__(self, *, cfg, verbose):
+            calls.append(("construct", (cfg, verbose)))
+
+        def run(self, task):
+            calls.append(("run", task))
+            return {
+                "stop_reason": "submitted",
+                "submitted_output": None,
+                "final_message": "done",
+            }
+
+    def forbidden_readiness(**_kwargs):
+        raise AssertionError("flag-off CLI performed the Stage 1 readiness probe")
+
+    monkeypatch.setattr(module, "get_config", lambda: cfg)
+    monkeypatch.setattr(agent_module, "Agent", Agent)
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        forbidden_readiness,
+    )
+
+    status = module.cmd_run(
+        SimpleNamespace(task="legacy task", json=False, verbose=True)
+    )
+
+    assert status == 0
+    assert calls == [("construct", (cfg, True)), ("run", "legacy task")]
+    assert "final: done" in capsys.readouterr().out
+
+
 def test_daemon_health_ignores_environment_proxies_for_a_wsl_nat_host(monkeypatch):
     module = _cli_module()
     config = SimpleNamespace(host="172.25.100.5", port=8760)

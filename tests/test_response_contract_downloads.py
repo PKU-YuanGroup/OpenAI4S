@@ -63,6 +63,7 @@ DOWNLOADS: dict[str, set[str]] = {
     },
     r"/frames/([^/]+)/session/export": {"application/vnd.openai4s.session+zip"},
     r"/artifacts/(.+)": {"application/octet-stream"},
+    r"/artifacts/versions/([^/]+)": {"application/octet-stream"},
 }
 
 

@@ -29,7 +29,10 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from openai4s.server.delivery import CompletionDeliveryService
+from openai4s.server.urls import artifact_version_url
 from openai4s.storage.annotations import settle_restored_annotation
+from openai4s.storage.delivery import json_sha256 as delivery_json_sha256
 from openai4s.storage.memories import MemoryLimitError
 from openai4s.storage.plans import PLAN_STATUSES
 from openai4s.storage.snapshots import WorkspaceCAS
@@ -55,6 +58,8 @@ _RECORD_LIMITS = {
     "recovery_journal": 100_000,
     "artifacts": 10_000,
     "artifact_versions": 50_000,
+    "completion_deliveries": 50_000,
+    "completion_delivery_artifacts": 100_000,
     "environment_snapshots": 50_000,
     "workspace_entries": 100_000,
     "generations": 25_000,
@@ -115,6 +120,11 @@ _PRIVATE_KEY_BLOCK = re.compile(
 )
 _REDACTED = "[REDACTED]"
 IMPORT_QUARANTINE_SETTING_PREFIX = "session:import-quarantine:"
+_DELIVERY_IMPORT_PENDING_CONTENT = (
+    "Completion delivery is pending package verification."
+)
+_DELIVERY_URL_TOKEN = re.compile(r"/api/v1/artifacts/versions/[^\s/?#<>\[\]{}()\"']+")
+_MAX_COMPLETION_DELIVERY_VERIFY_BYTES = 512 << 20
 
 
 def _imported_plan_status(raw: Any) -> str:
@@ -181,6 +191,20 @@ def _canonical_json(value: Any) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _remap_delivery_urls(content: str, replacements: Mapping[str, str]) -> str:
+    """Replace source delivery URLs once, even when keys/values overlap."""
+
+    if not replacements:
+        return content
+    # Match a complete canonical version segment first, then look it up. This
+    # prevents `/versions/a` from rewriting the prefix of `/versions/ab` and
+    # keeps work independent of the number/length of untrusted source ids.
+    return _DELIVERY_URL_TOKEN.sub(
+        lambda match: replacements.get(match.group(0), match.group(0)),
+        content,
+    )
 
 
 def _rows(value: Any, key: str) -> list[Any]:
@@ -353,6 +377,86 @@ def _reproduce_notes(
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _mkdir_durable(path: Path, *, exist_ok: bool) -> None:
+    """Create a private package directory and persist its parent links."""
+
+    path.mkdir(parents=True, exist_ok=exist_ok)
+    current = path
+    # The import root and its ``artifacts`` child can both be new. Persist the
+    # directory itself and the two parent entries that make it reachable.
+    for _ in range(3):
+        _fsync_directory(current)
+        if current.parent == current:
+            break
+        current = current.parent
+
+
+def _write_durable_snapshot(
+    destination: Path,
+    payload: bytes,
+    *,
+    expected_sha256: str,
+) -> None:
+    """Publish imported immutable bytes before any SQLite row can name them."""
+
+    _mkdir_durable(destination.parent, exist_ok=True)
+    pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+    descriptor: int | None = None
+    promoted = False
+    try:
+        descriptor = os.open(
+            pending,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        digest = hashlib.sha256()
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:  # pragma: no cover - OS write contract
+                raise OSError("session snapshot write made no progress")
+            digest.update(view[:written])
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        if digest.hexdigest() != expected_sha256:
+            raise SessionPackageError("artifact snapshot checksum mismatch")
+        if destination.exists():
+            raise FileExistsError(f"import snapshot already exists: {destination}")
+        os.replace(pending, destination)
+        promoted = True
+        _fsync_directory(destination.parent)
+        if (
+            destination.stat().st_size != len(payload)
+            or _sha256(destination.read_bytes()) != expected_sha256
+        ):
+            raise OSError("imported artifact snapshot verification failed")
+    except BaseException:
+        try:
+            pending.unlink(missing_ok=True)
+            if promoted:
+                destination.unlink(missing_ok=True)
+                _fsync_directory(destination.parent)
+        except OSError:
+            pass
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _safe_text(value: Any) -> str:
@@ -696,6 +800,13 @@ class SessionPackageService:
             artifact_projection,
             environment_snapshots,
         ) = self._export_artifacts(root_frame_id)
+        artifact_projection["completion_deliveries"] = (
+            self._export_completion_deliveries(
+                root_frame_id,
+                messages=messages,
+                artifacts=artifact_projection,
+            )
+        )
         safe_artifact_ids = {
             str(item.get("artifact_id"))
             for item in artifact_projection.get("artifacts") or []
@@ -1211,6 +1322,159 @@ class SessionPackageService:
         )
         return edges
 
+    def _export_completion_deliveries(
+        self,
+        root_frame_id: str,
+        *,
+        messages: list[dict[str, Any]],
+        artifacts: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Project the validated delivery ledger without internal retry keys.
+
+        Artifact export may intentionally omit a secret, missing, or oversized
+        snapshot.  A completion message cannot travel while the exact bytes it
+        claims are omitted, so that case fails closed instead of exporting an
+        orphaned success link.
+        """
+
+        rows = self.store.completion_deliveries_for_session(
+            root_frame_id,
+            limit=_RECORD_LIMITS["completion_deliveries"] + 1,
+        )
+        self._bounded_records("completion_deliveries", rows)
+        message_by_id = {
+            str(message.get("message_id") or ""): message
+            for message in messages
+            if message.get("message_id")
+        }
+        available = {
+            (
+                str(artifact.get("artifact_id") or ""),
+                str(version.get("version_id") or ""),
+            )
+            for artifact in artifacts.get("artifacts") or []
+            for version in artifact.get("versions") or []
+            if version.get("available")
+        }
+        output: list[dict[str, Any]] = []
+        delivered_messages: set[str] = set()
+        relation_count = 0
+        verification_bytes = 0
+        for row in rows:
+            message_id = str(row.get("message_id") or "")
+            message = message_by_id.get(message_id)
+            if message is None:
+                raise SessionPackageError(
+                    "completion delivery message is missing from the package"
+                )
+            delivered_messages.add(message_id)
+            manifest = row.get("manifest")
+            if not isinstance(manifest, Mapping):
+                raise SessionPackageError("completion delivery manifest is invalid")
+            manifest_artifacts = manifest.get("artifacts")
+            if not isinstance(manifest_artifacts, list):
+                raise SessionPackageError("completion delivery manifest is invalid")
+            relation_count += len(manifest_artifacts)
+            if relation_count > _RECORD_LIMITS["completion_delivery_artifacts"]:
+                raise SessionPackageError(
+                    "session has too many completion delivery Artifact relations "
+                    "to package safely"
+                )
+            projected_manifest = _sanitize(dict(manifest))
+            try:
+                projected_manifest_sha256 = delivery_json_sha256(projected_manifest)
+            except ValueError as error:
+                raise SessionPackageError(
+                    "completion delivery manifest is invalid"
+                ) from error
+            if projected_manifest_sha256 != row.get("manifest_sha256"):
+                raise SessionPackageError(
+                    "completion delivery manifest changed during safe projection"
+                )
+            content = message.get("content")
+            metadata = message.get("metadata")
+            envelope = (
+                metadata.get("completion_delivery")
+                if isinstance(metadata, Mapping)
+                else None
+            )
+            if (
+                message.get("role") != "assistant"
+                or message.get("branch_id") != row.get("branch_id")
+                or message.get("created_at") != row.get("created_at")
+                or not isinstance(content, str)
+                or hashlib.sha256(content.encode("utf-8")).hexdigest()
+                != row.get("content_sha256")
+                or not isinstance(envelope, Mapping)
+                or envelope.get("delivery_id") != row.get("delivery_id")
+                or envelope.get("manifest_sha256") != row.get("manifest_sha256")
+                or envelope.get("status") != row.get("status")
+                or (
+                    row.get("status") == "published"
+                    and envelope.get("published_at") != row.get("published_at")
+                )
+            ):
+                raise SessionPackageError(
+                    "completion delivery changed during message projection"
+                )
+            for entry in manifest_artifacts:
+                if not isinstance(entry, Mapping):
+                    raise SessionPackageError(
+                        "completion delivery Artifact entry is invalid"
+                    )
+                size_bytes = entry.get("size_bytes")
+                if (
+                    isinstance(size_bytes, bool)
+                    or not isinstance(size_bytes, int)
+                    or size_bytes < 0
+                ):
+                    raise SessionPackageError(
+                        "completion delivery Artifact byte size is invalid"
+                    )
+                # Import verifies each snapshot while rebuilding the manifest
+                # and again inside the atomic bind to close the scheduling gap.
+                verification_bytes += size_bytes * 2
+                if verification_bytes > _MAX_COMPLETION_DELIVERY_VERIFY_BYTES:
+                    raise SessionPackageError(
+                        "completion delivery verification work exceeds its limit"
+                    )
+                identity = (
+                    str(entry.get("artifact_id") or ""),
+                    str(entry.get("version_id") or ""),
+                )
+                if identity not in available:
+                    raise SessionPackageError(
+                        "completion delivery references an excluded Artifact version"
+                    )
+            output.append(
+                {
+                    key: _sanitize(row.get(key))
+                    for key in (
+                        "delivery_id",
+                        "message_id",
+                        "branch_id",
+                        "frame_id",
+                        "status",
+                        "created_at",
+                        "published_at",
+                        "manifest_sha256",
+                        "content_sha256",
+                    )
+                }
+                | {"manifest": projected_manifest}
+            )
+        for message_id, message in message_by_id.items():
+            metadata = message.get("metadata")
+            if (
+                isinstance(metadata, Mapping)
+                and "completion_delivery" in metadata
+                and message_id not in delivered_messages
+            ):
+                raise SessionPackageError(
+                    "completion delivery message changed during ledger projection"
+                )
+        return output
+
     # ------------------------------------------------------------------ import
     def import_bytes(self, data: bytes) -> dict[str, Any]:
         """Import untrusted bytes under one stable validation error contract."""
@@ -1263,24 +1527,40 @@ class SessionPackageService:
             project_id = f"proj_import_{uuid.uuid4().hex}"
             while self.store.get_project(project_id) is not None:
                 project_id = f"proj_import_{uuid.uuid4().hex}"
-            project = self.store.create_project(
-                name=f"Imported: {str(session.get('project', {}).get('name') or 'research')}",
-                description="Imported OpenAI4S Session package (view-only until recovery)",
-                context="",
+            provisional_quarantine = _canonical_json(
+                {
+                    "state": "quarantined",
+                    "reason": "session_package_import_in_progress",
+                    "package_sha256": package_sha256,
+                    "schema_version": PACKAGE_SCHEMA_VERSION,
+                    "injection_flags": 0,
+                }
+            ).decode("utf-8")
+            created = self.store.create_quarantined_import_session(
                 project_id=project_id,
+                quarantine_value=provisional_quarantine,
             )
-            new_project_id = str(project["project_id"])
-            new_root = self.store.new_frame(
-                project_id=new_project_id,
-                kind="turn",
+            new_project_id = str(created["project_id"])
+            new_root = str(created["root_frame_id"])
+            # Only after the root and its quarantine exist atomically may
+            # package-authored display metadata become visible.
+            self.store.update_project(
+                new_project_id,
+                name=(
+                    "Imported: "
+                    + _safe_text(session.get("project", {}).get("name") or "research")
+                ),
+                description=(
+                    "Imported OpenAI4S Session package " "(view-only until recovery)"
+                ),
+                context="",
+            )
+            self.store.update_frame(
+                new_root,
                 name=_safe_text(
                     session.get("frame", {}).get("name") or "Imported session"
                 ),
                 model=session.get("frame", {}).get("model"),
-                status="done",
-            )
-            self.store.update_frame(
-                new_root,
                 task_summary=_safe_text(
                     session.get("frame", {}).get("task_summary")
                     or "Imported scientific Session"
@@ -1289,7 +1569,7 @@ class SessionPackageService:
                 status="done",
             )
             import_root = self.data_dir / "session-imports" / new_root
-            import_root.mkdir(parents=True, exist_ok=False)
+            _mkdir_durable(import_root, exist_ok=False)
 
             source_root = str(source["root_frame_id"])
             source_project = str(source["project_id"])
@@ -1316,11 +1596,17 @@ class SessionPackageService:
                     "new import workspace is unexpectedly non-empty"
                 )
 
-            message_map = self._import_messages(
+            package_deliveries = (
+                documents["artifacts.json"].get("completion_deliveries") or []
+            )
+            message_map, imported_message_content = self._import_messages(
                 new_root,
                 session.get("messages") or [],
                 source_root=source_root,
                 branch_map=branch_map,
+                delivery_message_ids={
+                    str(item.get("message_id") or "") for item in package_deliveries
+                },
             )
             group_map, action_map = self._import_ledger(
                 new_root,
@@ -1352,6 +1638,16 @@ class SessionPackageService:
                 active_workspace=active_workspace,
                 cell_map=cell_map,
                 env_map=env_map,
+            )
+            self._import_completion_deliveries(
+                new_root,
+                new_project_id,
+                package_deliveries,
+                source_root=source_root,
+                branch_map=branch_map,
+                message_map=message_map,
+                imported_message_content=imported_message_content,
+                version_map=version_map,
             )
             self._import_lineage(
                 documents["lineage.json"],
@@ -1726,6 +2022,9 @@ class SessionPackageService:
         documents["review.json"].setdefault("activity_steps", [])
         documents["review.json"].setdefault("settings", {})
         documents["snapshots.json"].setdefault("checkpoint_states", [])
+        # Optional within schema v1: packages created before trusted completion
+        # delivery have neither these records nor delivery-bearing messages.
+        documents["artifacts.json"].setdefault("completion_deliveries", [])
 
         messages = records("session.json", "messages", "messages")
         groups = records("ledger.json", "groups", "groups")
@@ -1739,6 +2038,11 @@ class SessionPackageService:
         operations = records("snapshots.json", "operations", "operations")
         recovery = records("snapshots.json", "recovery_journal", "recovery_journal")
         artifacts = records("artifacts.json", "artifacts", "artifacts")
+        deliveries = records(
+            "artifacts.json",
+            "completion_deliveries",
+            "completion_deliveries",
+        )
         generations = records("environment.json", "generations", "generations")
         env_snapshots = records(
             "environment.json",
@@ -1761,7 +2065,8 @@ class SessionPackageService:
         ):
             raise SessionPackageError("session package has too many permission rules")
 
-        message_ids, _ = identities(messages, "message_id", "message")
+        message_ids, message_by_id = identities(messages, "message_id", "message")
+        _delivery_ids, _ = identities(deliveries, "delivery_id", "completion delivery")
         group_ids, _ = identities(groups, "group_id", "action group")
         cell_ids, _ = identities(cells, "producing_cell_id", "cell")
         branch_ids, branch_by_id = identities(branches, "branch_id", "branch")
@@ -1861,6 +2166,7 @@ class SessionPackageService:
 
         artifact_ids, _ = identities(artifacts, "artifact_id", "artifact")
         version_ids: set[str] = set()
+        available_version_by_id: dict[str, tuple[str, Mapping[str, Any]]] = {}
         version_count = 0
         artifact_names: set[str] = set()
         for artifact in artifacts:
@@ -1887,6 +2193,7 @@ class SessionPackageService:
                 if (
                     not isinstance(version_id, str)
                     or not version_id
+                    or len(version_id) > 512
                     or version_id in version_ids
                 ):
                     raise SessionPackageError(
@@ -1913,8 +2220,21 @@ class SessionPackageService:
                         raise SessionPackageError(
                             "artifact snapshot is missing or corrupt"
                         )
+                    if (
+                        isinstance(version.get("size_bytes"), bool)
+                        or not isinstance(version.get("size_bytes"), int)
+                        or version.get("size_bytes") != len(payload)
+                        or version.get("checksum") != digest
+                    ):
+                        raise SessionPackageError(
+                            "artifact snapshot byte metadata is inconsistent"
+                        )
                     if self._contains_secret_bytes(payload):
                         raise SessionPackageError("artifact snapshot contains a secret")
+                    available_version_by_id[version_id] = (
+                        str(artifact.get("artifact_id")),
+                        version,
+                    )
             if available_count == 0:
                 raise SessionPackageError("artifact has no importable version")
             required_reference(
@@ -1923,6 +2243,176 @@ class SessionPackageService:
                 "artifact latest version",
             )
 
+        delivery_by_message: dict[str, Mapping[str, Any]] = {}
+        delivery_relation_count = 0
+        delivery_verification_bytes = 0
+        for delivery in deliveries:
+            message_id = delivery.get("message_id")
+            required_reference(message_id, message_ids, "completion delivery")
+            message_id = str(message_id)
+            if message_id in delivery_by_message:
+                raise SessionPackageError(
+                    "completion delivery message is referenced more than once"
+                )
+            delivery_by_message[message_id] = delivery
+            message = message_by_id[message_id]
+            branch_id = delivery.get("branch_id")
+            required_reference(branch_id, branch_ids, "completion delivery")
+            if branch_id != message.get("branch_id", source_root):
+                raise SessionPackageError(
+                    "completion delivery message branch is inconsistent"
+                )
+            if delivery.get("frame_id") not in (None, source_root):
+                raise SessionPackageError(
+                    "completion delivery frame cannot be remapped"
+                )
+            if message.get("role") != "assistant":
+                raise SessionPackageError(
+                    "completion delivery must reference an assistant message"
+                )
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise SessionPackageError("completion delivery message is invalid")
+            content_sha256 = delivery.get("content_sha256")
+            if content_sha256 != hashlib.sha256(content.encode("utf-8")).hexdigest():
+                raise SessionPackageError(
+                    "completion delivery message checksum mismatch"
+                )
+            created_at = delivery.get("created_at")
+            if (
+                isinstance(created_at, bool)
+                or not isinstance(created_at, int)
+                or created_at != message.get("created_at")
+            ):
+                raise SessionPackageError(
+                    "completion delivery creation timestamp is inconsistent"
+                )
+            status = delivery.get("status")
+            published_at = delivery.get("published_at")
+            if status == "published":
+                if (
+                    isinstance(published_at, bool)
+                    or not isinstance(published_at, int)
+                    or published_at < created_at
+                ):
+                    raise SessionPackageError(
+                        "published completion delivery timestamp is invalid"
+                    )
+            elif status == "committed":
+                if published_at is not None:
+                    raise SessionPackageError(
+                        "committed completion delivery has a publication timestamp"
+                    )
+            else:
+                raise SessionPackageError("completion delivery status is invalid")
+
+            manifest = delivery.get("manifest")
+            if not isinstance(manifest, Mapping):
+                raise SessionPackageError("completion delivery manifest is invalid")
+            try:
+                observed_manifest_sha256 = delivery_json_sha256(manifest)
+            except ValueError as error:
+                raise SessionPackageError(
+                    "completion delivery manifest is invalid"
+                ) from error
+            if delivery.get("manifest_sha256") != observed_manifest_sha256:
+                raise SessionPackageError(
+                    "completion delivery manifest checksum mismatch"
+                )
+            if (
+                manifest.get("schema_version") != 1
+                or manifest.get("root_frame_id") != source_root
+                or manifest.get("project_id") != source_project
+            ):
+                raise SessionPackageError(
+                    "completion delivery manifest scope is invalid"
+                )
+            entries = manifest.get("artifacts")
+            if not isinstance(entries, list) or not entries:
+                raise SessionPackageError(
+                    "completion delivery manifest has no Artifact versions"
+                )
+            delivery_relation_count += len(entries)
+            if (
+                delivery_relation_count
+                > _RECORD_LIMITS["completion_delivery_artifacts"]
+            ):
+                raise SessionPackageError(
+                    "session package has too many completion delivery Artifact "
+                    "relations"
+                )
+            seen_delivery_versions: set[str] = set()
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    raise SessionPackageError(
+                        "completion delivery Artifact entry is invalid"
+                    )
+                version_id = entry.get("version_id")
+                artifact_id = entry.get("artifact_id")
+                if (
+                    not isinstance(version_id, str)
+                    or version_id in seen_delivery_versions
+                    or version_id not in available_version_by_id
+                ):
+                    raise SessionPackageError(
+                        "completion delivery references an unknown Artifact version"
+                    )
+                seen_delivery_versions.add(version_id)
+                expected_artifact, version = available_version_by_id[version_id]
+                if artifact_id != expected_artifact:
+                    raise SessionPackageError(
+                        "completion delivery Artifact identity is inconsistent"
+                    )
+                expected_size = version.get("size_bytes")
+                expected_sha256 = version.get("snapshot_sha256")
+                if (
+                    isinstance(entry.get("size_bytes"), bool)
+                    or not isinstance(entry.get("size_bytes"), int)
+                    or entry.get("size_bytes") != expected_size
+                    or entry.get("sha256") != expected_sha256
+                    or entry.get("filename") != version.get("filename")
+                    or entry.get("content_type")
+                    != str(version.get("content_type") or "")
+                    or entry.get("url") != artifact_version_url(version_id)
+                ):
+                    raise SessionPackageError(
+                        "completion delivery Artifact bytes or URL are inconsistent"
+                    )
+                delivery_verification_bytes += int(expected_size) * 2
+                if delivery_verification_bytes > _MAX_COMPLETION_DELIVERY_VERIFY_BYTES:
+                    raise SessionPackageError(
+                        "completion delivery verification work exceeds its limit"
+                    )
+
+            metadata = message.get("metadata")
+            if not isinstance(metadata, Mapping):
+                raise SessionPackageError(
+                    "completion delivery message metadata is invalid"
+                )
+            envelope = metadata.get("completion_delivery")
+            if (
+                not isinstance(envelope, Mapping)
+                or envelope.get("delivery_id") != delivery.get("delivery_id")
+                or envelope.get("manifest_sha256") != delivery.get("manifest_sha256")
+                or envelope.get("status") != status
+                or (
+                    status == "published"
+                    and envelope.get("published_at") != published_at
+                )
+                or (status == "committed" and "published_at" in envelope)
+            ):
+                raise SessionPackageError(
+                    "completion delivery message relation is inconsistent"
+                )
+
+        for message in messages:
+            metadata = message.get("metadata")
+            if isinstance(metadata, Mapping) and "completion_delivery" in metadata:
+                message_id = str(message.get("message_id") or "")
+                if message_id not in delivery_by_message:
+                    raise SessionPackageError(
+                        "completion delivery message is missing its ledger record"
+                    )
         for edge in lineage:
             required_reference(
                 edge.get("input_version_id"), version_ids, "lineage edge"
@@ -2226,8 +2716,10 @@ class SessionPackageService:
         *,
         source_root: str,
         branch_map: Mapping[str, str],
-    ) -> dict[str, str]:
+        delivery_message_ids: set[str],
+    ) -> tuple[dict[str, str], dict[str, str]]:
         mapping: dict[str, str] = {}
+        imported_content: dict[str, str] = {}
         for item in sorted(messages, key=lambda value: int(value.get("seq") or 0)):
             role = str(item.get("role") or "assistant")
             if role not in {"user", "assistant"}:
@@ -2244,19 +2736,30 @@ class SessionPackageService:
             )
             if self._injection_flags != before:
                 metadata = {**(metadata or {}), "injection_flagged": True}
+            source_id = str(item.get("message_id") or "")
+            stored_content = content
+            if source_id in delivery_message_ids:
+                metadata = dict(metadata or {})
+                metadata.pop("completion_delivery", None)
+                metadata["completion_delivery_import_pending"] = True
+                # A process kill before Artifact remapping may strand a partial
+                # imported project.  Persist no source success URL or orphaned
+                # envelope in that window; the verified bind below swaps this
+                # deterministic placeholder atomically.
+                stored_content = _DELIVERY_IMPORT_PENDING_CONTENT
             inserted = self.store.add_message(
                 root_frame_id=new_root,
                 branch_id=branch_map[source_branch],
                 frame_id=new_root,
                 role=role,
-                content=content,
+                content=stored_content,
                 metadata=metadata,
                 created_at=item.get("created_at"),
             )
-            source_id = item.get("message_id")
             if source_id:
-                mapping[str(source_id)] = str(inserted["message_id"])
-        return mapping
+                mapping[source_id] = str(inserted["message_id"])
+                imported_content[source_id] = content
+        return mapping, imported_content
 
     def _import_ledger(
         self,
@@ -2542,10 +3045,11 @@ class SessionPackageService:
                     / "artifacts"
                     / f"{artifact_index:06d}-{version_index:06d}-{digest}.bin"
                 )
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with destination.open("xb") as handle:
-                    handle.write(payload)
-                os.chmod(destination, 0o600)
+                _write_durable_snapshot(
+                    destination,
+                    payload,
+                    expected_sha256=digest,
+                )
                 record = self.store.save_artifact(
                     path=str(live_path),
                     snapshot_path=str(destination),
@@ -2589,6 +3093,97 @@ class SessionPackageService:
                 if newest_payload is not None:
                     live_artifacts.append((filename, newest_payload))
         return artifact_map, version_map, live_artifacts
+
+    def _import_completion_deliveries(
+        self,
+        new_root: str,
+        new_project: str,
+        deliveries: list[Any],
+        *,
+        source_root: str,
+        branch_map: Mapping[str, str],
+        message_map: Mapping[str, str],
+        imported_message_content: Mapping[str, str],
+        version_map: Mapping[str, str],
+    ) -> None:
+        """Rebuild exact-version delivery claims after identity remapping.
+
+        Source manifests are evidence about source ids, not rows that may be
+        copied verbatim.  Rebuilding them through ``CompletionDeliveryService``
+        proves the imported snapshots and emits canonical local URLs; the Store
+        then swaps the message envelope/content and inserts the ledger in one
+        transaction.
+        """
+
+        service = CompletionDeliveryService(store=self.store, data_dir=self.data_dir)
+        ordered = sorted(
+            deliveries,
+            key=lambda item: (
+                int(item.get("created_at") or 0),
+                str(item.get("delivery_id") or ""),
+            ),
+        )
+        for item in ordered:
+            source_delivery_id = str(item.get("delivery_id") or "")
+            source_message_id = str(item.get("message_id") or "")
+            message_id = message_map.get(source_message_id)
+            content = imported_message_content.get(source_message_id)
+            if not message_id or content is None:
+                raise SessionPackageError(
+                    "completion delivery message could not be remapped"
+                )
+            source_manifest = item.get("manifest")
+            if not isinstance(source_manifest, Mapping):
+                raise SessionPackageError("completion delivery manifest is invalid")
+            source_entries = source_manifest.get("artifacts") or []
+            remapped_versions: list[str] = []
+            url_map: list[tuple[str, str]] = []
+            for entry in source_entries:
+                source_version = str(entry.get("version_id") or "")
+                local_version = version_map.get(source_version)
+                if not local_version:
+                    raise SessionPackageError(
+                        "completion delivery Artifact version could not be remapped"
+                    )
+                remapped_versions.append(local_version)
+                url_map.append(
+                    (
+                        artifact_version_url(source_version),
+                        artifact_version_url(local_version),
+                    )
+                )
+            verified = service.build_manifest(
+                root_frame_id=new_root,
+                project_id=new_project,
+                versions=remapped_versions,
+            )
+            # One pass is important for adversarial but valid source ids: a local
+            # URL produced by replacing one source must never be interpreted as
+            # another source URL later in the same import.
+            remapped_content = _remap_delivery_urls(content, dict(url_map))
+            source_branch = str(item.get("branch_id") or source_root)
+            branch_id = branch_map.get(source_branch)
+            if branch_id is None:
+                raise SessionPackageError(
+                    "completion delivery branch could not be remapped"
+                )
+            self.store.bind_imported_completion_delivery(
+                idempotency_key=(
+                    "session-package:"
+                    + hashlib.sha256(source_delivery_id.encode("utf-8")).hexdigest()
+                ),
+                message_id=message_id,
+                root_frame_id=new_root,
+                branch_id=branch_id,
+                frame_id=new_root,
+                expected_current_content=_DELIVERY_IMPORT_PENDING_CONTENT,
+                content=remapped_content,
+                manifest=verified.value,
+                status=str(item.get("status") or ""),
+                created_at=int(item.get("created_at")),
+                published_at=item.get("published_at"),
+                snapshot_verifier=service.verify_snapshot,
+            )
 
     def _import_lineage(
         self,

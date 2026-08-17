@@ -776,6 +776,7 @@ def _drive_seeded_downloads(
         content="capture memory", block="general", project_id=_CAPTURE_PROJECT
     )
     artifact_id = artifact["artifact_id"]
+    version_id = artifact["version_id"]
     probes: tuple[tuple[str, str, dict[str, list[str]]], ...] = (
         # Both notebook forms. The default is a zip *bundle* and a named
         # language is an `.ipynb`; a contract saying only "binary" cannot tell a
@@ -800,6 +801,11 @@ def _drive_seeded_downloads(
         # frozen contract credited `binary` to both. Only one of them ever
         # served it.
         (r"/artifacts/(.+)", f"/artifacts/{artifact_id}", {}),
+        (
+            r"/artifacts/versions/([^/]+)",
+            f"/artifacts/versions/{version_id}",
+            {},
+        ),
     )
     # Re-driven with a row present. The parameterless sweep runs before this
     # fixture exists, so it observes `memories: []` -- and an empty array

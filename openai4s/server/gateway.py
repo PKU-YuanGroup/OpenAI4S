@@ -104,9 +104,14 @@ from openai4s.server.artifacts import (
     ArtifactManager,
     ArtifactOperationError,
     PromotionTarget,
+    WorkspaceSnapshot,
 )
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
+from openai4s.server.delivery import (
+    CompletionDeliveryService,
+    DeliveryValidationError,
+)
 from openai4s.server.errors import (
     ERROR_CODES,
     INTERNAL_ERROR_MESSAGE,
@@ -165,6 +170,10 @@ from openai4s.server.share_service import ShareConflict, ShareService
 from openai4s.server.skill_sidecars import GenerationSidecarRecorder
 from openai4s.server.skills import SKILL_FAILURE_STATUS, SkillCustomizationService
 from openai4s.server.titles import SessionTitleService
+from openai4s.server.trusted_capture import (
+    TRUSTED_CAPTURE_BUSY,
+    TrustedCaptureCoordinator,
+)
 from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
@@ -1472,11 +1481,15 @@ class SessionState:
         kernel_generations=None,
         owner_instance_id: str | None = None,
         clock_ms=None,
+        trusted_capture_enabled: bool = False,
     ):
         self.root_frame_id = root_frame_id
         self.project_id = project_id
         self.branch_id = branch_id or root_frame_id
         self.workspace = workspace
+        self.trusted_capture = TrustedCaptureCoordinator(
+            enabled=trusted_capture_enabled
+        )
         #: `(profile_id, revision)` this turn was ACCEPTED under, when it came
         #: through the queue. `_pinned_llm_config` prefers it over the frame's
         #: current pin, because the frame's pin is mutable by design and an item
@@ -2103,6 +2116,9 @@ class SessionRunner:
     ) -> None:
         self.cfg = cfg
         self.hub = hub
+        self.stage1_trusted_delivery = bool(
+            cfg.roadmap_features.stage1_trusted_delivery
+        )
         self._clock = clock or time.time
         self._owner_instance_id = PROCESS_INSTANCE_ID
         self.store = get_store(cfg.db_path)
@@ -2124,8 +2140,20 @@ class SessionRunner:
         #: its note without being handed the ticket.
         self._turn_scope = threading.local()
         self._lock = threading.Lock()
+        self._project_mutation_condition = threading.Condition(self._lock)
         self._closed = False
         self._deleting_projects: set[str] = set()
+        # Root-stable deletion tombstones. drop_session intentionally removes
+        # SessionState before the durable aggregate is deleted; without this
+        # barrier a concurrent upload can recreate a fresh state in that gap
+        # and write into a session that is disappearing.
+        self._deleting_sessions: set[str] = set()
+        # All frameless Artifacts share data_dir/uploads and therefore share a
+        # basename namespace even when their database scopes name different
+        # projects. Mutations may coexist, but project deletion is one global
+        # writer across the DB-delete + filesystem-cleanup lifetime.
+        self._frameless_artifact_mutations = 0
+        self._frameless_deletion_active = False
         # One per daemon, so the startup opt-in and the on-demand route cannot
         # both be seeding the example at the same time.
         self.example_seed = _ExampleSeedState()
@@ -2183,6 +2211,12 @@ class SessionRunner:
             ),
             guess_content_type=_guess_ctype,
             checksum=_sha256,
+            trusted_delivery=self.stage1_trusted_delivery,
+        )
+        self.completion_delivery = (
+            CompletionDeliveryService(store=self.store, data_dir=cfg.data_dir)
+            if self.stage1_trusted_delivery
+            else None
         )
         self.session_domain = SessionDomainService(
             self.store,
@@ -2236,6 +2270,7 @@ class SessionRunner:
             ),
             revoke_shares=self.shares.revoke_for_session,
             release_compute=self._release_session_compute,
+            cleanup_frameless_uploads=self.stage1_trusted_delivery,
         )
         self.sidecar_manifests = GenerationSidecarRecorder(self.store)
         self.workbench = SessionWorkbenchStateService(
@@ -2298,6 +2333,8 @@ class SessionRunner:
                 capture=self._capture_artifacts,
                 emit_artifact_step=self._emit_artifact_step,
                 record_cell=self._record_cell_with_cursor_checkpoint,
+                admit=lambda _st, _request: (self.require_standard_profile_readiness()),
+                capture_lease=lambda st, _request: st.trusted_capture.capture(),
                 allocate_attempt=self._allocate_cell_attempt,
                 bind_attempt_generation=self._bind_cell_attempt_generation,
                 mark_attempt_started=lambda attempt_id: (
@@ -2810,7 +2847,21 @@ class SessionRunner:
         return True
 
     def delete_session(self, root_frame_id: str) -> dict[str, Any]:
-        return self.deletions.delete_session(root_frame_id)
+        if not self.stage1_trusted_delivery:
+            return self.deletions.delete_session(root_frame_id)
+        with self._lock:
+            frame = self.store.get_frame(root_frame_id)
+            project_id = str((frame or {}).get("project_id") or "")
+            if root_frame_id in self._deleting_sessions or (
+                project_id and project_id in self._deleting_projects
+            ):
+                raise GatewayError(409, "session deletion is already in progress")
+            self._deleting_sessions.add(root_frame_id)
+        try:
+            return self.deletions.delete_session(root_frame_id)
+        finally:
+            with self._lock:
+                self._deleting_sessions.discard(root_frame_id)
 
     def _may_create_session_in(self, project_id: str, user_id: str) -> bool:
         """Whether this user may put a session in this project.
@@ -2913,15 +2964,37 @@ class SessionRunner:
             return fid
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
+        roots: tuple[str, ...] = ()
         with self._lock:
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is already in progress")
+            if self.stage1_trusted_delivery:
+                if self._frameless_deletion_active:
+                    raise GatewayError(409, "another project deletion is in progress")
+                roots = tuple(self.store.project_session_ids(project_id))
+                if any(root in self._deleting_sessions for root in roots):
+                    raise GatewayError(409, "session deletion is already in progress")
             self._deleting_projects.add(project_id)
+            if self.stage1_trusted_delivery:
+                self._deleting_sessions.update(roots)
+                self._frameless_deletion_active = True
         try:
+            # Frameless/project-scoped Artifacts have no SessionState turn
+            # lock. Their project lease is claimed under the same lock as the
+            # tombstone above; wait only after admission is closed, so a
+            # mutation that already won may finish and no new one can enter.
+            if self.stage1_trusted_delivery:
+                with self._project_mutation_condition:
+                    while self._frameless_artifact_mutations:
+                        self._project_mutation_condition.wait()
             return self.deletions.delete_project(project_id)
         finally:
             with self._lock:
+                self._deleting_sessions.difference_update(roots)
                 self._deleting_projects.discard(project_id)
+                if self.stage1_trusted_delivery:
+                    self._frameless_deletion_active = False
+                    self._project_mutation_condition.notify_all()
 
     def _init_orchestration(self) -> None:
         """Build the backends this daemon can reach, and start the loop.
@@ -3176,8 +3249,283 @@ class SessionRunner:
     def _protect_latest_version_snapshots(self, st: SessionState) -> None:
         self.artifacts.protect_latest(st)
 
+    @contextmanager
+    def _external_project_artifact_mutation(self, project_id: str):
+        """Share the global uploads lease among frameless mutations."""
+
+        with self._project_mutation_condition:
+            if project_id in self._deleting_projects or self._frameless_deletion_active:
+                raise GatewayError(409, "project deletion is in progress")
+            self._frameless_artifact_mutations += 1
+        try:
+            yield
+        finally:
+            with self._project_mutation_condition:
+                self._frameless_artifact_mutations = max(
+                    0, self._frameless_artifact_mutations - 1
+                )
+                self._project_mutation_condition.notify_all()
+
+    @contextmanager
+    def _external_artifact_mutation(
+        self,
+        *,
+        frame_id: str | None = None,
+        project_id: str | None = None,
+        artifact_id: str | None = None,
+    ):
+        """Bind an HTTP-originated Artifact mutation to its session gate.
+
+        ArtifactManager remains usable for frameless project uploads and for
+        lower-level recovery tests.  A mutation that resolves to a live Web
+        session, however, must use the exact SessionState coordinator used by
+        Cells, native writers, delegation, and background kernels.  Resolve
+        the canonical root dynamically so a child frame cannot accidentally
+        acquire a different gate for the same physical workspace.
+        """
+
+        if not self.stage1_trusted_delivery:
+            # Stage 1 is rollout-gated.  The coordinator itself is a no-op
+            # while disabled, but turn_lock lives outside it; return before
+            # resolving/creating SessionState or applying new admission so the
+            # legacy path remains byte-for-byte compatible.
+            yield
+            return
+        root_frame_id = frame_id
+        fallback_project = project_id or "default"
+        if artifact_id is not None:
+            artifact = self.store.get_artifact(artifact_id)
+            if artifact is None:
+                # Let the owning Artifact operation preserve its established
+                # not-found response; there is no workspace to coordinate.
+                yield
+                return
+            root_frame_id = artifact.get("root_frame_id")
+            fallback_project = artifact.get("project_id") or fallback_project
+        if not root_frame_id:
+            # Frameless uploads live under data_dir/uploads, outside every
+            # session workspace and therefore outside the capture coordinator.
+            # They still share project-owned rows/files with project deletion.
+            with self._external_project_artifact_mutation(str(fallback_project)):
+                yield
+            return
+        scope = self.store.resolve_frame_scope(
+            str(root_frame_id),
+            fallback_project=str(fallback_project),
+        )
+        canonical_root = str(scope.get("root_frame_id") or root_frame_id)
+        canonical_project = str(scope.get("project_id") or fallback_project)
+        if (
+            self.store.get_frame(canonical_root) is None
+            and self._existing_state(canonical_root) is None
+        ):
+            raise GatewayError(404, "session not found")
+        # Branch activation deliberately replaces SessionState before its
+        # recovery/event tail has finished.  During that publication window
+        # the new state's lock is free even though the lifecycle writer still
+        # owns the session.  The execution identity is root-stable across that
+        # swap and closes the ABA gap; turn_lock below remains the compatible
+        # guard for legacy holders that predate coordinator admission.
+        if self._execution_active(canonical_root):
+            raise GatewayError(
+                409,
+                "session workspace is busy with another execution",
+                TRUSTED_CAPTURE_BUSY,
+            )
+        state = self._state(canonical_root, canonical_project)
+        # User mutations are refusals, not queued work: waiting here would let
+        # an upload accepted during one turn silently land in the next turn's
+        # completion Artifact delta.  This also closes pure tool/finalization
+        # turns and branch lifecycle operations, whose complete lifetime holds
+        # turn_lock even when no capture snapshot is open.
+        # Close the state/deletion ABA window atomically.  Deletion may pop a
+        # SessionState and clear its tombstone after `_state()` returns; an
+        # unguarded caller could then acquire that detached state's free lock
+        # and write after the durable aggregate was gone.  The acquire is
+        # deliberately nonblocking while `_lock` is held: activation takes
+        # old.turn_lock before publishing under `_lock`, so waiting here would
+        # invert those locks.  Either this mutation claims the live state now,
+        # or it refuses without a side effect.
+        with self._lock:
+            state_is_live = self._sessions.get(canonical_root) is state
+            deletion_active = (
+                canonical_root in self._deleting_sessions
+                or canonical_project in self._deleting_projects
+            )
+            turn_claimed = bool(
+                state_is_live
+                and not deletion_active
+                and state.turn_lock.acquire(blocking=False)
+            )
+        if not turn_claimed:
+            raise GatewayError(
+                409,
+                "session workspace is busy with another execution",
+                TRUSTED_CAPTURE_BUSY,
+            )
+        try:
+            # Keep the global lock order aligned with Cell execution:
+            # turn_lock -> trusted-capture coordinator. Neither path may ever
+            # take these two in the reverse order.
+            with state.trusted_capture.external_mutation():
+                yield
+        finally:
+            state.turn_lock.release()
+
+    def upload_artifact(self, payload: dict, *, broadcast=None) -> dict:
+        with self._external_artifact_mutation(
+            frame_id=payload.get("frame_id"),
+            project_id=payload.get("project_id"),
+        ):
+            return self.artifacts.upload(payload, broadcast=broadcast)
+
+    def save_datapro_search_result(
+        self,
+        *,
+        query: str,
+        result: dict,
+        frame_id: str | None,
+        secrets: tuple[str, ...],
+        source_result: dict,
+    ) -> tuple[dict | None, dict | None]:
+        """Index, save, link, or compensate one DataPro result atomically.
+
+        The SQLite index and Artifact upload use separate repositories, so the
+        compensation remains explicit.  One external-mutation lifetime spans
+        the whole sequence: a background launch cannot enter after upload but
+        before link failure cleanup and turn a recoverable failure into a
+        visible ghost Artifact.
+        """
+
+        receipt: dict | None = None
+        artifact: dict | None = None
+        pending_events: list[tuple[str, dict]] = []
+
+        def collect_event(root_frame_id: str, event: dict) -> None:
+            pending_events.append((root_frame_id, event))
+
+        with self._external_artifact_mutation(frame_id=frame_id):
+            try:
+                receipt = datapro.index_successful_search(
+                    self.store,
+                    query=query,
+                    result=result,
+                    frame_id=frame_id,
+                    secrets=secrets,
+                    source_result=source_result,
+                )
+                saved_result = (
+                    {**result, "index": receipt} if receipt is not None else result
+                )
+                if datapro.is_successful_search(saved_result):
+                    payload = datapro.result_artifact_payload(
+                        query=query,
+                        result=saved_result,
+                        frame_id=frame_id,
+                    )
+                    if self.stage1_trusted_delivery:
+                        # The upload is provisional until its index batch is
+                        # linked. Preserve the manager's exact event payload,
+                        # but do not project it before the compound outcome is
+                        # known.
+                        artifact = self.artifacts.upload(
+                            payload,
+                            broadcast=collect_event,
+                        )
+                    else:
+                        # Rollout compatibility: before Stage 1 the upload
+                        # event is immediate, including when a later link
+                        # fails and compensation emits its refresh event.
+                        artifact = self.artifacts.upload(payload)
+                if (
+                    isinstance(receipt, dict)
+                    and receipt.get("batch_id")
+                    and artifact
+                    and artifact.get("id")
+                ):
+                    self.store.link_datapro_index_artifact(
+                        receipt["batch_id"], artifact["id"]
+                    )
+            except BaseException:
+                artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
+                if artifact_id:
+                    try:
+                        if self.stage1_trusted_delivery:
+                            self.artifacts.delete(
+                                artifact_id,
+                                broadcast=lambda _root, _event: None,
+                            )
+                        else:
+                            self.artifacts.delete(artifact_id)
+                    except BaseException:  # preserve the original failure
+                        pass
+                if isinstance(receipt, dict) and receipt.get("batch_id"):
+                    try:
+                        self.store.delete_datapro_index_batch(receipt["batch_id"])
+                    except BaseException:  # preserve the original failure
+                        pass
+                raise
+            # Publish the ArtifactManager-authored event exactly once and only
+            # after index, upload, and any required link all succeeded. Event
+            # delivery remains a projection: a socket failure cannot roll back
+            # the already coherent durable result.
+            if self.stage1_trusted_delivery:
+                for root_frame_id, event in pending_events:
+                    try:
+                        self.artifacts.broadcast(root_frame_id, event)
+                    except Exception as error:  # noqa: BLE001
+                        record_diagnostic(
+                            error, surface="datapro:artifact:notification"
+                        )
+        return receipt, artifact
+
+    def edit_artifact(
+        self,
+        artifact_id: str,
+        content: str,
+        *,
+        broadcast=None,
+    ) -> dict:
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            return self.artifacts.edit(
+                artifact_id,
+                content,
+                broadcast=broadcast,
+            )
+
+    def rename_artifact(
+        self,
+        artifact_id: str,
+        filename: str | None,
+        *,
+        broadcast=None,
+    ) -> dict:
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            return self.artifacts.rename(
+                artifact_id,
+                filename,
+                broadcast=broadcast,
+            )
+
+    def delete_artifact(self, artifact_id: str, *, broadcast=None) -> dict:
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            return self.artifacts.delete(artifact_id, broadcast=broadcast)
+
+    def promote_cell_artifact(
+        self,
+        target: PromotionTarget,
+        cell: dict,
+        emit,
+    ) -> dict | None:
+        with self._external_artifact_mutation(
+            frame_id=target.root_frame_id,
+            project_id=target.project_id,
+        ):
+            return self.artifacts.promote_cell(target, cell, emit)
+
     def restore_version(self, artifact_id: str, version_id: str) -> dict:
-        result = self.artifacts.restore(artifact_id, version_id)
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            result = self.artifacts.restore(artifact_id, version_id)
         if result.get("ok") and result.get("artifact"):
             result = dict(result)
             result["artifact"] = _artifact_json(result["artifact"])
@@ -3195,12 +3543,15 @@ class SessionRunner:
         """Serialize one checkpoint/branch mutation with scientific writers."""
 
         st = self._state(root_frame_id, project_id)
-        with self._session_execution(
-            st,
-            owner="lifecycle",
-            owner_id=f"{operation}-{uuid.uuid4().hex[:12]}",
-            reason=operation.replace("_", " "),
-        ) as execution:
+        with (
+            self._session_execution(
+                st,
+                owner="lifecycle",
+                owner_id=f"{operation}-{uuid.uuid4().hex[:12]}",
+                reason=operation.replace("_", " "),
+            ) as execution,
+            st.trusted_capture.external_mutation(),
+        ):
             result = mutate()
             if invalidate_kernel and result.get("ok"):
                 st.kernels.stop(
@@ -3291,12 +3642,15 @@ class SessionRunner:
 
         emit = self.hub.emitter(root_frame_id)
         owner_id = f"activate-{uuid.uuid4().hex[:12]}"
-        with self._session_execution(
-            old,
-            owner="lifecycle",
-            owner_id=owner_id,
-            reason=f"activate branch {branch_id}",
-        ) as execution:
+        with (
+            self._session_execution(
+                old,
+                owner="lifecycle",
+                owner_id=owner_id,
+                reason=f"activate branch {branch_id}",
+            ) as execution,
+            old.trusted_capture.external_mutation(),
+        ):
             prepared = self.session_domain.prepare_activation(
                 root_frame_id,
                 branch_id=branch_id,
@@ -3310,6 +3664,7 @@ class SessionRunner:
                 kernel_generations=self.store,
                 owner_instance_id=self._owner_instance_id,
                 clock_ms=lambda: int(self._clock() * 1000),
+                trusted_capture_enabled=self.stage1_trusted_delivery,
             )
             candidate.model = old.model
             candidate.plan = old.plan
@@ -3485,12 +3840,15 @@ class SessionRunner:
             )
         owner_id = f"{action_id}-{uuid.uuid4().hex[:12]}"
         emit = self.hub.emitter(root_frame_id)
-        with self._session_execution(
-            st,
-            owner="recovery",
-            owner_id=owner_id,
-            reason=f"kernel recovery: {action_id}",
-        ) as execution:
+        with (
+            self._session_execution(
+                st,
+                owner="recovery",
+                owner_id=owner_id,
+                reason=f"kernel recovery: {action_id}",
+            ) as execution,
+            st.trusted_capture.external_mutation(),
+        ):
             runtime = self._recovery_runtime(st, emit)
             fresh = runtime.fresh_manifests() if action_id == "restart_fresh" else ()
             # Re-check enabled/confirmation after FIFO admission, before
@@ -3780,6 +4138,11 @@ class SessionRunner:
             self.require_session_writable(root_frame_id, "starting a live runtime")
         project_id = scope["project_id"]
         with self._lock:
+            if (
+                self.stage1_trusted_delivery
+                and root_frame_id in self._deleting_sessions
+            ):
+                raise GatewayError(409, "session deletion is in progress")
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is in progress")
             st = self._sessions.get(root_frame_id)
@@ -3802,6 +4165,7 @@ class SessionRunner:
                     kernel_generations=self.store,
                     owner_instance_id=self._owner_instance_id,
                     clock_ms=lambda: int(self._clock() * 1000),
+                    trusted_capture_enabled=self.stage1_trusted_delivery,
                 )
                 # A direct REPL Cell allocates its attempt before lazy language
                 # preparation calls ``_seed_messages``.  Seed the durable
@@ -4127,6 +4491,11 @@ class SessionRunner:
             return disp
 
         dispatcher = st.runtime.ensure(factory)
+        # BackgroundExecutor reads this hook dynamically, including when it
+        # was created by a tool-only turn before any language kernel existed.
+        # The lease spans the whole background job and is the atomic peer of
+        # every trusted foreground capture boundary.
+        dispatcher.background_execution_lease = st.trusted_capture.background
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
         self._wire_delegation(st)
@@ -4348,9 +4717,48 @@ class SessionRunner:
         try:
             import dataclasses as _dc
 
-            from openai4s.agent.delegation import DelegationRunner
+            from openai4s.agent.delegation import DelegationError, DelegationRunner
 
             child_cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
+
+            def build_child_cell_hooks(producer_frame_id):
+                return self.artifacts.delegated_cell_hooks(
+                    st,
+                    producer_frame_id,
+                    self.hub.emitter(st.root_frame_id),
+                )
+
+            cell_hooks_factory = (
+                build_child_cell_hooks if self.stage1_trusted_delivery else None
+            )
+
+            def trusted_capture_admission():
+                if self._background_active(st):
+                    return (
+                        "trusted Artifact capture cannot delegate while a "
+                        "background execution is running"
+                    )
+                return None
+
+            capture_admission = (
+                trusted_capture_admission if self.stage1_trusted_delivery else None
+            )
+
+            @contextmanager
+            def trusted_capture_lease():
+                lease = st.trusted_capture.capture()
+                try:
+                    lease.__enter__()
+                except GatewayError as error:
+                    raise DelegationError(error.message) from error
+                try:
+                    yield
+                finally:
+                    lease.__exit__(None, None, None)
+
+            capture_lease = (
+                trusted_capture_lease if self.stage1_trusted_delivery else None
+            )
             runner = st.delegation_runner
             if runner is None:
                 runner = DelegationRunner(
@@ -4364,6 +4772,9 @@ class SessionRunner:
                     # kernels and relative writes pollute the checkout and
                     # stay invisible to this session's artifact capture.
                     workspace=st.workspace,
+                    cell_hooks_factory=cell_hooks_factory,
+                    trusted_capture_admission=capture_admission,
+                    trusted_capture_lease=capture_lease,
                 )
                 st.delegation_runner = runner
             else:
@@ -4374,6 +4785,9 @@ class SessionRunner:
                 # Branch fork/activate can retarget the live workspace; future
                 # children must follow it, not the one at runner creation.
                 runner.workspace = st.workspace
+                runner.cell_hooks_factory = cell_hooks_factory
+                runner.set_trusted_capture_admission(capture_admission)
+                runner.set_trusted_capture_lease(capture_lease)
             disp._delegate_fn = runner
             disp.steer_fns = {
                 "children": runner.children,
@@ -5241,6 +5655,36 @@ class SessionRunner:
             }
         )
 
+    def standard_profile_readiness(self) -> dict[str, object]:
+        """Project Stage 1's local-only standard environment preflight."""
+
+        from openai4s.kernel.readiness import standard_profile_readiness
+
+        return standard_profile_readiness(enabled=self.stage1_trusted_delivery)
+
+    @staticmethod
+    def _readiness_failure_message(readiness: dict[str, object]) -> str:
+        from openai4s.kernel.readiness import readiness_failure_message
+
+        return readiness_failure_message(readiness)
+
+    def require_standard_profile_readiness(self) -> dict[str, object]:
+        """Fail before admission when Stage 1 knows science cannot run."""
+
+        readiness = self.standard_profile_readiness()
+        if not self.stage1_trusted_delivery or readiness.get("ready") is True:
+            return readiness
+        unavailable = readiness.get("state") == "unavailable"
+        raise GatewayError(
+            503 if unavailable else 409,
+            self._readiness_failure_message(readiness),
+            (
+                "environment_readiness_unavailable"
+                if unavailable
+                else "environment_not_ready"
+            ),
+        )
+
     def submit_message(
         self,
         root_frame_id: str,
@@ -5257,12 +5701,10 @@ class SessionRunner:
         The HTTP handler may still wait for completion for legacy frontend
         compatibility, but the work is no longer tied to the client socket.
 
-        Everything that can refuse this turn runs *here*, synchronously, before
-        a ticket exists. Both checks below used to happen later -- one inside
-        the worker thread, one nowhere at all -- and "later" is the wrong place
-        for a refusal twice over: the client has already been told 202
-        accepted, and a queued follow-up would not discover the problem until
-        it reached the head of a queue the user had since walked away from.
+        Message-size and model-binding checks run *here*, synchronously, before
+        a ticket exists. Scientific-environment admission is intentionally not
+        a message check: a pure native-tool or structured-finalization turn
+        needs no kernel. It runs at the Code Cell boundary instead.
         """
         st = self._state(root_frame_id, project_id)
 
@@ -5595,7 +6037,7 @@ class SessionRunner:
         return self.reviews.submit(root_frame_id, project_id)
 
     # -- capture figures + written files after a cell -> artifacts ---------
-    def _snapshot(self, ws: Path) -> dict[str, int]:
+    def _snapshot(self, ws: Path) -> WorkspaceSnapshot:
         return self.artifacts.snapshot(ws)
 
     def _register_file(
@@ -5619,7 +6061,7 @@ class SessionRunner:
         st: SessionState,
         cell_index: int,
         cell_id: str,
-        before: dict[str, int],
+        before: WorkspaceSnapshot,
         emit,
         language: str = "python",
     ) -> tuple[list, list, list]:
@@ -5638,7 +6080,7 @@ class SessionRunner:
         st: SessionState,
         cell_index: int,
         cell_id: str,
-        before: dict[str, int],
+        before: WorkspaceSnapshot,
         emit,
         language: str,
     ) -> CaptureResult:
@@ -5696,35 +6138,78 @@ class SessionRunner:
             finally:
                 self.recovery.touch(st)
 
+        # The lease is acquired before the native side effect and held until
+        # its final workspace capture.  An already-running background job
+        # therefore refuses before ``invoke`` can write, and a new background
+        # launch cannot enter the snapshot/action/capture interval.
+        with st.trusted_capture.capture():
+            return self._invoke_writing_control_with_artifacts_bound(st, emit, invoke)
+
+    def _invoke_writing_control_with_artifacts_bound(self, st, emit, invoke):
+        """Run one declared writing action inside its capture lease."""
+
         before = self.artifacts.snapshot(st.workspace)
         self.artifacts.protect_latest(st)
-        try:
-            return invoke()
-        finally:
-            try:
-                captured = self.artifacts.capture(
+
+        def capture_written_files() -> None:
+            captured = self.artifacts.capture(
+                st,
+                st.cell_index,
+                None,
+                before,
+                emit,
+                language="native",
+                drain_remote_provenance=self._remote_provenance_drain(st),
+            )
+            if captured.artifacts:
+                self._emit_artifact_step(
                     st,
-                    st.cell_index,
-                    None,
-                    before,
+                    "Saving "
+                    + (
+                        captured.artifacts[0]["filename"]
+                        if len(captured.artifacts) == 1
+                        else f"{len(captured.artifacts)} artifacts"
+                    ),
+                    captured.artifacts,
                     emit,
-                    language="native",
-                    drain_remote_provenance=self._remote_provenance_drain(st),
                 )
-                if captured.artifacts:
-                    self._emit_artifact_step(
-                        st,
-                        "Saving "
-                        + (
-                            captured.artifacts[0]["filename"]
-                            if len(captured.artifacts) == 1
-                            else f"{len(captured.artifacts)} artifacts"
-                        ),
-                        captured.artifacts,
-                        emit,
+
+        try:
+            result = invoke()
+        except BaseException as tool_error:
+            # A declared writing tool may have changed the workspace before it
+            # failed.  Capture whatever is recoverable, but never replace the
+            # primary tool exception with a secondary capture fault.  Either
+            # way the action is a retry veto: replay could duplicate the write.
+            try:
+                capture_written_files()
+            except Exception as capture_error:  # noqa: BLE001
+                record_diagnostic(
+                    capture_error,
+                    surface="artifacts:native_capture_after_tool_failure",
+                )
+            try:
+                setattr(tool_error, "output_committed", True)
+            except Exception:  # pragma: no cover - exotic immutable exception
+                pass
+            raise
+        else:
+            try:
+                capture_written_files()
+            except Exception as capture_error:  # noqa: BLE001
+                if self.stage1_trusted_delivery:
+                    # The tool already ran.  Returning its success would make
+                    # uncaptured bytes disappear from the durable delivery
+                    # delta; retrying it could duplicate a side effect.  Raise
+                    # a fixed, non-secret failure with the shared retry veto.
+                    failure = RuntimeError(
+                        "trusted Artifact capture failed after a writing tool ran"
                     )
-            except Exception:  # noqa: BLE001 — capture cannot mask tool outcome
+                    failure.output_committed = True  # type: ignore[attr-defined]
+                    raise failure from capture_error
                 traceback.print_exc()
+            return result
+        finally:
             self.recovery.touch(st)
 
     def _capture_env_snapshot(self, st=None) -> str | None:
@@ -6517,6 +7002,14 @@ class SessionRunner:
                 for a in self.store.list_artifacts({"root_frame_id": root_frame_id})
                 if (a.get("artifact_id") or a.get("id"))
             }
+            capture_observation_cursor = (
+                self.store.artifact_capture_observation_cursor(
+                    root_frame_id=root_frame_id,
+                    project_id=project_id,
+                )
+                if self.stage1_trusted_delivery
+                else 0
+            )
             cell_count_before = self.store.cell_count(root_frame_id)
             step_count_before = self.store.step_count(root_frame_id)
             emit({"type": "text_reset", "frame_id": root_frame_id})
@@ -6637,6 +7130,31 @@ class SessionRunner:
                     )
                     != artifact.get("latest_version_id")
                 ]
+                if self.stage1_trusted_delivery:
+                    # Same-head captures do not move latest_version_id. Their
+                    # durable observation cursor is the delivery delta; native
+                    # control tools that create a fresh head remain covered by
+                    # the compatible head comparison above.
+                    observations = self.store.artifact_capture_observations_since(
+                        capture_observation_cursor,
+                        root_frame_id=root_frame_id,
+                        project_id=project_id,
+                    )
+                    candidates = [*produced_artifacts, *observations]
+                    produced_artifacts = []
+                    seen_version_ids: set[str] = set()
+                    for candidate in candidates:
+                        version_id = str(
+                            candidate.get("version_id")
+                            or candidate.get("latest_version_id")
+                            or ""
+                        )
+                        if not version_id or version_id in seen_version_ids:
+                            continue
+                        seen_version_ids.add(version_id)
+                        produced_artifacts.append(
+                            {**candidate, "version_id": version_id}
+                        )
                 prior_text = "\n\n".join(
                     str(block.get("text") or "") for block in assistant_visible
                 ).strip()
@@ -6647,19 +7165,119 @@ class SessionRunner:
                     previous_text=prior_text,
                     language=response_language(user_text),
                     require_fallback=not bool(st.last_model_prose.strip()),
+                    trusted_delivery=self.stage1_trusted_delivery,
                 )
                 if final_text:
-                    assistant_visible.append(
-                        {"at": int(time.time() * 1000), "text": final_text}
-                    )
-                    emit(
-                        {
-                            "type": "text_chunk",
-                            "frame_id": root_frame_id,
-                            "block_type": "text",
-                            "chunk": final_text + "\n",
-                        }
-                    )
+                    delivered_at = int(time.time() * 1000)
+                    if self.stage1_trusted_delivery and produced_artifacts:
+                        try:
+                            delivery_service = self.completion_delivery
+                            if delivery_service is None:
+                                raise RuntimeError(
+                                    "trusted completion delivery is unavailable"
+                                )
+                            verified = delivery_service.build_manifest(
+                                root_frame_id=root_frame_id,
+                                project_id=project_id,
+                                versions=produced_artifacts,
+                            )
+                            # Preserve the pre-existing live/reopen ordering:
+                            # model prose comes first, then the transactional
+                            # Artifact-bearing final message.
+                            for block in assistant_visible:
+                                if (
+                                    block.get("persisted")
+                                    or not str(block.get("text") or "").strip()
+                                ):
+                                    continue
+                                self.store.add_message(
+                                    root_frame_id=root_frame_id,
+                                    branch_id=st.branch_id,
+                                    role="assistant",
+                                    content=block["text"],
+                                    frame_id=root_frame_id,
+                                    created_at=block.get("at"),
+                                )
+                                block["persisted"] = True
+                            delivery = delivery_service.commit_verified_manifest(
+                                verified=verified,
+                                idempotency_key=(
+                                    "artifact-completion:" + str(execution.execution_id)
+                                ),
+                                root_frame_id=root_frame_id,
+                                branch_id=st.branch_id,
+                                frame_id=root_frame_id,
+                                content=final_text,
+                                created_at=delivered_at,
+                            )
+                        except Exception as error:  # noqa: BLE001 - fail closed
+                            # No verified row means no success link is emitted.
+                            # The fixed public text carries no local path or raw
+                            # storage exception; the diagnostic keeps those for
+                            # the operator.
+                            record_diagnostic(
+                                error, surface="completion:trusted_delivery"
+                            )
+                            status = "failed"
+                            failure_meta["code"] = "artifact_delivery_unverified"
+                            err_text = (
+                                "产物交付未能通过完整性校验；未发布完成链接。"
+                                if response_language(user_text) == "zh"
+                                else "Artifact delivery could not be verified; "
+                                "no completion link was published."
+                            )
+                            emit(
+                                {
+                                    "type": "text_chunk",
+                                    "frame_id": root_frame_id,
+                                    "block_type": "text",
+                                    "chunk": "\n\n" + err_text + "\n",
+                                }
+                            )
+                        else:
+                            delivery_id = str(delivery["delivery_id"])
+                            assistant_visible.append(
+                                {
+                                    "at": delivered_at,
+                                    "text": final_text,
+                                    "persisted": True,
+                                    "delivery_id": delivery_id,
+                                }
+                            )
+                            emit(
+                                {
+                                    "type": "text_chunk",
+                                    "frame_id": root_frame_id,
+                                    "block_type": "text",
+                                    "chunk": final_text + "\n",
+                                    "delivery_id": delivery_id,
+                                }
+                            )
+                            try:
+                                self.store.mark_completion_delivery_published(
+                                    delivery_id
+                                )
+                            except Exception as error:  # noqa: BLE001
+                                # Message+manifest are already durable. Leaving
+                                # the row committed preserves a stable recovery
+                                # key for REST reopen and future explicit
+                                # reconciliation; Stage 1 does not re-emit here.
+                                record_diagnostic(
+                                    error,
+                                    surface="completion:publication_reconcile",
+                                )
+                    else:
+                        assistant_visible.append(
+                            {"at": delivered_at, "text": final_text}
+                        )
+                        emit(
+                            {
+                                "type": "text_chunk",
+                                "frame_id": root_frame_id,
+                                "block_type": "text",
+                                "chunk": final_text + "\n",
+                            }
+                        )
             # Persist each visible prose block with the time it was produced (see
             # _loop) rather than collapsing the whole turn's text into one message
             # stamped at turn-end. The latter sorted every step card into a single
@@ -6673,6 +7291,8 @@ class SessionRunner:
                 if not (blk.get("text") or "").strip():
                     continue
                 had_prose = True
+                if blk.get("persisted"):
+                    continue
                 self.store.add_message(
                     root_frame_id=root_frame_id,
                     branch_id=st.branch_id,
@@ -6964,16 +7584,27 @@ class SessionRunner:
             if path.read_bytes() != payload:
                 raise RuntimeError("context Artifact digest collision")
         checksum = hashlib.sha256(payload).hexdigest()
-        record = self.store.save_artifact(
-            path=str(path),
-            filename=filename,
-            content_type="application/json",
-            size_bytes=len(payload),
-            checksum=checksum,
-            frame_id=st.root_frame_id,
-            root_frame_id=st.root_frame_id,
-            project_id=st.project_id,
-        )
+        frozen_context = None
+        if self.stage1_trusted_delivery:
+            frozen_context = self.artifacts.freeze_capture_snapshot(filename, path)
+        try:
+            record = self.store.save_artifact(
+                path=str(path),
+                filename=filename,
+                content_type="application/json",
+                size_bytes=len(payload),
+                checksum=checksum,
+                frame_id=st.root_frame_id,
+                root_frame_id=st.root_frame_id,
+                project_id=st.project_id,
+                snapshot_path=(
+                    str(frozen_context.path) if frozen_context is not None else None
+                ),
+            )
+        except Exception:
+            if frozen_context is not None:
+                frozen_context.path.unlink(missing_ok=True)
+            raise
         self.hub.broadcast(
             st.root_frame_id,
             {
@@ -7131,6 +7762,7 @@ class SessionRunner:
                 events=events,
                 prose_nudge=_submit_nudge_for(llm_cfg),
                 explore_nudge=_EXPLORE_NUDGE,
+                admit_cell=lambda _action: (self.require_standard_profile_readiness()),
                 native_wrapper=lambda call, invoke: (
                     self._invoke_control_with_artifacts(st, call, emit, invoke)
                 ),
@@ -7585,6 +8217,11 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> dict:
+        # Executable plans are the scientific workflow surface: unlike an
+        # ordinary turn, their contract requires Cells, deliverables and a
+        # structured submission. Refuse before a draft can be stranded in the
+        # executing state.
+        self.require_standard_profile_readiness()
         return self.plans.run_execution(
             root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
         )
@@ -7606,6 +8243,7 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> "MessageJob":
+        self.require_standard_profile_readiness()
         return self._spawn_job(
             root_frame_id,
             lambda: self.run_plan_execution(
@@ -7643,6 +8281,7 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> dict:
+        self.require_standard_profile_readiness()
         return self.plans.resume_execution(
             root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
         )
@@ -7655,6 +8294,7 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> "MessageJob":
+        self.require_standard_profile_readiness()
         return self._spawn_job(
             root_frame_id,
             lambda: self.run_plan_resume(
@@ -9982,9 +10622,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     return
                 if method == "GET" and path.startswith("/preview/"):
-                    self._serve_artifact(
-                        unquote(path[len("/preview/") :]), force_html=True
-                    )
+                    self._serve_artifact(path[len("/preview/") :], force_html=True)
                     return
                 if method == "GET" and path == "/ketcher":
                     self._send(
@@ -10116,9 +10754,49 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- artifact bytes --------------------------------------------
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
-            path = store.resolve_artifact_path(ident)
+            # Canonical trusted-delivery URLs live below the reserved
+            # ``versions/`` sub-path.  They must resolve one exact version or
+            # 404; the compatible Artifact-id/filename fallbacks below are
+            # deliberately unreachable from this branch.
+            exact_version = ident.startswith("versions/")
+            encoded_ident = ident[len("versions/") :] if exact_version else ident
+            # Decode exactly once.  ``/preview/`` used to decode before calling
+            # here as well, so a literal ``%2F`` in an imported identifier was
+            # turned into ``/`` and selected the wrong object (or a 404).
+            decoded_ident = unquote(encoded_ident)
+            if exact_version and (
+                not decoded_ident
+                or "/" in encoded_ident
+                or decoded_ident in {".", ".."}
+            ):
+                self._json({"error": "artifact not found"}, 404)
+                return
+            if exact_version and getattr(runner, "stage1_trusted_delivery", False):
+                meta = store.version_meta(decoded_ident)
+                delivery_service = getattr(runner, "completion_delivery", None)
+                if not isinstance(meta, dict) or delivery_service is None:
+                    self._json({"error": "artifact not found"}, 404)
+                    return
+                self._team_guard_served_artifact(meta)
+                try:
+                    body = delivery_service.read_verified_snapshot(meta)
+                except DeliveryValidationError as error:
+                    record_diagnostic(error, surface="artifact:exact_version_read")
+                    self._json({"error": "artifact not found"}, 404)
+                    return
+                ctype = meta.get("content_type") or _guess_ctype(
+                    str(meta.get("filename") or decoded_ident)
+                )
+                if force_html:
+                    ctype = "text/html; charset=utf-8"
+                self._send(200, body, ctype)
+                return
+            path = store.resolve_artifact_path(decoded_ident)
             meta = None
             if path is None:
+                if exact_version:
+                    self._json({"error": "artifact not found"}, 404)
+                    return
                 # Only when the name is unambiguous. This used to take the most
                 # recently created artifact with that filename *anywhere*, so
                 # `/artifacts/report.pdf` served whichever project last made a
@@ -10126,13 +10804,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # with a straight face. The UI never sends a filename here (it
                 # always sends `a.id`), so nothing first-party relied on the
                 # guess.
-                meta = store.artifact_by_unique_filename(unquote(ident))
+                meta = store.artifact_by_unique_filename(decoded_ident)
                 if meta:
                     path = meta.get("path")
             else:
                 # ident may be an artifact_id OR a version_id — fall back to the
                 # version row so a historical version serves its OWN content_type
-                meta = store.get_artifact(ident) or store.version_meta(ident)
+                meta = (
+                    store.version_meta(decoded_ident)
+                    if exact_version
+                    else store.get_artifact(decoded_ident)
+                    or store.version_meta(decoded_ident)
+                )
+                if exact_version and not meta:
+                    self._json({"error": "artifact not found"}, 404)
+                    return
             if not path or not Path(path).is_file():
                 self._json({"error": "artifact not found"}, 404)
                 return
@@ -11720,6 +12406,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"
                 model = b.get("model")
+                if action in {"approve", "resume"}:
+                    # The readiness refusal must precede the draft/paused CAS;
+                    # otherwise a known-missing runtime strands the plan in
+                    # `executing` before its first Cell can even start.
+                    runner.require_standard_profile_readiness()
                 if action == "approve":
                     # Claimed here, synchronously, for the same reason `resume`
                     # below is: this route answers 202 and then runs the plan on
@@ -11985,7 +12676,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 if cell is None:
                     raise GatewayError(404, "unknown cell")
-                metadata = runner.artifacts.promote_cell(
+                metadata = runner.promote_cell_artifact(
                     PromotionTarget(
                         root_frame_id=fid,
                         project_id=str(frame.get("project_id") or ""),
@@ -12365,6 +13056,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # ---- artifacts ----
             if sub == "/renderers" and method == "GET":
                 self._json({"renderers": runner.session_domain.renderer_catalog()})
+                return
+            m = re.fullmatch(r"/artifacts/versions/([^/]+)", sub)
+            if m and method == "GET":
+                # A distinct route identity is intentional: trusted completion
+                # links promise exact-version lookup with no Artifact-id or
+                # filename fallback.  Keep the byte mechanics in the shared
+                # helper, but let the response-contract inventory freeze this
+                # stronger namespace independently from the legacy catch-all.
+                self._serve_artifact(f"versions/{m.group(1)}")
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/renderer", sub)
             if m and method == "GET":
@@ -12895,8 +13595,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     safe_query = datapro.redact_secret(query, secret)
                     if current_secret and current_secret != secret:
                         safe_query = datapro.redact_secret(safe_query, current_secret)
-                    receipt = datapro.index_successful_search(
-                        store,
+                    receipt, artifact = runner.save_datapro_search_result(
                         query=safe_query,
                         result=result,
                         frame_id=frame_id,
@@ -12905,50 +13604,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     if receipt is not None:
                         result = {**result, "index": receipt}
-                    # Only a strict code-0 response is worth saving.  The upload
-                    # used to be unconditional while the index was gated, so a
-                    # transport-level success carrying e.g. code 4011 still wrote
-                    # a `datapro-search-*.json` into the workspace and broadcast
-                    # `artifact_created` -- the UI then rendered "已保存" beside
-                    # the error text, and every retry left another dead file.
-                    if datapro.is_successful_search(result):
-                        artifact = runner.artifacts.upload(
-                            datapro.result_artifact_payload(
-                                query=safe_query,
-                                result=result,
-                                frame_id=frame_id,
-                            )
-                        )
-                    # `receipt` can now be an explicit incomplete receipt with no
-                    # batch_id (the index hit a capacity ceiling), so link only
-                    # a batch that actually exists.
-                    if (
-                        isinstance(receipt, dict)
-                        and receipt.get("batch_id")
-                        and artifact
-                        and artifact.get("id")
-                    ):
-                        store.link_datapro_index_artifact(
-                            receipt["batch_id"], artifact["id"]
-                        )
                 except Exception as error:  # noqa: BLE001
-                    # The product route promises that an available result is
-                    # both indexed and saved. Compensate either half if upload
-                    # or linking fails, so a 502 cannot leave a palette-visible
-                    # ghost batch (or an orphaned result Artifact).
-                    artifact_id = (
-                        artifact.get("id") if isinstance(artifact, dict) else None
-                    )
-                    if artifact_id:
-                        try:
-                            runner.artifacts.delete(artifact_id)
-                        except Exception:  # noqa: BLE001 - preserve root failure
-                            pass
-                    if isinstance(receipt, dict) and receipt.get("batch_id"):
-                        try:
-                            store.delete_datapro_index_batch(receipt["batch_id"])
-                        except Exception:  # noqa: BLE001 - preserve root failure
-                            pass
                     safe, status = public_exception(
                         error,
                         surface="datapro:search",
@@ -13663,7 +14319,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "packages": report,
                         "preinstall": pstat,
                     }
-                ]
+                ],
+                "standard_profile_readiness": (runner.standard_profile_readiness()),
             }
 
         def _exec_log(self, root_frame_id: str) -> dict:
@@ -13682,7 +14339,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(artifact["root_frame_id"]), "editing an Artifact"
                     )
-                return runner.artifacts.edit(
+                return runner.edit_artifact(
                     artifact_id,
                     content,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
@@ -13707,7 +14364,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(artifact["root_frame_id"]), "renaming an Artifact"
                     )
-                return runner.artifacts.rename(
+                return runner.rename_artifact(
                     artifact_id,
                     filename,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
@@ -13722,11 +14379,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 frame_id = b.get("frame_id")
                 if frame_id:
                     frame = store.get_frame(str(frame_id)) or {}
+                    root = str(frame.get("root_frame_id") or frame_id)
                     _require_session_writable(
-                        str(frame.get("root_frame_id") or frame_id),
+                        root,
                         "uploading a Session Artifact",
                     )
-                return runner.artifacts.upload(
+                return runner.upload_artifact(
                     b,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
                         root_frame_id, event
@@ -13742,7 +14400,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(artifact["root_frame_id"]), "deleting an Artifact"
                     )
-                return runner.artifacts.delete(
+                return runner.delete_artifact(
                     artifact_id,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
                         root_frame_id, event
@@ -14318,20 +14976,46 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     # nobody was watching. The UI surfaces the plan (Customize → Compute) and
     # `openai4s setup` applies it.
     try:
-        from openai4s.kernel import preinstall
+        if cfg.roadmap_features.stage1_trusted_delivery:
+            from openai4s.kernel.readiness import standard_profile_readiness
 
-        plan = preinstall.core_plan()
-        if plan["missing"]:
+            readiness = standard_profile_readiness(enabled=True)
+            if readiness.get("ready") is True:
+                print(
+                    "[openai4s] standard scientific profile is ready "
+                    "(local package metadata verified; no network or mutation).",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[openai4s] " + SessionRunner._readiness_failure_message(readiness),
+                    file=sys.stderr,
+                )
+        else:
+            from openai4s.kernel import preinstall
+
+            plan = preinstall.core_plan()
+            if plan["missing"]:
+                print(
+                    f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
+                    f"installed: {', '.join(plan['missing'][:6])}"
+                    f"{' …' if len(plan['missing']) > 6 else ''}\n"
+                    f"[openai4s] startup does not install packages. Run "
+                    f"`openai4s setup`, or install from Customize → Compute.",
+                    file=sys.stderr,
+                )
+    except Exception as error:  # noqa: BLE001 - diagnostics must never block startup
+        # Readiness failures are a task-admission boundary, not a liveness
+        # boundary. Keep the daemon available so the UI can display/repair it.
+        if cfg.roadmap_features.stage1_trusted_delivery:
+            record_diagnostic(error, surface="startup:standard_readiness")
             print(
-                f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
-                f"installed: {', '.join(plan['missing'][:6])}"
-                f"{' …' if len(plan['missing']) > 6 else ''}\n"
-                f"[openai4s] startup does not install packages. Run "
-                f"`openai4s setup`, or install from Customize → Compute.",
+                "[openai4s] standard scientific environment readiness is "
+                "unavailable; Code Cell admission will fail closed.",
                 file=sys.stderr,
             )
-    except Exception:  # noqa: BLE001 - diagnostics must never block startup
-        traceback.print_exc()
+        else:
+            traceback.print_exc()
     hub = WSHub()
     runner = SessionRunner(cfg, hub)
     # Seed the security-first permission defaults once (idempotent).

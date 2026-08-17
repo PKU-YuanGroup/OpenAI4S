@@ -182,6 +182,31 @@ def _runtime(cfg: Any) -> Check:
     import sys
 
     facts: dict[str, Any] = {"daemon_python": sys.version.split()[0]}
+    roadmap = getattr(cfg, "roadmap_features", None)
+    if bool(getattr(roadmap, "stage1_trusted_delivery", False)):
+        from openai4s.kernel.readiness import (
+            readiness_failure_message,
+            standard_profile_readiness,
+        )
+
+        readiness = standard_profile_readiness(enabled=True)
+        facts["standard_profile_readiness"] = readiness
+        if readiness.get("ready") is True:
+            return Check(
+                "runtime",
+                OK,
+                "standard profile ready: all recommended Python and R "
+                "packages are present in local metadata",
+                facts=facts,
+            )
+        return Check(
+            "runtime",
+            FAIL,
+            readiness_failure_message(readiness),
+            "Run the explicit managed plan/apply commands above, then rerun "
+            "`openai4s doctor`.",
+            facts,
+        )
     try:
         from openai4s.kernel.environments import discover_environments
 

@@ -75,6 +75,7 @@ def test_root_capture_finalizes_child_provenance_without_changing_producer(tmp_p
         checksum="same",
         producing_cell_id="cell-child",
         frame_id=child,
+        reuse_matching_head=True,
     )
     capture = store.record_cell_artifact(
         path=str(path),
@@ -86,6 +87,7 @@ def test_root_capture_finalizes_child_provenance_without_changing_producer(tmp_p
         frame_id=root,
         root_frame_id=root,
         project_id="project-science",
+        reuse_matching_head=True,
     )
 
     assert capture["artifact_id"] == provenance["artifact_id"]
@@ -95,6 +97,11 @@ def test_root_capture_finalizes_child_provenance_without_changing_producer(tmp_p
     assert artifact["root_frame_id"] == root
     assert artifact["project_id"] == "project-science"
     assert metadata["frame_id"] == child
+    observations = store.list_artifact_capture_observations(
+        version_id=provenance["version_id"]
+    )
+    assert len(observations) == 1
+    assert observations[0]["frame_id"] == child
 
 
 def test_artifact_rejects_version_from_different_root(tmp_path):

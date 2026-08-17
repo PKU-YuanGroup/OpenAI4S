@@ -420,6 +420,39 @@
         "type": "object"
       }
     },
+    "DELETE /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /auth/login [error]": {
       "schema": {
         "properties": {
@@ -6180,6 +6213,31 @@
         "type": "object"
       }
     },
+    "GET /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /auth/login [error]": {
       "schema": {
         "properties": {
@@ -7059,7 +7117,10 @@
                   "type": "integer"
                 },
                 "python_version": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "root": {
                   "type": "string"
@@ -7205,10 +7266,201 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "standard_profile_readiness": {
+            "properties": {
+              "checked_locally": {
+                "type": "boolean"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "environments": {
+                "items": {
+                  "properties": {
+                    "installed_required_package_count": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "issue": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "missing_packages": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "present": {
+                      "type": "boolean"
+                    },
+                    "required_package_count": {
+                      "type": "integer"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "installed_required_package_count",
+                    "issue",
+                    "missing_packages",
+                    "name",
+                    "present",
+                    "required_package_count",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "missing_environments": {
+                "type": "array"
+              },
+              "missing_packages": {
+                "properties": {
+                  "python": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "r": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "mutation_performed": {
+                "type": "boolean"
+              },
+              "network_contacted": {
+                "type": "boolean"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "remediation": {
+                "properties": {
+                  "apply_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "commands": {
+                    "items": {
+                      "properties": {
+                        "argv": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "argv",
+                        "command",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "plan_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "requires_explicit_action": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "apply_argv",
+                  "commands",
+                  "kind",
+                  "plan_argv",
+                  "requires_explicit_action"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "required_environments": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "requirements_digest": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "schema_version": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "checked_locally",
+              "enabled",
+              "environments",
+              "missing_environments",
+              "missing_packages",
+              "mutation_performed",
+              "network_contacted",
+              "profile",
+              "ready",
+              "reason",
+              "remediation",
+              "required_environments",
+              "requirements_digest",
+              "schema_version",
+              "state"
+            ],
+            "type": "object"
           }
         },
         "required": [
-          "environments"
+          "environments",
+          "standard_profile_readiness"
         ],
         "type": "object"
       }
@@ -9943,7 +10195,10 @@
                   "type": "integer"
                 },
                 "python_version": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "root": {
                   "type": "string"
@@ -11836,7 +12091,8 @@
             "type": "string"
           },
           "sandbox": {
-            "machine_state": true,
+            "properties": {},
+            "required": [],
             "type": "object"
           }
         },
@@ -12255,9 +12511,6 @@
                 "type": "string"
               },
               "missing": {
-                "items": {
-                  "type": "string"
-                },
                 "type": "array"
               },
               "phase": {
@@ -16285,6 +16538,39 @@
       }
     },
     "PATCH /artifacts/([^/]+)/versions/([^/]+)/restore [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /artifacts/versions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -21975,6 +22261,39 @@
           "restored_from_version_id",
           "snapshot_verified",
           "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -30083,6 +30402,9 @@
             },
             "type": "array"
           },
+          "backend": {
+            "type": "string"
+          },
           "code": {
             "type": "string"
           },
@@ -32692,6 +33014,39 @@
       }
     },
     "PUT /artifacts/([^/]+)/versions/([^/]+)/restore [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /artifacts/versions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {

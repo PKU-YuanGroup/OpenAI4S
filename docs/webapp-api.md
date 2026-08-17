@@ -14,9 +14,9 @@ minimal server (`openai4s/server/daemon.py`, `POST /run`) was removed rather
 than documented: nothing imported it and it had none of the gateway's Host,
 Origin, token or header defences.
 
-### Auto Mode API status at Stage 0
+### Auto Mode API status after Stage 1
 
-The new Auto Mode API and state vocabulary are **not implemented in this
+The Stage 2–7 Auto Mode API and state vocabulary are **not implemented in this
 contract version**. The only planned route names are explicitly versioned as
 `GET/PATCH /api/v1/frames/{fid}/auto-mode` and
 `GET /api/v1/frames/{fid}/auto-audits?subject_kind=&before=&limit=`; neither
@@ -50,13 +50,19 @@ failure, durability, and retry state. Request and assessment digests are not
 interchangeable; the server must fail closed on reuse, substitution, or an
 assessment hash mismatch.
 
+Stage 1 implements only the default-off `stage1_trusted_delivery` rollout
+surface: exact-version Artifact completion URLs, a `delivery_id` on the
+link-bearing `text_chunk`, and the additive
+`standard_profile_readiness` projection on `GET /api/v1/environments/status`.
+It creates no Auto Run state or event above and grants no permission.
+
 The existing per-frame `auto_review` preference still starts the legacy,
 single-call evidence Reviewer after the answer has already been finalized. Its
 ordinary `step`/`step_update` records do not promote or veto `frame_update`, and
 reopen/share/export must not reinterpret such a step as a new Auto Mode
-terminal fact. Stage 0's default-off config values are inert reservations, not
-API capability. The future truth and recovery rules are frozen in the
-[Auto Mode product contract](auto-mode.md).
+terminal fact. The Stage 2–12 rollout flags remain inert reservations, not API
+capability. The future truth and recovery rules are frozen in the [Auto Mode
+product contract](auto-mode.md).
 
 A future `blocked_by_guardian` projection requires a durable Guardian assessment
 of a deterministic `ask`. Sandbox, egress, secret/credential, biosecurity,
@@ -239,7 +245,8 @@ or stored `Content-Type`:
 | --- | --- | --- |
 | `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/index.html`. |
 | `GET /static/<rel>` | file bytes | Path-traversal-guarded; 404/403 as JSON. |
-| `GET /api/artifacts/{ident}` | artifact bytes | `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
+| `GET /api/artifacts/{ident}` | artifact bytes | Compatibility route. `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
+| `GET /api/v1/artifacts/versions/{version_id}` | immutable artifact-version bytes | Stage 1 trusted completion links use this reserved canonical route only. The server helper rejects empty and dot-only identifiers and encodes slash, Unicode, and URL metacharacters into one path segment. The route resolves that exact version or 404 and never falls back to an Artifact id or filename, so a reopened link remains bound to the same bytes after the head changes. |
 | `GET /api/frames/{fid}/artifacts.zip` | ZIP bytes | Current Artifact versions for one session. |
 | `GET /api/projects/{pid}/artifacts.zip` | ZIP bytes | Current Artifact versions across one project. |
 | `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb`, ZIP or Markdown bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest; `markdown` returns one `.md` with both languages in execution order. |
@@ -374,6 +381,19 @@ The bare `@name` spelling still works for one minor release. It resolves inside
 the calling session only, through the artifact's latest *version* rather than
 its live path, and says in the injected block that it is unpinned.
 
+With `stage1_trusted_delivery` enabled, ordinary messages remain routable while
+the standard profile is incomplete. This is required for native control-tool
+and sole `finalize_response` turns, neither of which needs a kernel. If routing
+selects a Code Cell, `needs_setup`/`needs_repair` fails it with
+`environment_not_ready`; an unreadable or ambiguous local inventory uses
+`environment_readiness_unavailable`. The refusal occurs before a pending
+environment switch, Cell identity/attempt, runtime start, or workspace side
+effect, and the terminal job/WebSocket projection carries the stable code. The
+complete structured gaps and copy-only repair commands come from
+`GET /environments/status`. Approved/resumed plans retain a synchronous
+pre-CAS check because their execution contract requires scientific Cells;
+`plan:true` drafting remains available.
+
 
 | Method & path | Behavior |
 | --- | --- |
@@ -405,6 +425,12 @@ When `annotation_ids` are sent, **both** branches additionally carry `annotation
 | `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously: the `paused` → `executing` transition is a compare-and-swap performed *before* the 202, so of two concurrent resumes exactly one is accepted and the other is refused with the status it lost to, instead of both being handed a job that runs the same steps. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
 | `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}`. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
+
+Under the Stage 1 flag, `approve` and `resume` run the same standard-profile
+preflight **before** their draft/paused compare-and-swap. A readiness refusal
+therefore uses the 409/503 codes above and leaves the plan in its prior state;
+it cannot strand a plan as `executing` without an admitted job. Draft/revise
+remain non-executing authoring operations and are not readiness-gated.
 
 ### Cluster batch jobs (orchestration)
 
@@ -480,6 +506,14 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 | `GET /frames/{fid}/environments` | `{"environments":[…],"current","default","pending"}`. |
 | `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. |
 
+When Stage 1 trusted delivery is enabled, `kernel/execute` also performs the
+standard-profile admission before allocating a Cell id/index/state revision,
+execution attempt, or runtime. A not-ready/unavailable result carries the same
+stable readiness codes, so the Notebook does not manufacture a failed Cell
+merely to discover the first missing import. A queued request reports that
+failure through its job/terminal projection; a synchronous caller receives the
+corresponding refusal directly.
+
 **Notebook REPL gate:** the Notebook is a **read-only execution trace** by
 default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
 `start`, `interrupt` — return `403 {"error":…}` unless
@@ -526,7 +560,7 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `POST /frames/{fid}/recovery/actions/{restore\|retry\|restart_fresh}` | Runs the advertised verified-recovery action under an exact recovery execution ticket. `restart_fresh` requires `{"confirm":true}` and never claims namespace restoration. |
 | `GET /frames/{fid}/kernel/variables?language=python|r` | Bounded idle-only Variable Inspector projection. It never starts a stopped language worker and returns explicit Busy/Restoring/Ended/Not Started states. |
 | `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. `markdown` returns a `text/markdown` rendering of the branch — both languages in execution order, because the interleaving is the record the split forms lose — with every cell's index, language and state revision in a citable heading, and failed cells kept and labelled. Anything else is 400. Includes `Content-Disposition` and `X-Content-SHA256`. |
-| `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. |
+| `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. Exact-version completion deliveries are included; import verifies their snapshots and remaps message, Artifact, version, manifest, and URL identities atomically. An orphaned or inconsistent delivery rejects the package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
 
@@ -541,20 +575,40 @@ available through the query parameter.
 
 ### Artifacts
 
+Stage 1 trusted completion treats a version URL as a delivery claim, not as a
+generic Artifact lookup. Before the final message is visible, the server
+requires a frozen regular-file snapshot whose size and SHA-256 match the exact
+version and whose session/project scope matches the turn. The message and its
+path-free manifest commit in one SQLite transaction; a snapshot, checksum,
+scope, relation, or persistence failure emits no success link. The event then
+uses the canonical server helper's `/api/v1/artifacts/versions/{version_id}` URL.
+
+When a Cell captures bytes equal to the current head, the Stage 1 flag-on path
+keeps the version count unchanged and writes a durable per-producer capture
+observation instead. That row retains the new Cell, environment/source, and
+input-version lineage without rewriting the version's original producer. It is
+scoped local audit/delivery-delta data in this Stage. There is no standalone
+capture-observation route; the latest version's scope-checked observations and
+path-free producer frame are nested in the Artifact lineage projection so the
+Provenance UI can truthfully identify delegated producers. Session packages,
+share snapshots, and Artifact ZIPs do not yet serialize observations as
+portable durable records. A client-side metadata export merely mirrors the
+current lineage response and is not a portable observation ledger.
+
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames/{fid}/artifacts` | **Bare array** of artifact JSON. |
 | `GET /projects/{pid}/artifacts` | **Bare array** — every artifact across the project's conversations. |
 | `GET /frames/{fid}/artifacts.zip` | Raw ZIP of the session's current Artifact versions. |
 | `GET /projects/{pid}/artifacts.zip` | Raw ZIP of current Artifact versions across the project. |
-| `GET /artifacts/{aid}/lineage` | `{"artifact_id","filename","interactions":[{kind:"cell",…}|{kind:"save",at}],"dependency_mappings":{"inputs":[…]}}`. Unknown artifact → the same shape with nulls/empties, HTTP 200 (**not** 404). |
+| `GET /artifacts/{aid}/lineage` | `{"artifact_id","filename","interactions":[{kind:"cell",…}|{kind:"save",at}],"dependency_mappings":{"inputs":[…]},"producer"?:{kind:"cell"|"non_cell",frame_id,frame_kind,producing_cell_id?,cell_recorded},"capture_observations"?:[{observation_id,version_id,capture_kind,producing_cell_id,frame_id,frame_kind,cell_recorded,cell_index?,kernel_id?,language?,inputs,at}]}`. Producer/capture fields are path-free and refer only to the latest version; a delegated Cell without a root Notebook row keeps its real Cell/frame identity and `cell_recorded:false`, while a native writer remains `non_cell`. Unknown artifact → the base shape with nulls/empties and neither optional field, HTTP 200 (**not** 404). |
 | `GET /artifacts/{aid}/environment?version=` | Env snapshot captured for the producing run, `{"source":"captured",…}`; falls back to a live freeze `{"source":"live",…}` when none was recorded. |
 | `POST|PUT|PATCH /artifacts/{aid}/priority` | Body `{priority:int}` → `{"ok":true,"artifact":…|null}`. |
 | `GET /artifacts/{aid}/versions` | `{"versions":[{version_id,ordinal,is_latest,size_bytes,content_type,checksum?,producing_cell_id?,created_at}…]}`. |
 | `POST /artifacts/{aid}/versions/{vid}/restore` | Reverts the live file + latest pointer → `{"ok":true,"artifact":…}` or `404 {"error":…}`; broadcasts a *bare* `artifact_created` (see §3). |
 | `POST|PUT|PATCH /artifacts/{aid}/edit` | Body `{content}` (text). Non-text artifact → `415`; unknown → `404` (both via `GatewayError`) → `{"ok":true,"artifact_id","version_id","size_bytes"}`. |
 | `POST|PUT|PATCH /artifacts/{aid}/rename` | Body `{filename}`; missing → `400`; unknown → `404` → `{"ok":true,"artifact_id","filename"}`. |
-| `DELETE /artifacts/{aid}` | Deletes rows + snapshot files → `{"ok":true}`; broadcasts a *bare* `artifact_created`. |
+| `DELETE /artifacts/{aid}` | Deletes rows + snapshot files → `{"ok":true}` and broadcasts a *bare* `artifact_created`. If an exact version is pinned by a completion delivery, returns `409`; delete the owning session instead so the message/manifest relation is removed atomically. |
 | `GET /artifacts/{ident}` | **Raw bytes** (see §1). |
 | `POST /uploads` | **Base64 JSON upload — not multipart.** Body `{filename?, content_base64` (or `content`, or `content_text`)`, frame_id?, project_id?}`. Supply **exactly one** content field; two is a `400`, because which one is authoritative cannot be guessed. `content_base64`/`content` are strict base64 — whitespace is stripped (line wrapping is transport formatting) and anything else outside the alphabet is a `400`. `content_text` uploads text as UTF-8. A rejected upload writes nothing. This used to decode without `validate=True`, silently discarding stray characters so a corrupted payload decoded to different bytes with no error, and to fall back to storing the raw string's UTF-8 bytes — so a `.npy` that lost one character became an artifact containing base64 text, versioned and checksummed. File lands in the session workspace (or `data_dir/uploads` without `frame_id`), is registered as a versioned artifact (`is_user_upload`), re-upload of the same name in the same frame creates a new version → `{"artifact_id","id","filename"}`. |
 
@@ -689,7 +743,7 @@ reported as `failed` (which would blame the job's own command) or `cancelled`
 Output is bounded in bytes as it is read, not trimmed afterwards, so every row
 carries `seen_bytes`, `retained_bytes`, `dropped_bytes` and `truncated`. What is
 kept is the tail; `output` is prefixed with a notice when anything was dropped.
-| `GET /environments/status` | `{"environments":[{language,status,python_version,package_count,packages,preinstall}]}`. |
+| `GET /environments/status` | `{"environments":[{language,status,python_version,package_count,packages,preinstall}],"standard_profile_readiness":{…}}`. The additive readiness object is always present. Flag off returns `schema_version:1`, `enabled:false`, `profile:"standard"`, `state:"unavailable"`, `ready:false`, `reason:"feature_disabled"`, `checked_locally:false`, `network_contacted:false`, `mutation_performed:false`, `required_environments:["python","r"]`, empty missing/environment rows, null digest/remediation, and performs no discovery. Flag on returns the path-free local projection: `state` (`ready|needs_setup|needs_repair|unavailable`), `reason`, requirement digest, required/missing environments, `missing_packages`, per-environment `{name,state,present,required_package_count,installed_required_package_count,missing_packages,issue}`, and explicit managed `plan`/`apply` remediation commands when repairable. It never contacts the network or mutates an environment. |
 | `GET /environments` | Same shape as `GET /frames/{fid}/environments`, without a session. |
 | `GET /kernel/packages` | `{"packages":[…],"preinstall":{…}}`. |
 | `GET /kernel/environment` | Full env freeze for Provenance → Environment. |
@@ -745,6 +799,17 @@ gateway does not currently emit any).
 Every event has `type` and (via the hub emitter) a `root_frame_id`; most also
 carry a redundant `frame_id`. The frontend keys off `m.root_frame_id ||
 m.frame_id`.
+
+For a Stage 1 trusted, Artifact-bearing completion, the final text event also
+carries `delivery_id`. Its assistant message and verified version manifest are
+already durable when that event is sent. If socket delivery is lost, reopening
+reads the committed message whose links still name exact versions. A
+`committed` ledger row and stable id remain queryable for explicit/future
+reconciliation, but the Stage 1 delivery ledger does not drive automatic
+re-emission or ask the client to deduplicate such a replay. The ordinary
+bounded WS sequence buffer may still replay the event while its turn is live;
+after terminal/restart, REST reopen is authoritative. Ordinary prose/tool
+chunks and flag-off completion chunks omit `delivery_id`.
 
 | Event `type` | Fields (beyond `root_frame_id`) | Meaning |
 | --- | --- | --- |
@@ -857,6 +922,13 @@ compatibility; keep both when touching these serializers.
   (idempotent deletes), or a nulls-filled 200 (`/artifacts/{aid}/lineage`).
 - Malformed JSON request bodies are rejected with `400 malformed_json`.
 - Raw-bytes artifact routes return JSON bodies on 404.
+- Stage 1 capture observations are durable and scope-filtered in the local
+  Store. There is no standalone observation route, but the latest version's
+  observations and path-free producer frame are projected by
+  `/artifacts/{aid}/lineage` for the Provenance UI. Session packages, share
+  snapshots, and Artifact ZIPs still do not carry a portable observation
+  ledger; do not infer portable observation provenance from an Artifact version
+  or a client-side metadata export alone.
 - Skill enable-disable state is durable; the legacy built-in-agent roster
   toggle is still process-local. Specialist runtime policy has separate
   persistent capability state.

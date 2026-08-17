@@ -53,6 +53,26 @@ def test_completion_message_projects_summary_bullets_and_real_artifacts():
     assert "](/api/artifacts/a-2)" in text
 
 
+def test_trusted_completion_links_exact_encoded_versions_and_skips_mutable_heads():
+    text = completion_message(
+        {"output": {"summary": "Delivered verified bytes."}},
+        [
+            {
+                "artifact_id": "mutable-head",
+                "latest_version_id": "version/报告 1?#",
+                "filename": "报告 [final].csv",
+            },
+            {"artifact_id": "head-without-version", "filename": "unstable.csv"},
+        ],
+        trusted_delivery=True,
+    )
+
+    assert "/api/v1/artifacts/versions/version%2F%E6%8A%A5%E5%91%8A%201%3F%23" in text
+    assert "mutable-head" not in text
+    assert "unstable.csv" not in text
+    assert "报告 \\[final\\].csv" in text
+
+
 def test_completion_message_deduplicates_existing_closing_prose():
     text = completion_message(
         {

@@ -11,6 +11,7 @@ from openai4s.execution import CaptureResult, CellRequest
 from openai4s.kernel import KernelSupervisor
 from openai4s.server import cell_run
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
+from openai4s.server.errors import GatewayError
 
 
 class Harness:
@@ -101,6 +102,93 @@ def _session(tmp_path):
         cell_index=0,
         kernels=KernelSupervisor(),
     )
+
+
+@pytest.mark.parametrize("origin", ["agent", "user"])
+def test_readiness_admission_precedes_cell_revision_attempt_and_runtime(
+    tmp_path, origin
+):
+    """Agent and direct Notebook cells share the same zero-side-effect refusal."""
+    harness = Harness()
+    calls = {"admit": 0, "cell_id": 0, "attempt": 0}
+
+    def refuse(_session, request):
+        calls["admit"] += 1
+        assert request.origin == origin
+        raise GatewayError(
+            409,
+            "The standard scientific environment is not ready.",
+            "environment_not_ready",
+        )
+
+    def allocate(*_args):
+        calls["attempt"] += 1
+        raise AssertionError("a refused cell allocated a durable attempt")
+
+    def cell_id():
+        calls["cell_id"] += 1
+        raise AssertionError("a refused cell allocated an id")
+
+    service = CellExecutionService(
+        replace(
+            harness.ports(),
+            admit=refuse,
+            allocate_attempt=allocate,
+        ),
+        id_factory=cell_id,
+    )
+    session = _session(tmp_path)
+    events: list[dict] = []
+
+    with pytest.raises(GatewayError) as refused:
+        service.execute(
+            session,
+            CellRequest("import missing_science_package", origin, stream=True),
+            events.append,
+        )
+
+    assert refused.value.code == 409
+    assert refused.value.error_code == "environment_not_ready"
+    assert calls == {"admit": 1, "cell_id": 0, "attempt": 0}
+    assert session.cell_index == 0
+    assert harness.order == []
+    assert harness.records == []
+    assert events == []
+
+
+def test_malformed_capture_lease_fails_before_cell_identity_or_admission(tmp_path):
+    """An unparseable lease is a refusal, never permission to run unguarded."""
+
+    harness = Harness()
+    calls = {"admit": 0, "cell_id": 0}
+
+    def admit(_session, _request):
+        calls["admit"] += 1
+
+    def cell_id():
+        calls["cell_id"] += 1
+        return "must-not-be-created"
+
+    service = CellExecutionService(
+        replace(
+            harness.ports(),
+            admit=admit,
+            capture_lease=lambda _session, _request: object(),
+        ),
+        id_factory=cell_id,
+    )
+    session = _session(tmp_path)
+
+    with pytest.raises(TypeError):
+        service.execute(
+            session,
+            CellRequest("print('must not run')", "agent"),
+            lambda _event: None,
+        )
+
+    assert calls == {"admit": 0, "cell_id": 0}
+    assert session.cell_index == 0
+    assert harness.order == []
 
 
 def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):

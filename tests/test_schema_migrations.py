@@ -132,6 +132,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Per-user LLM credential *references* (M4-1). The keys themselves
         # stay in the SecretBroker.
         "user_llm_keys",
+        # Same-head byte reuse keeps per-Cell observations, and final prose is
+        # atomically bound to its exact Artifact manifest.
+        "artifact_observations_and_completion_delivery",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -162,6 +165,81 @@ def test_reopening_a_current_database_does_no_work(tmp_path, monkeypatch):
     )
     Store(path).close()
     assert calls == [], "an already-current database must not be probed or backed up"
+
+
+def test_v24_installs_both_halves_of_trusted_artifact_delivery(tmp_path):
+    db = Config(data_dir=tmp_path).db_path
+    store = get_store(db)
+    store.close()
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("DROP TABLE completion_delivery_artifacts")
+        conn.execute("DROP TABLE artifact_capture_observations")
+        conn.execute("DROP TABLE completion_deliveries")
+        conn.execute("DELETE FROM schema_migrations WHERE version=24")
+        conn.execute("PRAGMA user_version = 23")
+        conn.commit()
+    finally:
+        conn.close()
+
+    upgraded = Store(db)
+    try:
+        tables = {
+            row[0]
+            for row in upgraded._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "artifact_capture_observations" in tables
+        assert "completion_deliveries" in tables
+        assert "completion_delivery_artifacts" in tables
+        migration = upgraded._conn.execute(
+            "SELECT name FROM schema_migrations WHERE version=24"
+        ).fetchone()
+        assert migration["name"] == "artifact_observations_and_completion_delivery"
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION
+    finally:
+        upgraded.close()
+
+
+def test_v24_combined_schema_step_rolls_back_if_second_half_fails(tmp_path):
+    db = tmp_path / "v23.db"
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA user_version = 23")
+    conn.commit()
+
+    from openai4s.storage.artifact_observations import (
+        create_artifact_observations_schema,
+    )
+
+    def interrupted_step(connection):
+        create_artifact_observations_schema(connection)
+        raise RuntimeError("killed between delivery schemas")
+
+    try:
+        with pytest.raises(MigrationError, match="killed between delivery schemas"):
+            run_migrations(
+                conn,
+                db,
+                {
+                    24: (
+                        "artifact_observations_and_completion_delivery",
+                        interrupted_step,
+                    )
+                },
+                target=24,
+            )
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "artifact_capture_observations" not in tables
+        assert current_version(conn) == 23
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------

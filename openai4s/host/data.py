@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -76,7 +77,16 @@ class HostDataStore(Protocol):
 
     def producing_cell_for_version(self, version_id: str) -> dict | None: ...
 
-    def lineage_inputs(self, version_id: str) -> list[dict]: ...
+    def lineage_inputs(
+        self, version_id: str, *, producing_cell_id: str | None = None
+    ) -> list[dict]: ...
+
+    def list_artifact_capture_observations(
+        self,
+        *,
+        artifact_id: str | None = None,
+        version_id: str | None = None,
+    ) -> list[dict]: ...
 
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]: ...
 
@@ -158,6 +168,90 @@ class HostDataService:
     def _frame_id(self) -> str | None:
         source = self._frame_id_source
         return source() if callable(source) else source
+
+    def _trusted_delivery_enabled(self) -> bool:
+        flags = getattr(self._config(), "roadmap_features", None)
+        return bool(getattr(flags, "stage1_trusted_delivery", False))
+
+    @staticmethod
+    def _freeze_snapshot(source: Path, destination: Path) -> tuple[str, int]:
+        """Atomically copy stable regular-file bytes into trusted storage.
+
+        ``host.save_artifact`` and the in-kernel provenance hook both execute
+        before the end-of-Cell workspace sweep.  In trusted mode their first
+        durable row must already name the same bytes its checksum describes;
+        a digest-then-``copy2`` pair has a mutation window between those two
+        reads.  This single descriptor stream is fsynced and verified before
+        its atomic rename makes the snapshot visible.
+        """
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+        source_descriptor: int | None = None
+        target_descriptor: int | None = None
+        try:
+            source_descriptor = os.open(
+                source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            before = os.fstat(source_descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("artifact source is not a regular file")
+            target_descriptor = os.open(
+                pending,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            digest = hashlib.sha256()
+            size_bytes = 0
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(target_descriptor, view)
+                    if written <= 0:  # pragma: no cover - OS write contract
+                        raise OSError("artifact snapshot write made no progress")
+                    view = view[written:]
+                size_bytes += len(chunk)
+                digest.update(chunk)
+            os.fsync(target_descriptor)
+            after = os.fstat(source_descriptor)
+            if (
+                before.st_dev != after.st_dev
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or size_bytes != after.st_size
+            ):
+                raise OSError("artifact source changed during snapshot freeze")
+            os.close(target_descriptor)
+            target_descriptor = None
+            os.replace(pending, destination)
+            directory_descriptor = os.open(
+                destination.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+            checksum = digest.hexdigest()
+            if destination.stat().st_size != size_bytes or HostDataService._digest_file(
+                destination
+            ) != (checksum, size_bytes):
+                raise OSError("artifact snapshot verification failed")
+            return checksum, size_bytes
+        except Exception:
+            pending.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
+        finally:
+            if target_descriptor is not None:
+                os.close(target_descriptor)
+            if source_descriptor is not None:
+                os.close(source_descriptor)
 
     def query(self, spec: dict) -> Any:
         store = self._store()
@@ -567,13 +661,17 @@ class HostDataService:
         # all. Two passes beat one pass that has to hold the file: `copy2`
         # takes the kernel's copy fast path, so the second read costs I/O, not
         # memory.
-        checksum, size_bytes = self._digest_file(source)
         version_stub = uuid.uuid4().hex[:12]
         safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
         config = self._config()
-        config.artifacts_dir.mkdir(parents=True, exist_ok=True)
         destination = config.artifacts_dir / f"v-{version_stub}__{safe_filename}"
-        shutil.copy2(source, destination)
+        trusted_delivery = self._trusted_delivery_enabled()
+        if trusted_delivery:
+            checksum, size_bytes = self._freeze_snapshot(source, destination)
+        else:
+            checksum, size_bytes = self._digest_file(source)
+            config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
         store = self._store()
         try:
             execution_cell_id = spec.get("execution_cell_id") or spec.get(
@@ -591,6 +689,7 @@ class HostDataService:
                 input_version_ids=input_version_ids,
                 source=spec.get("source"),
                 reuse_policy="provisional",
+                **({"reuse_matching_head": True} if trusted_delivery else {}),
             )
         except Exception:
             destination.unlink(missing_ok=True)
@@ -721,17 +820,47 @@ class HostDataService:
         store = self._store()
         metadata = self._scoped_version(version_id)
         cell = store.producing_cell_for_version(version_id) or {}
-        return {
+        producing_cell_id = metadata.get("producing_cell_id")
+        try:
+            inputs = store.lineage_inputs(
+                version_id,
+                producing_cell_id=(
+                    str(producing_cell_id) if producing_cell_id else None
+                ),
+            )
+        except TypeError:
+            inputs = store.lineage_inputs(version_id)
+        result = {
             "version_id": version_id,
             "artifact_id": metadata.get("artifact_id"),
             "filename": metadata.get("filename"),
             "checksum": metadata.get("checksum"),
             "frame_id": metadata.get("frame_id"),
-            "producing_cell_id": metadata.get("producing_cell_id"),
+            "producing_cell_id": producing_cell_id,
             "code": cell.get("code"),
-            "inputs": store.lineage_inputs(version_id),
+            "inputs": inputs,
             "extraction_pending": False,
         }
+        observation_reader = getattr(
+            store,
+            "list_artifact_capture_observations",
+            None,
+        )
+        if callable(observation_reader):
+            observations = observation_reader(version_id=version_id)
+            if observations:
+                result["capture_observations"] = [
+                    {
+                        "observation_id": row.get("observation_id"),
+                        "capture_kind": row.get("capture_kind"),
+                        "producing_cell_id": row.get("producing_cell_id"),
+                        "frame_id": row.get("frame_id"),
+                        "input_version_ids": list(row.get("input_version_ids") or []),
+                        "created_at": row.get("created_at"),
+                    }
+                    for row in observations
+                ]
+        return result
 
     def lineage_graph(self, spec: dict) -> dict:
         """Walk the lineage graph from one version, always bounded.
@@ -816,7 +945,8 @@ class HostDataService:
     #: How much of a file is read at a time when checksumming it.
     _DIGEST_CHUNK = 1024 * 1024
 
-    def _digest_file(self, path: Path) -> tuple[str, int]:
+    @staticmethod
+    def _digest_file(path: Path) -> tuple[str, int]:
         """Return ``(sha256, size)`` for a file, one chunk at a time.
 
         Shared by `save_artifact` and `provenance_record` so the two cannot
@@ -829,7 +959,7 @@ class HostDataService:
         size_bytes = 0
         with open(path, "rb") as handle:
             while True:
-                chunk = handle.read(self._DIGEST_CHUNK)
+                chunk = handle.read(HostDataService._DIGEST_CHUNK)
                 if not chunk:
                     break
                 size_bytes += len(chunk)
@@ -877,8 +1007,22 @@ class HostDataService:
         # a process that also serves every other session; `save_artifact` was
         # still doing exactly that, which is why the loop now lives in one
         # place instead of two.
+        trusted_delivery = self._trusted_delivery_enabled()
+        snapshot: Path | None = None
         try:
-            checksum, size_bytes = self._digest_file(output)
+            if trusted_delivery:
+                config = self._config()
+                safe_filename = re.sub(
+                    r"[^A-Za-z0-9._-]+",
+                    "_",
+                    str(spec.get("filename") or output.name or "artifact"),
+                )
+                snapshot = (
+                    config.artifacts_dir / f"v-{uuid.uuid4().hex[:12]}__{safe_filename}"
+                )
+                checksum, size_bytes = self._freeze_snapshot(output, snapshot)
+            else:
+                checksum, size_bytes = self._digest_file(output)
         except FileNotFoundError:
             # Reported the same way whether the resolver enforced existence or
             # the open did. A caller with a pass-through resolver would
@@ -887,17 +1031,35 @@ class HostDataService:
             return {"error": f"prov_record: no such output file: {path}"}
         except OSError as error:
             return {"error": f"prov_record: {path}: {error}"}
-
-        return self._store().record_cell_artifact(
-            path=str(output),
-            filename=spec.get("filename") or output.name,
-            content_type=spec.get("content_type"),
-            size_bytes=size_bytes,
-            checksum=checksum,
-            producing_cell_id=spec.get("producing_cell_id"),
-            frame_id=self._frame_id(),
-            input_version_ids=input_version_ids,
-        )
+        store = self._store()
+        try:
+            record = store.record_cell_artifact(
+                path=str(output),
+                filename=spec.get("filename") or output.name,
+                content_type=spec.get("content_type"),
+                size_bytes=size_bytes,
+                checksum=checksum,
+                producing_cell_id=spec.get("producing_cell_id"),
+                frame_id=self._frame_id(),
+                input_version_ids=input_version_ids,
+                **(
+                    {
+                        "snapshot_path": str(snapshot),
+                        "reuse_matching_head": True,
+                    }
+                    if snapshot is not None
+                    else {}
+                ),
+            )
+        except Exception:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
+            raise
+        if snapshot is not None:
+            metadata = store.version_meta(record["version_id"]) or {}
+            if metadata.get("snapshot_path") != str(snapshot):
+                snapshot.unlink(missing_ok=True)
+        return record
 
 
 __all__ = ["FRAME_STATUSES", "HostDataService", "rank_artifacts"]

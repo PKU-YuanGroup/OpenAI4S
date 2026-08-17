@@ -37,6 +37,9 @@ gateway.py
 ## 完成、Notebook 与恢复边界
 
 - Cell 的结果是回到外层循环的一条 observation，它本身不代表任务完成。要完成，必须有一个单独且有效的、由 Engine 拥有的 `finalize_response`，或者 Python Cell 内部调用的 `host.submit_output(...)`。R Cell 根本无法完成任务。
+- Stage 1 trusted delivery 开启时，completion 链接只由一个 URL helper 根据精确的不可变 version id 生成。服务端先验证快照作用域、大小和 checksum，再把最终 assistant 消息与 delivery manifest 放进同一事务提交，最后才发带稳定 `delivery_id` 的链接 `text_chunk`。若 socket 发布丢失，普通 REST reopen 仍会恢复已提交消息；`committed` 行与稳定 id 也为未来或运维显式重放提供依据，但 Stage 1 的 delivery ledger 不会自行驱动重发。普通的有界 WS 序列缓冲在 turn 仍存活时可能重放；终态或重启后以 REST 为准。验证或审计失败则不发布成功链接。
+- 再次捕获当前 head 的相同字节会复用 version，同时追加一条限定作用域的 capture observation，保留新的 producing Cell 与 lineage；原 version 的 producer/provenance 不会被改写。Stage 1 的 observation 只在本地，Session package、share 与 export 还不会序列化它。
+- Stage 1 的 standard-profile 准入完全在本地且没有副作用。普通 turn 仍可走原生工具或结构化完成；一旦路由出 Code Cell，系统会在应用 pending environment、分配身份/attempt、运行安全检查或启动 runtime 之前拒绝。直接 Cell 共用同一边界；批准/恢复的科学 plan 仍在状态切换前检查。UI 持久显示 banner 与只复制不执行的受管修复卡。修复会先构建并验证新的 Python/R generation，再移动指针。
 - 只包含 `host.submit_output` 协议调用的 Cell 照样会执行，也会留在原始执行历史与审计记录里，但实时和重新打开的 Notebook 投影会把它过滤掉。`.ipynb` exporter 读的是没有套用该过滤的不可变执行历史，所以它导出的是 raw/audit 版本，可能带上这个系统 Cell。
 - 恢复执行已经接入 REST/UI、FIFO 所有权和 Python/R 候选内核流水线，但仍然是 **Partial**：不安全或非确定性的 Cell 会被归类为 `never`；系统不会去序列化任意的历史命名空间；某个语言的候选内核如果无法变为 active，整个恢复可以就此停下并给出显式的 Partial 结果。
 
@@ -49,11 +52,12 @@ gateway.py
 | [`agent_run.py`](agent_run.py) | 把 `AgentEngine` 适配到 Web 契约。它流式输出安全的文本与代码草稿，发出 Web 事件，处理取消，并通过注入的端口执行原生 Action 或 Cell。 |
 | [`artifact_refs.py`](artifact_refs.py) | 用户消息里钉住版本的 `@文件` 引用。`@name#v-<version_id>` 发送的是那个确切版本的冻结字节，而不是活文件——旧的解析读到的是后续 cell 留下的任何内容。解析不出来的引用会被**报告**而不是丢掉；二进制 Artifact 只报名字，不会被贴成一片替换字符；同 project 的跨会话引用在**发送时**物化（D3），而不是就地读取。 |
 | [`retrieval_source.py`](retrieval_source.py) | 一个版本的检索溯源信息中，可以安全交给客户端的那一部分投影。这个信封是由执行检索的那段代码（包括未经审计的 Skill）写入的自由格式 JSON，而科研 API 把 key 放进查询串是常态——所以键走白名单、值有长度上限，查询串、路径和 userinfo 三处的凭据都会被指纹化。没有溯源信息时返回 `None` 而不是一个空面板：空面板会被读成一条关于数据本身的结论。 |
-| [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。 |
-| [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：执行准入、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
-| [`completions.py`](completions.py) | 生成用户看到的那段叙述。进度和结果文字都做了本地化；结构化的 completion 是照着真实的 Artifact 版本增量渲染的，而不是照着一句声称。隐藏推理不会进到这里。 |
+| [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。trusted 路径会在登记前流式复制、fsync、原子冻结并验证字节；遇到相同 head 时复用 version，同时保留 observation。 |
+| [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：readiness 准入、身份/attempt 分配、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。Stage 1 的准入端口会在任何 Cell id 或 runtime 出现之前拒绝。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
+| [`completions.py`](completions.py) | 生成用户看到的那段叙述。进度和结果文字都做了本地化；结构化的 completion 是照着真实的 Artifact version/capture 增量渲染的，而不是照着一句声称。trusted 链接只来自公共 URL helper 与精确 version id；隐藏推理不会进到这里。 |
 | [`compute_tasks.py`](compute_tasks.py) | 一个会话的远程计算工作的只读视图。远程任务的寿命长过发起它的那一轮、内核、乃至守护进程，而那份持久记录原先只能从 cell 里够到。这个页面不能轮询，原因是这套系统特有的：**探测即回收**——`ComputeManager.result()` 才是去联系远端的那一步，而联系远端就会把文件拉回来并结束任务，所以一个会自动刷新的页面等于在没人看着的会话里偷偷做回收。本模块只接收一个 `Store`，完全没有 import `ComputeManager`，所以这条保证是结构性的，而不是一句关于调用顺序的承诺。按 `owner_key`（会话工作区）限定范围；别的会话的任务不会被列出、不计入计数，也不会以「已隐藏」的形式被提及。 |
 | [`contract.py`](contract.py) | `API_ROOT`、`RouteSpec` 原语，以及每一条可路由路径与 WebSocket 事件的清单——这份清单是从代码里**推导**出来的，而不是在旁边另立一份手工维护的名单。两条读法在每个路由模块上取并集：既解析 `gateway.py` 及其 `*_routes.py` 兄弟模块里的路由链，也读取已迁移模块运行时的 `ROUTES` 表。手工名单在有人赶时间加了一条路由的那一刻就是错的，而且它错了这件事本身看不见——那正是契约要防的失效方式；源码读法如果路由写法变到读不出来，会以「清单为空」的方式大声失败。若按模块二选一，这个洞会在下一层重新出现（声明旁边残留的 `re.fullmatch`、或者表名不叫 `ROUTES`，都会被静默漏掉），所以两条读法始终都跑。它回答的是有哪些路径存在，而不是它们返回什么。 |
+| [`delivery.py`](delivery.py) | 对精确 Artifact version 的 delivery manifest 做验证，不信任可变路径：归属作用域、普通文件类型、不可变快照、稳定 descriptor 身份、大小与 SHA-256 必须全部一致。输出不带路径，由 completion-delivery repository 与最终消息或安全暂存的 Session-package 消息做原子绑定。 |
 | [`local_auth.py`](local_auth.py) | daemon 自己的访问令牌：在数据目录下只铸一次、仅属主可读、比较用恒定时间。是文件而非 Store 行，因为 CLI 必须在任何数据库存在之前读到它，而 `openai4s doctor` 恰恰要在数据库本身坏掉时还能工作。此前它活在闭包里、每次重启都换，已发出的每个 cookie 都因此失效。铸造时用 `os.link` 发布——这是唯一只可能成功一次的操作，于是并发启动的多个 daemon 会收敛到同一个令牌，而不是各自握着一个。|
 | [`errors.py`](errors.py) | `GatewayError`、稳定的机器错误码、追加式的公开失败信封，以及那个异常投影器：它把任意 `str(e)` 挡在响应体之外，而运维仍能从结构化日志里拿到原始异常。独立成模块，是因为 `GatewayError` 原本位于 gateway 自身 import 区块下方约 5800 行处，兄弟模块从那里 import 它构成循环导入，会让 daemon 在**启动时**就失败。从 `Handler._api` 里切出的每个路由组都要抛这个异常，否则每抽一次就要重新踩一次这个坑。gateway 仍然再导出原来的名字。 |
 | [`execution_coordinator.py`](execution_coordinator.py) | 会话级 FIFO 执行所有权的 Web 适配层。ticket 状态会被投影成 WebSocket 事件；已准入的 ticket 会绑定到它的取消事件和当时那把内核 lease 上；中断只会打到由那个执行 id 精确持有的那把 lease。 |
@@ -94,6 +98,8 @@ gateway.py
 | [`team_auth.py`](team_auth.py) | 团队模式认证（`OPENAI4S_TEAM_MODE`）：`os_user` 登录 cookie；按（用户名, ip）的令牌桶限速——在 PBKDF2 计算**之前**消耗令牌，所以限速同时约束了攻击者能让 daemon 做多少哈希功；以及 loopback CLI 的 service 身份，让服务器上的管理 CLI 继续用 daemon 访问令牌而不冒充任何真人账号。每次登录结果都写审计（INV-12）。 |
 | [`team_routes.py`](team_routes.py) | 认证路由（`/auth/login`、`/auth/logout`、`/auth/me`），按 `kernel_routes` 的形态组织：一张经校验的 `RouteSpec` 表，运行时分发和契约清单读同一份。两种模式下都确定性应答——团队模式关闭时返回稳定的"已禁用"形状，契约捕获冻结的正是它。Set-Cookie 走 `_send` 带消毒的 header 通道；原始会话 token 只存在于该头和客户端 cookie jar 里。 |
 | [`titles.py`](titles.py) | 在后台根据第一条消息生成会话标题。模型配置延迟绑定，持久化和广播都做了防竞态处理。 |
+| [`trusted_capture.py`](trusted_capture.py) | 管理 Stage 1 会话级前台 Artifact 捕获、独立后台内核与面向用户的外部工作区变更三者之间的准入边界。同一线程的捕获和外部变更均可在各自类别内嵌套；另一所有者或任何跨类别重叠都会在工作区动作开始前失败即关闭。 |
+| [`urls.py`](urls.py) | 服务端统一拥有的持久资源 URL。trusted completion 只接受非空的精确 version id，把它百分号编码到保留的 `/api/v1/artifacts/versions/{version_id}` 命名空间；该路径不会回退为 Artifact id 或文件名，flag-off 的旧 helper 也被隔离在这里，不再散落在 completion 文案中。 |
 | [`variable_inspector.py`](variable_inspector.py) | 通过一个很窄的 manager 协议请求，读取活着且空闲的 Python/R 命名空间，返回有界、净化过的变量预览。它不会创建会话，也不会创建 worker，更不会进入 Cell 事务。 |
 | [`workbench_state.py`](workbench_state.py) | 根据持久状态与实时状态投影 Context 和 Security 面板。它不暴露消息内容；在真实 worker 报回自测结果之前，它也不会声称 OS 沙箱已经存在。 |
 | [`ws_frames.py`](ws_frames.py) | 由 gateway WebSocket 与分享隧道共用的、加固过的 RFC 6455 帧编解码。按角色的读取会校验掩码方向、FIN、RSV、opcode、canonical 长度、64 位最高位、控制帧大小与载荷上限；gateway 通过别名保留原有调用点。 |

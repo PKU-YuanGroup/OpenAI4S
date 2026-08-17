@@ -22,6 +22,13 @@ from typing import Any, Callable
 # by type. `artifact_restore` imports nothing from storage, so this is a
 # leaf dependency rather than a cycle.
 from openai4s.artifact_restore import ArtifactRestoreRefused
+from openai4s.storage.artifact_observations import (
+    CAPTURE_KIND_HEAD_CHECKSUM_REUSED,
+    CAPTURE_KIND_SAME_CELL_MERGE,
+    CAPTURE_KIND_VERSION_CREATED,
+    MAX_DELIVERY_OBSERVATIONS,
+    ArtifactObservationRepository,
+)
 
 Clock = Callable[[], int]
 Execute = Callable[[str, tuple], None]
@@ -33,6 +40,11 @@ GetEnvironmentSnapshot = Callable[[str], dict | None]
 FileIdentity = Callable[[str], str | None]
 SameFilePath = Callable[[str, str], bool]
 DeleteArtifactRelated = Callable[[str], None]
+PublishUpload = Callable[[str, str], str]
+
+
+class ArtifactDeliveryReferenceError(RuntimeError):
+    """A durable completion message still addresses this Artifact's bytes."""
 
 
 def file_identity(path: str) -> str | None:
@@ -158,6 +170,7 @@ class ArtifactRepository:
         self._identify_file = identify_file or file_identity
         self._paths_match = paths_match or same_file_path
         self._delete_related = delete_related
+        self._observations = ArtifactObservationRepository(connection)
 
     def get_artifact(self, artifact_id: str) -> dict | None:
         with self._lock:
@@ -172,16 +185,30 @@ class ArtifactRepository:
     def delete_artifact(self, artifact_id: str) -> list[str]:
         """Remove an artifact and return paths no surviving version references."""
         with self._lock:
+            delivered = self._connection.execute(
+                "SELECT 1 FROM completion_delivery_artifacts "
+                "WHERE artifact_id=? LIMIT 1",
+                (artifact_id,),
+            ).fetchone()
+            if delivered is not None:
+                raise ArtifactDeliveryReferenceError(
+                    "Artifact is referenced by a durable completion message"
+                )
             rows = self._connection.execute(
                 "SELECT version_id,path,snapshot_path,env_snapshot_id "
                 "FROM artifact_versions WHERE artifact_id=?",
+                (artifact_id,),
+            ).fetchall()
+            observation_env_rows = self._connection.execute(
+                "SELECT env_snapshot_id FROM artifact_capture_observations "
+                "WHERE artifact_id=? AND env_snapshot_id IS NOT NULL",
                 (artifact_id,),
             ).fetchall()
             version_ids = tuple(str(row["version_id"]) for row in rows)
             env_snapshot_ids = tuple(
                 dict.fromkeys(
                     str(row["env_snapshot_id"])
-                    for row in rows
+                    for row in (*rows, *observation_env_rows)
                     if row["env_snapshot_id"]
                 )
             )
@@ -195,6 +222,10 @@ class ArtifactRepository:
                 self._connection.execute("SAVEPOINT artifact_delete")
                 if self._delete_related is not None:
                     self._delete_related(artifact_id)
+                self._connection.execute(
+                    "DELETE FROM artifact_capture_observations WHERE artifact_id=?",
+                    (artifact_id,),
+                )
                 if version_ids:
                     marks = "(" + ",".join("?" for _ in version_ids) + ")"
                     self._connection.execute(
@@ -221,6 +252,9 @@ class ArtifactRepository:
                         "DELETE FROM env_snapshots WHERE snapshot_id IN "
                         f"{marks} AND NOT EXISTS (SELECT 1 FROM artifact_versions "
                         "WHERE artifact_versions.env_snapshot_id="
+                        "env_snapshots.snapshot_id) AND NOT EXISTS (SELECT 1 FROM "
+                        "artifact_capture_observations WHERE "
+                        "artifact_capture_observations.env_snapshot_id="
                         "env_snapshots.snapshot_id)",
                         env_snapshot_ids,
                     )
@@ -306,6 +340,27 @@ class ArtifactRepository:
         if len(rows) != 1:
             return None
         return self._get_artifact(rows[0]["artifact_id"])
+
+    def artifact_by_scope_filename(
+        self,
+        filename: str,
+        *,
+        root_frame_id: str | None,
+        project_id: str,
+    ) -> dict | None:
+        """Resolve an upload target in one exact nullable-root scope."""
+
+        root_clause = (
+            "root_frame_id=?" if root_frame_id is not None else "root_frame_id IS NULL"
+        )
+        root_args = (root_frame_id,) if root_frame_id is not None else ()
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT artifact_id FROM artifacts WHERE filename=? AND project_id=? "
+                f"AND {root_clause} ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (filename, project_id, *root_args),
+            ).fetchone()
+        return self._get_artifact(row["artifact_id"]) if row else None
 
     def artifact_write_scope(
         self,
@@ -448,6 +503,242 @@ class ArtifactRepository:
             "created_at": now,
         }
 
+    def commit_artifact_upload(
+        self,
+        *,
+        path: str,
+        filename: str,
+        content_type: str | None,
+        size_bytes: int,
+        checksum: str,
+        frame_id: str | None,
+        project_id: str | None,
+        artifact_id: str | None,
+        expected_previous_version_id: str | None,
+        expected_previous_updated_at: int | None,
+        publish: PublishUpload,
+    ) -> dict:
+        """Commit one upload only after its snapshot and live bytes publish.
+
+        ``publish`` performs the filesystem half while the new version and head
+        are still protected by this SQLite savepoint.  If it raises, neither
+        row is visible.  The caller owns a durable filesystem journal and can
+        therefore restore the previous live file if the process exits after a
+        rename but before SQLite commits.
+        """
+
+        explicit_scope, resolved_root, resolved_project = (
+            self._resolve_artifact_write_scope(
+                frame_id=frame_id,
+                root_frame_id=None,
+                project_id=project_id,
+            )
+        )
+        now = self._clock_ms()
+        version_id = f"v-{uuid.uuid4().hex[:12]}"
+        new_artifact = artifact_id is None
+        if new_artifact:
+            artifact_id = f"a-{uuid.uuid4().hex[:12]}"
+        assert artifact_id is not None
+
+        with self._lock:
+            try:
+                self._connection.execute("SAVEPOINT artifact_upload")
+                if not new_artifact:
+                    current = self._connection.execute(
+                        "SELECT project_id,root_frame_id,latest_version_id,updated_at "
+                        "FROM artifacts "
+                        "WHERE artifact_id=?",
+                        (artifact_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise KeyError(f"no such artifact {artifact_id!r}")
+                    if not explicit_scope:
+                        resolved_root = current["root_frame_id"]
+                        resolved_project = current["project_id"]
+                    if (
+                        current["root_frame_id"] is not None
+                        and resolved_root is not None
+                        and current["root_frame_id"] != resolved_root
+                    ):
+                        raise ValueError("artifact belongs to a different root frame")
+                    if (
+                        current["root_frame_id"] is not None
+                        and current["project_id"] != resolved_project
+                    ):
+                        raise ValueError("artifact belongs to a different project")
+                    if (
+                        current["latest_version_id"] != expected_previous_version_id
+                        or current["updated_at"] != expected_previous_updated_at
+                    ):
+                        raise RuntimeError("artifact changed before upload publication")
+                else:
+                    root_clause = (
+                        "root_frame_id=?"
+                        if resolved_root is not None
+                        else "root_frame_id IS NULL"
+                    )
+                    root_args = (resolved_root,) if resolved_root is not None else ()
+                    raced = self._connection.execute(
+                        "SELECT 1 FROM artifacts WHERE filename=? AND project_id=? "
+                        f"AND {root_clause} LIMIT 1",
+                        (filename, resolved_project, *root_args),
+                    ).fetchone()
+                    if raced is not None:
+                        raise RuntimeError(
+                            "artifact appeared before upload publication"
+                        )
+
+                self._connection.execute(
+                    "INSERT INTO artifact_versions(version_id,artifact_id,filename,"
+                    "content_type,size_bytes,checksum,path,snapshot_path,"
+                    "producing_cell_id,frame_id,created_at,env_snapshot_id,source) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        version_id,
+                        artifact_id,
+                        filename,
+                        content_type,
+                        size_bytes,
+                        checksum,
+                        path,
+                        None,
+                        None,
+                        frame_id,
+                        now,
+                        None,
+                        None,
+                    ),
+                )
+                if new_artifact:
+                    self._connection.execute(
+                        "INSERT INTO artifacts(artifact_id,project_id,root_frame_id,"
+                        "filename,content_type,is_user_upload,priority,"
+                        "latest_version_id,created_at,updated_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            artifact_id,
+                            resolved_project,
+                            resolved_root,
+                            filename,
+                            content_type,
+                            1,
+                            0,
+                            version_id,
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    self._connection.execute(
+                        "UPDATE artifacts SET latest_version_id=?,updated_at=? "
+                        "WHERE artifact_id=?",
+                        (version_id, now, artifact_id),
+                    )
+
+                snapshot_path = publish(version_id, artifact_id)
+                self._connection.execute(
+                    "UPDATE artifact_versions SET snapshot_path=? "
+                    "WHERE version_id=?",
+                    (snapshot_path, version_id),
+                )
+                self._connection.execute("RELEASE SAVEPOINT artifact_upload")
+                self._connection.commit()
+            except BaseException:
+                try:
+                    self._connection.execute("ROLLBACK TO SAVEPOINT artifact_upload")
+                    self._connection.execute("RELEASE SAVEPOINT artifact_upload")
+                except sqlite3.Error:
+                    self._connection.rollback()
+                raise
+        return {
+            "artifact_id": artifact_id,
+            "version_id": version_id,
+            "filename": filename,
+            "path": path,
+            "content_type": content_type,
+            "size_bytes": size_bytes,
+            "checksum": checksum,
+            "created_at": now,
+        }
+
+    def rollback_artifact_upload(
+        self,
+        *,
+        artifact_id: str,
+        version_id: str,
+        previous_version_id: str | None,
+        previous_updated_at: int | None,
+    ) -> bool:
+        """Remove exactly one incomplete upload during startup recovery."""
+
+        with self._lock:
+            try:
+                self._connection.execute("SAVEPOINT artifact_upload_rollback")
+                artifact = self._connection.execute(
+                    "SELECT latest_version_id FROM artifacts WHERE artifact_id=?",
+                    (artifact_id,),
+                ).fetchone()
+                version = self._connection.execute(
+                    "SELECT 1 FROM artifact_versions WHERE version_id=? "
+                    "AND artifact_id=?",
+                    (version_id, artifact_id),
+                ).fetchone()
+                if artifact is None or version is None:
+                    self._connection.execute(
+                        "RELEASE SAVEPOINT artifact_upload_rollback"
+                    )
+                    self._connection.commit()
+                    return False
+                if artifact["latest_version_id"] != version_id:
+                    raise RuntimeError(
+                        "incomplete upload is no longer the Artifact head"
+                    )
+                self._connection.execute(
+                    "DELETE FROM lineage_edges WHERE input_version_id=? "
+                    "OR output_version_id=?",
+                    (version_id, version_id),
+                )
+                self._connection.execute(
+                    "DELETE FROM artifact_capture_observations WHERE version_id=?",
+                    (version_id,),
+                )
+                self._connection.execute(
+                    "DELETE FROM artifact_versions WHERE version_id=?",
+                    (version_id,),
+                )
+                if previous_version_id is None:
+                    self._connection.execute(
+                        "DELETE FROM artifacts WHERE artifact_id=?", (artifact_id,)
+                    )
+                else:
+                    previous = self._connection.execute(
+                        "SELECT 1 FROM artifact_versions WHERE version_id=? "
+                        "AND artifact_id=?",
+                        (previous_version_id, artifact_id),
+                    ).fetchone()
+                    if previous is None:
+                        raise RuntimeError("previous upload head is unavailable")
+                    self._connection.execute(
+                        "UPDATE artifacts SET latest_version_id=?,updated_at=? "
+                        "WHERE artifact_id=?",
+                        (previous_version_id, previous_updated_at, artifact_id),
+                    )
+                self._connection.execute("RELEASE SAVEPOINT artifact_upload_rollback")
+                self._connection.commit()
+            except BaseException:
+                try:
+                    self._connection.execute(
+                        "ROLLBACK TO SAVEPOINT artifact_upload_rollback"
+                    )
+                    self._connection.execute(
+                        "RELEASE SAVEPOINT artifact_upload_rollback"
+                    )
+                except sqlite3.Error:
+                    self._connection.rollback()
+                raise
+        return True
+
     def record_cell_artifact(
         self,
         *,
@@ -467,8 +758,22 @@ class ArtifactRepository:
         preserve_filename: bool = False,
         preserve_content_type: bool = False,
         reuse_policy: str = "any",
+        reuse_matching_head: bool = False,
     ) -> dict:
-        """Atomically record or finalize one cell's physical file write."""
+        """Atomically record or finalize one cell's physical file write.
+
+        A version is a byte identity, while an observation is a producer
+        identity.  With ``reuse_matching_head`` enabled, the current head may
+        therefore be reused when a new Cell producer and an equal checksum are
+        explicit.  The current head may have originated outside a Cell (for
+        example, an upload or a native writing tool); its absent producer stays
+        absent while the new Cell gets a durable observation.  We never search
+        historical versions for this optimization and never rewrite the reused
+        version's original provenance.  The default keeps the pre-rollout
+        versioning behavior, including its return shape and lack of observation
+        writes. Trusted callers opt into both the reuse rule and its required
+        durable capture audit with the same flag.
+        """
         if reuse_policy not in {"any", "provisional"}:
             raise ValueError(f"unknown cell artifact reuse policy: {reuse_policy!r}")
         _explicit, resolved_root, resolved_project = self._resolve_artifact_write_scope(
@@ -481,8 +786,13 @@ class ArtifactRepository:
         artifact_id: str
         created_at = now
         stored_version: sqlite3.Row
+        capture_kind = CAPTURE_KIND_VERSION_CREATED
+        version_created = True
+        observation: dict | None = None
+        producer_frame_id = frame_id
         with self._lock:
             try:
+                self._connection.execute("SAVEPOINT artifact_record_cell")
                 artifact = None
                 candidate = None
                 root_clause = (
@@ -494,12 +804,13 @@ class ArtifactRepository:
 
                 if producing_cell_id and checksum is not None:
                     exact_rows = self._connection.execute(
-                        "SELECT v.*,a.latest_version_id AS artifact_latest_version_id,"
+                        "SELECT v.*,"
                         "CASE WHEN a.filename=? THEN 0 ELSE 1 END AS filename_rank "
                         "FROM artifact_versions v JOIN artifacts a "
                         "ON a.artifact_id=v.artifact_id WHERE a.project_id=? AND "
                         + root_clause
-                        + " AND v.producing_cell_id=? AND v.checksum=? "
+                        + " AND v.version_id=a.latest_version_id "
+                        "AND v.producing_cell_id=? AND v.checksum=? "
                         "ORDER BY filename_rank,v.created_at DESC,v.rowid DESC",
                         (
                             filename,
@@ -510,17 +821,15 @@ class ArtifactRepository:
                         ),
                     ).fetchall()
                     for row in exact_rows:
-                        if row["artifact_latest_version_id"] == row[
-                            "version_id"
-                        ] and self._paths_match(row["path"], path):
+                        if self._paths_match(row["path"], path):
                             candidate = row
                             break
 
-                reuse = candidate is not None and (
+                same_cell_reuse = candidate is not None and (
                     reuse_policy == "any" or not candidate["snapshot_path"]
                 )
 
-                if reuse:
+                if same_cell_reuse:
                     artifact = self._connection.execute(
                         "SELECT rowid AS artifact_rowid,* FROM artifacts "
                         "WHERE artifact_id=?",
@@ -528,17 +837,39 @@ class ArtifactRepository:
                     ).fetchone()
                 else:
                     artifact = self._connection.execute(
-                        "SELECT rowid AS artifact_rowid,* FROM artifacts a "
+                        "SELECT a.rowid AS artifact_rowid,a.*,"
+                        "v.version_id AS head_version_id,"
+                        "v.filename AS head_filename,"
+                        "v.content_type AS head_content_type,"
+                        "v.checksum AS head_checksum,"
+                        "v.producing_cell_id AS head_producing_cell_id,"
+                        "v.created_at AS head_created_at "
+                        "FROM artifacts a LEFT JOIN artifact_versions v "
+                        "ON v.version_id=a.latest_version_id "
                         "WHERE a.filename=? AND a.project_id=? AND "
                         + root_clause
                         + " ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1",
                         (filename, resolved_project, *root_args),
                     ).fetchone()
 
-                if reuse:
+                cross_cell_head_reuse = bool(
+                    reuse_matching_head
+                    and not same_cell_reuse
+                    and artifact is not None
+                    and producing_cell_id
+                    and checksum is not None
+                    and artifact["head_version_id"]
+                    and artifact["head_checksum"] == checksum
+                    and artifact["head_producing_cell_id"] != producing_cell_id
+                )
+
+                if same_cell_reuse:
                     artifact_id = candidate["artifact_id"]
                     version_id = candidate["version_id"]
                     created_at = candidate["created_at"]
+                    capture_kind = CAPTURE_KIND_SAME_CELL_MERGE
+                    version_created = False
+                    producer_frame_id = candidate["frame_id"]
                     stored_filename = (
                         (candidate["filename"] or artifact["filename"])
                         if preserve_filename
@@ -568,6 +899,27 @@ class ArtifactRepository:
                             version_id,
                         ),
                     )
+                elif cross_cell_head_reuse:
+                    # The version still belongs to its original Cell.  In
+                    # particular, do not fill a missing env/source from this
+                    # later producer: that would turn deduplication into false
+                    # provenance.  The observation below owns the new facts.
+                    artifact_id = artifact["artifact_id"]
+                    version_id = artifact["head_version_id"]
+                    created_at = artifact["head_created_at"]
+                    capture_kind = CAPTURE_KIND_HEAD_CHECKSUM_REUSED
+                    version_created = False
+                    stored_filename = artifact["head_filename"] or artifact["filename"]
+                    stored_content_type = (
+                        artifact["head_content_type"] or artifact["content_type"]
+                    )
+                    if snapshot_path:
+                        self._connection.execute(
+                            "UPDATE artifact_versions SET "
+                            "snapshot_path=COALESCE(snapshot_path,?) "
+                            "WHERE version_id=?",
+                            (snapshot_path, version_id),
+                        )
                 else:
                     stored_filename = filename
                     stored_content_type = content_type
@@ -619,19 +971,26 @@ class ArtifactRepository:
                             ),
                         )
 
-                self._connection.execute(
-                    "UPDATE artifacts SET filename=?,"
-                    "content_type=COALESCE(?,content_type),latest_version_id=?,"
-                    "updated_at=? WHERE artifact_id=?",
-                    (
-                        stored_filename,
-                        stored_content_type,
-                        version_id,
-                        now,
-                        artifact_id,
-                    ),
-                )
+                if cross_cell_head_reuse:
+                    self._connection.execute(
+                        "UPDATE artifacts SET updated_at=? WHERE artifact_id=?",
+                        (now, artifact_id),
+                    )
+                else:
+                    self._connection.execute(
+                        "UPDATE artifacts SET filename=?,"
+                        "content_type=COALESCE(?,content_type),latest_version_id=?,"
+                        "updated_at=? WHERE artifact_id=?",
+                        (
+                            stored_filename,
+                            stored_content_type,
+                            version_id,
+                            now,
+                            artifact_id,
+                        ),
+                    )
                 seen_inputs: set[str] = set()
+                recorded_inputs: list[Any] = []
                 for input_version_id in input_version_ids or ():
                     if (
                         not input_version_id
@@ -640,10 +999,16 @@ class ArtifactRepository:
                     ):
                         continue
                     seen_inputs.add(input_version_id)
+                    recorded_inputs.append(input_version_id)
                     exists = self._connection.execute(
                         "SELECT 1 FROM lineage_edges WHERE input_version_id=? "
-                        "AND output_version_id=? LIMIT 1",
-                        (input_version_id, version_id),
+                        "AND output_version_id=? AND producing_cell_id IS ? "
+                        "LIMIT 1",
+                        (
+                            input_version_id,
+                            version_id,
+                            producing_cell_id,
+                        ),
                     ).fetchone()
                     if exists:
                         continue
@@ -656,7 +1021,7 @@ class ArtifactRepository:
                             input_version_id,
                             version_id,
                             producing_cell_id,
-                            frame_id,
+                            producer_frame_id,
                             now,
                         ),
                     )
@@ -664,11 +1029,39 @@ class ArtifactRepository:
                     "SELECT * FROM artifact_versions WHERE version_id=?",
                     (version_id,),
                 ).fetchone()
+                if producing_cell_id and reuse_matching_head:
+                    observation = self._observations.upsert(
+                        artifact_id=artifact_id,
+                        version_id=version_id,
+                        producing_cell_id=producing_cell_id,
+                        frame_id=producer_frame_id,
+                        capture_kind=capture_kind,
+                        filename=filename,
+                        content_type=content_type,
+                        size_bytes=size_bytes,
+                        checksum=checksum,
+                        path=path,
+                        # Point at the snapshot retained by the exact version,
+                        # not a later caller's pre-freeze candidate that the
+                        # Artifact manager is allowed to clean up.
+                        snapshot_path=stored_version["snapshot_path"],
+                        env_snapshot_id=env_snapshot_id,
+                        source=_encode_source(source),
+                        input_version_ids=recorded_inputs,
+                        now=now,
+                    )
+                self._connection.execute("RELEASE SAVEPOINT artifact_record_cell")
                 self._connection.commit()
             except Exception:
-                self._connection.rollback()
+                try:
+                    self._connection.execute(
+                        "ROLLBACK TO SAVEPOINT artifact_record_cell"
+                    )
+                    self._connection.execute("RELEASE SAVEPOINT artifact_record_cell")
+                except sqlite3.Error:
+                    self._connection.rollback()
                 raise
-        return {
+        result = {
             "artifact_id": artifact_id,
             "version_id": version_id,
             "filename": stored_version["filename"],
@@ -678,6 +1071,19 @@ class ArtifactRepository:
             "checksum": stored_version["checksum"],
             "created_at": created_at,
         }
+        if reuse_matching_head:
+            result.update(
+                observation_id=(
+                    observation["observation_id"] if observation is not None else None
+                ),
+                observation_ordinal=(
+                    observation["ordinal"] if observation is not None else None
+                ),
+                ordinal=(observation["ordinal"] if observation is not None else None),
+                version_created=version_created,
+                capture_kind=capture_kind,
+            )
+        return result
 
     def materialise_artifact_version(
         self,
@@ -1034,6 +1440,9 @@ class ArtifactRepository:
                 "DELETE FROM env_snapshots WHERE snapshot_id IN "
                 f"{marks} AND NOT EXISTS (SELECT 1 FROM artifact_versions "
                 "WHERE artifact_versions.env_snapshot_id="
+                "env_snapshots.snapshot_id) AND NOT EXISTS (SELECT 1 FROM "
+                "artifact_capture_observations WHERE "
+                "artifact_capture_observations.env_snapshot_id="
                 "env_snapshots.snapshot_id)",
                 identifiers,
             )
@@ -1211,6 +1620,53 @@ class ArtifactRepository:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_capture_observations(
+        self,
+        *,
+        artifact_id: str | None = None,
+        version_id: str | None = None,
+    ) -> list[dict]:
+        """Return capture audit rows in their durable global order."""
+        with self._lock:
+            return self._observations.list(
+                artifact_id=artifact_id,
+                version_id=version_id,
+            )
+
+    def capture_observation_cursor(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        project_id: str | None = None,
+    ) -> int:
+        with self._lock:
+            return self._observations.cursor(
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+            )
+
+    def capture_observations_since(
+        self,
+        cursor: int,
+        *,
+        root_frame_id: str | None,
+        project_id: str,
+        limit: int = MAX_DELIVERY_OBSERVATIONS,
+    ) -> list[dict]:
+        with self._lock:
+            bounded = max(1, min(int(limit), MAX_DELIVERY_OBSERVATIONS))
+            rows = self._observations.since(
+                cursor,
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+                limit=bounded + 1,
+            )
+            if len(rows) > bounded:
+                raise RuntimeError(
+                    "Artifact capture observation delta exceeds the safe limit"
+                )
+            return rows
+
     def list_versions(self, artifact_id: str) -> list[dict]:
         with self._lock:
             latest = self._connection.execute(
@@ -1310,14 +1766,27 @@ class ArtifactRepository:
             ),
         )
 
-    def lineage_inputs(self, version_id: str) -> list[dict]:
+    def lineage_inputs(
+        self,
+        version_id: str,
+        *,
+        producing_cell_id: str | None = None,
+    ) -> list[dict]:
+        producer_clause = (
+            " AND le.producing_cell_id IS ?" if producing_cell_id is not None else ""
+        )
+        params: tuple[Any, ...] = (
+            (version_id, producing_cell_id)
+            if producing_cell_id is not None
+            else (version_id,)
+        )
         with self._lock:
             rows = self._connection.execute(
-                "SELECT le.input_version_id, av.filename, av.path "
+                "SELECT DISTINCT le.input_version_id, av.filename, av.path "
                 "FROM lineage_edges le LEFT JOIN artifact_versions av "
                 "ON le.input_version_id=av.version_id "
-                "WHERE le.output_version_id=?",
-                (version_id,),
+                "WHERE le.output_version_id=?" + producer_clause,
+                params,
             ).fetchall()
         return [
             {
@@ -1333,7 +1802,7 @@ class ArtifactRepository:
         column_to = "input_version_id" if direction == "up" else "output_version_id"
         with self._lock:
             rows = self._connection.execute(
-                f"SELECT {column_to} AS nxt FROM lineage_edges "
+                f"SELECT DISTINCT {column_to} AS nxt FROM lineage_edges "
                 f"WHERE {column_from}=?",
                 (version_id,),
             ).fetchall()

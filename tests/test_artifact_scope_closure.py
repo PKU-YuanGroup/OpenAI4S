@@ -77,11 +77,12 @@ def _seed_version(cfg, store, root_frame_id, project_id, filename, payload):
         content_type="text/csv",
         size_bytes=len(payload),
         checksum=hashlib.sha256(payload).hexdigest(),
-        producing_cell_id=None,
+        producing_cell_id=f"cell-{filename}",
         frame_id=root_frame_id,
         root_frame_id=root_frame_id,
         project_id=project_id,
         snapshot_path=str(snapshot),
+        reuse_matching_head=True,
     )
 
 
@@ -121,7 +122,13 @@ def test_agent_sql_cannot_read_the_artifacts_table(two_projects):
 
 @pytest.mark.parametrize(
     "table",
-    ["artifacts", "artifact_versions", "lineage_edges", "env_snapshots"],
+    [
+        "artifacts",
+        "artifact_versions",
+        "artifact_capture_observations",
+        "lineage_edges",
+        "env_snapshots",
+    ],
 )
 def test_agent_sql_cannot_read_any_internal_artifact_table(two_projects, table):
     _cfg, _store, service, _ours, _foreign = two_projects
@@ -194,6 +201,34 @@ def test_a_legitimate_query_still_works(two_projects):
     _cfg, _store, service, _ours, _foreign = two_projects
     rows = service.query({"sql": "SELECT 1 AS one"})
     assert rows == [{"one": 1}]
+
+
+def test_capture_observation_view_returns_only_the_callers_scope(two_projects):
+    _cfg, store, _service, ours, foreign = two_projects
+    mine = store.get_artifact(ours["artifact_id"])
+    rows = store.query(
+        "SELECT artifact_id,version_id,producing_cell_id "
+        "FROM my_artifact_capture_observations ORDER BY ordinal",
+        scope={
+            "root_frame_id": mine["root_frame_id"],
+            "project_id": mine["project_id"],
+        },
+    )
+    assert rows == [
+        {
+            "artifact_id": ours["artifact_id"],
+            "version_id": ours["version_id"],
+            "producing_cell_id": "cell-ours.csv",
+        }
+    ]
+    assert foreign["artifact_id"] not in repr(rows)
+
+
+def test_completion_delivery_ledger_is_never_agent_readable(two_projects):
+    _cfg, store, service, _ours, _foreign = two_projects
+    assert "completion_deliveries" not in store.schema()
+    with pytest.raises((PermissionError, ValueError)):
+        service.query({"sql": "SELECT * FROM completion_deliveries"})
 
 
 def test_agent_sql_cannot_write(two_projects):

@@ -67,17 +67,27 @@ notice that never exposes hidden reasoning or raw arguments. On successful
 submission, the Gateway projects the structured output, completion bullets,
 and actual Artifact-version delta into the final assistant message before the
 terminal frame event; a provider cannot leave the user with an empty reply.
+With Stage 1 trusted delivery enabled, every Artifact link in that final
+projection names an exact immutable `version_id` through the shared server URL
+helper's reserved `/api/v1/artifacts/versions/{version_id}` namespace. The
+verified manifest and assistant message commit before the
+link-bearing `text_chunk` is emitted.
 
-### Auto Mode boundary at Stage 0
+### Auto Mode boundary after Stage 1
 
-Stage 0 freezes the future Auto Mode product contract and adds only inert,
-default-off configuration reservations. The `autonomous`/on reservation is one
-normalized preset (`auto_fix` + `auto_review` + hard budget ceilings), not an
-independent permission tier. The running architecture above is
-unchanged: it does **not** yet create an immutable candidate/evidence snapshot,
-gate finalization on Scientific Review, start a Repair Agent, ask a Permission
-Guardian, or emit/persist `candidate`, `verified`, `completed_with_issues`,
-`review_unavailable`, or `blocked_by_guardian`.
+Stage 0 froze the future Auto Mode product contract and added default-off
+configuration reservations. Stage 1 graduates exactly one of them:
+`stage1_trusted_delivery`. It remains off by default. Enabling it adds the
+trusted Artifact-delivery, same-head capture-observation, and standard-profile
+readiness contracts described below; disabling it preserves the pre-Stage-1
+completion and admission behavior.
+
+The `autonomous`/on reservation is still one normalized future preset
+(`auto_fix` + `auto_review` + hard budget ceilings), not an independent
+permission tier. Stage 1 does **not** create an immutable candidate/evidence
+snapshot, gate finalization on Scientific Review, start a Repair Agent, ask a
+Permission Guardian, or emit/persist `candidate`, `verified`,
+`completed_with_issues`, `review_unavailable`, or `blocked_by_guardian`.
 
 The existing optional evidence Reviewer is a constrained single LLM call that
 runs after the final answer and persists an ordinary review step. It is not a
@@ -94,6 +104,65 @@ Guardian decisions. Their committed reason remains precise: policy setup,
 budget exhaustion, unknown external outcome, safe rollback unavailable, loop
 detection, or a hard/integrity `safety_boundary`. Selection precedence and the
 fixed finite budgets are frozen in the Auto Mode contract.
+
+#### Trusted Artifact delivery and capture observations
+
+The Stage 1 flag-on path treats delivery as an ordered, fail-closed protocol:
+
+1. Artifact capture streams the workspace file into a temporary snapshot,
+   verifies that the source identity, size, and time did not change while it
+   was read, fsyncs the bytes, and atomically publishes the immutable snapshot
+   before the version row can reference it.
+2. Completion accepts exact version identities only and re-reads each trusted
+   snapshot through a regular-file descriptor, checking its recorded size,
+   SHA-256, session, and project. A filename or mutable Artifact head is never
+   a substitute for a missing version.
+3. The final assistant message and its canonical verified manifest enter
+   SQLite in one transaction under an idempotency key. Only after that commit
+   may the Gateway emit the link-bearing `text_chunk`, carrying a stable
+   `delivery_id`. A lost socket publication leaves a committed message that
+   REST reopen recovers, plus a queryable delivery fact for explicit/future
+   reconciliation with the same id. The delivery ledger does not drive
+   automatic re-emission; the ordinary bounded WebSocket sequence buffer may
+   replay it while the turn remains live, and terminal/restart recovery uses
+   REST. A verification or audit failure publishes no success link.
+
+Session packages carry the delivery ledger beside the exact Artifact snapshots,
+but never reuse source identities or URLs. Import verifies the restored local
+snapshots, rebuilds each local manifest/URL, and atomically rebinds the remapped
+assistant message. An envelope without its ledger (or the reverse), a changed
+byte claim, or a partial bind rejects the package instead of projecting a link
+that cannot reopen.
+
+Artifact versions and capture observations answer different questions. A
+version answers “which bytes?”; an observation answers “which Cell captured
+these bytes on this occasion?”. When a flag-on capture has the same SHA-256 as
+the current head, it reuses that version rather than creating a fake new one,
+while appending a root/project-scoped observation for the new producing Cell,
+environment/source details, and input-version lineage. The reused version keeps
+its original producer and provenance. Stage 1 consumes these observations for
+the local delivery delta and exposes the latest version's scope-checked,
+path-free observations/producer frame through the Artifact lineage projection.
+That lets the Provenance UI identify a delegated child without pretending it
+was a root Notebook Cell. Session-package, share-snapshot, and Artifact-ZIP
+serialization do **not** yet include a portable observation ledger; a
+client-side metadata export only mirrors the current local lineage projection.
+Portability work belongs to Stage 2 and must not be inferred from the local
+table.
+
+Truthful capture also requires exclusive authorship of the shared workspace.
+With Stage 1 enabled, one per-session coordinator admits foreground capture,
+independent background kernels, and person-facing Artifact mutations as three
+mutually exclusive lifetime classes. Synchronous delegated children may nest
+under the owning foreground thread; asynchronous/fanout delegation is refused
+before work starts. Background admission spans worker creation through kernel
+cleanup, and an external mutation spans its durable write and final event.
+Session/branch/project lifecycle writers use the same root-stable execution and
+turn barriers, including state-replacement and deletion tombstones, so a stale
+`SessionState` cannot regain the workspace. Frameless uploads have no session
+state; a separate global reader/deletion barrier covers their shared `uploads/`
+namespace through project-row deletion and confined file cleanup. Flag-off
+paths preserve the previous admission behavior.
 
 ## The `host` singleton
 
@@ -127,7 +196,7 @@ host.submit_output(...)                         # scientific-cell completion
 - **stdout/stderr captured** so `print` never corrupts the protocol wire; **per-cell linecache tags** give accurate `error_lineno`.
 - **Synchronous host RPC mid-execution** — `host.llm(...)` blocks the cell, the host services it, the cell resumes.
 - **`getrusage`-based accounting** (wall / cpu / peak_rss) per cell.
-- **Bounded-depth delegation** — `host.delegate(...)` spawns concurrent sub-agents running the same loop (fanout cap 48, session cap 1000); children at `MAX_DEPTH` (4) become leaves that cannot re-delegate.
+- **Bounded-depth delegation** — `host.delegate(...)` spawns concurrent sub-agents running the same loop (fanout cap 48, session cap 1000); children at `MAX_DEPTH` (4) become leaves that cannot re-delegate. Under the opt-in Stage 1 trusted-delivery boundary, Web children share one workspace and capture authorship from exact Cell brackets, so asynchronous and fanout delegation fail closed before budget reservation; single synchronous children and nested synchronous chains remain available. Flag-off and standalone delegation retain their existing parallel behavior.
 - **Context compaction** — older turns are summarized past a token threshold; raw slices archived to disk.
 - **One scientific writer per session** — a FIFO execution coordinator exposes
   an exact owner, queue positions, and scoped cancellation; interrupts target an
@@ -257,8 +326,8 @@ implementation files. New behaviour goes to the owning class below:
 | `host/` | host capability behaviour | LLM, files, completion, data/lineage, delegation, progress, skills, MCP, endpoints, credentials, remote capability/science services |
 | `sdk/` | worker-facing `host.*` API | compatible host facade plus the independent compute namespace/job handles |
 | `store.py` | one SQLite connection, schema, migrations, query guard, and public facade | forwards domain operations without duplicating SQL |
-| `storage/` | persistence behaviour and transaction boundaries | frame/artifact plus Action Ledger, attempts, kernel generations, approvals, capability state, snapshots/branches, recovery, metadata/settings, plan/review, connector, and memory repositories |
-| `server/` | persistent Web-session operations | execution coordinator, Cell/artifact transactions, Timeline, session domain/checkpoints/recovery/export/renderers, plan/review/skills/title; `gateway.py` exposes the currently wired subset over stdlib HTTP/WebSocket |
+| `storage/` | persistence behaviour and transaction boundaries | frame/artifact/capture-observation and completion-delivery repositories plus Action Ledger, attempts, kernel generations, approvals, capability state, snapshots/branches, recovery, metadata/settings, plan/review, connector, and memory repositories |
+| `server/` | persistent Web-session operations | execution coordinator, Cell/artifact/delivery transactions, Timeline, session domain/checkpoints/recovery/export/renderers, plan/review/skills/title; `gateway.py` exposes the currently wired subset over stdlib HTTP/WebSocket |
 
 ### Schema versioning
 
@@ -372,10 +441,12 @@ Python/R variables can be inspected or restored.
 [`server/artifacts.py`](../openai4s/server/artifacts.py) owns the durable
 workspace side of that transaction: deliverable diffing, Python figure export,
 one environment/provenance snapshot per producing cell, version registration,
-immutable byte snapshots, and restore. Kernel system execution, remote
-provenance draining, event transport, and HTTP serialization remain injected
-Gateway ports, so the manager has no dependency on `SessionRunner`,
-`HostDispatcher`, or `WSHub`.
+immutable byte snapshots, and restore. In the Stage 1 flag-on path it freezes
+and verifies the snapshot before registration and asks the repository to reuse
+an identical current head while retaining a separate capture observation.
+Kernel system execution, remote provenance draining, event transport, and HTTP
+serialization remain injected Gateway ports, so the manager has no dependency
+on `SessionRunner`, `HostDispatcher`, or `WSHub`.
 
 Artifact ownership separates three identifiers: `frame_id` is the actual
 producer (including a delegated child), `root_frame_id` is the session and
@@ -395,6 +466,39 @@ runtime adapters also inject their workspace, interpreter, and environment into
 independent background-kernel factories, so the host never guesses where a
 relative path came from. Store lookup first uses the exact live path, then a
 physical-path fallback for legacy relative rows and symlink aliases.
+
+## Standard-profile readiness admission
+
+[`kernel/readiness.py`](../openai4s/kernel/readiness.py) is the Stage 1,
+local-only preflight for the shipped `standard` profile. It parses the direct
+dependency intent from `envs/python.yml` (32 normalized packages) and
+`envs/r.yml` (8), discovers the existing `python` and `r` environments, and
+compares their package metadata without importing a science package, starting
+an interpreter, contacting the network, or mutating an environment. An
+unreadable manifest, ambiguous environment, or unavailable package inventory
+is `unavailable`, never an empty-set guess presented as ready.
+
+With `stage1_trusted_delivery` enabled, daemon startup, the status API and the
+UI expose this projection before a task is sent. Admission itself belongs to
+the first routed Code Cell, not to the user message: native control tools and a
+sole `finalize_response` still run without starting a kernel. On the Web path,
+the action adapter checks before applying a pending environment switch and the
+Cell service checks again before allocating a Cell id, revision, attempt, or
+kernel. Direct Notebook Cells use the same second boundary. The CLI action
+adapter raises a typed refusal at the same point, after action routing but
+before its lazy Python/R worker or safety classifier is touched. Thus the first
+scientific symptom is the complete readiness report rather than an
+`ImportError` from a partially started computation. Approved/resumed plans are
+also checked before their status CAS because their execution contract requires
+scientific Cells and deliverables; plan drafting remains available. Daemon
+startup and `doctor` report the state but never repair it implicitly.
+
+The remediation is explicit and transactional:
+`openai4s env plan python r --repair` previews fresh generations, and
+`openai4s env apply python r --repair` builds them. Apply runs the actual
+Python/R interpreter and verifies the full direct standard-package set before
+moving the atomic `current` pointer. A failed build or incomplete generation
+therefore leaves the previously selected generation unchanged.
 
 ## The R execution channel
 

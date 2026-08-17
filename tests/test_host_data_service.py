@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from openai4s.config import Config, RoadmapFeatureFlags
 from openai4s.host.data import HostDataService, rank_artifacts
+from openai4s.store import get_store
 
 
 class FakeStore:
@@ -132,11 +136,21 @@ class FakeStore:
         return self.paths.get(path)
 
 
-def _service(tmp_path: Path, store: FakeStore | None = None):
+def _service(
+    tmp_path: Path,
+    store: FakeStore | None = None,
+    *,
+    trusted_delivery: bool = False,
+):
     actual_store = store or FakeStore()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    config = SimpleNamespace(artifacts_dir=tmp_path / "artifacts")
+    config = SimpleNamespace(
+        artifacts_dir=tmp_path / "artifacts",
+        roadmap_features=SimpleNamespace(
+            stage1_trusted_delivery=trusted_delivery,
+        ),
+    )
 
     def resolve(path, *, must_exist=False):
         result = (workspace / path).resolve()
@@ -151,6 +165,39 @@ def _service(tmp_path: Path, store: FakeStore | None = None):
         resolve_path=resolve,
     )
     return service, actual_store, workspace, config
+
+
+def _real_service(tmp_path: Path, *, trusted_delivery: bool):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = Config(
+        data_dir=tmp_path / "data",
+        roadmap_features=RoadmapFeatureFlags(
+            stage1_trusted_delivery=trusted_delivery,
+        ),
+    )
+    store = get_store(config.db_path)
+    frame_id = store.new_frame(project_id="science", status="ready")
+    workspace_root = workspace.resolve()
+
+    def resolve(path, *, must_exist=False):
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = workspace_root / candidate
+        result = candidate.resolve()
+        if result != workspace_root and workspace_root not in result.parents:
+            raise ValueError(f"path escapes the workspace: {path}")
+        if must_exist and not result.exists():
+            raise FileNotFoundError(result)
+        return result
+
+    service = HostDataService(
+        store=store,
+        config=config,
+        frame_id=frame_id,
+        resolve_path=resolve,
+    )
+    return service, store, workspace, config, frame_id
 
 
 def test_query_projection_and_schema_keep_store_contract(tmp_path):
@@ -297,6 +344,354 @@ def test_save_artifact_forwards_the_retrieval_envelope(tmp_path):
 
     record = next(call for call in store.calls if call[0] == "record_cell_artifact")
     assert record[1]["source"] == envelope
+
+
+def test_flag_off_provenance_record_preserves_legacy_record_shape(tmp_path):
+    service, store, workspace, config = _service(tmp_path, trusted_delivery=False)
+    source = workspace / "legacy-result.bin"
+    source.write_bytes(b"legacy-bytes")
+
+    result = service.provenance_record(
+        {
+            "path": source.name,
+            "filename": "published.bin",
+            "content_type": "application/octet-stream",
+            "producing_cell_id": "cell-legacy",
+        }
+    )
+
+    assert result == store.version
+    record = next(call for call in store.calls if call[0] == "record_cell_artifact")
+    assert record[1] == {
+        "path": str(source),
+        "filename": "published.bin",
+        "content_type": "application/octet-stream",
+        "size_bytes": len(b"legacy-bytes"),
+        "checksum": hashlib.sha256(b"legacy-bytes").hexdigest(),
+        "producing_cell_id": "cell-legacy",
+        "frame_id": "frame-1",
+        "input_version_ids": [],
+    }
+    assert not config.artifacts_dir.exists()
+
+
+@pytest.mark.parametrize("operation", ["save_artifact", "provenance_record"])
+def test_flag_off_real_host_capture_keeps_legacy_response_and_no_observation(
+    tmp_path, operation
+):
+    service, store, workspace, _config, _frame_id = _real_service(
+        tmp_path,
+        trusted_delivery=False,
+    )
+    source = workspace / "legacy-real.dat"
+    source.write_bytes(b"legacy-real-bytes")
+
+    try:
+        if operation == "save_artifact":
+            result = service.save_artifact(
+                {
+                    "path": source.name,
+                    "execution_cell_id": "cell-legacy",
+                }
+            )
+        else:
+            result = service.provenance_record(
+                {
+                    "path": source.name,
+                    "producing_cell_id": "cell-legacy",
+                }
+            )
+
+        assert set(result) == {
+            "artifact_id",
+            "version_id",
+            "filename",
+            "path",
+            "content_type",
+            "size_bytes",
+            "checksum",
+            "created_at",
+        }
+        assert (
+            store.list_artifact_capture_observations(version_id=result["version_id"])
+            == []
+        )
+        metadata = store.version_meta(result["version_id"])
+        if operation == "save_artifact":
+            assert Path(metadata["snapshot_path"]).read_bytes() == b"legacy-real-bytes"
+        else:
+            assert metadata["snapshot_path"] is None
+            assert result["path"] == str(source)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("operation", ["save_artifact", "provenance_record"])
+def test_trusted_host_capture_freezes_exact_bytes_before_the_store_call(
+    tmp_path, monkeypatch, operation
+):
+    service, store, workspace, config = _service(
+        tmp_path,
+        trusted_delivery=True,
+    )
+    source = workspace / "result.dat"
+    payload = b"trusted-exact-bytes\x00\xff"
+    source.write_bytes(payload)
+    original_record = store.record_cell_artifact
+    observed = []
+
+    def inspect_record(**fields):
+        snapshot = Path(fields["snapshot_path"])
+        snapshot_bytes = snapshot.read_bytes()
+        observed.append((snapshot, dict(fields)))
+        assert snapshot_bytes == payload
+        assert fields["size_bytes"] == len(snapshot_bytes)
+        assert fields["checksum"] == hashlib.sha256(snapshot_bytes).hexdigest()
+        assert fields["reuse_matching_head"] is True
+        store.metadata[store.version["version_id"]] = {
+            "snapshot_path": str(snapshot),
+        }
+        return original_record(**fields)
+
+    monkeypatch.setattr(store, "record_cell_artifact", inspect_record)
+    spec = {
+        "path": source.name,
+        "filename": "published.dat",
+        "content_type": "application/octet-stream",
+    }
+    if operation == "save_artifact":
+        spec["execution_cell_id"] = "cell-trusted"
+        result = service.save_artifact(spec)
+    else:
+        spec["producing_cell_id"] = "cell-trusted"
+        result = service.provenance_record(spec)
+
+    assert result["version_id"] == store.version["version_id"]
+    assert len(observed) == 1
+    snapshot, fields = observed[0]
+    assert snapshot.parent == config.artifacts_dir
+    assert snapshot.is_file()
+    source.write_bytes(b"later-mutable-workspace-bytes")
+    assert snapshot.read_bytes() == payload
+    if operation == "save_artifact":
+        assert fields["reuse_policy"] == "provisional"
+    else:
+        assert "reuse_policy" not in fields
+
+
+@pytest.mark.parametrize("operation", ["save_artifact", "provenance_record"])
+def test_trusted_host_capture_reuses_head_bytes_but_audits_each_cell(
+    tmp_path, operation
+):
+    service, store, workspace, config, frame_id = _real_service(
+        tmp_path,
+        trusted_delivery=True,
+    )
+    source = workspace / "same.dat"
+    payload = b"same-scientific-result"
+    source.write_bytes(payload)
+
+    try:
+        if operation == "save_artifact":
+            first = service.save_artifact(
+                {
+                    "path": source.name,
+                    "execution_cell_id": "cell-first",
+                }
+            )
+            second = service.save_artifact(
+                {
+                    "path": source.name,
+                    "execution_cell_id": "cell-second",
+                }
+            )
+        else:
+            first = service.provenance_record(
+                {
+                    "path": source.name,
+                    "producing_cell_id": "cell-first",
+                }
+            )
+            second = service.provenance_record(
+                {
+                    "path": source.name,
+                    "producing_cell_id": "cell-second",
+                }
+            )
+
+        assert first["version_id"] == second["version_id"]
+        artifact = store.artifact_by_filename(source.name, frame_id, strict=True)
+        assert artifact is not None
+        assert len(store.list_versions(artifact["artifact_id"])) == 1
+        observations = store.list_artifact_capture_observations(
+            version_id=first["version_id"]
+        )
+        assert [row["producing_cell_id"] for row in observations] == [
+            "cell-first",
+            "cell-second",
+        ]
+        assert observations[0]["capture_kind"] == "version_created"
+        assert observations[1]["capture_kind"] == "head_checksum_reused"
+
+        metadata = store.version_meta(first["version_id"])
+        snapshot = Path(metadata["snapshot_path"])
+        assert metadata["checksum"] == hashlib.sha256(payload).hexdigest()
+        assert snapshot.read_bytes() == payload
+        source.write_bytes(b"mutable-workspace-after-capture")
+        assert snapshot.read_bytes() == payload
+        assert list(config.artifacts_dir.iterdir()) == [snapshot]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("operation", ["save_artifact", "provenance_record"])
+def test_trusted_host_freeze_fault_never_reaches_the_store_or_leaves_bytes(
+    tmp_path, monkeypatch, operation
+):
+    service, store, workspace, config = _service(
+        tmp_path,
+        trusted_delivery=True,
+    )
+    source = workspace / "freeze-fault.dat"
+    source.write_bytes(b"must-not-be-claimed")
+
+    def fail_fsync(_descriptor):
+        raise OSError("injected freeze fault")
+
+    monkeypatch.setattr("openai4s.host.data.os.fsync", fail_fsync)
+    spec = {"path": source.name, "producing_cell_id": "cell-fault"}
+    if operation == "save_artifact":
+        spec = {"path": source.name, "execution_cell_id": "cell-fault"}
+        with pytest.raises(OSError, match="injected freeze fault"):
+            service.save_artifact(spec)
+    else:
+        result = service.provenance_record(spec)
+        assert result == {"error": f"prov_record: {source.name}: injected freeze fault"}
+
+    assert not any(call[0] == "record_cell_artifact" for call in store.calls)
+    assert config.artifacts_dir.is_dir()
+    assert list(config.artifacts_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["save_artifact", "provenance_record"])
+def test_trusted_host_rejects_mid_freeze_rewrite_with_restored_mtime(
+    tmp_path, monkeypatch, operation
+):
+    service, store, workspace, config, frame_id = _real_service(
+        tmp_path,
+        trusted_delivery=True,
+    )
+    source = workspace / "mid-freeze.dat"
+    original = b"A" * (1024 * 1024 + 4096)
+    replacement = b"B" * len(original)
+    source.write_bytes(original)
+    source_stat = source.stat()
+    source_identity = (source_stat.st_dev, source_stat.st_ino)
+    native_read = os.read
+    mutated = False
+
+    def rewrite_after_first_source_read(descriptor, size):
+        nonlocal mutated
+        chunk = native_read(descriptor, size)
+        descriptor_stat = os.fstat(descriptor)
+        if (
+            chunk
+            and not mutated
+            and (descriptor_stat.st_dev, descriptor_stat.st_ino) == source_identity
+        ):
+            mutated = True
+            with source.open("r+b", buffering=0) as stream:
+                stream.write(replacement)
+                os.fsync(stream.fileno())
+            os.utime(
+                source,
+                ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+            )
+        return chunk
+
+    monkeypatch.setattr("openai4s.host.data.os.read", rewrite_after_first_source_read)
+
+    try:
+        if operation == "save_artifact":
+            with pytest.raises(OSError, match="changed during snapshot freeze"):
+                service.save_artifact(
+                    {
+                        "path": source.name,
+                        "execution_cell_id": "cell-mid-freeze",
+                    }
+                )
+        else:
+            result = service.provenance_record(
+                {
+                    "path": source.name,
+                    "producing_cell_id": "cell-mid-freeze",
+                }
+            )
+            assert result == {
+                "error": (
+                    f"prov_record: {source.name}: "
+                    "artifact source changed during snapshot freeze"
+                )
+            }
+
+        assert mutated is True
+        assert source.stat().st_size == len(original)
+        assert source.stat().st_mtime_ns == source_stat.st_mtime_ns
+        assert (
+            store.list_artifacts({"root_frame_id": frame_id, "project_id": "science"})
+            == []
+        )
+        assert store.list_artifact_capture_observations() == []
+        assert (
+            store._conn.execute(  # noqa: SLF001 - assert no hidden version row
+                "SELECT COUNT(*) FROM artifact_versions"
+            ).fetchone()[0]
+            == 0
+        )
+        assert config.artifacts_dir.is_dir()
+        assert list(config.artifacts_dir.iterdir()) == []
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("operation", ["save_artifact", "provenance_record"])
+def test_trusted_host_store_fault_removes_prefreeze_and_persists_nothing(
+    tmp_path, operation
+):
+    service, store, workspace, config, frame_id = _real_service(
+        tmp_path,
+        trusted_delivery=True,
+    )
+    source = workspace / "store-fault.dat"
+    source.write_bytes(b"must-not-survive")
+    store._conn.execute(
+        "CREATE TRIGGER fail_host_capture_observation BEFORE INSERT "
+        "ON artifact_capture_observations "
+        "BEGIN SELECT RAISE(ABORT, 'injected store fault'); END"
+    )
+    store._conn.commit()
+    try:
+        spec = {"path": source.name, "producing_cell_id": "cell-fault"}
+        if operation == "save_artifact":
+            spec = {"path": source.name, "execution_cell_id": "cell-fault"}
+            call = service.save_artifact
+        else:
+            call = service.provenance_record
+        with pytest.raises(sqlite3.IntegrityError, match="injected store fault"):
+            call(spec)
+
+        assert list(config.artifacts_dir.iterdir()) == []
+        assert (
+            store.list_artifacts({"root_frame_id": frame_id, "project_id": "science"})
+            == []
+        )
+        assert store.list_artifact_capture_observations() == []
+        assert (
+            store._conn.execute("SELECT COUNT(*) FROM artifact_versions").fetchone()[0]
+            == 0
+        )
+    finally:
+        store.close()
 
 
 def test_frames_modes_validate_before_store_access(tmp_path):

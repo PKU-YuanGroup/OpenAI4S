@@ -23,6 +23,7 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, TimeoutError
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -563,14 +564,24 @@ class _DelegationTree:
         budget: DelegationBudget | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
         persistence_sink: Callable[[_Child], None] | None = None,
+        trusted_capture_admission: Callable[[], str | None] | None = None,
+        trusted_capture_lease: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.lock = threading.RLock()
+        # Stage 1 Web Artifact capture brackets a delegated Cell with a shared
+        # workspace snapshot. The gate is separate from ``lock`` so steering,
+        # cancellation and status reads remain live while one synchronous
+        # lineage owns capture. RLock is intentional: a child may synchronously
+        # delegate a grandchild on the same Host-RPC thread.
+        self.trusted_capture_gate = threading.RLock()
         self.budget = budget or DelegationBudget()
         self.message_sequence = 0
         self.children: dict[str, _Child] = {}
         self.event_sink = event_sink
         self.persistence_sink = persistence_sink
+        self.trusted_capture_admission = trusted_capture_admission
+        self.trusted_capture_lease = trusted_capture_lease
         self.clock = clock
 
     def allocate(
@@ -761,6 +772,9 @@ class DelegationRunner:
         owner_instance_id: str | None = None,
         runner_instance_id: str | None = None,
         workspace: str | Path | None = None,
+        cell_hooks_factory: Callable[[str], object] | None = None,
+        trusted_capture_admission: Callable[[], str | None] | None = None,
+        trusted_capture_lease: Callable[[], Any] | None = None,
     ) -> None:
         if depth < 0 or depth > MAX_DEPTH:
             raise ValueError(f"delegation depth must be between 0 and {MAX_DEPTH}")
@@ -781,6 +795,10 @@ class DelegationRunner:
         # never in the daemon's launch directory. None preserves the CLI
         # contract: each child resolves its own process cwd at run() start.
         self.workspace = workspace
+        # Web embedding supplies the Artifact boundary.  The delegation core
+        # only forwards this duck-typed hook and remains independent of server
+        # storage or UI projections.
+        self.cell_hooks_factory = cell_hooks_factory
         self.owner_instance_id = owner_instance_id or DELEGATION_PROCESS_INSTANCE_ID
         self.runner_instance_id = runner_instance_id or f"runner-{uuid.uuid4()}"
         if (
@@ -840,7 +858,13 @@ class DelegationRunner:
             budget=(budget or DelegationBudget(parent_frame_id)),
             event_sink=event_sink,
             persistence_sink=persistence_sink,
+            trusted_capture_admission=trusted_capture_admission,
+            trusted_capture_lease=trusted_capture_lease,
         )
+        if trusted_capture_admission is not None:
+            self._tree.trusted_capture_admission = trusted_capture_admission
+        if trusted_capture_lease is not None:
+            self._tree.trusted_capture_lease = trusted_capture_lease
         self.budget = self._tree.budget
         if event_sink is not None and self._tree.event_sink is None:
             self._tree.event_sink = event_sink
@@ -931,6 +955,12 @@ class DelegationRunner:
                 cancellation=_ChildCancellation(child),
                 context_policy=_SteeringContextPolicy(child_cfg, child, self._tree),
                 workspace=self.workspace,
+                cell_execution_hooks=(
+                    self.cell_hooks_factory(child_frame_id)
+                    if self.cell_hooks_factory is not None and child_frame_id
+                    else None
+                ),
+                delegated_cell_hooks_factory=self.cell_hooks_factory,
             )
             agent.dispatcher.set_child_execution_policy(execution_policy)
             if child.attach_agent(agent):
@@ -1015,6 +1045,74 @@ class DelegationRunner:
                 f"delegate fanout {len(items)} exceeds cap {FANOUT_CAP}; "
                 "split into multiple waves"
             )
+        if self.cell_hooks_factory is not None and (not wait or len(items) != 1):
+            # Stage 1's Web hook proves authorship by bracketing one child
+            # Code Cell with a shared-workspace snapshot and durable capture.
+            # Two children executing Cells concurrently can each observe the
+            # other's writes, so no directory-diff algorithm can truthfully
+            # attribute those bytes. Reject before reserving budget or creating
+            # child rows. Synchronous single-child delegation, including a
+            # nested chain, remains safe because the blocked ancestor cannot
+            # mutate the workspace while its child executes.
+            raise DelegationError(
+                "parallel delegation is unavailable while trusted Artifact "
+                "capture is enabled; delegate one child with wait=true"
+            )
+        if self.cell_hooks_factory is not None:
+            admission = self._tree.trusted_capture_admission
+            if admission is not None:
+                try:
+                    refusal = admission()
+                except BaseException:
+                    refusal = "trusted Artifact capture admission could not be verified"
+                if refusal:
+                    raise DelegationError(str(refusal))
+        lease = nullcontext()
+        if self.cell_hooks_factory is not None:
+            lease_factory = self._tree.trusted_capture_lease
+            if lease_factory is not None:
+                try:
+                    lease = lease_factory()
+                except BaseException as error:
+                    raise DelegationError(
+                        "trusted Artifact capture admission could not be verified"
+                    ) from error
+                if not callable(getattr(lease, "__enter__", None)) or not callable(
+                    getattr(lease, "__exit__", None)
+                ):
+                    raise DelegationError(
+                        "trusted Artifact capture admission could not be verified"
+                    )
+        with lease:
+            capture_gate = None
+            if self.cell_hooks_factory is not None:
+                capture_gate = self._tree.trusted_capture_gate
+                if not capture_gate.acquire(blocking=False):
+                    # Waiting would strand a parent Cell behind work it is
+                    # itself awaiting, so contention is an admission refusal
+                    # rather than a queue.
+                    raise DelegationError(
+                        "another delegated child owns trusted Artifact capture; "
+                        "wait for it to finish before delegating again"
+                    )
+            try:
+                return self._call_admitted(
+                    spec, items, is_list=is_list, wait=bool(wait)
+                )
+            finally:
+                if capture_gate is not None:
+                    capture_gate.release()
+
+    def _call_admitted(
+        self,
+        spec: dict[str, Any],
+        items: list[Any],
+        *,
+        is_list: bool,
+        wait: bool,
+    ) -> Any:
+        """Spawn after trusted-capture admission has become exclusive."""
+
         child_specs = [_normalize_item(item, spec) for item in items]
         if self.parent_child_id is not None:
             with self._tree.lock:
@@ -1024,6 +1122,10 @@ class DelegationRunner:
             child_specs = [
                 _apply_parent_execution_ceiling(child_spec, parent.spec)
                 for child_spec in child_specs
+            ]
+        if self.cell_hooks_factory is not None:
+            child_specs = [
+                _apply_trusted_capture_ceiling(child_spec) for child_spec in child_specs
             ]
         for child_spec in child_specs:
             try:
@@ -1092,6 +1194,18 @@ class DelegationRunner:
         with self._tree.lock:
             direct = list(self._children.values())
         return [child.snapshot() for child in direct]
+
+    def set_trusted_capture_admission(
+        self, admission: Callable[[], str | None] | None
+    ) -> None:
+        """Update the shared tree's Web-owned capture precondition."""
+
+        self._tree.trusted_capture_admission = admission
+
+    def set_trusted_capture_lease(self, lease: Callable[[], Any] | None) -> None:
+        """Update the shared tree's atomic capture lifetime."""
+
+        self._tree.trusted_capture_lease = lease
 
     def collect(self, spec: dict[str, Any]) -> list[dict[str, Any]]:
         child_ids = spec.get("child_ids")
@@ -1352,6 +1466,19 @@ def _apply_parent_execution_ceiling(
                 merged.pop(key, None)
             else:
                 merged[key] = sorted(narrowed)
+    return merged
+
+
+def _apply_trusted_capture_ceiling(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Forbid asynchronous child kernels that outlive capture ownership."""
+
+    merged = dict(spec)
+    permissions = dict(child_execution_policy(merged).permissions)
+    # This is a mandatory Stage 1 provenance ceiling, not a caller preference.
+    # It is applied after nested-policy merging so neither an unrestricted
+    # child nor an explicit allow can widen it back open.
+    permissions["background"] = "deny"
+    merged["permissions"] = permissions
     return merged
 
 
