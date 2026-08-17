@@ -148,6 +148,7 @@ def test_setup_only_accepts_each_documented_environment(name):
         (["init", "--help"], "--api-key-stdin"),
         (["setup", "--help"], "--only"),
         (["setup", "--help"], "--dry-run"),
+        (["benchmark", "--help"], "--acceptance"),
         (["jupyter", "describe", "--help"], "--json"),
         (["jupyter", "export", "--help"], "--language"),
         (["jupyter", "install", "--help"], "--prefix"),

@@ -10,13 +10,15 @@ from pathlib import Path
 from typing import Sequence
 
 from .runner import run_scenario
+from .schema import ScenarioValidationError, load_scenario
 
 #: Which runner a scenario goes to. Dispatch by surface rather than by
 #: directory: a scenario's own declaration is the thing under review, and a
 #: file that moved would otherwise change how it is executed without
 #: changing a single line a reviewer reads.
 _ORCHESTRATION_SURFACE = "orchestration"
-from .schema import ScenarioValidationError, load_scenario
+_AUTO_MODE_CONTRACT_SURFACE = "auto_mode_contract"
+_AUTO_MODE_TERMINAL_CONTRACT_SURFACE = "auto_mode_terminal_contract"
 
 _DEFAULT_SCENARIOS = Path(__file__).resolve().parent / "scenarios"
 _DEFAULT_GOLDEN = (
@@ -80,6 +82,8 @@ def _run(args: argparse.Namespace) -> int:
     seen_ids: dict[str, Path] = {}
     excluded_offline: set[str] = set()
     excluded_tier: set[str] = set()
+    attempted_ids: set[str] = set()
+    validation_failures = {"contract_only": 0, "production_backed": 0}
     for path in _scenario_paths(args.scenario_dir):
         try:
             scenario = load_scenario(path)
@@ -101,14 +105,35 @@ def _run(args: argparse.Namespace) -> int:
         if args.offline and not scenario.is_offline:
             excluded_offline.add(scenario.id)
             continue
-        if scenario.surface == _ORCHESTRATION_SURFACE:
-            from .orchestration import run_orchestration_scenario
+        production_backed = scenario.surface == _ORCHESTRATION_SURFACE
+        attempted_ids.add(scenario.id)
+        try:
+            if scenario.surface == _ORCHESTRATION_SURFACE:
+                from .orchestration import run_orchestration_scenario
 
-            results.append(run_orchestration_scenario(scenario, offline=args.offline))
-        else:
-            results.append(run_scenario(scenario, offline=args.offline))
+                result = run_orchestration_scenario(scenario, offline=args.offline)
+            elif scenario.surface == _AUTO_MODE_CONTRACT_SURFACE:
+                from .auto_mode_contract import run_auto_mode_contract
 
-    found_ids = {result.scenario_id for result in results}
+                result = run_auto_mode_contract(scenario, offline=args.offline)
+            elif scenario.surface == _AUTO_MODE_TERMINAL_CONTRACT_SURFACE:
+                from .auto_mode_terminal_contract import (
+                    run_auto_mode_terminal_contract,
+                )
+
+                result = run_auto_mode_terminal_contract(scenario, offline=args.offline)
+            else:
+                result = run_scenario(scenario, offline=args.offline)
+        except ScenarioValidationError as exc:
+            load_errors.append(f"{path}: {exc}")
+            bucket = "production_backed" if production_backed else "contract_only"
+            validation_failures[bucket] += 1
+            continue
+        results.append((result, production_backed))
+
+    # A runner validation failure is already one selected failure. Keep its id
+    # here so the requested-id check cannot count it again as "not found".
+    found_ids = attempted_ids
     for scenario_id in sorted(selected_ids - found_ids):
         if scenario_id in excluded_offline:
             load_errors.append(
@@ -128,23 +153,45 @@ def _run(args: argparse.Namespace) -> int:
 
     for error in load_errors:
         print(f"ERROR {error}")
-    for result in results:
+    for result, production_backed in results:
+        prefix = "PRODUCTION" if production_backed else "CONTRACT"
         state = "PASS" if result.passed else "FAIL"
         print(
-            f"{state} {result.scenario_id} events={len(result.events)} "
+            f"{prefix}_{state} production={str(production_backed).lower()} "
+            f"{result.scenario_id} events={len(result.events)} "
             f"sha256={result.trace_sha256}"
         )
         for error in result.errors:
             print(f"  {error}")
-    failed = len(load_errors) + sum(not result.passed for result in results)
+    failed = len(load_errors) + sum(not result.passed for result, _ in results)
+
+    def bucket_summary(production_backed: bool) -> dict[str, int]:
+        name = "production_backed" if production_backed else "contract_only"
+        selected_results = [
+            result
+            for result, is_production in results
+            if is_production is production_backed
+        ]
+        validation_failed = validation_failures[name]
+        return {
+            "selected": len(selected_results) + validation_failed,
+            "passed": sum(result.passed for result in selected_results),
+            "failed": sum(not result.passed for result in selected_results)
+            + validation_failed,
+        }
+
+    contract_only = bucket_summary(False)
+    production_backed = bucket_summary(True)
     summary = {
         "schema_version": 1,
         "tier": args.tier,
         "offline": bool(args.offline),
-        "selected": len(results),
-        "passed": sum(result.passed for result in results),
+        "selected": len(results) + sum(validation_failures.values()),
+        "passed": sum(result.passed for result, _ in results),
         "failed": failed,
         "load_errors": len(load_errors),
+        "contract_only": contract_only,
+        "production_backed": production_backed,
     }
     print("SUMMARY " + json.dumps(summary, sort_keys=True, separators=(",", ":")))
     if not results:

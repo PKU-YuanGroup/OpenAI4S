@@ -68,6 +68,33 @@ submission, the Gateway projects the structured output, completion bullets,
 and actual Artifact-version delta into the final assistant message before the
 terminal frame event; a provider cannot leave the user with an empty reply.
 
+### Auto Mode boundary at Stage 0
+
+Stage 0 freezes the future Auto Mode product contract and adds only inert,
+default-off configuration reservations. The `autonomous`/on reservation is one
+normalized preset (`auto_fix` + `auto_review` + hard budget ceilings), not an
+independent permission tier. The running architecture above is
+unchanged: it does **not** yet create an immutable candidate/evidence snapshot,
+gate finalization on Scientific Review, start a Repair Agent, ask a Permission
+Guardian, or emit/persist `candidate`, `verified`, `completed_with_issues`,
+`review_unavailable`, or `blocked_by_guardian`.
+
+The existing optional evidence Reviewer is a constrained single LLM call that
+runs after the final answer and persists an ordinary review step. It is not a
+completion gate and its historical `auto_review` name is not the new Auto Mode.
+Later stages will add the durable supervisor/services around the
+provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
+permission product modes. See [Auto Mode contract](auto-mode.md) for the exact
+future entry, recovery, projection, and safety rules.
+
+The future Guardian is downstream only of deterministic `ask`. Existing hard
+policy, sandbox, egress, biosecurity, secret/credential, cost, action-digest,
+and audit-persistence controls always keep priority and are never relabelled as
+Guardian decisions. Their committed reason remains precise: policy setup,
+budget exhaustion, unknown external outcome, safe rollback unavailable, loop
+detection, or a hard/integrity `safety_boundary`. Selection precedence and the
+fixed finite budgets are frozen in the Auto Mode contract.
+
 ## The `host` singleton
 
 Inside the Python science kernel, audited Host capabilities are exposed through

@@ -1,6 +1,9 @@
 # `workflows/`
 
-带版本的科学工作流基准清单。十个 workflow、共 20 个用例，每个都是一份声明「这次运行应该做什么、做到什么才算做到」的 JSON。
+带版本的科学工作流基准清单：十个 workflow、共 20 个用例，每份 workflow
+JSON 都声明「这次运行应该做什么、做到什么才算做到」。根目录的
+`next-round-acceptance.json` 是独立的 Stage 0 现场/安全验收包，不是第十一个
+科学 workflow。
 
 它们放在仓库里而不是 fixture 目录里只有一个理由：用例的改动必须是一份可评审的 diff。执行它们的 runner 在 [`openai4s/benchmark/`](../openai4s/benchmark/README_zh.md)，它走的每一步都驱动生产代码——真实的 Store、真实的 kernel manager、真实的 host dispatcher、真实的 compute manager。被注入的只有离线跑不了的那些：模型、网络，以及包管理器。
 
@@ -8,6 +11,7 @@
 
 | Workflow | 覆盖什么 |
 | --- | --- |
+| [`next-round-acceptance.json`](next-round-acceptance.json) | Stage 0 严格验收包：六条现场路径、七类安全动作和明确分母的基线指标 |
 | [`artifact-lineage/`](artifact-lineage/README_zh.md) | 派生产物携带 lineage |
 | [`environment-provenance/`](environment-provenance/README_zh.md) | 产物环境 provenance |
 | [`environment-transaction/`](environment-transaction/README_zh.md) | 环境 plan → apply → rollback |
@@ -18,3 +22,11 @@
 | [`remote-compute/`](remote-compute/README_zh.md) | 远程任务 submit → poll → harvest |
 | [`science-retrieval/`](science-retrieval/README_zh.md) | 科学数据检索与来源证据 |
 | [`telemetry-identity/`](telemetry-identity/README_zh.md) | 遥测身份随撤销一同销毁 |
+
+使用 `openai4s benchmark --acceptance --json` 一键重放 Stage 0 严格验收包并
+生成可直接用作 gate 的 JSON。匹配当前缺口只会标为 `BASELINE`，不会算作
+现有能力。loader 会在一个 `pack_version` 下冻结 manifest 的路径 ID、claim、
+execution mode、断言键、期望值和规范化内容 digest；未经评审的版本／digest
+更新就做语义改动，会被拒绝而不是悄悄改变基线。
+当前 `2026-08-16.2` manifest 强制要求 Reviewer 观察证明正式 workspace
+fingerprint 没有变化。

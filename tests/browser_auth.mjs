@@ -40,8 +40,15 @@ export function daemonToken() {
 // Deliberately the query-string bootstrap rather than injecting a header on
 // every call: this is the path a real browser takes, so the harness exercises
 // the 303 and the cookie hand-off instead of routing around them.
-export async function authenticate(page, baseUrl) {
-  const token = daemonToken();
+export async function authenticate(page, baseUrl, explicitToken = undefined) {
+  // Security-sensitive harnesses may validate and open a particular token
+  // file themselves, then pass the captured value here. In that mode never
+  // perform a second environment/default-directory lookup: doing so would
+  // reopen a TOCTOU window after the caller's validation.
+  const token =
+    explicitToken === undefined
+      ? daemonToken()
+      : String(explicitToken || "").trim() || null;
   if (!token) return null;
   const url = new URL(baseUrl);
   url.searchParams.set("token", token);

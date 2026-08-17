@@ -1242,7 +1242,40 @@ def cmd_env_recover(args) -> int:
 
 def cmd_benchmark(args) -> int:
     """Run the versioned workflow benchmark against the real subsystems."""
-    from openai4s.benchmark import load_workflows, run_all
+    from openai4s.benchmark import load_workflows, run_acceptance_pack, run_all
+
+    if getattr(args, "acceptance", False):
+        report = run_acceptance_pack()
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            for item in report["field_paths"]:
+                if not item["pass"]:
+                    mark = "FAIL"
+                elif item["claim"] == "capability":
+                    mark = "CAPABILITY"
+                else:
+                    mark = "BASELINE"
+                status = item["observed"].get("status", "unknown")
+                print(f"  [{mark:10}] {item['id']} — {status}")
+            for item in report["safety_actions"]:
+                mark = "ok" if item["pass"] else "FAIL"
+                decision = item["observed"].get("effective_decision", "unknown")
+                print(f"  [{mark:10}] safety:{item['id']} — {decision}")
+            summary = report["summary"]
+            print(
+                "\n"
+                f"{summary['capability_passes']} current capability path(s), "
+                f"{summary['baseline_observations_reproduced']} baseline gap/behavior "
+                "observation(s) reproduced, "
+                f"{summary['field_path_failures']} field failure(s), "
+                f"{summary['safety_action_failures']} safety failure(s)"
+            )
+            print(
+                "A BASELINE match reproduces current behavior; it does not claim "
+                "that an incomplete capability works."
+            )
+        return 0 if report["pass"] else 1
 
     if args.list:
         for workflow in load_workflows():
@@ -1836,7 +1869,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="run the versioned workflow benchmark against the real subsystems",
     )
     pb.add_argument("--json", action="store_true", help="machine-readable report")
-    pb.add_argument("--list", action="store_true", help="list workflows and cases")
+    benchmark_mode = pb.add_mutually_exclusive_group()
+    benchmark_mode.add_argument(
+        "--list", action="store_true", help="list workflows and cases"
+    )
+    benchmark_mode.add_argument(
+        "--acceptance",
+        action="store_true",
+        help="replay the Stage 0 field-and-safety baseline pack",
+    )
     pb.set_defaults(fn=cmd_benchmark)
 
     pe = sub.add_parser(

@@ -14,6 +14,60 @@ minimal server (`openai4s/server/daemon.py`, `POST /run`) was removed rather
 than documented: nothing imported it and it had none of the gateway's Host,
 Origin, token or header defences.
 
+### Auto Mode API status at Stage 0
+
+The new Auto Mode API and state vocabulary are **not implemented in this
+contract version**. The only planned route names are explicitly versioned as
+`GET/PATCH /api/v1/frames/{fid}/auto-mode` and
+`GET /api/v1/frames/{fid}/auto-audits?subject_kind=&before=&limit=`; neither
+exists yet, and there will be no unversioned or alternate alias. There is
+likewise no durable or WebSocket event named `auto_run_started`,
+`candidate_ready`, `auto_audit_started`, `auto_audit_completed`,
+`repair_started`, `repair_completed`, or `auto_run_terminal`, and `candidate`,
+`verified`, `completed_with_issues`, `review_unavailable`, and
+`blocked_by_guardian` are not currently emitted or stored frame statuses.
+
+`auto_audit_started` and `auto_audit_completed` are the sole planned wire and
+storage event names for both audit kinds. Their required `subject_kind` is
+`result_review` or `permission_review`; phrases such as “review started” and
+“Guardian completed” are domain descriptions, not additional event types or
+aliases. One durable event id names one committed transition, so an adapter
+must never duplicate it under a second name. The existing `permission_resolved`
+event remains canonical; later stages add `resolution_actor` and `audit_id` to
+that event after the corresponding durable transaction rather than inventing a
+second permission-resolution event.
+
+The planned audit envelope also requires an orthogonal
+`subject_entity_kind`: `result_review` pairs only with
+`candidate_evidence_snapshot`, and `permission_review` pairs only with
+`approval_action`. Entity values must not be placed in `subject_kind` and do
+not create event aliases. A started/completed pair shares one `audit_id` and
+one `audit_request_digest`, which binds only the immutable request and subject.
+`auto_audit_completed` additionally carries the canonical assessment and a
+separate `assessment_digest` binding the request digest, subject fields,
+attempt, verdict/decision, findings, risk, authorization, outcome, rationale,
+failure, durability, and retry state. Request and assessment digests are not
+interchangeable; the server must fail closed on reuse, substitution, or an
+assessment hash mismatch.
+
+The existing per-frame `auto_review` preference still starts the legacy,
+single-call evidence Reviewer after the answer has already been finalized. Its
+ordinary `step`/`step_update` records do not promote or veto `frame_update`, and
+reopen/share/export must not reinterpret such a step as a new Auto Mode
+terminal fact. Stage 0's default-off config values are inert reservations, not
+API capability. The future truth and recovery rules are frozen in the
+[Auto Mode product contract](auto-mode.md).
+
+A future `blocked_by_guardian` projection requires a durable Guardian assessment
+of a deterministic `ask`. Sandbox, egress, secret/credential, biosecurity,
+cost, deterministic hard-deny, action-digest mismatch, and permission-audit
+persistence controls remain prior to Guardian; the API/UI must not claim
+Guardian made those decisions. Projection follows the committed reason:
+`policy_requires_explicit_setup`, `budget_exhausted`,
+`safe_rollback_unavailable`, `outcome_unknown`, `loop_detected`, or the
+hard/integrity `safety_boundary`, with the user truth frozen in the Auto Mode
+contract.
+
 ## 1. Transport and general behavior
 
 - Server: stdlib `http.server.BaseHTTPRequestHandler`, `HTTP/1.1`

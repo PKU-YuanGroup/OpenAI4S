@@ -14,6 +14,7 @@ and the internal plans in this directory are not published by that site.
 | --- | --- |
 | `architecture.md` | Current dual-loop architecture and Host API overview; compatibility entry for contributors. |
 | `ark-agent-plan-9.9.png` | Volcengine Ark Agent Plan pricing screenshot displayed by the repository's root README. |
+| `auto-mode.md` | Stage 0's frozen Auto Mode product contract: normalized preset and precedence, finite budget ceilings, provisional/terminal truth, durable evidence, recovery, projection rules, and later-stage safety invariants. It explicitly marks the new states and routes as not implemented yet. |
 | `backend-extension-guide.md` | Current extension seams: where a new tool, Host service, storage repository, provider, Skill, or Web session service is meant to plug in. |
 | `backend-refactor-architecture.md` | Historical backend-refactor design record. It says what was agreed, so it is not proof of current end-to-end behavior. |
 | `compute.md` | Remote compute, the BYOC providers, and `host.fold`: how they behave and where their limits are. |

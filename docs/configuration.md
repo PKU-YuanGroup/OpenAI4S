@@ -102,6 +102,79 @@ exposes to an unauthenticated caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 
+## Auto Mode roadmap reservations (Stage 0)
+
+Stage 0 reserves configuration names for the ordered Stage 1–12 rollout. Every
+flag defaults off and no runtime component consumes any of them yet. Setting a
+flag in this version therefore does **not** enable the named behavior, change
+completion, or grant permission; each later Stage must wire only its own flag
+after its Go/No-Go gate passes.
+
+| Config field under `Config.roadmap_features` | Environment variable | Reserved behavior |
+| --- | --- | --- |
+| `stage1_trusted_delivery` | `OPENAI4S_STAGE1_TRUSTED_DELIVERY` | Artifact delivery, deduplication, and environment readiness. |
+| `stage2_auto_run_storage` | `OPENAI4S_STAGE2_AUTO_RUN_STORAGE` | Durable Auto Run/review/finding/decision records and events. |
+| `stage3_scientific_review_shadow` | `OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW` | Immutable-evidence Scientific Reviewer shadow mode. |
+| `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Candidate-to-reviewed-final completion gate. |
+| `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Bounded Repair Agent and independent re-review loop. |
+| `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Exact-action Permission Guardian shadow adjudication. |
+| `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | One-shot Guardian enforcement and unified Auto Mode UX. |
+| `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Live Notebook and cross-language version lineage. |
+| `stage9_artifact_workbench` | `OPENAI4S_STAGE9_ARTIFACT_WORKBENCH` | Interactive Artifact workbench and Ketcher. |
+| `stage10_scientific_connectors` | `OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS` | ClinVar, literature, and trials connector product path. |
+| `stage11_durable_remote_compute` | `OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE` | Durable remote-compute submit/reconcile/cancel. |
+| `stage12_auto_mode_ga` | `OPENAI4S_STAGE12_AUTO_MODE_GA` | Hardening/rollout/GA controls. |
+
+The reserved product selections live under `Config.auto_mode`:
+
+| Environment variable | Allowed values | Default |
+| --- | --- | --- |
+| `OPENAI4S_AUTO_MODE` | `0/1`, `false/true`, `no/yes`, `off/on`, `autonomous` | off |
+| `OPENAI4S_RESULT_REVIEW_MODE` | `off`, `review_only`, `auto_fix` | `off` |
+| `OPENAI4S_APPROVALS_REVIEWER` | `user`, `auto_review` | `user` |
+
+These are closed vocabularies. An unknown or explicitly blank value (including
+a misspelled boolean such as `flase`) rejects configuration rather than
+becoming truthy. `on`/`autonomous` is one non-contradictory preset: it always
+normalizes the effective sub-modes to `auto_fix` + `auto_review`. Explicit
+sub-modes apply only while the preset is off.
+
+The preset's frozen ceilings live under `Config.auto_mode.budgets`; an
+environment override may tighten but never exceed them. The rolling circuit
+window is fixed at 50 so changing its denominator cannot weaken the rate rule:
+
+| Config field | Environment variable | Ceiling |
+| --- | --- | ---: |
+| `max_review_rounds` | `OPENAI4S_AUTO_MAX_REVIEW_ROUNDS` | 2 attempts per candidate |
+| `max_repair_rounds` | `OPENAI4S_AUTO_MAX_REPAIR_ROUNDS` | 2 |
+| `repair_turns_per_round` | `OPENAI4S_AUTO_REPAIR_TURNS_PER_ROUND` | 12 |
+| `max_extra_cells` | `OPENAI4S_AUTO_MAX_EXTRA_CELLS` | 30 |
+| `wall_time_s` | `OPENAI4S_AUTO_WALL_TIME_S` | 900 |
+| `extra_token_multiplier` | `OPENAI4S_AUTO_EXTRA_TOKEN_MULTIPLIER` | 1.5 |
+| `repeated_finding_limit` | `OPENAI4S_AUTO_REPEATED_FINDING_LIMIT` | 2 |
+| `same_action_no_delta_limit` | `OPENAI4S_AUTO_SAME_ACTION_NO_DELTA_LIMIT` | 3 |
+| `no_progress_turn_limit` | `OPENAI4S_AUTO_NO_PROGRESS_TURN_LIMIT` | 5 |
+| `guardian_timeout_s` | `OPENAI4S_AUTO_GUARDIAN_TIMEOUT_S` | 90 |
+| `guardian_consecutive_denial_limit` | `OPENAI4S_AUTO_GUARDIAN_CONSECUTIVE_DENIAL_LIMIT` | 3 |
+| `guardian_window_size` | `OPENAI4S_AUTO_GUARDIAN_WINDOW_SIZE` | fixed 50 |
+| `guardian_window_denial_limit` | `OPENAI4S_AUTO_GUARDIAN_WINDOW_DENIAL_LIMIT` | 10 |
+
+When later stages add durable selection, precedence is import quarantine
+(forces off/user) → explicit frame → explicit project → explicitly configured
+deployment → legacy `review:auto:{root}` → built-in defaults. Legacy true maps
+only to `review_only`; it can never enable repair or permission automation. An
+unset deployment value is distinct from an explicit off for migration. Hard
+sandbox, egress, biosecurity, secret/credential, cost, and deterministic
+permission policy remains outside and above this precedence order. None is
+attributed to Guardian. Its durable reason separately projects policy setup,
+budget exhaustion, safe rollback unavailable, unknown external outcome, loop
+detection, or a hard/integrity safety boundary; the subsystem name alone never
+chooses the terminal label.
+
+Auto Mode is a future bounded preset, not full access. The authoritative
+budget, state, recovery, and projection meanings are in the
+[Auto Mode product contract](auto-mode.md).
+
 ## Optional Jupyter adapter
 
 The daemon and KernelSpec tooling remain zero-dependency. Install the optional

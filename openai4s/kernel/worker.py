@@ -41,6 +41,7 @@ import sys
 import threading
 import time
 import traceback
+from functools import partial
 
 MAX_OUTPUT = 1_000_000  # 1M-character head cap on captured cell output
 _DISCARD_BUDGET = 8  # bounded discard for desync
@@ -540,7 +541,7 @@ def _drain_skill_sidecar_loads() -> list[dict]:
     return captured
 
 
-def _install_host(ns: dict) -> None:
+def _install_host(ns: dict, *, mode: str) -> None:
     try:
         from openai4s.sdk.host import build_host
 
@@ -548,7 +549,6 @@ def _install_host(ns: dict) -> None:
         # manager sets OPENAI4S_KERNEL_MODE ("repl" control-plane vs "python"/"R"
         # analysis). An analysis kernel is spliced without frames/query/mcp/
         # delegate — those symbols are genuinely absent (AttributeError).
-        mode = os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
         # A remote worker has no OPENAI4S_KERNEL_GENERATION -- the transport
         # branch of `Kernel._spawn` never builds a child environment -- so it
         # takes the value the Host handed back on the handshake. Passed at
@@ -751,15 +751,28 @@ def _bounded_format_exc(exc: BaseException) -> str:
     return buf.captured()
 
 
-def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
+def _run_cell(
+    code: str,
+    cell_id: str,
+    origin: str = "agent",
+    *,
+    kernel_mode: str | None = None,
+) -> dict:
     global _CELL_SEQ
     _CELL_SEQ += 1
     tag = f"<kernel:{_CELL_SEQ}>"
     _register_cell(code, tag)
     _ACTIVE_CELL_ID[0] = cell_id
 
-    if "host" not in _NS:
-        _install_host(_NS)
+    # The optional Jupyter adapter is a standalone language kernel, not a
+    # second Agent/Host control plane.  Its public contract promises no Host
+    # RPC or Gateway provenance capture, so do not install either facade in
+    # that mode.  Other modes keep the long-standing lazy installation.
+    # Protocol workers receive the startup-captured value from ``main``.
+    # Direct in-process callers retain the historical environment fallback.
+    mode = kernel_mode or os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
+    if mode != "jupyter" and "host" not in _NS:
+        _install_host(_NS, mode=mode)
 
     # tell the provenance layer which cell any lineage writes belong to
     try:
@@ -1154,6 +1167,15 @@ def _install_audit_hook() -> None:
 def main() -> None:
     _setup_protocol_channels()
     _install_audit_hook()
+    # Kernel mode is process identity established by the manager at spawn.
+    # Capture both it and the runner object in this driver frame. This keeps
+    # ordinary cell mutations of ``os.environ`` and ``__main__`` globals from
+    # changing how a later protocol request is admitted. The manager's absent
+    # dispatcher remains the independent authority that rejects Jupyter Host
+    # RPC even if arbitrary in-process Python tampers with implementation
+    # details beyond this namespace-isolation contract.
+    kernel_mode = os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
+    run_cell = partial(_run_cell, kernel_mode=kernel_mode)
     while True:
         raw_line = _readline_protocol()
         if not raw_line:
@@ -1182,7 +1204,7 @@ def main() -> None:
         if rtype == "shutdown":
             break
         if rtype == "execute":
-            resp = _run_cell(
+            resp = run_cell(
                 req.get("code", ""),
                 req.get("id", "unknown"),
                 req.get("origin", "agent"),

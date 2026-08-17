@@ -6,6 +6,11 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 
 这里的东西都带版本、只用标准库，也不在生产代码的 import 图里。通用 runner 只验证 Harness 自身的 schema/event/fault 循环，刻意不导入生产运行时。目前的例外是三个文件，而且它们的例外方式并不相同：`characterize.py` 隔着标准库 `unittest.mock` 的 fake 去驱动选定的生产入口；action-routing 与 retrosynthesis-backend 这两个 eval 则是拿录制好的输入直接调用一个生产函数——`openai4s/agent/actions.py` 里的 router，以及内置 retrosynthesis Skill 里的响应规范化函数——这里不需要 fake，因为根本没有活的边界需要顶替。
 
+`auto_mode_contract.py` 同样与生产实现无关。它是 Stage 0 为拟议 Auto Mode 用户状态建立的契约适配器，不是“生产状态机已经存在”的证据。它在每条 trace 中都明确写出这一点，并钉住后续 Stage 必须实现的事件顺序和失败即拒绝语义。
+规范的 identity、candidate、完整且冻结的 evidence、Artifact 集合、action、仅含请求侧事实的 review policy、audit request 和 completion assessment digest 都从严格规范 JSON 计算，再与单独审阅的 `golden_traces/v1/auto_mode_contract_expected.json` 比较；只改场景自身的预期结果无法让场景自证通过。Material finding 与 termination basis 属于响应侧 assessment 事实，既不会泄漏到临时候选，也不会被 audit request 预先承诺。Hash mismatch 场景会重新散列实际发生变异的 runtime fixture，而不接受调用方声称的 observed digest。完整 evidence snapshot 必须恰好一次引用每个已声明的 Artifact／provenance 版本。Stage 0 的 `allow_once` trace 只接受封闭的内部 `results/` 文件写类别，action 自报的风险标签不能扩大这个集合。
+
+`auto_mode_terminal_contract.py` 单独冻结五类非 Guardian 控制面停止原因：需要显式策略配置、预算耗尽、缺少安全回滚、外部结果未知和循环检测。这些停止原因不是 Auto Mode 用户状态，也不会借用 Reviewer 或 Guardian 的审计字段。Adapter 校验各原因专属的失败即关闭条件、交叉路由优先级、恢复限制，以及 `golden_traces/v1/auto_mode_terminal_contract_expected.json` 中独立审阅的规范 digest。它同样明确声明 `production_state_machine: false`；生产实现留给后续 Stage。
+
 确定性的 `tier:pr` 场景是 CI 必需的 Harness 自契约门禁。pytest suite 还会在进程内验证 CLI 门禁（`tests/test_harness_contract.py`）；之所以在 CI 里另设独立 step，是为了让契约门禁不依赖 pytest collection（`pyproject.toml` 刻意只收集 `tests/`）。真实模型的质量 eval 与需要外部资源的 smoke test 始终要显式启用。
 
 ## 为什么 `harness/` 与 `tests/` 分开
@@ -24,8 +29,10 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 | 文件 | 职责 |
 | --- | --- |
 | [`__init__.py`](__init__.py) | Harness 对外的一张脸：场景 schema、loader、result、runner。生产包永远不会导入它。 |
+| [`auto_mode_contract.py`](auto_mode_contract.py) | 不导入生产状态机代码，回放拟议的 Stage 0 Auto Mode 契约：`candidate` 保持非终态；Reviewer 与 producer 身份、完整 evidence reference、review policy、结构化 material finding 和 exact action 都被精确绑定；canonical 与 specific 事件名共用一个 event id；timeout／parse／audit／hash 失败都安全关闭。Reviewer 或 Guardian 决策都最多尝试两次。审计或完整性失败使用独立的 `safety_boundary`，不冒充 Guardian 决策。Guardian 基础设施重试耗尽时记录 `decision=unavailable`，且只打开 infra breaker。没有既往拒绝记录的一次普通持久 deny 会保持两个 breaker 关闭，仅因 assessment 明确记录 `terminal_basis=no_safe_continuation` 而终止；denial circuit 必须达到连续 3 次拒绝或最近 50 次中的 10 次。它刻意只是契约适配器，不声称当前运行时已经实现这些行为。 |
+| [`auto_mode_terminal_contract.py`](auto_mode_terminal_contract.py) | 不导入生产状态机代码，回放五类拟议的非 Guardian Auto Mode 停止原因。每类原因都有封闭的条件 schema、精确恢复投影和独立规范 digest；不安全的交叉路由、同一运行内续跑、结果不明时重试副作用、冒充 Reviewer／Guardian，以及 fixture 漂移都会失败即关闭。 |
 | [`characterize.py`](characterize.py) | 导入选定的生产入口，在标准库 `unittest.mock` 的 fake 后面驱动它们，把它们真正做了什么规范化成经审阅的 r5 pre-change characterization。快照记录了已知缺陷的地方会写清楚；缺陷被修掉时，这些快照本来就该跟着变。 |
-| [`cli.py`](cli.py) | 两个子命令。`run` 按 tier 挑出场景，校验并执行，一个场景打印一行，末尾再加一行摘要；`characterize` 把 r5 characterization 与 golden 比对，或者重新写出 golden。退出码是确定的。 |
+| [`cli.py`](cli.py) | 两个子命令。`run` 按 tier 挑出场景，校验并执行，把每项结果明确标成 `CONTRACT_* production=false` 或 `PRODUCTION_* production=true`，摘要也分开报告 `contract_only` 与 `production_backed`；`characterize` 把 r5 characterization 与 golden 比对，或者重新写出 golden。退出码是确定的。 |
 | [`faults.py`](faults.py) | 一次运行想要可重复所需要的东西：单调时钟（sleep 只是把它往前推）、按调用顺序发出的 UUID 形状标识符，以及一份故障计划。每条声明的故障只触发一次，落在指定点的第 N 次访问上；抛出的失败是结构化的，不是一个裸异常。 |
 | [`normalize.py`](normalize.py) | 把 trace 里易变的 UUID、时间、路径和端口换掉，输出用于逐字节比较的规范编码。标识符在第一次出现时才拿到占位符，所以 parent 链仍然有意义，交换两个事件也会改变输出。事件列表从不排序。 |
 | [`orchestration.py`](orchestration.py) | 另一类 runner：它驱动**真的** `Reconciler` 去对一个脚本化 backend。这是对旁边那条规则的刻意例外，理由与 action-routing eval 相同——reconciler 的决策函数没有哪条活边界需要替身去顶，它的输入就是一行 workload 和一个 observation，两者都是数据。把它的规则在这里重新实现一遍再去检查，等于拿模型验模型，在两者共有的每个缺陷上都会保持绿色。 |
@@ -46,7 +53,7 @@ Harness 用来回放场景。一个场景会脚本化模型本该说出的话，
 
 这里的一切都要能离线跑，也要能在没有任何 secret 的情况下跑通，默认的 PR CI 本来就不提供 secret。`harness/` 里的内容不得需要真实网络、API key、GPU、SSH、Docker、浏览器或实验室硬件。确实绕不开这些资源的入口只能显式启用，并挂上对应的 pytest marker（`external`、`network`、`live_llm`、`gpu`、`ssh`、`docker`、`browser`、`lab`），也就是 `pyproject.toml` 里注册的那几个。
 
-这里同样不放生产代码。运行时实现留在 `openai4s/` 和 `openai4s_compute_provider/`，通用 runner 保持自包含。只有那几个显式命名的 characterization 与 eval adapter 可以导入选定的生产公共入口，而且必须隔着确定性 fake。Harness 的 helper 也不能给核心包塞进硬性的第三方 import。
+这里同样不放生产代码。运行时实现留在 `openai4s/` 和 `openai4s_compute_provider/`，通用 runner 与 Auto Mode 契约 runner 都保持自包含。只有那几个显式命名的 characterization 与 eval adapter 可以导入选定的生产公共入口，而且必须隔着确定性 fake。Harness 的 helper 也不能给核心包塞进硬性的第三方 import。
 
 还有两条规则，护的是记录本身。规范化可以替换易变的值，但不能给事件列表排序：并发场景比较的是明确的因果关系和每条 stream 内部的先后，而不是捏造一个全序。还有，golden trace 是用来比对的数据，不是可执行的历史，场景回放只能调用声明过的 fake，别的一概不行。
 

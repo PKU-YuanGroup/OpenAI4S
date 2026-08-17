@@ -8,6 +8,12 @@
 
 | 文件 | 职责 |
 | --- | --- |
+| [`auto_mode_contract_expected.json`](auto_mode_contract_expected.json) | 独立审阅的 Stage 0 Auto Mode 契约预期：canonical 与 specific 事件序列、规范 fixture 与 audit-request digest、completion-assessment digest、终态 payload，以及明确的 `production_state_machine: false`。Request 与 assessment digest 刻意分离；assessment 会绑定 attempt、verdict 或 decision、findings、risk、authorization、outcome、rationale 和 failure kind。Adapter 读取这份数据；场景不会从自身回放结果推导它。 |
+| [`auto_mode_terminal_contract_expected.json`](auto_mode_terminal_contract_expected.json) | 五类非 Guardian Stage 0 停止原因的独立审阅预期。它冻结精确终态 payload、规范 identity digest 和各原因条件 digest，保持 `auto_user_state` 为 null，并明确拒绝声称生产状态机已经存在。 |
 | [`r5_prechange.json`](r5_prechange.json) | 选定 r5 生产行为的经审阅快照，规范化成可逐字节比较的字节流：CLI max turns、带 `Retry-After` 的 429、已经提交过一个 delta 之后断掉的流、compaction 摘要如何投影进各 provider 的请求体、超大 observation、headless 下的权限拒绝，以及被禁用的 MCP connector。每个 case 都记录生产现在的实际行为、期望的契约，以及这份快照是不是在冻结一个已知缺陷——而如今「pre-change」只剩下文件名这一层意思：七个 case 里曾有四个记着已知缺陷，四个后来都修掉了，它们的 `current_behavior` 也随之改写成修复后的行为。这正是这份文件该有的样子，不是漂移。 |
 
 `uv run python -m harness.cli characterize` 只比较，不写入。对不上是需要人去看的信号，不是自动覆盖 golden 的许可。
+
+没有阈值历史时，普通拒绝 assessment 会保持两个 breaker 关闭，并绑定 `terminal_basis=no_safe_continuation`。Denial circuit 的预算仍是连续 3 次拒绝，或最近 50 次 decision 中出现 10 次拒绝。
+
+非 Guardian 终态 golden 刻意与 Reviewer／Guardian 决策分离。其条件绑定 admission、rollback、reconciliation 和 circuit 事实，不伪造审计身份，也不允许自动续跑。
