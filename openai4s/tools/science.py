@@ -8,6 +8,38 @@ from openai4s.tools.base import Tool
 from openai4s.tools.taxonomy import resource_key
 
 
+def _stage10(runtime: Any) -> bool:
+    from openai4s.host.stage10_science import official_stage10_enabled
+
+    cfg = getattr(runtime, "cfg", None) or getattr(runtime, "config", None)
+    if cfg is None:
+        from openai4s.config import Config
+
+        cfg = Config()
+    return official_stage10_enabled(cfg)
+
+
+def _maybe_record(runtime: Any, result: dict) -> dict | None:
+    if not _stage10(runtime):
+        return None
+    store = getattr(runtime, "store", None)
+    workspace = getattr(runtime, "workspace", None)
+    if workspace is not None and hasattr(workspace, "workspace"):
+        workspace = workspace.workspace()
+    root = getattr(runtime, "root_frame_id", None) or getattr(runtime, "frame_id", None)
+    if store is None or workspace is None or not root:
+        return None
+    from openai4s.host.stage10_science import record_search_artifact
+
+    return record_search_artifact(
+        store,
+        workspace,
+        result,
+        root_frame_id=str(root),
+        project_id=str(getattr(runtime, "project_id", None) or "default"),
+    )
+
+
 class ScienceListDatabasesTool(Tool):
     name = "science_list_dbs"
     host_method = "science_list_dbs"
@@ -32,7 +64,7 @@ class ScienceListDatabasesTool(Tool):
         from openai4s.host.science import ScienceConnectorError, ScienceConnectorService
 
         try:
-            return ScienceConnectorService().list_databases(
+            return ScienceConnectorService(stage10=_stage10(_runtime)).list_databases(
                 str(arguments.get("domain") or "all")
             )
         except ScienceConnectorError as error:
@@ -57,6 +89,9 @@ class ScienceSearchTool(Tool):
                     "pubchem",
                     "arxiv",
                     "openalex",
+                    "clinvar",
+                    "pubmed",
+                    "clinicaltrials",
                 ],
             },
             "query": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -93,7 +128,7 @@ class ScienceSearchTool(Tool):
         from openai4s.host.science import ScienceConnectorError, ScienceConnectorService
 
         try:
-            return ScienceConnectorService().search(
+            result = ScienceConnectorService(stage10=_stage10(_runtime)).search(
                 arguments.get("database", ""),
                 arguments.get("query", ""),
                 limit=int(arguments.get("limit") or 10),
@@ -101,6 +136,16 @@ class ScienceSearchTool(Tool):
                 filters=arguments.get("filters"),
                 timeout=float(arguments.get("timeout") or 30),
             )
+            artifact = _maybe_record(_runtime, result)
+            if artifact:
+                result = dict(result)
+                result["artifact"] = {
+                    "artifact_id": artifact.get("artifact_id"),
+                    "version_id": artifact.get("version_id")
+                    or artifact.get("latest_version_id"),
+                    "filename": artifact.get("filename"),
+                }
+            return result
         except (
             ScienceConnectorError,
             webtools.NetworkDisabled,

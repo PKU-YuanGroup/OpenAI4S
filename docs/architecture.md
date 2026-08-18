@@ -167,6 +167,13 @@ full-dataset CSV/Parquet sort/filter/page, text version diffs, PDF/HTML
 comments bound to a version and locator and quoted into the next turn, and
 the vendored Ketcher 3.7.0 editor saving a new version of the same Artifact.
 
+#### Stage 10 scientific connectors
+
+`OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS=1` adds ClinVar, PubMed, and
+ClinicalTrials.gov to the existing science envelope. Empty results, 429s, and
+schema drift are honest errors. A successful search records query, endpoint,
+retrieved_at, source checksum, and accessions on a versioned Artifact.
+
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

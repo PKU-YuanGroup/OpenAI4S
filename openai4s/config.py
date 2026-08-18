@@ -529,12 +529,13 @@ def data_root_policies() -> list[tuple[Path, bool]]:
 class RoadmapFeatureFlags:
     """Stage 1--12 rollout reservations from the Auto Mode master plan.
 
-    Every flag defaults off. Stage 1--9 consume only their own flags for
+    Every flag defaults off. Stage 1--10 consume only their own flags for
     trusted delivery, durable Auto Mode storage/projection, Scientific
     Reviewer shadow recording, the review completion gate, bounded auto-fix,
     Guardian shadow/enforcement, the official live Notebook lineage path,
-    and the Artifact workbench/Ketcher; later stages remain inert until
-    their own Go/No-Go gate passes.
+    the Artifact workbench/Ketcher, and production ClinVar/PubMed/trials
+    connectors; later stages remain inert until their own Go/No-Go gate
+    passes.
     """
 
     stage1_trusted_delivery: bool = field(
