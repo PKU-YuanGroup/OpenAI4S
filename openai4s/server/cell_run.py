@@ -110,6 +110,7 @@ class CellExecutionPorts:
     mark_attempt_response: Callable[[str], None] = _no_attempt_milestone
     mark_attempt_capture: Callable[[str], None] = _no_attempt_milestone
     finish_attempt: Callable[[str, str, Any], None] = _no_attempt_finish
+    bind_lineage: Callable[..., list[str]] | None = None
 
 
 #: Author-written, never a rendering of an exception. The timeout wording keeps
@@ -364,6 +365,16 @@ class CellExecutionService:
                 self.ports.mark_attempt_capture(attempt_id)
             if capture.artifacts and request.stream:
                 self.ports.emit_artifact_step(session, title, capture.artifacts, emit)
+            if self.ports.bind_lineage is not None:
+                try:
+                    capture.files_read = list(
+                        self.ports.bind_lineage(
+                            session, request, before, capture, cell_id
+                        )
+                        or []
+                    )
+                except Exception:  # noqa: BLE001 - lineage must not fail the Cell
+                    capture.files_read = []
         except BaseException as exc:
             self._finish_attempt(attempt_id, "capture_failed", exc)
             raise
@@ -656,7 +667,7 @@ class CellExecutionService:
                 "status": status,
                 "figures": list(capture.figures),
                 "files_written": list(capture.files_written),
-                "files_read": [],
+                "files_read": list(capture.files_read),
                 "cpu_seconds": (result.get("usage") or {}).get("cpu_s"),
                 "peak_rss_kb": (result.get("usage") or {}).get("peak_rss_kb"),
             }
@@ -688,7 +699,7 @@ class CellExecutionService:
             language=request.language,
             figures=capture.figures,
             files_written=capture.files_written,
-            files_read=[],
+            files_read=list(capture.files_read),
             visibility=("system" if completion_only else request.visibility),
             pin=(False if completion_only else request.pin),
             replay_policy=("never" if completion_only else request.replay_policy),

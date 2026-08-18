@@ -266,6 +266,31 @@ def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
     assert result.generation_id is None
 
 
+def test_bind_lineage_records_host_side_reads(tmp_path):
+    harness = Harness()
+    harness.capture_result = CaptureResult(
+        files_written=["table.json"],
+        artifacts=[{"version_id": "v-out", "filename": "table.json"}],
+    )
+
+    def bind(session, request, before, capture, cell_id):
+        assert "table.csv" in request.code
+        assert capture.files_written == ["table.json"]
+        return ["table.csv"]
+
+    service = CellExecutionService(
+        replace(harness.ports(), bind_lineage=bind),
+        id_factory=lambda: "cell-lineage",
+    )
+    result = service.execute(
+        _session(tmp_path),
+        CellRequest('json.dump(open("table.csv"))', "user"),
+        lambda event: None,
+    )
+    assert result.capture.files_read == ["table.csv"]
+    assert harness.records[0]["files_read"] == ["table.csv"]
+
+
 def test_live_and_finished_events_use_the_exact_persistent_generation(tmp_path):
     harness = Harness()
     session = _session(tmp_path)

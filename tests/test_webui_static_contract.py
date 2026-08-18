@@ -1447,6 +1447,21 @@ def test_variable_inspector_is_manual_read_only_and_strictly_sanitized() -> None
     assert ".nb-variable-row" in STYLE_CSS
 
 
+def test_notebook_owner_chips_and_generation_are_visible() -> None:
+    notebook = _extract_js_function(APP_JS, "renderNotebook")
+    kernel = _extract_js_function(APP_JS, "_paintKernel")
+
+    assert '["agent", "user_repl", "repair", "review_scratch"]' in notebook
+    assert "nb-owner-chip" in notebook
+    assert 't("nb.owner." + kind)' in notebook
+    assert "identityForOwner(S.executionQueue, kind)" in notebook
+    assert "nb.owner.generation" in kernel
+    assert ".nb-owners" in STYLE_CSS
+    assert ".nb-owner-chip.active" in STYLE_CSS
+    assert APP_JS.count('"nb.owner.agent"') >= 2
+    assert APP_JS.count('"nb.owner.user_repl"') >= 2
+
+
 def test_local_model_discovery_is_loopback_only_and_requires_explicit_add() -> None:
     loopback = _extract_js_function(APP_JS, "loopbackModelBase")
     sanitizer = _extract_js_function(APP_JS, "sanitizeLocalModelDiscovery")

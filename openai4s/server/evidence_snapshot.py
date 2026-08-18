@@ -32,6 +32,65 @@ def _text(value: Any, limit: int = 20_000) -> str:
     return str(value or "")[:limit]
 
 
+def _artifact_version_id(item: Mapping[str, Any]) -> str:
+    return str(item.get("version_id") or item.get("latest_version_id") or "")
+
+
+def _read_versions_for_cell(
+    store: Any,
+    root_frame_id: str,
+    cell: Mapping[str, Any],
+    artifacts: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    existing = [str(item) for item in (cell.get("read_versions") or []) if item]
+    if existing:
+        return existing[:16]
+    versions: list[str] = []
+    output_ids = [
+        _artifact_version_id(item)
+        for item in artifacts
+        if isinstance(item, Mapping) and _artifact_version_id(item)
+    ]
+    for output_id in output_ids:
+        try:
+            edges = store.lineage_inputs(
+                output_id,
+                producing_cell_id=str(
+                    cell.get("cell_id") or cell.get("producing_cell_id") or ""
+                )
+                or None,
+            )
+        except Exception:  # noqa: BLE001
+            edges = []
+        for edge in edges or []:
+            if not isinstance(edge, Mapping):
+                continue
+            version_id = str(
+                edge.get("version_id") or edge.get("input_version_id") or ""
+            )
+            if version_id and version_id not in versions:
+                versions.append(version_id)
+    if versions:
+        return versions[:16]
+    try:
+        listed = store.list_artifacts({"root_frame_id": root_frame_id})
+    except Exception:  # noqa: BLE001
+        listed = []
+    catalog = [
+        item for item in (*artifacts, *(listed or [])) if isinstance(item, Mapping)
+    ]
+    output_set = set(output_ids)
+    for name in list(cell.get("files_read") or [])[:16]:
+        hit = next(
+            (item for item in catalog if str(item.get("filename") or "") == str(name)),
+            None,
+        )
+        version_id = _artifact_version_id(hit or {})
+        if version_id and version_id not in versions and version_id not in output_set:
+            versions.append(version_id)
+    return versions
+
+
 def _ref(
     ref_id: str,
     kind: str,
@@ -167,6 +226,17 @@ def freeze_evidence_snapshot(parts: Mapping[str, Any]) -> dict[str, Any]:
         )
         if cell_id:
             refs.append(_ref(f"cell:{cell_id}", "cell", cell_id=cell_id))
+        for version_id in cell.get("read_versions") or []:
+            version_id = _text(version_id, 160)
+            if version_id:
+                refs.append(
+                    _ref(
+                        f"art:{version_id}",
+                        "artifact_version",
+                        version_id=version_id,
+                        role="input",
+                    )
+                )
     for edge in lineage:
         output_id = _text(edge.get("output_version_id"), 160)
         input_id = _text(edge.get("input_version_id"), 160)
@@ -312,6 +382,9 @@ def collect_turn_evidence(
                 "error": _text(cell.get("error"), 2_000),
                 "files_written": list(cell.get("files_written") or [])[:16],
                 "files_read": list(cell.get("files_read") or [])[:16],
+                "read_versions": _read_versions_for_cell(
+                    store, root_frame_id, cell, artifacts
+                ),
             }
         )
 
@@ -338,12 +411,22 @@ def collect_turn_evidence(
         if not version_id:
             continue
         try:
-            edges = store.lineage_edges_for(str(version_id), "inputs")
+            edges = store.lineage_inputs(str(version_id))
         except Exception:  # noqa: BLE001 - missing lineage is an omission, not a crash
             edges = []
         for edge in edges or []:
-            if isinstance(edge, Mapping):
-                lineage.append(dict(edge))
+            if not isinstance(edge, Mapping):
+                continue
+            input_id = edge.get("version_id") or edge.get("input_version_id")
+            if not input_id:
+                continue
+            lineage.append(
+                {
+                    "input_version_id": input_id,
+                    "output_version_id": version_id,
+                    "filename": edge.get("filename"),
+                }
+            )
 
     environment: dict[str, Any] = {}
     try:

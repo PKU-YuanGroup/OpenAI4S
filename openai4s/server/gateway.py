@@ -136,6 +136,10 @@ from openai4s.server.model_profiles import ModelProfileError, ModelProfileServic
 from openai4s.server.model_profiles import clean_api_key as _clean_api_key
 from openai4s.server.model_profiles import migrate_provider_alias
 from openai4s.server.model_profiles import resolve_profile_key as _resolve_profile_key
+from openai4s.server.notebook_lineage import (
+    bind_cell_lineage,
+    official_notebook_enabled,
+)
 
 # Keep the former gateway helper names as compatibility aliases; plan behavior
 # itself now lives together in PlanService.
@@ -2399,6 +2403,7 @@ class SessionRunner:
                         error=error,
                     )
                 ),
+                bind_lineage=self._bind_notebook_lineage,
             )
         )
         self.recovery = SessionRecoveryService(
@@ -5444,7 +5449,7 @@ class SessionRunner:
             "cell_count": (st.cell_index if st else 0),
             "manual_stop": bool(supervisor_status and supervisor_status["manual_stop"]),
             "env": self._env_summary(st),
-            "repl_enabled": bool(self.cfg.notebook_repl),
+            "repl_enabled": official_notebook_enabled(self.cfg),
             "view_only": bool(quarantine),
             "trust_state": "quarantined" if quarantine else "trusted",
             "quarantine_reason": (
@@ -6197,6 +6202,31 @@ class SessionRunner:
             cell_id,
             emit,
             env_snapshot_id=env_snapshot_id,
+        )
+
+    def _bind_notebook_lineage(
+        self,
+        st: SessionState,
+        request: CellRequest,
+        before: WorkspaceSnapshot,
+        capture: CaptureResult,
+        cell_id: str,
+    ) -> list[str]:
+        """Map host-side reads to versions when Stage 8 is enabled."""
+
+        if not self.cfg.roadmap_features.stage8_live_notebook_lineage:
+            return []
+        return bind_cell_lineage(
+            self.store,
+            workspace=st.workspace,
+            before=before,
+            source=request.code,
+            files_written=capture.files_written,
+            artifacts=capture.artifacts,
+            root_frame_id=st.root_frame_id,
+            project_id=st.project_id,
+            producing_cell_id=cell_id,
+            frame_id=st.root_frame_id,
         )
 
     def _capture(
@@ -8345,6 +8375,7 @@ class SessionRunner:
             "generation_id": executed.generation_id,
             "figures": executed.capture.figures,
             "files_written": executed.capture.files_written,
+            "files_read": executed.capture.files_read,
             "saved": executed.capture.artifacts,
             # Whether a kernel really ran the cell (False for safety-refused /
             # runtime-unavailable soft errors, whose result dict is identical
@@ -9096,7 +9127,7 @@ class SessionRunner:
                     "error": r.get("error"),
                     "figures": info["figures"],
                     "files_written": info["files_written"],
-                    "files_read": [],
+                    "files_read": info.get("files_read") or [],
                 },
             }
 

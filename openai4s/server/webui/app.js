@@ -715,6 +715,11 @@ Object.assign(I18N.zh, {
   "nb.cell.statusOk": "ok",
   "nb.cell.statusRunning": "running",
   "nb.kernel.shared": "与 Agent 共享",
+  "nb.owner.agent": "Agent",
+  "nb.owner.user_repl": "用户 REPL",
+  "nb.owner.repair": "Repair",
+  "nb.owner.review_scratch": "Review scratch",
+  "nb.owner.generation": "generation {0}",
   "nb.chips.all": "全部",
   "nb.empty": "运行任务后，这里会显示 Notebook 代码单元与输出。",
   "nb.env.placeholder": "环境…",
@@ -1785,6 +1790,11 @@ Object.assign(I18N.en, {
   "nb.cell.statusOk": "ok",
   "nb.cell.statusRunning": "running",
   "nb.kernel.shared": "shared with the agent",
+  "nb.owner.agent": "Agent",
+  "nb.owner.user_repl": "User REPL",
+  "nb.owner.repair": "Repair",
+  "nb.owner.review_scratch": "Review scratch",
+  "nb.owner.generation": "generation {0}",
   "nb.chips.all": "All",
   "nb.empty": "After running a task, Notebook code cells and outputs will appear here.",
   "nb.env.placeholder": "Environment…",
@@ -9292,6 +9302,7 @@ function _paintKernel(els, st) {
   }
   const env = st.env || {};
   if (title) title.textContent = kernelLabel(kernelIdFromEnv(env)) + " kernel · " + t("nb.kernel.shared")
+    + (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "")
     + (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "");
   if (badge && badge.root && badge.label) {
     const mode = runtimeSummary().status;
@@ -9595,6 +9606,16 @@ function renderNotebook() {
   let shown = entries; if (S.kernelFilter) shown = entries.filter(e => (e.kernel_id || "python") === S.kernelFilter);
   if (!shown.length) nb.appendChild(el("div", "dock-empty", t("nb.empty")));
   else shown.forEach(e => nb.appendChild(cellNode(e)));
+  const owners = el("div", "nb-owners");
+  ["agent", "user_repl", "repair", "review_scratch"].forEach(kind => {
+    const chip = el("span", "nb-owner-chip");
+    const active = identityForOwner(S.executionQueue, kind);
+    if (active) chip.classList.add("active");
+    chip.textContent = t("nb.owner." + kind);
+    chip.title = active && active.execution_id ? active.execution_id : kind;
+    owners.appendChild(chip);
+  });
+  nb.appendChild(owners);
   // Read-only Notebook by default: the interactive REPL (input, env selector,
   // stop/start/restart/interrupt) is built ONLY when the server explicitly
   // enables it (developer flag repl_enabled). Otherwise render a passive,

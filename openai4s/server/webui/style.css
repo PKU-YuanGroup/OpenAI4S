@@ -470,6 +470,9 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 /* REPL console */
 .nb-repl{border-top:.5px solid var(--border);margin-top:14px;padding-top:10px}
 .nb-repl-head{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--text-400);margin-bottom:6px}
+.nb-owners{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 4px}
+.nb-owner-chip{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border,#ccc);color:var(--text-400)}
+.nb-owner-chip.active{border-color:var(--accent);color:var(--accent)}
 .nb-repl-body{font-family:var(--mono);font-size:12px;color:var(--text-400);white-space:pre-wrap}
 .nb-repl-prompt{display:flex;align-items:baseline;gap:6px;margin-top:8px;font-family:var(--mono);font-size:12px}
 .nb-repl-prompt .pmt{color:var(--accent)}

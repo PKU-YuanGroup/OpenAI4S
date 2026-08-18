@@ -151,6 +151,15 @@ declare Verified.
 `OPENAI4S_STAGE6_GUARDIAN_SHADOW=1` records a non-executing Guardian judgment
 on the exact action envelope of an `ask`. Human allow/deny still decides.
 Guardian cannot create a standing allow. An action-hash mismatch fails closed.
+
+#### Stage 8 live Notebook and lineage
+
+`OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE=1` makes the live Notebook a first-class
+execution path on the same kernel generation and FIFO coordinator. Host-side
+file reads (Python and R) map to Artifact versions; a later write in that Cell
+creates an input→output lineage edge. Reviewer snapshots cite those version
+ids. Agent, user REPL, repair, and review scratch remain distinct owners.
+
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

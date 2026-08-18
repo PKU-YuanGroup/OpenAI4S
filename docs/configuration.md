@@ -150,7 +150,7 @@ standing authority.
 | `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Implemented opt-in: bounded Repair Agent plus independent re-review. Reviewer stays read-only; Repair cannot self-certify; identical bytes reuse the prior version. |
 | `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Implemented opt-in: exact-action Guardian shadow assessment. It does not execute, cannot create standing allow, and fails closed on hash mismatch. |
 | `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | Implemented opt-in: unattended ``ask`` may ``allow_once`` only for non-dangerous exact actions. Standing allow remains forbidden. |
-| `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Live Notebook and cross-language version lineage. |
+| `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Implemented opt-in: official live Notebook on the shared kernel generation, host-side Python/R read→version mapping, and automatic write lineage. |
 | `stage9_artifact_workbench` | `OPENAI4S_STAGE9_ARTIFACT_WORKBENCH` | Interactive Artifact workbench and Ketcher. |
 | `stage10_scientific_connectors` | `OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS` | ClinVar, literature, and trials connector product path. |
 | `stage11_durable_remote_compute` | `OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE` | Durable remote-compute submit/reconcile/cancel. |
