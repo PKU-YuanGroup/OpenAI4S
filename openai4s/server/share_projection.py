@@ -20,6 +20,7 @@ neither serializer re-reads the live Store, workspace, or artifact repository.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -353,17 +354,40 @@ class ShareProjectionBuilder:
             role = str(item.get("role") or "assistant")
             if role not in {"user", "assistant", "system"}:
                 role = "assistant"
-            out.append(
-                {
-                    "message_id": item.get("message_id"),
-                    "branch_id": root_frame_id,
-                    "seq": seq,
-                    "role": role,
-                    "content": _safe_text(item.get("content") or ""),
-                    "metadata": None,
-                    "created_at": item.get("created_at"),
-                }
-            )
+            review_status = None
+            raw_meta = item.get("metadata")
+            if isinstance(raw_meta, str):
+                try:
+                    raw_meta = json.loads(raw_meta)
+                except (TypeError, ValueError):
+                    raw_meta = None
+            if isinstance(raw_meta, dict):
+                status = raw_meta.get("review_status")
+                if status in {
+                    "candidate",
+                    "verified",
+                    "completed_with_issues",
+                    "review_unavailable",
+                }:
+                    review_status = {
+                        "status": status,
+                        "unverified": status != "verified",
+                    }
+                    truth = raw_meta.get("user_truth")
+                    if isinstance(truth, str) and truth:
+                        review_status["user_truth"] = truth[:240]
+            row = {
+                "message_id": item.get("message_id"),
+                "branch_id": root_frame_id,
+                "seq": seq,
+                "role": role,
+                "content": _safe_text(item.get("content") or ""),
+                "metadata": None,
+                "created_at": item.get("created_at"),
+            }
+            if review_status is not None:
+                row["review_status"] = review_status
+            out.append(row)
         return out
 
     def _project_groups(

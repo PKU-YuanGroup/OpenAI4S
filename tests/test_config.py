@@ -405,6 +405,10 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
         "openai4s/server/gateway.py",
         "openai4s/server/scientific_review.py",
     ]
+    assert sorted(consumers.pop("stage4_review_completion_gate")) == [
+        "openai4s/server/completion_gate.py",
+        "openai4s/server/gateway.py",
+    ]
     assert consumers == {
         name: []
         for name in ROADMAP_FLAGS
@@ -413,6 +417,7 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
             "stage1_trusted_delivery",
             "stage2_auto_run_storage",
             "stage3_scientific_review_shadow",
+            "stage4_review_completion_gate",
         }
     }
     assert "openai4s/server/auto_mode.py" in auto_mode_consumers

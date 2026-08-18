@@ -151,6 +151,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_review_scratch.py`](test_review_scratch.py) | 隔离 scratch 拒绝写正式工作区、联网、`submit_output` 以及继承来的秘密。 |
 | [`test_scientific_review_service.py`](test_scientific_review_service.py) | Shadow 编排：独立性失败即关闭、同模型 review_only、确定性数值核对、伪造引用、包含 Plan 的 shadow step，以及 flag 关闭时惰性。 |
 | [`test_scientific_review_golden.py`](test_scientific_review_golden.py) | Stage 3 Go/No-Go：≥100 个 golden/注入案例走真实 evaluator，高/中召回、干净任务误报，以及伪造 evidence ref 为零。 |
+| [`test_completion_gate.py`](test_completion_gate.py) | Stage 4 晋升顺序：candidate 早于 terminal，issues 保持未验证，flag 关闭时惰性，reopen 读持久的 message/setting 戳记。 |
 | [`test_host_completion_service.py`](test_host_completion_service.py) | `host.submit_output`，Python Cell 唯一拥有的完成信号。schema 失败是软失败，且不得覆盖掉此前已有的完成；完成要点的过去式检查，除英文外也接受中日韩的表达。 |
 | [`test_host_contract.py`](test_host_contract.py) | worker 到 Host 的 wire：注入的门面、单键形式的软错误、camelCase 编解码。最后那个测试最有用——SDK 能调的每一个 `host.*` 方法都必须有对应的分发路由，这样新能力就不会接了一半就发出去。 |
 | [`test_host_credentials_service.py`](test_host_credentials_service.py) | 会话本地的 credential 引用。秘密本身从不返回；lease 绑定到单个动作并会过期；轮换一个 credential 会吊销挂在它上面的所有 lease；replay 排除了全部 credential 方法与取值。 |

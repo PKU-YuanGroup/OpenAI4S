@@ -126,6 +126,16 @@ requires a different fingerprint or records `review_unavailable` with
 recheck. Plan turns are included. Scratch verification is isolated: no
 network, no formal-workspace write, no MCP, no `submit_output`. Findings
 must cite snapshot `evidence_refs`; a forged ref is itself a high finding.
+
+#### Stage 4 completion gate
+
+`OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE=1` changes promotion order when result
+review is selected: candidate → frozen snapshot → review → terminal. Streamed
+prose stays provisional. A `pass` may become Verified; `issues` become
+`completed_with_issues` (Repair is Stage 5); timeout/parse/provider failure
+after the bounded retry is `review_unavailable`. The user still has the
+candidate artifacts. Reopen reads the durable gate stamp on the assistant
+message and `review-gate:{root}` setting, never a cached badge.
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

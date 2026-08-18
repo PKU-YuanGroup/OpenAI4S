@@ -135,16 +135,17 @@ exposes to an unauthenticated caller.
 
 Every rollout flag defaults off. Stage 1 implements trusted delivery, Stage 2
 implements the durable Auto Run/configuration/projection foundation, and
-Stage 3 implements Scientific Reviewer V2 shadow recording. Stage 4–12 flags
-remain inert reservations and cannot gate completion, repair a workspace,
-review or resolve a permission, or grant authority.
+Stage 3 implements Scientific Reviewer V2 shadow recording, and Stage 4
+implements the review-only completion gate. Stage 5–12 flags remain inert
+reservations and cannot repair a workspace, review or resolve a permission,
+or grant authority.
 
 | Config field under `Config.roadmap_features` | Environment variable | Reserved behavior |
 | --- | --- | --- |
 | `stage1_trusted_delivery` | `OPENAI4S_STAGE1_TRUSTED_DELIVERY` | Implemented opt-in: exact immutable Artifact delivery, same-head capture observations, and standard-profile readiness admission. |
 | `stage2_auto_run_storage` | `OPENAI4S_STAGE2_AUTO_RUN_STORAGE` | Implemented opt-in: durable Auto Run/review/finding/repair/permission-assessment records, canonical post-commit events, CAS selection PATCH, and REST/reopen projection. No Reviewer/Repair/Guardian execution. |
 | `stage3_scientific_review_shadow` | `OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW` | Implemented opt-in: immutable Evidence Snapshot, independent V2 Reviewer, read-only scratch/adapters, and shadow recording that does not gate completion. |
-| `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Candidate-to-reviewed-final completion gate. |
+| `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Implemented opt-in: candidate stays provisional until review; pass promotes Verified, issues become completed_with_issues, failures become review_unavailable. Does not start Repair. |
 | `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Bounded Repair Agent and independent re-review loop. |
 | `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Exact-action Permission Guardian shadow adjudication. |
 | `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | One-shot Guardian enforcement and unified Auto Mode UX. |

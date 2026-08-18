@@ -109,6 +109,7 @@ from openai4s.server.artifacts import (
 )
 from openai4s.server.auto_mode import AutoModeService
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
+from openai4s.server.completion_gate import CompletionGateService
 from openai4s.server.completions import completion_message, response_language
 from openai4s.server.delivery import (
     CompletionDeliveryService,
@@ -2235,6 +2236,12 @@ class SessionRunner:
             config=cfg,
             auto_mode=self.auto_mode,
             owner_instance_id=self._owner_instance_id,
+        )
+        self.completion_gate = CompletionGateService(
+            store=self.store,
+            config=cfg,
+            scientific_review=self.scientific_review,
+            auto_mode=self.auto_mode,
         )
         self._ws_root = cfg.data_dir / "agent-workspaces"
         self._ws_root.mkdir(parents=True, exist_ok=True)
@@ -7512,8 +7519,52 @@ class SessionRunner:
                 )
                 if st.cancel.is_set():
                     status = "cancelled"
+            gated = False
             if (
-                self.cfg.roadmap_features.stage3_scientific_review_shadow
+                self.cfg.roadmap_features.stage4_review_completion_gate
+                and status == "completed"
+            ):
+                try:
+                    gate = self.completion_gate.gate_after_turn(
+                        root_frame_id=root_frame_id,
+                        project_id=project_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        turn_id=str(action_ledger.turn_id),
+                        execution_id=str(
+                            getattr(execution, "execution_id", "") or turn_request_id
+                        ),
+                        user_request=user_text,
+                        candidate_answer="\n\n".join(
+                            str(blk.get("text") or "") for blk in assistant_visible
+                        ).strip(),
+                        structured_completion=(
+                            st.last_engine_completion
+                            or getattr(st.dispatcher, "last_output", None)
+                        ),
+                        artifact_versions_before=artifact_versions_before,
+                        cell_count_before=cell_count_before,
+                        step_count_before=step_count_before,
+                        agent_cfg=llm_cfg,
+                        reviewer_cfg=self._review_llm_cfg(st),
+                        emit=emit,
+                    )
+                except Exception:  # noqa: BLE001 - never fail an already delivered turn
+                    traceback.print_exc()
+                    gate = None
+                if gate is not None:
+                    gated = True
+                    emit(
+                        {
+                            "type": "frame_update",
+                            "frame_id": root_frame_id,
+                            "status": "done",
+                            "review_status": gate.get("terminal"),
+                            "user_truth": gate.get("user_truth"),
+                        }
+                    )
+            if (
+                (not gated)
+                and self.cfg.roadmap_features.stage3_scientific_review_shadow
                 and status == "completed"
             ):
                 # Shadow records a judgment after the existing answer is
@@ -11975,6 +12026,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 if _message_failure(mm)
                                 else {}
                             ),
+                            **(
+                                {"review_status": _message_review_gate(mm)}
+                                if _message_review_gate(mm)
+                                else {}
+                            ),
                         }
                         for mm in msgs
                     ]
@@ -14866,6 +14922,32 @@ def _message_failure(message: dict) -> dict | None:
     if failure.get("output_committed") is True:
         out["output_committed"] = True
     return out or None
+
+
+def _message_review_gate(message: dict) -> dict | None:
+    """Project the Stage 4 completion-gate stamp from message metadata."""
+
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    status = raw.get("review_status")
+    if status not in {
+        "candidate",
+        "verified",
+        "completed_with_issues",
+        "review_unavailable",
+    }:
+        return None
+    out: dict = {"status": status, "unverified": status != "verified"}
+    truth = raw.get("user_truth")
+    if isinstance(truth, str) and truth:
+        out["user_truth"] = truth[:240]
+    return out
 
 
 def _message_artifact_refs(message: dict) -> list[dict]:

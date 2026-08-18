@@ -77,7 +77,15 @@ Scientific Reviewer V2 step (`kind=review`, `input.mode=shadow`). It does not
 change `frame_update`, does not emit a Verified badge, and does not add a new
 HTTP route. Plan turns are included. When Stage 2 storage is also enabled, the
 shadow review is persisted as a `result_review` audit on the current Auto Run
-and remains non-terminal. Stage 4 and later execution flags remain inert
+and remains non-terminal.
+
+`OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE=1` runs that review *before* promotion
+when `result_review_mode` is not `off`. Live order is `candidate_ready` then
+review events then `auto_run_terminal` then `frame_update` with
+`review_status`. `GET /frames/{id}/messages` may include an optional
+`review_status` object (`status`, `unverified`, `user_truth`) reconstructed
+from message metadata. Refreshing cannot promote a candidate to Verified
+without that durable stamp. Stage 5 and later execution flags remain inert
 reservations. The full truth and recovery rules are frozen in the
 [Auto Mode product contract](auto-mode.md).
 

@@ -1645,6 +1645,10 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
    Muted: it is a support id and a warning, not part of the conversation. */
 .msg-failure-meta { margin-top: 6px; font-size: 12px; opacity: .72; line-height: 1.5; }
 .msg-failure-meta:empty { display: none; }
+.review-badge { margin-top: 6px; display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border, #ccc); }
+.review-badge-candidate { opacity: .8; }
+.review-badge-verified { border-color: #2e7d32; color: #2e7d32; }
+.review-badge-completed_with_issues, .review-badge-review_unavailable { border-color: #ef6c00; color: #ef6c00; }
 
 /* ---- Team mode (M1-9): user chip + team files panel ---- */
 .team-files-crumbs{padding:10px 18px;border-bottom:.5px solid var(--border);font-size:13px;color:var(--text-300)}

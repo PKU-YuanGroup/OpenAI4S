@@ -648,6 +648,10 @@ Object.assign(I18N.zh, {
   "editor.label": "编辑 {0}",
   "empty.sub": "描述你的科研任务，智能体会写 Python、联网检索、调用技能并产出图表/报告/结构文件。可试试：",
   "empty.title": "开始一个新分析",
+  "review.badge.candidate": "候选 · 未验证",
+  "review.badge.verified": "已验证",
+  "review.badge.completed_with_issues": "完成 · 未验证",
+  "review.badge.review_unavailable": "审核不可用 · 未验证",
   "export.artifactsHeading": "## 产物",
   "export.messageAssistant": "🤖 助手",
   "export.messageUser": "🧑 用户",
@@ -1714,6 +1718,10 @@ Object.assign(I18N.en, {
   "editor.label": "Editing {0}",
   "empty.sub": "Describe your research task and the agent will write Python, search the web, invoke skills, and produce charts/reports/structure files. Try:",
   "empty.title": "Start a new analysis",
+  "review.badge.candidate": "Candidate · not verified",
+  "review.badge.verified": "Verified",
+  "review.badge.completed_with_issues": "Completed · unverified",
+  "review.badge.review_unavailable": "Unavailable · not verified",
   "export.artifactsHeading": "## Artifacts",
   "export.messageAssistant": "🤖 Assistant",
   "export.messageUser": "🧑 User",
@@ -4954,6 +4962,16 @@ function onEvent(m) {
   else if (m.type === "plan_progress") { if (mine(fid)) updatePlanProgress(m); }
   else if (m.type === "await_permission") { if (mine(fid)) { renderPermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "permission_resolved") { if (mine(fid)) { resolvePermissionCard(m); scheduleWorkbenchRefresh(); } }
+  else if (m.type === "candidate_ready" && m.gates_completion) {
+    if (mine(fid) || mine(m.root_frame_id)) {
+      S.reviewGate = { status: "candidate", user_truth: m.user_truth || t("review.badge.candidate") };
+    }
+  }
+  else if (m.type === "auto_run_terminal" && m.review_status) {
+    if (mine(fid) || mine(m.root_frame_id)) {
+      S.reviewGate = { status: m.review_status, user_truth: m.user_truth || t("review.badge." + m.review_status) };
+    }
+  }
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
       // Unconditional, and deliberately outside the `!S.running` guard below:
@@ -6650,6 +6668,13 @@ function renderStored(m, target) {
     // successful turns ago, or one on a page the reader scrolled back to --
     // become the current state of the whole UI.
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
+    const review = m.review_status || (m.metadata && m.metadata.review_status);
+    const reviewStatus = review && (review.status || review);
+    if (reviewStatus) {
+      const badge = el("div", "review-badge review-badge-" + String(reviewStatus).replace(/[^a-z_]/g, ""));
+      badge.textContent = (review && review.user_truth) || t("review.badge." + reviewStatus);
+      w.appendChild(badge);
+    }
   }
   // Stamped with its own time so a page of OLDER messages can be put where it
   // belongs. Activity steps are fetched whole while messages are paged, so the
