@@ -8,9 +8,13 @@ published or disguised by a fallback search engine.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
+import socket
+import types
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -63,6 +67,103 @@ class _Response(io.BytesIO):
         return self.status
 
 
+class _RetiringSocket:
+    """A socket that refuses a read timeout once its descriptor is gone.
+
+    ``settimeout`` on a closed socket raises ``OSError`` (EBADF); every stdlib
+    socket behaves this way, so a reader that touches one after the body is
+    complete fails on any interpreter.
+    """
+
+    def __init__(self):
+        self.timeouts: list[float] = []
+        self._fd = 7
+
+    def settimeout(self, value):
+        if self._fd < 0:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        self.timeouts.append(value)
+
+    def fileno(self) -> int:
+        return self._fd
+
+    def close(self) -> None:
+        self._fd = -1
+
+
+class _EndOfBodyClosingResponse:
+    """urllib's response as CPython 3.11+ ``http.client`` hands it back.
+
+    ``HTTPResponse.read1`` calls ``_close_conn()`` on the *same* call that
+    returns the final byte of a known ``Content-Length``.  urllib has already
+    closed the connection socket by then (``makefile`` was holding the last I/O
+    reference), so the descriptor goes away while the caller is still holding
+    what looks like an open response.  Python 3.10 alone waited for one further
+    empty read, which is why this shape has to be modelled rather than left to
+    whichever interpreter happens to run the suite.
+    """
+
+    def __init__(self, payload, *, chunk_bytes: int = 16):
+        self._body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._offset = 0
+        self._chunk_bytes = chunk_bytes
+        self.length = len(self._body)
+        self.socket = _RetiringSocket()
+        self.fp = types.SimpleNamespace(_sock=self.socket)
+        self.headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(self._body)),
+        }
+        self.status = 200
+        self.read1_calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def getcode(self) -> int:
+        return self.status
+
+    def isclosed(self) -> bool:
+        return self.fp is None
+
+    def read(self, *_args, **_kwargs):  # pragma: no cover - must stay unused
+        raise AssertionError("buffer-filling read would bypass the deadline")
+
+    def read1(self, size=-1):
+        self.read1_calls += 1
+        if self.fp is None:
+            return b""
+        if size is None or size < 0:
+            size = self.length
+        chunk = self._body[self._offset : self._offset + min(size, self._chunk_bytes)]
+        self._offset += len(chunk)
+        self.length -= len(chunk)
+        if not chunk or not self.length:
+            self._retire()
+        return chunk
+
+    def close(self) -> None:
+        self._retire()
+
+    def _retire(self) -> None:
+        self.fp = None
+        self.socket.close()
+
+
+def _http_wire(payload) -> bytes:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+        b"Connection: close\r\n"
+        b"\r\n" + body
+    )
+
+
 class _RecordingOpener:
     def __init__(self, replies):
         self.replies = iter(replies)
@@ -75,9 +176,9 @@ class _RecordingOpener:
         reply = next(self.replies)
         if isinstance(reply, BaseException):
             raise reply
-        if isinstance(reply, _Response):
-            return reply
-        return _Response(reply)
+        if isinstance(reply, (bytes, dict, list)):
+            return _Response(reply)
+        return reply
 
 
 def _store(tmp_path: Path) -> Store:
@@ -511,6 +612,89 @@ def test_body_reader_returns_after_each_raw_read_to_recheck_deadline(tmp_path):
     _store_obj, service = _service(tmp_path, opener)
 
     assert service.search("deadline-safe body reads")["source"] == "doubao"
+
+
+def test_a_completely_read_body_is_not_reported_as_a_failed_request(tmp_path):
+    """A finished exchange must not be re-bounded on its retired socket.
+
+    The upstream answered HTTP 200 with real results and the reader consumed
+    every byte, but the loop then asked the socket ``http.client`` had just
+    closed to arm one more read timeout.  That raised ``OSError`` (EBADF), which
+    the boundary projected as ``Doubao search request failed (OSError)`` -- a
+    complete, successful search reported to the Agent as a network failure on
+    every interpreter except the 3.10 floor.
+    """
+
+    response = _EndOfBodyClosingResponse(_successful_payload())
+    opener = _RecordingOpener([response])
+    _store_obj, service = _service(tmp_path, opener)
+
+    result = service.search("complete body over a retired socket", timeout=15)
+
+    assert result["source"] == "doubao"
+    assert result["count"] == 1
+    assert result["results"][0]["title"] == "Official Doubao Search result"
+    # The scenario has to be the real one: the transport really did retire
+    # while the reader still held the response.
+    assert response.isclosed() is True
+    assert response.socket.fileno() == -1
+    # Every raw read was still bounded while the socket was live, and the
+    # budget only ever shrank.
+    assert response.read1_calls > 1
+    assert len(response.socket.timeouts) == response.read1_calls
+    assert all(0 < value <= 15.0 for value in response.socket.timeouts)
+    assert response.socket.timeouts == sorted(response.socket.timeouts, reverse=True)
+
+
+def test_a_real_socket_exchange_survives_the_stdlib_end_of_body_close(
+    tmp_path, monkeypatch
+):
+    """The same contract through the production opener over a real socket.
+
+    Nothing below ``socket`` is faked here, so ``http.client`` performs its own
+    end-of-body ``_close_conn()`` and the descriptor is genuinely gone.  This is
+    the shape that failed against the live provider while every fake-transport
+    test passed.
+    """
+
+    from openai4s import egress, webtools
+    from openai4s.http_deadline import HTTPExchangeDeadline, _DeadlineHTTPSConnection
+
+    client, server = socket.socketpair()
+
+    def _build_opener(exchange, *handlers):
+        class _SocketpairConnection(_DeadlineHTTPSConnection):
+            def connect(self) -> None:
+                self.sock = client
+                self._absolute_deadline._register_socket(client)
+                client.settimeout(self._absolute_deadline.remaining())
+
+        return urllib.request.build_opener(
+            *handlers,
+            urllib.request.ProxyHandler({}),
+            exchange.https_handler(_SocketpairConnection),
+        )
+
+    monkeypatch.setattr(webtools, "network_allowed", lambda: True)
+    monkeypatch.setattr(webtools, "guard_url", lambda _url: None)
+    monkeypatch.setattr(egress, "check_url", lambda _url: None)
+    monkeypatch.setattr(HTTPExchangeDeadline, "build_opener", _build_opener)
+    store = _store(tmp_path)
+    datapro.save_agent_plan_key(store, _OLD_SECRET)
+    # No injected opener: this exercises the deadline-aware transport the
+    # daemon actually uses, including its bounded-read requirement.
+    service = DoubaoSearchService(store)
+    try:
+        server.sendall(_http_wire(_successful_payload("real socket result")))
+        server.shutdown(socket.SHUT_WR)
+        result = service.search("real socket exchange", num_results=1, timeout=15)
+    finally:
+        client.close()
+        server.close()
+        store.close()
+
+    assert result["source"] == "doubao"
+    assert result["results"][0]["title"] == "real socket result"
 
 
 @pytest.mark.parametrize(
