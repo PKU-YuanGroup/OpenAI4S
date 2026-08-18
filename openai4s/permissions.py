@@ -408,13 +408,23 @@ class PermissionBroker:
             unattended = (
                 os.environ.get("OPENAI4S_UNATTENDED_APPROVAL", "deny").strip().lower()
             )
-            allowed = unattended == "allow"
+            guardian_decision = None
+            try:
+                from openai4s.server.guardian_enforce import decide_unattended
+
+                guardian_decision = decide_unattended(payload)
+            except Exception:  # noqa: BLE001 - fall back to fail-closed deny
+                guardian_decision = None
+            if guardian_decision is not None:
+                allowed, message = guardian_decision
+            else:
+                allowed = unattended == "allow"
+                message = (
+                    "allowed by explicit unattended approval policy"
+                    if allowed
+                    else "approval required but no interactive channel is attached"
+                )
             state = "allowed" if allowed else "denied"
-            message = (
-                "allowed by explicit unattended approval policy"
-                if allowed
-                else "approval required but no interactive channel is attached"
-            )
             try:
                 resolved_request = store.resolve_permission_request(
                     did,

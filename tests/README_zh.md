@@ -154,6 +154,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_completion_gate.py`](test_completion_gate.py) | Stage 4 晋升顺序：candidate 早于 terminal，issues 保持未验证，flag 关闭时惰性，reopen 读持久的 message/setting 戳记。 |
 | [`test_auto_repair.py`](test_auto_repair.py) | Stage 5 的残差行数与缺失值误述种植案例、相同字节复用版本、禁止自我认证，以及 review_only 不修复。 |
 | [`test_guardian_shadow.py`](test_guardian_shadow.py) | Stage 6 精确动作 hash 失败即关闭、不能 standing allow、shadow 不执行，以及 flag 关闭时惰性。 |
+| [`test_guardian_enforce.py`](test_guardian_enforce.py) | Stage 7 无人值守 allow_once 与危险拒绝，以及 flag 关闭时走旧路径。 |
 | [`test_host_completion_service.py`](test_host_completion_service.py) | `host.submit_output`，Python Cell 唯一拥有的完成信号。schema 失败是软失败，且不得覆盖掉此前已有的完成；完成要点的过去式检查，除英文外也接受中日韩的表达。 |
 | [`test_host_contract.py`](test_host_contract.py) | worker 到 Host 的 wire：注入的门面、单键形式的软错误、camelCase 编解码。最后那个测试最有用——SDK 能调的每一个 `host.*` 方法都必须有对应的分发路由，这样新能力就不会接了一半就发出去。 |
 | [`test_host_credentials_service.py`](test_host_credentials_service.py) | 会话本地的 credential 引用。秘密本身从不返回；lease 绑定到单个动作并会过期；轮换一个 credential 会吊销挂在它上面的所有 lease；replay 排除了全部 credential 方法与取值。 |

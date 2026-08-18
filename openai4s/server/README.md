@@ -77,6 +77,7 @@ gateway.py
 | [`auto_mode_routes.py`](auto_mode_routes.py) | The exact `GET/PATCH /frames/{id}/auto-mode` and read-only `/auto-audits` adapters. Their validated `RouteSpec` table feeds the contract inventory; there are deliberately no public run/review/repair/Guardian transition routes. |
 | [`auto_repair.py`](auto_repair.py) | Stage 5 bounded Repair Agent and re-review loop. The Reviewer stays read-only; Repair cannot self-certify; identical checksums reuse the prior version. |
 | [`guardian_shadow.py`](guardian_shadow.py) | Stage 6 exact-action Guardian shadow. It records allow/deny advice without executing and refuses standing grants. |
+| [`guardian_enforce.py`](guardian_enforce.py) | Stage 7 unattended enforcement. Only ``allow_once`` for non-dangerous exact actions; Guardian still cannot create a standing allow. |
 | [`evidence_adapters.py`](evidence_adapters.py) | Read-only PDF, image, structure, and table adapters for frozen Artifact versions. Filename-only coverage is incomplete. |
 | [`evidence_snapshot.py`](evidence_snapshot.py) | Builds the immutable Stage 3 Evidence Snapshot, including plan, checksums, lineage, adapters, omissions, and resolvable `evidence_refs`. Hidden Agent reasoning is excluded. |
 | [`review_scratch.py`](review_scratch.py) | Isolated scratch for Reviewer verification: secret-scrubbed child env, no network, no formal-workspace write, no MCP, no `submit_output`. |

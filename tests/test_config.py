@@ -413,6 +413,9 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
     assert consumers.pop("stage6_guardian_shadow") == [
         "openai4s/server/guardian_shadow.py"
     ]
+    assert consumers.pop("stage7_guardian_enforcement") == [
+        "openai4s/server/guardian_enforce.py"
+    ]
     assert consumers == {
         name: []
         for name in ROADMAP_FLAGS
@@ -424,6 +427,7 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
             "stage4_review_completion_gate",
             "stage5_auto_repair",
             "stage6_guardian_shadow",
+            "stage7_guardian_enforcement",
         }
     }
     assert "openai4s/server/auto_mode.py" in auto_mode_consumers

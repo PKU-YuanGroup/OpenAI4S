@@ -58,6 +58,7 @@ gateway.py
 | [`auto_mode_routes.py`](auto_mode_routes.py) | 精确承接 `GET/PATCH /frames/{id}/auto-mode` 与只读 `/auto-audits`。经校验的 `RouteSpec` 表进入契约清单；这里刻意没有公开的 run/review/repair/Guardian 状态变更路由。 |
 | [`auto_repair.py`](auto_repair.py) | Stage 5 有界 Repair Agent 与再审核循环。Reviewer 保持只读；Repair 不能自我认证；相同 checksum 复用上一版本。 |
 | [`guardian_shadow.py`](guardian_shadow.py) | Stage 6 精确动作 Guardian shadow。只记录建议、不执行，并拒绝 standing allow。 |
+| [`guardian_enforce.py`](guardian_enforce.py) | Stage 7 无人值守执行。只有非危险精确动作可以 ``allow_once``；Guardian 仍然不能创建 standing allow。 |
 | [`evidence_adapters.py`](evidence_adapters.py) | 冻结 Artifact version 的只读 PDF/图像/结构/表格适配器。仅有文件名不算覆盖。 |
 | [`evidence_snapshot.py`](evidence_snapshot.py) | 构造不可变的 Stage 3 Evidence Snapshot：计划、checksum、lineage、适配器、省略声明和可解析的 `evidence_refs`。不含主 Agent 隐藏推理。 |
 | [`review_scratch.py`](review_scratch.py) | Reviewer 校验用的隔离 scratch：子进程环境已擦除秘密，无网络、不能写正式工作区、不能 MCP、不能 `submit_output`。 |
