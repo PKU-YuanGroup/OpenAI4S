@@ -56,6 +56,10 @@ gateway.py
 | [`auto_mode.py`](auto_mode.py) | 按冻结的「导入隔离 → frame → project → 显式 deployment → 旧 result-review → 内建默认」顺序解析 Stage 2 Auto Mode 选择；对 durable run/audit 状态做有界白名单投影；只把新建且已提交的规范事件作为尽力而为的 WebSocket 提示转发。它不会调用模型、Reviewer、Repair Agent 或权限路径。 |
 | [`auto_mode_portability.py`](auto_mode_portability.py) | Session package 与只读 share 共用的“不信任输入也安全”reducer。它验证 Auto Mode 的 scope/reference 闭包，只输出闭合的审计 DTO，把 portable evidence 无法独立证明的结论降级，而且绝不恢复执行或权限能力。 |
 | [`auto_mode_routes.py`](auto_mode_routes.py) | 精确承接 `GET/PATCH /frames/{id}/auto-mode` 与只读 `/auto-audits`。经校验的 `RouteSpec` 表进入契约清单；这里刻意没有公开的 run/review/repair/Guardian 状态变更路由。 |
+| [`evidence_adapters.py`](evidence_adapters.py) | 冻结 Artifact version 的只读 PDF/图像/结构/表格适配器。仅有文件名不算覆盖。 |
+| [`evidence_snapshot.py`](evidence_snapshot.py) | 构造不可变的 Stage 3 Evidence Snapshot：计划、checksum、lineage、适配器、省略声明和可解析的 `evidence_refs`。不含主 Agent 隐藏推理。 |
+| [`review_scratch.py`](review_scratch.py) | Reviewer 校验用的隔离 scratch：子进程环境已擦除秘密，无网络、不能写正式工作区、不能 MCP、不能 `submit_output`。 |
+| [`scientific_review.py`](scientific_review.py) | Stage 3 shadow 编排。冻结 Reviewer 身份，运行确定性检查与独立模型审核，绑定 evidence refs，并记录不把门的 shadow 判断。 |
 | [`cell_run.py`](cell_run.py) | 按固定顺序跑完一个 Python/R Cell：readiness 准入、身份/attempt 分配、安全检查、内核执行、实时输出、Artifact 捕获、执行日志、终止投影。Stage 1 的准入端口会在任何 Cell id 或 runtime 出现之前拒绝。这个事务跑完只是一条 observation，它不会判定 Agent 的任务已经完成。 |
 | [`completions.py`](completions.py) | 生成用户看到的那段叙述。进度和结果文字都做了本地化；结构化的 completion 是照着真实的 Artifact version/capture 增量渲染的，而不是照着一句声称。trusted 链接只来自公共 URL helper 与精确 version id；隐藏推理不会进到这里。 |
 | [`compute_tasks.py`](compute_tasks.py) | 一个会话的远程计算工作的只读视图。远程任务的寿命长过发起它的那一轮、内核、乃至守护进程，而那份持久记录原先只能从 cell 里够到。这个页面不能轮询，原因是这套系统特有的：**探测即回收**——`ComputeManager.result()` 才是去联系远端的那一步，而联系远端就会把文件拉回来并结束任务，所以一个会自动刷新的页面等于在没人看着的会话里偷偷做回收。本模块只接收一个 `Store`，完全没有 import `ComputeManager`，所以这条保证是结构性的，而不是一句关于调用顺序的承诺。按 `owner_key`（会话工作区）限定范围；别的会话的任务不会被列出、不计入计数，也不会以「已隐藏」的形式被提及。 |

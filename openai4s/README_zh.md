@@ -38,6 +38,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`prompts.py`](./prompts.py) | 核心自己要发的那批小型单用途 prompt：压缩、审查 gate、溯源、Skill 检索、抽取、编辑和安全。 |
 | [`replay.py`](./replay.py) | 把成功的 `host.*` 结果记进离线回放 tape（溯源、凭据读取这类内部管道调用刻意不入 tape）；导出的 notebook 回放这盘 tape 时，它负责发现调用顺序的漂移。 |
 | [`review.py`](./review.py) | 对已完成回合的证据做一次有界、无工具的审查，并把 JSON verdict 标准化。审查者动不了工作区。 |
+| [`scientific_reviewer.py`](./scientific_reviewer.py) | Stage 3 Scientific Reviewer V2：只读冻结 Evidence Snapshot、严格 `pass`/`issues`/`incomplete` schema，以及冻结的 provider/base_url/model 指纹。省略 Artifact 不能判 pass。 |
 | [`store.py`](./store.py) | 持久化层的兼容 facade。唯一那条 SQLite 连接放在这里，schema 和受保护的只读查询也放在这里。各个聚焦的 storage 仓储拿到的是同一条连接和同一把锁。migration 已经不属于这个 facade：它们带版本、走事务、按 checksum 记录，放在 [`storage/migrations.py`](./storage/migrations.py) 里——每次打开都把所有表重新探一遍、再把失败的 `ALTER` 逐个吞掉，会让「这个数据库是不是最新的」变成代码自己都答不上来的问题。`close()` 是幂等的，并且只逐出恰好是它自己的那个缓存实例，因此之后 `get_store(path)` 可以为同一路径开出新的一代。 |
 | [`webtools.py`](./webtools.py) | Host 侧的 Web 搜索、抓取、探测与下载。transport 优先走标准库。内容转换在这里做，网络开关、SSRF 检查和 egress 强制也都在这里生效——而且是每一跳都生效，这正是重定向要手工跟随、而不是交给 `urllib` 的原因：由 opener 在内部走完的跳转链，只在第一个 URL 上被检查过一次，之后再没有。任何绕开这里触达网络的能力（内置 Skill 用裸 `urllib` 拉一个归档、探测资源是否存在时另起一个函数），就等于同时跳过了允许名单和这道 guard。 |
 

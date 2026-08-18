@@ -145,6 +145,12 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_auto_mode_storage.py`](test_auto_mode_storage.py) | 持久 Auto Mode 状态机、事件次序、幂等、Verified 证明完整性、finding 生命周期、repair 所有权、权限作用域、分支投影、迁移、quarantine 与导入身份重映射。损坏的 hash 或 owner/event 不一致都会失败即拒绝。 |
 | [`test_auto_mode_surface_regressions.py`](test_auto_mode_surface_regressions.py) | 通过真实 Gateway、团队作用域 REST、公开字段脱敏、默认关闭行为、WebSocket 提示丢失、daemon 重开、package、share 与 quarantine，证明 SQLite 始终是事实源，损坏的 Verified 证明绝不会发布。 |
 | [`test_auto_mode_terminal_contract.py`](test_auto_mode_terminal_contract.py) | 五类 Stage 0 非 Guardian 终态契约：精确的独立 golden payload 与规范 digest、封闭的原因专属条件、失败即关闭的交叉路由、不冒充 Reviewer／Guardian 审计，以及有界恢复真值。 |
+| [`test_scientific_reviewer.py`](test_scientific_reviewer.py) | Stage 3 V2 schema：证据不完整不能 pass，实质性 finding 强制 issues，Reviewer 只看到注入的 snapshot。 |
+| [`test_evidence_adapters.py`](test_evidence_adapters.py) | PDF/图像/结构/表格适配器要么给出完整覆盖，要么诚实声明省略；仅有文件名不够。 |
+| [`test_evidence_snapshot.py`](test_evidence_snapshot.py) | 不可变 snapshot 的完整性、plan/cell/adapter 引用，以及 digest 稳定性。 |
+| [`test_review_scratch.py`](test_review_scratch.py) | 隔离 scratch 拒绝写正式工作区、联网、`submit_output` 以及继承来的秘密。 |
+| [`test_scientific_review_service.py`](test_scientific_review_service.py) | Shadow 编排：独立性失败即关闭、同模型 review_only、确定性数值核对、伪造引用、包含 Plan 的 shadow step，以及 flag 关闭时惰性。 |
+| [`test_scientific_review_golden.py`](test_scientific_review_golden.py) | Stage 3 Go/No-Go：≥100 个 golden/注入案例走真实 evaluator，高/中召回、干净任务误报，以及伪造 evidence ref 为零。 |
 | [`test_host_completion_service.py`](test_host_completion_service.py) | `host.submit_output`，Python Cell 唯一拥有的完成信号。schema 失败是软失败，且不得覆盖掉此前已有的完成；完成要点的过去式检查，除英文外也接受中日韩的表达。 |
 | [`test_host_contract.py`](test_host_contract.py) | worker 到 Host 的 wire：注入的门面、单键形式的软错误、camelCase 编解码。最后那个测试最有用——SDK 能调的每一个 `host.*` 方法都必须有对应的分发路由，这样新能力就不会接了一半就发出去。 |
 | [`test_host_credentials_service.py`](test_host_credentials_service.py) | 会话本地的 credential 引用。秘密本身从不返回；lease 绑定到单个动作并会过期；轮换一个 credential 会吊销挂在它上面的所有 lease；replay 排除了全部 credential 方法与取值。 |

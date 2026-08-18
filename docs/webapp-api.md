@@ -70,8 +70,15 @@ single-call evidence Reviewer after the answer has already been finalized. Its
 ordinary `step`/`step_update` records do not promote or veto `frame_update`, and
 reopen/share/export must not reinterpret such a step as a new Auto Mode
 terminal fact. Legacy true migrates only to result `review_only`; it cannot
-enable repair or permission review. Stage 3 and later execution flags remain
-inert reservations. The full truth and recovery rules are frozen in the
+enable repair or permission review.
+
+`OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW=1` adds a post-delivery shadow
+Scientific Reviewer V2 step (`kind=review`, `input.mode=shadow`). It does not
+change `frame_update`, does not emit a Verified badge, and does not add a new
+HTTP route. Plan turns are included. When Stage 2 storage is also enabled, the
+shadow review is persisted as a `result_review` audit on the current Auto Run
+and remains non-terminal. Stage 4 and later execution flags remain inert
+reservations. The full truth and recovery rules are frozen in the
 [Auto Mode product contract](auto-mode.md).
 
 Any future `blocked_by_guardian` projection requires a durable Guardian assessment

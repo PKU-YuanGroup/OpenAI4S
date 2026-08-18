@@ -106,6 +106,26 @@ Reviewer unavailability or Verified.
 The existing optional evidence Reviewer is a constrained single LLM call that
 runs after the final answer and persists an ordinary review step. It is not a
 completion gate and its historical `auto_review` name is not the new Auto Mode.
+
+#### Stage 3 Scientific Reviewer shadow
+
+`OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW=1` records an independent V2
+Scientific Review after the existing answer is already delivered. It does not
+change user-visible completion, does not start Repair, and does not write the
+formal workspace. The Reviewer receives only a frozen Evidence Snapshot: user
+request, plan, candidate, structured completion, this-turn artifact versions
+and checksums, cells, tool ledger, lineage, environment, source metadata,
+adapter coverage, and every omission/truncation. Filename-only coverage of
+PDF, image, structure, or table artifacts is incomplete and cannot pass.
+
+The Reviewer identity is frozen as `profile_id + profile_revision +
+(provider, base_url, model)` fingerprint for the run. `review_only` may use
+the same model in a separately labelled independent session; `auto_fix`
+requires a different fingerprint or records `review_unavailable` with
+`reviewer_independence_unavailable` instead of claiming an independent
+recheck. Plan turns are included. Scratch verification is isolated: no
+network, no formal-workspace write, no MCP, no `submit_output`. Findings
+must cite snapshot `evidence_refs`; a forged ref is itself a high finding.
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

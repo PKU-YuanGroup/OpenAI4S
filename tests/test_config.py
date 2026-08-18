@@ -397,11 +397,23 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
         "openai4s/host/data.py",
         "openai4s/server/gateway.py",
     ]
-    assert consumers.pop("stage2_auto_run_storage") == ["openai4s/server/auto_mode.py"]
+    assert sorted(consumers.pop("stage2_auto_run_storage")) == [
+        "openai4s/server/auto_mode.py",
+        "openai4s/server/scientific_review.py",
+    ]
+    assert sorted(consumers.pop("stage3_scientific_review_shadow")) == [
+        "openai4s/server/gateway.py",
+        "openai4s/server/scientific_review.py",
+    ]
     assert consumers == {
         name: []
         for name in ROADMAP_FLAGS
-        if name not in {"stage1_trusted_delivery", "stage2_auto_run_storage"}
+        if name
+        not in {
+            "stage1_trusted_delivery",
+            "stage2_auto_run_storage",
+            "stage3_scientific_review_shadow",
+        }
     }
     assert "openai4s/server/auto_mode.py" in auto_mode_consumers
     assert all(

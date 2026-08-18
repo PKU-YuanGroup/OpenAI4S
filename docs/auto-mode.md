@@ -1,13 +1,15 @@
 # Auto Mode product and terminal-state contract
 
-Status: **Stage 0 Auto Mode contract; Stage 1 trusted delivery implemented as
-default-off opt-in**.
+Status: **Stage 0 Auto Mode contract; Stage 1 trusted delivery, Stage 2
+durable Auto Run storage, and Stage 3 Scientific Reviewer shadow implemented
+as default-off opt-in**.
 
 This document freezes the product truth that Stages 1–12 must implement. It is
-normative for the new Auto Mode states, but it is not evidence that those
-states exist today. Stage 1 consumes only `stage1_trusted_delivery`; it does not
-add an Auto Mode state machine, Auto Run row/event/route/UI badge, reviewer
-gate, repair loop, or Guardian decision. Stage 2–12 roadmap flags remain inert.
+normative for the new Auto Mode states, but it is not evidence that later
+gates exist today. Stage 1 consumes only `stage1_trusted_delivery`. Stage 2
+consumes only `stage2_auto_run_storage`. Stage 3 consumes only
+`stage3_scientific_review_shadow` and records a shadow judgment without
+gating completion. Stage 4–12 roadmap flags remain inert.
 
 The existing `review:auto:<frame>` setting remains the old single-call,
 post-completion Reviewer. It records an ordinary review step after the final

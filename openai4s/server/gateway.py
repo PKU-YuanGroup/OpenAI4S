@@ -153,6 +153,7 @@ from openai4s.server.recovery_runtime import (
     python_runtime_spec,
 )
 from openai4s.server.reviews import ReviewPorts, ReviewService
+from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import security_headers
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
@@ -2228,6 +2229,12 @@ class SessionRunner:
             # calls this sink.  A socket failure is therefore only lost live
             # delivery; REST/reopen remains the durable source of truth.
             emit=lambda root_frame_id, event: self.hub.broadcast(root_frame_id, event),
+        )
+        self.scientific_review = ScientificReviewService(
+            store=self.store,
+            config=cfg,
+            auto_mode=self.auto_mode,
+            owner_instance_id=self._owner_instance_id,
         )
         self._ws_root = cfg.data_dir / "agent-workspaces"
         self._ws_root.mkdir(parents=True, exist_ok=True)
@@ -7505,6 +7512,40 @@ class SessionRunner:
                 )
                 if st.cancel.is_set():
                     status = "cancelled"
+            if (
+                self.cfg.roadmap_features.stage3_scientific_review_shadow
+                and status == "completed"
+            ):
+                # Shadow records a judgment after the existing answer is
+                # already delivered. Plan turns are included: Stage 3 removes
+                # the historical skip, but never gates completion.
+                shadow_text = "\n\n".join(
+                    str(blk.get("text") or "") for blk in assistant_visible
+                ).strip()
+                try:
+                    self.scientific_review.shadow_after_turn(
+                        root_frame_id=root_frame_id,
+                        project_id=project_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        turn_id=str(action_ledger.turn_id),
+                        execution_id=str(
+                            getattr(execution, "execution_id", "") or turn_request_id
+                        ),
+                        user_request=user_text,
+                        candidate_answer=shadow_text,
+                        structured_completion=(
+                            st.last_engine_completion
+                            or getattr(st.dispatcher, "last_output", None)
+                        ),
+                        artifact_versions_before=artifact_versions_before,
+                        cell_count_before=cell_count_before,
+                        step_count_before=step_count_before,
+                        agent_cfg=llm_cfg,
+                        reviewer_cfg=self._review_llm_cfg(st),
+                        emit=emit,
+                    )
+                except Exception:  # noqa: BLE001 - shadow must not fail the turn
+                    traceback.print_exc()
             self.store.update_frame(
                 root_frame_id, status=("done" if status == "completed" else status)
             )
