@@ -145,6 +145,12 @@ Reviewer. A new candidate is independently re-reviewed. Unchanged finding
 fingerprints or a spent repair budget stop as `completed_with_issues`.
 Identical Artifact bytes reuse the previous version. The Repair Agent cannot
 declare Verified.
+
+#### Stage 6 Guardian shadow
+
+`OPENAI4S_STAGE6_GUARDIAN_SHADOW=1` records a non-executing Guardian judgment
+on the exact action envelope of an `ask`. Human allow/deny still decides.
+Guardian cannot create a standing allow. An action-hash mismatch fails closed.
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

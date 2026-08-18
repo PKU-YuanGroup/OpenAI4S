@@ -393,6 +393,12 @@ class PermissionBroker:
                 "allow": False,
                 "message": "approval required but its durable request could not be recorded",
             }
+        try:
+            from openai4s.server.guardian_shadow import maybe_record_shadow
+
+            maybe_record_shadow(store, created_request, payload)
+        except Exception:  # noqa: BLE001 - shadow must not block the ask
+            pass
 
         with self._lock:
             chan = self._channels.get(root)

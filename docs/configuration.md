@@ -137,8 +137,9 @@ Every rollout flag defaults off. Stage 1 implements trusted delivery, Stage 2
 implements the durable Auto Run/configuration/projection foundation, and
 Stage 3 implements Scientific Reviewer V2 shadow recording, and Stage 4
 implements the review-only completion gate, and Stage 5 implements bounded
-auto-fix / re-review. Stage 6–12 flags remain inert reservations and cannot
-review or resolve a permission or grant authority.
+auto-fix / re-review, and Stage 6 records Permission Guardian shadow
+assessments. Stage 7–12 flags remain inert reservations and cannot grant
+standing authority.
 
 | Config field under `Config.roadmap_features` | Environment variable | Reserved behavior |
 | --- | --- | --- |
@@ -147,7 +148,7 @@ review or resolve a permission or grant authority.
 | `stage3_scientific_review_shadow` | `OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW` | Implemented opt-in: immutable Evidence Snapshot, independent V2 Reviewer, read-only scratch/adapters, and shadow recording that does not gate completion. |
 | `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Implemented opt-in: candidate stays provisional until review; pass promotes Verified, issues become completed_with_issues, failures become review_unavailable. Does not start Repair. |
 | `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Implemented opt-in: bounded Repair Agent plus independent re-review. Reviewer stays read-only; Repair cannot self-certify; identical bytes reuse the prior version. |
-| `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Exact-action Permission Guardian shadow adjudication. |
+| `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Implemented opt-in: exact-action Guardian shadow assessment. It does not execute, cannot create standing allow, and fails closed on hash mismatch. |
 | `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | One-shot Guardian enforcement and unified Auto Mode UX. |
 | `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Live Notebook and cross-language version lineage. |
 | `stage9_artifact_workbench` | `OPENAI4S_STAGE9_ARTIFACT_WORKBENCH` | Interactive Artifact workbench and Ketcher. |
