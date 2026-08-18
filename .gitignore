@@ -35,3 +35,5 @@ docs/nextgen-progress.md
 # subtrees carry no bilingual README pairs, so one stray `git add -A` would
 # fail the directory-docs CI gate.
 epibench_eval/
+paper/
+.openai4s-runtime/

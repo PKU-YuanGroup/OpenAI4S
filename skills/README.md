@@ -2,11 +2,13 @@
 
 [中文说明](README_zh.md)
 
-The 40 bundled OpenAI4S Skills live here, one directory each. A Skill is a
-recipe: code plus the operational knowledge needed to run it, not a provider
-JSON Tool. Disclosure is progressive, so the loader shows a name and a one-line
-summary and nothing more until a Skill is selected; only then does it read
-`SKILL.md` and the optional `kernel.py` sidecar.
+This tree exposes 602 bundled Skills: 41 curated OpenAI4S recipes plus the 561
+recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
+plus the operational knowledge needed to run it—not a provider JSON Tool.
+Disclosure is progressive: curated Skills receive one summary line each, while
+the large third-party collection receives one line total and expands through
+search or exact loading. Only a selected Skill's `SKILL.md` and optional
+`kernel.py` sidecar are loaded.
 
 ## Subdirectories
 
@@ -16,6 +18,7 @@ summary and nothing more until a Skill is selected; only then does it read
 | [`alphafold2/`](alphafold2/) | AF2 and AF2-Multimer through the ColabFold `colabfold_batch` runner, so a prediction is one FASTA and one command instead of a local database mount. The MSA comes from the public MMseqs2 server, which means the sequence is sent there. Proteins only. For ligands or nucleic acids, route to `boltz`, `chai1`, or `openfold3`. |
 | [`audit-dataset/`](audit-dataset/) | The check to run before anything is trained or published: schema drift, missingness, duplicate rows and IDs, target imbalance, and entities shared across train, validation, and test. Pure stdlib. A clean structural audit still says nothing about whether the data is representative or the labels are right. |
 | [`bioprobench/`](bioprobench/) | Scoring a model's protocol reasoning against the BioProBench benchmark: question answering, step ordering, error correction, generation, and LLM-judged error reasoning. The contract is the trap — it scores one file that already merges ground truth into each model response, and a plain model-output file returns zeros under `"status": "failed"`. Check `Failed_Rate`. |
+| [`bioskills/`](bioskills/) | A pinned, read-only import of all 561 MIT-licensed GPTomics/bioSkills recipes across 63 bioinformatics categories. Its bilingual boundary docs, upstream license, and SHA-256 manifest preserve provenance; individual recipes remain searchable/loadable without placing 561 descriptions in every system prompt. |
 | [`boltz/`](boltz/) | Open-weights co-folding of protein, DNA, RNA, and ligand chains, with an optional small-molecule affinity head. Among the four co-folders it is the default for binder-validation campaigns: fully open MIT weights and the fastest sampler. |
 | [`borzoi/`](borzoi/) | DNA in, predicted assay coverage out: RNA-seq, CAGE, DNase, and ChIP tracks over roughly 524 kb windows. Score a non-coding variant by running ref and alt windows and comparing the per-track delta. Reach for `evo2` instead when you want sequence likelihood rather than assay tracks. |
 | [`catalyst_sar_screening/`](catalyst_sar_screening/) | Single-atom-catalyst SAR on graphene M–N–C sites, hard-locked to FAIRChem UMA. Heuristics, lookup tables, and other MLIPs are forbidden, and so is handing the repo's committed demo outputs to a user as a result: every answer must come from a fresh pipeline run. If the weights hub is unreachable it stops and asks rather than substituting a method. |
@@ -43,6 +46,7 @@ summary and nothing more until a Skill is selected; only then does it read
 | [`reaction-condition-recommendation/`](reaction-condition-recommendation/) | Parrot condition hypotheses for a fixed reaction, preserving checkpoint-specific label vocabularies and temperature support while separating model output from literature or ELN evidence. |
 | [`reaction-forward-prediction/`](reaction-forward-prediction/) | ReactionT5v2 forward product prediction and round-trip recovery checks for proposed retrosynthetic steps. Product rank is model agreement, not experimental feasibility. |
 | [`reaction-yield-estimation/`](reaction-yield-estimation/) | Bounded ReactionT5v2 yield screening for fully specified reactions, with an explicit domain gate and no route-wide success-probability claim. |
+| [`rfdiffusion/`](rfdiffusion/) | Backbone generation for de novo binders, hotspot conditioning, and motif scaffolding. The recipe fixes Hydra quoting and contig semantics, preserves `.trb` mappings and batch provenance, and requires downstream sequence design plus independent monomer/complex validation; generation alone is not binding evidence. |
 | [`remote-compute-nvidia/`](remote-compute-nvidia/) | Dispatch to NVIDIA NIM in either of two forms that share one job contract. `self_hosted` runs an nvcr.io container on your own GPU; `hosted` needs no GPU but every job request leaves for NVIDIA's managed gateway. Only the declared key variables are forwarded to the confined helper, and they are scrubbed from the log tails that leave the sandbox. |
 | [`remote-compute-ssh/`](remote-compute-ssh/) | The orchestration half of running on the user's own SSH or SLURM host: partitions, env activation, job scripts, staging, harvest, recovery. Not the science. Each submit puts an approval modal in front of the user and spends their allocation, so the shape of a good run is to read what is already known about the host, ask once for what is not, land the first submit, and write down what you learned. |
 | [`retrosynthesis_planning/`](retrosynthesis_planning/) | The multi-step scientific task: AiZynthFinder searches from a target to a declared stock, after which routes are normalized, de-duplicated, ranked, structurally audited, and rendered for chemist review. Single-step, forward, mapping, condition, and yield questions have their own Skills. |

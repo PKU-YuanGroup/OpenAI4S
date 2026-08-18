@@ -128,6 +128,7 @@ def check_sources(src: Path) -> int:
     if missing:
         raise BundleCheckError("source tree is missing: " + ", ".join(missing))
     skills = sorted(src.glob("skills/*/SKILL.md"))
+    skills.extend(sorted(src.glob("skills/bioskills/*/SKILL.md")))
     if len(skills) < MIN_SKILLS:
         raise BundleCheckError(
             f"bundle ships only {len(skills)} Skills; expected at least {MIN_SKILLS}"

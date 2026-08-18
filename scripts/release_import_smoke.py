@@ -58,6 +58,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="openai4s-release-smoke-") as temp:
         cfg = Config(data_dir=Path(temp))
         skills = sorted(cfg.skills_dir.glob("*/SKILL.md"))
+        skills.extend(sorted((cfg.skills_dir / "bioskills").glob("*/SKILL.md")))
         if len(skills) < 20:
             raise RuntimeError(
                 f"installed skill catalog is incomplete: {len(skills)} skill(s) at {cfg.skills_dir}"

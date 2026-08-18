@@ -282,7 +282,7 @@ class Skill:
     source: str = "bundled"
     keywords: set[str] = field(default_factory=set)
     #: What this Skill needs before it can actually run — `requirements: [gpu]`
-    #: in the frontmatter. Thirteen bundled Skills have declared this since they
+    #: in the frontmatter. Fourteen bundled Skills have declared this since they
     #: were written and nothing read it, so a GPU-only Skill looked identical
     #: to one that runs anywhere and the agent discovered the difference at
     #: execution time, deep into a task.
@@ -290,6 +290,11 @@ class Skill:
     version: str = ""
     document_sha256: str = ""
     sidecar_sha256: str | None = None
+    # Large third-party collections remain individually searchable/loadable,
+    # but are represented by one line in the always-on system prompt.  This
+    # preserves progressive disclosure when a collection contains hundreds of
+    # recipes whose summaries alone would otherwise consume the context.
+    collection: str | None = None
 
     @property
     def read_only(self) -> bool:
@@ -561,6 +566,21 @@ class SkillLoader:
             return None
         return project_skills_root(self.cfg, self.project_id)
 
+    def bundled_roots(self) -> tuple[tuple[Path, str | None], ...]:
+        """Return maintained bundled roots and their optional collection id.
+
+        Ordinary OpenAI4S Skills remain one directory below ``skills/``.  The
+        pinned bioSkills import is a generated third-party collection one
+        level lower, which lets its provenance/license live at a single stable
+        boundary instead of pretending 561 independently maintained packages.
+        """
+
+        roots: list[tuple[Path, str | None]] = [(self.skills_dir, None)]
+        bioskills = self.skills_dir / "bioskills"
+        if bioskills.is_dir():
+            roots.append((bioskills, "bioskills"))
+        return tuple(roots)
+
     @staticmethod
     def parse_document(content: str) -> tuple[dict, str]:
         """Parse one SKILL.md document with the loader's frontmatter rules."""
@@ -580,12 +600,14 @@ class SkillLoader:
         # canonical name. Bundled wins on collision, otherwise the agent could
         # load untrusted content under a trusted capability identity.
         claimed_names: set[str] = set()
-        roots = [("bundled", self.skills_dir)]
+        roots: list[tuple[str, Path, str | None]] = [
+            ("bundled", root, collection) for root, collection in self.bundled_roots()
+        ]
         project_root = self.project_skills_dir()
         if project_root is not None:
-            roots.append(("project", project_root))
-        roots.append(("user", self.user_skills_dir()))
-        for source, base in roots:
+            roots.append(("project", project_root, None))
+        roots.append(("user", self.user_skills_dir(), None))
+        for source, base, collection in roots:
             if not base or not base.exists():
                 continue
             is_writable = source in {"user", "project"}
@@ -641,6 +663,7 @@ class SkillLoader:
                     version=version,
                     document_sha256=document_sha256,
                     sidecar_sha256=sidecar_sha256,
+                    collection=collection,
                 )
                 claimed_names.add(canonical_name)
         self._skills = discovered
@@ -767,7 +790,7 @@ class SkillLoader:
                 for entry in (manifest.get("entries") or [])
                 if entry.get("directory") and entry.get("name") not in allowed
             )
-        roots = [str(self.skills_dir)]
+        roots = [str(root) for root, _collection in self.bundled_roots()]
         project_root = self.project_skills_dir()
         if project_root is not None:
             roots.append(str(project_root))
@@ -855,6 +878,10 @@ class SkillLoader:
                 "version": s.version,
                 "document_sha256": s.document_sha256,
                 "sidecar_sha256": s.sidecar_sha256,
+                # Public provenance/filtering metadata. None identifies the
+                # ordinary curated/user catalog; "bioskills" identifies the
+                # pinned third-party collection without changing Skill names.
+                "collection": s.collection,
             }
             for s in self.skills(include_disabled=include_disabled).values()
         ]
@@ -878,7 +905,9 @@ class SkillLoader:
         """
         skills = self.skills()
         if only is not None:
-            skills = {name: skill for name, skill in skills.items() if name in only}
+            skills = {
+                name: skill for name, skill in skills.items() if skill.name in only
+            }
         if not skills:
             return ""
         lines = [
@@ -897,8 +926,25 @@ class SkillLoader:
             "`glob_files` for Skill retrieval.",
             "",
         ]
-        for s in skills.values():
-            lines.append(s.summary_line())
+        collections: dict[str, list[Skill]] = {}
+        for skill in skills.values():
+            if skill.collection and only is None:
+                collections.setdefault(skill.collection, []).append(skill)
+            else:
+                lines.append(skill.summary_line())
+        bioskills = collections.get("bioskills", [])
+        if bioskills:
+            lines.append(
+                "- bioSkills collection: "
+                f"{len(bioskills)} pinned third-party bioinformatics recipes are "
+                "available on demand across genomics, transcriptomics, variants, "
+                "single-cell/spatial omics, structural biology, proteomics, "
+                "metabolomics, chemoinformatics, clinical statistics, and workflow "
+                "management. For ANY bioinformatics task, search this collection "
+                "before writing the pipeline, using English method, tool, data-type, "
+                "and workflow keywords even when the user asks in another language. "
+                "Use list_skills only when exact enumeration is required."
+            )
         return "\n".join(lines)
 
 

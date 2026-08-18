@@ -30,6 +30,9 @@ _WHEEL_REQUIRED = frozenset(
         "envs/struct.yml",
         "skills/example_stats/SKILL.md",
         "skills/example_stats/kernel.py",
+        "skills/bioskills/LICENSE",
+        "skills/bioskills/MANIFEST.json",
+        "skills/bioskills/bio-structural-biology-structure-validation/SKILL.md",
         "skills/remote-compute-nvidia/provider.json",
         "skills/remote-compute-nvidia/provider.py",
     }
@@ -43,6 +46,7 @@ _SDIST_REQUIRED = frozenset(
         "SECURITY.md",
         "docs/release-validation.md",
         "pyproject.toml",
+        "scripts/import_bioskills.py",
         "scripts/release_import_smoke.py",
         "scripts/setup_envs.sh",
         "scripts/source_secret_scan.py",

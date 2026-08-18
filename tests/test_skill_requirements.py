@@ -1,6 +1,6 @@
 """What a Skill needs before it can run, and whether this machine has it.
 
-Thirteen bundled Skills have declared `requirements: [gpu]` in their frontmatter
+Fourteen bundled Skills have declared `requirements: [gpu]` in their frontmatter
 since they were written, and nothing read it — not the loader, not the Skill
 object, not the catalogue row. So a GPU-only Skill looked exactly like one that
 runs anywhere, and the agent found out the difference at execution time, deep
@@ -16,6 +16,7 @@ import pytest
 
 from openai4s.config import get_config
 from openai4s.skills_loader.loader import (
+    _REQUIREMENT_CHECKS,
     NEEDS_SETUP,
     READY,
     UNKNOWN,
@@ -71,13 +72,13 @@ def test_readiness_distinguishes_missing_from_unknowable():
     assert unknowable["missing"] == []
 
 
-def test_a_known_missing_requirement_outranks_an_unknowable_one():
+def test_a_known_missing_requirement_outranks_an_unknowable_one(monkeypatch):
     """`needs_setup` is the more actionable answer, so it wins."""
+    monkeypatch.setitem(_REQUIREMENT_CHECKS, "gpu", lambda: False)
     mixed = skill_readiness(("gpu", "quantum-annealer"))
-    assert mixed["state"] in (NEEDS_SETUP, READY)  # depends on this host's GPU
-    if mixed["missing"]:
-        assert mixed["state"] == NEEDS_SETUP
-        assert mixed["unverifiable"] == ["quantum-annealer"]
+    assert mixed["state"] == NEEDS_SETUP
+    assert mixed["missing"] == ["gpu"]
+    assert mixed["unverifiable"] == ["quantum-annealer"]
 
 
 def test_browsing_the_catalogue_never_reaches_the_network(monkeypatch):
@@ -106,7 +107,7 @@ def test_readiness_does_not_spawn_a_process_per_skill(monkeypatch):
     """`nvidia-smi` is looked for on PATH, not executed.
 
     Running it would make rendering a catalogue spawn one subprocess per Skill
-    — thirty-four of them on this repo — which is the kind of cost that only
+    — one per bundled Skill — which is the kind of cost that only
     shows up on a slow machine and is then blamed on something else.
     """
     import subprocess
