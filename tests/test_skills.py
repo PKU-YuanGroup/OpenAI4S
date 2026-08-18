@@ -90,7 +90,9 @@ def test_search_matches_by_keyword():
 
 
 def test_search_no_match_returns_empty():
-    assert SkillLoader().search("quantum chromodynamics lattice gauge") == []
+    # The pinned bioSkills corpus is broad enough to mention ordinary physics
+    # vocabulary in modeling recipes, so use deliberately nonexistent tokens.
+    assert SkillLoader().search("zzqvorth blenxari ptuum") == []
 
 
 def test_sidecar_gate_ok_for_example():
@@ -346,6 +348,38 @@ def test_hyphenated_skill_uses_importlib_hint(tmp_path, monkeypatch):
 def test_identifier_skill_uses_import_star_hint():
     s = SkillLoader().discover()["example_stats"]
     assert s.import_hint.startswith("from example_stats.kernel import *")
+
+
+def test_bioskills_collection_is_discovered_but_prompt_is_compact():
+    loader = SkillLoader()
+    skills = loader.discover()
+    imported = [skill for skill in skills.values() if skill.collection == "bioskills"]
+
+    assert len(imported) == 561
+    assert loader.get("bio-structural-biology-structure-validation") is not None
+    catalog = {row["name"]: row for row in loader.catalog()}
+    assert catalog["bio-structural-biology-structure-validation"]["collection"] == (
+        "bioskills"
+    )
+    assert catalog["example_stats"]["collection"] is None
+    context = loader.system_context()
+    assert "bioSkills collection: 561 pinned third-party" in context
+    assert "For ANY bioinformatics task, search this collection" in context
+    assert "using English method, tool, data-type" in context
+    assert "bio-structural-biology-structure-validation:" not in context
+
+
+def test_bioskills_exact_load_search_and_scoped_prompt():
+    loader = SkillLoader()
+    name = "bio-structural-biology-structure-validation"
+
+    assert "R-free" in loader.get(name).doc
+    hits = loader.search("MolProbity R-free predicted structure validation", limit=3)
+    assert name in {hit["name"] for hit in hits}
+
+    scoped = loader.system_context(only=frozenset({name}))
+    assert f"- {name}:" in scoped
+    assert "bioSkills collection:" not in scoped
 
 
 if __name__ == "__main__":

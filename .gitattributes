@@ -1,0 +1,2 @@
+# Preserve byte-exact vendored bioSkills payloads from the pinned upstream commit.
+skills/bioskills/** -whitespace

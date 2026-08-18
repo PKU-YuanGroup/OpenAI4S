@@ -1,0 +1,72 @@
+# Reference: cellpose 4.0+, anndata 0.10+, matplotlib 3.8+, numpy 1.26+, pandas 2.2+, scanpy 1.10+, scvi-tools 1.1+, squidpy 1.3+, steinbock 0.16+ | Verify API if version differs
+import pandas as pd
+import numpy as np
+import anndata as ad
+import scanpy as sc
+import squidpy as sq
+from pathlib import Path
+
+# === CONFIGURATION ===
+data_dir = Path('steinbock_output')
+output_dir = Path('results')
+output_dir.mkdir(exist_ok=True)
+
+# === 1. LOAD DATA ===
+print('Loading steinbock outputs...')
+intensities = pd.read_csv(data_dir / 'intensities.csv', index_col=0)
+regionprops = pd.read_csv(data_dir / 'regionprops.csv', index_col=0)
+
+print(f'Loaded {len(intensities)} cells, {len(intensities.columns)} markers')
+
+# === 2. CREATE ANNDATA ===
+adata = ad.AnnData(X=intensities.values, obs=regionprops.copy(),
+                   var=pd.DataFrame(index=intensities.columns))
+adata.obs['cell_id'] = intensities.index.values
+adata.obs['image_id'] = pd.Categorical([idx.rsplit('_', 1)[0] for idx in intensities.index])   # squidpy library_key requires a categorical, not object/string
+adata.obsm['spatial'] = regionprops[['centroid-0', 'centroid-1']].values   # skimage regionprops_table names them centroid-0 (y) / centroid-1 (x)
+
+# === 3. PREPROCESSING ===
+print('Preprocessing...')
+adata.layers['counts'] = adata.X.copy()               # keep raw integer ion counts
+adata.X = np.arcsinh(adata.X / 1)                      # cofactor 1 for IMC (NOT the CyTOF 5, which over-compresses integer ion counts)
+adata.raw = adata.copy()
+sc.pp.scale(adata, max_value=10)
+
+# === 4. DIMENSIONALITY REDUCTION ===
+print('Running dimensionality reduction...')
+sc.pp.pca(adata, n_comps=20)
+sc.pp.neighbors(adata, n_neighbors=15)
+sc.tl.umap(adata)
+
+# === 5. CLUSTERING ===
+print('Clustering...')
+sc.tl.leiden(adata, resolution=0.8)
+print(f'Found {adata.obs["leiden"].nunique()} clusters')
+
+# === 6. MARKER ANALYSIS ===
+sc.tl.rank_genes_groups(adata, 'leiden', method='wilcoxon')
+
+# === 7. SPATIAL ANALYSIS ===
+print('Running spatial analysis...')
+sq.gr.spatial_neighbors(adata, coord_type='generic', delaunay=True, library_key='image_id')   # per-image graph; no cross-ROI edges
+sq.gr.nhood_enrichment(adata, cluster_key='leiden')
+
+# === 8. VISUALIZATION ===
+print('Generating plots...')
+sc.pl.umap(adata, color=['leiden'], save='_clusters.png')
+sq.pl.nhood_enrichment(adata, cluster_key='leiden')
+
+# Spatial plot for first image
+first_image = adata.obs['image_id'].iloc[0]
+adata_img = adata[adata.obs['image_id'] == first_image]
+sq.pl.spatial_scatter(adata_img, color='leiden', shape=None, size=15)
+
+# === 9. SAVE RESULTS ===
+print('Saving results...')
+adata.write(output_dir / 'imc_analysis.h5ad')
+
+proportions = adata.obs.groupby(['image_id', 'leiden'], observed=True).size().unstack(fill_value=0)   # observed=True: both groupers are categorical
+proportions = proportions.div(proportions.sum(axis=1), axis=0)
+proportions.to_csv(output_dir / 'cluster_proportions.csv')
+
+print('Analysis complete!')

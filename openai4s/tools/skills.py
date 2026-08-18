@@ -24,7 +24,10 @@ class ListSkillsTool(Tool):
     )
     parameters = {"properties": {}, "required": []}
     requires_approval = False
-    output_limit = 10_000
+    # Explicit all-Skills audits must be able to see the complete catalog.  The
+    # pinned bioSkills collection adds 561 names, so 10k would archive/truncate
+    # the very result this tool promises to enumerate.
+    output_limit = 50_000
     resource_key_prefix = "skill"
     resource_target_default = "catalog"
 
@@ -32,7 +35,7 @@ class ListSkillsTool(Tool):
         del arguments
         rows = runtime.invoke(self.host_method)
         # The Host catalog also carries descriptions, readiness, content
-        # digests, and version ids for UI reconciliation. The full 35-row JSON
+        # digests, and version ids for UI reconciliation. The full catalog JSON
         # exceeds the bounded model-observation window and is archived to an
         # internal blob; Ark then mistook that archive hint for a workspace
         # path. Native enumeration needs only stable names. Full metadata stays

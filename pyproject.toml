@@ -105,7 +105,29 @@ openai4s = [
     "server/webui/vendor/*.js",
     "server/webui/vendor/fonts/*.woff2",
 ]
-"*" = ["*.html", "*.json", "*.lock", "*.md", "*.yml"]
+"*" = [
+    "*.R",
+    "*.Rmd",
+    "*.aln",
+    "*.csv",
+    "*.cwl",
+    "*.fasta",
+    "*.fastq",
+    "*.gb",
+    "*.html",
+    "*.ini",
+    "*.json",
+    "*.lock",
+    "*.md",
+    "*.nf",
+    "*.qmd",
+    "*.sh",
+    "*.toml",
+    "*.wdl",
+    "*.yml",
+    "LICENSE",
+    "rnaseq_snakefile",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

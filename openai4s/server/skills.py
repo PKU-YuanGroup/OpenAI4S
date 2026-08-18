@@ -395,6 +395,9 @@ class SkillCustomizationService:
                         else ""
                     ),
                     "origin": origin,
+                    "collection": (
+                        item.get("collection") if isinstance(item, dict) else None
+                    ),
                     "scope": item_scope,
                     "editable": editable.get(name, origin == "user"),
                     "enabled": name not in disabled_names,

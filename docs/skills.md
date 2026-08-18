@@ -10,13 +10,24 @@ skills/example_stats/
 
 Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel adds `skills/` to `sys.path`, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (35)
+## Bundled Skills (597)
+
+The catalog has two maintenance tiers: 36 curated OpenAI4S Skills and a pinned,
+read-only import of all 561 MIT-licensed
+[GPTomics/bioSkills](../skills/bioskills/) recipes. Every imported recipe is
+individually searchable and loadable, but the system prompt represents the
+collection with one aggregate line rather than 561 descriptions. The bundle's
+source commit, conversion rules, license, complete inventory, and per-file
+hashes live at its linked boundary; importing it installs no scientific
+packages and does not imply that every optional tool is ready locally.
+
+### Curated OpenAI4S Skills (36)
 
 | category | Skills |
 |---|---|
 | **Structure prediction** (GPU) | `alphafold2` · `openfold3` · `boltz` · `chai1` · `esmfold2` |
 | **Sequence / omics / docking** (GPU) | `fair-esm2` · `evo2` · `borzoi` · `scgpt` · `scvi-tools` · `diffdock` |
-| **Protein design** (GPU) | `proteinmpnn` · `ligandmpnn` · `solublempnn` |
+| **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` |
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
 | **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` · `evidence-walkthrough` · `retrosynthesis_planning` · `mineral_spectra_analysis` · `admet_genetic` · `protein-mutation-enhancement` |
 | **ML methodology / benchmarks** | `plan-ml-experiment` · `audit-dataset` · `evaluate-model` · `bioprobench` |

@@ -16,10 +16,23 @@ ROOT = Path(__file__).resolve().parents[1]
 # injected into the trees themselves.
 EXCLUDED_PREFIXES = (
     PurePosixPath("openai4s/server/webui/vendor"),
+    # Pinned, mechanically imported third-party resource collection.  Its
+    # owning skills/bioskills README pair, manifest, and license document the
+    # boundary; injecting 1,122 generated README files into upstream recipes
+    # would obscure rather than improve provenance.
+    PurePosixPath("skills/bioskills"),
     PurePosixPath("tests/fixtures"),
 )
 EXCLUDED_PARTS = frozenset(
-    {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".build"}
+    {
+        ".git",
+        ".venv",
+        ".openai4s-runtime",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".build",
+    }
 )
 # A directory documents itself with README.md + README_zh.md, or — where a
 # README.md would collide with the way a tool treats the folder, as
