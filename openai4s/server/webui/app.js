@@ -678,6 +678,17 @@ Object.assign(I18N.zh, {
   "kernel.started": "内核已启动",
   "kernel.stopped": "内核已停止（会话保留，可随时启动以恢复）",
   "ketcher.modalTitle": "Ketcher — 化学结构编辑器",
+  "wb.table.filter": "筛选 col:值",
+  "wb.table.prev": "上一页",
+  "wb.table.next": "下一页",
+  "wb.table.meta": "{0} 行 · 显示 {1}–{2}",
+  "wb.ketcher.edit": "在 Ketcher 中编辑",
+  "wb.locator.title": "按位置评论（进入下一轮）",
+  "wb.locator.quote": "选中的原文",
+  "wb.locator.selector": "CSS 选择器，如 #hit",
+  "wb.locator.body": "评论…",
+  "wb.locator.saved": "评论已保存",
+  "wb.locator.err": "评论失败：{0}",
   "key.banner.goConfigure": "去配置 →",
   "key.banner.notConfigured": " 尚未配置 API Key，发送消息会失败。",
   "label.apiKey": "API Key",
@@ -1753,6 +1764,17 @@ Object.assign(I18N.en, {
   "kernel.started": "Kernel started",
   "kernel.stopped": "Kernel stopped (session preserved; start anytime to resume)",
   "ketcher.modalTitle": "Ketcher — Chemical Structure Editor",
+  "wb.table.filter": "Filter col:value",
+  "wb.table.prev": "Previous",
+  "wb.table.next": "Next",
+  "wb.table.meta": "{0} rows · showing {1}–{2}",
+  "wb.ketcher.edit": "Edit in Ketcher",
+  "wb.locator.title": "Location comments (sent on the next turn)",
+  "wb.locator.quote": "Selected source text",
+  "wb.locator.selector": "CSS selector, e.g. #hit",
+  "wb.locator.body": "Comment…",
+  "wb.locator.saved": "Comment saved",
+  "wb.locator.err": "Comment failed: {0}",
   "key.banner.goConfigure": "Configure →",
   "key.banner.notConfigured": " No API Key configured yet; sending messages will fail.",
   "label.apiKey": "API Key",
@@ -8094,8 +8116,8 @@ function renderArtifactDescriptor(body, a, descriptor) {
   const content = el("div", "renderer-content"); shell.appendChild(content); body.appendChild(shell);
   const url = artUrl(a); const nm = String(a.filename || "").toLowerCase();
   if (rendererId === "image") renderAnnotatableImage(content, a, url);
-  else if (rendererId === "pdf") { const frame = el("iframe"); frame.src = url; content.appendChild(frame); }
-  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", "allow-scripts allow-forms"); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); }
+  else if (rendererId === "pdf") { const frame = el("iframe"); frame.src = url; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "pdf"); }
+  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", "allow-scripts allow-forms"); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
   else if (rendererId === "molecule-3d") molecule(content, url, nm);
   else if (rendererId === "chemistry-2d") renderChemistry2D(content, a, url);
   else if (rendererId === "genome-track") renderGenomeTrack(content, a, url);
@@ -8140,7 +8162,11 @@ function renderStructuredText(container, a, text) {
   if (!rows || !rows.length) { const pre = el("pre", "renderer-source"); pre.textContent = text.slice(0, 300000); container.appendChild(pre); return; }
   renderSheet(container, rows);
 }
+function artifactWorkbenchOn() {
+  return !!(S.artifactWorkbench || (_kc && _kc.st && _kc.st.artifact_workbench));
+}
 function renderTableArtifact(container, a, url) {
+  if (artifactWorkbenchOn()) return renderWorkbenchTable(container, a);
   fetchArtifactText(url).then(text => {
     if (!container.isConnected) return;
     if (looksBinary(text)) return renderDownloadArtifact(container, a, url);
@@ -8148,6 +8174,51 @@ function renderTableArtifact(container, a, url) {
     if (rows && rows.length) renderSheet(container, rows);
     else { const pre = el("pre", "renderer-source"); pre.textContent = text.slice(0, 300000); container.appendChild(pre); }
   }).catch(() => rendererFailure(container, a, url));
+}
+function renderWorkbenchTable(container, a) {
+  const state = { sort: "", dir: "asc", filters: {}, offset: 0, limit: 50 };
+  const chrome = el("div", "wb-table");
+  const controls = el("div", "wb-table-controls");
+  const filter = el("input", "wb-filter"); filter.placeholder = t("wb.table.filter");
+  const prev = el("button", "outline-btn small", t("wb.table.prev"));
+  const next = el("button", "outline-btn small", t("wb.table.next"));
+  const meta = el("div", "wb-table-meta");
+  controls.appendChild(filter); controls.appendChild(prev); controls.appendChild(next); chrome.appendChild(controls); chrome.appendChild(meta);
+  const hold = el("div", "wb-table-hold"); chrome.appendChild(hold); container.appendChild(chrome);
+  const load = async () => {
+    const query = new URLSearchParams({ sort: state.sort, dir: state.dir, offset: String(state.offset), limit: String(state.limit) });
+    Object.entries(state.filters).forEach(([key, value]) => { if (value) query.set("q_" + key, value); });
+    let payload;
+    try { payload = await api(`/artifacts/${encodeURIComponent(a.id)}/table?${query}`); }
+    catch (error) { hold.textContent = apiErrorText(error); return; }
+    if (!container.isConnected) return;
+    meta.textContent = t("wb.table.meta", payload.total_rows, payload.offset + 1, Math.min(payload.offset + payload.rows.length, payload.total_rows));
+    hold.innerHTML = "";
+    const table = el("table", "sheet"); const head = el("tr");
+    (payload.columns || []).forEach(name => {
+      const th = el("th", payload.sorted_by === name ? "wb-sorted" : "", name);
+      th.onclick = () => { state.sort = name; state.dir = payload.sorted_by === name && state.dir === "asc" ? "desc" : "asc"; state.offset = 0; load(); };
+      head.appendChild(th);
+    });
+    table.appendChild(head);
+    (payload.rows || []).forEach(row => {
+      const tr = el("tr"); (payload.columns || []).forEach((_, index) => tr.appendChild(el("td", null, String(row[index] ?? "")))); table.appendChild(tr);
+    });
+    hold.appendChild(table);
+    prev.disabled = payload.offset <= 0;
+    next.disabled = payload.offset + payload.rows.length >= payload.total_rows;
+  };
+  filter.onchange = () => { state.filters = payloadFilters(filter.value, a); state.offset = 0; load(); };
+  prev.onclick = () => { state.offset = Math.max(0, state.offset - state.limit); load(); };
+  next.onclick = () => { state.offset += state.limit; load(); };
+  load();
+}
+function payloadFilters(text, a) {
+  const value = String(text || "").trim();
+  if (!value) return {};
+  const named = value.match(/^([^:]+):(.*)$/);
+  if (named) return { [named[1].trim()]: named[2].trim() };
+  return { [((a && a.filename) || "col").replace(/\.[^.]+$/, "")]: value };
 }
 // The true shape of a parsed table: rows, and the union of every row's keys.
 // Not `rows[0]`'s keys, which is what decides the drawn columns -- records
@@ -8292,6 +8363,20 @@ function molecule2dSvg(model) {
   return svg;
 }
 function renderChemistry2D(container, a, url) {
+  if (artifactWorkbenchOn()) {
+    const bar = el("div", "wb-ketcher-bar");
+    const open = el("button", "solid-btn small", t("wb.ketcher.edit"));
+    open.onclick = () => {
+      $("#modal-title").textContent = t("ketcher.modalTitle");
+      $("#modal-download").style.display = "none";
+      const body = $("#modal-body"); body.innerHTML = "";
+      const frame = el("iframe");
+      frame.src = (S.sandboxOrigin || "") + "/ketcher?artifact_id=" + encodeURIComponent(a.id);
+      frame.setAttribute("allow", "clipboard-read; clipboard-write");
+      body.appendChild(frame); openModalEl($("#modal"));
+    };
+    bar.appendChild(open); container.appendChild(bar);
+  }
   fetchArtifactText(url).then(text => {
     if (!container.isConnected) return;
     const runtime = scientificRenderers(); const model = runtime && runtime.parseMolfile(text); const drawing = molecule2dSvg(model);
@@ -9346,6 +9431,7 @@ async function refreshKernelState(els, _b, _c) {
   const previousRuntimeKey = _kc.st && [_kc.st.state, _kc.st.alive, _kc.st.turn_running, _kc.st.generation_id, _kc.st.generation, _kc.st.view_only, _kc.st.trust_state].join(":");
   if (_kc.id !== sid) { _kc.id = sid; _kc.envs = null; }
   _kc.st = st; _kc.stAt = Date.now();
+  S.artifactWorkbench = !!st.artifact_workbench;
   _paintKernel(els, st);  // els may be stale (a newer render replaced it); harmless — the next render repaints from cache
   // The first render happens before kernel status is known and therefore uses
   // the passive strip. If this daemon explicitly enables the developer REPL,
@@ -10050,6 +10136,45 @@ function renderProvReview(body, a, lin) {
   if (save && save.at) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(save.at))));
 }
 function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = (S.sandboxOrigin || "") + "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); openModalEl($("#modal")); }
+function renderLocatorComments(container, a, kind) {
+  const box = el("div", "wb-locator");
+  box.appendChild(el("div", "wb-locator-title", t("wb.locator.title")));
+  const quote = el("textarea", "wb-locator-quote"); quote.placeholder = t("wb.locator.quote");
+  const selector = el("input", "wb-locator-selector"); selector.placeholder = t("wb.locator.selector");
+  const comment = el("textarea", "wb-locator-body"); comment.placeholder = t("wb.locator.body");
+  const save = el("button", "solid-btn small", t("common.save"));
+  if (kind === "html") box.appendChild(selector);
+  box.appendChild(quote); box.appendChild(comment); box.appendChild(save);
+  const preview = el("pre", "wb-locator-preview"); box.appendChild(preview);
+  container.appendChild(box);
+  const endpoint = kind === "pdf" ? "pdf-text" : "html-outline";
+  api(`/artifacts/${encodeURIComponent(a.id)}/${endpoint}`).then(payload => {
+    preview.textContent = kind === "pdf"
+      ? ((payload.pages || []).map(page => page.text).join("\n").slice(0, 4000))
+      : (payload.elements || []).map(item => (item.selector || item.tag) + " " + (item.text || "")).join("\n").slice(0, 4000);
+  }).catch(() => { preview.textContent = ""; });
+  save.onclick = async () => {
+    if (!S.currentId || !String(comment.value || "").trim()) return;
+    save.disabled = true;
+    try {
+      await api(`/frames/${S.currentId}/annotations`, {
+        method: "POST",
+        body: JSON.stringify({
+          artifact_id: a.id,
+          artifact_name: a.filename,
+          kind,
+          body: comment.value,
+          locator: kind === "pdf"
+            ? { page: 1, quote: quote.value }
+            : { selector: selector.value, quote: quote.value },
+        }),
+      });
+      comment.value = ""; hint(t("wb.locator.saved"));
+      if (S.currentId) loadAnnotations(S.currentId);
+    } catch (error) { hint(t("wb.locator.err", apiErrorText(error)), true); }
+    save.disabled = false;
+  };
+}
 
 /* ---------- upload ---------- */
 function uploadFiles(files) {

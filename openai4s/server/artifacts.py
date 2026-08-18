@@ -1079,6 +1079,15 @@ class ArtifactManager:
             pass
 
         raw = content.encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        if current and current.get("checksum") == digest:
+            return {
+                "ok": True,
+                "artifact_id": artifact_id,
+                "version_id": current_version_id,
+                "size_bytes": len(raw),
+                "unchanged": True,
+            }
         try:
             live.parent.mkdir(parents=True, exist_ok=True)
             live.write_text(content, encoding="utf-8")
@@ -1093,7 +1102,7 @@ class ArtifactManager:
             filename=artifact["filename"],
             content_type=artifact.get("content_type"),
             size_bytes=len(raw),
-            checksum=hashlib.sha256(raw).hexdigest(),
+            checksum=digest,
             frame_id=artifact.get("root_frame_id"),
             project_id=artifact.get("project_id"),
             artifact_id=artifact_id,
@@ -1120,6 +1129,7 @@ class ArtifactManager:
             "artifact_id": artifact_id,
             "version_id": record["version_id"],
             "size_bytes": len(raw),
+            "unchanged": False,
         }
 
     def rename(

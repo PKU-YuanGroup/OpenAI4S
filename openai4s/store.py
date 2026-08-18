@@ -565,7 +565,11 @@ CREATE TABLE IF NOT EXISTS annotations (
     reservation_id TEXT,
     status         TEXT NOT NULL DEFAULT 'open',   -- open|reserved|sent|resolved|dismissed
     created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL
+    updated_at     INTEGER NOT NULL,
+    -- Stage 9 workbench locators. Image pins stay on rel_x/rel_y; PDF/HTML
+    -- comments name a quote or element. NULL on rows created before this.
+    kind           TEXT,
+    locator        TEXT
 );
 -- One row per attempt to admit pinned comments into a message.
 --
@@ -1414,6 +1418,10 @@ class Store:
                         "auto_mode_durable_state",
                         self._apply_auto_mode_state,
                     ),
+                    26: (
+                        "annotation_locators",
+                        self._apply_annotation_locators,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1496,6 +1504,21 @@ class Store:
         """
 
         create_auto_mode_schema(conn)
+
+    def _apply_annotation_locators(self, conn: sqlite3.Connection) -> None:
+        """Version 26: PDF/HTML annotation locators next to image pins."""
+
+        from openai4s.storage.migrations import _is_duplicate_column
+
+        for statement in (
+            "ALTER TABLE annotations ADD COLUMN kind TEXT",
+            "ALTER TABLE annotations ADD COLUMN locator TEXT",
+        ):
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as error:
+                if not _is_duplicate_column(error):
+                    raise
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -4180,6 +4203,8 @@ class Store:
         body: str,
         version_id: str | None = None,
         checksum: str | None = None,
+        kind: str | None = None,
+        locator: str | None = None,
     ) -> dict:
         return self._annotations.add(
             root_frame_id=root_frame_id,
@@ -4190,6 +4215,8 @@ class Store:
             body=body,
             version_id=version_id,
             checksum=checksum,
+            kind=kind,
+            locator=locator,
         )
 
     def get_annotation(self, annotation_id: str) -> dict | None:

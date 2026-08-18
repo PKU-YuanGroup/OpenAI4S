@@ -163,7 +163,7 @@ def test_v25_installs_all_auto_mode_tables_and_repository_constructor_is_passive
     tmp_path,
 ):
     store = _store(tmp_path)
-    assert store.schema_state()["version"] == SCHEMA_VERSION == 25
+    assert store.schema_state()["version"] == SCHEMA_VERSION == 26
     tables = {
         row["name"]
         for row in store._conn.execute(

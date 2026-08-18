@@ -160,6 +160,13 @@ file reads (Python and R) map to Artifact versions; a later write in that Cell
 creates an input→output lineage edge. Reviewer snapshots cite those version
 ids. Agent, user REPL, repair, and review scratch remain distinct owners.
 
+#### Stage 9 Artifact workbench
+
+`OPENAI4S_STAGE9_ARTIFACT_WORKBENCH=1` turns Artifact viewing into a workbench:
+full-dataset CSV/Parquet sort/filter/page, text version diffs, PDF/HTML
+comments bound to a version and locator and quoted into the next turn, and
+the vendored Ketcher 3.7.0 editor saving a new version of the same Artifact.
+
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

@@ -78,6 +78,7 @@ def test_edit_versions_live_text_and_preserves_exact_event_shape(tmp_path):
         "artifact_id": artifact_id,
         "version_id": result["version_id"],
         "size_bytes": len(b"version two"),
+        "unchanged": False,
     }
     assert (harness.workspace / "notes.txt").read_text() == "version two"
     assert (

@@ -83,6 +83,7 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
+    artifact_workbench_routes,
     auto_mode_routes,
     compute_session_routes,
     compute_tasks,
@@ -101,6 +102,12 @@ from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
 from openai4s.server.agent_run import WebActionExecutor, WebEventSink
+from openai4s.server.artifact_workbench import (
+    ArtifactWorkbenchService,
+    format_located_annotations,
+    ketcher_document,
+    official_workbench_enabled,
+)
 from openai4s.server.artifacts import (
     ArtifactManager,
     ArtifactOperationError,
@@ -2261,6 +2268,15 @@ class SessionRunner:
             guess_content_type=_guess_ctype,
             checksum=_sha256,
             trusted_delivery=self.stage1_trusted_delivery,
+        )
+        self.workbench_artifacts = ArtifactWorkbenchService(
+            store=self.store,
+            artifacts=self.artifacts,
+            broadcast=getattr(
+                self.hub,
+                "broadcast",
+                lambda root_frame_id, event: self.hub.emitter(root_frame_id)(event),
+            ),
         )
         self.completion_delivery = (
             CompletionDeliveryService(store=self.store, data_dir=cfg.data_dir)
@@ -5450,6 +5466,7 @@ class SessionRunner:
             "manual_stop": bool(supervisor_status and supervisor_status["manual_stop"]),
             "env": self._env_summary(st),
             "repl_enabled": official_notebook_enabled(self.cfg),
+            "artifact_workbench": official_workbench_enabled(self.cfg),
             "view_only": bool(quarantine),
             "trust_state": "quarantined" if quarantine else "trusted",
             "quarantine_reason": (
@@ -10886,7 +10903,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if method == "GET" and path == "/ketcher":
                     self._send(
-                        200, _KETCHER_HTML.encode("utf-8"), "text/html; charset=utf-8"
+                        200,
+                        ketcher_document(cfg, parse_qs(parsed.query)),
+                        "text/html; charset=utf-8",
                     )
                     return
                 # unknown non-API GET -> SPA shell (deep-linking)
@@ -11397,6 +11416,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         frame_mutation.group(1), "mutating the Session"
                     )
             if auto_mode_routes.handle(self, method, sub, q, runner):
+                return
+            if artifact_workbench_routes.handle(self, method, sub, q, runner):
                 return
             # ---- identity / meta (no-auth local mode) ----
             if sub == "/me":
@@ -12829,6 +12850,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # record. See `_pinned_image_bytes` for why re-resolving the
                 # artifact at send time is the wrong answer.
                 bound = store.get_artifact(str(art_id)) or {}
+                kind = "image"
+                locator = None
+                if official_workbench_enabled(cfg):
+                    from openai4s.server.artifact_workbench import (
+                        WorkbenchError,
+                        normalize_locator,
+                    )
+
+                    try:
+                        kind = str(b.get("kind") or "image").lower()
+                        locator_obj = normalize_locator(kind, b.get("locator") or b)
+                    except WorkbenchError as error:
+                        self._json(
+                            {"error": error.message, "code": error.code}, error.status
+                        )
+                        return
+                    locator = json.dumps(
+                        locator_obj, ensure_ascii=False, sort_keys=True
+                    )
+                    if kind == "image":
+                        b = {
+                            **b,
+                            "rel_x": locator_obj.get("rel_x", b.get("rel_x", 0)),
+                            "rel_y": locator_obj.get("rel_y", b.get("rel_y", 0)),
+                        }
                 anno = store.add_annotation(
                     root_frame_id=fid,
                     artifact_id=str(art_id),
@@ -12838,6 +12884,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     body=body_text,
                     version_id=bound.get("latest_version_id"),
                     checksum=bound.get("checksum"),
+                    kind=kind,
+                    locator=locator,
                 )
                 self._json({"annotation": _annotation_json(anno)}, 201)
                 return
@@ -15073,6 +15121,12 @@ def _annotation_json(a: dict | None) -> dict | None:
         # The version this pin was taken against, so a client can tell a pin on
         # the figure now on screen from one taken before the agent re-plotted.
         "version_id": a.get("version_id"),
+        "kind": a.get("kind") or "image",
+        "locator": (
+            json.loads(a["locator"])
+            if isinstance(a.get("locator"), str) and a.get("locator")
+            else a.get("locator")
+        ),
         "created_at": _iso(a.get("created_at")),
         "updated_at": _iso(a.get("updated_at") or a.get("created_at")),
     }
@@ -15198,6 +15252,16 @@ def _format_annotations_block(annos: list) -> str:
     annos = [a for a in (annos or []) if a]
     if not annos:
         return ""
+    located = [
+        item for item in annos if str(item.get("kind") or "image") in {"pdf", "html"}
+    ]
+    images = [item for item in annos if item not in located]
+    parts: list[str] = []
+    if located:
+        parts.append(format_located_annotations(located))
+    if not images:
+        return "\n\n".join(parts)
+    annos = images
 
     def _zone(x: float, y: float) -> str:
         col = "左" if x < 0.34 else ("中" if x < 0.67 else "右")
@@ -15233,13 +15297,8 @@ def _format_annotations_block(annos: list) -> str:
                 f"    [{a.get('number')}] (x={x * 100:.0f}%, y={y * 100:.0f}%，"
                 f"{_zone(x, y)}区)：{a.get('body', '').strip()}"
             )
-    return "\n".join(lines)
-
-
-_KETCHER_HTML = """<!doctype html><html><head><meta charset="utf-8">
-<title>Ketcher</title></head><body style="font:14px system-ui;padding:2rem;color:#444">
-<p>Chemical structure editor placeholder. Bundle Ketcher assets here to enable
-in-browser structure drawing.</p></body></html>"""
+    parts.append("\n".join(lines))
+    return "\n\n".join(parts)
 
 
 # --------------------------------------------------------------------------- #

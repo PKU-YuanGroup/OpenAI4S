@@ -1462,6 +1462,15 @@ def test_notebook_owner_chips_and_generation_are_visible() -> None:
     assert APP_JS.count('"nb.owner.user_repl"') >= 2
 
 
+def test_stage9_workbench_ui_is_flag_gated() -> None:
+    assert "function artifactWorkbenchOn()" in APP_JS
+    assert "renderWorkbenchTable" in APP_JS
+    assert "renderLocatorComments" in APP_JS
+    assert "/ketcher?artifact_id=" in APP_JS
+    assert ".wb-table-controls" in STYLE_CSS
+    assert APP_JS.count('"wb.ketcher.edit"') >= 2
+
+
 def test_local_model_discovery_is_loopback_only_and_requires_explicit_add() -> None:
     loopback = _extract_js_function(APP_JS, "loopbackModelBase")
     sanitizer = _extract_js_function(APP_JS, "sanitizeLocalModelDiscovery")

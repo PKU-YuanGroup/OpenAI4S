@@ -139,6 +139,8 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Durable Auto Run/audit state and the exact checkpoint event cursor
         # advance as one rollback-safe schema boundary.
         "auto_mode_durable_state",
+        # PDF/HTML annotation locators next to image pins.
+        "annotation_locators",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -523,11 +525,18 @@ def test_v25_upgrades_a_real_v24_store_preserving_data_and_checkpoint_envelope(
             "auto_event_cursor": 0,
         }
         assert upgraded.get_setting("v24-preservation-canary") == "precious-data"
-        assert upgraded._conn.execute("PRAGMA user_version").fetchone()[0] == 25
+        assert (
+            upgraded._conn.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
         migration = upgraded._conn.execute(
             "SELECT name FROM schema_migrations WHERE version=25"
         ).fetchone()
         assert migration["name"] == "auto_mode_durable_state"
+        locator = upgraded._conn.execute(
+            "SELECT name FROM schema_migrations WHERE version=26"
+        ).fetchone()
+        assert locator["name"] == "annotation_locators"
     finally:
         upgraded.close()
 

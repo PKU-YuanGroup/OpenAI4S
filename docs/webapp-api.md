@@ -277,7 +277,7 @@ or stored `Content-Type`:
 | `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb`, ZIP or Markdown bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest; `markdown` returns one `.md` with both languages in execution order. |
 | `GET /api/frames/{fid}/session/export` | Session ZIP bytes | Deterministic `application/vnd.openai4s.session+zip`; carries schema and SHA-256 headers. |
 | `GET /preview/{ident}` | artifact bytes | Same resolution, but `Content-Type` is **forced** to `text/html; charset=utf-8` (sandboxed iframe preview). Not under `/api`. |
-| `GET /ketcher` | HTML | Static placeholder page. |
+| `GET /ketcher` | HTML | Flag-off: historical placeholder. Stage 9: wrapper around vendored Ketcher 3.7.0 plus the `openai4s-artifact` save/load bridge. |
 
 **Wart:** when a raw-bytes route fails (artifact missing) it responds with a
 *JSON* body `404 {"error": "artifact not found"}` — a consumer streaming the
