@@ -174,6 +174,13 @@ ClinicalTrials.gov to the existing science envelope. Empty results, 429s, and
 schema drift are honest errors. A successful search records query, endpoint,
 retrieved_at, source checksum, and accessions on a versioned Artifact.
 
+#### Stage 11 durable remote compute
+
+`OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE=1` turns the existing durable job
+ledger into the product path: a restarted manager only reconciles, never
+resubmits; cancel still names the exact receipt; harvest Artifacts record the
+remote environment, input versions, job receipt, and checksums.
+
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

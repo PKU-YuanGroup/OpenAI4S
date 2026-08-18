@@ -250,6 +250,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_science_connectors.py`](test_science_connectors.py) | 每一个科学数据库 connector，全部跑在离线 HTTP fake 上。它们共用同一份记录 schema；从不用用户输入拼出任意 URL；上游返回 204、或返回一个从未承诺过的 schema 时，得到的是有界的 connector 错误，而不是崩溃。 |
 | [`test_stage10_connectors.py`](test_stage10_connectors.py) | Stage 10 的 ClinVar/PubMed/ClinicalTrials：flag 关闭时目录仍是原来的七个；fixture 返回 accession/URL/时间和版本化 Artifact；空结果、429、schema drift 都是诚实错误。 |
 | [`test_stage10_live_canaries.py`](test_stage10_live_canaries.py) | 打公开 ClinVar、PubMed、ClinicalTrials.gov 的 live canary。标了 `network`/`external`，不进默认离线套件。 |
+| [`test_stage11_remote_compute.py`](test_stage11_remote_compute.py) | Stage 11 持久远程计算：重启只 reconcile、cancel 打到精确 receipt、unknown/timeout 不算成功，harvest Artifact 记下 receipt、输入 version 和 checksum。 |
 | [`test_connector_manifests.py`](test_connector_manifests.py) | connector manifest 必须描述 connector，而不是给它加装饰。对着 connector 自己的离线 fixture 证明每条 required 路径既存在又承重——删掉它 adapter 就返回不了记录。没有后半条，manifest 会漂向罗列一切「有了更好」的字段，而基于它的 canary 会对无关紧要的东西报警。 |
 | [`test_connector_canary.py`](test_connector_canary.py) | canary 的唯一职责是把宕机和契约变化区分开。用注入的 fetch（无网络）驱动分类器走过：健康的 200、required 字段被改名的 200（漂移）、超时、HTML 的 200、以及重试后成功的瞬时失败。把这个区分弄反——无论哪个方向——都是失败模式：对宕机报警会被静音，对漂移沉默则毫无意义。 |
 | [`test_platform_support.py`](test_platform_support.py) | Windows 不受支持，而「不受支持」必须意味着被拒绝。真正承重的测试不是「它会不会抛异常」，而是**「它是否在 spawn 之前抛」**——在 `Popen` 之后才拒绝能骗过一个天真的检查，却完全背离意图。变异检验：拿掉守卫、把 Windows 加进支持集、以及把拒绝降级为警告（也就是最初的缺陷本身），三者都会导致测试失败。 |

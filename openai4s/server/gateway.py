@@ -6341,6 +6341,8 @@ class SessionRunner:
         before = self.artifacts.snapshot(st.workspace)
         self.artifacts.protect_latest(st)
 
+        captured_holder: list = []
+
         def capture_written_files() -> None:
             captured = self.artifacts.capture(
                 st,
@@ -6351,6 +6353,7 @@ class SessionRunner:
                 language="native",
                 drain_remote_provenance=self._remote_provenance_drain(st),
             )
+            captured_holder.append(captured)
             if captured.artifacts:
                 self._emit_artifact_step(
                     st,
@@ -6398,6 +6401,15 @@ class SessionRunner:
                     failure.output_committed = True  # type: ignore[attr-defined]
                     raise failure from capture_error
                 traceback.print_exc()
+            from openai4s.compute.stage11 import (
+                official_stage11_enabled,
+                stamp_harvest_artifacts,
+            )
+
+            if official_stage11_enabled(self.cfg) and captured_holder:
+                stamp_harvest_artifacts(
+                    self.store, captured_holder[-1].artifacts, result
+                )
             return result
         finally:
             self.recovery.touch(st)

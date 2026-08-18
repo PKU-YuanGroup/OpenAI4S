@@ -153,7 +153,7 @@ standing authority.
 | `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Implemented opt-in: official live Notebook on the shared kernel generation, host-side Python/R read→version mapping, and automatic write lineage. |
 | `stage9_artifact_workbench` | `OPENAI4S_STAGE9_ARTIFACT_WORKBENCH` | Implemented opt-in: interactive CSV/Parquet tables, version diffs, PDF/HTML locators in the next turn, and real vendored Ketcher 3.7.0. |
 | `stage10_scientific_connectors` | `OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS` | Implemented opt-in: ClinVar, PubMed, and ClinicalTrials.gov with pagination, cache, honest errors, and versioned Artifact provenance. |
-| `stage11_durable_remote_compute` | `OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE` | Durable remote-compute submit/reconcile/cancel. |
+| `stage11_durable_remote_compute` | `OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE` | Implemented opt-in: boot reconcile never resubmits, and harvest Artifacts record remote env, input versions, job receipt, and checksums. |
 | `stage12_auto_mode_ga` | `OPENAI4S_STAGE12_AUTO_MODE_GA` | Hardening/rollout/GA controls. |
 
 With `OPENAI4S_STAGE1_TRUSTED_DELIVERY=1`, a final completion links only to

@@ -862,6 +862,10 @@ class HostDispatcher:
             except Exception:  # noqa: BLE001 - fall back to the process cwd
                 workspace = None
             self._compute = ComputeManager(self.cfg, workspace=workspace)
+            from openai4s.compute.stage11 import official_stage11_enabled
+
+            if official_stage11_enabled(self.cfg):
+                self._compute.reconcile()
         return self._compute
 
     @property

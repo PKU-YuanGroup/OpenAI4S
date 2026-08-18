@@ -426,6 +426,9 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
     assert consumers.pop("stage10_scientific_connectors") == [
         "openai4s/host/stage10_science.py"
     ]
+    assert consumers.pop("stage11_durable_remote_compute") == [
+        "openai4s/compute/stage11.py"
+    ]
     assert consumers == {
         name: []
         for name in ROADMAP_FLAGS
@@ -441,6 +444,7 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
             "stage8_live_notebook_lineage",
             "stage9_artifact_workbench",
             "stage10_scientific_connectors",
+            "stage11_durable_remote_compute",
         }
     }
     assert "openai4s/server/auto_mode.py" in auto_mode_consumers

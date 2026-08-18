@@ -1620,6 +1620,17 @@ class ArtifactRepository:
             ).fetchone()
         return dict(row) if row else None
 
+    def set_version_source(self, version_id: str, source: Any) -> None:
+        """Bind harvest/retrieval provenance onto an existing version."""
+
+        encoded = _encode_source(source)
+        with self._lock:
+            self._connection.execute(
+                "UPDATE artifact_versions SET source=? WHERE version_id=?",
+                (encoded, version_id),
+            )
+            self._connection.commit()
+
     def list_capture_observations(
         self,
         *,

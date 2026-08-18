@@ -3723,6 +3723,9 @@ class Store:
     def version_meta(self, version_id: str) -> dict | None:
         return self._artifacts.version_meta(version_id)
 
+    def set_version_source(self, version_id: str, source: Any) -> None:
+        self._artifacts.set_version_source(version_id, source)
+
     def list_versions(self, artifact_id: str) -> list[dict]:
         return self._artifacts.list_versions(artifact_id)
 
