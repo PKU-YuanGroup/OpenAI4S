@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from openai4s.server.auto_mode import public_auto_event
+from openai4s.server.auto_repair import AutoRepairService
 from openai4s.storage.auto_mode import AutoModeConflictError
 
 EventSink = Callable[[dict], None]
@@ -53,11 +54,15 @@ class CompletionGateService:
         config: Any,
         scientific_review: Any,
         auto_mode: Any | None = None,
+        auto_repair: Any | None = None,
     ) -> None:
         self.store = store
         self.config = config
         self.scientific_review = scientific_review
         self.auto_mode = auto_mode
+        self.auto_repair = auto_repair or AutoRepairService(
+            store=store, config=config, scientific_review=scientific_review
+        )
 
     @property
     def feature_enabled(self) -> bool:
@@ -141,6 +146,33 @@ class CompletionGateService:
             return None
         result = dict(result)
         result["gates_completion"] = True
+        mode = "off"
+        if self.auto_mode is not None:
+            try:
+                mode = str(
+                    (
+                        (self.auto_mode.get(root_frame_id) or {}).get("selection") or {}
+                    ).get("result_review_mode")
+                    or "off"
+                )
+            except Exception:  # noqa: BLE001
+                mode = "off"
+        if (
+            self.auto_repair is not None
+            and getattr(self.auto_repair, "feature_enabled", False)
+            and mode == "auto_fix"
+            and terminal_for_review(result)[0] == "completed_with_issues"
+        ):
+            result = dict(
+                self.auto_repair.run(
+                    initial=result,
+                    result_review_mode=mode,
+                    agent_cfg=agent_cfg,
+                    reviewer_cfg=reviewer_cfg,
+                    run_id=f"auto-{root_frame_id}-{turn_id}",
+                )
+            )
+            result["gates_completion"] = True
         terminal, user_truth = terminal_for_review(result)
         if (
             getattr(self.scientific_review, "storage_enabled", False)

@@ -56,6 +56,7 @@ gateway.py
 | [`auto_mode.py`](auto_mode.py) | 按冻结的「导入隔离 → frame → project → 显式 deployment → 旧 result-review → 内建默认」顺序解析 Stage 2 Auto Mode 选择；对 durable run/audit 状态做有界白名单投影；只把新建且已提交的规范事件作为尽力而为的 WebSocket 提示转发。它不会调用模型、Reviewer、Repair Agent 或权限路径。 |
 | [`auto_mode_portability.py`](auto_mode_portability.py) | Session package 与只读 share 共用的“不信任输入也安全”reducer。它验证 Auto Mode 的 scope/reference 闭包，只输出闭合的审计 DTO，把 portable evidence 无法独立证明的结论降级，而且绝不恢复执行或权限能力。 |
 | [`auto_mode_routes.py`](auto_mode_routes.py) | 精确承接 `GET/PATCH /frames/{id}/auto-mode` 与只读 `/auto-audits`。经校验的 `RouteSpec` 表进入契约清单；这里刻意没有公开的 run/review/repair/Guardian 状态变更路由。 |
+| [`auto_repair.py`](auto_repair.py) | Stage 5 有界 Repair Agent 与再审核循环。Reviewer 保持只读；Repair 不能自我认证；相同 checksum 复用上一版本。 |
 | [`evidence_adapters.py`](evidence_adapters.py) | 冻结 Artifact version 的只读 PDF/图像/结构/表格适配器。仅有文件名不算覆盖。 |
 | [`evidence_snapshot.py`](evidence_snapshot.py) | 构造不可变的 Stage 3 Evidence Snapshot：计划、checksum、lineage、适配器、省略声明和可解析的 `evidence_refs`。不含主 Agent 隐藏推理。 |
 | [`review_scratch.py`](review_scratch.py) | Reviewer 校验用的隔离 scratch：子进程环境已擦除秘密，无网络、不能写正式工作区、不能 MCP、不能 `submit_output`。 |

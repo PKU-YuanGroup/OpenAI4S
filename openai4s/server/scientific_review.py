@@ -47,6 +47,8 @@ _MEAN_CLAIM = re.compile(
     re.I,
 )
 _ATOM_CLAIM = re.compile(r"\b(\d+)\s+atoms?\b", re.I)
+_MISSING_NONE = re.compile(r"\bno missing values\b", re.I)
+_MISSING_COUNT = re.compile(r"\bmissing values(?:\s+in\s+\w+)?\s*=\s*(\d+)\b", re.I)
 _SEVERITY_TO_STORAGE = {
     "high": "high",
     "medium": "major",
@@ -252,6 +254,41 @@ class ScientificReviewService:
                             reproduction=f"adapter mean={actual}",
                         )
                     )
+            for name, stats in columns.items():
+                if not isinstance(stats, Mapping):
+                    continue
+                nulls = stats.get("null_count")
+                if type(nulls) is not int:
+                    continue
+                if _MISSING_NONE.search(answer) and nulls > 0:
+                    findings.append(
+                        self._finding(
+                            severity="high",
+                            category="claim_mismatch",
+                            claim_ref="no missing values",
+                            evidence_refs=(
+                                [ref] if ref in refs else ["source:candidate_answer"]
+                            ),
+                            reproduction=f"{name} null_count={nulls}",
+                        )
+                    )
+                for claimed_missing in (
+                    int(item) for item in _MISSING_COUNT.findall(answer)
+                ):
+                    if claimed_missing != nulls:
+                        findings.append(
+                            self._finding(
+                                severity="high",
+                                category="claim_mismatch",
+                                claim_ref=f"missing values={claimed_missing}",
+                                evidence_refs=(
+                                    [ref]
+                                    if ref in refs
+                                    else ["source:candidate_answer"]
+                                ),
+                                reproduction=f"{name} null_count={nulls}",
+                            )
+                        )
         for adapter in snapshot.get("adapters") or []:
             if (
                 not isinstance(adapter, Mapping)

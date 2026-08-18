@@ -136,6 +136,15 @@ prose stays provisional. A `pass` may become Verified; `issues` become
 after the bounded retry is `review_unavailable`. The user still has the
 candidate artifacts. Reopen reads the durable gate stamp on the assistant
 message and `review-gate:{root}` setting, never a cached badge.
+
+#### Stage 5 auto-fix
+
+`OPENAI4S_STAGE5_AUTO_REPAIR=1` with `result_review_mode=auto_fix` starts a
+bounded Repair Run after issues. Repair uses a dedicated executor, not the
+Reviewer. A new candidate is independently re-reviewed. Unchanged finding
+fingerprints or a spent repair budget stop as `completed_with_issues`.
+Identical Artifact bytes reuse the previous version. The Repair Agent cannot
+declare Verified.
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

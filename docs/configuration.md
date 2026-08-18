@@ -136,9 +136,9 @@ exposes to an unauthenticated caller.
 Every rollout flag defaults off. Stage 1 implements trusted delivery, Stage 2
 implements the durable Auto Run/configuration/projection foundation, and
 Stage 3 implements Scientific Reviewer V2 shadow recording, and Stage 4
-implements the review-only completion gate. Stage 5–12 flags remain inert
-reservations and cannot repair a workspace, review or resolve a permission,
-or grant authority.
+implements the review-only completion gate, and Stage 5 implements bounded
+auto-fix / re-review. Stage 6–12 flags remain inert reservations and cannot
+review or resolve a permission or grant authority.
 
 | Config field under `Config.roadmap_features` | Environment variable | Reserved behavior |
 | --- | --- | --- |
@@ -146,7 +146,7 @@ or grant authority.
 | `stage2_auto_run_storage` | `OPENAI4S_STAGE2_AUTO_RUN_STORAGE` | Implemented opt-in: durable Auto Run/review/finding/repair/permission-assessment records, canonical post-commit events, CAS selection PATCH, and REST/reopen projection. No Reviewer/Repair/Guardian execution. |
 | `stage3_scientific_review_shadow` | `OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW` | Implemented opt-in: immutable Evidence Snapshot, independent V2 Reviewer, read-only scratch/adapters, and shadow recording that does not gate completion. |
 | `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Implemented opt-in: candidate stays provisional until review; pass promotes Verified, issues become completed_with_issues, failures become review_unavailable. Does not start Repair. |
-| `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Bounded Repair Agent and independent re-review loop. |
+| `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Implemented opt-in: bounded Repair Agent plus independent re-review. Reviewer stays read-only; Repair cannot self-certify; identical bytes reuse the prior version. |
 | `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Exact-action Permission Guardian shadow adjudication. |
 | `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | One-shot Guardian enforcement and unified Auto Mode UX. |
 | `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Live Notebook and cross-language version lineage. |
