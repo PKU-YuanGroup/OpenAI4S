@@ -26,6 +26,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from openai4s.agent.ledger import branch_action_groups
+from openai4s.server.auto_mode_portability import (
+    AutoModePortabilityError,
+    portable_auto_mode_projection,
+)
 
 # Reuse the on-disk package format primitives so a share bundle is byte-for-byte
 # compatible with the existing untrusted importer.  These are intentionally the
@@ -40,6 +44,7 @@ from openai4s.server.session_package import (
     SessionPackageService,
     _assert_secret_free,
     _canonical_json,
+    _export_auto_mode_for_publication,
     _safe_artifact_filename,
     _safe_text,
     _sanitize,
@@ -47,7 +52,7 @@ from openai4s.server.session_package import (
     _zip_bytes,
 )
 from openai4s.storage.branch_projection import project_branch_records
-from openai4s.storage.snapshots import WorkspaceCAS
+from openai4s.storage.snapshots import WorkspaceCAS, revert_recovery_setting_key
 
 SHARE_VIEW_SCHEMA_VERSION = 1
 
@@ -139,6 +144,14 @@ class ShareProjectionBuilder:
             if cancel_event is not None and cancel_event.is_set():
                 raise ShareCancelled("share snapshot cancelled")
 
+        if (
+            self.store.get_setting(revert_recovery_setting_key(root_frame_id))
+            is not None
+        ):
+            raise SessionPackageError(
+                "session workspace revert requires recovery before sharing"
+            )
+
         frame = self.store.get_frame(root_frame_id)
         if frame is None:
             raise KeyError(f"unknown session {root_frame_id!r}")
@@ -202,7 +215,65 @@ class ShareProjectionBuilder:
 
         safe_artifact_ids = {str(item["artifact_id"]) for item in artifacts}
         plans = self._project_plans(root_frame_id, safe_artifact_ids)
-        review = self._project_review(root_frame_id, safe_artifact_ids)
+        safe_version_ids = {
+            str(version.get("version_id"))
+            for artifact in artifacts
+            for version in artifact.get("versions") or []
+            if version.get("available") and version.get("version_id")
+        }
+        raw_auto_mode = _export_auto_mode_for_publication(
+            self.store,
+            root_frame_id,
+            branch_id=active_branch,
+        )
+        auto_trust_state = (
+            raw_auto_mode.get("trust_state", "local")
+            if isinstance(raw_auto_mode, Mapping)
+            else "local"
+        )
+        try:
+            auto_mode = portable_auto_mode_projection(
+                raw_auto_mode,
+                trust_state=auto_trust_state,
+                root_frame_id=root_frame_id,
+                artifact_ids=safe_artifact_ids,
+                version_ids=safe_version_ids,
+                cell_ids=retained_cell_ids,
+                action_group_ids={
+                    str(group.get("group_id"))
+                    for group in groups
+                    if group.get("group_id")
+                },
+                turn_ids={
+                    str(group.get("turn_id"))
+                    for group in groups
+                    if group.get("turn_id")
+                },
+                action_group_scopes={
+                    str(group["group_id"]): group
+                    for group in groups
+                    if group.get("group_id")
+                },
+            )
+        except AutoModePortabilityError as error:
+            raise SessionPackageError(str(error)) from error
+        # A share flattens the projected active-branch history onto one
+        # synthetic root. Preserve run/event identities but not source branch
+        # topology, exactly as messages/actions/Cells above do.
+        for key in (
+            "runs",
+            "events",
+            "review_runs",
+            "findings",
+            "repair_runs",
+            "permission_assessments",
+        ):
+            for record in auto_mode[key]:
+                record["root_frame_id"] = root_frame_id
+                record["branch_id"] = root_frame_id
+        review = self._project_review(
+            root_frame_id, safe_artifact_ids, auto_mode=auto_mode
+        )
         _ck()
 
         frame_meta = {
@@ -593,7 +664,11 @@ class ShareProjectionBuilder:
         ]
 
     def _project_review(
-        self, root_frame_id: str, safe_artifact_ids: set[str]
+        self,
+        root_frame_id: str,
+        safe_artifact_ids: set[str],
+        *,
+        auto_mode: Mapping[str, Any],
     ) -> dict[str, Any]:
         annotations = [
             _sanitize(item)
@@ -613,6 +688,7 @@ class ShareProjectionBuilder:
                 "reviewer_model": None,
                 "active_on_import": False,
             },
+            "auto_mode": dict(auto_mode),
         }
 
     # --------------------------------------------------------------- serialize
@@ -843,6 +919,7 @@ class ShareProjectionBuilder:
             "by_filename": by_filename,
             "counts": dict(projection.counts),
             "excluded": dict(projection.excluded),
+            "auto_mode": dict(projection.review.get("auto_mode") or {}),
             "bundle": dict(bundle or {}),
         }
         _assert_secret_free(document, path="view.json")

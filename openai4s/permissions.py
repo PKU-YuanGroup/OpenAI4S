@@ -170,9 +170,18 @@ class _Pending:
         "payload",
         "created_at",
         "store",
+        "expected_action_digest",
+        "resolution_done",
+        "resolution_result",
     )
 
-    def __init__(self, payload: dict, store=None):
+    def __init__(
+        self,
+        payload: dict,
+        store=None,
+        *,
+        expected_action_digest: str | None = None,
+    ):
         self.event = threading.Event()
         self.allow = False
         self.scope = "once"
@@ -181,6 +190,9 @@ class _Pending:
         self.payload = payload
         self.created_at = time.time()
         self.store = store
+        self.expected_action_digest = expected_action_digest
+        self.resolution_done = threading.Event()
+        self.resolution_result: dict | None = None
 
 
 class PermissionBroker:
@@ -268,6 +280,7 @@ class PermissionBroker:
         side_effect_class: str | None = None,
         resource_keys: list[str] | tuple[str, ...] | None = None,
         dangerous: bool = False,
+        canonical_arguments: Any = None,
         timeout: float | None = None,
     ) -> dict:
         # Resolve the conversation identity + project from the dispatcher's frame
@@ -313,6 +326,10 @@ class PermissionBroker:
                     project_id=proj or "default",
                     tool=method,
                     target=target,
+                    side_effect_class=side_effect_class,
+                    resource_keys=resource_keys,
+                    dangerous=dangerous,
+                    canonical_arguments=canonical_arguments,
                 )
         except Exception:  # noqa: BLE001 - an unusable grant never fails open
             restart_once_grant = None
@@ -354,7 +371,7 @@ class PermissionBroker:
         }
         wait_seconds = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         try:
-            store.create_permission_request(
+            created_request = store.create_permission_request(
                 decision_id=did,
                 root_frame_id=root,
                 frame_id=frame_id,
@@ -367,6 +384,8 @@ class PermissionBroker:
                 tool=method,
                 target=target,
                 payload=payload,
+                dangerous=dangerous,
+                canonical_arguments=canonical_arguments,
                 expires_at=int((time.time() + wait_seconds) * 1000),
             )
         except Exception:  # noqa: BLE001 — inability to audit must fail closed
@@ -391,13 +410,19 @@ class PermissionBroker:
                 else "approval required but no interactive channel is attached"
             )
             try:
-                store.resolve_permission_request(
+                resolved_request = store.resolve_permission_request(
                     did,
                     state=state,
                     scope="once",
                     message=message,
                     resolution_context="unattended",
+                    expected_action_digest=(
+                        created_request.get("action_digest") if allowed else None
+                    ),
                 )
+                allowed = bool(allowed and resolved_request.get("state") == "allowed")
+                if state == "allowed" and not allowed:
+                    message = "approval expired before it could be committed"
             except Exception:  # noqa: BLE001
                 allowed = False
                 message = "approval persistence failed closed"
@@ -421,7 +446,11 @@ class PermissionBroker:
                 pass
             return {"allow": False, "message": "turn cancelled"}
 
-        pend = _Pending(payload, store=store)
+        pend = _Pending(
+            payload,
+            store=store,
+            expected_action_digest=created_request.get("action_digest"),
+        )
         with self._lock:
             self._pending[did] = pend
             self._by_root.setdefault(root, set()).add(did)
@@ -431,63 +460,55 @@ class PermissionBroker:
             pass
 
         deadline = time.time() + wait_seconds
-        try:
-            while not pend.event.wait(self._POLL):
-                if cancel_ev is not None and cancel_ev.is_set():
-                    pend.allow, pend.message = False, "turn cancelled"
-                    break
-                if time.time() >= deadline:
-                    pend.allow, pend.message = False, "approval timed out"
-                    break
-        finally:
-            with self._lock:
-                self._pending.pop(did, None)
-                s = self._by_root.get(root)
-                if s:
-                    s.discard(did)
-                    if not s:
-                        self._by_root.pop(root, None)
-            try:
-                chan["emit"](
-                    {
-                        "type": "permission_resolved",
-                        "frame_id": root,
-                        "decision_id": did,
-                        "allow": pend.allow,
-                        "scope": pend.scope,
-                    }
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        while not pend.event.wait(self._POLL):
+            if cancel_ev is not None and cancel_ev.is_set():
+                pend.allow, pend.message = False, "turn cancelled"
+                break
+            if time.time() >= deadline:
+                pend.allow, pend.message = False, "approval timed out"
+                break
 
+        requested_allow = bool(pend.allow)
         durable_state = (
             "allowed"
-            if pend.allow
+            if requested_allow
             else (
                 "cancelled"
                 if pend.message == "turn cancelled"
                 else ("timed_out" if pend.message == "approval timed out" else "denied")
             )
         )
+        resolved_request = None
+        resolution_error: str | None = None
         try:
-            store.resolve_permission_request(
+            resolved_request = store.resolve_permission_request(
                 did,
                 state=durable_state,
                 scope=pend.scope,
                 pattern=pend.pattern,
                 message=pend.message,
                 resolution_context="live_thread",
+                expected_action_digest=(
+                    pend.expected_action_digest if requested_allow else None
+                ),
             )
-        except Exception:  # noqa: BLE001 — the action is already decided in memory
-            if pend.allow:
-                return {
-                    "allow": False,
-                    "message": "approval resolution could not be durably recorded",
-                }
+        except Exception:  # noqa: BLE001 — persistence failure must fail closed
+            resolution_error = "approval resolution could not be durably recorded"
+        actual_state = str((resolved_request or {}).get("state") or "")
+        effective_allow = bool(requested_allow and actual_state == "allowed")
+        if requested_allow and actual_state == "timed_out":
+            resolution_error = "approval request expired"
+        elif requested_allow and not effective_allow and resolution_error is None:
+            resolution_error = "approval failed exact-action integrity validation"
         # Persist a standing rule only after the concrete request's terminal
         # state is durable; otherwise a failed audit write could still leave a
         # broad allow rule behind.
-        if pend.scope and pend.scope != "once":
+        if (
+            pend.scope
+            and pend.scope != "once"
+            and actual_state == durable_state
+            and actual_state in {"allowed", "denied"}
+        ):
             scope_id = {
                 "conversation": root,
                 "project": proj or "default",
@@ -499,16 +520,61 @@ class PermissionBroker:
                     scope_id=scope_id,
                     tool=method,
                     pattern=(pend.pattern or target or "*"),
-                    decision=("allow" if pend.allow else "deny"),
+                    decision=("allow" if effective_allow else "deny"),
                 )
             except Exception:  # noqa: BLE001
                 pass
-        if pend.allow:
+        live_resolution = {
+            "ok": bool(
+                (effective_allow and actual_state == "allowed")
+                or (not requested_allow and actual_state == durable_state)
+            ),
+            "decision_id": did,
+            "allow": effective_allow,
+            "scope": pend.scope,
+            "resolution_context": "live_thread",
+            "requires_continue": False,
+            "original_action_executed": None,
+        }
+        if not live_resolution["ok"]:
+            live_resolution.update(
+                {
+                    "error": resolution_error or "approval resolution failed closed",
+                    "code": (
+                        "decision_expired"
+                        if actual_state == "timed_out"
+                        else "decision_integrity_failure"
+                    ),
+                }
+            )
+        pend.resolution_result = live_resolution
+        pend.resolution_done.set()
+        with self._lock:
+            self._pending.pop(did, None)
+            pending_ids = self._by_root.get(root)
+            if pending_ids:
+                pending_ids.discard(did)
+                if not pending_ids:
+                    self._by_root.pop(root, None)
+        try:
+            chan["emit"](
+                {
+                    "type": "permission_resolved",
+                    "frame_id": root,
+                    "decision_id": did,
+                    "allow": effective_allow,
+                    "scope": pend.scope,
+                    "state": actual_state or "failed",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        if effective_allow:
             return {"allow": True, "decision_id": did}
         return {
             "allow": False,
             "decision_id": did,
-            "message": pend.message or "denied by user",
+            "message": resolution_error or pend.message or "denied by user",
         }
 
     # --- decision + cancel (called by the web gateway / HTTP thread) ------
@@ -556,7 +622,14 @@ class PermissionBroker:
                 "error": "decision_id is required",
                 "code": "decision_id_required",
             }
+        if type(allow) is not bool:
+            return {
+                "ok": False,
+                "error": "allow must be a Boolean",
+                "code": "invalid_allow",
+            }
         normalized_scope = _scope(scope)
+        live_pending: _Pending | None = None
         with self._lock:
             pend = self._pending.get(decision_id)
             if pend is not None:
@@ -578,22 +651,31 @@ class PermissionBroker:
                 pend.pattern = pattern
                 pend.message = message
                 pend.event.set()
-                return {
-                    "ok": True,
+                live_pending = pend
+                stores = []
+            else:
+                # After a daemon restart there is no blocked thread, but the
+                # durable request must still be resolvable and auditable.
+                stores = ([store] if store is not None else []) + [
+                    channel.get("store")
+                    for channel in self._channels.values()
+                    if channel.get("store") is not None
+                ]
+        if live_pending is not None:
+            # The blocked tool thread publishes this acknowledgement only after
+            # the durable terminal state commits. A local wait timeout would be
+            # unsafe: the HTTP caller could receive a timeout while that same
+            # approval commits and executes moments later.
+            live_pending.resolution_done.wait()
+            return dict(
+                live_pending.resolution_result
+                or {
+                    "ok": False,
                     "decision_id": decision_id,
-                    "allow": bool(allow),
-                    "scope": normalized_scope,
-                    "resolution_context": "live_thread",
-                    "requires_continue": False,
-                    "original_action_executed": None,
+                    "error": "permission resolution failed closed",
+                    "code": "decision_integrity_failure",
                 }
-            # After a daemon restart there is no blocked thread, but the
-            # durable request must still be resolvable and auditable.
-            stores = ([store] if store is not None else []) + [
-                channel.get("store")
-                for channel in self._channels.values()
-                if channel.get("store") is not None
-            ]
+            )
         terminal = "allowed" if allow else "denied"
         seen_stores: set[int] = set()
         for durable_store in stores:
@@ -612,6 +694,11 @@ class PermissionBroker:
                         "code": "decision_not_found",
                     }
                 state = str(request.get("state") or "")
+                expected_action_digest = None
+                if allow:
+                    expected_action_digest = (
+                        durable_store.permission_request_action_digest(decision_id)
+                    )
                 if state == "pending":
                     expires_at = request.get("expires_at")
                     if expires_at is not None and int(expires_at) <= int(
@@ -645,6 +732,7 @@ class PermissionBroker:
                         resolution_context="after_restart",
                         # Activated only after the ledger marker is durable.
                         continuation_required=False,
+                        expected_action_digest=expected_action_digest,
                     )
                 elif not (
                     state == terminal
@@ -654,6 +742,20 @@ class PermissionBroker:
                         "ok": False,
                         "error": f"decision is already {state or 'resolved'}",
                         "code": "decision_already_resolved",
+                    }
+                if str(request.get("state") or "") != terminal:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "approval request expired"
+                            if request.get("state") == "timed_out"
+                            else "approval failed exact-action integrity validation"
+                        ),
+                        "code": (
+                            "decision_expired"
+                            if request.get("state") == "timed_out"
+                            else "decision_integrity_failure"
+                        ),
                     }
                 if _scope(request.get("scope")) != normalized_scope or (
                     request.get("pattern") or None

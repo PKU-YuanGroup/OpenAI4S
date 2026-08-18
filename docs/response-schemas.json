@@ -1825,6 +1825,72 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/branches [error]": {
       "schema": {
         "properties": {
@@ -3240,7 +3306,7 @@
         "type": "object"
       }
     },
-    "DELETE /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "DELETE /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -4115,6 +4181,9 @@
           },
           "deleted_rows": {
             "properties": {
+              "auto_mode_selections": {
+                "type": "integer"
+              },
               "capability_events": {
                 "type": "integer"
               },
@@ -4153,6 +4222,7 @@
               }
             },
             "required": [
+              "auto_mode_selections",
               "capability_events",
               "capability_manifests",
               "capability_states",
@@ -8169,6 +8239,9 @@
                   },
                   "type": "array"
                 },
+                "auto_event_cursor": {
+                  "type": "integer"
+                },
                 "branch_id": {
                   "type": "string"
                 },
@@ -8524,6 +8597,7 @@
               "required": [
                 "action_cursor",
                 "artifact_versions",
+                "auto_event_cursor",
                 "branch_id",
                 "capability_state",
                 "cell_cursor",
@@ -8947,6 +9021,424 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/auto-audits [ok]": {
+      "schema": {
+        "properties": {
+          "audits": {
+            "items": {
+              "properties": {
+                "assessment_digest": {
+                  "type": "string"
+                },
+                "audit_id": {
+                  "type": "string"
+                },
+                "audit_request_digest": {
+                  "type": "string"
+                },
+                "branch_id": {
+                  "type": "string"
+                },
+                "completed_at": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "event_ordinal": {
+                  "type": "integer"
+                },
+                "execution_id": {
+                  "type": "string"
+                },
+                "public_summary": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "subject_entity_id": {
+                  "type": "string"
+                },
+                "subject_entity_kind": {
+                  "type": "string"
+                },
+                "subject_kind": {
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": "string"
+                },
+                "verdict": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "assessment_digest",
+                "audit_id",
+                "audit_request_digest",
+                "branch_id",
+                "completed_at",
+                "created_at",
+                "event_ordinal",
+                "execution_id",
+                "public_summary",
+                "root_frame_id",
+                "run_id",
+                "status",
+                "subject_entity_id",
+                "subject_entity_kind",
+                "subject_kind",
+                "turn_id",
+                "verdict"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_before": {
+            "type": "null"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "subject_kind": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "audits",
+          "branch_id",
+          "has_more",
+          "next_before",
+          "root_frame_id",
+          "schema_version",
+          "subject_kind"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/auto-mode [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "budgets": {
+            "properties": {
+              "extra_token_multiplier": {
+                "type": "number"
+              },
+              "guardian_consecutive_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_timeout_s": {
+                "type": "integer"
+              },
+              "guardian_window_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_window_size": {
+                "type": "integer"
+              },
+              "max_extra_cells": {
+                "type": "integer"
+              },
+              "max_repair_rounds": {
+                "type": "integer"
+              },
+              "max_review_rounds": {
+                "type": "integer"
+              },
+              "no_progress_turn_limit": {
+                "type": "integer"
+              },
+              "repair_turns_per_round": {
+                "type": "integer"
+              },
+              "repeated_finding_limit": {
+                "type": "integer"
+              },
+              "same_action_no_delta_limit": {
+                "type": "integer"
+              },
+              "wall_time_s": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "extra_token_multiplier",
+              "guardian_consecutive_denial_limit",
+              "guardian_timeout_s",
+              "guardian_window_denial_limit",
+              "guardian_window_size",
+              "max_extra_cells",
+              "max_repair_rounds",
+              "max_review_rounds",
+              "no_progress_turn_limit",
+              "repair_turns_per_round",
+              "repeated_finding_limit",
+              "same_action_no_delta_limit",
+              "wall_time_s"
+            ],
+            "type": "object"
+          },
+          "deployment": {
+            "properties": {
+              "explicit": {
+                "type": "boolean"
+              },
+              "explicit_fields": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "explicit",
+              "explicit_fields"
+            ],
+            "type": "object"
+          },
+          "disabled_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "feature_enabled": {
+            "type": "boolean"
+          },
+          "last_event_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "last_event_ordinal": {
+            "type": "integer"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "run": {
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "budgets": {
+                "properties": {
+                  "max_repair_rounds": {
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "candidate_id": {
+                "type": "string"
+              },
+              "candidate_snapshot_sha256": {
+                "type": "string"
+              },
+              "candidate_version_ids": {
+                "type": "array"
+              },
+              "evidence_snapshot_sha256": {
+                "type": "string"
+              },
+              "execution_id": {
+                "type": "string"
+              },
+              "finished_at": {
+                "type": "integer"
+              },
+              "last_event_id": {
+                "type": "string"
+              },
+              "last_event_ordinal": {
+                "type": "integer"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "recovery_required": {
+                "type": "boolean"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "terminal_at": {
+                "type": "integer"
+              },
+              "terminal_reason": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "branch_id",
+              "budgets",
+              "candidate_id",
+              "candidate_snapshot_sha256",
+              "candidate_version_ids",
+              "evidence_snapshot_sha256",
+              "execution_id",
+              "last_event_id",
+              "last_event_ordinal",
+              "mode",
+              "recovery_required",
+              "root_frame_id",
+              "run_id",
+              "started_at",
+              "status",
+              "turn_id",
+              "updated_at"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "selection": {
+            "properties": {
+              "approvals_reviewer": {
+                "type": "string"
+              },
+              "explicit": {
+                "type": "boolean"
+              },
+              "preset": {
+                "type": "string"
+              },
+              "result_review_mode": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "approvals_reviewer",
+              "explicit",
+              "preset",
+              "result_review_mode",
+              "revision",
+              "source",
+              "source_revision"
+            ],
+            "type": "object"
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "budgets",
+          "deployment",
+          "disabled_reason",
+          "feature_enabled",
+          "last_event_id",
+          "last_event_ordinal",
+          "root_frame_id",
+          "run",
+          "schema_version",
+          "selection",
+          "writable"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/branches [error]": {
       "schema": {
         "properties": {
@@ -9007,6 +9499,9 @@
                           "type": "string"
                         },
                         "type": "array"
+                      },
+                      "auto_event_cursor": {
+                        "type": "integer"
                       },
                       "branch_id": {
                         "type": "string"
@@ -9405,6 +9900,7 @@
                     "required": [
                       "action_cursor",
                       "artifact_versions",
+                      "auto_event_cursor",
                       "branch_id",
                       "capability_state",
                       "cell_cursor",
@@ -11738,6 +12234,9 @@
           "current": {
             "type": "null"
           },
+          "explicit_recovery_required": {
+            "type": "boolean"
+          },
           "generations": {
             "properties": {
               "python": {
@@ -11753,6 +12252,9 @@
             ],
             "type": "object"
           },
+          "revert_recovery": {
+            "type": "null"
+          },
           "root_frame_id": {
             "type": "string"
           },
@@ -11764,7 +12266,9 @@
           "attempts",
           "branch_id",
           "current",
+          "explicit_recovery_required",
           "generations",
+          "revert_recovery",
           "root_frame_id",
           "state"
         ],
@@ -12091,8 +12595,7 @@
             "type": "string"
           },
           "sandbox": {
-            "properties": {},
-            "required": [],
+            "machine_state": true,
             "type": "object"
           }
         },
@@ -12335,7 +12838,7 @@
         "type": "object"
       }
     },
-    "GET /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "GET /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -12511,6 +13014,9 @@
                 "type": "string"
               },
               "missing": {
+                "items": {
+                  "type": "string"
+                },
                 "type": "array"
               },
               "phase": {
@@ -17966,6 +18472,221 @@
         "type": "object"
       }
     },
+    "PATCH /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/auto-mode [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "budgets": {
+            "properties": {
+              "extra_token_multiplier": {
+                "type": "number"
+              },
+              "guardian_consecutive_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_timeout_s": {
+                "type": "integer"
+              },
+              "guardian_window_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_window_size": {
+                "type": "integer"
+              },
+              "max_extra_cells": {
+                "type": "integer"
+              },
+              "max_repair_rounds": {
+                "type": "integer"
+              },
+              "max_review_rounds": {
+                "type": "integer"
+              },
+              "no_progress_turn_limit": {
+                "type": "integer"
+              },
+              "repair_turns_per_round": {
+                "type": "integer"
+              },
+              "repeated_finding_limit": {
+                "type": "integer"
+              },
+              "same_action_no_delta_limit": {
+                "type": "integer"
+              },
+              "wall_time_s": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "extra_token_multiplier",
+              "guardian_consecutive_denial_limit",
+              "guardian_timeout_s",
+              "guardian_window_denial_limit",
+              "guardian_window_size",
+              "max_extra_cells",
+              "max_repair_rounds",
+              "max_review_rounds",
+              "no_progress_turn_limit",
+              "repair_turns_per_round",
+              "repeated_finding_limit",
+              "same_action_no_delta_limit",
+              "wall_time_s"
+            ],
+            "type": "object"
+          },
+          "deployment": {
+            "properties": {
+              "explicit": {
+                "type": "boolean"
+              },
+              "explicit_fields": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "explicit",
+              "explicit_fields"
+            ],
+            "type": "object"
+          },
+          "disabled_reason": {
+            "type": "null"
+          },
+          "feature_enabled": {
+            "type": "boolean"
+          },
+          "last_event_id": {
+            "type": "null"
+          },
+          "last_event_ordinal": {
+            "type": "integer"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "run": {
+            "type": "null"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "selection": {
+            "properties": {
+              "approvals_reviewer": {
+                "type": "string"
+              },
+              "explicit": {
+                "type": "boolean"
+              },
+              "preset": {
+                "type": "string"
+              },
+              "result_review_mode": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "approvals_reviewer",
+              "explicit",
+              "preset",
+              "result_review_mode",
+              "revision",
+              "source",
+              "source_revision"
+            ],
+            "type": "object"
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "budgets",
+          "deployment",
+          "disabled_reason",
+          "feature_enabled",
+          "last_event_id",
+          "last_event_ordinal",
+          "root_frame_id",
+          "run",
+          "schema_version",
+          "selection",
+          "writable"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /frames/([^/]+)/branches [error]": {
       "schema": {
         "properties": {
@@ -19378,7 +20099,7 @@
         "type": "object"
       }
     },
-    "PATCH /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "PATCH /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -23589,6 +24310,9 @@
             },
             "type": "array"
           },
+          "auto_event_cursor": {
+            "type": "integer"
+          },
           "branch_id": {
             "type": "string"
           },
@@ -23659,6 +24383,9 @@
               "artifact_versions": {
                 "type": "array"
               },
+              "auto_event_cursor": {
+                "type": "integer"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -23720,6 +24447,9 @@
                           "action_cursor": {
                             "type": "integer"
                           },
+                          "auto_event_cursor": {
+                            "type": "integer"
+                          },
                           "cell_cursor": {
                             "type": "integer"
                           },
@@ -23729,6 +24459,7 @@
                         },
                         "required": [
                           "action_cursor",
+                          "auto_event_cursor",
                           "cell_cursor",
                           "message_cursor"
                         ],
@@ -23890,6 +24621,7 @@
             "required": [
               "action_cursor",
               "artifact_versions",
+              "auto_event_cursor",
               "branch_id",
               "capability_state",
               "cell_cursor",
@@ -23930,6 +24662,9 @@
               "python"
             ],
             "type": "object"
+          },
+          "explicit_recovery_required": {
+            "type": "boolean"
           },
           "generation_refs": {
             "properties": {
@@ -24323,6 +25058,25 @@
                     ],
                     "type": "object"
                   },
+                  "auto_mode_events": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
                   "branch_id": {
                     "type": "string"
                   },
@@ -24498,6 +25252,7 @@
                   "actions",
                   "applied_workspace",
                   "artifacts",
+                  "auto_mode_events",
                   "branch_id",
                   "can_apply",
                   "capabilities",
@@ -24825,6 +25580,9 @@
           "reason": {
             "type": "string"
           },
+          "recovery_barrier_key": {
+            "type": "string"
+          },
           "recovery_recipe": {
             "properties": {
               "artifact_hashes": {
@@ -25038,6 +25796,9 @@
                 },
                 "type": "array"
               },
+              "auto_event_cursor": {
+                "type": "integer"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -25156,6 +25917,9 @@
                           "action_cursor": {
                             "type": "integer"
                           },
+                          "auto_event_cursor": {
+                            "type": "integer"
+                          },
                           "cell_cursor": {
                             "type": "integer"
                           },
@@ -25165,6 +25929,7 @@
                         },
                         "required": [
                           "action_cursor",
+                          "auto_event_cursor",
                           "cell_cursor",
                           "message_cursor"
                         ],
@@ -25369,6 +26134,7 @@
             "required": [
               "action_cursor",
               "artifact_versions",
+              "auto_event_cursor",
               "branch_id",
               "capability_state",
               "cell_cursor",
@@ -25389,6 +26155,9 @@
               "workspace_tree_id"
             ],
             "type": "object"
+          },
+          "explicit_recovery_required": {
+            "type": "boolean"
           },
           "ok": {
             "type": "boolean"
@@ -25495,6 +26264,25 @@
                     "required": [
                       "added",
                       "removed"
+                    ],
+                    "type": "object"
+                  },
+                  "auto_mode_events": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
                     ],
                     "type": "object"
                   },
@@ -25652,6 +26440,7 @@
                   "actions",
                   "applied_workspace",
                   "artifacts",
+                  "auto_mode_events",
                   "branch_id",
                   "can_apply",
                   "capabilities",
@@ -25873,6 +26662,9 @@
             ],
             "type": "object"
           },
+          "recovery_barrier_key": {
+            "type": "string"
+          },
           "requires_kernel_recovery": {
             "type": "boolean"
           },
@@ -25882,9 +26674,11 @@
         },
         "required": [
           "checkpoint",
+          "explicit_recovery_required",
           "ok",
           "operation",
           "projection",
+          "recovery_barrier_key",
           "requires_kernel_recovery",
           "undo_checkpoint_id"
         ],
@@ -25952,6 +26746,25 @@
                 "required": [
                   "added",
                   "removed"
+                ],
+                "type": "object"
+              },
+              "auto_mode_events": {
+                "properties": {
+                  "delta": {
+                    "type": "integer"
+                  },
+                  "from": {
+                    "type": "integer"
+                  },
+                  "to": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "delta",
+                  "from",
+                  "to"
                 ],
                 "type": "object"
               },
@@ -26105,6 +26918,7 @@
             "required": [
               "actions",
               "artifacts",
+              "auto_mode_events",
               "branch_id",
               "can_apply",
               "capabilities",
@@ -26378,6 +27192,72 @@
       }
     },
     "POST /frames/([^/]+)/artifacts\\.zip [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/auto-mode [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -27877,102 +28757,6 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [ok]": {
-      "schema": {
-        "properties": {
-          "action": {
-            "type": "string"
-          },
-          "branch_id": {
-            "type": "string"
-          },
-          "checkpoint_id": {
-            "type": "string"
-          },
-          "execution_id": {
-            "type": "string"
-          },
-          "ok": {
-            "type": "boolean"
-          },
-          "owner": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "kind"
-            ],
-            "type": "object"
-          },
-          "recovery_id": {
-            "type": "string"
-          },
-          "results": {
-            "items": {
-              "properties": {
-                "candidate_generation_id": {
-                  "type": "string"
-                },
-                "issues": {
-                  "type": "array"
-                },
-                "manifest_id": {
-                  "type": "string"
-                },
-                "replayed_steps": {
-                  "type": "array"
-                },
-                "skipped_steps": {
-                  "type": "array"
-                },
-                "source_generation_id": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "candidate_generation_id",
-                "issues",
-                "manifest_id",
-                "replayed_steps",
-                "skipped_steps",
-                "source_generation_id",
-                "status"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "root_frame_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "branch_id",
-          "checkpoint_id",
-          "execution_id",
-          "ok",
-          "owner",
-          "recovery_id",
-          "results",
-          "root_frame_id",
-          "status"
-        ],
-        "type": "object"
-      }
-    },
     "POST /frames/([^/]+)/revert/operations [error]": {
       "schema": {
         "properties": {
@@ -28036,6 +28820,9 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "auto_event_cursor": {
+                "type": "integer"
               },
               "branch_id": {
                 "type": "string"
@@ -28155,6 +28942,9 @@
                           "action_cursor": {
                             "type": "integer"
                           },
+                          "auto_event_cursor": {
+                            "type": "integer"
+                          },
                           "cell_cursor": {
                             "type": "integer"
                           },
@@ -28164,6 +28954,7 @@
                         },
                         "required": [
                           "action_cursor",
+                          "auto_event_cursor",
                           "cell_cursor",
                           "message_cursor"
                         ],
@@ -28368,6 +29159,7 @@
             "required": [
               "action_cursor",
               "artifact_versions",
+              "auto_event_cursor",
               "branch_id",
               "capability_state",
               "cell_cursor",
@@ -28388,6 +29180,9 @@
               "workspace_tree_id"
             ],
             "type": "object"
+          },
+          "explicit_recovery_required": {
+            "type": "boolean"
           },
           "ok": {
             "type": "boolean"
@@ -28527,6 +29322,25 @@
                     "required": [
                       "added",
                       "removed"
+                    ],
+                    "type": "object"
+                  },
+                  "auto_mode_events": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
                     ],
                     "type": "object"
                   },
@@ -28838,6 +29652,7 @@
                   "actions",
                   "applied_workspace",
                   "artifacts",
+                  "auto_mode_events",
                   "branch_id",
                   "can_apply",
                   "capabilities",
@@ -29059,6 +29874,9 @@
             ],
             "type": "object"
           },
+          "recovery_barrier_key": {
+            "type": "string"
+          },
           "requires_kernel_recovery": {
             "type": "boolean"
           },
@@ -29068,9 +29886,11 @@
         },
         "required": [
           "checkpoint",
+          "explicit_recovery_required",
           "ok",
           "operation",
           "projection",
+          "recovery_barrier_key",
           "requires_kernel_recovery",
           "undo_checkpoint_id"
         ],
@@ -29420,6 +30240,25 @@
                 ],
                 "type": "object"
               },
+              "auto_mode_events": {
+                "properties": {
+                  "delta": {
+                    "type": "integer"
+                  },
+                  "from": {
+                    "type": "integer"
+                  },
+                  "to": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "delta",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -29597,6 +30436,7 @@
             "required": [
               "actions",
               "artifacts",
+              "auto_mode_events",
               "branch_id",
               "can_apply",
               "capabilities",
@@ -29618,7 +30458,7 @@
         "type": "object"
       }
     },
-    "POST /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "POST /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "action": {
@@ -29727,6 +30567,102 @@
           }
         },
         "required": [
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [ok]": {
+      "schema": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "owner": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "recovery_id": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "properties": {
+                "candidate_generation_id": {
+                  "type": "string"
+                },
+                "issues": {
+                  "type": "array"
+                },
+                "manifest_id": {
+                  "type": "string"
+                },
+                "replayed_steps": {
+                  "type": "array"
+                },
+                "skipped_steps": {
+                  "type": "array"
+                },
+                "source_generation_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "candidate_generation_id",
+                "issues",
+                "manifest_id",
+                "replayed_steps",
+                "skipped_steps",
+                "source_generation_id",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "branch_id",
+          "checkpoint_id",
+          "execution_id",
+          "ok",
+          "owner",
+          "recovery_id",
+          "results",
+          "root_frame_id",
           "status"
         ],
         "type": "object"
@@ -34507,6 +35443,72 @@
         "type": "object"
       }
     },
+    "PUT /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /frames/([^/]+)/branches [error]": {
       "schema": {
         "properties": {
@@ -35894,7 +36896,7 @@
         "type": "object"
       }
     },
-    "PUT /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "PUT /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {

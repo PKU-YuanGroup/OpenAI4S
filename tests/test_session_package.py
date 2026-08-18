@@ -6,6 +6,7 @@ import json
 import sqlite3
 import stat
 import struct
+import threading
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,10 @@ from openai4s.agent.ledger import restore_action_history
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import session_package as session_package_mod
+from openai4s.server.auto_mode_portability import (
+    AutoModePortabilityError,
+    portable_auto_mode_projection,
+)
 from openai4s.server.delivery import CompletionDeliveryService
 from openai4s.server.execution_views import ExecutionViewService
 from openai4s.server.session_domain import SessionDomainService
@@ -24,6 +29,7 @@ from openai4s.server.session_package import (
     session_import_quarantine_key,
 )
 from openai4s.server.urls import artifact_version_url
+from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store
 
 
@@ -205,6 +211,361 @@ def _source(tmp_path: Path):
     return store, domain, project, root, artifact, checkpoint, workspace
 
 
+def _portable_auto_mode_projection(root: str, version_id: str) -> dict:
+    candidate_hash = "a" * 64
+    evidence_hash = "b" * 64
+    events = [
+        {
+            "event_cursor": 1,
+            "event_id": "auto-event-started",
+            "type": "auto_run_started",
+            "run_id": "auto-run-source",
+            "root_frame_id": root,
+            "branch_id": root,
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "payload": {
+                "mode": "auto_fix",
+                "status": "running",
+                "prompt": "private hidden prompt",
+            },
+            "created_at": 100,
+        },
+        {
+            "event_cursor": 2,
+            "event_id": "auto-event-candidate",
+            "type": "candidate_ready",
+            "run_id": "auto-run-source",
+            "root_frame_id": root,
+            "branch_id": root,
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "payload": {
+                "candidate_id": "candidate-source",
+                "candidate_snapshot_sha256": candidate_hash,
+                "evidence_snapshot_sha256": evidence_hash,
+                "candidate_version_ids": [version_id],
+                "status": "candidate",
+            },
+            "created_at": 101,
+        },
+        {
+            "event_cursor": 3,
+            "event_id": "auto-event-review-started",
+            "type": "auto_audit_started",
+            "run_id": "auto-run-source",
+            "root_frame_id": root,
+            "branch_id": root,
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "payload": {
+                "audit_id": "audit-source",
+                "subject_kind": "result_review",
+                "subject_entity_kind": "candidate_evidence_snapshot",
+                "subject_entity_id": "candidate-source",
+                "review_run_id": "review-run-source",
+                "candidate_id": "candidate-source",
+                "candidate_snapshot_sha256": candidate_hash,
+                "evidence_snapshot_sha256": evidence_hash,
+                "round": 0,
+                "attempt": 1,
+                "model_profile_id": "scientific-reviewer",
+                "model_profile_revision": 1,
+                "model_fingerprint": "reviewer-model-v1",
+                "status": "started",
+                # Crafted 64-hex strings are not portable proof by themselves.
+                "audit_request_digest": "d" * 64,
+            },
+            "created_at": 102,
+        },
+        {
+            "event_cursor": 4,
+            "event_id": "auto-event-review-completed",
+            "type": "auto_audit_completed",
+            "run_id": "auto-run-source",
+            "root_frame_id": root,
+            "branch_id": root,
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "payload": {
+                "audit_id": "audit-source",
+                "subject_kind": "result_review",
+                "subject_entity_kind": "candidate_evidence_snapshot",
+                "subject_entity_id": "candidate-source",
+                "review_run_id": "review-run-source",
+                "candidate_id": "candidate-source",
+                "audit_request_digest": "d" * 64,
+                "assessment_digest": "e" * 64,
+                "attempt": 1,
+                "verdict": "pass",
+                "finding_count": 0,
+                "status": "completed",
+                "public_summary": "Independent review passed.",
+            },
+            "created_at": 103,
+        },
+        {
+            "event_cursor": 5,
+            "event_id": "auto-event-permission-started",
+            "type": "auto_audit_started",
+            "run_id": "auto-run-source",
+            "root_frame_id": root,
+            "branch_id": root,
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "payload": {
+                "audit_id": "permission-audit-source",
+                "subject_kind": "permission_review",
+                "subject_entity_kind": "approval_action",
+                "subject_entity_id": "decision-source",
+                "audit_request_digest": "f" * 64,
+                "assessment_id": "assessment-source",
+                "decision_id": "decision-source",
+                "action_digest": "c" * 64,
+                "policy_version": "policy-v1",
+                "status": "started",
+            },
+            "created_at": 104,
+        },
+        {
+            "event_cursor": 6,
+            "event_id": "auto-event-permission-completed",
+            "type": "auto_audit_completed",
+            "run_id": "auto-run-source",
+            "root_frame_id": root,
+            "branch_id": root,
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "payload": {
+                "audit_id": "permission-audit-source",
+                "subject_kind": "permission_review",
+                "subject_entity_kind": "approval_action",
+                "subject_entity_id": "decision-source",
+                "audit_request_digest": "f" * 64,
+                "assessment_digest": "1" * 64,
+                "assessment_id": "assessment-source",
+                "decision_id": "decision-source",
+                "action_digest": "c" * 64,
+                "outcome": "denied",
+                "risk": "critical",
+                "status": "completed",
+                "public_summary": "Denied by policy.",
+            },
+            "created_at": 105,
+        },
+        {
+            "event_cursor": 7,
+            "event_id": "auto-event-terminal",
+            "type": "auto_run_terminal",
+            "run_id": "auto-run-source",
+            "root_frame_id": root,
+            "branch_id": root,
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "payload": {
+                "status": "verified",
+                "terminal_reason": "review_passed",
+            },
+            "created_at": 106,
+        },
+    ]
+    for event in events:
+        event["payload_sha256"] = hashlib.sha256(
+            _canonical(event["payload"])
+        ).hexdigest()
+    return {
+        "schema_version": 1,
+        "trust_state": "local",
+        "historical_selection": {
+            "preset": "autonomous",
+            "result_review_mode": "auto_fix",
+            "approvals_reviewer": "auto_review",
+            "source": "frame",
+        },
+        "runs": [
+            {
+                "run_id": "auto-run-source",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-source",
+                "execution_id": "execution-source",
+                "mode": "auto_fix",
+                "status": "verified",
+                "candidate_id": "candidate-source",
+                "candidate_snapshot_sha256": candidate_hash,
+                "evidence_snapshot_sha256": evidence_hash,
+                "candidate_version_ids": [version_id],
+                "terminal_reason": "review_passed",
+                "created_at": 100,
+                "finished_at": 106,
+            }
+        ],
+        "events": events,
+        "review_runs": [
+            {
+                "review_run_id": "review-run-source",
+                "audit_id": "audit-source",
+                "run_id": "auto-run-source",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-source",
+                "execution_id": "execution-source",
+                "candidate_id": "candidate-source",
+                "candidate_snapshot_sha256": candidate_hash,
+                "evidence_snapshot_sha256": evidence_hash,
+                "round": 0,
+                "attempt": 1,
+                "model_profile_id": "scientific-reviewer",
+                "model_profile_revision": 1,
+                "model_fingerprint": "reviewer-model-v1",
+                "audit_request_digest": "d" * 64,
+                "assessment_digest": "e" * 64,
+                "status": "completed",
+                "verdict": "pass",
+                "public_summary": "Independent review passed.",
+                "created_at": 102,
+                "finished_at": 103,
+                "rationale": "private chain-of-thought must not cross",
+            }
+        ],
+        "findings": [],
+        "repair_runs": [],
+        "permission_assessments": [
+            {
+                "assessment_id": "assessment-source",
+                "audit_id": "permission-audit-source",
+                "run_id": "auto-run-source",
+                "decision_id": "decision-source",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-source",
+                "execution_id": "execution-source",
+                "action_digest": "c" * 64,
+                "policy_version": "policy-v1",
+                "audit_request_digest": "f" * 64,
+                "assessment_digest": "1" * 64,
+                "status": "completed",
+                "outcome": "denied",
+                "risk": "critical",
+                "public_summary": "Denied by policy.",
+                "created_at": 104,
+                "finished_at": 105,
+                "authorization": {"max_uses": 1},
+                "payload": {"credential": "private"},
+                "rationale": "private permission rationale",
+            }
+        ],
+    }
+
+
+def test_auto_mode_portability_rejects_cross_run_scope_and_audit_subject_drift():
+    projection = _portable_auto_mode_projection("root", "version-1")
+    projection["review_runs"][0]["execution_id"] = "other-execution"
+    with pytest.raises(AutoModePortabilityError, match="scope does not match"):
+        portable_auto_mode_projection(
+            projection,
+            trust_state="local",
+            root_frame_id="root",
+            branch_ids={"root"},
+            version_ids={"version-1"},
+        )
+
+    projection = _portable_auto_mode_projection("root", "version-1")
+    projection["events"][3]["payload"]["subject_entity_kind"] = "approval_action"
+    projection["events"][3]["payload_sha256"] = hashlib.sha256(
+        _canonical(projection["events"][3]["payload"])
+    ).hexdigest()
+    with pytest.raises(AutoModePortabilityError, match="subject pair"):
+        portable_auto_mode_projection(
+            projection,
+            trust_state="local",
+            root_frame_id="root",
+            branch_ids={"root"},
+            version_ids={"version-1"},
+        )
+
+    projection = _portable_auto_mode_projection("root", "version-1")
+    projection["events"][0]["payload"]["mode"] = "review_only"
+    with pytest.raises(AutoModePortabilityError, match="digest mismatch"):
+        portable_auto_mode_projection(projection, trust_state="local")
+
+
+def test_auto_mode_portability_normalizes_legacy_singular_finding_references():
+    projection = _portable_auto_mode_projection("root", "version-1")
+    projection["findings"] = [
+        {
+            "finding_id": "finding-1",
+            "review_run_id": "review-run-source",
+            "run_id": "auto-run-source",
+            "root_frame_id": "root",
+            "branch_id": "root",
+            "turn_id": "turn-source",
+            "execution_id": "execution-source",
+            "candidate_id": "candidate-source",
+            "fingerprint": "finding-fingerprint-1",
+            "severity": "minor",
+            "category": "evidence",
+            "claim": "A bounded legacy reference needs review.",
+            "evidence_refs": ["cell-1"],
+            "artifact_id": "artifact-1",
+            "version_id": "version-1",
+            "producing_cell_id": "cell-1",
+            "status": "resolved",
+            "created_at": 103,
+            "updated_at": 103,
+        }
+    ]
+    projection["events"][3]["payload"]["finding_count"] = 1
+    projection["events"][3]["payload_sha256"] = hashlib.sha256(
+        _canonical(projection["events"][3]["payload"])
+    ).hexdigest()
+
+    portable = portable_auto_mode_projection(
+        projection,
+        trust_state="local",
+        root_frame_id="root",
+        branch_ids={"root"},
+        artifact_ids={"artifact-1"},
+        version_ids={"version-1"},
+        cell_ids={"cell-1"},
+    )
+
+    assert portable["findings"][0]["artifact_ids"] == ["artifact-1"]
+    assert portable["findings"][0]["version_ids"] == ["version-1"]
+    assert portable["findings"][0]["cell_ids"] == ["cell-1"]
+    assert "artifact_id" not in portable["findings"][0]
+
+
+def test_auto_mode_portability_makes_nonterminal_history_inert_and_is_bounded():
+    projection = _portable_auto_mode_projection("root", "version-1")
+    projection["runs"][0]["status"] = "candidate"
+    projection["runs"][0].pop("finished_at")
+    projection["runs"][0].pop("terminal_reason")
+    projection["events"] = projection["events"][:-1]
+
+    portable = portable_auto_mode_projection(
+        projection,
+        trust_state="local",
+        root_frame_id="root",
+        branch_ids={"root"},
+        version_ids={"version-1"},
+    )
+
+    assert portable["runs"][0]["source_claimed_status"] == "candidate"
+    assert portable["runs"][0]["status"] == "unverified"
+    assert portable["runs"][0]["terminal_reason"] == "portable_execution_inert"
+    assert portable["effective_selection"]["preset"] == "off"
+
+    with pytest.raises(AutoModePortabilityError, match="must be an object"):
+        portable_auto_mode_projection([], trust_state="local")
+    projection = _portable_auto_mode_projection("root", "version-1")
+    projection["events"][0]["payload"]["counts"] = {
+        str(index): index for index in range(4097)
+    }
+    with pytest.raises(AutoModePortabilityError, match="object is too large"):
+        portable_auto_mode_projection(projection, trust_state="local")
+
+
 def _attach_completion_delivery(
     tmp_path: Path,
     store: Store,
@@ -261,6 +622,103 @@ def _attach_completion_delivery(
             committed["delivery_id"], published_at=created_at + 1
         )
     return artifact, committed, url
+
+
+def test_session_package_rejects_unresolved_revert_workspace(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        store.set_setting(
+            revert_recovery_setting_key(root),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "state": "recovery_required",
+                    "operation_id": "so-package-revert",
+                    "branch_id": root,
+                }
+            ),
+        )
+
+        with pytest.raises(SessionPackageError, match="requires recovery"):
+            domain.session_export(root)
+    finally:
+        store.close()
+
+
+def test_session_package_rejects_corrupt_empty_revert_marker(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        store.set_setting(revert_recovery_setting_key(root), "")
+
+        with pytest.raises(SessionPackageError, match="requires recovery"):
+            domain.session_export(root)
+    finally:
+        store.close()
+
+
+def test_direct_session_export_rejects_branch_head_change_during_workspace_read(
+    tmp_path, monkeypatch
+):
+    """A direct caller cannot return a package assembled across a revert.
+
+    Pause after branch/checkpoint metadata was read but before the active
+    workspace is captured. Advancing the head in that window would otherwise
+    pair the old checkpoint graph with the new workspace bytes.
+    """
+
+    store, domain, _project, root, _artifact, checkpoint, workspace = _source(tmp_path)
+    export_at_workspace = threading.Event()
+    continue_export = threading.Event()
+    errors: list[BaseException] = []
+    original_export_workspace = domain.packages._export_workspace
+
+    def paused_export_workspace(*args, **kwargs):
+        export_at_workspace.set()
+        if not continue_export.wait(5):
+            raise TimeoutError("test did not release the package exporter")
+        return original_export_workspace(*args, **kwargs)
+
+    monkeypatch.setattr(
+        domain.packages,
+        "_export_workspace",
+        paused_export_workspace,
+    )
+
+    def export_package():
+        try:
+            domain.session_export(root)
+        except BaseException as error:  # captured for the assertion thread
+            errors.append(error)
+
+    thread = threading.Thread(target=export_package, daemon=True)
+    try:
+        thread.start()
+        assert export_at_workspace.wait(5)
+        active_workspace = workspace(root, root)
+        (active_workspace / "analysis.txt").write_text(
+            "reverted result\n", encoding="utf-8"
+        )
+        advanced = domain.create_checkpoint(
+            root,
+            reason="concurrent_revert_commit",
+            expected_head=checkpoint["checkpoint_id"],
+        )
+        assert advanced["checkpoint_id"] != checkpoint["checkpoint_id"]
+        continue_export.set()
+        thread.join(10)
+
+        assert not thread.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], SessionPackageError)
+        assert "changed during export" in str(errors[0])
+    finally:
+        continue_export.set()
+        thread.join(10)
+        store.close()
 
 
 def test_session_package_is_deterministic_and_round_trips_durable_state(tmp_path):
@@ -366,6 +824,129 @@ def test_session_package_is_deterministic_and_round_trips_durable_state(tmp_path
         assert root not in snapshot_text
         assert project["project_id"] not in snapshot_text
         assert artifact["artifact_id"] not in snapshot_text
+    finally:
+        store.close()
+
+
+def test_session_package_v1_carries_sanitized_inert_auto_mode_history(
+    tmp_path, monkeypatch
+):
+    store, domain, _project, root, artifact, _checkpoint, _workspace = _source(tmp_path)
+    projection = _portable_auto_mode_projection(root, str(artifact["version_id"]))
+    imported_call: dict = {}
+
+    monkeypatch.setattr(
+        store,
+        "export_auto_mode_projection",
+        lambda root_frame_id, **_filters: (projection if root_frame_id == root else {}),
+        raising=False,
+    )
+
+    def capture_import(projected, **context):
+        imported_call.update({"projection": projected, **context})
+        return {"imported": True}
+
+    monkeypatch.setattr(
+        store,
+        "import_quarantined_auto_mode_projection",
+        capture_import,
+        raising=False,
+    )
+    try:
+        package = domain.session_export(root)["data"]
+        files = _unpack(package)
+        # The package remains schema-v1 with the original twelve required JSON
+        # documents. Auto Mode is an optional member of review.json, not a new
+        # required file that would strand older importers.
+        manifest = json.loads(files["manifest.json"])
+        required_json = {
+            name
+            for name in files
+            if "/" not in name and name.endswith(".json") and name != "manifest.json"
+        }
+        assert manifest["schema_version"] == 1
+        assert required_json == set(session_package_mod._REQUIRED_JSON)
+
+        auto_mode = json.loads(files["review.json"])["auto_mode"]
+        assert auto_mode["schema_version"] == 1
+        assert auto_mode["trust_state"] == "local"
+        assert auto_mode["runs"][0]["source_claimed_status"] == "verified"
+        assert auto_mode["runs"][0]["status"] == "unverified"
+        assert auto_mode["runs"][0]["terminal_reason"] == ("portable_proof_incomplete")
+        serialized = repr(auto_mode)
+        for forbidden in (
+            "private hidden prompt",
+            "private chain-of-thought",
+            "private permission rationale",
+            "authorization",
+            "credential",
+        ):
+            assert forbidden not in serialized
+        assert auto_mode["permission_assessments"] == [
+            {
+                "action_digest": "c" * 64,
+                "assessment_digest": "1" * 64,
+                "assessment_id": "assessment-source",
+                "audit_id": "permission-audit-source",
+                "audit_request_digest": "f" * 64,
+                "branch_id": root,
+                "created_at": 104,
+                "decision_id": "decision-source",
+                "execution_id": "execution-source",
+                "finished_at": 105,
+                "outcome": "denied",
+                "policy_version": "policy-v1",
+                "public_summary": "Denied by policy.",
+                "risk": "critical",
+                "root_frame_id": root,
+                "run_id": "auto-run-source",
+                "status": "completed",
+                "turn_id": "turn-source",
+            }
+        ]
+        assert all(event["payload_sha256"] for event in auto_mode["events"])
+
+        imported = domain.session_import(package)
+        assert imported_call["root_frame_id"] == imported["root_frame_id"]
+        assert imported_call["project_id"] == imported["project_id"]
+        assert imported_call["projection"]["trust_state"] == "quarantined_import"
+        assert imported_call["projection"]["effective_selection"] == {
+            "preset": "off",
+            "result_review_mode": "off",
+            "approvals_reviewer": "user",
+        }
+        # Historical selection remains provenance only; it never becomes an
+        # executable imported permission/review policy.
+        assert imported_call["projection"]["historical_selection"]["preset"] == (
+            "autonomous"
+        )
+        assert imported_call["resume_execution"] is False
+        assert imported_call["branch_id_map"][root] == imported["root_frame_id"]
+        assert imported_call["version_id_map"][str(artifact["version_id"])]
+        assert imported_call["action_group_id_map"]
+    finally:
+        store.close()
+
+
+def test_session_package_v1_without_auto_mode_remains_importable(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        review = json.loads(files["review.json"])
+        review.pop("auto_mode", None)
+        files["review.json"] = _canonical(review)
+        old_v1 = _repack(files)
+
+        imported = domain.session_import(old_v1)
+
+        assert imported["schema_version"] == 1
+        assert imported["trust_state"] == "quarantined"
+        assert all(
+            checkpoint["auto_event_cursor"] == 0
+            for checkpoint in store.list_session_checkpoints(imported["root_frame_id"])
+        )
     finally:
         store.close()
 
@@ -1095,6 +1676,32 @@ def test_session_package_preserves_revert_projection_without_reviving_abandoned_
         tampered_files["snapshots.json"] = _canonical(tampered_snapshots)
         with pytest.raises(SessionPackageError, match="unknown identity"):
             domain.session_import(_repack(tampered_files))
+
+        boundary_files = _unpack(package)
+        boundary_snapshots = json.loads(boundary_files["snapshots.json"])
+        boundary_snapshots["checkpoints"][0]["auto_event_cursor"] = 999
+        boundary_files["snapshots.json"] = _canonical(boundary_snapshots)
+        project_ids_before = {item["project_id"] for item in store.list_projects()}
+        with pytest.raises(SessionPackageError, match="no event boundary"):
+            domain.session_import(_repack(boundary_files))
+        assert {item["project_id"] for item in store.list_projects()} == (
+            project_ids_before
+        )
+
+        cursor_files = _unpack(package)
+        cursor_snapshots = json.loads(cursor_files["snapshots.json"])
+        cursor_projection = next(
+            item["metadata"]["history_projection"]
+            for item in cursor_snapshots["checkpoints"]
+            if (item.get("metadata") or {}).get("history_projection")
+        )
+        cursor_projection["resume_cursors"]["auto_event_cursor"] = 999
+        cursor_files["snapshots.json"] = _canonical(cursor_snapshots)
+        with pytest.raises(SessionPackageError, match="no event boundary"):
+            domain.session_import(_repack(cursor_files))
+        assert {item["project_id"] for item in store.list_projects()} == (
+            project_ids_before
+        )
     finally:
         store.close()
 
@@ -1803,6 +2410,135 @@ class _Hub:
 
     def drop_frame(self, _root_frame_id):
         return None
+
+
+def test_http_session_export_waits_for_revert_fifo_and_keeps_head_workspace_aligned(
+    tmp_path, monkeypatch
+):
+    config = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(config, _Hub(), start_idle_sweeper=False)
+    project = runner.store.create_project(name="FIFO export source")
+    root = runner.store.new_frame(
+        project_id=project["project_id"], kind="turn", status="done"
+    )
+    workspace = runner.active_workspace_for(root)
+    workspace.mkdir(parents=True, exist_ok=True)
+    result_path = workspace / "result.txt"
+    result_path.write_text("before revert\n", encoding="utf-8")
+    first = runner.session_domain.create_checkpoint(root, reason="before race")
+    state = runner._state(root, project["project_id"])
+    blocker = runner._queue_execution(
+        state,
+        owner="lifecycle",
+        owner_id="deterministic-revert",
+        reason="revert session",
+    )
+    workspace_changed = threading.Event()
+    commit_revert = threading.Event()
+    head_changed = threading.Event()
+    release_revert = threading.Event()
+    export_queued = threading.Event()
+    export_entered = threading.Event()
+    holder_errors: list[BaseException] = []
+    export_errors: list[BaseException] = []
+    committed: dict = {}
+
+    def hold_revert_ticket():
+        try:
+            with runner.executions.admitted(blocker, cancel_event=state.cancel):
+                result_path.write_text("after revert\n", encoding="utf-8")
+                workspace_changed.set()
+                if not commit_revert.wait(5):
+                    raise TimeoutError("test did not release the revert commit")
+                committed.update(
+                    runner.session_domain.create_checkpoint(
+                        root,
+                        reason="revert continuation",
+                        expected_head=first["checkpoint_id"],
+                    )
+                )
+                head_changed.set()
+                if not release_revert.wait(5):
+                    raise TimeoutError("test did not release the revert ticket")
+        except BaseException as error:
+            holder_errors.append(error)
+            workspace_changed.set()
+            head_changed.set()
+
+    original_queue = runner._queue_execution
+
+    def observed_queue(*args, **kwargs):
+        ticket = original_queue(*args, **kwargs)
+        if kwargs.get("reason") == "session package export":
+            export_queued.set()
+        return ticket
+
+    monkeypatch.setattr(runner, "_queue_execution", observed_queue)
+    original_export = runner.session_domain.session_export
+
+    def observed_export(root_frame_id):
+        export_entered.set()
+        return original_export(root_frame_id)
+
+    monkeypatch.setattr(runner.session_domain, "session_export", observed_export)
+    handler_class = gateway_mod.make_handler(config, runner.hub, runner)
+    handler = object.__new__(handler_class)
+    replies = []
+    handler._query = lambda: {}
+    handler._send = lambda code, data, content_type, extra=None: replies.append(
+        (code, data, content_type, extra or {})
+    )
+    handler._json = lambda value, code=200: replies.append((code, value))
+
+    def export_over_http():
+        try:
+            handler._api("GET", f"/frames/{root}/session/export")
+        except BaseException as error:
+            export_errors.append(error)
+
+    holder = threading.Thread(target=hold_revert_ticket, daemon=True)
+    exporter = threading.Thread(target=export_over_http, daemon=True)
+    try:
+        holder.start()
+        assert workspace_changed.wait(5)
+        exporter.start()
+        assert export_queued.wait(5)
+        assert not export_entered.is_set()
+
+        commit_revert.set()
+        assert head_changed.wait(5)
+        release_revert.set()
+        holder.join(10)
+        exporter.join(10)
+
+        assert not holder.is_alive()
+        assert not exporter.is_alive()
+        assert holder_errors == []
+        assert export_errors == []
+        code, package, _content_type, _headers = replies.pop()
+        assert code == 200
+        files = _unpack(package)
+        snapshots = json.loads(files["snapshots.json"])
+        root_branch = next(
+            item for item in snapshots["branches"] if item["branch_id"] == root
+        )
+        assert root_branch["head_checkpoint_id"] == committed["checkpoint_id"]
+        workspace_projection = snapshots["workspace"]
+        safe_tree_id = workspace_projection["tree_map"][
+            workspace_projection["active_source_tree_id"]
+        ]
+        tree = json.loads(files[f"workspace/trees/{safe_tree_id}.json"])
+        entry = next(item for item in tree["entries"] if item["path"] == "result.txt")
+        assert files[f"workspace/blobs/{entry['blob']}"] == b"after revert\n"
+    finally:
+        commit_revert.set()
+        release_revert.set()
+        holder.join(10)
+        exporter.join(10)
+        runner.close()
 
 
 def test_session_package_gateway_routes_use_binary_export_and_raw_import(tmp_path):

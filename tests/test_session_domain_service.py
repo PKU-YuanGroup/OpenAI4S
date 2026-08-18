@@ -12,6 +12,8 @@ from openai4s.server.session_domain import (
     CursorCheckpointUnavailable,
     SessionDomainService,
 )
+from openai4s.server.session_package import session_import_quarantine_key
+from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store
 
 
@@ -107,6 +109,82 @@ def test_empty_branch_projection_keeps_checkpoint_enabled_without_mutating(tmp_p
     assert projection["capabilities"]["fork"]["fork_from_message"] is True
     # GET/projection must not manufacture a branch row.
     assert store.list_session_branches(root) == []
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "",
+        "not-json",
+        "null",
+        '{"state":"recovery_required"}',
+    ],
+)
+def test_branch_mutation_capabilities_fail_closed_while_revert_recovery_exists(
+    tmp_path, marker
+):
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = SessionDomainService(
+        store,
+        data_dir=tmp_path,
+        workspace=lambda _root, _branch: workspace,
+    )
+    service.create_checkpoint(root)
+    store.set_setting(revert_recovery_setting_key(root), marker)
+
+    projection = service.branches(root)
+    capabilities = projection["capabilities"]
+
+    for name in ("checkpoint", "fork", "revert", "activate", "promote"):
+        assert capabilities[name]["enabled"] is False
+        assert "workspace revert recovery" in capabilities[name]["reason"]
+    assert capabilities["fork"]["fork_from_cell"] is False
+    assert capabilities["fork"]["fork_from_message"] is False
+    assert "workspace revert recovery" in capabilities["fork"]["fork_from_cell_reason"]
+    assert (
+        "workspace revert recovery" in capabilities["fork"]["fork_from_message_reason"]
+    )
+    # Preview is read-only and remains useful for inspecting recovery state.
+    assert capabilities["revert_preview"] == {"enabled": True, "reason": None}
+
+    store.delete_setting(revert_recovery_setting_key(root))
+    restored = service.branches(root)["capabilities"]
+    for name in ("checkpoint", "fork", "revert", "activate", "promote"):
+        assert restored[name]["enabled"] is True
+        assert restored[name]["reason"] is None
+    store.close()
+
+
+def test_recovery_projection_fails_closed_for_empty_import_quarantine_marker(
+    tmp_path,
+):
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    service = SessionDomainService(
+        store,
+        data_dir=tmp_path,
+        workspace=lambda _root, _branch: workspace,
+    )
+    store.set_setting(session_import_quarantine_key(root), "")
+
+    status = service.recovery_status(root)
+    actions = service.recovery_actions(root)
+
+    assert status["view_only"] is True
+    assert status["trust_state"] == "quarantined"
+    assert status["explicit_recovery_required"] is True
+    assert actions["view_only"] is True
+    assert actions["trust_state"] == "quarantined"
+    assert actions["explicit_recovery_required"] is True
+    for action in actions["actions"]:
+        if action["id"] in {"restore", "retry"}:
+            assert action["enabled"] is False
     store.close()
 
 
@@ -411,6 +489,104 @@ def test_session_domain_composes_checkpoint_branch_timeline_export_and_renderer(
     store.close()
 
 
+def test_revert_persists_timeline_and_invalidates_runtime_before_unlock(tmp_path):
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    analysis = workspace / "analysis.txt"
+    live_events: list[dict] = []
+    unlock_observations: list[dict] = []
+
+    def before_unlock(root_frame_id, branch_id, checkpoint):
+        marker = store.get_setting(revert_recovery_setting_key(root_frame_id))
+        groups = store.list_action_groups(root_frame_id, branch_id=branch_id)
+        revert_groups = [group for group in groups if group["kind"] == "revert"]
+        unlock_observations.append(
+            {
+                "marker_present": marker is not None,
+                "durable_terminal": any(
+                    event.get("canonical_arguments", {}).get("type")
+                    == "branch_reverted"
+                    for group in revert_groups
+                    for event in group["events"]
+                ),
+                "live_terminal": any(
+                    event.get("type") == "branch_reverted" for event in live_events
+                ),
+                "checkpoint_id": checkpoint.get("checkpoint_id"),
+            }
+        )
+
+    service = SessionDomainService(
+        store,
+        data_dir=tmp_path,
+        workspace=lambda _root, _branch: workspace,
+        event_sink=live_events.append,
+        before_revert_unlock=before_unlock,
+    )
+    analysis.write_text("v1", encoding="utf-8")
+    target = service.create_checkpoint(root)
+    analysis.write_text("v2", encoding="utf-8")
+    service.create_checkpoint(root)
+
+    reverted = service.revert_apply(root, target_checkpoint_id=target["checkpoint_id"])
+
+    assert unlock_observations == [
+        {
+            "marker_present": True,
+            "durable_terminal": True,
+            "live_terminal": False,
+            "checkpoint_id": reverted["checkpoint"]["checkpoint_id"],
+        }
+    ]
+    assert store.get_setting(revert_recovery_setting_key(root)) is None
+    assert [event["type"] for event in live_events].count("branch_reverted") == 1
+    store.close()
+
+
+def test_session_domain_reconciles_committed_revert_after_restart(tmp_path):
+    store = Store(tmp_path / "openai4s.db")
+    root = store.new_frame(project_id="default", kind="turn", status="ready")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    analysis = workspace / "analysis.txt"
+    live_events: list[dict] = []
+    service = SessionDomainService(
+        store,
+        data_dir=tmp_path,
+        workspace=lambda _root, _branch: workspace,
+        event_sink=live_events.append,
+    )
+    analysis.write_text("v1", encoding="utf-8")
+    target = service.create_checkpoint(root)
+    analysis.write_text("v2", encoding="utf-8")
+    service.create_checkpoint(root)
+    # This is the durable state left when a process exits after the branching
+    # commit but before SessionDomain publishes projection/runtime invalidation.
+    committed = service.branching.revert_and_continue(
+        root,
+        branch_id=root,
+        target_checkpoint_id=target["checkpoint_id"],
+    )
+    assert store.get_setting(revert_recovery_setting_key(root))
+    analysis.write_text("v2", encoding="utf-8")
+
+    reconciled = service.reconcile_revert(root)
+
+    assert reconciled["state"] == "committed"
+    assert (
+        reconciled["checkpoint"]["checkpoint_id"]
+        == committed["checkpoint"]["checkpoint_id"]
+    )
+    assert analysis.read_text(encoding="utf-8") == "v1"
+    assert store.get_setting(revert_recovery_setting_key(root)) is None
+    assert [event["type"] for event in live_events].count("branch_reverted") == 1
+    timeline = service.action_timeline(root)
+    assert sum(group["kind"] == "revert" for group in timeline["groups"]) == 1
+    store.close()
+
+
 def test_recovery_projection_is_redacted_and_actions_fail_closed_or_enable(
     tmp_path,
 ):
@@ -456,6 +632,30 @@ def test_recovery_projection_is_redacted_and_actions_fail_closed_or_enable(
         if item["id"] == "retry"
     )
     assert retry["enabled"] is False
+    store.set_setting(revert_recovery_setting_key(root), "null")
+    blocked = service.recovery_status(root)
+    assert blocked["state"] == "failed"
+    assert blocked["explicit_recovery_required"] is True
+    assert blocked["revert_recovery"] == {"state": "recovery_required"}
+    restart = next(
+        item
+        for item in service.recovery_actions(root)["actions"]
+        if item["id"] == "restart_fresh"
+    )
+    assert restart["enabled"] is False
+    assert "workspace revert" in restart["reason"]
+    store.set_setting(revert_recovery_setting_key(root), "")
+    corrupt = service.recovery_status(root)
+    assert corrupt["state"] == "failed"
+    assert corrupt["explicit_recovery_required"] is True
+    assert corrupt["revert_recovery"] == {"state": "recovery_required"}
+    restart = next(
+        item
+        for item in service.recovery_actions(root)["actions"]
+        if item["id"] == "restart_fresh"
+    )
+    assert restart["enabled"] is False
+    assert "workspace revert" in restart["reason"]
     store.close()
 
 

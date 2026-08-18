@@ -1397,6 +1397,18 @@ def test_imported_session_quarantine_is_visible_and_blocks_live_controls() -> No
     assert APP_JS.count('"runtime.quarantineHint"') >= 2
 
 
+def test_runtime_summary_treats_explicit_recovery_as_view_only() -> None:
+    summary = _extract_js_function(APP_JS, "runtimeSummary")
+    undo = _extract_js_function(APP_JS, "branchUndoFromProjection")
+
+    assert "explicitRecoveryRequired" in summary
+    assert "recovery.explicit_recovery_required === true" in summary
+    assert "(S.recoveryActions || {}).explicit_recovery_required === true" in summary
+    assert "(_kc.st || {}).explicit_recovery_required === true" in summary
+    assert "const viewOnly = explicitRecoveryRequired ||" in summary
+    assert "state.capabilities.revert !== true" in undo
+
+
 def test_variable_inspector_is_manual_read_only_and_strictly_sanitized() -> None:
     sanitizer = _extract_js_function(APP_JS, "sanitizeVariableInspection")
     refresh = _extract_js_function(APP_JS, "refreshVariableInspector")

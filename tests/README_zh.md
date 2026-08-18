@@ -137,6 +137,13 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_governance.py`](test_governance.py) | 用测试写出来的仓库治理。每一个安全扫描与发布用的 action 都固定到具体 commit，secret 扫描用一个校验和固定的二进制扫全部历史，Dependabot 盯着 hook 与 workflow action。 |
 | [`test_harness_characterization.py`](test_harness_characterization.py) | 一份特征化 golden，因此它刻意记录的是当前行为，已知 bug 也照记不误，并且标注出来。重新生成 golden 必须是一个显式动作——正是这一点拦得住无声的漂移。 |
 | [`test_harness_contract.py`](test_harness_contract.py) | harness 自身：场景 schema、脚本化 provider、故障时刻表，以及一个保留事件顺序、而不是排序的规范化器。声明了却从未触发的故障，会让这个场景判失败。 |
+| [`test_auto_mode_faults.py`](test_auto_mode_faults.py) | Stage 2 的崩溃、回滚、过期、多连接与副作用 ledger 恢复契约。它证明已提交事实能幂等重放、部分提交的 phase 不会逸出、repair action group 在使用前已绑定，且丢失 WebSocket 永远不会变成事实源。 |
+| [`test_auto_mode_portability_regressions.py`](test_auto_mode_portability_regressions.py) | 对抗式 package/share 可移植性覆盖：按 run 隔离的身份重映射、按 start cursor 稳定排序、direct/shared 图验证一致性、常数事件查询次数，以及始终惰性的多跳来源声明。 |
+| [`test_auto_mode_recovery_regressions.py`](test_auto_mode_recovery_regressions.py) | 提交后证明篡改、重放、finding owner、事件顺序、终态完整性、历史前缀、fork 与 revert 的恢复回归。 |
+| [`test_auto_mode_routes.py`](test_auto_mode_routes.py) | 精确 frame 级 Auto Mode GET/PATCH/audit 路由的聚焦 adapter 契约：method/path 归属、查询边界、错误映射、规范 live event 名，以及刻意不存在的 HTTP 状态变更路由。伪造 service 已标记，合成 shape 不会进入 response-schema 捕获。 |
+| [`test_auto_mode_service.py`](test_auto_mode_service.py) | quarantine、frame、project、deployment、旧布尔值与内置默认值之间的选择优先级和兼容映射。deployment 的显式未设置与 off 保持不同，且 Stage 2 的运行时仍惰性。 |
+| [`test_auto_mode_storage.py`](test_auto_mode_storage.py) | 持久 Auto Mode 状态机、事件次序、幂等、Verified 证明完整性、finding 生命周期、repair 所有权、权限作用域、分支投影、迁移、quarantine 与导入身份重映射。损坏的 hash 或 owner/event 不一致都会失败即拒绝。 |
+| [`test_auto_mode_surface_regressions.py`](test_auto_mode_surface_regressions.py) | 通过真实 Gateway、团队作用域 REST、公开字段脱敏、默认关闭行为、WebSocket 提示丢失、daemon 重开、package、share 与 quarantine，证明 SQLite 始终是事实源，损坏的 Verified 证明绝不会发布。 |
 | [`test_auto_mode_terminal_contract.py`](test_auto_mode_terminal_contract.py) | 五类 Stage 0 非 Guardian 终态契约：精确的独立 golden payload 与规范 digest、封闭的原因专属条件、失败即关闭的交叉路由、不冒充 Reviewer／Guardian 审计，以及有界恢复真值。 |
 | [`test_host_completion_service.py`](test_host_completion_service.py) | `host.submit_output`，Python Cell 唯一拥有的完成信号。schema 失败是软失败，且不得覆盖掉此前已有的完成；完成要点的过去式检查，除英文外也接受中日韩的表达。 |
 | [`test_host_contract.py`](test_host_contract.py) | worker 到 Host 的 wire：注入的门面、单键形式的软错误、camelCase 编解码。最后那个测试最有用——SDK 能调的每一个 `host.*` 方法都必须有对应的分发路由，这样新能力就不会接了一半就发出去。 |

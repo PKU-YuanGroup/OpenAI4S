@@ -24,6 +24,7 @@ from openai4s.kernel.recovery import (
     RecoveryRecipe,
     RecoveryStep,
 )
+from openai4s.storage.snapshots import revert_recovery_setting_key
 
 _STATUSES = frozenset(
     {"started", "completed", "skipped", "partial", "failed", "cancelled"}
@@ -54,6 +55,8 @@ class RecoveryStore(Protocol):
     def get_session_branch(self, branch_id: str) -> dict | None: ...
 
     def get_session_checkpoint(self, checkpoint_id: str) -> dict | None: ...
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None: ...
 
     def latest_kernel_generation(
         self, root_frame_id: str, language: str, *, branch_id: str | None = None
@@ -181,10 +184,49 @@ class RecoveryControlService:
             if current is not None
             else _generation_state(generations.values())
         )
+        get_setting = getattr(self.store, "get_setting", None)
+        barrier_raw = (
+            get_setting(revert_recovery_setting_key(root_frame_id))
+            if callable(get_setting)
+            else None
+        )
+        if barrier_raw is None:
+            barrier_value = None
+        else:
+            try:
+                barrier_value = json.loads(barrier_raw)
+            except (TypeError, ValueError):
+                barrier_value = {"state": "recovery_required"}
+            if not isinstance(barrier_value, Mapping):
+                barrier_value = {"state": "recovery_required"}
+        barrier = (
+            {
+                key: barrier_value.get(key)
+                for key in (
+                    "state",
+                    "operation_id",
+                    "branch_id",
+                    "target_checkpoint_id",
+                    "undo_checkpoint_id",
+                    "revert_checkpoint_id",
+                )
+                if barrier_value.get(key) is not None
+            }
+            if isinstance(barrier_value, Mapping)
+            else None
+        )
+        if barrier is not None:
+            # A marker visible to this projection has survived the synchronous
+            # revert call (or a process restart). It is recoverable work, not a
+            # currently-running writer; reporting ``restoring`` would disable
+            # every recovery action forever.
+            state = "failed"
         return {
             "root_frame_id": root_frame_id,
             "branch_id": branch_id,
             "state": state,
+            "explicit_recovery_required": barrier is not None,
+            "revert_recovery": barrier,
             "current": current,
             "attempts": attempts,
             "generations": {
@@ -280,8 +322,12 @@ class RecoveryControlService:
             # so nothing goes back in without a route to reach it.
             _action(
                 "restart_fresh",
-                not busy,
-                "recovery already running" if busy else None,
+                not busy and not status.get("explicit_recovery_required"),
+                (
+                    "workspace revert must be restored or reconciled first"
+                    if status.get("explicit_recovery_required")
+                    else "recovery already running" if busy else None
+                ),
                 requires_ticket=True,
                 requires_confirmation=True,
             ),
@@ -442,6 +488,14 @@ def _journal_state(rows: list[dict]) -> str:
     latest = rows[-1]
     phase = str(latest.get("phase") or "")
     status = str(latest.get("status") or "")
+    if phase == "revert_workspace":
+        if status in {"completed", "cancelled"}:
+            return "ended"
+        if status == "partial":
+            return "partial"
+        if status == "failed":
+            return "failed"
+        return "restoring"
     if phase in {"publish", "session"} and status == "completed":
         return "active"
     if status == "partial":

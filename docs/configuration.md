@@ -131,17 +131,17 @@ exposes to an unauthenticated caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 
-## Auto Mode roadmap flags (Stage 1)
+## Auto Mode roadmap flags (Stage 2)
 
-Stage 0 reserved configuration names for the ordered Stage 1–12 rollout. Every
-flag still defaults off. Stage 1 now consumes only
-`stage1_trusted_delivery`; the Stage 2–12 flags remain inert reservations and
-cannot enable their named behavior or grant permission.
+Every rollout flag defaults off. Stage 1 implements trusted delivery and Stage
+2 implements only the durable Auto Run/configuration/projection foundation.
+Stage 3–12 flags remain inert reservations and cannot invoke a model, repair a
+workspace, review or resolve a permission, or grant authority.
 
 | Config field under `Config.roadmap_features` | Environment variable | Reserved behavior |
 | --- | --- | --- |
 | `stage1_trusted_delivery` | `OPENAI4S_STAGE1_TRUSTED_DELIVERY` | Implemented opt-in: exact immutable Artifact delivery, same-head capture observations, and standard-profile readiness admission. |
-| `stage2_auto_run_storage` | `OPENAI4S_STAGE2_AUTO_RUN_STORAGE` | Durable Auto Run/review/finding/decision records and events. |
+| `stage2_auto_run_storage` | `OPENAI4S_STAGE2_AUTO_RUN_STORAGE` | Implemented opt-in: durable Auto Run/review/finding/repair/permission-assessment records, canonical post-commit events, CAS selection PATCH, and REST/reopen projection. No Reviewer/Repair/Guardian execution. |
 | `stage3_scientific_review_shadow` | `OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW` | Immutable-evidence Scientific Reviewer shadow mode. |
 | `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Candidate-to-reviewed-final completion gate. |
 | `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Bounded Repair Agent and independent re-review loop. |
@@ -207,7 +207,7 @@ window is fixed at 50 so changing its denominator cannot weaken the rate rule:
 | `guardian_window_size` | `OPENAI4S_AUTO_GUARDIAN_WINDOW_SIZE` | fixed 50 |
 | `guardian_window_denial_limit` | `OPENAI4S_AUTO_GUARDIAN_WINDOW_DENIAL_LIMIT` | 10 |
 
-When later stages add durable selection, precedence is import quarantine
+Stage 2 durable selection precedence is import quarantine
 (forces off/user) → explicit frame → explicit project → explicitly configured
 deployment → legacy `review:auto:{root}` → built-in defaults. Legacy true maps
 only to `review_only`; it can never enable repair or permission automation. An
@@ -219,7 +219,9 @@ budget exhaustion, safe rollback unavailable, unknown external outcome, loop
 detection, or a hard/integrity safety boundary; the subsystem name alone never
 chooses the terminal label.
 
-Auto Mode is a future bounded preset, not full access. The authoritative
+Auto Mode is a bounded preset, not full access. In Stage 2 it is configuration
+and durable history only; selecting `autonomous` does not yet start execution.
+The authoritative
 budget, state, recovery, and projection meanings are in the
 [Auto Mode product contract](auto-mode.md).
 

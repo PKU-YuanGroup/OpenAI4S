@@ -308,6 +308,36 @@ def _auto_mode_enabled() -> bool:
     raise ValueError(f"invalid OPENAI4S_AUTO_MODE: expected one of {choices}")
 
 
+_AUTO_MODE_SELECTION_ENV_FIELDS = (
+    ("OPENAI4S_AUTO_MODE", "preset"),
+    ("OPENAI4S_RESULT_REVIEW_MODE", "result_review_mode"),
+    ("OPENAI4S_APPROVALS_REVIEWER", "approvals_reviewer"),
+)
+
+
+def _auto_mode_deployment_explicit_fields() -> tuple[str, ...]:
+    """Selection fields the operator actually set for this Config generation.
+
+    Capturing this beside the parsed values is load-bearing.  Looking at the
+    environment later cannot distinguish an unset deployment default from an
+    explicit ``off`` after tests, launch wrappers, or embedders have changed
+    ``os.environ``.  The Stage 2 resolver needs that distinction so a built-in
+    default does not erase an older frame's explicit result-review setting.
+    """
+
+    return tuple(
+        field_name
+        for env_name, field_name in _AUTO_MODE_SELECTION_ENV_FIELDS
+        if env_name in os.environ
+    )
+
+
+def _auto_mode_deployment_explicit() -> bool:
+    return any(
+        env_name in os.environ for env_name, _ in _AUTO_MODE_SELECTION_ENV_FIELDS
+    )
+
+
 @dataclass
 class SecurityConfig:
     """Toggles for the defense-in-depth safety layer (openai4s.security).
@@ -499,10 +529,9 @@ def data_root_policies() -> list[tuple[Path, bool]]:
 class RoadmapFeatureFlags:
     """Stage 1--12 rollout reservations from the Auto Mode master plan.
 
-    Stage 0 only freezes names and fail-closed parsing.  No runtime component
-    consumes these flags yet, and every flag defaults off.  Later stages must
-    wire and graduate exactly their own flag only after that stage's Go/No-Go
-    gate passes.
+    Every flag defaults off. Stage 1 and Stage 2 consume only their own flags
+    for trusted delivery and the durable Auto Mode storage/projection surface;
+    later stages remain inert until their own Go/No-Go gate passes.
     """
 
     stage1_trusted_delivery: bool = field(
@@ -583,11 +612,11 @@ AUTO_MODE_IMPORT_QUARANTINE_SELECTION = (False, "off", "user")
 
 @dataclass(frozen=True)
 class AutoModeBudgets:
-    """Fail-closed ceilings for the future autonomous preset.
+    """Fail-closed deployment ceilings for the autonomous preset.
 
-    Stage 0 parses and validates these deployment defaults but no runtime
-    component consumes them.  Environment overrides may only tighten the
-    Master Plan ceilings; a later project/frame policy may tighten them again.
+    Stage 2 publishes these as read-only policy and freezes them into durable
+    runs; it does not accept a partial project/frame budget override. A later
+    policy layer may add a complete resolver whose overrides only tighten them.
     """
 
     max_review_rounds: int = field(
@@ -701,12 +730,12 @@ class AutoModeBudgets:
 
 @dataclass(frozen=True)
 class AutoModeConfig:
-    """Reserved product-mode selection; inert until its owning stages land.
+    """Deployment selection parsed for the Stage 2 Auto Mode resolver.
 
     ``enabled`` represents the future UI/CLI preset, not a permission bypass.
     The preset is normalized here so no contradictory configuration can exist:
     enabled always means ``auto_fix`` + ``auto_review`` + bounded budgets.  No
-    runtime component consumes this Stage 0 reservation yet.
+    Stage 2 only stores/resolves this selection; later stages own execution.
     """
 
     enabled: bool = field(default_factory=_auto_mode_enabled)
@@ -721,6 +750,13 @@ class AutoModeConfig:
         )
     )
     budgets: AutoModeBudgets = field(default_factory=AutoModeBudgets)
+    # These are captured metadata, not another enable switch.  In particular,
+    # OPENAI4S_AUTO_MODE=off is semantically different from an unset variable
+    # even though both normalize to the same values.
+    deployment_explicit: bool = field(default_factory=_auto_mode_deployment_explicit)
+    deployment_explicit_fields: tuple[str, ...] = field(
+        default_factory=_auto_mode_deployment_explicit_fields
+    )
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
@@ -731,6 +767,26 @@ class AutoModeConfig:
             raise ValueError("approvals_reviewer must be a string")
         if not isinstance(self.budgets, AutoModeBudgets):
             raise ValueError("budgets must be an AutoModeBudgets")
+        if type(self.deployment_explicit) is not bool:
+            raise ValueError("deployment_explicit must be a bool")
+        if not isinstance(self.deployment_explicit_fields, tuple) or any(
+            not isinstance(field_name, str)
+            or field_name not in {"preset", "result_review_mode", "approvals_reviewer"}
+            for field_name in self.deployment_explicit_fields
+        ):
+            raise ValueError("deployment_explicit_fields contains an unknown field")
+        if len(set(self.deployment_explicit_fields)) != len(
+            self.deployment_explicit_fields
+        ):
+            raise ValueError("deployment_explicit_fields must not contain duplicates")
+        if self.deployment_explicit_fields and not self.deployment_explicit:
+            # Direct construction can supply metadata too.  A named explicit
+            # field and an explicit=false bit cannot both be true; reject the
+            # ambiguous input rather than silently choosing whichever a caller
+            # happened to inspect.
+            raise ValueError(
+                "deployment_explicit must be true when explicit fields are present"
+            )
         result_mode = self.result_review_mode.strip().lower()
         approvals_reviewer = self.approvals_reviewer.strip().lower()
         if result_mode not in _RESULT_REVIEW_MODES:

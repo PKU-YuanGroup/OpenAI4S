@@ -69,6 +69,11 @@ from openai4s.storage.artifact_observations import (
 from openai4s.storage.artifacts import ArtifactRepository
 from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
+from openai4s.storage.auto_mode import (
+    AutoModeRepository,
+    create_auto_mode_schema,
+    install_auto_mode_action_guards,
+)
 from openai4s.storage.branch_projection import count_cursor, project_branch_records
 from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.checkpoint_state import CheckpointStateRepository
@@ -126,7 +131,11 @@ from openai4s.storage.session_imports import SessionImportRepository
 from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
-from openai4s.storage.snapshots import SessionSnapshotRepository
+from openai4s.storage.snapshots import (
+    SessionSnapshotRepository,
+    WorkspaceCAS,
+    revert_recovery_setting_key,
+)
 from openai4s.storage.team import (
     TeamRepository,
     create_session_owners_schema,
@@ -631,6 +640,9 @@ CREATE TABLE IF NOT EXISTS permission_requests (
     side_effect_class TEXT,
     resource_keys  TEXT,
     payload        TEXT,
+    dangerous      INTEGER NOT NULL DEFAULT 0,
+    canonical_arguments_sha256 TEXT,
+    action_digest  TEXT,
     state          TEXT NOT NULL DEFAULT 'pending',
     scope          TEXT,
     pattern        TEXT,
@@ -738,6 +750,18 @@ QUERY_DENYLIST = frozenset(
         "checkpoint_state_snapshots",
         "snapshot_operations",
         "recovery_journal",
+        # Auto Mode contains immutable Reviewer/Guardian inputs, exact action
+        # digests, raw audit payloads, and recovery ownership. It is projected
+        # only through the bounded server service; agent SQL cannot inspect or
+        # use it as an alternate permission channel.
+        "auto_mode_selections",
+        "auto_mode_runs",
+        "auto_mode_events",
+        "review_runs",
+        "review_findings",
+        "repair_runs",
+        "repair_execution_groups",
+        "permission_review_assessments",
         # Publication ledger binds exact manifests to final assistant messages.
         # It is server recovery/audit state, not an agent data source.
         "completion_deliveries",
@@ -1036,7 +1060,15 @@ class Store:
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
+            admit_action_group=lambda group_id, operation: self._auto_mode.assert_repair_action_group_appendable(
+                group_id, operation=operation
+            ),
+            admit_action_scope=lambda root_frame_id, branch_id, operation: self._auto_mode.assert_session_action_group_appendable(
+                root_frame_id, branch_id, operation
+            ),
         )
+        install_auto_mode_action_guards(self._conn)
+        self._conn.commit()
         self._kernel_generations = KernelGenerationRepository(
             self._conn,
             self._lock,
@@ -1052,6 +1084,22 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
             checkpoint_state=self._checkpoint_states,
+        )
+        self._auto_mode = AutoModeRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+            get_branch=self._session_snapshots.get_branch,
+            get_checkpoint=self._session_snapshots.get_checkpoint,
+            checkpoint_is_restorable=lambda tree_id: WorkspaceCAS(
+                self.db_path.parent / "workspace-cas"
+            ).verify_tree(tree_id),
+            get_action_group=lambda group_id: self._actions.get_group(
+                group_id, include_events=True
+            ),
+        )
+        self._session_snapshots.set_revert_commit_hook(
+            self._auto_mode.abandon_active_run_for_revert
         )
         self._session_activation = SessionActivationRepository(
             self._conn,
@@ -1125,6 +1173,7 @@ class Store:
             clock_ms=lambda: _now_ms(),
             get_setting=self.get_setting,
             set_setting=self.set_setting,
+            admit_action_group=self._auto_mode.assert_repair_action_group_appendable,
         )
         self._connectors = ConnectorRepository(
             self._conn,
@@ -1269,6 +1318,9 @@ class Store:
             ("tool_call_id", "TEXT"),
             ("side_effect_class", "TEXT"),
             ("resource_keys", "TEXT"),
+            ("dangerous", "INTEGER NOT NULL DEFAULT 0"),
+            ("canonical_arguments_sha256", "TEXT"),
+            ("action_digest", "TEXT"),
         ],
         "host_call_log": [
             ("action_group_id", "TEXT"),
@@ -1358,6 +1410,10 @@ class Store:
                         "artifact_observations_and_completion_delivery",
                         self._apply_artifact_delivery,
                     ),
+                    25: (
+                        "auto_mode_durable_state",
+                        self._apply_auto_mode_state,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1429,6 +1485,17 @@ class Store:
 
         create_artifact_observations_schema(conn)
         create_completion_delivery_schema(conn)
+
+    def _apply_auto_mode_state(self, conn: sqlite3.Connection) -> None:
+        """Version 25: durable, idempotent Auto Run and audit facts.
+
+        The focused repository constructor is deliberately passive. All seven
+        tables and the checkpoint cursor advance in this one numbered,
+        rollback-safe migration so an interrupted upgrade advertises neither
+        half of the recovery contract.
+        """
+
+        create_auto_mode_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -2816,6 +2883,29 @@ class Store:
             created_at=created_at,
         )
 
+    def append_action_group_with_events(
+        self,
+        *,
+        root_frame_id: str,
+        branch_id: str,
+        turn_id: str,
+        kind: str,
+        events: list[dict[str, Any]],
+        group_id: str,
+        admission_operation: str,
+    ) -> dict:
+        """Atomically publish one non-provider lifecycle group and its events."""
+
+        return self._actions.append_tool_group(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            kind=kind,
+            events=events,
+            group_id=group_id,
+            admission_operation=admission_operation,
+        )
+
     def get_action_group(
         self, group_id: str, *, include_events: bool = True
     ) -> dict | None:
@@ -3013,6 +3103,127 @@ class Store:
             branch_id=branch_id,
         )
 
+    # --- durable Auto Mode state / audit events ------------------------
+    def get_auto_mode_selection(self, scope_kind: str, scope_id: str) -> dict | None:
+        return self._auto_mode.get_selection(scope_kind, scope_id)
+
+    def set_auto_mode_selection(
+        self,
+        scope_kind: str,
+        scope_id: str,
+        values: dict,
+        expected_revision: int,
+    ) -> dict:
+        return self._auto_mode.set_selection(
+            scope_kind,
+            scope_id,
+            values,
+            expected_revision=expected_revision,
+        )
+
+    def start_auto_mode_run(self, **fields: Any) -> dict:
+        return self._auto_mode.start_run(**fields)
+
+    def record_auto_mode_candidate(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.record_candidate(run_id, **fields)
+
+    def start_auto_mode_review(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.start_review(run_id, **fields)
+
+    def complete_auto_mode_review(self, review_run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.complete_review(review_run_id, **fields)
+
+    def start_auto_mode_repair(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.start_repair(run_id, **fields)
+
+    def complete_auto_mode_repair(self, repair_run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.complete_repair(repair_run_id, **fields)
+
+    def bind_auto_mode_repair_execution_group(
+        self, repair_run_id: str, **fields: Any
+    ) -> dict:
+        return self._auto_mode.bind_repair_execution_group(repair_run_id, **fields)
+
+    def start_permission_review_assessment(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.start_permission_review(run_id, **fields)
+
+    def complete_permission_review_assessment(
+        self, assessment_id: str, **fields: Any
+    ) -> dict:
+        return self._auto_mode.complete_permission_review(assessment_id, **fields)
+
+    def terminate_auto_mode_run(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.terminate_run(run_id, **fields)
+
+    def auto_mode_event_cursor(
+        self, root_frame_id: str, branch_id: str | None = None
+    ) -> int:
+        return self._auto_mode.event_cursor(root_frame_id, branch_id=branch_id)
+
+    def list_auto_mode_events(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        after_cursor: int | None = None,
+        upto_cursor: int | None = None,
+        limit: int = 100_000,
+    ) -> list[dict]:
+        return self._auto_mode.list_events(
+            root_frame_id,
+            branch_id=branch_id,
+            after_cursor=after_cursor,
+            upto_cursor=upto_cursor,
+            limit=limit,
+        )
+
+    def project_auto_mode_run(
+        self,
+        root_frame_id: str,
+        branch_id: str,
+        upto_event_cursor: int | None = None,
+    ) -> dict:
+        return self._auto_mode.project_run(
+            root_frame_id,
+            branch_id,
+            upto_event_cursor=upto_event_cursor,
+        )
+
+    def list_auto_mode_audits(
+        self,
+        root_frame_id: str,
+        branch_id: str,
+        *,
+        subject_kind: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        return self._auto_mode.list_audits(
+            root_frame_id,
+            branch_id,
+            subject_kind=subject_kind,
+            before=before,
+            limit=limit,
+        )
+
+    def export_auto_mode_projection(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        upto_event_cursor: int | None = None,
+    ) -> dict:
+        return self._auto_mode.export_projection(
+            root_frame_id,
+            branch_id=branch_id,
+            upto_event_cursor=upto_event_cursor,
+        )
+
+    def import_quarantined_auto_mode_projection(
+        self, source: dict, **context: Any
+    ) -> dict:
+        return self._auto_mode.import_quarantined_projection(source, **context)
+
     # --- immutable session checkpoints / branches ----------------------
     def ensure_session_branch(self, **fields: Any) -> dict:
         return self._session_snapshots.ensure_branch(**fields)
@@ -3150,6 +3361,14 @@ class Store:
 
     def active_session_branch(self, root_frame_id: str) -> str:
         return self._session_activation.current(root_frame_id)
+
+    def session_export_guard(self, root_frame_id: str) -> dict:
+        """Return one atomic branch/head/revert-marker export boundary."""
+
+        return self._session_activation.export_guard(
+            root_frame_id,
+            recovery_setting_key=revert_recovery_setting_key(root_frame_id),
+        )
 
     def activate_session_branch_checkpoint(self, **fields: Any) -> dict:
         return self._session_activation.activate_checkpoint(**fields)
@@ -3568,6 +3787,9 @@ class Store:
     def delete_setting(self, key: str) -> None:
         self._settings.delete(key)
 
+    def delete_setting_if_value(self, key: str, expected_value: str) -> bool:
+        return self._settings.delete_if_value(key, expected_value)
+
     # --- web shares (public read-only snapshots) -------------------------
     def get_share(self, share_id: str) -> dict | None:
         return self._shares.get(share_id)
@@ -3711,6 +3933,7 @@ class Store:
         message: str | None = None,
         resolution_context: str | None = None,
         continuation_required: bool = False,
+        expected_action_digest: str | None = None,
         resolved_at: int | None = None,
     ) -> dict:
         return self._permissions.resolve_request(
@@ -3721,6 +3944,7 @@ class Store:
             message=message,
             resolution_context=resolution_context,
             continuation_required=continuation_required,
+            expected_action_digest=expected_action_digest,
             resolved_at=resolved_at,
         )
 
@@ -3731,6 +3955,10 @@ class Store:
         tool: str,
         target: str = "",
         project_id: str | None = None,
+        side_effect_class: str | None = None,
+        resource_keys: list[str] | tuple[str, ...] | None = None,
+        dangerous: bool = False,
+        canonical_arguments: Any = None,
         consumed_at: int | None = None,
     ) -> dict | None:
         return self._permissions.consume_restart_once_grant(
@@ -3738,6 +3966,10 @@ class Store:
             tool=tool,
             target=target,
             project_id=project_id,
+            side_effect_class=side_effect_class,
+            resource_keys=resource_keys,
+            dangerous=dangerous,
+            canonical_arguments=canonical_arguments,
             consumed_at=consumed_at,
         )
 
@@ -3754,6 +3986,9 @@ class Store:
 
     def get_permission_request(self, decision_id: str) -> dict | None:
         return self._permissions.get_request(decision_id)
+
+    def permission_request_action_digest(self, decision_id: str) -> str:
+        return self._permissions.request_action_digest(decision_id)
 
     def list_permission_requests(
         self,

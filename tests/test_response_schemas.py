@@ -794,12 +794,12 @@ def test_the_frozen_envelope_never_declares_request_id_nullable(frozen):
 def test_the_envelope_status_is_the_http_status_except_where_a_route_owns_it(frozen):
     """`status` is the integer HTTP status on every error shape but one.
 
-    `POST /frames/<id>/recovery/actions/restart_fresh` answers a failed action
-    with its whole domain result and HTTP 409, and that result carries its own
-    `status` string. The envelope defers rather than destroying it, so this one
-    route legitimately declares both types. Pinned by name: if a second route
-    starts colliding, that is a design question and it should have to be
-    answered, not absorbed.
+    `POST /frames/<id>/recovery/actions/{restore,retry,restart_fresh}` answers a
+    failed action with its whole domain result and HTTP 409, and that result
+    carries its own `status` string. The envelope defers rather than destroying
+    it, so this one route family legitimately declares both types. Pinned by
+    name: if a second route starts colliding, that is a design question and it
+    should have to be answered, not absorbed.
     """
     both = {}
     for route, entry in frozen["routes"].items():
@@ -812,7 +812,7 @@ def test_the_envelope_status_is_the_http_status_except_where_a_route_owns_it(fro
         if declared != "integer":
             both[route] = declared
     assert both == {
-        "POST /frames/[^/]+/recovery/actions/restart_fresh [error]": [
+        "POST /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": [
             "integer",
             "string",
         ]

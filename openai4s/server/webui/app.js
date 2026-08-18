@@ -2829,7 +2829,7 @@ function sanitizeBranches(payload) {
   };
 }
 function branchUndoFromProjection(state) {
-  if (!state || !state.branch_id) return null;
+  if (!state || !state.branch_id || !state.capabilities || state.capabilities.revert !== true) return null;
   const branch = (state.branches || []).find(item => item.branch_id === state.branch_id);
   const checkpoint = branch && (branch.checkpoints || []).find(item => item.checkpoint_id === branch.head_checkpoint_id);
   return checkpoint && checkpoint.undo_revert_checkpoint_id ? {
@@ -3092,7 +3092,8 @@ function runtimeSummary() {
   const recovery = S.recoveryState || {};
   const recoveryStatus = String(recovery.status || "").toLowerCase();
   const trustState = publicText(recovery.trust_state || (S.recoveryActions || {}).trust_state || (_kc.st || {}).trust_state, 32);
-  const viewOnly = recovery.view_only === true || (S.recoveryActions || {}).view_only === true || (_kc.st || {}).view_only === true;
+  const explicitRecoveryRequired = recovery.explicit_recovery_required === true || (S.recoveryActions || {}).explicit_recovery_required === true || (_kc.st || {}).explicit_recovery_required === true;
+  const viewOnly = explicitRecoveryRequired || recovery.view_only === true || (S.recoveryActions || {}).view_only === true || (_kc.st || {}).view_only === true;
   let status = "ended";
   if (/fail|error/.test(recoveryStatus)) status = "failed";
   else if (/partial/.test(recoveryStatus)) status = "partial";

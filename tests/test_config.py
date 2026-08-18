@@ -174,6 +174,40 @@ def test_auto_mode_product_defaults_are_inert(monkeypatch):
     assert mode.preset == "off"
     assert mode.result_review_mode == "off"
     assert mode.approvals_reviewer == "user"
+    assert mode.deployment_explicit is False
+    assert mode.deployment_explicit_fields == ()
+
+
+def test_auto_mode_deployment_explicitness_distinguishes_unset_from_off(monkeypatch):
+    _clear_auto_mode_environment(monkeypatch)
+    unset = AutoModeConfig()
+
+    monkeypatch.setenv("OPENAI4S_AUTO_MODE", "off")
+    explicit_off = AutoModeConfig()
+
+    assert unset.preset == explicit_off.preset == "off"
+    assert unset.deployment_explicit is False
+    assert explicit_off.deployment_explicit is True
+    assert explicit_off.deployment_explicit_fields == ("preset",)
+
+
+def test_auto_mode_deployment_explicitness_is_captured_once(monkeypatch):
+    _clear_auto_mode_environment(monkeypatch)
+    monkeypatch.setenv("OPENAI4S_RESULT_REVIEW_MODE", "review_only")
+    mode = AutoModeConfig()
+    monkeypatch.delenv("OPENAI4S_RESULT_REVIEW_MODE")
+
+    assert mode.deployment_explicit is True
+    assert mode.deployment_explicit_fields == ("result_review_mode",)
+    assert mode.result_review_mode == "review_only"
+
+
+def test_auto_mode_deployment_explicit_metadata_is_closed():
+    with pytest.raises(ValueError, match="unknown field"):
+        AutoModeConfig(
+            deployment_explicit=True,
+            deployment_explicit_fields=([],),  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize("preset", ("1", "true", "yes", "on", "autonomous"))
@@ -323,7 +357,7 @@ def test_auto_mode_selection_precedence_and_migration_are_frozen():
     assert AUTO_MODE_LEGACY_CAN_ENABLE_PERMISSION_REVIEW is False
 
 
-def test_stage1_consumes_only_its_roadmap_flag_without_changing_legacy_config(
+def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_config(
     monkeypatch,
 ):
     _clear_auto_mode_environment(monkeypatch)
@@ -363,10 +397,21 @@ def test_stage1_consumes_only_its_roadmap_flag_without_changing_legacy_config(
         "openai4s/host/data.py",
         "openai4s/server/gateway.py",
     ]
+    assert consumers.pop("stage2_auto_run_storage") == ["openai4s/server/auto_mode.py"]
     assert consumers == {
-        name: [] for name in ROADMAP_FLAGS if name != "stage1_trusted_delivery"
+        name: []
+        for name in ROADMAP_FLAGS
+        if name not in {"stage1_trusted_delivery", "stage2_auto_run_storage"}
     }
-    assert auto_mode_consumers == []
+    assert "openai4s/server/auto_mode.py" in auto_mode_consumers
+    assert all(
+        relative.startswith("openai4s/server/")
+        or relative.startswith("openai4s/storage/")
+        or relative in {"openai4s/store.py", "openai4s/storage/__init__.py"}
+        for relative in auto_mode_consumers
+    )
+    assert "openai4s/agent/engine.py" not in auto_mode_consumers
+    assert "openai4s/host_dispatch.py" not in auto_mode_consumers
 
 
 def test_data_roots_parse_colon_separated(monkeypatch, tmp_path):

@@ -760,6 +760,30 @@
         404
       ]
     },
+    "/frames/([^/]+)/auto-audits": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/auto-mode": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/frames/([^/]+)/branches": {
       "content_types": [
         "application/json"
@@ -852,6 +876,7 @@
       ],
       "statuses": [
         200,
+        400,
         404
       ]
     },
@@ -1328,7 +1353,7 @@
         404
       ]
     },
-    "/frames/[^/]+/recovery/actions/restart_fresh": {
+    "/frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh)": {
       "content_types": [
         "application/json"
       ],

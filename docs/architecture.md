@@ -73,26 +73,40 @@ helper's reserved `/api/v1/artifacts/versions/{version_id}` namespace. The
 verified manifest and assistant message commit before the
 link-bearing `text_chunk` is emitted.
 
-### Auto Mode boundary after Stage 1
+### Auto Mode durable boundary after Stage 2
 
-Stage 0 froze the future Auto Mode product contract and added default-off
-configuration reservations. Stage 1 graduates exactly one of them:
-`stage1_trusted_delivery`. It remains off by default. Enabling it adds the
-trusted Artifact-delivery, same-head capture-observation, and standard-profile
-readiness contracts described below; disabling it preserves the pre-Stage-1
-completion and admission behavior.
+Stage 2 implements the data and projection foundation behind the default-off
+`stage2_auto_run_storage` flag. SQLite is authoritative for Auto Runs, canonical
+events, result/permission audit owners, findings, Repair Runs, and exact Repair
+action-ledger bindings. Every fact carries root, branch, turn, and execution
+identity. Checkpoints freeze an `auto_event_cursor`; fork/revert projects the
+logical branch prefix while retaining abandoned physical tails for audit. Each
+transition commits before its canonical WebSocket hint, so a lost socket is
+recovered through REST/reopen rather than by replaying a side effect.
 
-The `autonomous`/on reservation is still one normalized future preset
-(`auto_fix` + `auto_review` + hard budget ceilings), not an independent
-permission tier. Stage 1 does **not** create an immutable candidate/evidence
-snapshot, gate finalization on Scientific Review, start a Repair Agent, ask a
-Permission Guardian, or emit/persist `candidate`, `verified`,
-`completed_with_issues`, `review_unavailable`, or `blocked_by_guardian`.
+This is deliberately a storage stage. It does **not** invoke a Scientific
+Reviewer, Repair Agent, or Permission Guardian, does not gate completion, and
+does not resolve a permission. The `autonomous` selection still means one
+bounded future preset (`auto_fix` + `auto_review` + deployment hard ceilings),
+not a permission tier. With the Stage 2 flag off, GET remains an explicit inert
+projection and PATCH is refused. Imported history is always quarantined,
+unverified, `off`/`user`, identity-remapped, and non-resumable.
+
+The only Stage 2 event vocabulary is `auto_run_started`, `candidate_ready`,
+`auto_audit_started`, `auto_audit_completed`, `repair_started`,
+`repair_completed`, and `auto_run_terminal`. Both audit kinds share the audit
+events and are distinguished by the closed subject pairs
+`result_review/candidate_evidence_snapshot` and
+`permission_review/approval_action`; aliases are rejected. Local Verified
+projection revalidates the durable candidate, independent review envelope,
+ordered findings, event hashes, and owner bindings on every read. An integrity
+failure is shown as `failed` with `terminal_reason=safety_boundary`, never as
+Reviewer unavailability or Verified.
 
 The existing optional evidence Reviewer is a constrained single LLM call that
 runs after the final answer and persists an ordinary review step. It is not a
 completion gate and its historical `auto_review` name is not the new Auto Mode.
-Later stages will add the durable supervisor/services around the
+Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact
 future entry, recovery, projection, and safety rules.

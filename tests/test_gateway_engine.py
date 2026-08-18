@@ -22,6 +22,7 @@ from openai4s.agent.delegation import DelegationError
 from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.execution_views import ExecutionViewService
+from openai4s.storage.snapshots import revert_recovery_setting_key
 
 
 class _Hub:
@@ -1079,6 +1080,157 @@ def test_recovery_action_refuses_active_background_before_runtime_preparation(
                 )
         assert failure.value.error_code == "trusted_capture_busy"
         assert runtime_built is False
+    finally:
+        runner.close()
+
+
+def test_successful_restore_clears_revert_barrier_after_runtime_publication(
+    tmp_path, monkeypatch
+):
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path, stage1=True), hub)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    runner._state(frame_id, "default")
+    marker_key = revert_recovery_setting_key(frame_id)
+    runner.store.set_setting(
+        marker_key,
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": "recovery_required",
+                "operation_id": "so-manual-restore",
+                "branch_id": frame_id,
+            }
+        ),
+    )
+
+    class Runtime:
+        def run(self, _plan):
+            assert runner.store.get_setting(marker_key) is not None
+            return {"ok": True, "status": "active", "recovery_id": "recovery-1"}
+
+        def kernel_status_event(self, result, recovery_id):
+            assert runner.store.get_setting(marker_key) is not None
+            return {
+                "type": "kernel_status",
+                "status": result["status"],
+                "recovery_id": recovery_id,
+            }
+
+    monkeypatch.setattr(runner, "_recovery_runtime", lambda _st, _emit: Runtime())
+    monkeypatch.setattr(
+        runner.session_domain.recovery,
+        "prepare_action",
+        lambda *_args, **_kwargs: SimpleNamespace(recovery_id="recovery-1"),
+    )
+    try:
+        result = runner.execute_recovery_action(
+            frame_id,
+            "default",
+            "restore",
+        )
+
+        assert result["status"] == "active"
+        assert result["revert_recovery_cleared"] is True
+        assert runner.store.get_setting(marker_key) is None
+        assert any(
+            event.get("type") == "kernel_status" and event.get("status") == "active"
+            for event in hub.events
+        )
+    finally:
+        runner.close()
+
+
+def test_first_write_guard_reconciles_committed_revert_after_restart(tmp_path):
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path, stage1=True), hub)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    runner._state(frame_id, "default")
+    workspace = Path(runner.workspace_for_branch(frame_id, frame_id))
+    workspace.mkdir(parents=True, exist_ok=True)
+    analysis = workspace / "analysis.txt"
+    try:
+        analysis.write_text("v1", encoding="utf-8")
+        target = runner.session_domain.create_checkpoint(frame_id)
+        analysis.write_text("v2", encoding="utf-8")
+        runner.session_domain.create_checkpoint(frame_id)
+        runner.session_domain.branching.revert_and_continue(
+            frame_id,
+            branch_id=frame_id,
+            target_checkpoint_id=target["checkpoint_id"],
+        )
+        marker_key = revert_recovery_setting_key(frame_id)
+        assert runner.store.get_setting(marker_key)
+        analysis.write_text("v2", encoding="utf-8")
+
+        runner.require_session_writable(frame_id, "running the next turn")
+
+        assert analysis.read_text(encoding="utf-8") == "v1"
+        assert runner.store.get_setting(marker_key) is None
+        assert any(event.get("type") == "branch_reverted" for event in hub.events)
+    finally:
+        runner.close()
+
+
+def test_first_write_guard_fails_closed_for_corrupt_empty_revert_marker(
+    tmp_path, monkeypatch
+):
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path, stage1=True), _Hub())
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    marker_key = revert_recovery_setting_key(frame_id)
+    runner.store.set_setting(marker_key, "")
+    monkeypatch.setattr(
+        runner.session_domain,
+        "reconcile_revert",
+        lambda _root: {"resolved": False, "state": "recovery_required"},
+    )
+    try:
+        with pytest.raises(gateway_mod.GatewayError) as failure:
+            runner.require_session_writable(frame_id, "running the next turn")
+
+        assert failure.value.code == 423
+        assert runner.store.get_setting(marker_key) == ""
+    finally:
+        runner.close()
+
+
+def test_first_write_guard_never_reconciles_an_active_revert_owner(
+    tmp_path, monkeypatch
+):
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path, stage1=True), _Hub())
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    marker_key = revert_recovery_setting_key(frame_id)
+    marker = json.dumps(
+        {
+            "schema_version": 1,
+            "state": "preparing",
+            "operation_id": "so-active-revert",
+            "branch_id": frame_id,
+        }
+    )
+    runner.store.set_setting(marker_key, marker)
+    reconciled = False
+
+    def must_not_reconcile(_root):
+        nonlocal reconciled
+        reconciled = True
+        raise AssertionError("an active revert owner must keep its own barrier")
+
+    monkeypatch.setattr(runner.session_domain, "reconcile_revert", must_not_reconcile)
+    try:
+        with runner._session_execution(
+            state,
+            owner="lifecycle",
+            owner_id="active-revert",
+            reason="reverting workspace",
+        ):
+            with pytest.raises(gateway_mod.GatewayError) as failure:
+                runner.require_session_writable(frame_id, "running the next turn")
+
+            assert failure.value.code == 423
+            assert reconciled is False
+            assert runner.store.get_setting(marker_key) == marker
     finally:
         runner.close()
 

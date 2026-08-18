@@ -84,7 +84,15 @@ HTML/CSS/JavaScript served directly from the working tree.
   do not: import verifies the restored snapshots, builds local manifests/URLs,
   and atomically rebinds each local message. A missing or inconsistent
   message/ledger relation rejects the package rather than leaving a plausible
-  link that cannot reopen.
+  link that cannot reopen. Stage 2 also carries a closed, sanitized Auto Mode
+  audit graph. All run, candidate, audit, finding, repair, and decision
+  identities are remapped per owner; the effective selection is forced to
+  `off`/`user`, Verified claims become Unverified, and the original claimed
+  status/terminal reason remain diagnostic provenance across repeated exports.
+  Imported wall-clock timestamps record the import boundary rather than
+  trusting source clocks; event cursor order preserves chronology. Raw prompts,
+  hidden rationale, permission payloads, and reusable authorization never cross
+  the package boundary.
 - **Customize and research UX** — model profiles, Skills/Specialists,
   connectors, compute, network, memory, permission rules, plan/explore modes,
   voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN.

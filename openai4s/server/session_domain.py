@@ -9,6 +9,8 @@ and optional event delivery are injected, while Store supplies durable ports.
 from __future__ import annotations
 
 import hashlib
+import json
+import sqlite3
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,10 +27,11 @@ from openai4s.server.session_package import (
     session_import_quarantine_key,
 )
 from openai4s.storage.branch_projection import project_branch_records
-from openai4s.storage.snapshots import WorkspaceCAS
+from openai4s.storage.snapshots import WorkspaceCAS, revert_recovery_setting_key
 
 WorkspaceResolver = Callable[[str, str], str | Path]
 DomainEventSink = Callable[[dict[str, Any]], None]
+BeforeRevertUnlock = Callable[[str, str, Mapping[str, Any]], None]
 
 
 class CursorCheckpointUnavailable(RuntimeError):
@@ -65,6 +68,8 @@ class SessionDomainStore(Protocol):
 
     def record_snapshot_operation(self, **fields: Any) -> dict: ...
 
+    def get_snapshot_operation(self, operation_id: str) -> dict | None: ...
+
     def list_snapshot_operations(
         self, root_frame_id: str, **filters: Any
     ) -> list[dict]: ...
@@ -86,11 +91,21 @@ class SessionDomainStore(Protocol):
 
     def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]: ...
 
+    def auto_mode_event_cursor(
+        self, root_frame_id: str, branch_id: str | None = None
+    ) -> int | None: ...
+
     def list_execution_attempts(self, **filters: Any) -> list[dict]: ...
 
     def append_action_group(self, **fields: Any) -> dict: ...
 
     def append_action_event(self, **fields: Any) -> dict: ...
+
+    def append_action_group_with_events(self, **fields: Any) -> dict: ...
+
+    def get_action_group(
+        self, group_id: str, *, include_events: bool = True
+    ) -> dict | None: ...
 
     def list_artifacts(self, filters: dict | None = None) -> list[dict]: ...
 
@@ -119,6 +134,12 @@ class SessionDomainStore(Protocol):
     ) -> list[dict]: ...
 
     def get_setting(self, key: str, default: str | None = None) -> str | None: ...
+
+    def set_setting(self, key: str, value: str) -> None: ...
+
+    def delete_setting(self, key: str) -> None: ...
+
+    def delete_setting_if_value(self, key: str, expected_value: str) -> bool: ...
 
 
 class _SnapshotFacade:
@@ -157,6 +178,9 @@ class _SnapshotFacade:
     def record_operation(self, **fields: Any) -> dict:
         return self.store.record_snapshot_operation(**fields)
 
+    def get_operation(self, operation_id: str) -> dict | None:
+        return self.store.get_snapshot_operation(operation_id)
+
 
 class SessionDomainService:
     """One route-friendly API over immutable session domain components."""
@@ -169,22 +193,32 @@ class SessionDomainService:
         workspace: WorkspaceResolver,
         event_sink: DomainEventSink | None = None,
         renderer_registry: RendererRegistry | None = None,
+        before_revert_unlock: BeforeRevertUnlock | None = None,
     ) -> None:
         self.store = store
         self._workspace = workspace
         self._event_sink = event_sink or (lambda _event: None)
+        self._before_revert_unlock = before_revert_unlock or (
+            lambda _root, _branch, _checkpoint: None
+        )
         self.cas = WorkspaceCAS(Path(data_dir) / "workspace-cas")
+        self.recovery = RecoveryControlService(
+            store,
+            workspace_tree_exists=self._workspace_tree_exists,
+            event_sink=self._event_sink,
+        )
         self.branching = SessionBranchingService(
             _SnapshotFacade(store),
             self.cas,
             workspace=workspace,
             read_state=self._checkpoint_state,
             event_sink=self._record_domain_event,
-        )
-        self.recovery = RecoveryControlService(
-            store,
-            workspace_tree_exists=self._workspace_tree_exists,
-            event_sink=self._event_sink,
+            get_setting=store.get_setting,
+            set_setting=store.set_setting,
+            delete_setting=store.delete_setting,
+            delete_setting_if_value=store.delete_setting_if_value,
+            recovery_event_sink=self.recovery.record,
+            defer_revert_unlock=True,
         )
         self.timeline = ActionTimelineService(store)
         self.notebooks = NotebookExportService(store)
@@ -309,23 +343,40 @@ class SessionDomainService:
             for checkpoint in (branch.get("checkpoints") or ())
         ]
         has_checkpoint = bool(checkpoints)
+        has_activatable_branch = any(
+            branch.get("head_checkpoint_id") for branch in branches
+        )
+        recovery_blocked = (
+            self.store.get_setting(revert_recovery_setting_key(root_frame_id))
+            is not None
+        )
+        recovery_reason = (
+            "workspace revert recovery must complete before changing Session state"
+        )
+
+        def mutation_reason(unavailable: str | None = None) -> str | None:
+            return recovery_reason if recovery_blocked else unavailable
+
         projection.update(
             {
                 "current_branch_id": current_branch_id,
                 "capabilities": {
-                    "checkpoint": {"enabled": True, "reason": None},
+                    "checkpoint": {
+                        "enabled": not recovery_blocked,
+                        "reason": mutation_reason(),
+                    },
                     "fork": {
-                        "enabled": has_checkpoint,
-                        "reason": (
+                        "enabled": has_checkpoint and not recovery_blocked,
+                        "reason": mutation_reason(
                             None
                             if has_checkpoint
                             else "create a checkpoint before forking"
                         ),
                         "source": "checkpoint",
-                        "fork_from_cell": True,
-                        "fork_from_cell_reason": None,
-                        "fork_from_message": True,
-                        "fork_from_message_reason": None,
+                        "fork_from_cell": not recovery_blocked,
+                        "fork_from_cell_reason": mutation_reason(),
+                        "fork_from_message": not recovery_blocked,
+                        "fork_from_message_reason": mutation_reason(),
                     },
                     "revert_preview": {
                         "enabled": has_checkpoint,
@@ -336,22 +387,18 @@ class SessionDomainService:
                         ),
                     },
                     "revert": {
-                        "enabled": has_checkpoint,
-                        "reason": (
+                        "enabled": has_checkpoint and not recovery_blocked,
+                        "reason": mutation_reason(
                             None
                             if has_checkpoint
                             else "create a checkpoint before reverting"
                         ),
                     },
                     "activate": {
-                        "enabled": any(
-                            branch.get("head_checkpoint_id") for branch in branches
-                        ),
-                        "reason": (
+                        "enabled": has_activatable_branch and not recovery_blocked,
+                        "reason": mutation_reason(
                             None
-                            if any(
-                                branch.get("head_checkpoint_id") for branch in branches
-                            )
+                            if has_activatable_branch
                             else "create a checkpoint before activating a branch"
                         ),
                     },
@@ -359,7 +406,10 @@ class SessionDomainService:
                     # shareable Markdown artifact; always available on a live
                     # research session (the cell's own files are already captured
                     # at execution time — see ArtifactManager.promote_cell).
-                    "promote": {"enabled": True, "reason": None},
+                    "promote": {
+                        "enabled": not recovery_blocked,
+                        "reason": mutation_reason(),
+                    },
                 },
             }
         )
@@ -572,6 +622,20 @@ class SessionDomainService:
             checkpoint_id=checkpoint_id,
             expected_current_branch_id=branch_id,
         )
+        domain_event = result.pop("domain_event", None)
+        if not isinstance(domain_event, Mapping):
+            raise RuntimeError("successful revert has no terminal domain event")
+        public = self._persist_domain_event(dict(domain_event))
+        # The kernel/runtime projection must stop referring to pre-revert state
+        # before the write barrier is released. Gateway supplies this callback;
+        # direct domain users have no live runtime and use the no-op default.
+        self._before_revert_unlock(root_frame_id, branch_id, checkpoint)
+        if not result.get("explicit_recovery_required"):
+            self.branching.finalize_revert_unlock(
+                root_frame_id,
+                operation_id=str(domain_event.get("operation_id") or ""),
+            )
+        self._broadcast_domain_event(public)
         return {**result, "projection": projection}
 
     def revert_operations(
@@ -588,12 +652,39 @@ class SessionDomainService:
             limit=limit,
         )
 
+    def reconcile_revert(self, root_frame_id: str) -> dict[str, Any]:
+        """Finish or compensate one durable crash marker before new writes."""
+
+        result = self.branching.reconcile_revert(root_frame_id)
+        if result.get("state") != "committed":
+            return result
+        checkpoint = result.get("checkpoint")
+        domain_event = result.pop("domain_event", None)
+        branch_id = str(result.get("branch_id") or "")
+        operation_id = str(result.get("operation_id") or "")
+        if not isinstance(checkpoint, Mapping) or not isinstance(domain_event, Mapping):
+            raise RuntimeError("committed revert reconciliation is incomplete")
+        projection = self.store.activate_session_branch_checkpoint(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            checkpoint_id=str(checkpoint.get("checkpoint_id") or ""),
+            expected_current_branch_id=branch_id,
+        )
+        public = self._persist_domain_event(domain_event)
+        self._before_revert_unlock(root_frame_id, branch_id, checkpoint)
+        self.branching.finalize_revert_unlock(root_frame_id, operation_id=operation_id)
+        self._broadcast_domain_event(public)
+        return {**result, "projection": projection}
+
     # Read projections ---------------------------------------------------------
     def recovery_status(self, root_frame_id: str, **filters: Any) -> dict[str, Any]:
         if not filters.get("branch_id"):
             filters["branch_id"] = self.store.active_session_branch(root_frame_id)
         projection = self.recovery.status(root_frame_id, **filters)
-        if self.store.get_setting(session_import_quarantine_key(root_frame_id)):
+        if (
+            self.store.get_setting(session_import_quarantine_key(root_frame_id))
+            is not None
+        ):
             projection["view_only"] = True
             projection["trust_state"] = "quarantined"
             projection["explicit_recovery_required"] = True
@@ -603,7 +694,10 @@ class SessionDomainService:
         if not filters.get("branch_id"):
             filters["branch_id"] = self.store.active_session_branch(root_frame_id)
         projection = self.recovery.actions(root_frame_id, **filters)
-        if self.store.get_setting(session_import_quarantine_key(root_frame_id)):
+        if (
+            self.store.get_setting(session_import_quarantine_key(root_frame_id))
+            is not None
+        ):
             for action in projection.get("actions") or []:
                 if action.get("id") in {"restore", "retry"}:
                     action["enabled"] = False
@@ -789,6 +883,17 @@ class SessionDomainService:
             # checkpoint graph, so abandoned/reverted messages stay excluded.
             "message_cursor": self.store.message_count(root_frame_id),
             "cell_cursor": cell_cursor,
+            # Auto Mode transitions are append-only and use their own physical
+            # cursor.  A checkpoint must bind this boundary alongside the
+            # message/action/Cell cursors; otherwise a later terminal audit can
+            # leak backwards through fork or revert and make a historical
+            # candidate appear reviewed before it was.
+            # Persist the physical per-root append boundary.  The branch
+            # projector still filters records by branch, but using the visible
+            # cursor here would move the continuation point backwards after a
+            # revert and let the abandoned tail reappear at the next ordinary
+            # checkpoint.
+            "auto_event_cursor": self.store.auto_mode_event_cursor(root_frame_id) or 0,
             "artifact_versions": artifact_versions,
             "environment_pins": {
                 "python": frame.get("runtime_env"),
@@ -883,6 +988,12 @@ class SessionDomainService:
             pass
 
     def _record_domain_event(self, event: dict[str, Any]) -> None:
+        public = self._persist_domain_event(event)
+        self._broadcast_domain_event(public)
+
+    def _persist_domain_event(self, event: Mapping[str, Any]) -> dict[str, Any]:
+        """Commit one sanitized Timeline fact atomically before live delivery."""
+
         event_type = str(event.get("type") or "session_event")
         public = {
             key: event.get(key)
@@ -903,39 +1014,80 @@ class SessionDomainService:
             )
             if event.get(key) is not None
         }
-        # The browser event bus and durable timeline share the same explicit
-        # projection.  Domain service return values may contain full workspace
-        # previews or checkpoint records, none of which belong on WebSocket.
-        try:
-            self._event_sink(dict(public))
-        except Exception:  # noqa: BLE001 - durable state already committed
-            pass
         root_frame_id = str(public.get("root_frame_id") or "")
         if not root_frame_id:
-            return
-        group = self.store.append_action_group(
-            root_frame_id=root_frame_id,
-            branch_id=str(public.get("branch_id") or root_frame_id),
-            turn_id=f"domain-{uuid.uuid4().hex[:16]}",
-            kind=_event_kind(event_type),
+            return public
+        branch_id = str(public.get("branch_id") or root_frame_id)
+        encoded = json.dumps(
+            public,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         )
-        self.store.append_action_event(
-            group_id=group["group_id"],
-            type=(
-                "failed"
-                if any(token in event_type for token in ("conflict", "failed"))
-                else "completed"
-            ),
-            canonical_arguments=public,
-            result={"recorded": True, "event": event_type},
-            side_effect_class=(
-                "workspace_mutation" if "revert" in event_type else "metadata_write"
-            ),
-            resource_keys=[
-                f"session:{root_frame_id}",
-                f"branch:{public.get('branch_id') or root_frame_id}",
+        identity = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+        group_id = f"ag-domain-{identity}"
+        event_id = f"ae-domain-{identity}"
+        admission_operation = "session_domain_event:append"
+        if event_type == "branch_reverted":
+            operation_id = str(public.get("operation_id") or "")
+            if not operation_id:
+                raise ValueError("branch_reverted event requires operation_id")
+            admission_operation = f"revert_terminal:{operation_id}"
+        terminal_type = (
+            "failed"
+            if any(token in event_type for token in ("conflict", "failed"))
+            else "completed"
+        )
+        fields = {
+            "root_frame_id": root_frame_id,
+            "branch_id": branch_id,
+            "turn_id": f"domain-{identity}",
+            "kind": _event_kind(event_type),
+            "group_id": group_id,
+            "admission_operation": admission_operation,
+            "events": [
+                {
+                    "event_id": event_id,
+                    "type": terminal_type,
+                    "canonical_arguments": public,
+                    "result": {"recorded": True, "event": event_type},
+                    "side_effect_class": (
+                        "workspace_mutation"
+                        if "revert" in event_type
+                        else "metadata_write"
+                    ),
+                    "resource_keys": [
+                        f"session:{root_frame_id}",
+                        f"branch:{branch_id}",
+                    ],
+                }
             ],
-        )
+        }
+        try:
+            self.store.append_action_group_with_events(**fields)
+        except sqlite3.IntegrityError:
+            # Deterministic identities make post-commit response loss and a
+            # reconciler retry idempotent. Anything but the exact event is a
+            # collision and remains a hard failure.
+            existing = self.store.get_action_group(group_id, include_events=True)
+            events = existing.get("events") if isinstance(existing, Mapping) else None
+            if not (
+                isinstance(events, list)
+                and len(events) == 1
+                and events[0].get("event_id") == event_id
+                and events[0].get("type") == terminal_type
+                and events[0].get("canonical_arguments") == public
+            ):
+                raise
+        return public
+
+    def _broadcast_domain_event(self, public: Mapping[str, Any]) -> None:
+        """Best-effort WebSocket hint after the durable Timeline commit."""
+
+        try:
+            self._event_sink(dict(public))
+        except Exception:  # noqa: BLE001 - REST/reopen remains authoritative
+            pass
 
 
 def _event_kind(event_type: str) -> str:

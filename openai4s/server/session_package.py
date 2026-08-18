@@ -29,6 +29,11 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from openai4s.server.auto_mode_portability import (
+    EFFECTIVE_AUTO_MODE_OFF,
+    AutoModePortabilityError,
+    portable_auto_mode_projection,
+)
 from openai4s.server.delivery import CompletionDeliveryService
 from openai4s.server.urls import artifact_version_url
 from openai4s.storage.annotations import settle_restored_annotation
@@ -514,6 +519,41 @@ def _assert_secret_free(value: Any, *, path: str = "payload", depth: int = 0) ->
         raise SessionPackageError(f"secret-looking plaintext is forbidden at {path}")
 
 
+def _portable_auto_mode_projection(value: Any, **scope: Any) -> dict[str, Any]:
+    """Translate the focused portability reducer's error to this wire API."""
+
+    try:
+        result = portable_auto_mode_projection(value, **scope)
+    except AutoModePortabilityError as error:
+        raise SessionPackageError(str(error)) from error
+    _assert_secret_free(result, path="review.json.auto_mode")
+    return result
+
+
+def _export_auto_mode_for_publication(
+    store: Any,
+    root_frame_id: str,
+    **scope: Any,
+) -> Any:
+    """Read Auto Mode state without leaking repository integrity failures.
+
+    Package and share publication are fail-closed trust boundaries.  The local
+    REST projection may safely downgrade a broken proof for diagnosis, but an
+    export must reject it using this boundary's stable domain error rather than
+    exposing a storage exception (or accidentally serializing partial truth).
+    """
+
+    exporter = getattr(store, "export_auto_mode_projection", None)
+    if not callable(exporter):
+        return {}
+    try:
+        return exporter(root_frame_id, **scope)
+    except (ValueError, KeyError, sqlite3.DatabaseError) as error:
+        raise SessionPackageError(
+            "Auto Mode history failed integrity validation and cannot be published"
+        ) from error
+
+
 def _safe_relative(value: str) -> str:
     if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
         raise SessionPackageError("package path must be a portable relative path")
@@ -701,9 +741,14 @@ class SessionPackageService:
             raise KeyError(f"unknown session {root_frame_id!r}")
         if (frame.get("root_frame_id") or root_frame_id) != root_frame_id:
             raise SessionPackageError("session export requires a root frame")
+        export_guard = self.store.session_export_guard(root_frame_id)
+        if export_guard["recovery_marker_present"]:
+            raise SessionPackageError(
+                "session workspace revert requires recovery before export"
+            )
         project_id = str(frame.get("project_id") or "default")
         project = self.store.get_project(project_id) or {}
-        active_branch = self.store.active_session_branch(root_frame_id)
+        active_branch = str(export_guard["active_branch_id"])
         branches = self._bounded_records(
             "branches", self.store.list_session_branches(root_frame_id)
         )
@@ -812,6 +857,41 @@ class SessionPackageService:
             for item in artifact_projection.get("artifacts") or []
             if item.get("artifact_id")
         }
+        safe_version_ids = {
+            str(version.get("version_id"))
+            for artifact in artifact_projection.get("artifacts") or []
+            for version in artifact.get("versions") or []
+            if version.get("version_id")
+        }
+        safe_cell_ids = {
+            str(cell.get("producing_cell_id"))
+            for cell in cells
+            if cell.get("producing_cell_id")
+        }
+        raw_auto_mode = _export_auto_mode_for_publication(self.store, root_frame_id)
+        auto_trust_state = (
+            raw_auto_mode.get("trust_state", "local")
+            if isinstance(raw_auto_mode, Mapping)
+            else "local"
+        )
+        auto_mode = _portable_auto_mode_projection(
+            raw_auto_mode,
+            trust_state=auto_trust_state,
+            root_frame_id=root_frame_id,
+            branch_ids=set(branch_ids),
+            artifact_ids=safe_artifact_ids,
+            version_ids=safe_version_ids,
+            cell_ids=safe_cell_ids,
+            action_group_ids=seen_groups,
+            turn_ids={
+                str(group.get("turn_id")) for group in groups if group.get("turn_id")
+            },
+            action_group_scopes={
+                str(group["group_id"]): group
+                for group in groups
+                if group.get("group_id")
+            },
+        )
 
         generations = self._bounded_records(
             "generations", self.store.list_kernel_generations(root_frame_id)
@@ -965,6 +1045,9 @@ class SessionPackageService:
                     "annotations": _sanitize(annotations),
                     "activity_steps": _sanitize(review_steps),
                     "settings": review_settings,
+                    # Optional within package schema v1. Older readers ignore
+                    # this member; older packages omit it and still import.
+                    "auto_mode": auto_mode,
                 }
             ),
             "memory.json": _canonical_json({"memories": _sanitize(memories)}),
@@ -1003,6 +1086,15 @@ class SessionPackageService:
         data = _zip_bytes(files)
         if len(data) > MAX_ARCHIVE_BYTES:
             raise SessionPackageError("session package archive exceeds its limit")
+        final_guard = self.store.session_export_guard(root_frame_id)
+        if final_guard["recovery_marker_present"]:
+            raise SessionPackageError(
+                "session workspace revert requires recovery before export"
+            )
+        if final_guard != export_guard:
+            raise SessionPackageError(
+                "session active branch or head changed during export; retry"
+            )
         stem = re.sub(r"[^A-Za-z0-9._-]+", "-", root_frame_id).strip("-")
         return {
             "filename": f"{stem or 'session'}.openai4s-session.zip",
@@ -1608,7 +1700,7 @@ class SessionPackageService:
                     str(item.get("message_id") or "") for item in package_deliveries
                 },
             )
-            group_map, action_map = self._import_ledger(
+            group_map, action_map, turn_map = self._import_ledger(
                 new_root,
                 branch_map,
                 documents["ledger.json"],
@@ -1694,6 +1786,36 @@ class SessionPackageService:
                 message_map=message_map,
                 revision_map=revision_map,
             )
+            imported_auto_mode = documents["review.json"].get("auto_mode")
+            if imported_auto_mode is not None:
+                auto_importer = getattr(
+                    self.store, "import_quarantined_auto_mode_projection", None
+                )
+                if not callable(auto_importer):
+                    # Presence of new durable history without its owning
+                    # repository is not an old-v1 compatibility case. Dropping
+                    # it would turn a package claim into unaudited prose.
+                    raise SessionPackageError(
+                        "Auto Mode history cannot be imported by this installation"
+                    )
+                quarantined_auto_mode = {
+                    **dict(imported_auto_mode),
+                    "trust_state": "quarantined_import",
+                    "effective_selection": dict(EFFECTIVE_AUTO_MODE_OFF),
+                }
+                auto_importer(
+                    quarantined_auto_mode,
+                    root_frame_id=new_root,
+                    project_id=new_project_id,
+                    branch_id_map=branch_map,
+                    turn_id_map=turn_map,
+                    artifact_id_map=artifact_map,
+                    version_id_map=version_map,
+                    cell_id_map=cell_map,
+                    action_group_id_map=group_map,
+                    action_id_map=action_map,
+                    resume_execution=False,
+                )
             self._import_policies(
                 new_root,
                 new_project_id,
@@ -2021,6 +2143,9 @@ class SessionPackageService:
         source_project = str(source["project_id"])
         documents["review.json"].setdefault("activity_steps", [])
         documents["review.json"].setdefault("settings", {})
+        # Optional inside schema v1: packages predating Stage 2 carry no Auto
+        # Mode history and remain valid without manufacturing any run.
+        documents["review.json"].setdefault("auto_mode", None)
         documents["snapshots.json"].setdefault("checkpoint_states", [])
         # Optional within schema v1: packages created before trusted completion
         # delivery have neither these records nor delivery-bearing messages.
@@ -2436,6 +2561,38 @@ class SessionPackageService:
                 "review_settings",
             }:
                 raise SessionPackageError("review activity kind is invalid")
+        raw_auto_mode = documents["review.json"].get("auto_mode")
+        auto_event_cursors: set[int] = set()
+        if raw_auto_mode is not None:
+            auto_trust_state = (
+                raw_auto_mode.get("trust_state", "local")
+                if isinstance(raw_auto_mode, Mapping)
+                else "local"
+            )
+            documents["review.json"]["auto_mode"] = _portable_auto_mode_projection(
+                raw_auto_mode,
+                trust_state=auto_trust_state,
+                root_frame_id=source_root,
+                branch_ids=branch_ids,
+                artifact_ids=artifact_ids,
+                version_ids=version_ids,
+                cell_ids=cell_ids,
+                action_group_ids=group_ids,
+                turn_ids={
+                    str(group.get("turn_id"))
+                    for group in documents["ledger.json"].get("groups") or []
+                    if group.get("turn_id")
+                },
+                action_group_scopes={
+                    str(group["group_id"]): group
+                    for group in documents["ledger.json"].get("groups") or []
+                    if group.get("group_id")
+                },
+            )
+            auto_event_cursors = {
+                int(event["event_cursor"])
+                for event in documents["review.json"]["auto_mode"]["events"]
+            }
 
         workspace = documents["snapshots.json"].get("workspace") or {}
         if not isinstance(workspace, Mapping):
@@ -2553,6 +2710,24 @@ class SessionPackageService:
                 raise SessionPackageError("checkpoint Artifact versions are invalid")
             for version_id in checkpoint_versions:
                 reference(version_id, version_ids, "checkpoint artifact version")
+            for cursor_name in (
+                "action_cursor",
+                "message_cursor",
+                "cell_cursor",
+                "auto_event_cursor",
+            ):
+                cursor = checkpoint.get(cursor_name)
+                if cursor is not None and (
+                    isinstance(cursor, bool)
+                    or not isinstance(cursor, int)
+                    or cursor < 0
+                ):
+                    raise SessionPackageError("checkpoint cursor is invalid")
+            auto_cursor = checkpoint.get("auto_event_cursor")
+            if auto_cursor not in (None, 0) and auto_cursor not in auto_event_cursors:
+                raise SessionPackageError(
+                    "checkpoint Auto Mode cursor has no event boundary"
+                )
             source_kind = checkpoint.get("source_kind")
             source_id = checkpoint.get("source_id")
             if (source_kind is None) != (source_id is None):
@@ -2595,7 +2770,12 @@ class SessionPackageService:
                     raise SessionPackageError(
                         "checkpoint history resume cursors are invalid"
                     )
-                for key in ("action_cursor", "message_cursor", "cell_cursor"):
+                for key in (
+                    "action_cursor",
+                    "message_cursor",
+                    "cell_cursor",
+                    "auto_event_cursor",
+                ):
                     cursor = cursors.get(key)
                     if cursor is not None and (
                         isinstance(cursor, bool)
@@ -2605,6 +2785,14 @@ class SessionPackageService:
                         raise SessionPackageError(
                             "checkpoint history resume cursor is invalid"
                         )
+                resume_auto_cursor = cursors.get("auto_event_cursor")
+                if (
+                    resume_auto_cursor not in (None, 0)
+                    and resume_auto_cursor not in auto_event_cursors
+                ):
+                    raise SessionPackageError(
+                        "checkpoint history Auto Mode cursor has no event boundary"
+                    )
 
         root_branch = branch_by_id[source_root]
         if root_branch.get("parent_branch_id") or root_branch.get("base_checkpoint_id"):
@@ -2766,7 +2954,7 @@ class SessionPackageService:
         new_root: str,
         branch_map: Mapping[str, str],
         ledger: Mapping[str, Any],
-    ) -> tuple[dict[str, str], dict[str, str]]:
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
         group_map: dict[str, str] = {}
         action_map: dict[str, str] = {}
         tool_map: dict[str, str] = {}
@@ -2861,7 +3049,7 @@ class SessionPackageService:
                     resource_keys=list(event.get("resource_keys") or []),
                     created_at=event.get("created_at"),
                 )
-        return group_map, action_map
+        return group_map, action_map, turn_map
 
     def _annotate_assistant_message(self, message: Any) -> Any:
         """Banner the plain-text content of an untrusted assistant message."""
@@ -3474,6 +3662,9 @@ class SessionPackageService:
                 action_cursor=item.get("action_cursor"),
                 message_cursor=item.get("message_cursor"),
                 cell_cursor=cell_cursor,
+                # Pre-Stage-2 packages have no Auto Mode boundary. Import that
+                # absence as the empty prefix, never as "use the latest".
+                auto_event_cursor=(item.get("auto_event_cursor") or 0),
                 artifact_versions=artifact_versions,
                 environment_pins={},
                 generation_refs={},
@@ -3829,6 +4020,10 @@ class SessionPackageService:
                         "cell_cursor": cls._map_cursor(
                             cursors.get("cell_cursor"), revision_map
                         ),
+                        "auto_event_cursor": cls._safe_integer_cursor(
+                            cursors.get("auto_event_cursor")
+                        )
+                        or 0,
                     },
                 }
         return output

@@ -83,6 +83,7 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
+    auto_mode_routes,
     compute_session_routes,
     compute_tasks,
     contract,
@@ -106,6 +107,7 @@ from openai4s.server.artifacts import (
     PromotionTarget,
     WorkspaceSnapshot,
 )
+from openai4s.server.auto_mode import AutoModeService
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completions import completion_message, response_language
 from openai4s.server.delivery import (
@@ -182,6 +184,7 @@ from openai4s.storage.governance import QuotaExceeded
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
+from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
 
@@ -995,7 +998,20 @@ class WSHub:
     #: status, permission cards, metadata deltas -- is frame state that no
     #: execution owns, and withholding those would break surfaces that have
     #: nothing to do with turn ordering.
-    _TURN_SCOPED_TYPES = frozenset({"text_reset", "text_chunk", "frame_update"})
+    _TURN_SCOPED_TYPES = frozenset(
+        {
+            "text_reset",
+            "text_chunk",
+            "frame_update",
+            "auto_run_started",
+            "candidate_ready",
+            "auto_audit_started",
+            "auto_audit_completed",
+            "repair_started",
+            "repair_completed",
+            "auto_run_terminal",
+        }
+    )
 
     def _refuses_event_locked(self, rid: str, obj: dict) -> bool:
         """Should this event be withheld from the buffer AND from live sockets?
@@ -1230,6 +1246,13 @@ class WSHub:
             "execution_state",
             "execution_queue",
             "execution_owner",
+            "auto_run_started",
+            "candidate_ready",
+            "auto_audit_started",
+            "auto_audit_completed",
+            "repair_started",
+            "repair_completed",
+            "auto_run_terminal",
         ):
             event, size = self._append_live_event(buf, obj)
             if t == "notebook_cell_start" and cell_id:
@@ -2198,6 +2221,14 @@ class SessionRunner:
         )
         self._review_ops = self.reviews.operations
         self._review_calls = self.reviews.provider_calls
+        self.auto_mode = AutoModeService(
+            store=self.store,
+            config=cfg,
+            # The repository has already committed by the time the service
+            # calls this sink.  A socket failure is therefore only lost live
+            # delivery; REST/reopen remains the durable source of truth.
+            emit=lambda root_frame_id, event: self.hub.broadcast(root_frame_id, event),
+        )
         self._ws_root = cfg.data_dir / "agent-workspaces"
         self._ws_root.mkdir(parents=True, exist_ok=True)
         self.artifacts = ArtifactManager(
@@ -2223,6 +2254,7 @@ class SessionRunner:
             data_dir=self.cfg.data_dir,
             workspace=self.workspace_for_branch,
             event_sink=lambda event: self.hub.emitter(event["root_frame_id"])(event),
+            before_revert_unlock=self._prepare_revert_unlock,
         )
         # Web share: an outbound read-only snapshot tunnel. The tunnel client is
         # created lazily and only when sharing is both enabled and configured, so
@@ -3552,63 +3584,103 @@ class SessionRunner:
             ) as execution,
             st.trusted_capture.external_mutation(),
         ):
-            result = mutate()
-            if invalidate_kernel and result.get("ok"):
-                st.kernels.stop(
-                    "python", manual=False, reason="branch_revert_requires_recovery"
-                )
-                st.kernels.stop(
-                    "r", manual=False, reason="branch_revert_requires_recovery"
-                )
-                # Revert/Undo publishes the same checkpoint-backed Artifact,
-                # environment, capability, and permission projection as branch
-                # activation.  Discard in-memory provider/control-plane caches
-                # so the next turn is rebuilt from that durable head instead of
-                # retaining messages or policy from the abandoned interval.
-                if st.delegation_runner is not None:
-                    st.delegation_runner.close(cancel=True)
-                    st.delegation_runner = None
-                st.runtime = SessionRuntime()
-                st.messages = []
-                st.env_name = None
-                st.pending_env = None
-                checkpoint = result.get("checkpoint") or {}
-                pins = (
-                    checkpoint.get("environment_pins")
-                    if isinstance(checkpoint, Mapping)
-                    else {}
-                )
-                pins = pins if isinstance(pins, Mapping) else {}
-                st.desired_env = str(pins["python"]) if pins.get("python") else None
-                st.r_env_name = str(pins["r"]) if pins.get("r") else None
-                self._seed_messages(st)
-                emit = self.hub.emitter(root_frame_id)
-                emit(
-                    {
-                        "type": "kernel_status",
-                        "frame_id": root_frame_id,
-                        "status": "ended",
-                        "state": "ended",
-                        "ended_reason": "branch_revert_requires_recovery",
-                        "requires_kernel_recovery": True,
-                    }
-                )
-                emit(
-                    {
-                        "type": "branch_projection_restored",
-                        "frame_id": root_frame_id,
-                        "branch_id": st.branch_id,
-                        "checkpoint_id": (
-                            checkpoint.get("checkpoint_id")
-                            if isinstance(checkpoint, Mapping)
-                            else None
-                        ),
-                    }
-                )
+            barrier_key = revert_recovery_setting_key(root_frame_id)
+            try:
+                result = mutate()
+            except Exception:
+                if (
+                    invalidate_kernel
+                    and self.store.get_setting(barrier_key) is not None
+                ):
+                    checkpoint: Mapping[str, Any] = {}
+                    try:
+                        branch = self.store.get_session_branch(st.branch_id) or {}
+                        head = branch.get("head_checkpoint_id")
+                        if head:
+                            checkpoint = (
+                                self.store.get_session_checkpoint(str(head)) or {}
+                            )
+                    except Exception:  # noqa: BLE001 - barrier remains authoritative
+                        checkpoint = {}
+                    self._invalidate_reverted_session(st, checkpoint)
+                raise
             self.executions.mark_finalizing(
                 execution, reason=f"persisting {operation.replace('_', ' ')}"
             )
             return result
+
+    def export_session_package(
+        self,
+        root_frame_id: str,
+        project_id: str,
+    ) -> dict[str, Any]:
+        """Serialize an HTTP package read with all session workspace writers."""
+
+        st = self._state(root_frame_id, project_id, allow_quarantined=True)
+        with self._session_execution(
+            st,
+            owner="lifecycle",
+            owner_id=f"session-export-{uuid.uuid4().hex[:12]}",
+            reason="session package export",
+        ):
+            return self.session_domain.session_export(root_frame_id)
+
+    def _prepare_revert_unlock(
+        self,
+        root_frame_id: str,
+        branch_id: str,
+        checkpoint: Mapping[str, Any],
+    ) -> None:
+        """Invalidate a live runtime while the durable revert barrier is held."""
+
+        with self._lock:
+            st = self._sessions.get(root_frame_id)
+        if st is None:
+            return
+        if st.branch_id != branch_id:
+            raise RuntimeError("live branch changed before revert unlock")
+        self._invalidate_reverted_session(st, checkpoint)
+
+    def _invalidate_reverted_session(
+        self, st: SessionState, checkpoint: Mapping[str, Any]
+    ) -> None:
+        """End stale runtimes before a committed revert barrier is cleared."""
+
+        st.kernels.stop(
+            "python", manual=False, reason="branch_revert_requires_recovery"
+        )
+        st.kernels.stop("r", manual=False, reason="branch_revert_requires_recovery")
+        if st.delegation_runner is not None:
+            st.delegation_runner.close(cancel=True)
+            st.delegation_runner = None
+        st.runtime = SessionRuntime()
+        st.messages = []
+        st.env_name = None
+        st.pending_env = None
+        pins = checkpoint.get("environment_pins")
+        pins = pins if isinstance(pins, Mapping) else {}
+        st.desired_env = str(pins["python"]) if pins.get("python") else None
+        st.r_env_name = str(pins["r"]) if pins.get("r") else None
+        self._seed_messages(st)
+        emit = self.hub.emitter(st.root_frame_id)
+        emit(
+            {
+                "type": "kernel_status",
+                "frame_id": st.root_frame_id,
+                "status": "ended",
+                "state": "ended",
+                "ended_reason": "branch_revert_requires_recovery",
+                "requires_kernel_recovery": True,
+            }
+        )
+        emit(
+            {
+                "type": "branch_projection_restored",
+                "frame_id": st.root_frame_id,
+                "branch_id": st.branch_id,
+                "checkpoint_id": checkpoint.get("checkpoint_id"),
+            }
+        )
 
     def activate_session_branch(
         self,
@@ -3867,6 +3939,17 @@ class SessionRunner:
                 )
                 emit(runtime.kernel_status_event(result, plan.recovery_id))
             if (
+                action_id in {"restore", "retry"}
+                and str(result.get("status") or "").lower() == "active"
+                and self.store.get_setting(revert_recovery_setting_key(root_frame_id))
+                is not None
+            ):
+                result["revert_recovery_cleared"] = (
+                    self.session_domain.branching.release_revert_barrier_after_recovery(
+                        root_frame_id
+                    )
+                )
+            if (
                 quarantine
                 and action_id == "restart_fresh"
                 and str(result.get("status") or "").lower() == "active"
@@ -4101,7 +4184,7 @@ class SessionRunner:
 
     def import_quarantine(self, root_frame_id: str) -> dict[str, Any] | None:
         raw = self.store.get_setting(session_import_quarantine_key(root_frame_id))
-        if not raw:
+        if raw is None:
             return None
         try:
             value = json.loads(raw)
@@ -4119,6 +4202,52 @@ class SessionRunner:
                 423,
                 "imported Session is quarantined and view-only; use the "
                 "confirmed restart_fresh recovery action before " + operation,
+            )
+        barrier_key = revert_recovery_setting_key(root_frame_id)
+        if self.store.get_setting(barrier_key) is not None:
+            # Reconciliation is itself a workspace/head writer. Never run it
+            # from a pre-ticket guard while a revert (or any other exact owner)
+            # is active, or the guard could clear that owner's preparing marker
+            # and admit a concurrent mutation.
+            snapshot = self.executions.snapshot(root_frame_id)
+            if not (
+                snapshot.get("owner")
+                or snapshot.get("queued_count")
+                or snapshot.get("queue")
+            ):
+                scope = self.store.resolve_frame_scope(
+                    root_frame_id, fallback_project="default"
+                )
+                st = self._state(
+                    root_frame_id,
+                    scope["project_id"],
+                    allow_quarantined=True,
+                )
+                with self._session_execution(
+                    st,
+                    owner="recovery",
+                    owner_id=f"reconcile-revert-{uuid.uuid4().hex[:12]}",
+                    reason="reconciling interrupted workspace revert",
+                ):
+                    # A revert may have entered after the snapshot above and
+                    # completed while this ticket waited. Its exact owner is
+                    # then responsible for the marker; an absent row is the
+                    # only safe fast path and must not become a false 423.
+                    if self.store.get_setting(barrier_key) is None:
+                        return
+                    try:
+                        reconciled = self.session_domain.reconcile_revert(root_frame_id)
+                    except Exception:  # noqa: BLE001 - marker remains authoritative
+                        reconciled = {"resolved": False}
+                    if (
+                        reconciled.get("resolved")
+                        and self.store.get_setting(barrier_key) is None
+                    ):
+                        return
+            raise GatewayError(
+                423,
+                "Session workspace revert requires recovery and is view-only "
+                "before " + operation,
             )
 
     def _state(
@@ -9359,6 +9488,7 @@ def _environment_snapshot() -> dict:
 #: retries them all the same way is wrong about three.
 _DECISION_REFUSAL_STATUS = {
     "decision_id_required": 400,
+    "invalid_allow": 400,
     # Not 403. A decision for another frame and one that never existed answer
     # identically, or the refusal is an existence oracle.
     "decision_not_found": 404,
@@ -9366,6 +9496,7 @@ _DECISION_REFUSAL_STATUS = {
     "decision_already_resolved": 409,
     "decision_immutable": 409,
     "decision_expired": 410,
+    "decision_integrity_failure": 409,
     # The approval is recorded. `output_committed` on the body is what stops the
     # UI offering a retry that would submit it twice.
     "decision_continuation_failed": 500,
@@ -9564,11 +9695,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         if callable(guard):
             guard(root_frame_id, operation)
             return
-        if store.get_setting(session_import_quarantine_key(root_frame_id)):
+        if store.get_setting(session_import_quarantine_key(root_frame_id)) is not None:
             raise GatewayError(
                 423,
                 "imported Session is quarantined and view-only; use the "
                 "confirmed restart_fresh recovery action before " + operation,
+            )
+        if store.get_setting(revert_recovery_setting_key(root_frame_id)) is not None:
+            raise GatewayError(
+                423,
+                "Session workspace revert requires recovery and is view-only "
+                "before " + operation,
             )
 
     from openai4s.jobs import JobManager
@@ -11108,8 +11245,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 delete_session = method == "DELETE" and sub == (
                     f"/frames/{frame_mutation.group(1)}"
                 )
-                confirmed_fresh_restart = bool(
-                    re.fullmatch(r"/frames/[^/]+/recovery/actions/restart_fresh", sub)
+                recovery_action = bool(
+                    re.fullmatch(
+                        r"/frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh)",
+                        sub,
+                    )
                     and method == "POST"
                 )
                 read_only_preview = bool(
@@ -11126,13 +11266,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 if not (
                     delete_session
-                    or confirmed_fresh_restart
+                    or recovery_action
                     or read_only_preview
                     or share_publish
                 ):
                     _require_session_writable(
                         frame_mutation.group(1), "mutating the Session"
                     )
+            if auto_mode_routes.handle(self, method, sub, q, runner):
+                return
             # ---- identity / meta (no-auth local mode) ----
             if sub == "/me":
                 self._json(
@@ -12202,6 +12344,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 b = self._body()
                 from openai4s.permissions import broker
 
+                if not isinstance(b.get("allow"), bool):
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": "allow must be a JSON boolean",
+                            "code": "invalid_allow",
+                        },
+                        400,
+                    )
+                    return
                 frame = store.get_frame(m.group(1))
                 if frame is None:
                     self._json({"ok": False, "error": "session not found"}, 404)
@@ -12209,7 +12361,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 root = frame.get("root_frame_id") or m.group(1)
                 resolution = broker().resolve_result(
                     b.get("decision_id"),
-                    allow=bool(b.get("allow")),
+                    allow=b["allow"],
                     scope=b.get("scope") or "once",
                     pattern=b.get("pattern"),
                     message=b.get("message"),
@@ -13031,7 +13183,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/session/export", sub)
             if m and method == "GET":
-                exported = runner.session_domain.session_export(m.group(1))
+                fid = m.group(1)
+                frame = store.get_frame(fid) or {}
+                exported = runner.export_session_package(
+                    fid,
+                    str(frame.get("project_id") or "default"),
+                )
                 self._send(
                     200,
                     exported["data"],

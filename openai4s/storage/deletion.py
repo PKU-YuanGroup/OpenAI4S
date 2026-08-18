@@ -12,6 +12,8 @@ import sqlite3
 from collections.abc import Iterable
 from typing import Any
 
+from openai4s.storage.snapshots import revert_recovery_setting_key
+
 
 class SessionDeletionRepository:
     """Delete durable session aggregates without crossing ownership scopes."""
@@ -217,6 +219,28 @@ class SessionDeletionRepository:
                 ).fetchall()
             )
 
+        if roots:
+            root_where = f"root_frame_id IN {self._marks(roots)}"
+            # Remove Auto Mode bindings before deleting action-ledger rows.
+            # Sealed repair ledgers reject event/attempt DELETE while their
+            # binding exists; aggregate deletion intentionally removes the
+            # owner first in this same transaction.
+            for table in (
+                "review_findings",
+                "repair_execution_groups",
+                "repair_runs",
+                "permission_review_assessments",
+                "review_runs",
+                "auto_mode_events",
+                "auto_mode_runs",
+            ):
+                self._delete_counted(deleted_rows, table, root_where, roots)
+            self._delete_counted(
+                deleted_rows,
+                "auto_mode_selections",
+                "scope_kind='frame' AND scope_id IN " + self._marks(roots),
+                roots,
+            )
         if group_ids:
             for table in ("action_events", "execution_attempts"):
                 self._delete_counted(
@@ -479,6 +503,7 @@ class SessionDeletionRepository:
                     f"review:model:{root}",
                     f"delegation:{root}",
                     f"session:import-quarantine:{root}",
+                    revert_recovery_setting_key(root),
                 ):
                     self._delete_counted(deleted_rows, "settings", "key=?", (key,))
         for frame_id in frames:
@@ -493,6 +518,12 @@ class SessionDeletionRepository:
             )
 
         if project_id is not None:
+            self._delete_counted(
+                deleted_rows,
+                "auto_mode_selections",
+                "scope_kind='project' AND scope_id=?",
+                (project_id,),
+            )
             for table in (
                 "compaction_archives",
                 "permission_requests",

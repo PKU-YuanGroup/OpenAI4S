@@ -14,21 +14,36 @@ minimal server (`openai4s/server/daemon.py`, `POST /run`) was removed rather
 than documented: nothing imported it and it had none of the gateway's Host,
 Origin, token or header defences.
 
-### Auto Mode API status after Stage 1
+### Auto Mode API status after Stage 2
 
-The Stage 2–7 Auto Mode API and state vocabulary are **not implemented in this
-contract version**. The only planned route names are explicitly versioned as
+Stage 2 implements the versioned storage/read/configuration surface:
 `GET/PATCH /api/v1/frames/{fid}/auto-mode` and
-`GET /api/v1/frames/{fid}/auto-audits?subject_kind=&before=&limit=`; neither
-exists yet, and there will be no unversioned or alternate alias. There is
-likewise no durable or WebSocket event named `auto_run_started`,
-`candidate_ready`, `auto_audit_started`, `auto_audit_completed`,
-`repair_started`, `repair_completed`, or `auto_run_terminal`, and `candidate`,
-`verified`, `completed_with_issues`, `review_unavailable`, and
-`blocked_by_guardian` are not currently emitted or stored frame statuses.
+`GET /api/v1/frames/{fid}/auto-audits?subject_kind=&before=&limit=`. There is no
+unversioned or alternate alias and no HTTP transition endpoint. In particular,
+these routes cannot invoke a Reviewer, Repair Agent, or Permission Guardian,
+resolve a permission, or resume imported execution.
 
-`auto_audit_started` and `auto_audit_completed` are the sole planned wire and
-storage event names for both audit kinds. Their required `subject_kind` is
+GET returns `{schema_version,feature_enabled,writable,disabled_reason,
+root_frame_id,branch_id,selection,deployment,budgets,run,last_event_id,
+last_event_ordinal}`. `budgets` are deployment hard ceilings and are read-only
+in Stage 2. PATCH accepts a CAS `revision` plus only `preset`,
+`result_review_mode`, and `approvals_reviewer`; all three null values clear the
+frame override. The Stage 2 flag defaults off: GET then says
+`feature_enabled:false`/`writable:false`, while PATCH returns
+`409 auto_mode_storage_disabled`. A quarantined import always projects
+`off`/`user`, is non-writable, and returns 423 to PATCH.
+
+The durable and post-commit WebSocket vocabulary is exactly
+`auto_run_started`, `candidate_ready`, `auto_audit_started`,
+`auto_audit_completed`, `repair_started`, `repair_completed`, and
+`auto_run_terminal`. SQLite, not the socket, is truth. A reconnect or lost hint
+uses GET and the event cursor; it never retries an already committed side
+effect. Checkpoint/fork/revert reads apply the branch's `auto_event_cursor`, so
+abandoned tails remain in physical audit storage but cannot mutate or appear in
+the active logical projection.
+
+`auto_audit_started` and `auto_audit_completed` are the sole wire and storage
+event names for both audit kinds. Their required `subject_kind` is
 `result_review` or `permission_review`; phrases such as “review started” and
 “Guardian completed” are domain descriptions, not additional event types or
 aliases. One durable event id names one committed transition, so an adapter
@@ -37,7 +52,7 @@ event remains canonical; later stages add `resolution_actor` and `audit_id` to
 that event after the corresponding durable transaction rather than inventing a
 second permission-resolution event.
 
-The planned audit envelope also requires an orthogonal
+The audit envelope also requires an orthogonal
 `subject_entity_kind`: `result_review` pairs only with
 `candidate_evidence_snapshot`, and `permission_review` pairs only with
 `approval_action`. Entity values must not be placed in `subject_kind` and do
@@ -50,21 +65,16 @@ failure, durability, and retry state. Request and assessment digests are not
 interchangeable; the server must fail closed on reuse, substitution, or an
 assessment hash mismatch.
 
-Stage 1 implements only the default-off `stage1_trusted_delivery` rollout
-surface: exact-version Artifact completion URLs, a `delivery_id` on the
-link-bearing `text_chunk`, and the additive
-`standard_profile_readiness` projection on `GET /api/v1/environments/status`.
-It creates no Auto Run state or event above and grants no permission.
-
 The existing per-frame `auto_review` preference still starts the legacy,
 single-call evidence Reviewer after the answer has already been finalized. Its
 ordinary `step`/`step_update` records do not promote or veto `frame_update`, and
 reopen/share/export must not reinterpret such a step as a new Auto Mode
-terminal fact. The Stage 2–12 rollout flags remain inert reservations, not API
-capability. The future truth and recovery rules are frozen in the [Auto Mode
-product contract](auto-mode.md).
+terminal fact. Legacy true migrates only to result `review_only`; it cannot
+enable repair or permission review. Stage 3 and later execution flags remain
+inert reservations. The full truth and recovery rules are frozen in the
+[Auto Mode product contract](auto-mode.md).
 
-A future `blocked_by_guardian` projection requires a durable Guardian assessment
+Any future `blocked_by_guardian` projection requires a durable Guardian assessment
 of a deterministic `ask`. Sandbox, egress, secret/credential, biosecurity,
 cost, deterministic hard-deny, action-digest mismatch, and permission-audit
 persistence controls remain prior to Guardian; the API/UI must not claim
@@ -400,6 +410,9 @@ pre-CAS check because their execution contract requires scientific Cells;
 | `GET /frames?project_id=&limit=&cursor=` | `{"frames":[…],"next_cursor":…,"has_more":bool}`. Keyset pagination, newest first; `limit` 1–200 (default 100). `cursor` is opaque — parsing it would couple a client to the sort key. An unreadable cursor is a `400`, never a silent restart, which would loop a client on page one. `has_more` is observed by collecting one row beyond the page, not inferred from the page being full: hidden abandoned sessions are filtered *after* the read, so a full-looking page is not evidence of a next one. |
 | `POST /frames` | Body `{project_id?,model?}` → frame JSON for a new root frame. |
 | `GET /frames/{fid}` | Frame JSON, or `{}` when not found. |
+| `GET /frames/{fid}/auto-mode` | Durable Stage 2 logical-branch projection: feature/writable state, effective selection and precedence source, deployment metadata, read-only hard budget ceilings, sanitized current run, and last committed event identity/cursor. It never returns prompts, hidden rationale, permission payloads, or reusable authorization. |
+| `PATCH /frames/{fid}/auto-mode` | CAS selection update. Body requires `revision` and may set only `preset`, `result_review_mode`, and `approvals_reviewer`; setting all three to null clears the frame override. Disabled storage is 409, stale revision is 409, and imported quarantine is 423. It changes configuration only and starts no model or action. |
+| `GET /frames/{fid}/auto-audits?subject_kind=&before=&limit=` | Newest-first sanitized durable audit summaries for the active logical branch. `subject_kind` is `result_review` or `permission_review`; `before` is an event cursor/id and `limit` is 1–500 (default 100). The response contains no raw assessment prompt, hidden rationale, permission request, or authorization capability. |
 | `PATCH /frames/{fid}` | Updates `name`/`task_summary`, broadcasts `frame_update` → frame JSON. |
 | `DELETE /frames/{fid}` | `{"ok":true}`. |
 | `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id,artifact_refs,failure?}…]}`. `failure` is present only on a message that recorded one, and carries `{request_id,code,output_committed?}` — an allowlisted projection of the row's metadata, never the exception. It exists because reopening otherwise lost both the support id and the retry veto: the socket event is gone once the tab closes and the stored row is a sentence. `output_committed` appears only when true; absent is "no claim". Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. **Latest-first paging:** `?newest_first=1` returns the newest page and adds `next_before_seq` + `has_earlier`; `?before_seq=<seq>` walks backwards. Without either, the response is exactly what it always was — oldest-first from `from`, and no cursor keys. It mattered because a 640-message session returned messages 0–299: the *oldest* page, with the newest 340 absent. The cursor is a `seq` bound rather than an offset, because newest-first plus OFFSET shifts on every arriving message. `has_earlier` is observed, not inferred from a short page — the branch projection can hide rows, which a client cannot tell from the end of history. `before_seq` that is not an integer is `400 invalid_cursor`. |

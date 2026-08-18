@@ -769,6 +769,14 @@ def _drive_seeded_downloads(
             root_frame_id=frame_id,
             frame_id=frame_id,
             project_id=_CAPTURE_PROJECT,
+            # Stage 2 makes every allow-shaped restart decision prove the
+            # immutable action envelope it resolves.  Seed a real envelope,
+            # rather than asking the route driver to approve a legacy row
+            # whose exact arguments can no longer be reconstructed.
+            canonical_arguments={
+                "filename": _CAPTURE_FILENAME,
+                "content_sha256": hashlib.sha256(_CAPTURE_BYTES).hexdigest(),
+            },
         )
     except Exception:  # noqa: BLE001 - already present on a re-drive
         pass
@@ -1064,6 +1072,8 @@ def _drive_session_surface(
         (r"/frames/([^/]+)/delegations", f"{base}/delegations"),
         (r"/frames/([^/]+)/recovery", f"{base}/recovery"),
         (r"/frames/([^/]+)/recovery/actions", f"{base}/recovery/actions"),
+        (r"/frames/([^/]+)/auto-mode", f"{base}/auto-mode"),
+        (r"/frames/([^/]+)/auto-audits", f"{base}/auto-audits"),
         (r"/frames/([^/]+)/branches", f"{base}/branches"),
         # One inventory entry covers both spellings; there is no bare
         # `/frames/<id>/checkpoints` pattern, and naming one would publish a

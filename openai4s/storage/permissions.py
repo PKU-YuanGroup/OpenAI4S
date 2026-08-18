@@ -3,10 +3,117 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import sqlite3
 import uuid
 from typing import Any, Callable
+
+_MISSING = object()
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "permission action arguments must be canonical JSON"
+        ) from error
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def permission_action_digest(
+    *,
+    root_frame_id: str | None,
+    project_id: str | None,
+    tool: str,
+    target: str,
+    side_effect_class: str | None,
+    resource_keys: list[str] | tuple[str, ...] | None,
+    dangerous: bool,
+    canonical_arguments: Any,
+) -> tuple[str, str]:
+    """Return ``(arguments_sha256, action_sha256)`` for one exact action.
+
+    Full arguments are deliberately never persisted here: permission payloads
+    are UI projections and may truncate large inputs or redact secrets.  The
+    durable action identity instead binds a hash of the complete canonical
+    arguments together with the policy-relevant scope and declarations.
+    """
+
+    if not isinstance(tool, str) or not tool:
+        raise ValueError("permission action tool is invalid")
+    if not isinstance(target, str):
+        raise ValueError("permission action target is invalid")
+    if resource_keys is not None and (
+        not isinstance(resource_keys, (list, tuple))
+        or any(not isinstance(value, str) or not value for value in resource_keys)
+    ):
+        raise ValueError("permission action resource keys are invalid")
+    arguments_sha256 = _canonical_json_sha256(canonical_arguments)
+    envelope = {
+        "schema_version": 1,
+        "root_frame_id": root_frame_id,
+        "project_id": project_id,
+        "tool": tool,
+        "target": target,
+        "side_effect_class": side_effect_class or "unknown",
+        "resource_keys": sorted(set(resource_keys or ())),
+        "dangerous": bool(dangerous),
+        "canonical_arguments_sha256": arguments_sha256,
+    }
+    return arguments_sha256, _canonical_json_sha256(envelope)
+
+
+def canonical_permission_action_digest(row: Any) -> str:
+    """Hash the exact durable action represented by one permission request."""
+
+    def field(name: str) -> Any:
+        try:
+            return row[name]
+        except (KeyError, TypeError, IndexError) as error:
+            raise ValueError("permission action envelope is incomplete") from error
+
+    try:
+        resources = json.loads(field("resource_keys") or "[]")
+    except (TypeError, ValueError) as error:
+        raise ValueError("permission action envelope is malformed") from error
+    if not isinstance(resources, list) or any(
+        not isinstance(value, str) or not value for value in resources
+    ):
+        raise ValueError("permission action envelope is malformed")
+    arguments_sha256 = field("canonical_arguments_sha256")
+    stored_digest = field("action_digest")
+    if (
+        not isinstance(arguments_sha256, str)
+        or len(arguments_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in arguments_sha256)
+        or not isinstance(stored_digest, str)
+        or len(stored_digest) != 64
+        or any(char not in "0123456789abcdef" for char in stored_digest)
+    ):
+        raise ValueError("permission action envelope is malformed")
+    envelope = {
+        "schema_version": 1,
+        "root_frame_id": field("root_frame_id"),
+        "project_id": field("project_id"),
+        "tool": field("tool"),
+        "target": field("target"),
+        "side_effect_class": field("side_effect_class") or "unknown",
+        "resource_keys": sorted(set(resources)),
+        "dangerous": bool(field("dangerous")),
+        "canonical_arguments_sha256": arguments_sha256,
+    }
+    digest = _canonical_json_sha256(envelope)
+    if digest != stored_digest:
+        raise ValueError("permission action envelope digest is invalid")
+    return digest
 
 
 def perm_match(text: str, pattern: str) -> bool:
@@ -89,12 +196,14 @@ class PermissionRuleRepository:
         clock_ms: Callable[[], int],
         get_setting: Callable[[str, str | None], str | None],
         set_setting: Callable[[str, str], None],
+        admit_action_group: Callable[[str, str], None] | None = None,
     ) -> None:
         self._connection = connection
         self._lock = lock
         self._clock_ms = clock_ms
         self._get_setting = get_setting
         self._set_setting = set_setting
+        self._admit_action_group = admit_action_group
 
     def set_rule(
         self,
@@ -303,6 +412,8 @@ class PermissionRuleRepository:
         side_effect_class: str | None = None,
         resource_keys: list[str] | tuple[str, ...] | None = None,
         payload: dict | None = None,
+        dangerous: bool = False,
+        canonical_arguments: Any = _MISSING,
         expires_at: int | None = None,
         created_at: int | None = None,
     ) -> dict:
@@ -321,19 +432,36 @@ class PermissionRuleRepository:
             or not all(isinstance(value, str) for value in resource_keys)
         ):
             raise TypeError("resource_keys must be a list or tuple of strings")
+        if not isinstance(dangerous, bool):
+            raise TypeError("dangerous must be a bool")
         now = self._clock_ms() if created_at is None else int(created_at)
         encoded = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"))
         encoded_resources = json.dumps(
             list(resource_keys or ()), ensure_ascii=False, separators=(",", ":")
         )
+        if canonical_arguments is _MISSING:
+            arguments_sha256 = None
+            action_digest = None
+        else:
+            arguments_sha256, action_digest = permission_action_digest(
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+                tool=tool,
+                target=target or "",
+                side_effect_class=side_effect_class,
+                resource_keys=resource_keys,
+                dangerous=dangerous,
+                canonical_arguments=canonical_arguments,
+            )
         with self._lock:
             try:
                 self._connection.execute(
                     "INSERT INTO permission_requests("
                     "decision_id,root_frame_id,frame_id,project_id,"
                     "action_group_id,action_id,tool_call_id,tool,target,"
-                    "side_effect_class,resource_keys,payload,state,created_at,"
-                    "expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,"
+                    "side_effect_class,resource_keys,payload,dangerous,"
+                    "canonical_arguments_sha256,action_digest,state,created_at,"
+                    "expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                     "'pending',?,?)",
                     (
                         decision_id,
@@ -348,6 +476,9 @@ class PermissionRuleRepository:
                         side_effect_class,
                         encoded_resources,
                         encoded,
+                        int(dangerous),
+                        arguments_sha256,
+                        action_digest,
                         now,
                         expires_at,
                     ),
@@ -386,6 +517,7 @@ class PermissionRuleRepository:
         message: str | None = None,
         resolution_context: str | None = None,
         continuation_required: bool = False,
+        expected_action_digest: str | None = None,
         resolved_at: int | None = None,
     ) -> dict:
         terminal = {"allowed", "denied", "timed_out", "cancelled"}
@@ -393,57 +525,93 @@ class PermissionRuleRepository:
             raise ValueError(f"invalid terminal permission state: {state!r}")
         now = self._clock_ms() if resolved_at is None else int(resolved_at)
         with self._lock:
-            row = self._request_row_locked(decision_id)
-            if row["state"] != "pending":
-                current = self._normalize_request(row)
-                if current["state"] == state:
-                    return current
-                raise RuntimeError(
-                    f"permission request {decision_id!r} is already {row['state']}"
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._request_row_locked(decision_id)
+                if row["state"] != "pending":
+                    current = self._normalize_request(row)
+                    if current["state"] == state:
+                        if state == "allowed":
+                            self._assert_exact_action_envelope_locked(
+                                row,
+                                expected_action_digest=expected_action_digest,
+                            )
+                        self._connection.commit()
+                        return current
+                    raise RuntimeError(
+                        f"permission request {decision_id!r} is already {row['state']}"
+                    )
+                if (
+                    state == "allowed"
+                    and row["expires_at"] is not None
+                    and int(row["expires_at"]) <= now
+                ):
+                    state = "timed_out"
+                    scope = "once"
+                    pattern = None
+                    message = "approval timed out"
+                    resolution_context = "expired"
+                    continuation_required = False
+                elif state == "allowed":
+                    try:
+                        self._assert_exact_action_envelope_locked(
+                            row,
+                            expected_action_digest=expected_action_digest,
+                        )
+                    except RuntimeError:
+                        state = "denied"
+                        scope = "once"
+                        pattern = None
+                        message = "permission action failed integrity validation"
+                        resolution_context = "integrity_failure"
+                        continuation_required = False
+                cursor = self._connection.execute(
+                    "UPDATE permission_requests SET state=?,scope=?,pattern=?,"
+                    "message=?,resolution_context=?,continuation_required=?,"
+                    "resolved_at=? WHERE decision_id=? AND state='pending'",
+                    (
+                        state,
+                        scope,
+                        pattern,
+                        message,
+                        resolution_context,
+                        int(bool(continuation_required)),
+                        now,
+                        decision_id,
+                    ),
                 )
-            cursor = self._connection.execute(
-                "UPDATE permission_requests SET state=?,scope=?,pattern=?,"
-                "message=?,resolution_context=?,continuation_required=?,"
-                "resolved_at=? WHERE decision_id=? AND state='pending'",
-                (
-                    state,
-                    scope,
-                    pattern,
-                    message,
-                    resolution_context,
-                    int(bool(continuation_required)),
-                    now,
-                    decision_id,
-                ),
-            )
-            if cursor.rowcount != 1:
+                if cursor.rowcount != 1:
+                    raise RuntimeError(f"permission request {decision_id!r} raced")
+                if row["action_group_id"]:
+                    try:
+                        resources = json.loads(row["resource_keys"] or "[]")
+                    except (TypeError, ValueError):
+                        resources = []
+                    self._append_permission_event_locked(
+                        group_id=row["action_group_id"],
+                        event_type="permission_resolved",
+                        decision_id=decision_id,
+                        action_id=row["action_id"],
+                        tool_call_id=row["tool_call_id"],
+                        side_effect_class=row["side_effect_class"],
+                        resource_keys=(
+                            resources if isinstance(resources, list) else []
+                        ),
+                        result={
+                            "decision_id": decision_id,
+                            "state": state,
+                            "scope": scope,
+                            "pattern": pattern,
+                            "message": message,
+                            "resolution_context": resolution_context,
+                        },
+                        created_at=now,
+                    )
+                self._connection.commit()
+                row = self._request_row_locked(decision_id)
+            except Exception:
                 self._connection.rollback()
-                raise RuntimeError(f"permission request {decision_id!r} raced")
-            if row["action_group_id"]:
-                try:
-                    resources = json.loads(row["resource_keys"] or "[]")
-                except (TypeError, ValueError):
-                    resources = []
-                self._append_permission_event_locked(
-                    group_id=row["action_group_id"],
-                    event_type="permission_resolved",
-                    decision_id=decision_id,
-                    action_id=row["action_id"],
-                    tool_call_id=row["tool_call_id"],
-                    side_effect_class=row["side_effect_class"],
-                    resource_keys=(resources if isinstance(resources, list) else []),
-                    result={
-                        "decision_id": decision_id,
-                        "state": state,
-                        "scope": scope,
-                        "pattern": pattern,
-                        "message": message,
-                        "resolution_context": resolution_context,
-                    },
-                    created_at=now,
-                )
-            self._connection.commit()
-            row = self._request_row_locked(decision_id)
+                raise
         return self._normalize_request(row)
 
     def consume_restart_once_grant(
@@ -453,6 +621,10 @@ class PermissionRuleRepository:
         tool: str,
         target: str = "",
         project_id: str | None = None,
+        side_effect_class: str | None = None,
+        resource_keys: list[str] | tuple[str, ...] | None = None,
+        dangerous: bool = False,
+        canonical_arguments: Any = _MISSING,
         consumed_at: int | None = None,
     ) -> dict | None:
         """Atomically consume one exact post-restart, ``once`` approval.
@@ -464,13 +636,27 @@ class PermissionRuleRepository:
         consumed before the new handler runs.
         """
 
-        if not root_frame_id or not tool:
+        if not root_frame_id or not tool or canonical_arguments is _MISSING:
+            return None
+        try:
+            _, expected_action_digest = permission_action_digest(
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+                tool=tool,
+                target=target or "",
+                side_effect_class=side_effect_class,
+                resource_keys=resource_keys,
+                dangerous=dangerous,
+                canonical_arguments=canonical_arguments,
+            )
+        except (TypeError, ValueError):
             return None
         now = self._clock_ms() if consumed_at is None else int(consumed_at)
         clauses = [
             "root_frame_id=?",
             "tool=?",
             "target=?",
+            "action_digest=?",
             "state='allowed'",
             "scope='once'",
             "resolution_context='after_restart'",
@@ -479,31 +665,56 @@ class PermissionRuleRepository:
             "continuation_expires_at>?",
             "continuation_consumed_at IS NULL",
         ]
-        params: list[Any] = [root_frame_id, tool, target or "", now]
+        params: list[Any] = [
+            root_frame_id,
+            tool,
+            target or "",
+            expected_action_digest,
+            now,
+        ]
         if project_id is not None:
             clauses.append("project_id=?")
             params.append(project_id)
         with self._lock:
-            row = self._connection.execute(
-                "SELECT decision_id FROM permission_requests WHERE "
-                + " AND ".join(clauses)
-                + " ORDER BY resolved_at,created_at,decision_id LIMIT 1",
-                params,
-            ).fetchone()
-            if row is None:
-                return None
-            decision_id = row["decision_id"]
-            cursor = self._connection.execute(
-                "UPDATE permission_requests SET continuation_consumed_at=? "
-                "WHERE decision_id=? AND continuation_consumed_at IS NULL "
-                "AND continuation_expires_at>?",
-                (now, decision_id, now),
-            )
-            if cursor.rowcount != 1:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._connection.execute(
+                    "SELECT * FROM permission_requests WHERE "
+                    + " AND ".join(clauses)
+                    + " ORDER BY resolved_at,created_at,decision_id LIMIT 1",
+                    params,
+                ).fetchone()
+                if row is None:
+                    self._connection.commit()
+                    return None
+                try:
+                    stored_action_digest = canonical_permission_action_digest(row)
+                except ValueError:
+                    self._connection.rollback()
+                    return None
+                if stored_action_digest != expected_action_digest:
+                    self._connection.rollback()
+                    return None
+                decision_id = row["decision_id"]
+                if row["action_group_id"] and self._admit_action_group is not None:
+                    self._admit_action_group(
+                        str(row["action_group_id"]),
+                        "consume_restart_once_grant",
+                    )
+                cursor = self._connection.execute(
+                    "UPDATE permission_requests SET continuation_consumed_at=? "
+                    "WHERE decision_id=? AND continuation_consumed_at IS NULL "
+                    "AND continuation_expires_at>?",
+                    (now, decision_id, now),
+                )
+                if cursor.rowcount != 1:
+                    self._connection.rollback()
+                    return None
+                self._connection.commit()
+                resolved = self._request_row_locked(decision_id)
+            except Exception:
                 self._connection.rollback()
-                return None
-            self._connection.commit()
-            resolved = self._request_row_locked(decision_id)
+                raise
         return self._normalize_request(resolved)
 
     def activate_restart_continuation(
@@ -515,24 +726,35 @@ class PermissionRuleRepository:
         """Make a post-restart approval consumable after its ledger marker exists."""
 
         with self._lock:
-            row = self._request_row_locked(decision_id)
-            if (
-                row["state"] != "allowed"
-                or row["resolution_context"] != "after_restart"
-            ):
-                raise RuntimeError(
-                    f"permission request {decision_id!r} is not a restart approval"
-                )
-            if not row["continuation_required"]:
-                self._connection.execute(
-                    "UPDATE permission_requests SET continuation_required=1,"
-                    "continuation_expires_at=? "
-                    "WHERE decision_id=? AND state='allowed' "
-                    "AND resolution_context='after_restart'",
-                    (expires_at, decision_id),
-                )
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._request_row_locked(decision_id)
+                if (
+                    row["state"] != "allowed"
+                    or row["resolution_context"] != "after_restart"
+                ):
+                    raise RuntimeError(
+                        f"permission request {decision_id!r} is not a restart approval"
+                    )
+                self._assert_exact_action_envelope_locked(row, require=True)
+                if row["action_group_id"] and self._admit_action_group is not None:
+                    self._admit_action_group(
+                        str(row["action_group_id"]),
+                        "activate_restart_continuation",
+                    )
+                if not row["continuation_required"]:
+                    self._connection.execute(
+                        "UPDATE permission_requests SET continuation_required=1,"
+                        "continuation_expires_at=? "
+                        "WHERE decision_id=? AND state='allowed' "
+                        "AND resolution_context='after_restart'",
+                        (expires_at, decision_id),
+                    )
                 self._connection.commit()
                 row = self._request_row_locked(decision_id)
+            except Exception:
+                self._connection.rollback()
+                raise
         return self._normalize_request(row)
 
     def get_request(self, decision_id: str) -> dict | None:
@@ -542,6 +764,11 @@ class PermissionRuleRepository:
                 (decision_id,),
             ).fetchone()
         return self._normalize_request(row) if row is not None else None
+
+    def request_action_digest(self, decision_id: str) -> str:
+        with self._lock:
+            row = self._request_row_locked(decision_id)
+            return canonical_permission_action_digest(row)
 
     def timeout_expired_requests(self, *, now: int | None = None) -> int:
         """Read-time backstop: resolve pendings whose expires_at has passed.
@@ -616,6 +843,35 @@ class PermissionRuleRepository:
         return row
 
     @staticmethod
+    def _assert_exact_action_envelope_locked(
+        row,
+        *,
+        expected_action_digest: str | None = None,
+        require: bool = False,
+    ) -> str | None:
+        """Validate an immutable action before an allow-shaped transition."""
+
+        arguments_sha256 = row["canonical_arguments_sha256"]
+        stored_digest = row["action_digest"]
+        if arguments_sha256 is None and stored_digest is None:
+            if require or expected_action_digest is not None:
+                raise RuntimeError("permission action envelope is missing")
+            # Legacy, explicitly human-resolved requests predate exact action
+            # hashes. They may still be denied or resolved by a user, but can
+            # never become a restart continuation.
+            return None
+        try:
+            current_digest = canonical_permission_action_digest(row)
+        except ValueError as error:
+            raise RuntimeError("permission action envelope is invalid") from error
+        if (
+            expected_action_digest is not None
+            and current_digest != expected_action_digest
+        ):
+            raise RuntimeError("permission action digest changed before resolution")
+        return current_digest
+
+    @staticmethod
     def _normalize_request(row) -> dict:
         data = dict(row)
         try:
@@ -644,6 +900,12 @@ class PermissionRuleRepository:
         created_at: int,
     ) -> None:
         """Insert one ledger event inside the caller's open transaction."""
+
+        if self._admit_action_group is not None:
+            operation = f"event:{event_type}"
+            if event_type == "permission_resolved":
+                operation += f":{str(result.get('state') or '').lower()}"
+            self._admit_action_group(group_id, operation)
 
         if (
             self._connection.execute(
@@ -689,7 +951,9 @@ class PermissionRuleRepository:
 
 
 __all__ = [
+    "canonical_permission_action_digest",
     "DEFAULT_PERMISSION_RULES",
+    "permission_action_digest",
     "PermissionRuleRepository",
     "perm_match",
 ]

@@ -250,6 +250,198 @@ def test_broker_deny_returns_soft_fail(tmp_path):
     assert "not now" in (out["res"].get("message") or "")
 
 
+def test_live_allow_fails_closed_after_exact_action_hash_tamper(tmp_path):
+    st = _store(tmp_path)
+    b = PermissionBroker()
+    events = []
+    b.register_channel("root-tamper", lambda event: events.append(event), store=st)
+    out = {}
+
+    thread = threading.Thread(
+        target=lambda: out.__setitem__(
+            "result",
+            b.gate(
+                store=st,
+                frame_id="root-tamper",
+                method="mcp_call",
+                target="lab/send",
+                canonical_arguments=[{"server": "lab", "tool": "send"}],
+                timeout=5,
+            ),
+        )
+    )
+    thread.start()
+    ask = _wait_ask(events)
+    st._conn.execute("DROP TRIGGER trg_permission_action_immutable")
+    st._conn.execute(
+        "UPDATE permission_requests SET canonical_arguments_sha256=? "
+        "WHERE decision_id=?",
+        ("0" * 64, ask["decision_id"]),
+    )
+    st._conn.commit()
+
+    resolution = b.resolve_result(
+        ask["decision_id"],
+        allow=True,
+        scope="conversation",
+        pattern="lab/*",
+        store=st,
+        root_frame_id="root-tamper",
+    )
+    thread.join(5)
+
+    assert resolution["ok"] is False
+    assert resolution["code"] == "decision_integrity_failure"
+    assert out["result"]["allow"] is False
+    assert st.get_permission_request(ask["decision_id"])["state"] == "denied"
+    assert (
+        st.resolve_permission(
+            root_frame_id="root-tamper",
+            project_id="default",
+            tool="mcp_call",
+            pattern_input="lab/other",
+        )
+        == "ask"
+    )
+    assert events[-1]["type"] == "permission_resolved"
+    assert events[-1]["allow"] is False
+    assert events[-1]["state"] == "denied"
+
+
+def test_live_allow_after_deadline_commits_timeout_before_resolved_event(tmp_path):
+    st = _store(tmp_path)
+    b = PermissionBroker()
+    events = []
+    durable_state_at_emit = []
+
+    def emit(event):
+        events.append(event)
+        if event.get("type") == "permission_resolved":
+            durable_state_at_emit.append(
+                st.get_permission_request(event["decision_id"])["state"]
+            )
+
+    b.register_channel("root-expired-live", emit, store=st)
+    out = {}
+    thread = threading.Thread(
+        target=lambda: out.__setitem__(
+            "result",
+            b.gate(
+                store=st,
+                frame_id="root-expired-live",
+                method="mcp_call",
+                target="lab/send",
+                canonical_arguments=[{"server": "lab", "tool": "send"}],
+                timeout=0.05,
+            ),
+        )
+    )
+    thread.start()
+    ask = _wait_ask(events)
+    time.sleep(0.08)
+
+    resolution = b.resolve_result(
+        ask["decision_id"],
+        allow=True,
+        scope="conversation",
+        pattern="lab/*",
+        store=st,
+        root_frame_id="root-expired-live",
+    )
+    thread.join(5)
+
+    assert resolution["ok"] is False
+    assert resolution["code"] == "decision_expired"
+    assert out["result"]["allow"] is False
+    assert st.get_permission_request(ask["decision_id"])["state"] == "timed_out"
+    assert durable_state_at_emit == ["timed_out"]
+    assert (
+        st.resolve_permission(
+            root_frame_id="root-expired-live",
+            project_id="default",
+            tool="mcp_call",
+            pattern_input="lab/other",
+        )
+        == "ask"
+    )
+
+
+def test_live_resolution_remains_in_flight_until_durable_commit(tmp_path, monkeypatch):
+    st = _store(tmp_path)
+    b = PermissionBroker()
+    events = []
+    b.register_channel("root-live-race", lambda event: events.append(event), store=st)
+    gate_result = {}
+    gate_thread = threading.Thread(
+        target=lambda: gate_result.__setitem__(
+            "result",
+            b.gate(
+                store=st,
+                frame_id="root-live-race",
+                method="mcp_call",
+                target="lab/send",
+                canonical_arguments=[{"server": "lab", "tool": "send"}],
+                timeout=5,
+            ),
+        )
+    )
+    gate_thread.start()
+    ask = _wait_ask(events)
+    entered_commit = threading.Event()
+    release_commit = threading.Event()
+    original_resolve = st.resolve_permission_request
+
+    def delayed_resolve(*args, **kwargs):
+        entered_commit.set()
+        assert release_commit.wait(5)
+        return original_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(st, "resolve_permission_request", delayed_resolve)
+    first_result = {}
+    first_thread = threading.Thread(
+        target=lambda: first_result.update(
+            b.resolve_result(
+                ask["decision_id"],
+                allow=True,
+                scope="once",
+                store=st,
+                root_frame_id="root-live-race",
+            )
+        )
+    )
+    first_thread.start()
+    assert entered_commit.wait(2)
+
+    raced = b.resolve_result(
+        ask["decision_id"],
+        allow=True,
+        scope="once",
+        store=st,
+        root_frame_id="root-live-race",
+    )
+    assert raced["ok"] is False
+    assert raced["code"] == "decision_in_flight"
+    release_commit.set()
+    first_thread.join(5)
+    gate_thread.join(5)
+
+    assert first_result["ok"] is True
+    assert gate_result["result"]["allow"] is True
+    request = st.get_permission_request(ask["decision_id"])
+    assert request["resolution_context"] == "live_thread"
+    assert request["continuation_required"] == 0
+    assert (
+        st.consume_restart_permission_grant(
+            root_frame_id="root-live-race",
+            project_id="default",
+            tool="mcp_call",
+            target="lab/send",
+            canonical_arguments=[{"server": "lab", "tool": "send"}],
+        )
+        is None
+    )
+
+
 def test_broker_cancel_denies_pending(tmp_path):
     st = _store(tmp_path)
     b = PermissionBroker()
@@ -324,6 +516,32 @@ def test_durable_pending_request_survives_broker_restart_and_can_be_resolved(tmp
     assert "did not execute" in history[-1]["content"]
 
 
+@pytest.mark.parametrize("invalid_allow", ["false", 0, 1, [], {}, None])
+def test_broker_rejects_non_boolean_allow_without_resolving(tmp_path, invalid_allow):
+    st = _store(tmp_path)
+    st.create_permission_request(
+        decision_id="perm-strict-boolean",
+        root_frame_id="root-strict-boolean",
+        frame_id="root-strict-boolean",
+        project_id="default",
+        tool="mcp_call",
+        target="lab/send",
+        payload={"type": "await_permission"},
+        canonical_arguments=[{"server": "lab", "tool": "send"}],
+    )
+
+    result = PermissionBroker().resolve_result(
+        "perm-strict-boolean",
+        allow=invalid_allow,
+        store=st,
+        root_frame_id="root-strict-boolean",
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "invalid_allow"
+    assert st.get_permission_request("perm-strict-boolean")["state"] == "pending"
+
+
 def test_restart_approval_requires_fresh_turn_and_never_replays_arguments(tmp_path):
     st = _store(tmp_path)
     st.append_tool_action_group(
@@ -358,6 +576,7 @@ def test_restart_approval_requires_fresh_turn_and_never_replays_arguments(tmp_pa
         "tool": "mcp_call",
         "target": "lab/send",
     }
+    exact_arguments = [{"server": "lab", "tool": "send"}]
     st.create_permission_request(
         decision_id="perm-restart",
         root_frame_id="root-restart",
@@ -366,6 +585,9 @@ def test_restart_approval_requires_fresh_turn_and_never_replays_arguments(tmp_pa
         tool="mcp_call",
         target="lab/send",
         payload=payload,
+        side_effect_class="runtime_mutation",
+        resource_keys=["host:mcp_call"],
+        canonical_arguments=exact_arguments,
     )
 
     st.close()
@@ -469,12 +691,26 @@ def test_restart_approval_requires_fresh_turn_and_never_replays_arguments(tmp_pa
 
     # A fresh, exact action consumes the durable once grant. No handler args
     # from the interrupted action are replayed by approval resolution itself.
+    mismatched = restarted.gate(
+        store=st,
+        frame_id="root-restart",
+        method="mcp_call",
+        target="lab/send",
+        side_effect_class="runtime_mutation",
+        resource_keys=["host:mcp_call"],
+        canonical_arguments=[{"server": "lab", "tool": "send", "changed": True}],
+    )
+    assert mismatched["allow"] is False
+    assert st.get_permission_request("perm-restart")["continuation_consumed_at"] is None
     assert (
         restarted.gate(
             store=st,
             frame_id="root-restart",
             method="mcp_call",
             target="lab/send",
+            side_effect_class="runtime_mutation",
+            resource_keys=["host:mcp_call"],
+            canonical_arguments=exact_arguments,
         )["allow"]
         is True
     )
@@ -500,6 +736,7 @@ def test_restart_resolution_scopes_rule_and_rejects_cross_frame_decision(tmp_pat
         tool="mcp_call",
         target="lab/send",
         payload={"type": "await_permission", "frame_id": "root-a"},
+        canonical_arguments=[{"server": "lab", "tool": "send"}],
     )
     restarted = PermissionBroker()
     mismatch = restarted.resolve_result(
@@ -552,6 +789,7 @@ def test_racing_restart_retry_cannot_escalate_once_to_global(tmp_path):
         tool="mcp_call",
         target="lab/send",
         payload={"type": "await_permission", "frame_id": "root-race"},
+        canonical_arguments=[{"server": "lab", "tool": "send"}],
     )
     global_read = threading.Event()
     once_resolved = threading.Event()
@@ -1098,7 +1336,7 @@ def test_every_decision_refusal_carries_a_code_the_gateway_can_map():
     from openai4s.server.gateway import _DECISION_REFUSAL_STATUS
 
     source = __import__("pathlib").Path("openai4s/permissions.py").read_text("utf-8")
-    emitted = set(re.findall(r'"code": "(decision_[a-z_]+)"', source))
+    emitted = set(re.findall(r'"code": "(decision_[a-z_]+|invalid_allow)"', source))
 
     assert emitted, "no decision refusal codes found; the grep is wrong"
     assert emitted == set(_DECISION_REFUSAL_STATUS), (

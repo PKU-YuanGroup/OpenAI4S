@@ -1266,6 +1266,7 @@ class HostDispatcher:
                     side_effect_class=audit_side_effect,
                     resource_keys=audit_resources,
                     dangerous=audit_dangerous,
+                    canonical_arguments=args,
                 )
                 permission_decision_id = gate.get("decision_id") or gate.get(
                     "continuation_decision_id"

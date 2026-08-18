@@ -273,6 +273,16 @@ SUCCESS_REQUIRED: dict[str, tuple[int, frozenset[str]]] = {
         frozenset({"state", "generations", "current"}),
     ),
     "GET /frames/([^/]+)/recovery/actions": (200, frozenset({"actions"})),
+    "GET /frames/([^/]+)/auto-mode": (
+        200,
+        frozenset(
+            {"schema_version", "feature_enabled", "writable", "selection", "run"}
+        ),
+    ),
+    "GET /frames/([^/]+)/auto-audits": (
+        200,
+        frozenset({"schema_version", "audits", "has_more"}),
+    ),
     "GET /frames/([^/]+)/branches": (200, frozenset({"branches"})),
     "POST /frames/([^/]+)/branches/fork": (
         200,
