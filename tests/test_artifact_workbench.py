@@ -269,3 +269,37 @@ def test_workbench_routes_are_forbidden_when_the_flag_is_off(tmp_path):
     assert code == 403
     assert payload["code"] == "workbench_disabled"
     runner.close()
+
+
+def test_table_and_diff_http_routes(tmp_path):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    workspace = runner.workspace_for_branch(fid, fid)
+    workspace.mkdir(parents=True, exist_ok=True)
+    path = workspace / "table.csv"
+    path.write_text("name,n\nr7,7\nr8,8\n", encoding="utf-8")
+    first = runner.store.save_artifact(
+        path=str(path),
+        filename="table.csv",
+        content_type="text/csv",
+        size_bytes=path.stat().st_size,
+        checksum="33" * 32,
+        frame_id=fid,
+        project_id="default",
+    )
+    code, page = _call(
+        handler,
+        "GET",
+        f"/artifacts/{first['artifact_id']}/table",
+        query={"sort": ["n"], "dir": ["desc"]},
+    )
+    assert code == 200
+    assert page["filename"] == "table.csv"
+    assert page["total_rows"] == 2
+    assert page["rows"][0][0] == "r8"
+    runner.edit_artifact(first["artifact_id"], "name,n\nr7,7\nr9,9\n")
+    code, diff = _call(handler, "GET", f"/artifacts/{first['artifact_id']}/diff")
+    assert code == 200
+    assert diff["changed"] is True
+    assert "r8" in diff["diff"]
+    assert "r9" in diff["diff"]
+    runner.close()

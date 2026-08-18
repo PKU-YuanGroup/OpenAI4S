@@ -5824,6 +5824,35 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/diff [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "diff": {
+            "type": "string"
+          },
+          "from_version_id": {
+            "type": "string"
+          },
+          "to_version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "changed",
+          "diff",
+          "from_version_id",
+          "to_version_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/edit [error]": {
       "schema": {
         "properties": {
@@ -5949,6 +5978,50 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/html-outline [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "elements": {
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "selector",
+                "tag",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "elements",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/lineage [ok]": {
       "schema": {
         "properties": {
@@ -5978,6 +6051,46 @@
           "dependency_mappings",
           "filename",
           "interactions"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/pdf-text [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "page": {
+                  "type": "integer"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "page",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "pages",
+          "version_id"
         ],
         "type": "object"
       }
@@ -6173,6 +6286,102 @@
           "provenance",
           "renderer",
           "trusted_html",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/table [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "column_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "descending": {
+            "type": "boolean"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "filters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "sorted_by": {
+            "type": "string"
+          },
+          "total_rows": {
+            "type": "integer"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "column_types",
+          "columns",
+          "descending",
+          "filename",
+          "filters",
+          "limit",
+          "offset",
+          "rows",
+          "sorted_by",
+          "total_rows",
           "version_id"
         ],
         "type": "object"
@@ -22843,6 +23052,93 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/structure [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "structure": {
+            "properties": {
+              "atoms": {
+                "items": {
+                  "properties": {
+                    "element": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "element"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "bond_count": {
+                "type": "integer"
+              },
+              "bonds": {
+                "items": {
+                  "properties": {
+                    "a": {
+                      "type": "integer"
+                    },
+                    "b": {
+                      "type": "integer"
+                    },
+                    "order": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "a",
+                    "b",
+                    "order"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "carbon_count": {
+                "type": "integer"
+              },
+              "format": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "atoms",
+              "bond_count",
+              "bonds",
+              "carbon_count",
+              "format",
+              "title"
+            ],
+            "type": "object"
+          },
+          "unchanged": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "ok",
+          "structure",
+          "unchanged",
+          "version_id"
         ],
         "type": "object"
       }

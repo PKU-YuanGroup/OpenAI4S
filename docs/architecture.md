@@ -181,6 +181,13 @@ ledger into the product path: a restarted manager only reconciles, never
 resubmits; cancel still names the exact receipt; harvest Artifacts record the
 remote environment, input versions, job receipt, and checksums.
 
+#### Stage 12 GA
+
+`OPENAI4S_STAGE12_AUTO_MODE_GA=1` arms the GA kill-switch declaration. Auto
+Mode remains default-off. Earlier stage flags stay independently opt-in. The
+evidence table for Stages 0–12 lives in
+[auto-mode-stage12-evidence.md](auto-mode-stage12-evidence.md).
+
 Later stages add the durable supervisor/services around the
 provider-neutral `AgentEngine`; the Engine itself remains unaware of Web review and
 permission product modes. See [Auto Mode contract](auto-mode.md) for the exact

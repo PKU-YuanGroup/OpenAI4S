@@ -13,6 +13,7 @@
 | `architecture.md` | 当前的双循环架构与 Host API 概览，也是贡献者使用的兼容入口。 |
 | `ark-agent-plan-9.9.png` | 源码仓库根 README 展示的火山方舟 Agent 套餐价格截图。 |
 | `auto-mode.md` | Stage 0 冻结的 Auto Mode 产品契约：无矛盾预设与优先级、有限预算上限、候选/终态真值、持久证据、恢复、投影规则，以及后续 Stage 必须满足的安全不变量；其中明确标注新状态和路由尚未实现。 |
+| `auto-mode-stage12-evidence.md` | Stage 12 证据表：Stage 0–12 对应的实现、测试与 commit。 |
 | `backend-extension-guide.md` | 当前的扩展接缝：新增一个 Tool、Host 服务、存储仓储、provider、Skill 或 Web 会话服务时，各自该接在哪里。 |
 | `backend-refactor-architecture.md` | backend refactor 的历史设计记录。它记的是当时定下的方案，不能用来证明当前已经端到端实现。 |
 | `compute.md` | 远程计算、BYOC provider 与 `host.fold` 的行为和限制。 |
