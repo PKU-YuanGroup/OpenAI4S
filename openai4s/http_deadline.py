@@ -31,8 +31,36 @@ class HTTPExchangeTimeout(TimeoutError):
     """One HTTP exchange exceeded its absolute wall-clock deadline."""
 
 
+def _socket_retired(sock: Any) -> bool:
+    """Whether this transport's descriptor is already gone.
+
+    A closed socket cannot block, so it needs no read timeout -- and touching
+    one raises ``OSError`` (EBADF).  ``socket.close()`` alone is not this state:
+    urllib closes the connection socket while ``makefile`` still holds an I/O
+    reference, and the descriptor stays readable for the whole response body.
+    """
+
+    fileno = getattr(sock, "fileno", None)
+    if not callable(fileno):
+        return False
+    try:
+        return int(fileno()) < 0
+    except OSError:
+        return True
+    except Exception:  # noqa: BLE001 - a transport that cannot say is treated as live
+        return False
+
+
 def socket_timeout_setter(response: Any) -> Callable[[float], Any] | None:
-    """Find a live response socket's timeout setter through urllib wrappers."""
+    """Bound-read-timeout callable for the socket backing a urllib response.
+
+    The callable becomes a no-op once that socket is retired.  ``http.client``
+    retires it on the *same* ``read1`` that returns the final content byte once
+    a known ``Content-Length`` reaches zero (CPython 3.11+; only the 3.10 floor
+    waits for one further empty read), so a loop that re-bounds the next read
+    before checking for more data touched a closed descriptor and turned a
+    complete, successful response into ``OSError``.
+    """
 
     pending = [response]
     seen: set[int] = set()
@@ -44,12 +72,49 @@ def socket_timeout_setter(response: Any) -> Callable[[float], Any] | None:
         seen.add(identity)
         setter = getattr(candidate, "settimeout", None)
         if callable(setter):
-            return setter
+            sock = candidate
+
+            def set_read_timeout(value: float, _sock: Any = sock) -> None:
+                if _socket_retired(_sock):
+                    return
+                try:
+                    _sock.settimeout(value)
+                except OSError:
+                    # Lost the race with a close (the watchdog's, or the
+                    # stdlib's end-of-body one).  Only a still-live transport
+                    # can leave a read unbounded, so re-raise for that case
+                    # alone rather than reporting a finished exchange as a
+                    # network failure.
+                    if _socket_retired(_sock):
+                        return
+                    raise
+
+            return set_read_timeout
         for attribute in ("fp", "raw", "_sock"):
             child = getattr(candidate, attribute, None)
             if child is not None:
                 pending.append(child)
     return None
+
+
+def response_body_exhausted(response: Any) -> bool:
+    """Whether this response can no longer yield body bytes.
+
+    Both signals are end-of-body, not error states: ``isclosed()`` reports the
+    body reader ``http.client`` retires once the last content byte is delivered,
+    and a remaining ``length`` of zero is the same fact on the 3.10 floor, which
+    retires one read later.  A reader that stops on either never asks a retired
+    transport for more.
+    """
+
+    is_closed = getattr(response, "isclosed", None)
+    if callable(is_closed):
+        try:
+            if bool(is_closed()):
+                return True
+        except Exception:  # noqa: BLE001 - an unknown reader is treated as open
+            return False
+    return getattr(response, "length", None) == 0
 
 
 def _response_socket(response: Any) -> socket.socket | None:
@@ -407,5 +472,6 @@ class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
 __all__ = [
     "HTTPExchangeDeadline",
     "HTTPExchangeTimeout",
+    "response_body_exhausted",
     "socket_timeout_setter",
 ]

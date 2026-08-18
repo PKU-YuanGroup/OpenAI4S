@@ -25,7 +25,11 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from openai4s import egress, webtools
-from openai4s.http_deadline import HTTPExchangeDeadline, socket_timeout_setter
+from openai4s.http_deadline import (
+    HTTPExchangeDeadline,
+    response_body_exhausted,
+    socket_timeout_setter,
+)
 from openai4s.mcp_protocol import (
     MAX_FRAME_BYTES,
     MCPError,
@@ -367,6 +371,12 @@ class MCPHTTPConnection:
             if total > _MAX_FRAME_BYTES:
                 raise MCPOversizedResponse("MCP HTTP response exceeded the 4 MiB limit")
             chunks.append(chunk)
+            if response_body_exhausted(response):
+                # ``http.client`` retires the transport on the same read that
+                # returns the final content byte, so one more pass would
+                # re-bound a read on a closed socket and report a complete
+                # response as a transport failure.
+                return b"".join(chunks)
 
     def _post(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import http.client
 import json
 import os
@@ -272,6 +273,82 @@ def test_streamable_http_body_reader_prefers_one_raw_read_per_deadline_check():
     assert body == b"one-read"
     assert response.read1_calls == 3
     assert len(response.socket.timeouts) == 3
+    assert all(0 < value <= 2.0 for value in response.socket.timeouts)
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_body_reader_stops_when_the_transport_retires():
+    """A complete Content-Length body must not fail on its own closed socket.
+
+    CPython 3.11+ ``HTTPResponse.read1`` calls ``_close_conn()`` on the same
+    call that returns the final content byte, and urllib closed the connection
+    socket back when the headers arrived, so that read drops the last I/O
+    reference and the descriptor goes away.  Arming a read timeout afterwards
+    raised ``OSError`` (EBADF) and turned a fully-read JSON-RPC reply into a
+    transport failure -- invisible to every fake-socket test, because only a
+    real socket refuses.
+    """
+
+    class _RetiredSocket:
+        def __init__(self):
+            self.timeouts = []
+            self.fd = 9
+
+        def settimeout(self, value):
+            if self.fd < 0:
+                raise OSError(errno.EBADF, "Bad file descriptor")
+            self.timeouts.append(value)
+
+        def fileno(self):
+            return self.fd
+
+    class _Raw:
+        def __init__(self, sock):
+            self._sock = sock
+
+    class _FP:
+        def __init__(self, sock):
+            self.raw = _Raw(sock)
+
+    class _EndOfBodyClosingResponse:
+        def __init__(self, body):
+            self.headers = _HTTPHeaders({"Content-Length": str(len(body))})
+            self.socket = _RetiredSocket()
+            self.fp = _FP(self.socket)
+            self._body = body
+            self._offset = 0
+            self.length = len(body)
+            self.read1_calls = 0
+
+        def isclosed(self):
+            return self.fp is None
+
+        def read1(self, size):
+            self.read1_calls += 1
+            if self.fp is None:
+                return b""
+            chunk = self._body[self._offset : self._offset + min(size, 8)]
+            self._offset += len(chunk)
+            self.length -= len(chunk)
+            if not chunk or not self.length:
+                self.fp = None
+                self.socket.fd = -1
+            return chunk
+
+        def read(self, _size=-1):
+            raise AssertionError("buffered read must not run when read1 exists")
+
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}).encode()
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+    response = _EndOfBodyClosingResponse(payload)
+
+    body = connection._read_body(response, time.monotonic() + 2.0)
+
+    assert body == payload
+    assert response.isclosed() is True
+    assert response.socket.fileno() == -1
+    assert len(response.socket.timeouts) == response.read1_calls
     assert all(0 < value <= 2.0 for value in response.socket.timeouts)
 
 
