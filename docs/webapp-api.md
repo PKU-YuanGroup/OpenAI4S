@@ -108,7 +108,7 @@ with no verdict.
 Verified is stamped only on the exact bytes the passing review read. A
 mismatch, a repair the caller could not deliver, or a delivery that failed
 after the review all resolve to a non-verified terminal rather than a guess.
-Later execution flags remain inert reservations. The full truth and recovery
+Later stages consume only their own flags. The full truth and recovery
 rules are frozen in the [Auto Mode product contract](auto-mode.md).
 
 Any future `blocked_by_guardian` projection requires a durable Guardian assessment
