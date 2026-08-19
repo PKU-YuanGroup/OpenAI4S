@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from openai4s.storage.auto_mode import AutoModeConflictError
-from openai4s.storage.snapshots import revert_recovery_setting_key
+from openai4s.storage.snapshots import WorkspaceCAS, revert_recovery_setting_key
 from openai4s.store import Store
 
 
@@ -62,6 +62,7 @@ def _start_fields(
     turn_id: str = "turn-1",
     execution_id: str = "execution-1",
     idempotency_key: str | None = None,
+    owner: str = "daemon-regression",
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -73,7 +74,7 @@ def _start_fields(
         "mode": "auto_fix",
         "selection": _selection(),
         "budgets": {"max_review_attempts": 2, "max_repair_rounds": 2},
-        "owner_instance_id": "daemon-regression",
+        "owner_instance_id": owner,
         "created_at": 100,
     }
 
@@ -659,3 +660,427 @@ def test_unresolved_revert_barrier_denies_new_auto_and_action_work_but_keeps_evi
         result={"error": "late terminal evidence"},
     )
     assert terminal["type"] == "failed"
+
+
+# --------------------------------------------------------------------------
+# Boot-time reconciliation of runs a dead daemon left mid-flight.
+#
+# `_persist_auto_mode` commits start_run, record_candidate, start_review and
+# complete_review as four separate transactions. `kill -9` between the third
+# and the fourth leaves `reviewing` -- excluded from `_TERMINAL_STATUSES` --
+# with no `finished_at` and no `abandoned_at`, and every later turn on that
+# branch then dies inside a swallowed `AutoModeConflictError`.
+# --------------------------------------------------------------------------
+
+
+def _crash_mid_review(store: Store, root: str) -> None:
+    """Leave exactly the row a `kill -9` during the audit leaves behind."""
+
+    store.start_auto_mode_run(**_start_fields(root, owner="daemon-DEAD"))
+    evidence, candidate = _candidate_fields()
+    store.record_auto_mode_candidate("run-1", **candidate)
+    store.start_auto_mode_review("run-1", **_review_fields(evidence))
+    # complete_review never runs: the daemon is gone.
+
+
+def _next_turn(store: Store, root: str, owner: str) -> str:
+    """Start the turn that follows the crash and report the branch's status."""
+
+    store.start_auto_mode_run(
+        **_start_fields(
+            root,
+            run_id="run-2",
+            turn_id="turn-2",
+            execution_id="execution-2",
+            owner=owner,
+        )
+    )
+    projected = store.project_auto_mode_run(root, root)["run"]
+    assert projected["run_id"] == "run-2"
+    return str(projected["status"])
+
+
+def test_crash_mid_review_wedges_the_branch_without_reconciliation(store_root):
+    """The defect itself: prove the branch is dead before proving the fix."""
+
+    store, root = store_root
+    _crash_mid_review(store, root)
+    assert store.project_auto_mode_run(root, root)["run"]["status"] == "reviewing"
+
+    with pytest.raises(AutoModeConflictError) as excinfo:
+        _next_turn(store, root, "daemon-NEW")
+    assert "recovery-required active run" in str(excinfo.value)
+
+
+def test_reconcile_moves_a_crashed_run_to_review_unavailable(store_root):
+    store, root = store_root
+    _crash_mid_review(store, root)
+
+    outcomes = store.reconcile_orphaned_auto_mode_runs(
+        owner_instance_id="daemon-NEW", now=500
+    )
+    assert outcomes == [
+        {
+            "run_id": "run-1",
+            "status": "review_unavailable",
+            "terminal_reason": "daemon_restart",
+        }
+    ]
+
+    # A definite terminal, not an abandoned row: the projection agrees, which
+    # means the reconciled run still satisfies replay integrity.
+    projected = store.project_auto_mode_run(root, root)["run"]
+    assert projected["status"] == "review_unavailable"
+    assert projected["terminal_reason"] == "daemon_restart"
+    assert projected["finished_at"] == 500
+
+    # And the branch accepts work again.
+    assert _next_turn(store, root, "daemon-NEW") == "running"
+
+
+def test_reconcile_closes_the_stranded_review_without_inventing_a_verdict(store_root):
+    store, root = store_root
+    _crash_mid_review(store, root)
+    store.reconcile_orphaned_auto_mode_runs(owner_instance_id="daemon-NEW", now=500)
+
+    review = store._conn.execute(
+        "SELECT status,verdict,completed_at FROM review_runs WHERE review_run_id=?",
+        ("review-1",),
+    ).fetchone()
+    assert review["status"] == "unavailable"
+    assert review["verdict"] == "review_unavailable"
+    assert review["completed_at"] == 500
+    # An interrupted audit reports no findings. Manufacturing one would be a
+    # claim about code no reviewer ever finished reading.
+    assert (
+        store._conn.execute(
+            "SELECT COUNT(*) FROM review_findings WHERE run_id='run-1'"
+        ).fetchone()[0]
+        == 0
+    )
+    # And the surface a reader actually sees says the same thing, in words.
+    audits = store.list_auto_mode_audits(root, root)
+    assert [(item["status"], item["verdict"]) for item in audits] == [
+        ("unavailable", "review_unavailable")
+    ]
+    assert "exited before" in audits[0]["public_summary"]
+
+
+def test_reconcile_preserves_every_committed_side_effect(store_root):
+    """Recovery closes the record; it never re-runs what already happened."""
+
+    store, root = store_root
+    _crash_mid_review(store, root)
+    before = store._conn.execute(
+        "SELECT candidate_id,candidate_snapshot_sha256,evidence_snapshot_sha256,"
+        "artifact_set_sha256,candidate_artifact_ids_json,candidate_version_ids_json,"
+        "created_at FROM auto_mode_runs WHERE run_id='run-1'"
+    ).fetchone()
+    events_before = [
+        event["type"] for event in store.list_auto_mode_events(root, branch_id=root)
+    ]
+    assert events_before == [
+        "auto_run_started",
+        "candidate_ready",
+        "auto_audit_started",
+    ]
+
+    store.reconcile_orphaned_auto_mode_runs(owner_instance_id="daemon-NEW", now=500)
+
+    after = store._conn.execute(
+        "SELECT candidate_id,candidate_snapshot_sha256,evidence_snapshot_sha256,"
+        "artifact_set_sha256,candidate_artifact_ids_json,candidate_version_ids_json,"
+        "created_at FROM auto_mode_runs WHERE run_id='run-1'"
+    ).fetchone()
+    assert tuple(after) == tuple(before)
+
+    # The audit chain is appended to, never rewritten: the pre-crash events
+    # stay byte-identical and reconciliation adds only its own two closures.
+    events_after = [
+        event["type"] for event in store.list_auto_mode_events(root, branch_id=root)
+    ]
+    assert events_after == events_before + [
+        "auto_audit_completed",
+        "auto_run_terminal",
+    ]
+
+
+def test_reconcile_never_touches_a_run_this_instance_owns(store_root):
+    """Ownership is the whole discriminator -- a live run must survive boot."""
+
+    store, root = store_root
+    store.start_auto_mode_run(**_start_fields(root, owner="daemon-LIVE"))
+    evidence, candidate = _candidate_fields()
+    store.record_auto_mode_candidate("run-1", **candidate)
+    store.start_auto_mode_review("run-1", **_review_fields(evidence))
+
+    assert (
+        store.reconcile_orphaned_auto_mode_runs(
+            owner_instance_id="daemon-LIVE", now=500
+        )
+        == []
+    )
+    assert store.project_auto_mode_run(root, root)["run"]["status"] == "reviewing"
+    # Still live, so the in-flight audit can still commit its real verdict.
+    _complete_review(store)
+    assert store.project_auto_mode_run(root, root)["run"]["status"] == "candidate"
+
+
+def test_reconcile_is_idempotent_across_repeated_restarts(store_root):
+    """A crash loop must not append a second terminal to the same run."""
+
+    store, root = store_root
+    _crash_mid_review(store, root)
+
+    assert (
+        len(
+            store.reconcile_orphaned_auto_mode_runs(
+                owner_instance_id="daemon-NEW", now=500
+            )
+        )
+        == 1
+    )
+    for tick in (600, 700):
+        assert (
+            store.reconcile_orphaned_auto_mode_runs(
+                owner_instance_id="daemon-NEWER", now=tick
+            )
+            == []
+        )
+    terminals = [
+        event
+        for event in store.list_auto_mode_events(root, branch_id=root)
+        if event["type"] == "auto_run_terminal"
+    ]
+    assert len(terminals) == 1
+    assert store.project_auto_mode_run(root, root)["run"]["finished_at"] == 500
+
+
+def test_reconcile_leaves_an_already_terminal_run_alone(store_root):
+    """A Verified run from a dead daemon keeps its own terminal truth."""
+
+    store, root = store_root
+    _build_verified(store, root)
+    assert (
+        store.reconcile_orphaned_auto_mode_runs(owner_instance_id="daemon-NEW", now=500)
+        == []
+    )
+    projected = store.project_auto_mode_run(root, root)["run"]
+    assert projected["status"] == "verified"
+    assert projected["terminal_reason"] == "review_passed"
+
+
+def test_reconcile_defers_to_an_unresolved_revert_recovery_hold(store_root):
+    """A revert barrier is a deliberate hold with its own recovery path."""
+
+    store, root = store_root
+    _crash_mid_review(store, root)
+    store.set_setting(
+        revert_recovery_setting_key(root),
+        _canonical({"operation_id": "op-1", "branch_id": root, "state": "reverting"}),
+    )
+
+    outcomes = store.reconcile_orphaned_auto_mode_runs(
+        owner_instance_id="daemon-NEW", now=500
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0]["deferred"] == "revert_recovery_required"
+    # Neither terminalized nor abandoned: the revert owns this row now.
+    row = store._conn.execute(
+        "SELECT status,finished_at,abandoned_at FROM auto_mode_runs WHERE run_id='run-1'"
+    ).fetchone()
+    assert row["status"] == "reviewing"
+    assert row["finished_at"] is None
+    assert row["abandoned_at"] is None
+
+
+def test_reconcile_startup_wires_auto_mode_recovery_at_boot(store_root):
+    """The gap was wiring, not mechanism -- assert the boot path calls it."""
+
+    from openai4s.server.session_recovery import SessionRecoveryService
+
+    store, root = store_root
+    _crash_mid_review(store, root)
+
+    recovery = SessionRecoveryService(
+        store=store,
+        sessions=lambda: [],
+        turn_active=lambda _root: False,
+        approval_pending=lambda _root: False,
+        background_active=lambda _session: False,
+        release_idle=lambda _session, _reason: False,
+        owner_instance_id="daemon-NEW",
+    )
+    recovery.reconcile_startup()
+
+    assert [entry["run_id"] for entry in recovery.reconciled_auto_mode_runs] == [
+        "run-1"
+    ]
+    assert (
+        store.project_auto_mode_run(root, root)["run"]["status"] == "review_unavailable"
+    )
+    assert _next_turn(store, root, "daemon-NEW") == "running"
+
+
+def _crash_mid_repair(
+    store: Store, root: str, tmp_path: Path, *, bind_ledger: bool
+) -> None:
+    """Leave the row a `kill -9` during an auto-fix repair leaves behind."""
+
+    store.start_auto_mode_run(**_start_fields(root, owner="daemon-DEAD"))
+    evidence, candidate = _candidate_fields()
+    store.record_auto_mode_candidate("run-1", **candidate)
+    store.start_auto_mode_review("run-1", **_review_fields(evidence))
+    store.complete_auto_mode_review(
+        "review-1",
+        idempotency_key="review:complete",
+        status="completed",
+        verdict="issues",
+        assessment={"public_summary": "One material issue."},
+        findings=[
+            {
+                "finding_id": "finding-1",
+                "fingerprint": "stable-finding-1",
+                "severity": "major",
+                "category": "evidence",
+                "claim": "The claim outruns its evidence.",
+                "evidence_refs": ["artifact-1"],
+                "artifact_ids": ["artifact-1"],
+                "version_ids": ["version-1"],
+                "cell_ids": [],
+            }
+        ],
+        usage={},
+        completed_at=130,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    (workspace / "result.txt").write_text("candidate\n", encoding="utf-8")
+    tree = WorkspaceCAS(store.db_path.parent / "workspace-cas").capture(workspace)
+    checkpoint = store.create_session_checkpoint(
+        checkpoint_id="checkpoint-repair",
+        root_frame_id=root,
+        branch_id=root,
+        reason="pre_repair",
+        workspace_tree_id=tree["tree_id"],
+        auto_event_cursor=store.auto_mode_event_cursor(root),
+    )
+    store.start_auto_mode_repair(
+        "run-1",
+        repair_run_id="repair-1",
+        idempotency_key="repair-1:start",
+        finding_ids=["finding-1"],
+        before_version_ids=["version-1"],
+        checkpoint_id=checkpoint["checkpoint_id"],
+    )
+    if not bind_ledger:
+        return
+    group = store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id="turn-1",
+        kind="native_tools",
+        assistant_content="bounded repair",
+    )
+    store.bind_auto_mode_repair_execution_group(
+        "repair-1",
+        action_group_id=group["group_id"],
+        idempotency_key=f"repair-1:bind:{group['group_id']}",
+    )
+    # Proposed, never resolved: the exact ledger a `kill -9` mid-write leaves.
+    store.append_action_event(
+        group_id=group["group_id"],
+        type="proposed",
+        action_id="repair-write",
+        tool_call_id="repair-write",
+        canonical_arguments={"path": "result.txt", "content": "repaired\n"},
+        side_effect_class="workspace_write",
+        resource_keys=["workspace:result.txt"],
+    )
+
+
+def test_reconcile_seals_an_interrupted_repair_as_outcome_unknown(store_root, tmp_path):
+    """A half-applied repair is terminal truth, never a retryable candidate."""
+
+    store, root = store_root
+    _crash_mid_repair(store, root, tmp_path, bind_ledger=True)
+    assert store.project_auto_mode_run(root, root)["run"]["status"] == "repairing"
+
+    outcomes = store.reconcile_orphaned_auto_mode_runs(
+        owner_instance_id="daemon-NEW", now=500
+    )
+    assert outcomes == [
+        {"run_id": "run-1", "status": "paused", "terminal_reason": "outcome_unknown"}
+    ]
+
+    # `complete_repair` sealed its own terminal, and reconciliation left it
+    # alone rather than relabelling it `review_unavailable`: the daemon dying
+    # is why we stopped looking, not what we found.
+    repair = store._conn.execute(
+        "SELECT status,after_version_ids_json FROM repair_runs WHERE repair_run_id=?",
+        ("repair-1",),
+    ).fetchone()
+    assert repair["status"] == "outcome_unknown"
+    assert repair["after_version_ids_json"] == "[]"
+    assert _next_turn(store, root, "daemon-NEW") == "running"
+
+
+def test_reconcile_releases_a_repair_whose_ledger_was_never_bound(store_root, tmp_path):
+    """No completion status can represent this, so claim nothing and release."""
+
+    store, root = store_root
+    _crash_mid_repair(store, root, tmp_path, bind_ledger=False)
+
+    outcomes = store.reconcile_orphaned_auto_mode_runs(
+        owner_instance_id="daemon-NEW", now=500
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0]["run_id"] == "run-1"
+    assert outcomes[0]["abandoned_at"] == 500
+    # No invented terminal: the status still says what the run was doing, and
+    # only `abandoned_at` marks the tail as no longer current.
+    row = store._conn.execute(
+        "SELECT status,finished_at,abandoned_at,terminal_reason "
+        "FROM auto_mode_runs WHERE run_id='run-1'"
+    ).fetchone()
+    assert row["status"] == "repairing"
+    assert row["finished_at"] is None
+    assert row["terminal_reason"] is None
+    assert row["abandoned_at"] == 500
+    # The branch is released either way -- that is the whole point.
+    assert _next_turn(store, root, "daemon-NEW") == "running"
+
+
+def test_one_sweep_reconciles_every_dead_session_and_spares_the_live_one(tmp_path):
+    """The real boot condition is a mixed set, not one run in isolation."""
+
+    store = Store(tmp_path / "auto-mode-mixed.db")
+    project = store.create_project(name="Auto Mode mixed restart")
+    try:
+        roots = []
+        for index in range(3):
+            root = store.new_frame(project_id=project["project_id"], kind="turn")
+            store.ensure_session_branch(root_frame_id=root, branch_id=root)
+            roots.append(root)
+            store.start_auto_mode_run(
+                **_start_fields(
+                    root,
+                    run_id=f"run-{index}",
+                    turn_id=f"turn-{index}",
+                    execution_id=f"execution-{index}",
+                    # The third session belongs to the daemon booting now.
+                    owner="daemon-LIVE" if index == 2 else f"daemon-DEAD-{index}",
+                )
+            )
+
+        outcomes = store.reconcile_orphaned_auto_mode_runs(
+            owner_instance_id="daemon-LIVE", now=500
+        )
+        # Both dead sessions, in a deterministic order; the live one untouched.
+        assert [entry["run_id"] for entry in outcomes] == ["run-0", "run-1"]
+        assert {entry["status"] for entry in outcomes} == {"review_unavailable"}
+        assert store.project_auto_mode_run(roots[2], roots[2])["run"]["status"] == (
+            "running"
+        )
+    finally:
+        store.close()

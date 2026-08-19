@@ -2719,6 +2719,208 @@ class AutoModeRepository:
                     "Session workspace revert requires recovery before new actions"
                 )
 
+    def reconcile_orphaned_runs(
+        self, *, owner_instance_id: str, now: int
+    ) -> list[dict[str, Any]]:
+        """Drive runs left behind by a dead daemon to a definite terminal.
+
+        ``_persist_auto_mode`` commits start_run, record_candidate,
+        start_review and complete_review as four separate transactions, so a
+        ``kill -9`` between any two of them leaves a row in ``running``,
+        ``candidate``, ``reviewing`` or ``repairing`` -- none of which is in
+        ``_TERMINAL_STATUSES``.  ``start_run`` then refuses every later turn on
+        that branch with "already has a recovery-required active run", the
+        shadow caller swallows that conflict, and Auto Mode is silently dead
+        for the session: no route, no sweeper and no boot step ever clears the
+        row.
+
+        Recovery closes the record; it never repeats the work.  Each stranded
+        phase is closed through its own completion method, so the owner row,
+        its event and the digest chain end up exactly as consistent as a live
+        completion leaves them, and the run then terminates as
+        ``review_unavailable`` with reason ``daemon_restart``.  No outcome is
+        invented: an interrupted review is ``unavailable`` rather than a
+        verdict, and an interrupted repair is ``outcome_unknown``, which
+        ``complete_repair`` seals as its own ``paused`` terminal because a
+        half-applied repair is not a retryable candidate.
+
+        Ownership is the whole discriminator.  A run carrying THIS instance's
+        id is in flight and must not be touched; only a foreign owner proves
+        that the daemon which held it is gone.
+        """
+
+        owner_instance_id = _text("owner_instance_id", owner_instance_id)
+        now = _integer("now", now)
+        outcomes: list[dict[str, Any]] = []
+        # The lock is re-entrant and the scan opens no transaction of its own,
+        # so every completion below still gets its own BEGIN IMMEDIATE while a
+        # concurrent writer cannot interleave between the scan and the close.
+        with self._lock:
+            run_ids = [
+                str(row["run_id"])
+                for row in self._connection.execute(
+                    "SELECT run_id FROM auto_mode_runs WHERE trust_state='local' "
+                    "AND finished_at IS NULL AND abandoned_at IS NULL "
+                    "AND owner_instance_id<>? ORDER BY created_at,run_id",
+                    (owner_instance_id,),
+                ).fetchall()
+            ]
+            for run_id in run_ids:
+                outcomes.append(self._reconcile_orphaned_run_locked(run_id, now=now))
+        return outcomes
+
+    def _reconcile_orphaned_run_locked(
+        self, run_id: str, *, now: int
+    ) -> dict[str, Any]:
+        """Close one orphaned run's open phases, then seal its terminal."""
+
+        try:
+            self._close_orphaned_phases_locked(run_id, now=now)
+            run = self._run_locked(run_id)
+            if run["finished_at"] is not None or run["status"] in _TERMINAL_STATUSES:
+                # ``complete_repair`` seals its own terminal for an unknown
+                # outcome.  That is already a definite failure terminal, and
+                # relabelling it here would claim evidence nobody gathered.
+                return {
+                    "run_id": run_id,
+                    "status": str(run["status"]),
+                    "terminal_reason": run["terminal_reason"],
+                }
+            self.terminate_run(
+                run_id,
+                idempotency_key=f"daemon-restart:terminal:{run_id}",
+                status="review_unavailable",
+                reason="daemon_restart",
+                finished_at=now,
+            )
+            return {
+                "run_id": run_id,
+                "status": "review_unavailable",
+                "terminal_reason": "daemon_restart",
+            }
+        except (AutoModeConflictError, ValueError, PermissionError, KeyError) as exc:
+            # A phase that no completion method can represent (a repair whose
+            # ledger was never bound, say) must not leave the branch wedged.
+            # Abandoning claims nothing about what ran; it only says this tail
+            # is no longer current, which is what releases `start_run`.
+            try:
+                return self._release_unreconcilable_run_locked(
+                    run_id, now=now, error=exc
+                )
+            except Exception as release_error:  # noqa: BLE001
+                # One unrecoverable row must not cost every other session its
+                # recovery, so the sweep reports this one and keeps going.
+                self._connection.rollback()
+                return {
+                    "run_id": run_id,
+                    "unreconciled": str(release_error)[:300],
+                    "error": str(exc)[:300],
+                }
+
+    def _close_orphaned_phases_locked(self, run_id: str, *, now: int) -> None:
+        """Terminalize every durable phase the dead daemon left ``started``."""
+
+        for review in self._connection.execute(
+            "SELECT review_run_id FROM review_runs WHERE run_id=? "
+            "AND status='started' ORDER BY started_at,review_run_id",
+            (run_id,),
+        ).fetchall():
+            review_run_id = str(review["review_run_id"])
+            self.complete_review(
+                review_run_id,
+                idempotency_key=f"daemon-restart:review:{review_run_id}",
+                status="unavailable",
+                verdict="review_unavailable",
+                assessment={
+                    "public_summary": (
+                        "The reviewing daemon exited before this audit "
+                        "returned a verdict."
+                    ),
+                    "reconciled_by": "daemon_restart",
+                },
+                findings=[],
+                usage={},
+                completed_at=now,
+            )
+        for assessment in self._connection.execute(
+            "SELECT assessment_id FROM permission_review_assessments "
+            "WHERE run_id=? AND status='started' ORDER BY started_at,assessment_id",
+            (run_id,),
+        ).fetchall():
+            assessment_id = str(assessment["assessment_id"])
+            self.complete_permission_review(
+                assessment_id,
+                idempotency_key=f"daemon-restart:permission:{assessment_id}",
+                status="unavailable",
+                outcome="unavailable",
+                risk="unknown",
+                assessment={
+                    "public_summary": (
+                        "The reviewing daemon exited before this approval "
+                        "assessment returned."
+                    ),
+                    "reconciled_by": "daemon_restart",
+                },
+                completed_at=now,
+            )
+        for repair in self._connection.execute(
+            "SELECT repair_run_id FROM repair_runs WHERE run_id=? "
+            "AND status='started' ORDER BY started_at,repair_run_id",
+            (run_id,),
+        ).fetchall():
+            repair_run_id = str(repair["repair_run_id"])
+            bound = [
+                str(row["action_group_id"])
+                for row in self._connection.execute(
+                    "SELECT action_group_id FROM repair_execution_groups "
+                    "WHERE repair_run_id=? ORDER BY binding_ordinal",
+                    (repair_run_id,),
+                ).fetchall()
+            ]
+            self.complete_repair(
+                repair_run_id,
+                idempotency_key=f"daemon-restart:repair:{repair_run_id}",
+                status="outcome_unknown",
+                after_version_ids=[],
+                execution_group_ids=bound,
+                completed_at=now,
+            )
+
+    def _release_unreconcilable_run_locked(
+        self, run_id: str, *, now: int, error: Exception
+    ) -> dict[str, Any]:
+        """Release a branch whose run cannot reach a terminal truthfully."""
+
+        run = self._run_locked(run_id)
+        if (
+            self._connection.execute(
+                "SELECT 1 FROM settings WHERE key=?",
+                (revert_recovery_setting_key(str(run["root_frame_id"])),),
+            ).fetchone()
+            is not None
+        ):
+            # An unresolved workspace revert is a deliberate hold with its own
+            # recovery path.  Clearing it from boot would defeat that guard.
+            return {
+                "run_id": run_id,
+                "status": str(run["status"]),
+                "deferred": "revert_recovery_required",
+                "error": str(error)[:300],
+            }
+        self._connection.execute(
+            "UPDATE auto_mode_runs SET abandoned_at=?,"
+            "state_revision=state_revision+1,updated_at=? "
+            "WHERE run_id=? AND abandoned_at IS NULL",
+            (now, now, run_id),
+        )
+        self._connection.commit()
+        return {
+            "run_id": run_id,
+            "status": str(run["status"]),
+            "abandoned_at": now,
+            "error": str(error)[:300],
+        }
+
     def abandon_active_run_for_revert(
         self,
         *,

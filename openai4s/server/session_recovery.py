@@ -89,6 +89,9 @@ class SessionRecoveryService:
         )
         self._clock = clock or time.time
         self._recovering: set[str] = set()
+        # What `reconcile_startup` did to Auto Mode, kept for diagnostics: one
+        # entry per orphaned run, naming the terminal it reached.
+        self.reconciled_auto_mode_runs: list[dict[str, Any]] = []
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -120,6 +123,29 @@ class SessionRecoveryService:
         pause_plans = getattr(self.store, "pause_orphaned_executing_plans", None)
         if callable(pause_plans):
             pause_plans()
+        # And the same again for Auto Mode. A run left in `running`,
+        # `candidate`, `reviewing` or `repairing` is not terminal, so
+        # `start_run` refuses every later turn on that branch with "already has
+        # a recovery-required active run" -- which the shadow caller swallows,
+        # leaving Auto Mode silently dead for the session with nothing that
+        # would ever clear the row. The repository closes each stranded phase
+        # through its own completion method and seals a `review_unavailable` /
+        # `daemon_restart` terminal, so nothing already committed is re-run.
+        reconcile_auto_mode = getattr(
+            self.store, "reconcile_orphaned_auto_mode_runs", None
+        )
+        if callable(reconcile_auto_mode):
+            # Per-run failures are already absorbed into the returned outcomes,
+            # so what is left here is a store-level fault. Boot must survive it
+            # rather than take the whole daemon down with Auto Mode.
+            try:
+                self.reconciled_auto_mode_runs = list(
+                    reconcile_auto_mode(
+                        owner_instance_id=self.owner_instance_id, now=now
+                    )
+                )
+            except Exception:  # noqa: BLE001 — boot must not fail on this
+                self.reconciled_auto_mode_runs = []
         return generations
 
     def start(self) -> bool:

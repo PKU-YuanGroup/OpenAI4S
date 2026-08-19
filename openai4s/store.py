@@ -3127,6 +3127,13 @@ class Store:
         )
 
     # --- durable Auto Mode state / audit events ------------------------
+    def reconcile_orphaned_auto_mode_runs(
+        self, *, owner_instance_id: str, now: int
+    ) -> list[dict]:
+        return self._auto_mode.reconcile_orphaned_runs(
+            owner_instance_id=owner_instance_id, now=now
+        )
+
     def get_auto_mode_selection(self, scope_kind: str, scope_id: str) -> dict | None:
         return self._auto_mode.get_selection(scope_kind, scope_id)
 
