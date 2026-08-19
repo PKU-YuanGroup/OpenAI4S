@@ -20,6 +20,10 @@ environments before generating visual reports:
 uv sync --extra science --extra chemistry
 ```
 
+For optional RetroChimera single-step proposals, use `model_deployment.py` to
+verify and safely extract a reviewed public checkpoint, then call it through
+`SyntheseusBackend`; never place model weights in the Skill directory.
+
 RDKit is not required to plan, rank, or review routes. If the chemistry extra is
 unavailable on the current platform, omit it; the dashboard falls back to
 transparent local SVG placeholders while the rest of the skill remains usable.

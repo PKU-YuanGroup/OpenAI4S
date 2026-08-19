@@ -85,6 +85,34 @@ Other Syntheseus model wrappers have model-specific optional dependencies. Follo
 
 The adapter does not add `syntheseus`, `retrochimera`, PyTorch or CUDA to `pyproject.toml`. The worker reports installed package versions at runtime, and a missing or incompatible package is returned as a structured backend error.
 
+### Reproducible RetroChimera checkpoint setup
+
+`model_deployment.py` records the public Pistachio, USPTO-FULL and USPTO-50K RetroChimera archives and their upstream byte counts, MD5 values, DOI records and MIT license. Listing the registry is offline:
+
+```bash
+python skills/retrosynthesis_planning/model_deployment.py list
+```
+
+Downloading is disabled unless the operator supplies `--allow-network`. Run this command in an operator shell or the isolated model environment, subject to the deployment's normal network policy:
+
+```bash
+python skills/retrosynthesis_planning/model_deployment.py download \
+  uspto50k /models/retrochimera/retrochimera_uspto50k.zip \
+  --allow-network
+```
+
+The smaller USPTO-50K archive is useful for an installation smoke test but is not a substitute for the broader main checkpoint. Upstream describes Pistachio as the main and most powerful released checkpoint. Install either archive only after validation:
+
+```bash
+python skills/retrosynthesis_planning/model_deployment.py extract \
+  uspto50k \
+  /models/retrochimera/retrochimera_uspto50k.zip \
+  /models/retrochimera/uspto50k \
+  --manifest /models/retrochimera/uspto50k-manifest.json
+```
+
+The command validates the reviewed byte count and MD5, computes SHA-256, rejects absolute paths, traversal, backslashes and symlinks in the ZIP, bounds member count and expanded size, and publishes the model directory only after extraction succeeds. It refuses to replace an existing model directory. The generated manifest is path-free and can be passed directly to `SyntheseusBackend`.
+
 ## Model manifest
 
 A model manifest is public provenance, not an environment configuration file. It must not contain a local checkpoint path, credential, private dataset location or internal experiment name.
@@ -99,8 +127,8 @@ A model manifest is public provenance, not an environment configuration file. It
   "checkpoint_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "training_dataset": "Pistachio",
   "code_license": "MIT",
-  "checkpoint_license": "review-required",
-  "source_url": "https://github.com/microsoft/retrochimera",
+  "checkpoint_license": "MIT",
+  "source_url": "https://doi.org/10.6084/m9.figshare.30591107.v1",
   "metadata": {
     "reviewed_by": "replace-with-public-review-role"
   }
@@ -127,8 +155,14 @@ backend = SyntheseusBackend(
         "python",
     ),
     timeout_seconds=600,
+    env={
+        "WANDB_MODE": "offline",
+        "SYNTHESEUS_CACHE_DIR": "/models/syntheseus-cache",
+    },
 )
 ```
+
+`env` adds only the listed values to the inherited worker environment. It is intended for model-specific cache and offline-mode controls, not credentials; keep secrets in the normal credential broker.
 
 `--no-capture-output` is required, not cosmetic: without it `conda run` does not
 forward stdin, the worker reads an empty request, and every call comes back as

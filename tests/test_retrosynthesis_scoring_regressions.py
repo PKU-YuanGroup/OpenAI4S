@@ -1,11 +1,13 @@
 """Regression tests for retrosynthesis execution scoring and route rendering."""
 
+import hashlib
 import importlib
 import json
 import math
 import os
 import sys
 import textwrap
+import zipfile
 
 import pytest
 
@@ -34,6 +36,29 @@ def worker():
 def backends():
     sys.path.insert(0, str(get_config().skills_dir))
     return importlib.import_module("retrosynthesis_planning.external_backends")
+
+
+@pytest.fixture(scope="module")
+def model_deployment():
+    sys.path.insert(0, str(get_config().skills_dir))
+    return importlib.import_module("retrosynthesis_planning.model_deployment")
+
+
+def _synthetic_checkpoint(model_deployment, archive, members):
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name, content in members:
+            bundle.writestr(name, content)
+    payload = archive.read_bytes()
+    spec = model_deployment.CheckpointSpec(
+        name="synthetic",
+        dataset="synthetic fixture",
+        article_id=1,
+        file_id=2,
+        filename=archive.name,
+        byte_size=len(payload),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(),
+    )
+    return spec
 
 
 def _direct_purchase_route(*, rank=1, score=1.0, stock=True):
@@ -612,6 +637,69 @@ def test_backend_rejects_a_manifest_the_worker_altered(backends, tmp_path):
         backend.single_step("CCON", num_results=1, request_id="tamper-check")
 
     assert caught.value.code == "manifest_mismatch"
+
+
+def test_syntheseus_backend_passes_explicit_worker_environment(backends, tmp_path):
+    backend = backends.SyntheseusBackend(
+        model="RetroChimera",
+        model_dir=tmp_path / "checkpoint",
+        env={"SYNTHESEUS_CACHE_DIR": str(tmp_path / "cache"), "WANDB_MODE": "offline"},
+    )
+
+    assert backend.process.env == {
+        "SYNTHESEUS_CACHE_DIR": str(tmp_path / "cache"),
+        "WANDB_MODE": "offline",
+    }
+
+
+def test_retrochimera_checkpoint_install_is_verified_and_path_free(
+    backends, model_deployment, tmp_path
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment,
+        archive,
+        [("models.json", "{}"), ("submodel/weights.ckpt", b"weights")],
+    )
+
+    verification = model_deployment.verify_checkpoint(archive, spec)
+    model_dir = tmp_path / "model"
+    result = model_deployment.extract_checkpoint(archive, model_dir, spec)
+    manifest = model_deployment.model_manifest(spec, verification["checkpoint_sha256"])
+    normalized = backends.ModelManifest.from_mapping(manifest)
+
+    assert result["member_count"] == 2
+    assert (model_dir / "models.json").read_text(encoding="utf-8") == "{}"
+    assert (model_dir / "submodel" / "weights.ckpt").read_bytes() == b"weights"
+    assert normalized.provenance_status == "complete"
+    assert str(tmp_path) not in json.dumps(manifest)
+
+
+def test_retrochimera_checkpoint_install_rejects_zip_traversal(
+    model_deployment, tmp_path
+):
+    archive = tmp_path / "unsafe.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment, archive, [("../escaped.ckpt", b"not a checkpoint")]
+    )
+    model_dir = tmp_path / "model"
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError, match="unsafe checkpoint member"
+    ):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert not model_dir.exists()
+    assert not (tmp_path / "escaped.ckpt").exists()
+
+
+def test_retrochimera_checkpoint_download_requires_explicit_network_opt_in(
+    model_deployment, tmp_path
+):
+    spec = model_deployment.checkpoint_spec("uspto50k")
+
+    with pytest.raises(PermissionError, match="allow_network=True"):
+        model_deployment.download_checkpoint(spec, tmp_path / spec.filename)
 
 
 def test_worker_metadata_redacts_paths_by_value_not_by_key_name(worker):

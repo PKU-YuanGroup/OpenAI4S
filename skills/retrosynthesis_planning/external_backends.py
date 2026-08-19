@@ -578,6 +578,7 @@ class SyntheseusBackend:
         python_command: Iterable[str] | None = None,
         worker_path: str | Path | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         model_name = _clean_text(model, field_name="model")
         if model_name not in self.supported_models:
@@ -608,7 +609,9 @@ class SyntheseusBackend:
         self.allow_model_download = allow_model_download
         self.worker_path = str(worker)
         self.process = SubprocessRetrosynthesisBackend(
-            [*command_prefix, self.worker_path], timeout_seconds=timeout_seconds
+            [*command_prefix, self.worker_path],
+            timeout_seconds=timeout_seconds,
+            env=env,
         )
 
     def capabilities(self, *, request_id: str | None = None) -> dict[str, Any]:

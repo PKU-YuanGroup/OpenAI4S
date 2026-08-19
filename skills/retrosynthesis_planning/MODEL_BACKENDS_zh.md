@@ -85,6 +85,34 @@ pip install syntheseus==0.7.2 retrochimera==1.2.0
 
 Adapter 不会把 `syntheseus`、`retrochimera`、PyTorch 或 CUDA 加进 `pyproject.toml`。Worker 会报告运行时安装的包版本；缺少或不兼容的依赖会返回结构化 backend error。
 
+### 可复现的 RetroChimera checkpoint 部署
+
+`model_deployment.py` 登记公开的 Pistachio、USPTO-FULL 和 USPTO-50K RetroChimera 归档，以及上游字节数、MD5、DOI 记录和 MIT 许可证。列出注册表不需要联网：
+
+```bash
+python skills/retrosynthesis_planning/model_deployment.py list
+```
+
+除非操作者显式提供 `--allow-network`，否则禁止下载。应在操作者 shell 或隔离模型环境中运行，并遵守部署环境原有的网络策略：
+
+```bash
+python skills/retrosynthesis_planning/model_deployment.py download \
+  uspto50k /models/retrochimera/retrochimera_uspto50k.zip \
+  --allow-network
+```
+
+较小的 USPTO-50K 归档适合安装冒烟测试，但不能替代覆盖更广的主 checkpoint。上游把 Pistachio 描述为发布的主力且最强 checkpoint。只有通过校验后才安装归档：
+
+```bash
+python skills/retrosynthesis_planning/model_deployment.py extract \
+  uspto50k \
+  /models/retrochimera/retrochimera_uspto50k.zip \
+  /models/retrochimera/uspto50k \
+  --manifest /models/retrochimera/uspto50k-manifest.json
+```
+
+该命令会校验经审阅的字节数和 MD5、计算 SHA-256，拒绝 ZIP 中的绝对路径、路径穿越、反斜杠和符号链接，限制 member 数量及展开大小，并且仅在解压成功后发布模型目录。它拒绝替换已有模型目录。生成的 manifest 不含路径，可以直接传给 `SyntheseusBackend`。
+
 ## Model manifest
 
 Model manifest 是公开 provenance，不是环境配置文件。它不能包含本地 checkpoint 路径、凭据、私有数据集位置或内部实验名称。
@@ -99,8 +127,8 @@ Model manifest 是公开 provenance，不是环境配置文件。它不能包含
   "checkpoint_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "training_dataset": "Pistachio",
   "code_license": "MIT",
-  "checkpoint_license": "review-required",
-  "source_url": "https://github.com/microsoft/retrochimera",
+  "checkpoint_license": "MIT",
+  "source_url": "https://doi.org/10.6084/m9.figshare.30591107.v1",
   "metadata": {
     "reviewed_by": "replace-with-public-review-role"
   }
@@ -127,8 +155,14 @@ backend = SyntheseusBackend(
         "python",
     ),
     timeout_seconds=600,
+    env={
+        "WANDB_MODE": "offline",
+        "SYNTHESEUS_CACHE_DIR": "/models/syntheseus-cache",
+    },
 )
 ```
+
+`env` 只把列出的值加入继承的 worker 环境。它用于模型 cache 和离线模式控制，不用于凭据；秘密仍应进入正常的 credential broker。
 
 `--no-capture-output`是必需的，不是可选项：缺少它时 `conda run` 不会转发 stdin，
 worker 读到空请求，于是每次调用都会返回 `invalid_json` 错误响应而不是结果。
