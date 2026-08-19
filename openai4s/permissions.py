@@ -35,58 +35,6 @@ def _scope(value: str | None) -> str:
     return value if value in _SCOPES else "once"
 
 
-#: How the broker learns which approvals reviewer a conversation actually
-#: selected. This is a PORT, not an import: the durable selection is Web-session
-#: state owned by ``openai4s/server/``, and the broker is core infrastructure the
-#: CLI shares. Reaching into the server package from here would invert the
-#: dependency, and ``tests/test_config.py`` asserts that boundary explicitly.
-#: The server registers its adapter at startup; the CLI, which has no such
-#: state, leaves it unset and the operator's environment decides -- which is the
-#: only thing there is to decide from in a one-shot run.
-_SELECTION_RESOLVER: Callable[[Any, str, str], str] | None = None
-
-
-def set_approvals_reviewer_resolver(
-    resolver: Callable[[Any, str, str], str] | None,
-) -> None:
-    """Register how to resolve a conversation's ``approvals_reviewer``.
-
-    The resolver takes ``(store, root_frame_id, project_id)`` and returns the
-    effective selection, honouring import quarantine and the legacy migration.
-    """
-
-    global _SELECTION_RESOLVER
-    _SELECTION_RESOLVER = resolver
-
-
-def _daemon_config():
-    """The process config, for the Guardian's feature flags and budgets."""
-
-    from openai4s.config import get_config
-
-    return get_config()
-
-
-def _resolved_approvals_reviewer(
-    store, root_frame_id: str | None, project_id: str
-) -> str:
-    """The conversation's effective approvals reviewer, or "" if unknown.
-
-    A registered resolver that RAISES resolves to ``"user"`` -- the fail-closed
-    answer -- because "we could not tell" is not consent. No resolver at all is
-    a different statement: nothing in this process owns a durable selection, so
-    the operator's environment is the only expressed intent there is.
-    """
-
-    resolver = _SELECTION_RESOLVER
-    if resolver is None:
-        return ""
-    try:
-        return str(resolver(store, str(root_frame_id or ""), project_id) or "")
-    except Exception:  # noqa: BLE001 — an unreadable selection is not consent
-        return "user"
-
-
 #: Path segments and basenames that carry credentials without matching the
 #: host tool's basename denylist. `is_secret_path` tests the BASENAME only, so
 #: `~/.aws/credentials`, `~/.ssh/known_hosts` and `~/.config/gh/hosts.yml` all
@@ -153,6 +101,14 @@ def _credential_shaped_path(path: str) -> bool:
         if any(pair in normalized for pair in _CREDENTIAL_DIRS if "/" in pair):
             return True
     return False
+
+
+def _daemon_config():
+    """The process config, for the Guardian's feature flags and budgets."""
+
+    from openai4s.config import get_config
+
+    return get_config()
 
 
 def _guardian_hard_deny(
@@ -376,6 +332,16 @@ class PermissionBroker:
     RESOLVE_ACK_TIMEOUT = 30.0
 
     def __init__(self) -> None:
+        #: How the broker learns which approvals reviewer a conversation
+        #: actually selected. This is a PORT, not an import: the durable
+        #: selection is Web-session state owned by ``openai4s/server/``, while
+        #: the broker is core infrastructure the CLI shares. Reaching into the
+        #: server package from here would invert the dependency, and
+        #: ``tests/test_config.py`` asserts that boundary. The server registers
+        #: its adapter at startup; the CLI, which has no such state, leaves it
+        #: unset and the operator's environment decides -- the only thing there
+        #: is to decide from in a one-shot run.
+        self._selection_resolver: Callable[[Any, str, str], str] | None = None
         self._lock = threading.RLock()
         self._channels: dict[str, dict] = {}  # root_frame_id -> {emit, cancel}
         self._pending: dict[str, _Pending] = {}  # decision_id -> _Pending
@@ -437,6 +403,40 @@ class PermissionBroker:
         human approval is not mistaken for a wedged cell."""
         with self._lock:
             return bool(self._by_root.get(root_frame_id))
+
+    def set_approvals_reviewer_resolver(
+        self, resolver: Callable[[Any, str, str], str] | None
+    ) -> None:
+        """Register how to resolve a conversation's ``approvals_reviewer``.
+
+        The resolver takes ``(store, root_frame_id, project_id)`` and returns
+        the effective selection, honouring import quarantine and the legacy
+        ``review:auto:*`` migration.
+        """
+
+        with self._lock:
+            self._selection_resolver = resolver
+
+    def _approvals_reviewer(
+        self, store, root_frame_id: str | None, project_id: str
+    ) -> str:
+        """The conversation's effective approvals reviewer, or "" if unknown.
+
+        A registered resolver that RAISES resolves to ``"user"`` -- the
+        fail-closed answer -- because "we could not tell" is not consent. No
+        resolver at all is a different statement: nothing in this process owns
+        a durable selection, so the operator's environment is the only
+        expressed intent there is.
+        """
+
+        with self._lock:
+            resolver = self._selection_resolver
+        if resolver is None:
+            return ""
+        try:
+            return str(resolver(store, str(root_frame_id or ""), project_id) or "")
+        except Exception:  # noqa: BLE001 — an unreadable selection is not consent
+            return "user"
 
     # --- the gate (called by HostDispatcher, on the turn thread) ----------
     def gate(
@@ -598,7 +598,7 @@ class PermissionBroker:
                         "canonical_arguments": canonical_arguments,
                     },
                     config=_daemon_config(),
-                    approvals_reviewer=_resolved_approvals_reviewer(
+                    approvals_reviewer=self._approvals_reviewer(
                         store, root, proj or "default"
                     ),
                     expected_digest=created_request.get("action_digest"),

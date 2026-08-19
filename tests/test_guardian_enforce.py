@@ -200,23 +200,24 @@ def test_no_recorded_selection_falls_back_to_the_environment(monkeypatch):
 
 
 def test_broker_exposes_the_resolver_port_and_defaults_closed():
-    from openai4s import permissions
+    from openai4s.permissions import broker
 
-    original = permissions._SELECTION_RESOLVER
+    bkr = broker()
+    original = bkr._selection_resolver
     try:
-        permissions.set_approvals_reviewer_resolver(None)
+        bkr.set_approvals_reviewer_resolver(None)
         # No resolver: unknown, so the environment decides (see above).
-        assert permissions._resolved_approvals_reviewer(None, "r", "p") == ""
+        assert bkr._approvals_reviewer(None, "r", "p") == ""
 
-        permissions.set_approvals_reviewer_resolver(lambda *_: "auto_review")
-        assert permissions._resolved_approvals_reviewer(None, "r", "p") == "auto_review"
+        bkr.set_approvals_reviewer_resolver(lambda *_: "auto_review")
+        assert bkr._approvals_reviewer(None, "r", "p") == "auto_review"
 
         def _boom(*_args):
             raise RuntimeError("store unreadable")
 
         # A resolver that RAISES is different: we were supposed to know and
         # could not, which is not consent.
-        permissions.set_approvals_reviewer_resolver(_boom)
-        assert permissions._resolved_approvals_reviewer(None, "r", "p") == "user"
+        bkr.set_approvals_reviewer_resolver(_boom)
+        assert bkr._approvals_reviewer(None, "r", "p") == "user"
     finally:
-        permissions.set_approvals_reviewer_resolver(original)
+        bkr.set_approvals_reviewer_resolver(original)

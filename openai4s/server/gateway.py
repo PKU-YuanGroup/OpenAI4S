@@ -80,7 +80,6 @@ from openai4s.observability import (
     reset_correlation_id,
     set_correlation_id,
 )
-from openai4s.permissions import set_approvals_reviewer_resolver
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
@@ -2249,7 +2248,9 @@ class SessionRunner:
         # migration pinned to "user" would still be auto-approved on a daemon
         # started with OPENAI4S_UNATTENDED_APPROVAL=auto_review. The broker owns
         # the port; this is the Web adapter for it.
-        set_approvals_reviewer_resolver(
+        from openai4s.permissions import broker
+
+        broker().set_approvals_reviewer_resolver(
             lambda store, root_frame_id, project_id: str(
                 resolve_effective_selection(store, cfg, root_frame_id, project_id).get(
                     "approvals_reviewer"
