@@ -1380,3 +1380,51 @@ def test_the_recorded_but_uncontinued_refusal_marks_its_output_committed():
         app,
     )
     assert guard, "the decision card re-enables its buttons unconditionally"
+
+
+def test_guardian_credential_fence_covers_what_the_basename_denylist_misses():
+    """`is_secret_path` matches BASENAMES, so `~/.aws/credentials` passes it.
+
+    That is tolerable when a human is reading the approval card and can see the
+    path. It is not tolerable for an approval no human will ever see, so the
+    unattended Guardian keeps its own wider fence.
+    """
+
+    from openai4s.host.files import is_secret_path
+    from openai4s.permissions import _credential_shaped_path
+
+    missed_by_basename_denylist = [
+        "/Users/x/.aws/credentials",
+        "/Users/x/.ssh/known_hosts",
+        "/Users/x/.ssh/authorized_keys",
+        "/Users/x/.docker/config.json",
+        "/Users/x/.kube/config",
+        "/Users/x/.config/gcloud/application_default_credentials.json",
+        "/Users/x/.git-credentials",
+    ]
+    for path in missed_by_basename_denylist:
+        assert not is_secret_path(path), f"denylist unexpectedly covers {path}"
+        assert _credential_shaped_path(path), path
+
+    for ordinary in ("/Users/x/proj/data.csv", "/Users/x/.gitconfig", ""):
+        assert not _credential_shaped_path(ordinary), ordinary
+
+
+def test_guardian_credential_fence_resolves_symlinks_and_traversal(tmp_path):
+    """A name-based fence that trusts the name it was handed is a symlink away
+    from useless: the link is innocent and the target is not."""
+
+    from openai4s.permissions import _credential_shaped_path
+
+    secret = tmp_path / ".aws" / "credentials"
+    secret.parent.mkdir()
+    secret.write_text("[default]\n", encoding="utf-8")
+    link = tmp_path / "innocent.txt"
+    link.symlink_to(secret)
+
+    assert _credential_shaped_path(str(link))
+    assert _credential_shaped_path(str(tmp_path / "sub" / ".." / ".aws" / "creds"))
+    # A dangling link cannot be resolved; the literal spelling still decides.
+    dangling = tmp_path / "dangling.txt"
+    dangling.symlink_to(tmp_path / "nope" / "gone")
+    assert _credential_shaped_path(str(dangling)) is False

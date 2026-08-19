@@ -63,12 +63,16 @@ class _GuardianConfig:
 
 
 def _guardian_config(store, root_frame_id: str | None, project_id: str):
-    """Resolve the config the Guardian must decide under, or None on doubt.
+    """Resolve the config the Guardian must decide under.
 
-    Returning ``None`` makes ``decide_unattended`` fall back to the process
-    environment, which is strictly the previous behaviour; returning a config
-    whose ``approvals_reviewer`` we could not resolve would be worse than
-    admitting we do not know.
+    Always returns a config, never ``None``: handing back ``None`` would let
+    ``decide_unattended`` fall through to reading the process environment,
+    which is exactly the behaviour that made the durable per-conversation
+    selection unreachable. An unreadable selection resolves to ``"user"`` --
+    the fail-closed answer -- because "we could not tell" is not consent.
+
+    If ``get_config()`` itself raises, the exception propagates to the gate's
+    handler, which drops to the legacy path and denies; that is also closed.
     """
 
     from openai4s.config import get_config
@@ -120,21 +124,44 @@ _CREDENTIAL_BASENAMES = frozenset(
 )
 
 
+def _credential_shaped_candidates(path: str) -> list[str]:
+    """The spellings of one path that the fence must all consider.
+
+    A name-based fence that only sees the string it was handed is defeated by
+    `ln -s ~/.aws/credentials /tmp/innocent.txt`: the link name is innocent and
+    the target is not. `realpath` is what closes that, and it is also what
+    collapses `..` traversal. It can raise (a path too long, a symlink loop) and
+    the target need not exist, so the literal spelling is always checked too --
+    resolution is an addition to the check, never a replacement for it.
+    """
+
+    candidates = [path]
+    try:
+        candidates.append(os.path.realpath(path))
+    except (OSError, ValueError):  # symlink loop, ENAMETOOLONG, embedded NUL
+        pass
+    return candidates
+
+
 def _credential_shaped_path(path: str) -> bool:
     """Whether a path is credential-bearing by directory or by basename."""
 
-    normalized = (path or "").replace("\\", "/").rstrip("/").lower()
-    if not normalized:
+    if not path:
         return False
-    parts = [segment for segment in normalized.split("/") if segment]
-    if not parts:
-        return False
-    if parts[-1] in _CREDENTIAL_BASENAMES:
-        return True
-    segments = set(parts[:-1])
-    if segments & {name for name in _CREDENTIAL_DIRS if "/" not in name}:
-        return True
-    return any(pair in normalized for pair in _CREDENTIAL_DIRS if "/" in pair)
+    for candidate in _credential_shaped_candidates(path):
+        normalized = (candidate or "").replace("\\", "/").rstrip("/").lower()
+        if not normalized:
+            continue
+        parts = [segment for segment in normalized.split("/") if segment]
+        if not parts:
+            continue
+        if parts[-1] in _CREDENTIAL_BASENAMES:
+            return True
+        if set(parts[:-1]) & {name for name in _CREDENTIAL_DIRS if "/" not in name}:
+            return True
+        if any(pair in normalized for pair in _CREDENTIAL_DIRS if "/" in pair):
+            return True
+    return False
 
 
 def _guardian_hard_deny(
