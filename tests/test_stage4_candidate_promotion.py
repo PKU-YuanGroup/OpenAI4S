@@ -425,3 +425,24 @@ def test_an_unchanged_repair_leaves_the_candidate_alone(tmp_path):
     assert result["answer_replaced"] is False
     assert result["final_answer"] == unchanged
     store.close()
+
+
+def test_a_tool_only_turn_never_stamps_the_previous_turns_answer():
+    """`writable` being empty means two opposite things; only one may stamp.
+
+    Stage 1 delivery leaves it empty because it already wrote this turn's row,
+    which then needs the verdict stamped onto it. A gated tool-only turn leaves
+    it empty because there is no answer at all -- and the newest assistant row
+    in the branch is the PREVIOUS turn's, which stamping would relabel with
+    this turn's result.
+    """
+
+    source = GATEWAY.read_text("utf-8")
+    stamp_at = source.index("self.completion_gate.stamp_delivered_answer(")
+    guard = source.rindex("if gate_metadata is not None", 0, stamp_at)
+    condition = source[guard : source.index(":\n", guard)]
+    assert "delivered_row" in condition, condition
+    # And `delivered_row` is only true when a delivery row was actually written.
+    assert (
+        'delivered_row = bool(published["ok"] and published["delivery_id"])' in source
+    )

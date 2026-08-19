@@ -7676,9 +7676,7 @@ class SessionRunner:
                         # refuse to promote.
                         deliver_replacement=candidate_final is not None,
                     )
-                except (
-                    Exception
-                ):  # noqa: BLE001 - a failed gate is unverified, not fatal
+                except Exception:  # noqa: BLE001 - a failed gate is unverified
                     traceback.print_exc()
                     gate = None
                 # A gate that could not reach a verdict -- it raised, or the
@@ -7702,6 +7700,8 @@ class SessionRunner:
             # exists, so the bytes the user is given and the bytes the reviewer
             # read are the same bytes -- which is the entire content of the
             # claim `verified` makes.
+            # Set when Stage 1 delivery wrote this turn's answer row itself.
+            delivered_row = False
             if candidate_final is not None:
                 promoted_text = str(candidate_final["text"])
                 replaced = bool(gate and gate.get("answer_replaced"))
@@ -7728,6 +7728,7 @@ class SessionRunner:
                     # emit; only a replacement has bytes the user has not seen.
                     already_streamed=not replaced,
                 )
+                delivered_row = bool(published["ok"] and published["delivery_id"])
                 if not published["ok"]:
                     status = "failed"
                     failure_meta["code"] = str(published["code"])
@@ -7791,12 +7792,15 @@ class SessionRunner:
                 for blk in assistant_visible
                 if (blk.get("text") or "").strip() and not blk.get("persisted")
             ]
-            if gate_metadata is not None and not writable:
+            if gate_metadata is not None and delivered_row and not writable:
                 # Stage 1 delivery already wrote every row itself, bound to an
                 # Artifact manifest, so there is nothing left for the persist
                 # loop to carry the verdict on. Stamping is correct here and
-                # only here: the newest assistant row in the branch is the one
-                # this turn just delivered.
+                # ONLY here, which is why it is conditioned on this turn having
+                # actually written that row: on a tool-only turn -- gated, but
+                # with no answer to deliver -- `writable` is empty for the
+                # opposite reason, and the newest assistant row in the branch
+                # still belongs to the PREVIOUS turn.
                 try:
                     self.completion_gate.stamp_delivered_answer(
                         root_frame_id,
