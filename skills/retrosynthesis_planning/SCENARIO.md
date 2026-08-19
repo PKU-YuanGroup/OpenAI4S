@@ -1,215 +1,280 @@
-# Retrosynthesis Planning Scenario: Robust Multi-Route Planning When the Best Search Strategy Is Unknown
+# Retrosynthesis Domain Decomposition: From Disconnection Prediction to Reviewable Route Decisions
 
 ## Scenario overview
 
-This scenario covers the case where a target molecule, a purchasable-stock snapshot, and several deployable retrosynthesis models or search strategies are available, but the best strategy for the target is unknown. Different single-step models, expansion policies, filters, search depths, and stock definitions may produce materially different routes. A single search followed by taking the backend's top score can mistake model preference, duplicated hypotheses, or malformed trees for a reliable answer.
+“Generate a synthesis route for this target” is not one scientific problem. It contains several related but independently testable questions: where to disconnect, which precursors to propose, how to search recursively to available materials, whether a route is plausible, which conditions may work, and how to compare competing routes.
 
-Without exposing a reference synthesis or evaluator answer during planning, the workflow therefore searches a predeclared, bounded strategy portfolio under comparable budgets. It normalizes and audits every result, selects a robust strategy using solvability, stock termination, structural integrity, repeat stability, route diversity, and compute cost, and only then performs the final full-budget search. The final route pool is deduplicated, diversity-selected, enriched with traceable evidence, and rendered for chemist review.
+An end-to-end answer that is judged only by whether the final route looks reasonable cannot locate failure in the single-step model, tree search, stock definition, validator, or ranking logic. It also allows fluent LLM prose to hide a problem that the chemistry backend did not solve.
 
-This is route discovery and triage, not experimental validation. Model scores are not experimental success probabilities. Conditions, yields, selectivity, safety, and scale-up notes supplied by an LLM remain hypotheses requiring literature, ELN, expert, and experimental review.
+This scenario therefore defines eight domain subproblems rather than one fixed pipeline. Each subproblem has its own science query, input, output, executable solution, metrics, and failure boundary. A task may evaluate one subproblem or compose several. Downstream interpretation must not rewrite upstream deterministic results.
 
-## Scenario flow compared with the baseline
+## Problem map
 
 ```text
-Robust multi-strategy scenario                       Baseline
+                           Target SMILES
+                                │
+             ┌──────────────────┼──────────────────┐
+             ▼                  ▼                  ▼
+ Q1 Disconnection sites   Q2 Single-step       User constraints /
+                           precursors            fixed stock
+             │                  │                  │
+             └──────────┬───────┘                  │
+                        ▼                          │
+                 Q3 Multi-step search ◀────────────┘
+                        │
+               ┌────────┴────────┐
+               ▼                 ▼
+        Q4 Stock termination  Q5 Feasibility validation
+               │                 │
+               └────────┬────────┘
+                        ▼
+          Q6 Conditions, selectivity, and risk
+                        │
+                        ▼
+             Q7 Ranking and route diversity
+                        │
+                        ▼
+          Q8 Evidence, confidence, and reporting
 
-Target SMILES + fixed stock + backend assets         Target SMILES + one config
-        │                                                  │
-        ▼                                                  ▼
-Normalize target and freeze input boundary             Run one search
-        │                                                  │
-        ▼                                                  ▼
-Declare strategy portfolio and equal budgets           Sort by backend score
-        │                                                  │
-        ▼                                                  ▼
-┌──── Loop over candidate strategies ────┐             Return Top-N routes
-│                                         │
-│ Select policy / filter / seed / budget  │
-│        ↓                                │
-│ Run bounded retrosynthesis search       │
-│        ↓                                │
-│ Normalize routes + structural audit     │
-│        ↓                                │
-│ Score solvability, stock termination,   │
-│ stability, diversity, audit risk, cost  │
-│        ↓                                │
-│ Aggregate strategy diagnostics          │
-└─────────────────────────────────────────┘
-        │
-        ▼
-Select a robust lower-cost strategy
-        │
-        ▼
-Run the final full-budget search
-        │
-        ▼
-Merge and normalize the route pool
-        │
-        ▼
-Deterministic audit + hard-constraint filtering
-        │
-        ▼
-Rank + deduplicate + diversity-select
-        │
-        ▼
-Evidence retrieval + explicitly labelled LLM hypotheses
-        │
-        ▼
-Routes, starting materials, diagnostics, and review report
+Q8's evidence and uncertainty boundary applies to Q1–Q7; it is not merely a
+disclaimer appended at the end.
 ```
 
-## Stages
+## Subproblem summary
+
+| Subproblem | Core question | Primary output | Independently testable |
+| --- | --- | --- | --- |
+| Q1. Disconnection prediction | Which bonds should be disconnected first? | Ranked reaction centers / bond sets | Yes |
+| Q2. Single-step precursor generation | Which precursor sets can produce the target in one step? | Top-K precursor sets and reaction hypotheses | Yes |
+| Q3. Multi-step route search | How can single-step proposals reach available materials recursively? | AND-OR route trees | Yes |
+| Q4. Stock termination | Are route leaves truly in the permitted stock? | Stock matches and unresolved leaves | Yes |
+| Q5. Feasibility validation | Is each route structurally and chemically coherent? | Errors, warnings, and plausibility evidence | Yes |
+| Q6. Conditions, selectivity, and risk | How might each step be run and what can fail? | Condition candidates and risk evidence | Yes |
+| Q7. Ranking and diversity | Which routes are preferable and genuinely distinct? | Pareto ranking and diverse Top-N set | Yes |
+| Q8. Evidence, confidence, and reporting | Which claims are predictions, evidence, or hypotheses? | Provenance, uncertainty, and review report | Yes |
+
+## Q1. Reaction-center and disconnection prediction
 
 ### Science query
 
-Given a target SMILES, a fixed purchasable-stock snapshot, and deployable retrosynthesis models or search strategies, automatically select a robust search strategy and generate structurally valid, stock-terminated, meaningfully distinct multi-step routes for chemist review without seeing a reference route, true conditions, or the evaluator's preferred configuration.
+Given a target molecule without reference-route access, identify one or more bonds worth prioritizing for retrosynthetic disconnection.
 
-### Stage 1. Target validation and boundary freezing
+### Input and output
 
-**Goal:** Establish one reproducible target representation and freeze the inputs visible to the scenario.
+- **Input:** Canonical target SMILES and optional protected-group, forbidden-bond, stereochemistry, or disconnection-count constraints.
+- **Output:** Ranked bond sets containing atom indices, bond types, model score, policy source, and constraint status.
 
-**Input:** Target SMILES, AiZynthFinder configuration, stock files, permitted policies and filters, and optional model manifests.
+### Executable solution
 
-**Output:** Canonical target, asset summary, stock identity, and run provenance.
+Parse and canonicalize the molecule with RDKit, obtain Top-K centers from a template classifier, graph model, or bond differences inferred from single-step outputs, merge duplicate centers while preserving model disagreement, and apply explicit hard constraints. Return candidates rather than declaring one center chemically correct; Q2, Q3, and Q5 provide separate tests.
 
-**Method:** Parse and canonicalize the target with RDKit when available, reject empty or invalid structures, and record versions or digests for configurations, stocks, and checkpoint manifests. Every candidate strategy must reuse the same target and stock snapshot.
+### Metrics
 
-### Stage 2. Search portfolio and budget definition
+Top-K reaction-center recall, bond precision/recall/F1, hidden-reference disconnection match, deduplication rate, cross-model agreement, and constraint violations.
 
-**Goal:** Declare a chemically and operationally meaningful bounded strategy space before search begins.
+### Current capability and gap
 
-**Input:** Expansion policies, filter policies, stocks, search algorithms, depth and iteration limits, seeds, and optional single-step backends.
+RetroChimera/Syntheseus proposals and AiZynthFinder policies indirectly carry disconnection information. The repository does not yet expose reaction centers as a stable public result; it needs an atom-mapping/bond-diff adapter and evaluator.
 
-**Output:** A bounded `search portfolio` with explicit parameters, seeds, and resource limits.
+## Q2. Single-step retrosynthetic precursor generation
 
-**Method:** AiZynthFinder owns multi-step tree search. RetroChimera or another Syntheseus wrapper may supply single-step precursor proposals but must not be presented as a complete multi-step planner. Candidate strategies receive equal or explicitly normalized expansion, wall-time, and concurrency budgets.
+### Science query
 
-### Stage 3. Bounded multi-strategy search
+Given a target molecule or specified reaction center, generate precursor sets capable of reaching the product in one reaction.
 
-**Goal:** Produce comparable routes and run diagnostics for each strategy without reference-route access.
+### Input and output
 
-**Input:** Canonical target, fixed stock, and `search portfolio`.
+- **Input:** Target SMILES, optional reaction center, model identity, and Top-K.
+- **Output:** Ranked precursor sets, reaction SMILES, score and score type, and model provenance.
 
-**Output:** Raw route exports, status, failure information, and resource use for every strategy and seed.
+### Executable solution
 
-**Method:** Run `aizynthcli` for each bounded strategy and retain the raw JSON, optional checkpoints, exit state, timing, and errors. External single-step models use the versioned JSON boundary and report model version, checkpoint digest, training dataset, and runtime package versions.
+Invoke an AiZynthFinder expansion policy or isolated `SyntheseusBackend`, canonicalize and validate every precursor, deduplicate unordered precursor sets, retain raw score semantics, validate mapped reactions and metadata, and optionally add an independent forward-model round-trip score. Missing data stays unknown; an LLM cannot fabricate it.
 
-### Stage 4. Route normalization
+### Metrics
 
-**Goal:** Convert heterogeneous search results into one comparable representation.
+Top-K exact precursor-set accuracy, canonical precursor recall, reaction-center consistency, invalid/duplicate/empty prediction rates, forward round-trip success, latency, and predictions per target.
 
-**Input:** Raw route JSON or versioned external-backend responses.
+### Current capability and gap
 
-**Output:** A common route schema containing the tree, solved state, backend score, steps, starting materials, and source metadata.
+The repository implements versioned external requests/responses, checkpoint provenance, Top-K normalization, and structured errors. It still needs an independent forward backend and live scientific-accuracy benchmarks; response replay currently verifies engineering contracts, not chemistry accuracy.
 
-**Method:** `normalize_routes(...)` standardizes shape while preserving strategy, seed, model, and original rank. Missing information remains unknown. Normalization never pretends that raw scores from different models are calibrated probabilities.
+## Q3. Multi-step route search and composition
 
-### Stage 5. Deterministic structural audit
+### Science query
 
-**Goal:** Reject broken exports and expose obvious structural risks before LLM interpretation or final selection.
+How can single-step proposals be recursively composed into complete routes from the target to permitted starting materials?
 
-**Input:** Normalized route trees.
+### Input and output
 
-**Output:** Route-level errors, warnings, and an audit summary.
+- **Input:** Target, expansion and filter policies, stock, search budget, and user constraints.
+- **Output:** AND-OR route trees with solved state, depth, leaves, search source, and original rank.
 
-**Method:** Detect missing trees, missing or invalid molecule SMILES, reactions without precursors, duplicate precursors, missing reaction identity, and simple product-versus-precursor elemental deficits when RDKit is available. Errors may be hard filters. Warnings remain visible because this audit is not a forward model and cannot establish feasibility, conditions, yield, or selectivity.
+### Executable solution
 
-### Stage 6. Blind strategy assessment and selection
+Use AiZynthFinder's configured tree search. Expand molecule nodes with a single-step policy, preserve the AND semantics of each reaction's precursor set, prune with declared filters, bound cycles/depth/iterations/time, and save raw exports and checkpoints. Partial `solved=False` trees remain diagnostic output and are never presented as complete routes.
 
-**Goal:** Select a robust, affordable strategy without evaluator Ground Truth.
+### Metrics
 
-**Input:** Normalized routes, audit results, stock termination, repeated runs, and resource use.
+Solved-target rate, Top-N route success, node/expansion count, depth, wall time, peak memory, reference tree/reaction/intermediate similarity, replay consistency, and timeout rate.
 
-**Output:** One selected strategy or a small Pareto set with an explainable decision record.
+### Current capability and gap
 
-**Method:** Aggregate solved-route rate, complete stock termination, structurally valid-route rate, agreement across seeds, independent route count, route-feature coverage, shortest depth, unresolved leaves, runtime failures, and compute cost. Use predeclared weights or Pareto rules. Do not compare uncalibrated raw scores across backends. Prefer the cheaper, simpler, more stable strategy when outcomes are close.
+The repository safely constructs `aizynthcli` commands and normalizes exported route trees. Real search remains in an optional AiZynthFinder environment; offline CI fixtures do not claim live model-search performance.
 
-### Stage 7. Final full-budget search and route-pool merge
+## Q4. Purchasable-material and stock termination
 
-**Goal:** Generate the final candidate pool using only the blindly selected strategy decision.
+### Science query
 
-**Input:** Selected strategy, canonical target, fixed stock, and final budget.
+Are route leaves genuinely members of the task's permitted stock, and which leaves remain unresolved?
 
-**Output:** Final raw route pool with complete provenance.
+### Input and output
 
-**Method:** Increase to the final budget only after strategy selection. If several Pareto strategies are retained, run and merge them without using reference-route similarity to choose among them. Persist parameters, seeds, raw exports, and resource use.
+- **Input:** Route leaves, frozen stock snapshot, and declared salt/tautomer/stereochemistry matching policy.
+- **Output:** Per-leaf `in_stock`, matched record, matching rule, stock version, and unresolved reason.
 
-### Stage 8. Route ranking, deduplication, and diversity selection
+### Executable solution
 
-**Goal:** Select high-quality candidates representing distinct chemical ideas rather than repeated variants.
+Freeze and hash the stock before the run, perform exact canonical-SMILES matching first, treat salt stripping and tautomer normalization as explicit later tiers, separate fixed-stock membership from time-sensitive supplier search, and record the exact rule that produced every match. An LLM cannot label an unmatched leaf purchasable.
 
-**Input:** Final normalized pool, audit results, user constraints, and optional reaction evidence.
+### Metrics
 
-**Output:** Ranked independent routes with duplicate and diversity diagnostics.
+Stock-membership precision/recall, fully terminated route rate, unresolved-leaf count, per-tier match rates, and stock/match provenance completeness.
 
-**Method:** Rank deterministically using solved status, constraints, audit penalties, backend ordering, steps, and starting materials. Merge exact duplicates using stable route signatures over reaction identity, products, precursors, and leaves while retaining `source_ranks` and `duplicate_count`. Apply Jaccard-based route-feature diversity selection. Any similar route restored to fill a display quota must carry `diversity_relaxed=True`.
+### Current capability and gap
 
-### Stage 9. Evidence enrichment and hypothesis annotation
+AiZynthFinder provides search-time stock termination and reports starting materials. A stable per-leaf stock-match schema and snapshot digest still need to be surfaced for auditability.
 
-**Goal:** Add traceable evidence while separating observations from model-written hypotheses.
+## Q5. Structural integrity and reaction feasibility validation
 
-**Input:** Candidate routes and their targets, intermediates, starting materials, and reactions.
+### Science query
 
-**Output:** Molecule briefs, literature or database sources, reaction interpretation, condition hypotheses, and risk notes.
+Is a candidate route structurally coherent, and does it contain invalid molecules, missing reactants, impossible atom changes, or weak reaction steps?
 
-**Method:** Retrieve PubChem, literature, and supplier records through guarded Host capabilities and store retrieval provenance. Normal AiZynthFinder exports do not predict conditions. Conditions require a separate predictor, literature evidence, or an explicitly uncertain LLM hypothesis. The LLM may explain a route but must not silently add, delete, or rewrite deterministic route-tree nodes.
+### Input and output
 
-### Stage 10. Route output and diagnosis
+- **Input:** Normalized route tree, reaction SMILES/templates, optional forward model, and literature evidence.
+- **Output:** Deterministic errors/warnings, forward evidence, precedent status, and explicitly unvalidated items.
 
-**Goal:** Produce a reviewable and rejectable decision package rather than one opaque "best route."
+### Executable solution
 
-**Input:** Final routes, audits, evidence, provenance, and strategy diagnostics.
+Run deterministic checks first, then atom-mapping/conservation checks when available, optionally perform an independent forward round trip, and retrieve exact or similarity-based precedents. Keep structural audit, forward prediction, and literature evidence as separate signals; combining them into a fake universal feasibility probability is prohibited.
 
-**Output:** Route trees, starting materials, rankings, audit findings, strategy diagnostics, HTML dashboard, and Markdown report.
+### Metrics
 
-**Method:** Report solved state, steps, stock termination, backend source, score type, duplicate provenance, diversity state, and audit issues for every route. Keep backend output, deterministic computation, external evidence, and LLM hypotheses visually distinct. Return structured failure diagnostics when no route satisfies the constraints.
+Structural error/warning count, mapping/conservation pass rate, forward rank/score, precedent coverage, classification precision/recall/AUROC against evaluator labels, and calibration error only for genuinely calibrated validators.
 
-## Automation feasibility
+### Current capability and gap
 
-The workflow can be orchestrated in Python, but experimental feasibility cannot be established by computation alone:
+`structural_audit.py` already checks tree integrity, SMILES, reaction children, duplicate precursors, missing identity, and simple elemental deficits. It is explicitly not a forward model. A deployable forward predictor, atom mapper, and reaction-evidence evaluator remain necessary.
+
+## Q6. Reaction conditions, selectivity, safety, and scale-up risk
+
+### Science query
+
+For a fixed reaction step, which reagents, solvents, temperatures, and times are worth testing, and what selectivity, safety, or scale-up failures are plausible?
+
+### Input and output
+
+- **Input:** Reactants, product, center, optional literature/ELN, and optional condition model.
+- **Output:** Top-K condition candidates, evidence, applicability caveats, selectivity risks, safety notes, and validation experiments.
+
+### Executable solution
+
+Prefer exact or close precedents, optionally invoke a dedicated condition predictor, preserve several candidates, use an LLM only to organize evidence and explicit hypotheses, separately assess functional-group compatibility and selectivity, and return unknown when no support exists. Fabricated yields are forbidden.
+
+### Metrics
+
+Top-K reagent/solvent/catalyst/temperature recall, condition-set similarity, temperature error, selectivity-risk recall, hazardous-reagent recall, evidence-backed condition rate, and correct abstention rate.
+
+### Current capability and gap
+
+The Skill can retrieve evidence through guarded Host calls and generate explicitly labelled LLM hypotheses. It does not contain a validated condition-prediction backend, so fluent condition text is not a scientific solution to this subproblem.
+
+## Q7. Route ranking, deduplication, and diversity decisions
+
+### Science query
+
+Given several candidate routes, which should be reviewed first, and which represent genuinely different chemical strategies?
+
+### Input and output
+
+- **Input:** Routes, audit findings, stock matches, user constraints, and optional cost/evidence/condition data.
+- **Output:** Multi-objective/Pareto ranking, duplicate provenance, and a diverse Top-N set.
+
+### Executable solution
+
+Apply hard constraints before scores, rank using solved state, steps, stock completion, audit risk, evidence, cost, and search source, merge exact route signatures while preserving `duplicate_count` and `source_ranks`, and select diversity over reaction/product/precursor/leaf features. Weights remain evaluator-independent.
+
+### Metrics
+
+Valid/solved/stock-complete fraction in Top-N, NDCG/Spearman/pairwise agreement with chemists, duplicate-removal rate, feature coverage, maximum route similarity, Pareto coverage, and ranking stability under small weight perturbations.
+
+### Current capability and gap
+
+`workflow.py` and `route_review.py` implement deterministic ranking, stable-signature deduplication, Jaccard diversity, and `diversity_relaxed`. This is not yet a chemist-calibrated industrial utility function; cost, yield, equipment, and organizational constraints require separate data.
+
+## Q8. Evidence, confidence, failure diagnosis, and review output
+
+### Science query
+
+How can a reviewer distinguish backend predictions, deterministic calculations, external evidence, and LLM hypotheses—and receive an honest failure when a subproblem is unsolved?
+
+### Input and output
+
+- **Input:** Q1–Q7 outputs, manifests, raw route exports, retrieved sources, and run logs.
+- **Output:** Provenance-complete structured JSON, HTML/Markdown review artifacts, uncertainty boundaries, and failure reasons.
+
+### Executable solution
+
+Label every result by source type, record model/checkpoint/runtime identity, preserve retrieval URL/request/time/digest, render merged molecule nodes without losing route AND-OR semantics or duplicate provenance, and return structured failure/unknown states for missing checkpoints, timeouts, unsolved searches, or absent evidence.
+
+### Metrics
+
+Provenance completeness, replay and normalized-digest consistency, source-label accuracy, failure-classification accuracy, appropriate abstention rate, and unsupported-claim count.
+
+### Current capability and gap
+
+The repository implements path-free manifests, checkpoint hashes, versioned responses, structured backend errors, route dashboards, and Markdown reports. A task-level schema still needs to unify independent Q1–Q7 confidence and evaluator results.
+
+## Recommended task compositions
+
+The subproblems do not have to run as one pipeline:
+
+| Task | Subproblems | Boundary |
+| --- | --- | --- |
+| Single-step benchmark | Q1 + Q2 + Q5 + Q8 | Evaluates disconnections and precursors, not complete routes |
+| Multi-step benchmark | Q2 + Q3 + Q4 + Q5 + Q8 | Evaluates reaching one frozen stock |
+| Route-selection benchmark | Q5 + Q7 + Q8 | Uses fixed candidate routes so search quality cannot leak into ranking |
+| Condition benchmark | Q5 + Q6 + Q8 | Uses fixed reactions so planner quality cannot leak into conditions |
+| End-to-end chemist review | Q1–Q8 | Produces routes and evidence but still does not establish experimental success |
+
+## Automation status
 
 ```text
-Target normalization                       ✓
-Search command construction and loops      ✓
-AiZynthFinder multi-step search             ✓ (optional environment/assets)
-RetroChimera single-step proposals          ✓ (verified checkpoint required)
-Route schema normalization                  ✓
-Deterministic structural audit              ✓
-Blind diagnostics and Pareto selection      ✓
-Ranking, deduplication, diversity selection ✓
-Evidence retrieval and provenance           ✓ (approved network required)
-HTML / Markdown output                      ✓
-Experimental conditions, yield, feasibility ✗ (literature/ELN/expert/lab required)
+Q1 disconnection prediction             △ adapter/evaluator needed
+Q2 single-step precursor generation     ✓ protocol exists; live accuracy needed
+Q3 multi-step search                    ✓ optional AiZynthFinder environment/assets
+Q4 stock termination                    △ search works; per-leaf provenance needed
+Q5 deterministic structural audit       ✓
+Q5 forward/literature feasibility       △ independent backends/evaluator needed
+Q6 conditions and selectivity            △ evidence + LLM hypotheses today
+Q7 ranking, deduplication, diversity     ✓ baseline capability implemented
+Q8 provenance and review output         ✓ baseline capability implemented
+Experimental success/yield/scale-up     ✗ expert and laboratory confirmation
 ```
 
-The repository already implements safe search-command construction, normalization and ranking, route deduplication and diversity selection, structural audit, the external single-step protocol, checkpoint provenance, and review rendering. The complete multi-strategy loop and blind strategy selector belong in a scenario orchestration layer with offline fixtures and separately marked live-backend tests.
+## Unified hard constraints
 
-## Evaluation metrics
-
-Ground Truth is evaluator-only and becomes visible after the run:
-
-1. **Reference-route recovery:** reaction steps and centers/templates, key intermediates, starting materials, and route-tree similarity.
-2. **Route validity:** solved-route rate, complete stock termination, parseable SMILES, structural-error count, and unresolved leaves.
-3. **Route quality:** step count, starting-material burden, constraint satisfaction, audit warnings, and forward or literature support when available.
-4. **Route diversity:** independent route count, reaction-feature coverage, starting-material differences, and maximum pairwise similarity.
-5. **Strategy robustness:** consistency of solved state, key disconnections, and terminal materials across seeds or bounded perturbations.
-6. **Iteration and selection quality:** whether several predeclared strategies were truly compared, failures retained, lower-cost ties preferred, and the final run followed the blind decision.
-7. **Evidence and provenance completeness:** traceability of model/checkpoint, configuration, stock, raw exports, external sources, and LLM hypotheses.
-8. **Resource efficiency:** wall time, search expansions, peak memory, timeout rate, and compute per independent valid route.
-
-## Hard implementation constraints
-
-1. **Ground-truth isolation:** The agent cannot access reference routes, hidden templates or disconnections, or evaluator scores during search, selection, ranking, evidence retrieval, or reporting.
-2. **Fixed target and stock:** All strategies use the identical canonical target and stock snapshot. Any tautomer, salt, or representation transform is declared before the run and applied uniformly.
-3. **Predeclared search space:** Policies, filters, stocks, single-step backends, depths, iterations, and seeds are bounded before search. Evaluator feedback cannot trigger a favorable new strategy.
-4. **Budget parity:** Strategy comparison uses equal or normalized time, expansions, and concurrency. Full-budget search starts only after blind selection.
-5. **Backend score separation:** Raw scores from different models or policies are not directly comparable probabilities or experimental success rates.
-6. **Route-source integrity:** Deterministic route trees come only from declared search backends or versioned model responses. An LLM cannot invent or repair steps and relabel them as backend output.
-7. **Structural-audit ordering:** Audit runs before LLM annotation. Natural-language interpretation cannot suppress deterministic errors or warnings.
-8. **Stock claim constraint:** Only fixed-stock matches may be labelled in-stock or purchasable. Supplier search is separate timestamped evidence.
-9. **Deduplication transparency:** Merged routes retain signatures, duplicate counts, and source ranks. Reintroduced similar routes expose `diversity_relaxed`.
-10. **Final-search constraint:** Final strategy and budget follow blind diagnostics; hidden Ground Truth cannot tune or cherry-pick the final routes.
-11. **Evidence isolation:** Literature, database, ELN, and supplier claims retain source provenance. Retrieved text cannot alter configuration, stock, or evaluator logic.
-12. **Hypothesis labelling:** LLM-derived conditions, yield, selectivity, safety, scale-up feasibility, and verdicts are explicit hypotheses with validation steps.
-13. **Model provenance:** External calls record model/version, checkpoint ID and SHA-256, training dataset, runtime packages, and failures. Weights stay outside the Skill and repository.
-14. **Failure honesty:** Missing checkpoints, unavailable backends, timeouts, unsolved searches, and hard-constraint rejection produce structured failures, never fabricated routes.
+1. **Ground-truth isolation:** Reference routes, true precursors/conditions, expert disconnections, and evaluator scores are evaluator-only.
+2. **Subproblem isolation:** A subproblem receives fixed inputs; better upstream search cannot secretly inflate a condition or ranking benchmark.
+3. **Fixed target and stock:** Canonicalization, stock snapshot, salt/tautomer, and stereochemistry rules are declared in advance.
+4. **Backend score separation:** Raw scores from different models are not directly comparable probabilities or experimental success rates.
+5. **Route-source integrity:** Route nodes come from declared backends; an LLM cannot invent or repair them and relabel the result.
+6. **Audit before interpretation:** Deterministic errors and warnings survive later language-model interpretation.
+7. **Stock claim constraint:** Only frozen-stock matches are labelled in-stock; supplier pages are timestamped external evidence.
+8. **Evidence separation:** Backend output, deterministic computation, external evidence, and LLM hypotheses carry distinct labels.
+9. **No fabricated conditions:** Without a condition model or evidence, return unknown or hypothesis—never invented yields or operating facts.
+10. **Deduplication transparency:** Merged routes retain signatures, counts, and sources; restored similar routes expose `diversity_relaxed`.
+11. **Model provenance:** External calls record model/version, checkpoint ID/SHA-256, training data, runtime packages, and failures.
+12. **Failure honesty:** An unsolved subproblem returns structured failure rather than being disguised by downstream prose.

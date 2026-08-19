@@ -76,8 +76,8 @@ audit = audit_routes(routes)
 | [`syntheseus_worker.py`](syntheseus_worker.py) | 用于 RetroChimera 和受支持 Syntheseus 模型类别的隔离可选依赖 worker。它在处理请求前把文件描述符 1 重定向到 stderr（使原生模型输出无法破坏协议），剔除模型 metadata 中的文件系统路径，并只输出一个结构化 JSON 响应。 |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | 外部模型隔离安装、provenance manifest、使用方式、wire error、科学边界和离线 replay 验证的英文说明。 |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | 外部模型后端与可信度说明的中文版本。 |
-| [`SCENARIO.md`](SCENARIO.md) | 稳健多策略逆合成 Scenario 的英文版：盲策略选择、有界搜索、路线审计、去重、多样性、证据、评测指标和实现约束。 |
-| [`SCENARIO_zh.md`](SCENARIO_zh.md) | 稳健多策略逆合成 Scenario 与评测契约的中文版。 |
+| [`SCENARIO.md`](SCENARIO.md) | 八个可独立评测的逆合成领域问题英文版：断键、前体、多步搜索、可行性、条件、路线决策和证据。 |
+| [`SCENARIO_zh.md`](SCENARIO_zh.md) | 逆合成领域子问题分解及逐问题解决/评测契约的中文版。 |
 
 这一层的定向回归测试位于 [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) 和 [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py)。
 
