@@ -76,6 +76,8 @@ See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_
 | [`syntheseus_worker.py`](syntheseus_worker.py) | The isolated optional-dependency worker for RetroChimera and supported Syntheseus model classes. It moves descriptor 1 onto stderr before handling a request — so native model output cannot corrupt the protocol — strips filesystem paths out of model metadata, and emits one structured JSON response. |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | English guide to isolated model installation, provenance manifests, usage, wire errors, scientific limits and offline replay verification. |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | Chinese version of the external-model backend and trust guide. |
+| [`MODEL_TASKS.md`](MODEL_TASKS.md) | Engineering audit of six independently testable model tasks, their selected open models, alternatives, licenses, deployment evidence, and scientific limits. |
+| [`MODEL_TASKS_zh.md`](MODEL_TASKS_zh.md) | Chinese version of the model-backed task audit. |
 | [`SCENARIO.md`](SCENARIO.md) | A four-layer retrosynthesis problem system separating core prediction, route assessment, synthesis-execution extensions, and trust infrastructure without claiming every capability is an independent chemistry problem. |
 | [`SCENARIO_zh.md`](SCENARIO_zh.md) | Chinese version of the four-layer problem system, executable solutions, benchmark isolation, coverage boundary, and implementation gaps. |
 

@@ -76,6 +76,8 @@ audit = audit_routes(routes)
 | [`syntheseus_worker.py`](syntheseus_worker.py) | 用于 RetroChimera 和受支持 Syntheseus 模型类别的隔离可选依赖 worker。它在处理请求前把文件描述符 1 重定向到 stderr（使原生模型输出无法破坏协议），剔除模型 metadata 中的文件系统路径，并只输出一个结构化 JSON 响应。 |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | 外部模型隔离安装、provenance manifest、使用方式、wire error、科学边界和离线 replay 验证的英文说明。 |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | 外部模型后端与可信度说明的中文版本。 |
+| [`MODEL_TASKS.md`](MODEL_TASKS.md) | 六个可独立评测的模型任务、入选开源模型、备选项、许可证、部署证据和科学边界的工程审计。 |
+| [`MODEL_TASKS_zh.md`](MODEL_TASKS_zh.md) | 模型任务工程审计的中文版。 |
 | [`SCENARIO.md`](SCENARIO.md) | 四层逆合成问题体系英文版，区分核心预测、路线评价、合成执行扩展与可信系统，不再把所有能力称为独立化学问题。 |
 | [`SCENARIO_zh.md`](SCENARIO_zh.md) | 四层问题体系、可执行解法、独立评测边界、覆盖范围和实现缺口的中文版。 |
 

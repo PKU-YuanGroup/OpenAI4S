@@ -181,6 +181,27 @@ def test_retrosynthesis_skill_is_searchable():
     assert any(hit["name"] == "retrosynthesis_planning" for hit in hits)
 
 
+def test_model_backed_reaction_tasks_are_separate_discoverable_skills():
+    skills = SkillLoader().discover()
+    expected = {
+        "single-step-retrosynthesis": "RetroChimera",
+        "retrosynthesis_planning": "AiZynthFinder",
+        "reaction-forward-prediction": "ReactionT5v2-forward",
+        "reaction-atom-mapping": "RXNMapper",
+        "reaction-condition-recommendation": "Parrot",
+        "reaction-yield-estimation": "ReactionT5v2-yield",
+    }
+
+    for name, model in expected.items():
+        assert name in skills
+        body = skills[name].doc
+        assert model in body
+
+    assert "complete reaction" in skills["reaction-atom-mapping"].description
+    assert "fully specified" in skills["reaction-yield-estimation"].description
+    assert "Do not recurse" in skills["single-step-retrosynthesis"].doc
+
+
 def test_aspirin_example_dashboard_is_documented():
     skill_root = get_config().skills_dir / "retrosynthesis_planning"
     skill_doc = (skill_root / "SKILL.md").read_text(encoding="utf-8")
