@@ -18,7 +18,11 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from openai4s import datapro, egress, webtools
-from openai4s.http_deadline import HTTPExchangeDeadline, socket_timeout_setter
+from openai4s.http_deadline import (
+    HTTPExchangeDeadline,
+    response_body_exhausted,
+    socket_timeout_setter,
+)
 from openai4s.mcp_protocol import redact_reflected_secret
 
 ENDPOINT = "https://open.feedcoopapi.com/search_api/web_search"
@@ -159,6 +163,12 @@ def _read_capped(
                 f"Doubao search response exceeded the {limit}-byte limit"
             )
         chunks.append(chunk)
+        if response_body_exhausted(response):
+            # The last content byte and the transport's retirement arrive on the
+            # same read.  Looping to prove it with one more read asked a closed
+            # socket to re-bound a read that cannot happen, which reported a
+            # complete HTTP 200 as a failed request.
+            return b"".join(chunks)
 
 
 def _safe_error_code(value: Any) -> str:

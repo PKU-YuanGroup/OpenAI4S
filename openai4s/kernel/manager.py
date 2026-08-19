@@ -24,7 +24,17 @@ from openai4s.kernel.errors import KernelBusyError, KernelInterruptUnavailable
 from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
 from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
 from openai4s.kernel.transport import KernelTransport, PipeTransport
-from openai4s.security.sandbox import KernelSandbox, create_kernel_sandbox
+from openai4s.security.sandbox import (
+    KernelSandbox,
+    SandboxUnavailableError,
+    create_kernel_sandbox,
+)
+
+
+def _sandbox_mode() -> str:
+    """The requested posture, read the same way the sandbox itself reads it."""
+    return (os.environ.get("OPENAI4S_KERNEL_SANDBOX") or "auto").strip().lower()
+
 
 _WORKER = Path(__file__).resolve().parent / "worker.py"
 
@@ -190,6 +200,22 @@ class Kernel:
 
         require_supported()
         if self.transport_factory is not None:
+            # `enforce` is the posture that promises the boundary is really
+            # there and fails closed when it is not. A remote worker is
+            # started by a scheduler on another machine, so `wrap_command`
+            # and `apply_environment` have nothing to wrap -- the daemon
+            # cannot confine a process it does not spawn. Silently running
+            # the cell anyway is what turns `enforce` into `auto` for the
+            # one execution path furthest from the operator; the boundary
+            # for remote work belongs to the resource plane (a job cgroup, a
+            # container image), and until it is declared there this refuses.
+            if _sandbox_mode() == "enforce":
+                raise SandboxUnavailableError(
+                    "OPENAI4S_KERNEL_SANDBOX=enforce, but this kernel runs on "
+                    "a remote node where the daemon cannot establish an OS "
+                    "boundary. Confine the job in the resource plane and set "
+                    "the mode to `auto`, or run this session locally."
+                )
             self._transport = self.transport_factory()
             self._stderr_tail = self._transport.stderr_tail
             return self._transport.process
@@ -439,9 +465,36 @@ class Kernel:
 
     @property
     def sandbox_status(self) -> dict[str, Any]:
-        """Serializable OS-boundary state for status APIs and the UI."""
+        """Serializable OS-boundary state for status APIs and the UI.
 
-        return self._sandbox.status.to_dict()
+        A remote kernel reports what is actually true of it, which is that
+        this daemon's sandbox does not apply. `create_kernel_sandbox` runs in
+        `__init__` for every kernel and self-tests on the *daemon's* host, so
+        a cluster session used to render `enforced: true`, `backend:
+        "seatbelt"` and `self_test_passed: true` in the Security panel for
+        cells running unconfined on a compute node -- and the same values
+        were written into the durable generation record. The transport branch
+        of `_spawn` never calls `wrap_command` or `apply_environment`, and it
+        could not: the process is on another machine, started by a scheduler.
+        Saying so is the fix available here; confining it is the resource
+        plane's job (a job-level cgroup, a container image), not something
+        the daemon can assert from a distance.
+        """
+        if self.transport_factory is None:
+            return self._sandbox.status.to_dict()
+        status = dict(self._sandbox.status.to_dict())
+        status.update(
+            {
+                "enforced": False,
+                "backend": "remote",
+                "self_test_passed": False,
+                "reason": (
+                    "this kernel runs on a remote node; the daemon's OS "
+                    "sandbox does not apply to it"
+                ),
+            }
+        )
+        return status
 
     def adopt_authorization_generation(self, generation: str) -> None:
         """Use the generation a remote worker was admitted under.

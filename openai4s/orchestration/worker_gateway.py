@@ -54,6 +54,13 @@ HANDSHAKE_TIMEOUT_S = 30.0
 #: how much memory this daemon allocates.
 MAX_HANDSHAKE_BYTES = 64 * 1024
 
+#: How many connections may be mid-handshake at once, before any of them has
+#: proved anything. A gang job dials one worker per rank simultaneously, so
+#: this has to sit comfortably above the widest allocation a site runs; it is
+#: a bound on *unauthenticated* concurrency, not on how many workers a daemon
+#: may end up driving.
+MAX_PENDING_HANDSHAKES = 64
+
 
 @dataclass(frozen=True)
 class Registration:
@@ -105,6 +112,7 @@ class WorkerGateway:
         bind: tuple[str, int],
         on_register: Callable[[Registration], None] | None = None,
         interrupt_hook_for: Callable[[str], Callable[[], bool]] | None = None,
+        max_pending_handshakes: int = MAX_PENDING_HANDSHAKES,
     ) -> None:
         self._authority = authority
         self._bind = bind
@@ -124,6 +132,12 @@ class WorkerGateway:
         self._arrived: dict[tuple[str, int], list[Registration]] = {}
         self.rejected = 0
         self.accepted = 0
+        #: Sockets closed because every pre-auth slot was busy. Counted
+        #: separately from `rejected`, which means "presented something and
+        #: it did not verify" -- conflating a refused credential with a full
+        #: pool would hide exactly the saturation an operator is looking for.
+        self.refused_busy = 0
+        self._handshake_slots = threading.Semaphore(max(1, int(max_pending_handshakes)))
 
     # --- lifecycle --------------------------------------------------------
 
@@ -170,13 +184,41 @@ class WorkerGateway:
             except OSError:
                 return
             # One thread per handshake so a slow or hostile peer cannot block
-            # the accept loop for everyone else.
+            # the accept loop for everyone else -- but a *bounded* number of
+            # them. Unbounded, this is an unauthenticated thread-exhaustion
+            # path: the thread is allocated before the credential is checked,
+            # so anyone who can reach the listener can hold one per socket,
+            # for the whole handshake deadline, at the cost of a TCP connect.
+            # Excess sockets are closed here rather than queued, because a
+            # queue behind a full pool is the same resource under a different
+            # name and a worker whose dial is refused simply retries.
+            if not self._handshake_slots.acquire(blocking=False):
+                with self._lock:
+                    self.refused_busy += 1
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                continue
             threading.Thread(
-                target=self._handshake,
+                target=self._handshake_bounded,
                 args=(conn, addr),
                 name="openai4s-worker-handshake",
                 daemon=True,
             ).start()
+
+    def _handshake_bounded(self, conn: socket.socket, addr: Any) -> None:
+        """`_handshake` with the pre-auth slot released the moment it ends.
+
+        Released here rather than inside `_handshake` so that every exit
+        path -- refusal, success, an unexpected raise -- gives the slot
+        back. A slot leaked on an error path would turn a bounded pool into
+        a smaller unbounded one, one connection at a time.
+        """
+        try:
+            self._handshake(conn, addr)
+        finally:
+            self._handshake_slots.release()
 
     # --- admission --------------------------------------------------------
 
@@ -184,7 +226,9 @@ class WorkerGateway:
         peer = f"{addr[0]}:{addr[1]}" if isinstance(addr, tuple) else str(addr)
         conn.settimeout(HANDSHAKE_TIMEOUT_S)
         try:
-            line = self._read_handshake_line(conn)
+            line = self._read_handshake_line(
+                conn, time.monotonic() + HANDSHAKE_TIMEOUT_S
+            )
             credential = BootstrapCredential.from_json(line)
             # Verify and burn before a single protocol byte is exchanged.
             self._authority.consume(credential)
@@ -271,10 +315,23 @@ class WorkerGateway:
                 pass
 
     @staticmethod
-    def _read_handshake_line(conn: socket.socket) -> str:
+    def _read_handshake_line(conn: socket.socket, deadline: float) -> str:
+        """One line, under a *total* deadline rather than a per-recv one.
+
+        `settimeout` bounds each individual `recv`, which is not the same
+        promise: a peer sending one byte every 29 seconds never trips a 30
+        second socket timeout, and the 64 KiB cap is only reached after
+        ~65,000 of those -- about three weeks holding a thread. The module
+        docstring's "read one line, with a deadline" describes this, and the
+        per-operation timeout did not implement it.
+        """
         chunks: list[bytes] = []
         total = 0
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BootstrapError("handshake deadline exceeded")
+            conn.settimeout(remaining)
             chunk = conn.recv(4096)
             if not chunk:
                 raise BootstrapError("peer closed before presenting a credential")

@@ -193,22 +193,52 @@ class BootstrapAuthority:
         #: single-use rule exist to prevent, and neither survived a process
         #: boundary.
         self._consumed: set[str] = set()
+        self._consumed_expiry: dict[str, float] = {}
         self._current_epoch: dict[str, int] = {}
         self._state_path = Path(state_path) if state_path else None
+        #: Set by `_load_state` when durable state existed and could not be
+        #: read. Non-None means every admission is refused: an unreadable
+        #: fence cannot answer "has this nonce been spent", and the answer it
+        #: would otherwise default to is the unsafe one.
+        self._fence_error: str | None = None
         self._load_state()
 
     # --- durable fence ----------------------------------------------------
 
     def _load_state(self) -> None:
-        """Read the fence back. A missing or unreadable file is an empty
-        fence, not a crash: refusing to boot because a cache is corrupt
-        would trade a replay window for an outage, and the file is rewritten
-        on the next issue anyway."""
+        """Read the fence back.
+
+        A *missing* file is an empty fence and is correct: a fresh install
+        has burned nothing. An *unreadable* one is not the same thing, and
+        the comment here used to treat them alike -- "refusing to boot
+        because a cache is corrupt would trade a replay window for an
+        outage". This is not a cache. It is the record of which credentials
+        have been spent, and reading it as empty re-admits every unexpired
+        credential still sitting on the shared filesystem, plus every epoch
+        a recovery had fenced off.
+
+        Corruption is also the shape tampering takes. `_save_state` publishes
+        through `os.replace`, which is atomic, so an interrupted write leaves
+        the previous complete file rather than half of a new one; a file that
+        will not parse is therefore disk damage or somebody editing it. The
+        second is exactly the party this fence exists to refuse, so the fence
+        marks itself untrusted and admission fails closed until an operator
+        deals with it.
+        """
         if self._state_path is None or not self._state_path.exists():
             return
         try:
             data = json.loads(self._state_path.read_text("utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self._fence_error = (
+                f"the worker bootstrap fence at {self._state_path} could not be "
+                f"read ({exc}). It records which credentials have already been "
+                f"used, so continuing without it would re-admit every unexpired "
+                f"credential and un-fence every recovered epoch. Rotate the "
+                f"signing secret (delete the secret file beside it, which "
+                f"invalidates outstanding credentials) or restore the fence "
+                f"from backup, then restart."
+            )
             return
         now = self._clock()
         consumed = data.get("consumed")
@@ -289,6 +319,8 @@ class BootstrapAuthority:
 
     def verify(self, credential: BootstrapCredential) -> None:
         """Raise unless this credential is ours, current, and unused."""
+        if self._fence_error is not None:
+            raise BootstrapError(self._fence_error)
         expected = _sign(self._secret, credential.payload())
         if not hmac.compare_digest(expected, credential.signature):
             raise BootstrapError("credential signature does not verify")
@@ -309,6 +341,8 @@ class BootstrapAuthority:
     def consume(self, credential: BootstrapCredential) -> None:
         """Verify and burn, atomically enough that two connections presenting
         the same credential cannot both win."""
+        if self._fence_error is not None:
+            raise BootstrapError(self._fence_error)
         with self._lock:
             if credential.nonce in self._consumed:
                 raise BootstrapError("credential has already been used")

@@ -473,15 +473,52 @@ def test_an_epoch_fence_survives_a_restart(tmp_path):
         second.consume(stale)
 
 
-def test_the_fence_file_is_owner_only_and_survives_a_corrupt_read(tmp_path):
-    """A corrupt fence is an empty fence, not an outage: refusing to boot
-    over it would trade a replay window for a dead daemon."""
+def test_the_fence_file_is_owner_only(tmp_path):
     state = tmp_path / "fence.json"
     secret = load_or_mint_secret(tmp_path)
     authority = BootstrapAuthority(secret, state_path=state)
     authority.consume(authority.issue(allocation_id="alloc_1", epoch=0))
     assert oct(state.stat().st_mode)[-3:] == "600"
 
+
+def test_a_corrupt_fence_refuses_admission_rather_than_forgetting(tmp_path):
+    """This test used to assert the opposite — "a corrupt fence is an empty
+    fence, not an outage" — and that reading is what a security review
+    reproduced as a replay: a consumed, unexpired credential was accepted
+    again after the fence was corrupted and the authority rebuilt.
+
+    The fence is not a cache. It is the record of which credentials have
+    been spent, and reading it as empty re-admits every unexpired
+    credential still on the shared filesystem and un-fences every epoch a
+    recovery had closed. `_save_state` publishes through `os.replace`, so an
+    interrupted write leaves the previous complete file — a file that will
+    not parse is disk damage or somebody editing it, and the second is
+    precisely the party this fence refuses.
+
+    A *missing* file is still an empty fence, because a fresh install has
+    genuinely burned nothing. The refusal names both remedies.
+    """
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=state)
+    burned = authority.issue(allocation_id="alloc_1", epoch=0)
+    authority.consume(burned)
+
     state.write_text("{ not json")
     revived = BootstrapAuthority(secret, state_path=state)
-    revived.consume(revived.issue(allocation_id="alloc_2", epoch=0))
+
+    # The replay the review reproduced.
+    with pytest.raises(BootstrapError, match="could not be read"):
+        revived.consume(burned)
+    # And nothing else is admitted either, since the fence cannot answer for
+    # any nonce.
+    with pytest.raises(BootstrapError, match="could not be read"):
+        revived.consume(revived.issue(allocation_id="alloc_2", epoch=0))
+
+
+def test_a_missing_fence_is_still_an_empty_fence(tmp_path):
+    """The distinction that makes the refusal above tolerable: a daemon that
+    has never written one starts clean rather than refusing to serve."""
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=tmp_path / "absent.json")
+    authority.consume(authority.issue(allocation_id="alloc_1", epoch=0))

@@ -224,6 +224,15 @@ INSTANCE_MUTATION_PATHS = frozenset(
         "/skills",
         "/skills/import",
         "/permissions/reset",
+        # A specialist is a named agent profile: a system prompt, a skill
+        # list, a connector list and an `unrestricted` flag, stored globally
+        # and offered to every member's agent selection. `upsert_agent`
+        # writes all of it from the request body and defaults `unrestricted`
+        # to True, so a member could persist a prompt -- and a capability
+        # posture -- that later runs inside somebody else's turn. Same class
+        # as `/skills`, and it was missing for the same reason: the policy
+        # enumerated the surfaces somebody remembered.
+        "/specialists",
     }
 )
 #: `/skills/` and `/agents/` are prefixes, not bare paths, because the
@@ -235,7 +244,12 @@ INSTANCE_MUTATION_PATHS = frozenset(
 #: write to fall back on. Every non-GET route under either prefix
 #: (`{name}`, `{name}/rollback`, `catalog/{name}/enabled`,
 #: `agents/{name}/enabled`) writes instance-global state; the reads stay open.
-INSTANCE_MUTATION_PREFIXES = ("/compute/remote/", "/skills/", "/agents/")
+INSTANCE_MUTATION_PREFIXES = (
+    "/compute/remote/",
+    "/skills/",
+    "/agents/",
+    "/specialists/",
+)
 #: `/connectors/{id}` and `/connectors/{id}/enabled` are configuration;
 #: `/connectors/{id}/call` and `/probe` are use. Enumerated by suffix so the
 #: distinction is a rule and not an accident of prefix length.
