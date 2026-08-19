@@ -167,3 +167,56 @@ def test_allowlists_are_read_only():
     assert "bash" not in ALLOWED_TOOLS
     assert "web_fetch" not in ALLOWED_TOOLS
     assert "write" not in ALLOWED_SIDE_EFFECTS
+
+
+def test_a_recorded_selection_of_user_beats_the_environment(monkeypatch):
+    """The durable per-conversation control must actually control approvals.
+
+    Session-import quarantine and the legacy `review:auto:*` migration both
+    pin `approvals_reviewer` to "user". If the gate could only see the process
+    environment, loading a quarantined session on a daemon started with
+    OPENAI4S_UNATTENDED_APPROVAL=auto_review would auto-approve it anyway.
+    """
+
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "auto_review")
+    assert _decide(approvals_reviewer="user") is None
+    assert _decide(approvals_reviewer="auto_review")[0] is True
+
+
+def test_no_recorded_selection_falls_back_to_the_environment(monkeypatch):
+    """An empty selection means nobody recorded one -- not that someone said no.
+
+    The CLI has no durable Auto Mode state at all, so the operator's
+    environment is the only expressed intent there is.
+    """
+
+    class _NoAuto:
+        roadmap_features = _Flags()
+
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "auto_review")
+    assert _decide(config=_NoAuto(), approvals_reviewer="")[0] is True
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "deny")
+    assert _decide(config=_NoAuto(), approvals_reviewer="") is None
+
+
+def test_broker_exposes_the_resolver_port_and_defaults_closed():
+    from openai4s import permissions
+
+    original = permissions._SELECTION_RESOLVER
+    try:
+        permissions.set_approvals_reviewer_resolver(None)
+        # No resolver: unknown, so the environment decides (see above).
+        assert permissions._resolved_approvals_reviewer(None, "r", "p") == ""
+
+        permissions.set_approvals_reviewer_resolver(lambda *_: "auto_review")
+        assert permissions._resolved_approvals_reviewer(None, "r", "p") == "auto_review"
+
+        def _boom(*_args):
+            raise RuntimeError("store unreadable")
+
+        # A resolver that RAISES is different: we were supposed to know and
+        # could not, which is not consent.
+        permissions.set_approvals_reviewer_resolver(_boom)
+        assert permissions._resolved_approvals_reviewer(None, "r", "p") == "user"
+    finally:
+        permissions.set_approvals_reviewer_resolver(original)

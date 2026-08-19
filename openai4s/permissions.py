@@ -35,65 +35,56 @@ def _scope(value: str | None) -> str:
     return value if value in _SCOPES else "once"
 
 
-class _GuardianAutoMode:
-    """The Auto Mode selection in force, shaped for ``decide_unattended``."""
+#: How the broker learns which approvals reviewer a conversation actually
+#: selected. This is a PORT, not an import: the durable selection is Web-session
+#: state owned by ``openai4s/server/``, and the broker is core infrastructure the
+#: CLI shares. Reaching into the server package from here would invert the
+#: dependency, and ``tests/test_config.py`` asserts that boundary explicitly.
+#: The server registers its adapter at startup; the CLI, which has no such
+#: state, leaves it unset and the operator's environment decides -- which is the
+#: only thing there is to decide from in a one-shot run.
+_SELECTION_RESOLVER: Callable[[Any, str, str], str] | None = None
 
-    __slots__ = ("approvals_reviewer", "budgets")
 
-    def __init__(self, approvals_reviewer: str, budgets: Any) -> None:
-        self.approvals_reviewer = approvals_reviewer
-        self.budgets = budgets
+def set_approvals_reviewer_resolver(
+    resolver: Callable[[Any, str, str], str] | None,
+) -> None:
+    """Register how to resolve a conversation's ``approvals_reviewer``.
 
-
-class _GuardianConfig:
-    """The daemon flags plus the per-conversation Auto Mode selection.
-
-    Built per gate so the durable selection wins over the process environment:
-    a session whose ``approvals_reviewer`` is ``user`` -- what import
-    quarantine and the legacy ``review:auto:*`` migration both force -- must
-    not be auto-approved because the daemon happened to be started with
-    ``OPENAI4S_UNATTENDED_APPROVAL=auto_review``.
+    The resolver takes ``(store, root_frame_id, project_id)`` and returns the
+    effective selection, honouring import quarantine and the legacy migration.
     """
 
-    __slots__ = ("roadmap_features", "auto_mode")
-
-    def __init__(self, roadmap_features: Any, auto_mode: Any) -> None:
-        self.roadmap_features = roadmap_features
-        self.auto_mode = auto_mode
+    global _SELECTION_RESOLVER
+    _SELECTION_RESOLVER = resolver
 
 
-def _guardian_config(store, root_frame_id: str | None, project_id: str):
-    """Resolve the config the Guardian must decide under.
-
-    Always returns a config, never ``None``: handing back ``None`` would let
-    ``decide_unattended`` fall through to reading the process environment,
-    which is exactly the behaviour that made the durable per-conversation
-    selection unreachable. An unreadable selection resolves to ``"user"`` --
-    the fail-closed answer -- because "we could not tell" is not consent.
-
-    If ``get_config()`` itself raises, the exception propagates to the gate's
-    handler, which drops to the legacy path and denies; that is also closed.
-    """
+def _daemon_config():
+    """The process config, for the Guardian's feature flags and budgets."""
 
     from openai4s.config import get_config
 
-    cfg = get_config()
-    approvals = ""
-    try:
-        from openai4s.server.auto_mode import resolve_effective_selection
+    return get_config()
 
-        selection = resolve_effective_selection(
-            store, cfg, str(root_frame_id or ""), project_id
-        )
-        approvals = str(selection.get("approvals_reviewer") or "")
+
+def _resolved_approvals_reviewer(
+    store, root_frame_id: str | None, project_id: str
+) -> str:
+    """The conversation's effective approvals reviewer, or "" if unknown.
+
+    A registered resolver that RAISES resolves to ``"user"`` -- the fail-closed
+    answer -- because "we could not tell" is not consent. No resolver at all is
+    a different statement: nothing in this process owns a durable selection, so
+    the operator's environment is the only expressed intent there is.
+    """
+
+    resolver = _SELECTION_RESOLVER
+    if resolver is None:
+        return ""
+    try:
+        return str(resolver(store, str(root_frame_id or ""), project_id) or "")
     except Exception:  # noqa: BLE001 — an unreadable selection is not consent
-        approvals = "user"
-    return _GuardianConfig(
-        getattr(cfg, "roadmap_features", None),
-        _GuardianAutoMode(
-            approvals, getattr(getattr(cfg, "auto_mode", None), "budgets", None)
-        ),
-    )
+        return "user"
 
 
 #: Path segments and basenames that carry credentials without matching the
@@ -606,7 +597,10 @@ class PermissionBroker:
                         **payload,
                         "canonical_arguments": canonical_arguments,
                     },
-                    config=_guardian_config(store, root, proj or "default"),
+                    config=_daemon_config(),
+                    approvals_reviewer=_resolved_approvals_reviewer(
+                        store, root, proj or "default"
+                    ),
                     expected_digest=created_request.get("action_digest"),
                     hard_deny=_guardian_hard_deny(
                         store,

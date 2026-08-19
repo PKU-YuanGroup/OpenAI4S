@@ -126,20 +126,24 @@ def feature_enabled(config: Any | None = None) -> bool:
     return _flag(os.environ.get("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", ""))
 
 
-def auto_review_requested(config: Any | None = None) -> bool:
+def auto_review_requested(
+    config: Any | None = None, approvals_reviewer: str | None = None
+) -> bool:
     """Whether this run asked for Guardian adjudication of ``ask`` decisions.
 
-    The durable per-frame selection wins when it is available: a session whose
-    ``approvals_reviewer`` is ``user`` -- which is what session import and the
-    legacy ``review:auto:*`` migration force -- must not be auto-approved just
-    because the daemon process was started with the environment variable set.
+    The durable per-conversation selection wins whenever there IS one: a session
+    that session-import quarantine or the legacy ``review:auto:*`` migration
+    pinned to ``user`` must not be auto-approved merely because the daemon
+    process was started with the environment variable set. An empty selection
+    means nobody recorded one, and only then does the environment decide.
     """
 
-    if config is not None:
+    selection = str(approvals_reviewer or "")
+    if not selection and config is not None:
         auto = getattr(config, "auto_mode", None)
         selection = str(getattr(auto, "approvals_reviewer", "") or "")
-        if selection:
-            return selection == "auto_review"
+    if selection:
+        return selection == "auto_review"
     return os.environ.get("OPENAI4S_UNATTENDED_APPROVAL", "deny").strip().lower() == (
         "auto_review"
     )
@@ -159,6 +163,7 @@ def decide_unattended(
     payload: Mapping[str, Any],
     *,
     config: Any | None = None,
+    approvals_reviewer: str | None = None,
     expected_digest: str | None = None,
     hard_deny: bool = False,
     audit_persisted: bool = False,
@@ -171,7 +176,9 @@ def decide_unattended(
     the absence of a digest is a denial, not a bypass.
     """
 
-    if not feature_enabled(config) or not auto_review_requested(config):
+    if not feature_enabled(config) or not auto_review_requested(
+        config, approvals_reviewer
+    ):
         return None
 
     key = str(circuit_key or payload.get("frame_id") or "")

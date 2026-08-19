@@ -80,6 +80,7 @@ from openai4s.observability import (
     reset_correlation_id,
     set_correlation_id,
 )
+from openai4s.permissions import set_approvals_reviewer_resolver
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
@@ -114,7 +115,7 @@ from openai4s.server.artifacts import (
     PromotionTarget,
     WorkspaceSnapshot,
 )
-from openai4s.server.auto_mode import AutoModeService
+from openai4s.server.auto_mode import AutoModeService, resolve_effective_selection
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completion_gate import CompletionGateService
 from openai4s.server.completions import completion_message, response_language
@@ -2241,6 +2242,20 @@ class SessionRunner:
             # calls this sink.  A socket failure is therefore only lost live
             # delivery; REST/reopen remains the durable source of truth.
             emit=lambda root_frame_id, event: self.hub.broadcast(root_frame_id, event),
+        )
+        # Teach the permission broker how to read a conversation's durable
+        # `approvals_reviewer`. Without this the broker can only see the process
+        # environment, so a session that import-quarantine or the legacy
+        # migration pinned to "user" would still be auto-approved on a daemon
+        # started with OPENAI4S_UNATTENDED_APPROVAL=auto_review. The broker owns
+        # the port; this is the Web adapter for it.
+        set_approvals_reviewer_resolver(
+            lambda store, root_frame_id, project_id: str(
+                resolve_effective_selection(store, cfg, root_frame_id, project_id).get(
+                    "approvals_reviewer"
+                )
+                or ""
+            )
         )
         self.scientific_review = ScientificReviewService(
             store=self.store,
