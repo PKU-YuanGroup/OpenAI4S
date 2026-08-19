@@ -706,9 +706,7 @@ def test_retrochimera_checkpoint_download_uses_guarded_host_capability(
     model_deployment, tmp_path
 ):
     archive = tmp_path / "source.zip"
-    spec = _synthetic_checkpoint(
-        model_deployment, archive, [("models.json", "{}")]
-    )
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
     destination = tmp_path / "downloaded.zip"
     observed = {}
 
