@@ -80,3 +80,27 @@ def test_table_without_adapter_is_incomplete():
     snapshot = freeze_evidence_snapshot(_parts(adapters=[]))
     assert snapshot["complete"] is False
     assert any(item["kind"] == "adapter_incomplete" for item in snapshot["omissions"])
+
+
+def test_a_clipped_answer_is_an_omission_not_a_silent_cut():
+    """`complete` is `not omissions`, so a silent clip publishes Verified.
+
+    `candidate_answer` is cut to 24,000 chars, and both reviewer paths -- the
+    deterministic `inspect_snapshot` and the LLM packet -- read only the
+    clipped string. A false claim past the cut was invisible to each of them
+    while the snapshot still reported complete.
+    """
+
+    from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
+
+    short = freeze_evidence_snapshot({"candidate_answer": "x" * 100})
+    assert short["complete"] is True
+
+    clipped = freeze_evidence_snapshot({"candidate_answer": "x" * 30_000})
+    assert clipped["complete"] is False
+    assert {"kind": "truncated", "fields": ["candidate_answer"]} in clipped["omissions"]
+
+    long_request = freeze_evidence_snapshot(
+        {"candidate_answer": "x", "user_request": "q" * 20_000}
+    )
+    assert long_request["complete"] is False

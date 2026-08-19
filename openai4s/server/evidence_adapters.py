@@ -401,7 +401,21 @@ def adapt_artifact(
         if kind == "image":
             return adapt_image(resolved, version_id=version_id, artifact_id=artifact_id)
         return adapt_structure(resolved, version_id=version_id, artifact_id=artifact_id)
-    except OSError:
+    except Exception:  # noqa: BLE001
+        # Deliberately broad. An adapter parses agent-authored files, so its
+        # failure modes are open-ended: a CSV field over the 128 KiB csv module
+        # limit raises `_csv.Error`, a .mol whose counts line starts with a
+        # superscript digit raises `ValueError` from `int()`, and a scalar JSON
+        # body used to raise `AttributeError`. `except OSError` caught none of
+        # them, and `collect_turn_evidence` calls this unguarded, so ONE
+        # malformed artifact propagated out through the completion gate --
+        # where gateway.py swallows it into `gate = None` and the turn ships
+        # with no review at all.
+        #
+        # An adapter that cannot read a file must say so, which is what this
+        # record does: incomplete coverage forces `complete: False` on the
+        # snapshot, which is what makes the turn honestly unverifiable rather
+        # than silently unreviewed.
         return _base(
             kind=kind,
             version_id=version_id,

@@ -249,6 +249,15 @@ def freeze_evidence_snapshot(parts: Mapping[str, Any]) -> dict[str, Any]:
                     output_version_id=output_id,
                 )
             )
+    # The prose fields are clipped below by `_text`. Recording that here is what
+    # keeps the clip honest: `complete` is `not omissions`, and a snapshot that
+    # silently dropped the tail of the answer still reported complete -- so a
+    # false claim past the cut was invisible to the deterministic checks AND to
+    # the reviewer packet (both read `snapshot["candidate_answer"]`), and the
+    # turn promoted to Verified on evidence nobody had seen.
+    for field, limit in (("candidate_answer", 24_000), ("user_request", 16_000)):
+        if len(str(parts.get(field) or "")) > limit:
+            truncation[field] = True
     if any(truncation.values()):
         omissions.append(
             {

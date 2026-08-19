@@ -63,3 +63,29 @@ def test_filename_alone_is_not_complete_coverage(tmp_path):
     assert missing is not None
     assert missing["complete"] is False
     assert missing["omission_reason"] == "artifact_bytes_missing"
+
+
+def test_an_unparseable_artifact_records_coverage_instead_of_escaping(tmp_path):
+    """An adapter parses agent-authored files, so its failures are open-ended.
+
+    `except OSError` caught none of these, and `collect_turn_evidence` calls
+    `adapt_artifact` unguarded -- so one malformed artifact propagated out
+    through the completion gate, where the gateway swallows it into
+    `gate = None` and the turn ships with no review at all.
+    """
+
+    from openai4s.server.evidence_adapters import adapt_artifact
+
+    oversized_csv_field = tmp_path / "big.csv"
+    oversized_csv_field.write_text(
+        'a,b\n"' + ("z" * 200_000) + '",2\n', encoding="utf-8"
+    )
+    superscript_counts_line = tmp_path / "bad.mol"
+    superscript_counts_line.write_text("name\n\n\n² 3  0  0\n", encoding="utf-8")
+
+    for path in (oversized_csv_field, superscript_counts_line):
+        adapted = adapt_artifact(
+            path, filename=path.name, version_id="v", artifact_id="a"
+        )
+        assert adapted["complete"] is False, path.name
+        assert adapted["omission_reason"] == "artifact_unreadable", path.name
