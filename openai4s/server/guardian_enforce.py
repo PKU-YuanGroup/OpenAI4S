@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -239,9 +238,3 @@ def decide_unattended(
     ):
         return settle(False, str(assessment.get("rationale") or "guardian denied"))
     return settle(True, "guardian allow_once for exact action " + expected_digest[:12])
-
-
-def note_deadline_exceeded(started_at: float, budget_s: float = 90.0) -> bool:
-    """Whether one Guardian adjudication has outrun its shared deadline."""
-
-    return (time.time() - started_at) > budget_s
