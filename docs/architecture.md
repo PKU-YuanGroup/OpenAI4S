@@ -130,12 +130,24 @@ must cite snapshot `evidence_refs`; a forged ref is itself a high finding.
 #### Stage 4 completion gate
 
 `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE=1` changes promotion order when result
-review is selected: candidate → frozen snapshot → review → terminal. Streamed
-prose stays provisional. A `pass` may become Verified; `issues` become
-`completed_with_issues` (Repair is Stage 5); timeout/parse/provider failure
-after the bounded retry is `review_unavailable`. The user still has the
-candidate artifacts. Reopen reads the durable gate stamp on the assistant
-message and `review-gate:{root}` setting, never a cached badge.
+review is selected: candidate → frozen snapshot → review → promotion. Streamed
+prose stays provisional, and so does the composed final answer: it goes out
+marked `provisional`, while the message row, the Artifact completion manifest
+and the completion link are all withheld until a verdict exists. The durable
+record follows the same order — the candidate and the frozen evidence are
+committed before the reviewer is called — so a daemon lost mid-review leaves an
+open review run to recover, not a durable answer nothing reviewed.
+
+Promotion is a value, not just a veto: the gate returns the text that may be
+delivered, which is how a Stage 5 repair reaches the user instead of being
+computed and discarded. Verified is stamped only on the exact bytes the passing
+review read; a repair the caller can no longer deliver, a mismatch between
+delivered and reviewed text, and a delivery that fails after the review all
+resolve to a non-verified terminal. A `pass` may become Verified; `issues`
+become `completed_with_issues`; timeout/parse/provider failure after the
+bounded retry is `review_unavailable`. The user still has the candidate
+artifacts. Reopen reads the durable gate stamp on the assistant message and
+`review-gate:{root}` setting, never a cached badge.
 
 #### Stage 5 auto-fix
 

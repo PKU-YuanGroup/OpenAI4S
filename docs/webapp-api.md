@@ -80,14 +80,36 @@ shadow review is persisted as a `result_review` audit on the current Auto Run
 and remains non-terminal.
 
 `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE=1` runs that review *before* promotion
-when `result_review_mode` is not `off`. Live order is `candidate_ready` then
-review events then `auto_run_terminal` then `frame_update` with
-`review_status`. `GET /frames/{id}/messages` may include an optional
-`review_status` object (`status`, `unverified`, `user_truth`) reconstructed
-from message metadata. Refreshing cannot promote a candidate to Verified
-without that durable stamp. Stage 5 and later execution flags remain inert
-reservations. The full truth and recovery rules are frozen in the
-[Auto Mode product contract](auto-mode.md).
+when `result_review_mode` is not `off`, and the turn is ordered candidate →
+frozen evidence → review → promotion.
+
+While the gate is armed the composed final answer is streamed as a `text_chunk`
+carrying `provisional: true` and `review_status: "candidate"`, and nothing
+final-looking about it is committed yet: no message row, no Artifact completion
+manifest, no completion link. Live order is that provisional chunk, then
+`candidate_ready`, then the review events, then `auto_run_terminal`, then
+`candidate_resolved`, then `frame_update` with `review_status`. A verified final
+therefore always arrives after a successful review event, never before it.
+
+`candidate_resolved` is the promotion applied to what was actually delivered. It
+carries `review_status`, `user_truth`, `delivered`, `replaced`, an optional
+`delivery_id`, and — only when `replaced` is true — the `text` that supersedes
+the provisional block. `replaced` means a Stage 5 repair corrected the answer:
+the reviewed text spans the whole turn, so it replaces the streamed prose rather
+than being appended under it, and the server likewise persists one row.
+
+`GET /frames/{id}/messages` may include an optional `review_status` object
+(`status`, `unverified`, `user_truth`) reconstructed from message metadata,
+written in the same call that creates the row. Refreshing cannot promote a
+candidate to Verified without that durable stamp, and a daemon lost mid-review
+leaves the frozen evidence on an open review run rather than a durable answer
+with no verdict.
+
+Verified is stamped only on the exact bytes the passing review read. A
+mismatch, a repair the caller could not deliver, or a delivery that failed
+after the review all resolve to a non-verified terminal rather than a guess.
+Later execution flags remain inert reservations. The full truth and recovery
+rules are frozen in the [Auto Mode product contract](auto-mode.md).
 
 Any future `blocked_by_guardian` projection requires a durable Guardian assessment
 of a deterministic `ask`. Sandbox, egress, secret/credential, biosecurity,
@@ -859,7 +881,8 @@ chunks and flag-off completion chunks omit `delivery_id`.
 | `delegation_child_event` | `event`, `at`, `child` (a snapshot), plus per-event extras | A sub-agent started, progressed, or finished. Carries no `frame_id` of its own; the hub's emitter attaches `root_frame_id`. Emitted by `agent/delegation.py`. |
 | `replay_begin` / `replay_end` | — | Bracket the buffered-event replay after `view_session` mid-turn. `replay_begin` carries `from_seq`, `to_seq`, the daemon run's `epoch`, and `gap`. |
 | `text_reset` | `frame_id` | Start of a fresh streamed assistant message (clears the live bubble). |
-| `text_chunk` | `frame_id`, `block_type` (`"text"` for prose, `"tool"` for code-cell echo/stdout/errors), `chunk`; a code-cell start also carries `cell_index`, canonical `kernel_id`, and `language` | Incremental stream. The frontend uses the start metadata directly so live Notebook grouping matches the persisted execution log without a status-cache race. |
+| `text_chunk` | `frame_id`, `block_type` (`"text"` for prose, `"tool"` for code-cell echo/stdout/errors), `chunk`; a code-cell start also carries `cell_index`, canonical `kernel_id`, and `language`; a Stage 4 gated final answer also carries `provisional: true` and `review_status: "candidate"` | Incremental stream. The frontend uses the start metadata directly so live Notebook grouping matches the persisted execution log without a status-cache race. |
+| `candidate_resolved` | `frame_id`, `review_status`, `user_truth`, `delivered`, `replaced`, `delivery_id?`, `text?` | Stage 4 promotion, emitted after the review and after delivery, so it describes what the user was actually given rather than what the reviewer read. `text` is present only when `replaced` is true — a Stage 5 repair corrected the answer, and the reviewed text supersedes the provisional block instead of being appended under the claim it corrects. `delivered:false` means delivery failed after the review, which retracts any Verified promotion. |
 | `notebook_cell_start` | `frame_id`, `producing_cell_id`, `cell_index`, `state_revision`, `generation_id`, `kernel_id`, `language`, `origin`, `source`, `status` | Starts/upserts one immutable Cell identity using the exact attempt-bound runtime generation. |
 | `notebook_cell_chunk` | `frame_id`, `producing_cell_id`, `stream`, `chunk` | Appends output to that exact live Cell. Unknown/replayed fields are tolerated. |
 | `notebook_cell_finished` | start identity (including the unchanged `state_revision` and `generation_id`) plus complete source/output/error, figures/files and usage | Replaces the live projection with the authoritative finished revision. |

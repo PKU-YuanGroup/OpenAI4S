@@ -154,6 +154,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_scientific_review_service.py`](test_scientific_review_service.py) | Shadow 编排：独立性失败即关闭、同模型 review_only、确定性数值核对、伪造引用、包含 Plan 的 shadow step，以及 flag 关闭时惰性。 |
 | [`test_scientific_review_golden.py`](test_scientific_review_golden.py) | Stage 3 Go/No-Go：≥100 个 golden/注入案例走真实 evaluator，高/中召回、干净任务误报，以及伪造 evidence ref 为零。 |
 | [`test_completion_gate.py`](test_completion_gate.py) | Stage 4 晋升顺序：candidate 早于 terminal，issues 保持未验证，flag 关闭时惰性，reopen 读持久的 message/setting 戳记。 |
+| [`test_stage4_candidate_promotion.py`](test_stage4_candidate_promotion.py) | Stage 4 candidate → review → promotion：有裁决前不投递答案，candidate 在调用 Reviewer 之前已持久化，修复后的候选可被真正交付，Verified 只能盖在被审阅的同一份字节上，审核之后交付失败会撤回晋升。 |
 | [`test_auto_repair.py`](test_auto_repair.py) | Stage 5 的残差行数与缺失值误述种植案例、相同字节复用版本、禁止自我认证，以及 review_only 不修复。 |
 | [`test_guardian_shadow.py`](test_guardian_shadow.py) | Stage 6 精确动作 hash 失败即关闭、不能 standing allow、shadow 不执行，以及 flag 关闭时惰性。 |
 | [`test_guardian_enforce.py`](test_guardian_enforce.py) | Stage 7 无人值守 allow_once 与危险拒绝，以及 flag 关闭时走旧路径。 |

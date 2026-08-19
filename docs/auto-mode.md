@@ -9,7 +9,10 @@ normative for the new Auto Mode states, but it is not evidence that later
 gates exist today. Stage 1 consumes only `stage1_trusted_delivery`. Stage 2
 consumes only `stage2_auto_run_storage`. Stage 3 consumes only
 `stage3_scientific_review_shadow` and records a shadow judgment without
-gating completion. Stage 4–12 roadmap flags remain inert.
+gating completion. Stage 4 consumes only `stage4_review_completion_gate` and
+does gate completion: with it on and `result_review_mode` not `off`, the
+candidate is streamed provisional and nothing final-looking about it is
+committed before the verdict. Stage 5–12 roadmap flags remain inert.
 
 The existing `review:auto:<frame>` setting remains the old single-call,
 post-completion Reviewer. It records an ordinary review step after the final
@@ -160,6 +163,11 @@ event.
   hashes; the snapshot is complete; all evidence references resolve; and no
   material finding for that candidate is `open`, `claimed`, or `unaddressed`.
   The `auto_run_terminal(verified)` record commits after those facts exist.
+- The answer delivered to the user must be byte-identical to the candidate
+  that `pass` was bound to. A repair the delivering caller can no longer apply,
+  any other drift between delivered and reviewed text, and a delivery that
+  fails after the review are each disqualifying: the run takes a non-verified
+  terminal rather than certifying bytes nobody reviewed.
 - A durable `pass` coexisting with any such material finding is a
   review/findings integrity inconsistency. It enters the separate
   `safety_boundary`; the projector may neither silently rewrite the verdict to
