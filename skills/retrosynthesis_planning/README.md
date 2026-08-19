@@ -76,6 +76,8 @@ See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_
 | [`syntheseus_worker.py`](syntheseus_worker.py) | The isolated optional-dependency worker for RetroChimera and supported Syntheseus model classes. It moves descriptor 1 onto stderr before handling a request — so native model output cannot corrupt the protocol — strips filesystem paths out of model metadata, and emits one structured JSON response. |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | English guide to isolated model installation, provenance manifests, usage, wire errors, scientific limits and offline replay verification. |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | Chinese version of the external-model backend and trust guide. |
+| [`SCENARIO.md`](SCENARIO.md) | Robust multi-strategy retrosynthesis scenario: blind strategy selection, bounded search, route audit, deduplication, diversity, evidence, evaluation metrics, and implementation constraints. |
+| [`SCENARIO_zh.md`](SCENARIO_zh.md) | Chinese version of the robust multi-strategy retrosynthesis scenario and evaluation contract. |
 
 Focused regressions for this layer live in [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) and [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py).
 
