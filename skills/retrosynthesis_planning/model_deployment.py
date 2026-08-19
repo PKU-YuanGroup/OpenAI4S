@@ -9,11 +9,10 @@ import os
 import shutil
 import stat
 import tempfile
-import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Sequence
+from typing import Any, BinaryIO, Callable, Sequence
 
 CHUNK_SIZE = 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 20_000
@@ -147,32 +146,43 @@ def download_checkpoint(
     *,
     allow_network: bool = False,
     timeout_seconds: float = 60.0,
+    web_download: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Download and validate a checkpoint after explicit network opt-in."""
+    """Download and validate a checkpoint through the guarded Host capability."""
 
     if not allow_network:
         raise PermissionError("checkpoint download requires allow_network=True")
+    if web_download is None:
+        try:
+            import host
+        except ImportError as exc:
+            raise CheckpointDeploymentError(
+                "checkpoint download requires OpenAI4S host.web_download; "
+                "run it inside an OpenAI4S Python cell, or acquire the archive "
+                "with an operator-managed downloader and run verify"
+            ) from exc
+        web_download = host.web_download
     destination_path = Path(destination).expanduser()
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     if destination_path.exists():
         return verify_checkpoint(destination_path, spec)
     partial = destination_path.with_name(destination_path.name + ".part")
+    partial.unlink(missing_ok=True)
     try:
-        with urllib.request.urlopen(
-            spec.download_url, timeout=timeout_seconds
-        ) as response:
-            with partial.open("wb") as handle:
-                copied = 0
-                while True:
-                    chunk = response.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    copied += len(chunk)
-                    if copied > spec.byte_size:
-                        raise CheckpointDeploymentError(
-                            "checkpoint response exceeded the reviewed byte size"
-                        )
-                    handle.write(chunk)
+        response = web_download(
+            spec.download_url,
+            str(partial),
+            max_bytes=spec.byte_size,
+            timeout=timeout_seconds,
+        )
+        if not isinstance(response, dict):
+            raise CheckpointDeploymentError(
+                "host.web_download returned an invalid response"
+            )
+        if response.get("error"):
+            raise CheckpointDeploymentError(
+                f"checkpoint download failed: {response['error']}"
+            )
         verification = verify_checkpoint(partial, spec)
         os.replace(partial, destination_path)
         return verification
@@ -305,12 +315,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list", help="print reviewed checkpoint metadata")
-    for name in ("download", "verify", "extract"):
+    for name in ("verify", "extract"):
         command = commands.add_parser(name)
         command.add_argument("variant", choices=sorted(CHECKPOINTS))
         command.add_argument("archive", type=Path)
-        if name == "download":
-            command.add_argument("--allow-network", action="store_true")
         if name == "extract":
             command.add_argument("model_dir", type=Path)
             command.add_argument("--manifest", type=Path)
@@ -323,11 +331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result: Any = [CHECKPOINTS[name].to_dict() for name in sorted(CHECKPOINTS)]
     else:
         spec = checkpoint_spec(args.variant)
-        if args.command == "download":
-            result = download_checkpoint(
-                spec, args.archive, allow_network=args.allow_network
-            )
-        elif args.command == "verify":
+        if args.command == "verify":
             result = verify_checkpoint(args.archive, spec)
         else:
             result = extract_checkpoint(args.archive, args.model_dir, spec)

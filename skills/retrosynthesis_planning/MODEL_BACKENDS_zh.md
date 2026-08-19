@@ -93,17 +93,30 @@ Adapter 不会把 `syntheseus`、`retrochimera`、PyTorch 或 CUDA 加进 `pypro
 python skills/retrosynthesis_planning/model_deployment.py list
 ```
 
-除非操作者显式提供 `--allow-network`，否则禁止下载。应在操作者 shell 或隔离模型环境中运行，并遵守部署环境原有的网络策略：
+除非调用方显式授权，否则禁止下载；下载通过 OpenAI4S `host.web_download` 执行，因此每次重定向都会经过出网允许名单和 SSRF 防护。请在 OpenAI4S Python cell 中运行，并把目标放在 session workspace 内：
 
-```bash
-python skills/retrosynthesis_planning/model_deployment.py download \
-  uspto50k /models/retrochimera/retrochimera_uspto50k.zip \
-  --allow-network
+```python
+from retrosynthesis_planning.model_deployment import (
+    checkpoint_spec,
+    download_checkpoint,
+)
+
+spec = checkpoint_spec("uspto50k")
+download_checkpoint(
+    spec,
+    "models/retrochimera/retrochimera_uspto50k.zip",
+    allow_network=True,
+)
 ```
+
+对于数 GB 的 checkpoint，操作者也可以改用部署环境批准的流式下载器，然后在解压前运行下面的离线 `verify` 命令。独立脚本本身不会直接联网。
 
 较小的 USPTO-50K 归档适合安装冒烟测试，但不能替代覆盖更广的主 checkpoint。上游把 Pistachio 描述为发布的主力且最强 checkpoint。只有通过校验后才安装归档：
 
 ```bash
+python skills/retrosynthesis_planning/model_deployment.py verify \
+  uspto50k /models/retrochimera/retrochimera_uspto50k.zip
+
 python skills/retrosynthesis_planning/model_deployment.py extract \
   uspto50k \
   /models/retrochimera/retrochimera_uspto50k.zip \

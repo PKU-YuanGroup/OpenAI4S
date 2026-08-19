@@ -22,7 +22,10 @@ uv sync --extra science --extra chemistry
 
 For optional RetroChimera single-step proposals, use `model_deployment.py` to
 verify and safely extract a reviewed public checkpoint, then call it through
-`SyntheseusBackend`; never place model weights in the Skill directory.
+`SyntheseusBackend`; never place model weights in the Skill directory. When a
+checkpoint must be fetched from a Python cell, use its `download_checkpoint`
+helper, which routes bytes through `host.web_download`; do not add a raw
+`urllib`, `requests`, or socket download to the Skill.
 
 RDKit is not required to plan, rank, or review routes. If the chemistry extra is
 unavailable on the current platform, omit it; the dashboard falls back to

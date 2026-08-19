@@ -93,17 +93,30 @@ The adapter does not add `syntheseus`, `retrochimera`, PyTorch or CUDA to `pypro
 python skills/retrosynthesis_planning/model_deployment.py list
 ```
 
-Downloading is disabled unless the operator supplies `--allow-network`. Run this command in an operator shell or the isolated model environment, subject to the deployment's normal network policy:
+Downloading is disabled unless the caller explicitly opts in, and it runs through OpenAI4S `host.web_download` so every redirect is checked by the egress allowlist and SSRF guard. Run this in an OpenAI4S Python cell, with a destination inside the session workspace:
 
-```bash
-python skills/retrosynthesis_planning/model_deployment.py download \
-  uspto50k /models/retrochimera/retrochimera_uspto50k.zip \
-  --allow-network
+```python
+from retrosynthesis_planning.model_deployment import (
+    checkpoint_spec,
+    download_checkpoint,
+)
+
+spec = checkpoint_spec("uspto50k")
+download_checkpoint(
+    spec,
+    "models/retrochimera/retrochimera_uspto50k.zip",
+    allow_network=True,
+)
 ```
+
+For multi-gigabyte checkpoints, an operator may instead use the deployment environment's approved streaming downloader, then run the offline `verify` command below before extraction. The standalone script deliberately does not open the network itself.
 
 The smaller USPTO-50K archive is useful for an installation smoke test but is not a substitute for the broader main checkpoint. Upstream describes Pistachio as the main and most powerful released checkpoint. Install either archive only after validation:
 
 ```bash
+python skills/retrosynthesis_planning/model_deployment.py verify \
+  uspto50k /models/retrochimera/retrochimera_uspto50k.zip
+
 python skills/retrosynthesis_planning/model_deployment.py extract \
   uspto50k \
   /models/retrochimera/retrochimera_uspto50k.zip \

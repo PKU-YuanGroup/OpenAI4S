@@ -702,6 +702,41 @@ def test_retrochimera_checkpoint_download_requires_explicit_network_opt_in(
         model_deployment.download_checkpoint(spec, tmp_path / spec.filename)
 
 
+def test_retrochimera_checkpoint_download_uses_guarded_host_capability(
+    model_deployment, tmp_path
+):
+    archive = tmp_path / "source.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment, archive, [("models.json", "{}")]
+    )
+    destination = tmp_path / "downloaded.zip"
+    observed = {}
+
+    def web_download(url, path, **kwargs):
+        observed.update(url=url, path=path, **kwargs)
+        with archive.open("rb") as source, open(path, "wb") as target:
+            target.write(source.read())
+        return {"path": path, "bytes": archive.stat().st_size}
+
+    result = model_deployment.download_checkpoint(
+        spec,
+        destination,
+        allow_network=True,
+        timeout_seconds=17,
+        web_download=web_download,
+    )
+
+    assert destination.read_bytes() == archive.read_bytes()
+    assert not destination.with_name(destination.name + ".part").exists()
+    assert result["checkpoint"] == spec.name
+    assert observed == {
+        "url": spec.download_url,
+        "path": str(destination) + ".part",
+        "max_bytes": spec.byte_size,
+        "timeout": 17,
+    }
+
+
 def test_worker_metadata_redacts_paths_by_value_not_by_key_name(worker):
     safe = worker._json_safe(
         {

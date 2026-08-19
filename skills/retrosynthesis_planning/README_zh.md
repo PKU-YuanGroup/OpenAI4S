@@ -56,7 +56,7 @@ audit = audit_routes(routes)
 
 [`external_backends.py`](external_backends.py) 增加了版本化、标准库优先的 subprocess 边界，用于运行可选单步模型。[`syntheseus_worker.py`](syntheseus_worker.py) 可以在独立 Python 或 conda 环境中调用 RetroChimera 或受支持的 Syntheseus wrapper，从而不把 PyTorch、CUDA、checkpoint 和模型专属依赖带入 OpenAI4S core 进程。
 
-[`model_deployment.py`](model_deployment.py) 在不增加包依赖的前提下使 RetroChimera checkpoint 部署可复现：它登记三个公开上游归档，要求显式联网授权，校验经审阅的字节数、MD5 和本地计算的 SHA-256，拒绝不安全的 ZIP member，通过原子 staging 目录解压，并生成 backend 使用的不含路径 manifest。
+[`model_deployment.py`](model_deployment.py) 在不增加包依赖的前提下使 RetroChimera checkpoint 部署可复现：它登记三个公开上游归档，通过受防护的 Host capability 执行可选下载，校验经审阅的字节数、MD5 和本地计算的 SHA-256，拒绝不安全的 ZIP member，通过原子 staging 目录解压，并生成 backend 使用的不含路径 manifest。
 
 默认禁止自动下载 checkpoint。模型运行可以携带不含本地路径的 manifest，记录模型版本、checkpoint 标识与 SHA-256、训练数据集和许可证信息。返回分数始终保留为原始模型输出，并附带科学免责声明；它们不会被转换成实验成功概率。
 
@@ -72,7 +72,7 @@ audit = audit_routes(routes)
 | [`route_review.py`](route_review.py) | 稳定路线签名、重复路线来源记录，以及基于反应、产物、前体和末端原料特征的多样性选择。 |
 | [`structural_audit.py`](structural_audit.py) | LLM 解释前的确定性路线树检查。它保持标准库优先，仅在安装 RDKit 时增加解析和元素检查。 |
 | [`external_backends.py`](external_backends.py) | 版本化外部模型请求/响应校验、不含路径的 model manifest、超时与大小限制，以及 `SyntheseusBackend` subprocess adapter。 |
-| [`model_deployment.py`](model_deployment.py) | 纯标准库 RetroChimera checkpoint 注册表、显式下载门、归档校验、安全原子解压及不含路径的 manifest 生成。 |
+| [`model_deployment.py`](model_deployment.py) | 纯标准库 RetroChimera checkpoint 注册表、受 Host 防护的下载、归档校验、安全原子解压及不含路径的 manifest 生成。 |
 | [`syntheseus_worker.py`](syntheseus_worker.py) | 用于 RetroChimera 和受支持 Syntheseus 模型类别的隔离可选依赖 worker。它在处理请求前把文件描述符 1 重定向到 stderr（使原生模型输出无法破坏协议），剔除模型 metadata 中的文件系统路径，并只输出一个结构化 JSON 响应。 |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | 外部模型隔离安装、provenance manifest、使用方式、wire error、科学边界和离线 replay 验证的英文说明。 |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | 外部模型后端与可信度说明的中文版本。 |
