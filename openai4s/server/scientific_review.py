@@ -48,7 +48,7 @@ _MEAN_CLAIM = re.compile(
 )
 _ATOM_CLAIM = re.compile(r"\b(\d+)\s+atoms?\b", re.I)
 _MISSING_NONE = re.compile(r"\bno missing values\b", re.I)
-_MISSING_COUNT = re.compile(r"\bmissing values(?:\s+in\s+\w+)?\s*=\s*(\d+)\b", re.I)
+_MISSING_COUNT = re.compile(r"\bmissing values(?:\s+in\s+(\w+))?\s*=\s*(\d+)\b", re.I)
 _SEVERITY_TO_STORAGE = {
     "high": "high",
     "medium": "major",
@@ -272,23 +272,40 @@ class ScientificReviewService:
                             reproduction=f"{name} null_count={nulls}",
                         )
                     )
-                for claimed_missing in (
-                    int(item) for item in _MISSING_COUNT.findall(answer)
-                ):
-                    if claimed_missing != nulls:
-                        findings.append(
-                            self._finding(
-                                severity="high",
-                                category="claim_mismatch",
-                                claim_ref=f"missing values={claimed_missing}",
-                                evidence_refs=(
-                                    [ref]
-                                    if ref in refs
-                                    else ["source:candidate_answer"]
-                                ),
-                                reproduction=f"{name} null_count={nulls}",
-                            )
+            # Resolved the same way as `_MEAN_CLAIM` above: a claim that names
+            # its column is checked against THAT column. Checking every claim
+            # against every column turned "missing values in age=3" into a high
+            # claim_mismatch against `height null_count=0` -- a correct answer
+            # marked unverified, and under auto_fix a repair round spent on a
+            # defect that does not exist.
+            for column, claimed_missing in _MISSING_COUNT.findall(answer):
+                target = None
+                target_name = column
+                if column and column in columns:
+                    target = columns[column]
+                elif not column and len(columns) == 1:
+                    target_name, target = next(iter(columns.items()))
+                if not isinstance(target, Mapping):
+                    continue
+                nulls = target.get("null_count")
+                if type(nulls) is not int:
+                    continue
+                try:
+                    expected = int(claimed_missing)
+                except (TypeError, ValueError):
+                    continue
+                if expected != nulls:
+                    findings.append(
+                        self._finding(
+                            severity="high",
+                            category="claim_mismatch",
+                            claim_ref=f"missing values={expected}",
+                            evidence_refs=(
+                                [ref] if ref in refs else ["source:candidate_answer"]
+                            ),
+                            reproduction=f"{target_name} null_count={nulls}",
                         )
+                    )
         for adapter in snapshot.get("adapters") or []:
             if (
                 not isinstance(adapter, Mapping)
@@ -356,6 +373,24 @@ class ScientificReviewService:
                     forged.append(str(ref))
             cleaned = dict(finding)
             cleaned["evidence_refs"] = valid
+            # Reviewer-model findings arrive without an identity: `_clean_finding`
+            # emits only the schema fields the model is asked for. Everything
+            # downstream (the dedup below, the repeated-finding budget, the
+            # durable rows) keys on `fingerprint`, so stamp it here — at the one
+            # place every model finding passes through — rather than letting the
+            # first consumer KeyError on the reviewer's own output.
+            if not cleaned.get("fingerprint") or not cleaned.get("finding_id"):
+                identity = self._finding(
+                    severity=str(cleaned.get("severity") or "medium"),
+                    category=str(cleaned.get("category") or "other"),
+                    claim_ref=str(
+                        cleaned.get("claim_ref") or cleaned.get("claim") or "finding"
+                    ),
+                    evidence_refs=valid,
+                    reproduction=str(cleaned.get("reproduction") or ""),
+                )
+                cleaned["finding_id"] = identity["finding_id"]
+                cleaned["fingerprint"] = identity["fingerprint"]
             if forged:
                 extra.append(
                     self._finding(

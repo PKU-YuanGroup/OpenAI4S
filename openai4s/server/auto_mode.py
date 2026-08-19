@@ -808,58 +808,9 @@ class AutoModeService:
         root_frame_id: str,
         project_id: str,
     ) -> dict:
-        frame_row = self.store.get_auto_mode_selection("frame", root_frame_id)
-        frame_revision = _revision(frame_row)
-
-        if self._quarantined(root_frame_id):
-            values = _safe_selection()
-            source = "import_quarantine"
-            source_revision = 0
-        elif frame_row is not None and frame_row.get("is_set") is not False:
-            try:
-                values = _selection_values(frame_row)
-            except ValueError:
-                # A corrupt higher-precedence row must not fall through to a
-                # lower setting that enables more autonomy.
-                values = _safe_selection()
-            source = "frame"
-            source_revision = _revision(frame_row)
-        else:
-            project_row = (
-                self.store.get_auto_mode_selection("project", project_id)
-                if project_id
-                else None
-            )
-            if project_row is not None and project_row.get("is_set") is not False:
-                try:
-                    values = _selection_values(project_row)
-                except ValueError:
-                    values = _safe_selection()
-                source = "project"
-                source_revision = _revision(project_row)
-            elif self.config.auto_mode.deployment_explicit:
-                values = _deployment_values(self.config.auto_mode)
-                source = "deployment_explicit"
-                source_revision = 0
-            else:
-                legacy = legacy_auto_mode_selection(self.store, root_frame_id)
-                if legacy is not None:
-                    values = legacy
-                    source = "legacy_result_review"
-                else:
-                    values = _safe_selection()
-                    source = "built_in_defaults"
-                source_revision = 0
-
-        return {
-            **values,
-            "source": source,
-            "explicit": source != "built_in_defaults",
-            # PATCH compares the frame override, not whichever inherited row
-            # happened to supply the current effective values.
-            "revision": frame_revision,
-            "source_revision": source_revision,
-        }
+        return resolve_effective_selection(
+            self.store, self.config, root_frame_id, project_id
+        )
 
     def get(self, frame_id: str) -> dict:
         _root, root_frame_id, project_id, branch_id = self._scope(frame_id)
@@ -1135,3 +1086,78 @@ __all__ = [
     "RESULT_REVIEW_MODES",
     "public_auto_event",
 ]
+
+
+def resolve_effective_selection(
+    store: Any,
+    config: Any,
+    root_frame_id: str,
+    project_id: str,
+) -> dict:
+    """Resolve the Auto Mode selection actually in force for one conversation.
+
+    Precedence: import quarantine, then the frame override, then the project
+    row, then an explicit deployment setting, then a legacy ``review:auto:*``
+    migration, then the safe built-in defaults. A corrupt higher-precedence row
+    collapses to the safe defaults rather than falling through to a lower one
+    that would grant more autonomy.
+
+    Module-level so the permission broker can ask the same question the Auto
+    Mode API answers. ``approvals_reviewer`` is a durable, per-conversation
+    control; resolving it in one place is what keeps ``PATCH .../auto-mode``
+    and the gate that actually grants permission from disagreeing.
+    """
+
+    quarantined = (
+        store.get_setting(session_import_quarantine_key(root_frame_id)) is not None
+    )
+    frame_row = store.get_auto_mode_selection("frame", root_frame_id)
+    frame_revision = _revision(frame_row)
+
+    if quarantined:
+        values = _safe_selection()
+        source = "import_quarantine"
+        source_revision = 0
+    elif frame_row is not None and frame_row.get("is_set") is not False:
+        try:
+            values = _selection_values(frame_row)
+        except ValueError:
+            # A corrupt higher-precedence row must not fall through to a
+            # lower setting that enables more autonomy.
+            values = _safe_selection()
+        source = "frame"
+        source_revision = _revision(frame_row)
+    else:
+        project_row = (
+            store.get_auto_mode_selection("project", project_id) if project_id else None
+        )
+        if project_row is not None and project_row.get("is_set") is not False:
+            try:
+                values = _selection_values(project_row)
+            except ValueError:
+                values = _safe_selection()
+            source = "project"
+            source_revision = _revision(project_row)
+        elif config.auto_mode.deployment_explicit:
+            values = _deployment_values(config.auto_mode)
+            source = "deployment_explicit"
+            source_revision = 0
+        else:
+            legacy = legacy_auto_mode_selection(store, root_frame_id)
+            if legacy is not None:
+                values = legacy
+                source = "legacy_result_review"
+            else:
+                values = _safe_selection()
+                source = "built_in_defaults"
+            source_revision = 0
+
+    return {
+        **values,
+        "source": source,
+        "explicit": source != "built_in_defaults",
+        # PATCH compares the frame override, not whichever inherited row
+        # happened to supply the current effective values.
+        "revision": frame_revision,
+        "source_revision": source_revision,
+    }

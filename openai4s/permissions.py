@@ -35,6 +35,157 @@ def _scope(value: str | None) -> str:
     return value if value in _SCOPES else "once"
 
 
+class _GuardianAutoMode:
+    """The Auto Mode selection in force, shaped for ``decide_unattended``."""
+
+    __slots__ = ("approvals_reviewer", "budgets")
+
+    def __init__(self, approvals_reviewer: str, budgets: Any) -> None:
+        self.approvals_reviewer = approvals_reviewer
+        self.budgets = budgets
+
+
+class _GuardianConfig:
+    """The daemon flags plus the per-conversation Auto Mode selection.
+
+    Built per gate so the durable selection wins over the process environment:
+    a session whose ``approvals_reviewer`` is ``user`` -- what import
+    quarantine and the legacy ``review:auto:*`` migration both force -- must
+    not be auto-approved because the daemon happened to be started with
+    ``OPENAI4S_UNATTENDED_APPROVAL=auto_review``.
+    """
+
+    __slots__ = ("roadmap_features", "auto_mode")
+
+    def __init__(self, roadmap_features: Any, auto_mode: Any) -> None:
+        self.roadmap_features = roadmap_features
+        self.auto_mode = auto_mode
+
+
+def _guardian_config(store, root_frame_id: str | None, project_id: str):
+    """Resolve the config the Guardian must decide under, or None on doubt.
+
+    Returning ``None`` makes ``decide_unattended`` fall back to the process
+    environment, which is strictly the previous behaviour; returning a config
+    whose ``approvals_reviewer`` we could not resolve would be worse than
+    admitting we do not know.
+    """
+
+    from openai4s.config import get_config
+
+    cfg = get_config()
+    approvals = ""
+    try:
+        from openai4s.server.auto_mode import resolve_effective_selection
+
+        selection = resolve_effective_selection(
+            store, cfg, str(root_frame_id or ""), project_id
+        )
+        approvals = str(selection.get("approvals_reviewer") or "")
+    except Exception:  # noqa: BLE001 — an unreadable selection is not consent
+        approvals = "user"
+    return _GuardianConfig(
+        getattr(cfg, "roadmap_features", None),
+        _GuardianAutoMode(
+            approvals, getattr(getattr(cfg, "auto_mode", None), "budgets", None)
+        ),
+    )
+
+
+#: Path segments and basenames that carry credentials without matching the
+#: host tool's basename denylist. `is_secret_path` tests the BASENAME only, so
+#: `~/.aws/credentials`, `~/.ssh/known_hosts` and `~/.config/gh/hosts.yml` all
+#: pass it. That is tolerable when a human is looking at the approval card and
+#: can see the path; it is not tolerable for an approval no human will ever
+#: see. Guardian therefore applies its own wider fence rather than inheriting
+#: a denylist written for the interactive case.
+_CREDENTIAL_DIRS = frozenset(
+    {".aws", ".ssh", ".gnupg", ".docker", ".kube", ".azure", ".config/gcloud"}
+)
+_CREDENTIAL_BASENAMES = frozenset(
+    {
+        "credentials",
+        "credentials.json",
+        "authorized_keys",
+        "known_hosts",
+        "config.json",
+        "hosts.yml",
+        "access-token",
+        "token.json",
+        "service-account.json",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+    }
+)
+
+
+def _credential_shaped_path(path: str) -> bool:
+    """Whether a path is credential-bearing by directory or by basename."""
+
+    normalized = (path or "").replace("\\", "/").rstrip("/").lower()
+    if not normalized:
+        return False
+    parts = [segment for segment in normalized.split("/") if segment]
+    if not parts:
+        return False
+    if parts[-1] in _CREDENTIAL_BASENAMES:
+        return True
+    segments = set(parts[:-1])
+    if segments & {name for name in _CREDENTIAL_DIRS if "/" not in name}:
+        return True
+    return any(pair in normalized for pair in _CREDENTIAL_DIRS if "/" in pair)
+
+
+def _guardian_hard_deny(
+    store,
+    *,
+    root_frame_id: str | None,
+    project_id: str,
+    tool: str,
+    target: str,
+) -> bool:
+    """Whether an existing hard policy already refuses this exact action.
+
+    The Guardian is the LAST line, not the first: sandbox, egress, secret and
+    standing-deny decisions outrank it, and an allow it issues over the top of
+    one of them would be the model widening its own authority. Anything we
+    cannot evaluate counts as a deny, because "we could not check" is not
+    evidence that the action is safe.
+    """
+
+    try:
+        from openai4s.host.files import is_secret_path
+
+        if target and is_secret_path(target):
+            return True
+    except Exception:  # noqa: BLE001 — an unusable check denies
+        return True
+    if target and _credential_shaped_path(target):
+        return True
+    try:
+        from openai4s.egress import domain_allowed, domain_of
+
+        if target and domain_of(target) and not domain_allowed(target):
+            return True
+    except Exception:  # noqa: BLE001
+        return True
+    try:
+        if (
+            store.resolve_permission(
+                root_frame_id=root_frame_id,
+                project_id=project_id,
+                tool=tool,
+                pattern_input=target,
+            )
+            == "deny"
+        ):
+            return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
 def _restart_resolution_marker(store, request: dict, *, allow: bool) -> bool:
     """Append an idempotent, argument-free restart decision to the ledger.
 
@@ -200,6 +351,11 @@ class PermissionBroker:
         900.0  # 15 min — backstop so a never-answered prompt frees the turn
     )
     _POLL = 0.5
+    #: How long the HTTP decision thread waits for the tool thread's durable
+    #: acknowledgement before answering "still committing". Generous enough to
+    #: cover a slow SQLite writer holding the Store lock, short enough that a
+    #: lost tool thread cannot retire a server thread permanently.
+    RESOLVE_ACK_TIMEOUT = 30.0
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -412,7 +568,29 @@ class PermissionBroker:
             try:
                 from openai4s.server.guardian_enforce import decide_unattended
 
-                guardian_decision = decide_unattended(payload)
+                # The Guardian is asked about the DURABLE action, not the UI
+                # projection: `action_digest` is what `resolve_permission_request`
+                # will CAS against below, so binding the approval to anything
+                # else would grant permission for an action the store cannot
+                # confirm. `canonical_arguments` likewise comes from the row,
+                # not from `payload["input"]`, which is truncated and redacted.
+                guardian_decision = decide_unattended(
+                    {
+                        **payload,
+                        "canonical_arguments": canonical_arguments,
+                    },
+                    config=_guardian_config(store, root, proj or "default"),
+                    expected_digest=created_request.get("action_digest"),
+                    hard_deny=_guardian_hard_deny(
+                        store,
+                        root_frame_id=root,
+                        project_id=proj or "default",
+                        tool=method,
+                        target=target,
+                    ),
+                    audit_persisted=bool(created_request.get("decision_id")),
+                    circuit_key=str(root or did),
+                )
             except Exception:  # noqa: BLE001 - fall back to fail-closed deny
                 guardian_decision = None
             if guardian_decision is not None:
@@ -476,115 +654,150 @@ class PermissionBroker:
             pass
 
         deadline = time.time() + wait_seconds
-        while not pend.event.wait(self._POLL):
-            if cancel_ev is not None and cancel_ev.is_set():
-                pend.allow, pend.message = False, "turn cancelled"
-                break
-            if time.time() >= deadline:
-                pend.allow, pend.message = False, "approval timed out"
-                break
-
-        requested_allow = bool(pend.allow)
-        durable_state = (
-            "allowed"
-            if requested_allow
-            else (
-                "cancelled"
-                if pend.message == "turn cancelled"
-                else ("timed_out" if pend.message == "approval timed out" else "denied")
-            )
-        )
-        resolved_request = None
+        effective_allow = False
+        actual_state = ""
         resolution_error: str | None = None
+        # Everything from here to the resolved-event emit runs under a
+        # `finally`. The three invariants it guarantees -- the pending entry
+        # is removed, the HTTP waiter is released, and the decision is
+        # published -- were previously straight-line code, so any abnormal
+        # exit (daemon shutdown KeyboardInterrupt, a raise in the durable
+        # write) leaked `_by_root`. That leak pins `is_pending()` True
+        # forever, which freezes the cell watchdog's clock and makes a truly
+        # wedged cell unreapable, and parks the HTTP decision thread on a
+        # `resolution_done` nobody will ever set.
         try:
-            resolved_request = store.resolve_permission_request(
-                did,
-                state=durable_state,
-                scope=pend.scope,
-                pattern=pend.pattern,
-                message=pend.message,
-                resolution_context="live_thread",
-                expected_action_digest=(
-                    pend.expected_action_digest if requested_allow else None
-                ),
+            while not pend.event.wait(self._POLL):
+                if cancel_ev is not None and cancel_ev.is_set():
+                    pend.allow, pend.message = False, "turn cancelled"
+                    break
+                if time.time() >= deadline:
+                    pend.allow, pend.message = False, "approval timed out"
+                    break
+
+            requested_allow = bool(pend.allow)
+            durable_state = (
+                "allowed"
+                if requested_allow
+                else (
+                    "cancelled"
+                    if pend.message == "turn cancelled"
+                    else (
+                        "timed_out"
+                        if pend.message == "approval timed out"
+                        else "denied"
+                    )
+                )
             )
-        except Exception:  # noqa: BLE001 — persistence failure must fail closed
-            resolution_error = "approval resolution could not be durably recorded"
-        actual_state = str((resolved_request or {}).get("state") or "")
-        effective_allow = bool(requested_allow and actual_state == "allowed")
-        if requested_allow and actual_state == "timed_out":
-            resolution_error = "approval request expired"
-        elif requested_allow and not effective_allow and resolution_error is None:
-            resolution_error = "approval failed exact-action integrity validation"
-        # Persist a standing rule only after the concrete request's terminal
-        # state is durable; otherwise a failed audit write could still leave a
-        # broad allow rule behind.
-        if (
-            pend.scope
-            and pend.scope != "once"
-            and actual_state == durable_state
-            and actual_state in {"allowed", "denied"}
-        ):
-            scope_id = {
-                "conversation": root,
-                "project": proj or "default",
-                "global": "",
-            }.get(pend.scope, "")
+            resolved_request = None
+            resolution_error: str | None = None
             try:
-                store.set_permission_rule(
+                resolved_request = store.resolve_permission_request(
+                    did,
+                    state=durable_state,
                     scope=pend.scope,
-                    scope_id=scope_id,
-                    tool=method,
-                    pattern=(pend.pattern or target or "*"),
-                    decision=("allow" if effective_allow else "deny"),
+                    pattern=pend.pattern,
+                    message=pend.message,
+                    resolution_context="live_thread",
+                    expected_action_digest=(
+                        pend.expected_action_digest if requested_allow else None
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — persistence failure must fail closed
+                resolution_error = "approval resolution could not be durably recorded"
+            actual_state = str((resolved_request or {}).get("state") or "")
+            effective_allow = bool(requested_allow and actual_state == "allowed")
+            if requested_allow and actual_state == "timed_out":
+                resolution_error = "approval request expired"
+            elif requested_allow and not effective_allow and resolution_error is None:
+                resolution_error = "approval failed exact-action integrity validation"
+            # Persist a standing rule only after the concrete request's terminal
+            # state is durable; otherwise a failed audit write could still leave a
+            # broad allow rule behind.
+            if (
+                pend.scope
+                and pend.scope != "once"
+                and actual_state == durable_state
+                and actual_state in {"allowed", "denied"}
+            ):
+                scope_id = {
+                    "conversation": root,
+                    "project": proj or "default",
+                    "global": "",
+                }.get(pend.scope, "")
+                try:
+                    store.set_permission_rule(
+                        scope=pend.scope,
+                        scope_id=scope_id,
+                        tool=method,
+                        pattern=(pend.pattern or target or "*"),
+                        decision=("allow" if effective_allow else "deny"),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            live_resolution = {
+                "ok": bool(
+                    (effective_allow and actual_state == "allowed")
+                    or (not requested_allow and actual_state == durable_state)
+                ),
+                "decision_id": did,
+                "allow": effective_allow,
+                "scope": pend.scope,
+                "resolution_context": "live_thread",
+                "requires_continue": False,
+                "original_action_executed": None,
+            }
+            if not live_resolution["ok"]:
+                live_resolution.update(
+                    {
+                        "error": resolution_error
+                        or "approval resolution failed closed",
+                        "code": (
+                            "decision_expired"
+                            if actual_state == "timed_out"
+                            else "decision_integrity_failure"
+                        ),
+                    }
+                )
+            pend.resolution_result = live_resolution
+            pend.resolution_done.set()
+            with self._lock:
+                self._pending.pop(did, None)
+                pending_ids = self._by_root.get(root)
+                if pending_ids:
+                    pending_ids.discard(did)
+                    if not pending_ids:
+                        self._by_root.pop(root, None)
+            try:
+                chan["emit"](
+                    {
+                        "type": "permission_resolved",
+                        "frame_id": root,
+                        "decision_id": did,
+                        "allow": effective_allow,
+                        "scope": pend.scope,
+                        "state": actual_state or "failed",
+                    }
                 )
             except Exception:  # noqa: BLE001
                 pass
-        live_resolution = {
-            "ok": bool(
-                (effective_allow and actual_state == "allowed")
-                or (not requested_allow and actual_state == durable_state)
-            ),
-            "decision_id": did,
-            "allow": effective_allow,
-            "scope": pend.scope,
-            "resolution_context": "live_thread",
-            "requires_continue": False,
-            "original_action_executed": None,
-        }
-        if not live_resolution["ok"]:
-            live_resolution.update(
-                {
-                    "error": resolution_error or "approval resolution failed closed",
-                    "code": (
-                        "decision_expired"
-                        if actual_state == "timed_out"
-                        else "decision_integrity_failure"
-                    ),
-                }
-            )
-        pend.resolution_result = live_resolution
-        pend.resolution_done.set()
-        with self._lock:
-            self._pending.pop(did, None)
-            pending_ids = self._by_root.get(root)
-            if pending_ids:
-                pending_ids.discard(did)
-                if not pending_ids:
-                    self._by_root.pop(root, None)
-        try:
-            chan["emit"](
-                {
-                    "type": "permission_resolved",
-                    "frame_id": root,
+        finally:
+            with self._lock:
+                self._pending.pop(did, None)
+                pending_ids = self._by_root.get(root)
+                if pending_ids:
+                    pending_ids.discard(did)
+                    if not pending_ids:
+                        self._by_root.pop(root, None)
+            if not pend.resolution_done.is_set():
+                pend.resolution_result = {
+                    "ok": False,
                     "decision_id": did,
-                    "allow": effective_allow,
-                    "scope": pend.scope,
-                    "state": actual_state or "failed",
+                    "allow": False,
+                    "error": "approval resolution failed closed",
+                    "code": "decision_integrity_failure",
                 }
-            )
-        except Exception:  # noqa: BLE001
-            pass
+                pend.resolution_done.set()
         if effective_allow:
             return {"allow": True, "decision_id": did}
         return {
@@ -679,10 +892,27 @@ class PermissionBroker:
                 ]
         if live_pending is not None:
             # The blocked tool thread publishes this acknowledgement only after
-            # the durable terminal state commits. A local wait timeout would be
-            # unsafe: the HTTP caller could receive a timeout while that same
-            # approval commits and executes moments later.
-            live_pending.resolution_done.wait()
+            # the durable terminal state commits, so we wait for it rather than
+            # guessing. But the wait is BOUNDED: this runs on the HTTP request
+            # thread, and the tool thread it depends on can be lost (daemon
+            # shutdown, a raise between the wait loop and the commit) or merely
+            # stuck behind a long writer holding the single Store lock. An
+            # unbounded wait there parks a server thread for good.
+            #
+            # Timing out is not the same as failing. The approval may still be
+            # committing, so the answer says exactly that and carries a code the
+            # client can poll on -- never a denial the caller might act on while
+            # the action goes on to execute.
+            if not live_pending.resolution_done.wait(self.RESOLVE_ACK_TIMEOUT):
+                return {
+                    "ok": False,
+                    "decision_id": decision_id,
+                    "error": (
+                        "the decision was accepted and is still being committed; "
+                        "re-read the request to see its final state"
+                    ),
+                    "code": "decision_resolving",
+                }
             return dict(
                 live_pending.resolution_result
                 or {
@@ -712,9 +942,20 @@ class PermissionBroker:
                 state = str(request.get("state") or "")
                 expected_action_digest = None
                 if allow:
-                    expected_action_digest = (
-                        durable_store.permission_request_action_digest(decision_id)
-                    )
+                    try:
+                        expected_action_digest = (
+                            durable_store.permission_request_action_digest(decision_id)
+                        )
+                    except ValueError:
+                        # A request written before the exact-action columns
+                        # existed has no digest to bind to: the migration adds
+                        # `canonical_arguments_sha256` without a backfill. The
+                        # store's own legacy carve-out already allows such a row
+                        # to be resolved by a human; letting this raise instead
+                        # meant an upgraded daemon could DENY a pre-upgrade
+                        # prompt but never APPROVE one, and reported it as
+                        # "unknown or expired decision".
+                        expected_action_digest = None
                 if state == "pending":
                     expires_at = request.get("expires_at")
                     if expires_at is not None and int(expires_at) <= int(

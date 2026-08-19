@@ -13,6 +13,7 @@ import io
 import json
 import re
 import struct
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -130,7 +131,17 @@ def adapt_table(path: Path, *, version_id: str, artifact_id: str) -> dict[str, A
                 summary={"format": "json"},
                 omission_reason="table_unreadable",
             )
-        rows = payload if isinstance(payload, list) else payload.get("rows")
+        # `json.loads` returns whatever the file held: a scalar, a string, or
+        # null are all valid JSON. Only a mapping has `.get`, and the caller
+        # guards OSError alone, so an AttributeError here escapes all the way
+        # out of evidence collection and disables the completion gate for the
+        # whole turn.
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, Mapping):
+            rows = payload.get("rows")
+        else:
+            rows = None
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
             return _base(
                 kind="table",

@@ -96,6 +96,8 @@ class CompletionGateService:
         agent_cfg: Any,
         reviewer_cfg: Any,
         emit: EventSink | None = None,
+        checkpoint_id: str | None = None,
+        cancel: Callable[[], bool] | None = None,
     ) -> dict[str, Any] | None:
         if not self.feature_enabled:
             return None
@@ -157,6 +159,10 @@ class CompletionGateService:
                 )
             except Exception:  # noqa: BLE001
                 mode = "off"
+        delivered_answer = str(
+            (result.get("snapshot") or {}).get("candidate_answer") or ""
+        )
+        repaired_but_undelivered = False
         if (
             self.auto_repair is not None
             and getattr(self.auto_repair, "feature_enabled", False)
@@ -170,14 +176,46 @@ class CompletionGateService:
                     agent_cfg=agent_cfg,
                     reviewer_cfg=reviewer_cfg,
                     run_id=f"auto-{root_frame_id}-{turn_id}",
+                    checkpoint_id=checkpoint_id,
+                    cancel=cancel,
                 )
             )
             result["gates_completion"] = True
+            # The repair loop rewrites the answer IN MEMORY to compute its
+            # verdict, but the message the user is reading was persisted and
+            # streamed before this ran. Promoting that to Verified would put a
+            # green badge on text the reviewer never approved -- the user would
+            # be told "n=100, no missing values" is verified because "n=97,
+            # missing values in age=3" passed. Until the repaired candidate is
+            # actually delivered, the honest terminal is "not verified".
+            repaired_answer = str(
+                (result.get("snapshot") or {}).get("candidate_answer") or ""
+            )
+            repaired_but_undelivered = bool(
+                repaired_answer and repaired_answer != delivered_answer
+            )
         terminal, user_truth = terminal_for_review(result)
-        if (
+        storage_enabled = bool(
             getattr(self.scientific_review, "storage_enabled", False)
-            and result.get("verdict") is not None
-        ):
+        )
+        if terminal == "verified" and repaired_but_undelivered:
+            terminal, user_truth = (
+                "completed_with_issues",
+                "Issues · repaired answer was not delivered",
+            )
+        if terminal == "verified" and not storage_enabled:
+            # `_assert_verified_locked` is the ONLY thing that checks "an
+            # independent pass review exists, in the right event order, with no
+            # material findings open". It lives behind Stage 2 storage, and the
+            # stage flags are independent booleans with no cross-validation, so
+            # Stage 3/4/5 without Stage 2 would stamp Verified from an
+            # in-memory dict. Verified must come from a durable pass or not at
+            # all.
+            terminal, user_truth = (
+                "review_unavailable",
+                "Unavailable · not verified (durable review storage disabled)",
+            )
+        if storage_enabled and result.get("verdict") is not None:
             try:
                 self.store.terminate_auto_mode_run(
                     f"auto-{root_frame_id}-{turn_id}",

@@ -6734,6 +6734,21 @@ class SessionRunner:
     def _review_llm_cfg(self, st: SessionState):
         return self.reviews.llm_config(st)
 
+    def _branch_head_checkpoint(self, st: SessionState) -> str | None:
+        """The restorable checkpoint auto-repair must roll back to, if any.
+
+        Returning None is a real answer, not a failure: `start_repair` treats a
+        branch with no restorable head as "safe rollback unavailable" and
+        refuses the repair, which is the correct outcome.
+        """
+
+        try:
+            branch = self.store.get_session_branch(str(st.branch_id or "")) or {}
+            head = branch.get("head_checkpoint_id")
+            return str(head) if head else None
+        except Exception:  # noqa: BLE001 — an unreadable branch has no checkpoint
+            return None
+
     @staticmethod
     def _review_artifact_excerpt(artifact: dict) -> str | None:
         return ReviewService.artifact_excerpt(artifact)
@@ -7606,6 +7621,16 @@ class SessionRunner:
                         agent_cfg=llm_cfg,
                         reviewer_cfg=self._review_llm_cfg(st),
                         emit=emit,
+                        # `start_repair` refuses a repair without a restorable
+                        # branch checkpoint -- that is the durable form of the
+                        # plan's "Blocked · Safe rollback unavailable". Passing
+                        # None here bypassed the check entirely, so repairs
+                        # mutated state with no verified rollback point and no
+                        # repair_runs row was ever written.
+                        checkpoint_id=self._branch_head_checkpoint(st),
+                        # Without this the repair loop's cancel check is dead and
+                        # a user pressing Stop mid-repair is ignored.
+                        cancel=st.cancel.is_set,
                     )
                 except Exception:  # noqa: BLE001 - never fail an already delivered turn
                     traceback.print_exc()
@@ -9649,6 +9674,12 @@ _DECISION_REFUSAL_STATUS = {
     "decision_immutable": 409,
     "decision_expired": 410,
     "decision_integrity_failure": 409,
+    # 202, not an error: the decision was accepted and its durable commit is
+    # still in flight. The request thread bounds its own wait rather than
+    # parking forever on the tool thread, so this is "ask again", not "failed"
+    # -- answering 4xx/5xx here would invite a client to re-submit a decision
+    # that is about to commit.
+    "decision_resolving": 202,
     # The approval is recorded. `output_committed` on the body is what stops the
     # UI offering a retry that would submit it twice.
     "decision_continuation_failed": 500,

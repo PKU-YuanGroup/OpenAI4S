@@ -78,10 +78,8 @@ def _services(store, cfg, chat=_pass_chat):
     return gate
 
 
-def test_candidate_event_precedes_verified_terminal(tmp_path):
-    store = _store(tmp_path)
-    events = []
-    result = _services(store, _cfg()).gate_after_turn(
+def _gate(store, cfg, events):
+    return _services(store, cfg).gate_after_turn(
         root_frame_id="root-1",
         project_id="project-1",
         branch_id="root-1",
@@ -93,19 +91,48 @@ def test_candidate_event_precedes_verified_terminal(tmp_path):
         reviewer_cfg=_llm("reviewer"),
         emit=events.append,
     )
+
+
+def test_candidate_event_precedes_verified_terminal(tmp_path):
+    store = _store(tmp_path)
+    events = []
+    cfg = _cfg(stage2=True)
+    result = _gate(store, cfg, events)
     assert result is not None
     types = [item.get("type") for item in events]
     assert types.index("candidate_ready") < types.index("auto_run_terminal")
     assert result["terminal"] == "verified"
     assert result["gates_completion"] is True
     loaded = CompletionGateService(
-        store=store, config=_cfg(), scientific_review=None
+        store=store, config=cfg, scientific_review=None
     ).load("root-1")
     assert loaded["terminal"] == "verified"
     messages = store.list_messages("root-1")
     stamp = _message_review_gate(messages[-1])
     assert stamp["status"] == "verified"
     assert stamp["unverified"] is False
+    store.close()
+
+
+def test_verified_is_unreachable_without_durable_review_storage(tmp_path):
+    """Stage 4 without Stage 2 must not stamp Verified from an in-memory dict.
+
+    `_assert_verified_locked` is the only check that an independent pass review
+    actually exists, in the right event order, with no material findings open --
+    and it lives behind Stage 2 storage. The stage flags are independent
+    booleans with no cross-validation, so a deployment that enables the gate but
+    not the storage used to publish a green badge nothing could substantiate.
+    """
+
+    store = _store(tmp_path)
+    events = []
+    result = _gate(store, _cfg(stage2=False), events)
+    assert result is not None
+    assert result["terminal"] == "review_unavailable"
+    assert "not verified" in result["user_truth"]
+    stamp = _message_review_gate(store.list_messages("root-1")[-1])
+    assert stamp["status"] == "review_unavailable"
+    assert stamp["unverified"] is True
     store.close()
 
 

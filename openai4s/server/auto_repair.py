@@ -146,7 +146,16 @@ class AutoRepairService:
         if result_review_mode != "auto_fix":
             return dict(initial)
         budgets = getattr(getattr(self.config, "auto_mode", None), "budgets", None)
-        max_rounds = int(getattr(budgets, "max_repair_rounds", 2) or 2)
+        # `or 2` would turn an explicit, in-range `0` back into 2 rounds:
+        # `max_repair_rounds` is declared with minimum=0 precisely so an
+        # operator can disable auto-repair, and that setting was unreachable.
+        configured = getattr(budgets, "max_repair_rounds", None)
+        try:
+            max_rounds = 2 if configured is None else int(configured)
+        except (TypeError, ValueError):
+            max_rounds = 2
+        if max_rounds < 0:
+            max_rounds = 0
         current = dict(initial)
         previous_prints: list[tuple[str, ...]] = [
             _fingerprint_set(current.get("findings") or [])
