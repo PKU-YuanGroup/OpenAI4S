@@ -116,7 +116,10 @@ from openai4s.server.artifacts import (
 )
 from openai4s.server.auto_mode import AutoModeService, resolve_effective_selection
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
-from openai4s.server.completion_gate import CompletionGateService
+from openai4s.server.completion_gate import (
+    CompletionGateService,
+    message_review_metadata,
+)
 from openai4s.server.completions import completion_message, response_language
 from openai4s.server.delivery import (
     CompletionDeliveryService,
@@ -7683,18 +7686,16 @@ class SessionRunner:
                 # reviewer was unavailable -- is `review_unavailable`, never a
                 # silent pass. `gated` stays true either way so the Stage 3
                 # shadow does not run a second review over the same turn.
-                gate_metadata = {
-                    "review_status": (
-                        gate.get("terminal") if gate else "review_unavailable"
-                    ),
-                    "user_truth": (
-                        gate.get("user_truth")
-                        if gate
-                        else "Unavailable · not verified (review_did_not_run)"
-                    ),
-                    "gates_completion": True,
-                    "unverified": bool(gate.get("unverified")) if gate else True,
-                }
+                gate_metadata = message_review_metadata(
+                    gate
+                    or {
+                        "terminal": "review_unavailable",
+                        "user_truth": (
+                            "Unavailable · not verified (review_did_not_run)"
+                        ),
+                        "unverified": True,
+                    }
+                )
             # --- promotion ---------------------------------------------------
             # The candidate withheld above is published now that a verdict
             # exists, so the bytes the user is given and the bytes the reviewer
@@ -7752,12 +7753,7 @@ class SessionRunner:
                         traceback.print_exc()
                         retracted = None
                     if retracted is not None:
-                        gate_metadata = {
-                            "review_status": retracted.get("terminal"),
-                            "user_truth": retracted.get("user_truth"),
-                            "gates_completion": True,
-                            "unverified": retracted.get("unverified"),
-                        }
+                        gate_metadata = message_review_metadata(retracted)
                 emit(
                     {
                         "type": "candidate_resolved",

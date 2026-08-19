@@ -49,6 +49,33 @@ def terminal_for_review(result: Mapping[str, Any]) -> tuple[str, str]:
     return "review_unavailable", "Unavailable · not verified"
 
 
+def message_review_metadata(gate: Mapping[str, Any]) -> dict[str, Any]:
+    """The verdict fields an assistant row carries, from a gate record.
+
+    One definition, because there are two writers: the persist loop passes it
+    to ``add_message``, and the transactional Stage 1 delivery -- which writes
+    its own row bound to an Artifact manifest -- stamps it afterwards. When
+    each built its own, the stamped path read ``terminal`` off a mapping that
+    called the same field ``review_status``, and wrote a row whose verdict was
+    literally ``null`` while its ``user_truth`` said Verified. Live looked
+    right; reopening showed no badge at all.
+    """
+
+    terminal = gate.get("terminal") or gate.get("review_status")
+    return {
+        "review_status": terminal,
+        "user_truth": gate.get("user_truth"),
+        "gates_completion": True,
+        # Derived, never read. `unverified` is a restatement of the terminal --
+        # the gate record defines it as `terminal != "verified"` -- and the
+        # result mapping the gateway holds does not carry the key at all, so
+        # reading it produced `None` where it was absent and, worse, a
+        # `completed_with_issues` row stamped `unverified: False`: one field
+        # saying not verified beside another saying it was.
+        "unverified": terminal != "verified",
+    }
+
+
 class CompletionGateService:
     """Promote a provisional candidate only after a durable review."""
 
@@ -368,6 +395,9 @@ class CompletionGateService:
         message row bound to an Artifact manifest and so cannot take the
         verdict as an argument. Safe only immediately after that write, when
         the newest assistant row in the branch is the one this turn delivered.
+
+        Accepts either shape -- a gate record or the row metadata built from
+        one -- because both callers exist and neither should have to translate.
         """
 
         self._stamp_last_assistant(root_frame_id, branch_id, gate)
@@ -389,13 +419,7 @@ class CompletionGateService:
             return
         try:
             self.store.update_message_metadata(
-                str(last["message_id"]),
-                {
-                    "review_status": gate.get("terminal"),
-                    "user_truth": gate.get("user_truth"),
-                    "gates_completion": True,
-                    "unverified": gate.get("unverified"),
-                },
+                str(last["message_id"]), message_review_metadata(gate)
             )
         except Exception:  # noqa: BLE001 - reopen still has the setting
             return

@@ -446,3 +446,51 @@ def test_a_tool_only_turn_never_stamps_the_previous_turns_answer():
     assert (
         'delivered_row = bool(published["ok"] and published["delivery_id"])' in source
     )
+
+
+def test_the_stamped_row_and_the_persisted_row_carry_the_same_verdict(tmp_path):
+    """Two writers, one shape -- or reopen shows a verdict of `null`.
+
+    The persist loop passes the row metadata to `add_message`; the Stage 1
+    delivery path writes its own row bound to an Artifact manifest and stamps
+    the verdict afterwards. When each built the mapping itself, the stamping
+    path read `terminal` off a mapping that calls that field `review_status`,
+    and wrote `"review_status": null` beside `"user_truth": "Verified"`. Live
+    was right, because the badge came off the socket; reopening showed no badge
+    at all, which is the exact failure this stage exists to prevent.
+    """
+
+    from openai4s.server.completion_gate import message_review_metadata
+
+    gate = {"terminal": "verified", "user_truth": "Verified", "unverified": False}
+    from_gate = message_review_metadata(gate)
+    # The row metadata is itself a valid input: the gateway holds that shape,
+    # not the gate, by the time Stage 1 delivery needs stamping.
+    from_row = message_review_metadata(from_gate)
+
+    assert from_gate == from_row
+    assert from_gate["review_status"] == "verified"
+    assert from_gate["unverified"] is False
+
+    # `unverified` restates the terminal, so it is derived rather than read.
+    # The result mapping the gateway holds carries no `unverified` key at all;
+    # reading one produced `None` where it was absent and, on the path that did
+    # supply a default, stamped a `completed_with_issues` row `unverified:
+    # False` -- one field saying not verified beside another saying it was.
+    for terminal in ("completed_with_issues", "review_unavailable"):
+        row = message_review_metadata({"terminal": terminal, "unverified": False})
+        assert row["unverified"] is True, row
+    assert message_review_metadata({"terminal": "verified"})["unverified"] is False
+
+    store = _store(tmp_path, "stamp.db")
+    store.add_message(
+        root_frame_id="root-1", branch_id="root-1", role="assistant", content="answer"
+    )
+    gate_service = _services(store, _cfg(), _pass_chat, mode="review_only")
+    gate_service.stamp_delivered_answer("root-1", "root-1", from_gate)
+
+    from openai4s.server.gateway import _message_review_gate
+
+    stamped = _message_review_gate(store.list_messages("root-1")[-1])
+    assert stamped["status"] == "verified", stamped
+    store.close()
