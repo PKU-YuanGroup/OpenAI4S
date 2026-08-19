@@ -49,6 +49,13 @@ DEFAULT_PERMISSION_RULES = (
     # for a second approval. A standing deny still wins absolutely; every other
     # MCP call retains the ask default.
     ("mcp_call", "volcengine-datapro/dataPro_search", "allow"),
+    # CUA's read-only tools are zero-friction: ping only checks connectivity
+    # and watch/observe only report state.  cua_delegate / cua_answer /
+    # cua_cancel operate a real cloud desktop, so they deliberately keep the
+    # ask default below (pre-allowable from the rules panel).
+    ("mcp_call", "cua/cua_ping", "allow"),
+    ("mcp_call", "cua/cua_watch", "allow"),
+    ("mcp_call", "cua/cua_observe", "allow"),
     ("mcp_call", "*", "ask"),
     # Reading a resource / rendering a prompt pulls attacker-controllable
     # content addressed by a model-chosen URI/name, so it stays "ask" like
@@ -66,10 +73,15 @@ DEFAULT_PERMISSION_RULES = (
 # marker.  New releases advance this separate version and list only the rules
 # introduced by that version, so upgrades add new defaults without restoring a
 # default that an operator deliberately deleted or changed.
-_DEFAULT_PERMISSION_RULE_VERSION = 3
+_DEFAULT_PERMISSION_RULE_VERSION = 4
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
     2: (("science_search", "*", "allow"),),
     3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
+    4: (
+        ("mcp_call", "cua/cua_ping", "allow"),
+        ("mcp_call", "cua/cua_watch", "allow"),
+        ("mcp_call", "cua/cua_observe", "allow"),
+    ),
 }
 
 

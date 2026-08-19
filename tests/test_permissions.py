@@ -45,6 +45,25 @@ def test_seed_defaults_and_fallback(tmp_path):
         )
         == "allow"
     )
+    # CUA read-only tools are pre-allowed; the desktop-operating trio stays ask
+    assert st.resolve_permission(tool="mcp_call", pattern_input="cua/cua_ping") == (
+        "allow"
+    )
+    assert st.resolve_permission(tool="mcp_call", pattern_input="cua/cua_watch") == (
+        "allow"
+    )
+    assert st.resolve_permission(tool="mcp_call", pattern_input="cua/cua_observe") == (
+        "allow"
+    )
+    assert st.resolve_permission(tool="mcp_call", pattern_input="cua/cua_delegate") == (
+        "ask"
+    )
+    assert st.resolve_permission(tool="mcp_call", pattern_input="cua/cua_answer") == (
+        "ask"
+    )
+    assert st.resolve_permission(tool="mcp_call", pattern_input="cua/cua_cancel") == (
+        "ask"
+    )
     # a tool with no rule at all falls back to ask (security-first)
     assert st.resolve_permission(tool="totally_unknown", pattern_input="x") == "ask"
 

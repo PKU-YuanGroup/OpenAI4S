@@ -396,6 +396,27 @@ Object.assign(I18N.zh, {
   "cust.connectors.namePlaceholder": "名称",
   "cust.connectors.test": "测试",
   "cust.connectors.testing": "测试中…",
+  "cust.cua.title": "CUA 云电脑",
+  "cust.cua.desc": "火山 Agent 套餐的云端 Windows 电脑：保存 CUA API Key 后，智能体即可通过 cua_* 工具把任务委托给云电脑执行。凭证是 CUA API Key，不是 Ark/Agent 套餐 Key。",
+  "cust.cua.connectorToggle": "启用/停用 CUA 连接器",
+  "cust.cua.connectorOn": "已启用 CUA 连接器。",
+  "cust.cua.connectorOff": "已停用 CUA 连接器，智能体不再访问该服务。",
+  "cust.cua.keyLabel": "CUA API Key",
+  "cust.cua.keyPlaceholder": "输入 CUA API Key",
+  "cust.cua.keyPlaceholderSet": "已保存；输入新 Key 可替换",
+  "cust.cua.keyConfigured": "凭证已保存",
+  "cust.cua.keyMissing": "尚未配置 CUA API Key",
+  "cust.cua.saveKey": "保存凭证",
+  "cust.cua.keyRequired": "请输入 CUA API Key",
+  "cust.cua.keySaved": "CUA API Key 已安全保存",
+  "cust.cua.verify": "验证连接",
+  "cust.cua.verifying": "验证中…",
+  "cust.cua.verifyOk": "CUA 可用（{0} 个工具）",
+  "cust.cua.desktopLink": "打开云桌面（新窗口）",
+  "cust.cua.desktopTemporary": "桌面链接为临时地址，过期后可重新验证连接获取新链接。",
+  "cust.cua.authHint": "请检查 CUA API Key 是否正确且已授权。",
+  "cust.cua.unavailable": "CUA 服务不可用",
+  "cust.cua.requestFailed": "CUA 请求失败：{0}",
   "cust.datapro.title": "火山方舟专业数据集 DataPro",
   "cust.datapro.desc": "保存 Agent Plan Key 后直接调用 dataPro_search；已配置的 Ark API Key 会自动复用。",
   "cust.datapro.connectorToggle": "启用/停用 DataPro 连接器",
@@ -1440,6 +1461,27 @@ Object.assign(I18N.en, {
   "cust.connectors.namePlaceholder": "Name",
   "cust.connectors.test": "Test",
   "cust.connectors.testing": "Testing…",
+  "cust.cua.title": "CUA Cloud Computer",
+  "cust.cua.desc": "The cloud Windows computer from the Volcengine Agent plan: save a CUA API Key and the agent can delegate tasks to it through the cua_* tools. The credential is a CUA API Key, not an Ark/Agent Plan Key.",
+  "cust.cua.connectorToggle": "Enable / disable the CUA connector",
+  "cust.cua.connectorOn": "CUA connector enabled.",
+  "cust.cua.connectorOff": "CUA connector disabled; the agent can no longer reach it.",
+  "cust.cua.keyLabel": "CUA API Key",
+  "cust.cua.keyPlaceholder": "Enter CUA API Key",
+  "cust.cua.keyPlaceholderSet": "Saved; enter a new key to replace it",
+  "cust.cua.keyConfigured": "Credential saved",
+  "cust.cua.keyMissing": "CUA API Key is not configured",
+  "cust.cua.saveKey": "Save credential",
+  "cust.cua.keyRequired": "Enter a CUA API Key",
+  "cust.cua.keySaved": "CUA API Key saved securely",
+  "cust.cua.verify": "Verify connection",
+  "cust.cua.verifying": "Verifying…",
+  "cust.cua.verifyOk": "CUA available ({0} tools)",
+  "cust.cua.desktopLink": "Open cloud desktop (new window)",
+  "cust.cua.desktopTemporary": "The desktop link is temporary; after it expires, verify the connection again for a fresh one.",
+  "cust.cua.authHint": "Check that the CUA API Key is correct and authorized.",
+  "cust.cua.unavailable": "The CUA service is unavailable",
+  "cust.cua.requestFailed": "CUA request failed: {0}",
   "cust.datapro.title": "Volcengine Ark Professional Dataset DataPro",
   "cust.datapro.desc": "Save one Agent Plan Key and call dataPro_search directly; an existing Ark API Key is reused automatically.",
   "cust.datapro.connectorToggle": "Enable / disable the DataPro connector",
@@ -10406,18 +10448,139 @@ function dataproCard(config, configError) {
   query.onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); search.click(); } };
   return card;
 }
+const CUA_CONNECTOR_ID = "cua";
+// http(s)-only projection of a remote URL, or "" when it is anything else.
+// Written with startsWith rather than a regex literal: the static-contract
+// brace scanner that extracts functions cannot see a `//` inside a regex and
+// would truncate the enclosing function at the swallowed line.
+function cuaHttpUrl(value) {
+  const url = typeof value === "string" ? value : "";
+  const lower = url.toLowerCase();
+  return lower.startsWith("http://") || lower.startsWith("https://") ? url : "";
+}
+function cuaCard(config, configError) {
+  const state = {
+    keyConfigured: !!(config && config.key_configured),
+    connectorEnabled: !!(config && config.connector_enabled),
+  };
+  const card = el("section", "datapro-card cua-card");
+  const heading = el("div", "datapro-head");
+  const headingText = el("div");
+  headingText.appendChild(el("div", "datapro-title", t("cust.cua.title")));
+  headingText.appendChild(el("div", "datapro-desc", t("cust.cua.desc")));
+  heading.appendChild(headingText);
+  // Same reason as the DataPro card: the managed row is filtered out of the
+  // generic connector list below and DELETE is refused, so this toggle is the
+  // only place in the UI where the seeded connector can be turned off.
+  const power = el("button", "toggle" + (state.connectorEnabled ? " on" : ""));
+  power.dataset.action = "cua-toggle-connector";
+  power.title = t("cust.cua.connectorToggle");
+  power.onclick = async () => {
+    const on = power.classList.toggle("on");
+    try {
+      await api(`/connectors/${encodeURIComponent(CUA_CONNECTOR_ID)}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: on }) });
+      state.connectorEnabled = on;
+      hint(on ? t("cust.cua.connectorOn") : t("cust.cua.connectorOff"));
+    } catch (error) {
+      power.classList.toggle("on", !on);
+      hint(t("toast.failed", apiErrorText(error)), true);
+    }
+  };
+  heading.appendChild(power);
+  card.appendChild(heading);
+
+  const credentials = el("div", "datapro-field");
+  credentials.appendChild(el("label", "skill-lbl", t("cust.cua.keyLabel")));
+  const credentialRow = el("div", "datapro-input-row");
+  const keyInput = el("input", "cust-input");
+  keyInput.id = "cua-api-key"; keyInput.type = "password"; keyInput.autocomplete = "off";
+  keyInput.autocapitalize = "off"; keyInput.spellcheck = false;
+  keyInput.placeholder = state.keyConfigured ? t("cust.cua.keyPlaceholderSet") : t("cust.cua.keyPlaceholder");
+  const saveKey = el("button", "solid-btn small", t("cust.cua.saveKey"));
+  saveKey.dataset.action = "cua-save-key";
+  const keyState = el("div", "datapro-credential-state", configError ? t("cust.cua.requestFailed", apiErrorText(configError)) : (state.keyConfigured ? t("cust.cua.keyConfigured") : t("cust.cua.keyMissing")));
+  keyState.classList.toggle("bad", !!configError || !state.keyConfigured);
+  saveKey.onclick = async () => {
+    let secret = keyInput.value.trim();
+    keyInput.value = "";
+    if (!secret) { hint(t("cust.cua.keyRequired"), true); return; }
+    saveKey.disabled = true; const request = api("/cua/config", { method: "POST", body: JSON.stringify({ cua_api_key: secret }) });
+    secret = "";
+    try {
+      const saved = await request;
+      state.keyConfigured = !!(saved && saved.key_configured);
+      // A successful save auto-enables the connector server-side; reflect the
+      // state the response reports instead of assuming it.
+      state.connectorEnabled = !!(saved && saved.connector_enabled);
+      power.classList.toggle("on", state.connectorEnabled);
+      keyInput.placeholder = state.keyConfigured ? t("cust.cua.keyPlaceholderSet") : t("cust.cua.keyPlaceholder");
+      keyState.textContent = state.keyConfigured ? t("cust.cua.keyConfigured") : t("cust.cua.keyMissing");
+      keyState.classList.toggle("bad", !state.keyConfigured); hint(t("cust.cua.keySaved"));
+    } catch (error) {
+      keyState.textContent = t("cust.cua.requestFailed", apiErrorText(error)); keyState.classList.add("bad");
+    } finally {
+      keyInput.value = ""; saveKey.disabled = false;
+    }
+  };
+  keyInput.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); saveKey.click(); } };
+  credentialRow.appendChild(keyInput); credentialRow.appendChild(saveKey);
+  credentials.appendChild(credentialRow); credentials.appendChild(keyState); card.appendChild(credentials);
+
+  const verifyField = el("div", "datapro-field");
+  const verifyActions = el("div", "datapro-query-actions");
+  const status = el("div", "datapro-status"); status.dataset.cuaVerifyStatus = ""; status.setAttribute("aria-live", "polite");
+  const verify = el("button", "solid-btn small", t("cust.cua.verify")); verify.dataset.action = "cua-verify";
+  verifyActions.appendChild(status); verifyActions.appendChild(verify); verifyField.appendChild(verifyActions);
+  const desktop = el("div", "datapro-index-status hidden"); desktop.dataset.cuaDesktop = ""; desktop.setAttribute("aria-live", "polite");
+  verifyField.appendChild(desktop); card.appendChild(verifyField);
+  verify.onclick = async () => {
+    verify.disabled = true; verify.textContent = t("cust.cua.verifying");
+    status.textContent = t("cust.cua.verifying"); status.className = "datapro-status";
+    desktop.textContent = ""; desktop.className = "datapro-index-status hidden";
+    try {
+      const response = await api("/cua/verify", { method: "POST" });
+      const ok = !!(response && response.ok === true && response.ping && response.ping.ok === true);
+      if (ok) {
+        const tools = Array.isArray(response.tools) ? response.tools : [];
+        status.textContent = t("cust.cua.verifyOk", tools.length);
+        status.className = "datapro-status ok";
+        // The URL comes off a remote service: built as a DOM anchor and
+        // rendered only when it is plain http(s), never as raw markup.
+        const desktopMeta = response.desktop;
+        const accessUrl = cuaHttpUrl(desktopMeta && desktopMeta.access_url);
+        if (accessUrl) {
+          const link = el("a", "cua-desktop-link", t("cust.cua.desktopLink"));
+          link.href = accessUrl; link.target = "_blank"; link.rel = "noopener noreferrer";
+          desktop.appendChild(link);
+          desktop.appendChild(document.createTextNode(" " + t("cust.cua.desktopTemporary")));
+          desktop.className = "datapro-index-status ok";
+        }
+      } else {
+        const message = (response && response.message) || t("cust.cua.unavailable");
+        status.textContent = response && response.error_code === "cua_auth" ? message + " " + t("cust.cua.authHint") : message;
+        status.className = "datapro-status bad";
+      }
+    } catch (error) {
+      status.textContent = t("cust.cua.requestFailed", apiErrorText(error)); status.className = "datapro-status bad";
+    } finally {
+      verify.disabled = false; verify.textContent = t("cust.cua.verify");
+    }
+  };
+  return card;
+}
 async function custConnectors(c) { try {
-  const [d, datapro] = await Promise.all([api("/connectors"), api("/datapro/config").then(config => ({ config })).catch(error => ({ config: {}, error }))]); const conns = (d && d.connectors) || [];
+  const [d, datapro, cua] = await Promise.all([api("/connectors"), api("/datapro/config").then(config => ({ config })).catch(error => ({ config: {}, error })), api("/cua/config").then(config => ({ config })).catch(error => ({ config: {}, error }))]); const conns = (d && d.connectors) || [];
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.connectors"), t("cust.connectors.desc")));
   c.appendChild(dataproCard(datapro.config, datapro.error));
-  conns.filter(k => k.connector_id !== DATAPRO_CONNECTOR_ID).forEach(k => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, k.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", k.connector_id)); info.appendChild(nm); info.appendChild(el("div", "ds", (k.description || "") + "  ·  " + (k.command_display || ""))); row.appendChild(info);
+  c.appendChild(cuaCard(cua.config, cua.error));
+  conns.filter(k => k.connector_id !== DATAPRO_CONNECTOR_ID).filter(k => k.connector_id !== CUA_CONNECTOR_ID).forEach(k => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, k.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", k.connector_id)); info.appendChild(nm); info.appendChild(el("div", "ds", (k.description || "") + "  ·  " + (k.command_display || ""))); row.appendChild(info);
     const pb = el("button", "outline-btn small", t("cust.connectors.test")); pb.onclick = async () => { pb.disabled = true; pb.textContent = t("cust.connectors.testing"); try { const r = await api(`/connectors/${k.connector_id}/probe`, { method: "POST" }); hint(r.ok ? (t("toast.connectors.probeOk", (r.tools || []).map(t => t.name).join("、"))) : (t("toast.failed", (r.error || "")))); } catch (e) { hint(t("toast.connectors.testFailed", apiErrorText(e)), true); } pb.disabled = false; pb.textContent = t("cust.connectors.test"); }; row.appendChild(pb);
     const tg = el("button", "toggle" + (k.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { await api(`/connectors/${k.connector_id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: on }) }); } catch {} }; row.appendChild(tg);
     const db = el("button", "icon-ghost"); db.title = t("common.delete"); db.innerHTML = icon("trash-2", 15); db.onclick = async () => { if (!confirm(t("cust.connectors.deleteConfirm", k.name))) return; try { await api(`/connectors/${k.connector_id}`, { method: "DELETE" }); custTab("connectors"); } catch {} }; row.appendChild(db); c.appendChild(row); });
   // directory (one-click add)
   c.appendChild(el("div", "cust-subhead", t("cust.connectors.fromDirectory")));
   let dir = { directory: [] }; try { dir = await api("/connectors/directory"); } catch {}
-  (dir.directory || []).forEach(item => { if (item.id === DATAPRO_CONNECTOR_ID || conns.some(k => k.connector_id === item.id)) return; const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", item.name)); info.appendChild(el("div", "ds", item.description || "")); row.appendChild(info); const add = el("button", "outline-btn small", t("common.add")); add.onclick = async () => { try { await api("/connectors", { method: "POST", body: JSON.stringify({ connector_id: item.id, name: item.name, description: item.description, command: item.command }) }); hint(t("toast.connectors.added", item.name)); custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; row.appendChild(add); c.appendChild(row); });
+  (dir.directory || []).forEach(item => { if (item.id === DATAPRO_CONNECTOR_ID || item.id === CUA_CONNECTOR_ID || conns.some(k => k.connector_id === item.id)) return; const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", item.name)); info.appendChild(el("div", "ds", item.description || "")); row.appendChild(info); const add = el("button", "outline-btn small", t("common.add")); add.onclick = async () => { try { await api("/connectors", { method: "POST", body: JSON.stringify({ connector_id: item.id, name: item.name, description: item.description, command: item.command }) }); hint(t("toast.connectors.added", item.name)); custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; row.appendChild(add); c.appendChild(row); });
   // custom add
   const add = el("div", "cust-row"); const ai = el("div", "info"); ai.appendChild(el("div", "nm", t("cust.connectors.customAddName"))); const ad = el("div", "job-submit"); const nameIn = el("input", "cust-input"); nameIn.placeholder = t("cust.connectors.namePlaceholder"); nameIn.style.flex = "0 0 120px"; const cmdIn = el("input", "cust-input"); cmdIn.placeholder = t("cust.connectors.cmdPlaceholder"); const go = el("button", "solid-btn small", t("common.add")); go.onclick = async () => { const nm = nameIn.value.trim(); const cmd = cmdIn.value.trim(); if (!nm || !cmd) return; try { await api("/connectors", { method: "POST", body: JSON.stringify({ name: nm, command: cmd.split(/\s+/) }) }); nameIn.value = cmdIn.value = ""; custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; ad.appendChild(nameIn); ad.appendChild(cmdIn); ad.appendChild(go); ai.appendChild(ad); add.appendChild(ai); c.appendChild(add);
 } catch (e) { c.textContent = t("versions.load.err", e.message); } }

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-35 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
+36 个 OpenAI4S 内置 Skill 都在这里，一个 Skill 一个目录。Skill 是一份 recipe：
 代码，加上把它跑起来所需要的运维知识，而不是 provider 的 JSON Tool。披露是渐进的，
 loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它才去读该目录下的
 `SKILL.md` 和可选的 `kernel.py` sidecar。
@@ -19,6 +19,7 @@ loader 一开始只给出名称和一行摘要；某个 Skill 真被选中，它
 | [`borzoi/`](borzoi/) | 输入 DNA，输出预测的实验信号覆盖：约 524 kb 窗口上的 RNA-seq、CAGE、DNase 和 ChIP track。给非编码变异打分的做法是跑 ref 与 alt 两个窗口，比较逐 track 的差值。如果你要的是序列似然而不是实验 track，请改用 `evo2`。 |
 | [`catalyst_sar_screening/`](catalyst_sar_screening/) | 针对石墨烯 M–N–C 位点的单原子催化剂 SAR 筛选，能量引擎硬锁定在 FAIRChem UMA。禁止启发式、查表和其他 MLIP，也禁止把仓库里已提交的 demo 输出当作用户结果：每个答案都必须来自一次全新的 pipeline 运行。权重 hub 连不上时，它会停下来问，而不是换一种方法糊过去。 |
 | [`chai1/`](chai1/) | 和 `boltz` 覆盖同样的 co-folding 场景，但换了一个模型——这正是它的价值：两个都跑，保留任一模型通过的设计。它的 Python 入口让它比 `boltz` 更容易嵌进循环里，而且 Apache-2.0 明确允许商用。 |
+| [`cua/`](cua/) | 经托管 `cua` MCP 连接器把任务委托给 CUA 云端 Windows 电脑。用户目标原样传给 `cua_delegate`——不拆解、不加步骤——返回的是五态 outcome 信封：`in_progress` 用 watch 等待，`needs_input` 把问题转达给用户，只有 `completed` 的 `result.text` 才是最终答案。`cua_observe` 只提供桌面可见性和短期有效的访问链接，绝不用来判断任务是否完成。 |
 | [`diffdock/`](diffdock/) | 盲式对接。不需要预先划定搜索盒：扩散模型可以把配体放到表面任何位置，再由 confidence 头给采样排序。这个 confidence 反映的是构象是否正确，不是结合自由能，而且不同复合物之间的数值不可比。所以在做苗头化合物分诊之前，还要配一个打分工具。 |
 | [`esmfold2/`](esmfold2/) | Biohub 的 ESM 发布：既有可以只凭单条序列跑的全原子 co-folding，也有 ESMC 语言模型给出的 embedding、突变打分和 contact 预测。当你没有 MSA 也能接受时，它优于其他几个 co-folding Skill。 |
 | [`evaluate-model/`](evaluate-model/) | 在留出数据上评估二分类与回归：ROC AUC 会处理并列取值，不确定度来自确定性 bootstrap。它有一半是纪律而不是算术：指标要在看到测试集之前定下来，结果要对照 baseline，还要逐个子群检查。bootstrap 区间刻画的是抽样波动，它不会修正泄漏，也不会修正数据分布偏移。 |

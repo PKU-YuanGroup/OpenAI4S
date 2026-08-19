@@ -10,7 +10,7 @@ skills/example_stats/
 
 Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel adds `skills/` to `sys.path`, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (35)
+## Bundled Skills (36)
 
 | category | Skills |
 |---|---|
@@ -20,7 +20,7 @@ Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to 
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
 | **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` · `evidence-walkthrough` · `retrosynthesis_planning` · `mineral_spectra_analysis` · `admet_genetic` · `protein-mutation-enhancement` |
 | **ML methodology / benchmarks** | `plan-ml-experiment` · `audit-dataset` · `evaluate-model` · `bioprobench` |
-| **Platform** | `remote-compute-nvidia` · `remote-compute-ssh` · `using-model-endpoint` · `volcengine-datapro` |
+| **Platform** | `remote-compute-nvidia` · `remote-compute-ssh` · `using-model-endpoint` · `volcengine-datapro` · `cua` |
 
 `example_stats` is the reference example Skill (pure-stdlib descriptive-statistics helpers).
 
@@ -28,6 +28,12 @@ Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to 
 configured `dataPro_search` MCP tool. Discovery is not an authentication check;
 only an integer `raw.structuredContent.code` of zero from a real search call is
 treated as usable.
+
+`cua` delegates a whole user objective to the CUA cloud Windows computer over
+the managed `cua` MCP connector and follows the returned outcome state machine.
+Only a `completed` invocation's `result.text` is treated as the final answer,
+and desktop observation never decides completion — see
+[science-connectors](science-connectors.md).
 
 ## Writing a Skill
 

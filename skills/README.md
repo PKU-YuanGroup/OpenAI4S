@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-The 35 bundled OpenAI4S Skills live here, one directory each. A Skill is a
+The 36 bundled OpenAI4S Skills live here, one directory each. A Skill is a
 recipe: code plus the operational knowledge needed to run it, not a provider
 JSON Tool. Disclosure is progressive, so the loader shows a name and a one-line
 summary and nothing more until a Skill is selected; only then does it read
@@ -20,6 +20,7 @@ summary and nothing more until a Skill is selected; only then does it read
 | [`borzoi/`](borzoi/) | DNA in, predicted assay coverage out: RNA-seq, CAGE, DNase, and ChIP tracks over roughly 524 kb windows. Score a non-coding variant by running ref and alt windows and comparing the per-track delta. Reach for `evo2` instead when you want sequence likelihood rather than assay tracks. |
 | [`catalyst_sar_screening/`](catalyst_sar_screening/) | Single-atom-catalyst SAR on graphene M–N–C sites, hard-locked to FAIRChem UMA. Heuristics, lookup tables, and other MLIPs are forbidden, and so is handing the repo's committed demo outputs to a user as a result: every answer must come from a fresh pipeline run. If the weights hub is unreachable it stops and asks rather than substituting a method. |
 | [`chai1/`](chai1/) | The same co-folding surface as `boltz` from a different model, which is the point: run both and keep the designs that pass either. Its Python entry point makes it the easier of the two to drive from inside a loop, and Apache-2.0 explicitly permits commercial use. |
+| [`cua/`](cua/) | Delegation to the CUA cloud Windows computer over the managed `cua` MCP connector. The user's objective goes to `cua_delegate` verbatim — no decomposition, no added steps — and the reply is a five-state outcome envelope: watch while `in_progress`, relay the question on `needs_input`, and treat only a `completed` `result.text` as the final answer. `cua_observe` is desktop visibility with a short-lived access link, never a completion check. |
 | [`diffdock/`](diffdock/) | Blind docking. No search box: the diffusion model places the ligand anywhere on the surface, and a confidence head ranks the samples. That confidence tracks pose correctness, not binding free energy, and the values are not comparable across complexes, so pair it with a scorer before triaging hits. |
 | [`esmfold2/`](esmfold2/) | The Biohub ESM release: all-atom co-folding that works from a single sequence, plus the ESMC language models for embeddings, mutation scoring, and contacts. Pick it over the other co-folders when you can live without an MSA. |
 | [`evaluate-model/`](evaluate-model/) | Held-out scoring for binary classification and regression, with tie-aware ROC AUC and a deterministic bootstrap. Half of it is discipline rather than arithmetic: choose the metric before seeing the test set, compare against a baseline, check subgroups. Bootstrap intervals describe sampling variability and do not correct leakage or dataset shift. |

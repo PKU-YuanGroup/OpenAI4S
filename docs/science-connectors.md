@@ -145,3 +145,54 @@ deny remains an absolute veto.
 Redirects are refused so authenticated headers cannot cross origins, and the
 fixed endpoint still passes the global network switch, exact-host egress
 allowlist, SSRF guard, timeout, and response-size ceiling.
+
+## CUA cloud computer
+
+CUA is a hosted cloud Windows desktop operated by its own remote agent.
+OpenAI4S delegates a whole user objective to it and follows the outcome; it
+does not script individual mouse or keyboard actions. Like DataPro it is one
+fixed, managed MCP Streamable HTTP connector — `connector_id` `cua`, endpoint
+`https://sd8j64df316pc5mfa3qpg.apigateway-cn-beijing.volceapi.com/skill/mcp`,
+authenticated on every request with `Authorization: Bearer <CUA API Key>`. The
+endpoint is not user-selectable.
+
+The credential is a dedicated **CUA API Key** (`cua_api_key`), stored through
+SecretBroker and pasted into the Customize → Connectors CUA card. It is issued
+by CUA's official authorization flow (browser SSO sign-in, then key creation).
+It is **not** the `ark-` Agent Plan Key that Doubao Search and DataPro share —
+the CUA service rejects `ark-` keys.
+
+Six tools, as returned by the live server's `tools/list`:
+
+| tool | kind | purpose |
+|---|---|---|
+| `cua_ping` | read-only | connectivity, auth, and desktop-binding check; creates no task |
+| `cua_delegate` | mutating | start a delegation carrying the user's verbatim objective |
+| `cua_watch` | read-only | wait for or poll an invocation's next semantic state |
+| `cua_answer` | mutating | forward the user's answer when an invocation is `needs_input` |
+| `cua_cancel` | mutating | cancel an invocation on the user's explicit request; no rollback of performed actions |
+| `cua_observe` | read-only | desktop visibility: environment state, a short-lived `access_url`, optional screenshot |
+
+Default permissions follow that split: `cua_ping`, `cua_watch`, and
+`cua_observe` are seeded `allow`; `cua_delegate`, `cua_answer`, and
+`cua_cancel` operate a real cloud desktop and keep the `ask` policy, so each
+call prompts for approval unless the user pre-approves those targets in the
+permission panel.
+
+Agent code reaches the connector from a Python cell as `host.mcp.tools("cua")`
+and `host.mcp.call("cua", "<tool>", {...})`. The bundled
+[`cua` Skill](../skills/cua/SKILL.md) is the recipe, including the outcome
+state machine (`completed` / `in_progress` / `needs_input` / `failed` /
+`cancelled`) and the rule that a `completed` invocation's `result.text` is the
+sole authoritative final answer.
+
+Verification is read-only: the Customize → Connectors CUA card's verify action
+runs `cua_ping` plus `cua_observe` and reports the auth status together with a
+temporary desktop `access_url`. The link is short-lived — re-verify (or call
+`cua_observe` again) for a fresh one. Neither MCP initialization nor tool
+discovery is an authentication verdict.
+
+With `OPENAI4S_EGRESS=allowlist`, the CUA endpoint's host must be allowed: add
+`*.volceapi.com` (or the exact
+`sd8j64df316pc5mfa3qpg.apigateway-cn-beijing.volceapi.com`) to the allowlist,
+or the connector's requests are refused.

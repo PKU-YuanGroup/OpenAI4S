@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
-from openai4s import datapro, execution_principal, memory_budget
+from openai4s import cua, datapro, execution_principal, memory_budget
 from openai4s.agent.actions import NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
@@ -8823,6 +8823,27 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         ):
             _disconnect_managed_datapro_session()
 
+    def _disconnect_managed_cua_session() -> None:
+        """Invalidate CUA only for this live Store generation."""
+
+        from openai4s.mcp_client import manager as _mcp_manager
+
+        _mcp_manager().disconnect(
+            cua.CONNECTOR_ID,
+            cache_scope=cua.runtime_cache_scope(store),
+        )
+
+    def _disconnect_cua_if_credential_changed(previous: str) -> None:
+        """Drop a cached CUA session only when its own credential moved.
+
+        Unlike DataPro there is no provider linkage: the CUA API Key is a
+        dedicated secret, so an LLM provider or Ark key change cannot alter
+        what this connector would send.
+        """
+
+        if cua.resolve_cua_api_key(store) != previous:
+            _disconnect_managed_cua_session()
+
     def _save_shared_agent_plan_key(value: Any) -> None:
         """Save the one Ark Agent Plan credential used by managed products.
 
@@ -8893,6 +8914,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             "connector_enabled": bool(connector and connector.get("enabled")),
             "skill_name": datapro.SKILL_NAME,
             "skill_enabled": datapro.SKILL_NAME not in _disabled_skills,
+        }
+
+    def _cua_config_payload() -> dict[str, Any]:
+        connector = store.get_connector(cua.CONNECTOR_ID)
+        return {
+            **cua.credential_state(store),
+            "connector_id": cua.CONNECTOR_ID,
+            "connector_enabled": bool(connector and connector.get("enabled")),
+            "skill_name": cua.SKILL_NAME,
+            "skill_enabled": cua.SKILL_NAME not in _disabled_skills,
+            "endpoint": cua.ENDPOINT,
+            "server_name": cua.SERVER_NAME,
         }
 
     def _doubao_search_config_payload() -> dict[str, Any]:
@@ -12989,6 +13022,104 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({**result, "artifact": artifact})
                 return
 
+            # ---- CUA cloud desktop (managed Streamable HTTP MCP) ----
+            if sub == "/cua/config":
+                if method == "GET":
+                    self._json(_cua_config_payload())
+                    return
+                if method in ("POST", "PUT", "PATCH"):
+                    body = self._body()
+                    previous = cua.resolve_cua_api_key(store)
+                    try:
+                        cua.save_cua_api_key(store, body.get("cua_api_key"))
+                    except ValueError as error:
+                        raise GatewayError(400, str(error)) from error
+
+                    store.set_connector_enabled(cua.CONNECTOR_ID, True)
+                    # A cached Streamable HTTP session was authenticated by
+                    # the old key's header provider; rotating the dedicated
+                    # credential is the only event that invalidates it.
+                    _disconnect_cua_if_credential_changed(previous)
+                    self._json({"ok": True, **_cua_config_payload()})
+                    return
+
+            if sub == "/cua/verify" and method == "POST":
+                connector = store.get_connector(cua.CONNECTOR_ID)
+                if connector is None:
+                    raise GatewayError(503, "CUA connector is not installed")
+                if not connector.get("enabled"):
+                    raise GatewayError(409, "CUA connector is disabled")
+                secret = cua.resolve_cua_api_key(store)
+                if not secret:
+                    raise GatewayError(400, "CUA API Key is not configured")
+
+                from openai4s.mcp_client import manager
+
+                def _cua_verify_call(tool: str, arguments: dict) -> dict[str, Any]:
+                    """One read-only call, scrubbed with pre- and post-call keys."""
+
+                    called = manager().call_tool(
+                        cua.CONNECTOR_ID,
+                        cua.connector_runtime_config(store, connector),
+                        tool,
+                        arguments,
+                    )
+                    safe = cua.redact_mcp_result(called, secret)
+                    current = cua.resolve_cua_api_key(store)
+                    if current and current != secret:
+                        safe = cua.redact_secret(safe, current)
+                    return safe
+
+                try:
+                    ping = _cua_verify_call("cua_ping", {})
+                    if not cua.is_auth_error(ping) and not ping.get("is_error"):
+                        observe = _cua_verify_call(
+                            "cua_observe",
+                            {"invocation_id": None, "include_screenshot": False},
+                        )
+                    else:
+                        observe = ping
+                    if cua.is_auth_error(ping) or cua.is_auth_error(observe):
+                        self._json(
+                            {
+                                "ok": False,
+                                "error_code": "cua_auth",
+                                "message": cua.AUTH_FAILURE_MESSAGE,
+                            }
+                        )
+                        return
+                    if ping.get("is_error") or observe.get("is_error"):
+                        # Deliberately generic: an upstream error body is
+                        # untrusted text and is not projected to the browser.
+                        self._json(
+                            {
+                                "ok": False,
+                                "error_code": "cua_unavailable",
+                                "message": "CUA 服务暂不可用，请稍后重试。",
+                            }
+                        )
+                        return
+                    self._json(
+                        {
+                            "ok": True,
+                            "server_name": cua.SERVER_NAME,
+                            "tools": list(cua.TOOL_NAMES),
+                            "ping": cua.ping_projection(ping),
+                            "desktop": cua.observe_projection(observe),
+                            "message": cua.AVAILABLE_MESSAGE,
+                        }
+                    )
+                except Exception as error:  # noqa: BLE001
+                    safe, status = public_exception(
+                        error,
+                        surface="cua:verify",
+                        request_id=getattr(self, "_correlation_id", ""),
+                        status=502,
+                        error_code="cua_failed",
+                    )
+                    self._json(safe, status)
+                return
+
             # ---- connectors (MCP servers) ----
             if sub == "/connectors" and method == "GET":
                 self._json({"connectors": self._connectors_payload(store)})
@@ -13003,6 +13134,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 cid = b.get("connector_id") or _skill_slug(nm)
                 if cid == datapro.CONNECTOR_ID:
                     raise GatewayError(403, "DataPro is a managed connector")
+                if cid == cua.CONNECTOR_ID:
+                    raise GatewayError(403, "CUA is a managed connector")
                 # Drop any cached process first: it was spawned from the old
                 # command/env and would keep serving from them. Only DELETE
                 # disconnected, so editing a connector left the previous
@@ -13042,6 +13175,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # its own DataPro account/session. A local disable must
                         # revoke only this Store generation's connection.
                         _disconnect_managed_datapro_session()
+                    elif m.group(1) == cua.CONNECTOR_ID:
+                        # Same generation-scoped revocation for the second
+                        # managed row.
+                        _disconnect_managed_cua_session()
                     else:
                         from openai4s.mcp_client import manager as _mcp_manager
 
@@ -13054,6 +13191,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(
                         400,
                         "DataPro availability requires a real dataPro_search call",
+                    )
+                if m.group(1) == cua.CONNECTOR_ID:
+                    raise GatewayError(
+                        400,
+                        "CUA availability is verified through POST /cua/verify",
                     )
                 c = store.get_connector(m.group(1))
                 if not c:
@@ -13072,6 +13214,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 if not c.get("enabled"):
                     raise GatewayError(409, "connector is disabled")
+                if c["connector_id"] == cua.CONNECTOR_ID:
+                    # The generic route would fall through to a stdio spawn of
+                    # a dict "command" and fail as an opaque 502; refuse it
+                    # up front with directions to the managed surfaces.
+                    raise GatewayError(
+                        400,
+                        "CUA tools are not callable through the generic "
+                        "connector route; use POST /cua/verify or the "
+                        "agent's host.mcp surface",
+                    )
                 from openai4s.mcp_client import manager
 
                 b = self._body()
@@ -13637,18 +13789,20 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             for c in store.list_connectors():
                 cmd = c.get("command")
                 managed_datapro = c.get("connector_id") == datapro.CONNECTOR_ID
+                managed_cua = c.get("connector_id") == cua.CONNECTOR_ID
+                managed = managed_datapro or managed_cua
                 if managed_datapro:
                     display = "Streamable HTTP · " + datapro.ENDPOINT
+                elif managed_cua:
+                    display = "Streamable HTTP · " + cua.ENDPOINT
                 else:
                     display = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
                 out.append(
                     {
                         **public_connector(c),
                         "command_display": display,
-                        "managed": managed_datapro,
-                        "transport": (
-                            "streamable_http" if managed_datapro else "stdio"
-                        ),
+                        "managed": managed,
+                        "transport": ("streamable_http" if managed else "stdio"),
                     }
                 )
             return out
@@ -14482,6 +14636,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
         _seed_example_project(cfg)
         _seed_example_connector(cfg)
         _seed_datapro_connector(cfg)
+        _seed_cua_connector(cfg)
         handler = make_handler(cfg, hub, runner)
         httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
     except BaseException:
@@ -14697,6 +14852,31 @@ def _seed_datapro_connector(cfg: Config) -> None:
             name="Volcengine DataPro",
             description="Professional dataset search through dataPro_search.",
             command=datapro.managed_connector_command(),
+            enabled=True,
+        )
+    except Exception:  # noqa: BLE001 - optional connector must not block startup
+        pass
+
+
+def _seed_cua_connector(cfg: Config) -> None:
+    """Register the single managed CUA cloud-desktop connector.
+
+    Only public transport metadata is persisted.  The CUA API Key and its
+    Bearer header are resolved inside ``openai4s.cua`` at request time.  An
+    existing row keeps the user's enabled/disabled choice across restarts.
+    """
+
+    store = get_store(cfg.db_path)
+    if store.get_connector(cua.CONNECTOR_ID):
+        return
+    try:
+        store.upsert_connector(
+            connector_id=cua.CONNECTOR_ID,
+            name="CUA Cloud Desktop",
+            description=(
+                "Delegate computer-use tasks to a cloud Windows desktop " "through CUA."
+            ),
+            command=cua.managed_connector_command(),
             enabled=True,
         )
     except Exception:  # noqa: BLE001 - optional connector must not block startup

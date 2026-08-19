@@ -765,6 +765,9 @@ body.layout-wide{--col:1080px}
 .datapro-index-status.ok{color:var(--success-text)}
 .datapro-card .datapro-result{box-sizing:border-box;width:100%;max-height:260px;overflow:auto;margin:0;padding:10px 12px;border:.5px solid var(--border);border-radius:8px;background:var(--bg-000);color:var(--text-200);white-space:pre-wrap;word-break:break-word;font:12px/1.5 var(--mono)}
 .datapro-artifact{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cua-desktop-link{color:var(--accent);font-weight:600;text-decoration:none;border-bottom:1px solid rgba(24,79,149,.28)}
+.cua-desktop-link:hover{text-decoration:underline}
+html[data-theme="dark"] .cua-desktop-link{border-bottom-color:rgba(107,163,232,.35)}
 @media(max-width:600px){.datapro-head{flex-direction:column}.datapro-head .outline-btn{align-self:stretch}.datapro-input-row{align-items:stretch;flex-direction:column}.datapro-query-actions{align-items:stretch;flex-direction:column}.datapro-query-actions .solid-btn{align-self:stretch}}
 
 /* --- added: compute jobs --- */

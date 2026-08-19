@@ -25,7 +25,11 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from openai4s import egress, webtools
-from openai4s.http_deadline import HTTPExchangeDeadline, socket_timeout_setter
+from openai4s.http_deadline import (
+    HTTPExchangeDeadline,
+    response_body_exhausted,
+    socket_timeout_setter,
+)
 from openai4s.mcp_protocol import (
     MAX_FRAME_BYTES,
     MCPError,
@@ -367,6 +371,12 @@ class MCPHTTPConnection:
             if total > _MAX_FRAME_BYTES:
                 raise MCPOversizedResponse("MCP HTTP response exceeded the 4 MiB limit")
             chunks.append(chunk)
+            if response_body_exhausted(response):
+                # ``http.client`` retires the transport on the same read that
+                # returns the final content byte, so one more pass would
+                # re-bound a read on a closed socket and report a complete
+                # response as a transport failure.
+                return b"".join(chunks)
 
     def _post(
         self,
@@ -400,6 +410,29 @@ class MCPHTTPConnection:
                 self._reflection_secrets.clear()
                 raise MCPError(self._failure)
             self._reflection_secrets.append(plan_key)
+        # The managed CUA connector authenticates with `Authorization: Bearer`
+        # instead of a product header.  Capture the bare token under the same
+        # rotation bound so an upstream reflection of it is scrubbed too; the
+        # scheme prefix stays out because upstreams echo the token, not the
+        # header line.
+        authorization = next(
+            (
+                value
+                for name, value in wire_headers.items()
+                if name.lower() == "authorization"
+            ),
+            "",
+        )
+        bearer_token = (
+            authorization[7:].strip() if authorization[:7].lower() == "bearer " else ""
+        )
+        if bearer_token and bearer_token not in self._reflection_secrets:
+            if len(self._reflection_secrets) >= _MAX_REFLECTION_SECRETS:
+                self._closed = True
+                self._failure = "MCP HTTP credential rotation limit reached"
+                self._reflection_secrets.clear()
+                raise MCPError(self._failure)
+            self._reflection_secrets.append(bearer_token)
         request = urllib.request.Request(
             self._url,
             data=body,

@@ -2192,12 +2192,19 @@ class Store:
         # remain in the process-wide MCP cache.  Resolve the scope from object
         # identity (never credential material), and crucially do not create an
         # MCP manager for the many Stores that never used a connector.
-        from openai4s import datapro
+        from openai4s import cua, datapro
         from openai4s.mcp_client import disconnect_if_initialized
 
         disconnect_if_initialized(
             datapro.CONNECTOR_ID,
             cache_scope=datapro.runtime_cache_scope(self),
+        )
+        # The managed CUA connection holds the same shape of state (a Bearer
+        # header provider closed over this Store), scoped by the same object
+        # identity, so only this generation's session is dropped.
+        disconnect_if_initialized(
+            cua.CONNECTOR_ID,
+            cache_scope=cua.runtime_cache_scope(self),
         )
 
     # --- frames ----------------------------------------------------------

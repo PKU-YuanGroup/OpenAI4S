@@ -596,6 +596,23 @@ failed or non-integer/nonzero tool code creates no successful index batch, and
 an index transaction failure prevents an availability success from being
 projected.
 
+CUA (the Volcengine Agent-plan cloud Windows desktop) is the second managed
+Streamable HTTP connector. Like DataPro it is seeded, not editable or
+deletable through the generic connector API, and its generic probe is
+refused; its credential is a dedicated CUA API Key brokered separately from
+the shared Agent Plan Key:
+
+| Method + path | Response / semantics |
+| --- | --- |
+| `GET /cua/config` | Returns `{key_configured,connector_id,connector_enabled,skill_name,skill_enabled,endpoint,server_name}` — credential state as a boolean plus non-secret product configuration (the endpoint is fixed product metadata, not user input). No key, broker reference, or header value is returned. |
+| `POST|PUT|PATCH /cua/config` | Body `{cua_api_key}`. Validates and stores the dedicated key through SecretBroker, enables the connector, and drops the cached MCP session when the credential changes. Unlike DataPro nothing is mirrored to the LLM profile: the key authorizes only this product. The response is `{ok:true}` plus the same non-secret config payload; the key is never echoed. |
+| `POST /cua/verify` | Makes real read-only `cua_ping` and `cua_observe` tool calls through the managed connector and returns `{ok,server_name,tools,ping,desktop,message}`. `ping` is the fixed `{ok}` projection; `desktop` is `{access_url,temporary}` when the reply carries a usable short-lived desktop URL, else `null`. An in-band credential refusal returns `{ok:false,error_code:"cua_auth"}`, an upstream tool error `{ok:false,error_code:"cua_unavailable"}` with fixed prose — no upstream error body is projected. Reflected credential text is redacted before projection. `503` when the connector row is missing, `409` when it is disabled, `400` when no key is configured. |
+
+The six-tool surface (`cua_ping`/`cua_delegate`/`cua_watch`/`cua_answer`/
+`cua_cancel`/`cua_observe`) is fixed: discovery is answered from the
+transcribed local descriptors rather than over the wire, and `host.mcp`
+narrows the connector to exactly these tools.
+
 ### Session sharing (`shares`)
 
 Read-only session sharing over an outbound relay tunnel. The full protocol,

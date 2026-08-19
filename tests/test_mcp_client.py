@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import http.client
 import json
 import os
@@ -272,6 +273,82 @@ def test_streamable_http_body_reader_prefers_one_raw_read_per_deadline_check():
     assert body == b"one-read"
     assert response.read1_calls == 3
     assert len(response.socket.timeouts) == 3
+    assert all(0 < value <= 2.0 for value in response.socket.timeouts)
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_body_reader_stops_when_the_transport_retires():
+    """A complete Content-Length body must not fail on its own closed socket.
+
+    CPython 3.11+ ``HTTPResponse.read1`` calls ``_close_conn()`` on the same
+    call that returns the final content byte, and urllib closed the connection
+    socket back when the headers arrived, so that read drops the last I/O
+    reference and the descriptor goes away.  Arming a read timeout afterwards
+    raised ``OSError`` (EBADF) and turned a fully-read JSON-RPC reply into a
+    transport failure -- invisible to every fake-socket test, because only a
+    real socket refuses.
+    """
+
+    class _RetiredSocket:
+        def __init__(self):
+            self.timeouts = []
+            self.fd = 9
+
+        def settimeout(self, value):
+            if self.fd < 0:
+                raise OSError(errno.EBADF, "Bad file descriptor")
+            self.timeouts.append(value)
+
+        def fileno(self):
+            return self.fd
+
+    class _Raw:
+        def __init__(self, sock):
+            self._sock = sock
+
+    class _FP:
+        def __init__(self, sock):
+            self.raw = _Raw(sock)
+
+    class _EndOfBodyClosingResponse:
+        def __init__(self, body):
+            self.headers = _HTTPHeaders({"Content-Length": str(len(body))})
+            self.socket = _RetiredSocket()
+            self.fp = _FP(self.socket)
+            self._body = body
+            self._offset = 0
+            self.length = len(body)
+            self.read1_calls = 0
+
+        def isclosed(self):
+            return self.fp is None
+
+        def read1(self, size):
+            self.read1_calls += 1
+            if self.fp is None:
+                return b""
+            chunk = self._body[self._offset : self._offset + min(size, 8)]
+            self._offset += len(chunk)
+            self.length -= len(chunk)
+            if not chunk or not self.length:
+                self.fp = None
+                self.socket.fd = -1
+            return chunk
+
+        def read(self, _size=-1):
+            raise AssertionError("buffered read must not run when read1 exists")
+
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}).encode()
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+    response = _EndOfBodyClosingResponse(payload)
+
+    body = connection._read_body(response, time.monotonic() + 2.0)
+
+    assert body == payload
+    assert response.isclosed() is True
+    assert response.socket.fileno() == -1
+    assert len(response.socket.timeouts) == response.read1_calls
     assert all(0 < value <= 2.0 for value in response.socket.timeouts)
 
 
@@ -1205,5 +1282,412 @@ def test_managed_product_config_routes_project_only_local_credential_state(tmp_p
                 "primary": True,
             },
         )
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_captures_authorization_bearer_for_reflection_scrub(
+    monkeypatch,
+):
+    """A CUA-style `Authorization: Bearer` credential joins the scrub set.
+
+    The bare token — never the scheme prefix — is what an upstream can echo,
+    so that is what must be retained under the rotation bound and redacted
+    before a response leaves the transport.
+    """
+
+    requests = []
+    keys = iter(["cua-init-key-1", "cua-notify-key-2", "cua-call-key-3"])
+
+    class _Opener:
+        def open(self, request, timeout=None):
+            payload = json.loads(request.data)
+            headers = {name.casefold(): value for name, value in request.header_items()}
+            requests.append((payload, headers))
+            method = payload.get("method")
+            if method == "initialize":
+                return _rpc_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "result": {"protocolVersion": "2025-06-18"},
+                    }
+                )
+            if method == "notifications/initialized":
+                return _HTTPResponse(202)
+            token = headers["authorization"].split(" ", 1)[1]
+            return _rpc_response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "echo " + token + " after cua-init-key-1",
+                            }
+                        ],
+                        "structuredContent": {
+                            "ok": True,
+                            "echo": token,
+                            "prior": "cua-init-key-1",
+                        },
+                    },
+                }
+            )
+
+    _permit_fake_http(monkeypatch, _Opener())
+    manager = MCPManager()
+    config = {
+        "transport": "streamable_http",
+        "url": "https://cua.example/skill/mcp",
+        "headers_provider": lambda: {"Authorization": "Bearer " + next(keys)},
+        "timeout": 2,
+    }
+    try:
+        result = manager.call_tool("cua", config, "cua_ping", {})
+        cached = manager._conns[("cua", "")]
+        assert cached._reflection_secrets == [
+            "cua-init-key-1",
+            "cua-notify-key-2",
+            "cua-call-key-3",
+        ], "each distinct sent Bearer token must occupy one bounded scrub entry"
+    finally:
+        manager.shutdown()
+
+    structured = result["raw"]["structuredContent"]
+    assert structured["ok"] is True
+    assert structured["echo"] == "[REDACTED]"
+    assert structured["prior"] == "[REDACTED]"
+    serialized = json.dumps(result)
+    assert "cua-init-key-1" not in serialized
+    assert "cua-call-key-3" not in serialized
+    assert [entry[1]["authorization"] for entry in requests] == [
+        "Bearer cua-init-key-1",
+        "Bearer cua-notify-key-2",
+        "Bearer cua-call-key-3",
+    ]
+
+
+@pytest.mark.stubbed_backend
+def test_cua_web_routes_save_verify_and_never_project_key(
+    tmp_path, monkeypatch, caplog
+):
+    from openai4s import cua
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    canary = "cua-route-canary-never-return-1"
+    rotated = "cua-route-canary-never-return-2"
+    auth_error_text = (
+        '{"error":"AuthError","message":"invalid api key",'
+        '"status":401,"code":"Unauthorized"}'
+    )
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    calls = []
+    mode = {"value": "ok"}
+
+    def _reply(tool, outbound_key):
+        if mode["value"] == "auth":
+            return {
+                "is_error": True,
+                "text": auth_error_text,
+                "raw": {
+                    "content": [{"type": "text", "text": auth_error_text}],
+                    "isError": True,
+                },
+            }
+        if mode["value"] == "down":
+            return {
+                "is_error": True,
+                "text": "upstream exploded",
+                "raw": {
+                    "content": [{"type": "text", "text": "upstream exploded"}],
+                    "isError": True,
+                },
+            }
+        if mode["value"] == "raise":
+            raise RuntimeError("transport boom carrying " + outbound_key)
+        if tool == "cua_ping":
+            structured = {
+                "ok": True,
+                "server": {"name": "cua-skill", "version": "0.1.0"},
+                "echo": outbound_key,
+                outbound_key: "reflected-key",
+                "agent_hint": "untrusted",
+            }
+        else:
+            structured = {
+                "environment": {"id": "env-1", "name": "desktop", "status": None},
+                "access_url": "https://desktop.example/session",
+                "screenshot": None,
+                "echo": outbound_key,
+                "agent_hint": "untrusted",
+            }
+        text = json.dumps(structured, ensure_ascii=False)
+        return {
+            "is_error": False,
+            "text": text,
+            "raw": {
+                "content": [{"type": "text", "text": text}],
+                "structuredContent": structured,
+            },
+        }
+
+    class _Manager:
+        def disconnect(self, connector_id, cache_scope=None):
+            calls.append(("disconnect", connector_id, bool(cache_scope)))
+
+        def call_tool(self, connector_id, config, tool, args):
+            outbound = config["headers_provider"]()
+            calls.append((connector_id, tool, args, outbound))
+            token = outbound["Authorization"].split(" ", 1)[1]
+            return _reply(tool, token)
+
+    monkeypatch.setattr(mcp_client, "manager", lambda: _Manager())
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        replies = []
+        handler._query = lambda: {}
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+        handler._body = lambda: {}
+
+        # No connector row yet: verify refuses before any dial.
+        with pytest.raises(gateway_mod.GatewayError, match="not installed") as raised:
+            handler._api("POST", "/cua/verify")
+        assert raised.value.code == 503
+
+        runner.store.upsert_connector(
+            connector_id=cua.CONNECTOR_ID,
+            name="CUA Cloud Desktop",
+            command=cua.managed_connector_command(),
+            enabled=False,
+        )
+        with pytest.raises(gateway_mod.GatewayError, match="disabled") as raised:
+            handler._api("POST", "/cua/verify")
+        assert raised.value.code == 409
+
+        runner.store.set_connector_enabled(cua.CONNECTOR_ID, True)
+        with pytest.raises(gateway_mod.GatewayError, match="not configured") as raised:
+            handler._api("POST", "/cua/verify")
+        assert raised.value.code == 400
+        assert [c for c in calls if c[0] == cua.CONNECTOR_ID] == []
+
+        # Saving the key enables the managed row and reports only metadata.
+        runner.store.set_connector_enabled(cua.CONNECTOR_ID, False)
+        handler._body = lambda: {"cua_api_key": canary}
+        handler._api("POST", "/cua/config")
+        config_status, config_body = replies.pop()
+        assert config_status == 200
+        assert config_body == {
+            "ok": True,
+            "key_configured": True,
+            "connector_id": cua.CONNECTOR_ID,
+            "connector_enabled": True,
+            "skill_name": cua.SKILL_NAME,
+            "skill_enabled": True,
+            "endpoint": cua.ENDPOINT,
+            "server_name": cua.SERVER_NAME,
+        }
+        serialized = json.dumps(config_body)
+        assert canary not in serialized
+        assert "secret://" not in serialized
+        assert "Authorization" not in serialized
+        assert calls == [
+            ("disconnect", cua.CONNECTOR_ID, True)
+        ], "a first key is a credential change and must drop any session"
+
+        # Saving the identical key is not a rotation: no disconnect.
+        calls.clear()
+        handler._api("POST", "/cua/config")
+        replies.pop()
+        assert calls == []
+
+        # A real rotation drops this Store's session; restore the canary.
+        handler._body = lambda: {"cua_api_key": rotated}
+        handler._api("POST", "/cua/config")
+        replies.pop()
+        assert calls == [("disconnect", cua.CONNECTOR_ID, True)]
+        calls.clear()
+        handler._body = lambda: {"cua_api_key": canary}
+        handler._api("POST", "/cua/config")
+        replies.pop()
+        calls.clear()
+
+        handler._api("GET", "/cua/config")
+        assert replies.pop() == (
+            200,
+            {
+                "key_configured": True,
+                "connector_id": cua.CONNECTOR_ID,
+                "connector_enabled": True,
+                "skill_name": cua.SKILL_NAME,
+                "skill_enabled": True,
+                "endpoint": cua.ENDPOINT,
+                "server_name": cua.SERVER_NAME,
+            },
+        )
+
+        # The generic probe is refused toward the dedicated verify route.
+        handler._body = lambda: {}
+        with pytest.raises(gateway_mod.GatewayError, match="/cua/verify"):
+            handler._api("POST", f"/connectors/{cua.CONNECTOR_ID}/probe")
+
+        # The managed row cannot be redefined through the generic POST.
+        handler._body = lambda: {
+            "name": "evil",
+            "command": ["python", "evil.py"],
+            "connector_id": cua.CONNECTOR_ID,
+        }
+        with pytest.raises(
+            gateway_mod.GatewayError, match="managed connector"
+        ) as raised:
+            handler._api("POST", "/connectors")
+        assert raised.value.code == 403
+
+        # Success: ping + observe, exact authoritative contract, no echoes.
+        handler._body = lambda: {}
+        handler._api("POST", "/cua/verify")
+        status, body = replies.pop()
+        assert status == 200
+        assert body == {
+            "ok": True,
+            "server_name": cua.SERVER_NAME,
+            "tools": list(cua.TOOL_NAMES),
+            "ping": {"ok": True},
+            "desktop": {
+                "access_url": "https://desktop.example/session",
+                "temporary": True,
+            },
+            "message": "CUA 可用",
+        }
+        assert canary not in json.dumps(body)
+        tool_calls = [c for c in calls if c[0] == cua.CONNECTOR_ID]
+        assert [(c[1], c[2]) for c in tool_calls] == [
+            ("cua_ping", {}),
+            ("cua_observe", {"invocation_id": None, "include_screenshot": False}),
+        ]
+        assert tool_calls[0][3] == {"Authorization": f"Bearer {canary}"}
+
+        # In-band 401 maps to the friendly auth error, not a transport 502.
+        calls.clear()
+        mode["value"] = "auth"
+        handler._api("POST", "/cua/verify")
+        status, body = replies.pop()
+        assert status == 200
+        assert body == {
+            "ok": False,
+            "error_code": "cua_auth",
+            "message": "CUA API Key 无效或未授权。",
+        }
+        assert (
+            len([c for c in calls if c[0] == cua.CONNECTOR_ID]) == 1
+        ), "a refused ping must not be followed by an observe dial"
+
+        # Any other in-band error is a generic, safe unavailability.
+        mode["value"] = "down"
+        handler._api("POST", "/cua/verify")
+        status, body = replies.pop()
+        assert status == 200
+        assert body["ok"] is False
+        assert body["error_code"] == "cua_unavailable"
+        assert "upstream exploded" not in json.dumps(body)
+
+        # A transport exception is projected, never quoted.
+        mode["value"] = "raise"
+        handler._api("POST", "/cua/verify")
+        status, body = replies.pop()
+        assert status == 502
+        assert body["code"] == "cua_failed"
+        assert canary not in json.dumps(body)
+
+        # A credential too short for lossless exact-reflection redaction is
+        # rejected before storage or any outbound MCP call.
+        mode["value"] = "ok"
+        calls.clear()
+        handler._body = lambda: {"cua_api_key": "r"}
+        with pytest.raises(gateway_mod.GatewayError, match="at least") as denied:
+            handler._api("POST", "/cua/config")
+        assert denied.value.code == 400
+        assert calls == []
+        assert canary not in caplog.text
+    finally:
+        runner.close()
+
+
+def test_cua_config_routes_project_only_local_credential_state(tmp_path):
+    """Non-stubbed response-capture source for the CUA config routes."""
+
+    from openai4s import cua
+    from openai4s.config import Config, LLMConfig
+    from openai4s.server import gateway as gateway_mod
+
+    class _Hub:
+        def emitter(self, root_frame_id):
+            return lambda event: None
+
+        def broadcast(self, root_frame_id, event):
+            return None
+
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    runner.store.upsert_connector(
+        connector_id=cua.CONNECTOR_ID,
+        name="CUA Cloud Desktop",
+        command=cua.managed_connector_command(),
+        enabled=True,
+    )
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        replies = []
+        handler._query = lambda: {}
+        handler._json = lambda obj, code=200: replies.append((code, obj))
+
+        handler._api("GET", "/cua/config")
+        assert replies.pop() == (
+            200,
+            {
+                "key_configured": False,
+                "connector_id": cua.CONNECTOR_ID,
+                "connector_enabled": True,
+                "skill_name": cua.SKILL_NAME,
+                "skill_enabled": True,
+                "endpoint": cua.ENDPOINT,
+                "server_name": cua.SERVER_NAME,
+            },
+        )
+
+        handler._body = lambda: {"cua_api_key": "local-cua-config-test-key"}
+        handler._api("POST", "/cua/config")
+        status, body = replies.pop()
+        assert status == 200
+        assert body == {
+            "ok": True,
+            "key_configured": True,
+            "connector_id": cua.CONNECTOR_ID,
+            "connector_enabled": True,
+            "skill_name": cua.SKILL_NAME,
+            "skill_enabled": True,
+            "endpoint": cua.ENDPOINT,
+            "server_name": cua.SERVER_NAME,
+        }
+        assert "local-cua-config-test-key" not in json.dumps(body)
     finally:
         runner.close()

@@ -221,6 +221,56 @@ def test_datapro_card_keeps_credentials_ephemeral_and_authenticates_by_search():
     assert "Key 无效、额度不足，或者专业数据集 Harness 未开启。" in APP_JS
 
 
+def test_cua_card_keeps_credentials_ephemeral_and_verifies_read_only():
+    card = _extract_js_function(APP_JS, "cuaCard")
+    connectors = _extract_js_function(APP_JS, "custConnectors")
+
+    for selector in (
+        "cua-api-key",
+        "cua-save-key",
+        "cua-toggle-connector",
+        "cua-verify",
+        "cuaVerifyStatus",
+        "cuaDesktop",
+    ):
+        assert selector in card
+    # Credential hygiene mirrors the DataPro card: password semantics, no
+    # autofill, and the input is wiped before the request settles.
+    assert 'keyInput.type = "password"' in card
+    assert 'keyInput.autocomplete = "off"' in card
+    assert card.count('keyInput.value = ""') >= 2
+    assert "/cua/config" in card
+    assert "/cua/verify" in card
+    assert "/probe" not in card
+    assert "cua_api_key" in card
+    # Success is gated on the locked verify contract, not on prose.
+    assert "response.ok === true && response.ping && response.ping.ok === true" in card
+    assert 'response.error_code === "cua_auth"' in card
+    # The desktop URL comes off a remote service: a DOM anchor, scheme-checked
+    # through cuaHttpUrl, opened in a new window, never rendered as markup.
+    url_guard = _extract_js_function(APP_JS, "cuaHttpUrl")
+    assert 'lower.startsWith("http://")' in url_guard
+    assert 'lower.startsWith("https://")' in url_guard
+    assert "cuaHttpUrl(desktopMeta && desktopMeta.access_url)" in card
+    assert 'link.target = "_blank"' in card
+    assert 'link.rel = "noopener noreferrer"' in card
+    assert "innerHTML" not in card
+    # The full function must survive extraction: `return card` is the last
+    # statement, so its presence proves the brace scan reached the real end.
+    assert "return card;" in card
+    # The managed row stays out of the generic connector list; the card toggle
+    # is the only place the seeded connector can be turned off.
+    assert ".filter(k => k.connector_id !== CUA_CONNECTOR_ID)" in connectors
+    assert "cuaCard(cua.config, cua.error)" in connectors
+    # Both translation tables, not just the one the developer reads.
+    assert APP_JS.count('"cust.cua.title":') == 2
+    assert APP_JS.count('"cust.cua.keySaved":') == 2
+    assert APP_JS.count('"cust.cua.verifying":') == 2
+    assert APP_JS.count('"cust.cua.desktopTemporary":') == 2
+    assert "CUA API Key 已安全保存" in APP_JS
+    assert "不是 Ark/Agent 套餐 Key" in APP_JS
+
+
 def test_doubao_search_is_the_primary_no_fallback_network_card():
     card = _extract_js_function(APP_JS, "doubaoSearchCard")
     result_text = _extract_js_function(APP_JS, "doubaoSearchResultText")

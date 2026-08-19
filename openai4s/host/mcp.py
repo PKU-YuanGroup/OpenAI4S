@@ -37,6 +37,16 @@ def _datapro_narrow_error() -> dict[str, str]:
     return {"error": "volcengine-datapro only permits dataPro_search"}
 
 
+def _cua_tool_only(connector: dict) -> bool:
+    """Whether this managed connector exposes only its fixed six tools."""
+
+    return connector.get("connector_id") == "cua"
+
+
+def _cua_narrow_error() -> dict[str, str]:
+    return {"error": "cua only permits cua_* tools"}
+
+
 class MCPService:
     """Resolve configured MCP servers and dispatch MCP control operations."""
 
@@ -123,6 +133,12 @@ class MCPService:
         # dedicated DataPro UI cannot drift onto different transports or
         # credential paths.  Custom connectors retain the existing stdio
         # config; only the fixed managed connector receives authenticated HTTP.
+        if _cua_tool_only(connector):
+            # Same sharing argument for the second managed row: its Bearer
+            # header provider and long-poll timeout come from one factory.
+            from openai4s.cua import connector_runtime_config as cua_config
+
+            return cua_config(self.store, connector)
         from openai4s.datapro import connector_runtime_config
 
         return connector_runtime_config(self.store, connector)
@@ -173,6 +189,13 @@ class MCPService:
             # key was valid.  The answer is fixed anyway -- the reply was
             # filtered down to this single tool.
             return {"tools": [datapro.tool_descriptor()]}
+        if _cua_tool_only(connector):
+            from openai4s import cua
+
+            # Same zero-dial rule as DataPro: the six-tool surface is fixed,
+            # and dialling for it would put the user's Bearer credential on
+            # the wire behind an ungated discovery capability.
+            return {"tools": cua.tool_descriptors()}
         config = self._config(connector)
         try:
             tools = manager_factory().list_tools(
@@ -205,11 +228,20 @@ class MCPService:
                 args = {"query": datapro.validate_query(args.get("query"))}
             except ValueError as error:
                 return {"error": str(error)}
+        if _cua_tool_only(connector):
+            from openai4s import cua
+
+            if tool not in cua.TOOL_NAMES:
+                return _cua_narrow_error()
+            if not isinstance(args, dict):
+                return {"error": "cua tool arguments must be an object"}
         config = self._config(connector)
         try:
             secret_before = ""
             if connector["connector_id"] == "volcengine-datapro":
                 secret_before = datapro.resolve_agent_plan_key(self.store)
+            if _cua_tool_only(connector):
+                secret_before = cua.resolve_cua_api_key(self.store)
             result = manager_factory().call_tool(
                 connector["connector_id"],
                 config,
@@ -231,6 +263,15 @@ class MCPService:
                 if receipt is not None:
                     safe["index"] = receipt
                 return safe
+            if _cua_tool_only(connector):
+                # Same pre/post-call scrub as DataPro, closing the rotation
+                # race between resolving the key and reading the reply.  No
+                # index step: CUA results are task envelopes, not corpora.
+                secret_after = cua.resolve_cua_api_key(self.store)
+                safe = cua.redact_mcp_result(result, secret_before)
+                if secret_after and secret_after != secret_before:
+                    safe = cua.redact_secret(safe, secret_after)
+                return safe
             return result
         except Exception as exc:  # noqa: BLE001 - preserve host soft-fail contract
             return {"error": f"mcp_call({server}.{tool}) failed: {exc}"}
@@ -248,6 +289,8 @@ class MCPService:
             return {"error": _disabled(server)}
         if _datapro_tool_only(connector):
             return _datapro_narrow_error()
+        if _cua_tool_only(connector):
+            return _cua_narrow_error()
         try:
             return manager_factory().list_resources(
                 connector["connector_id"],
@@ -270,6 +313,8 @@ class MCPService:
             return {"error": f"connector {server!r} is disabled"}
         if _datapro_tool_only(connector):
             return _datapro_narrow_error()
+        if _cua_tool_only(connector):
+            return _cua_narrow_error()
         try:
             return manager_factory().read_resource(
                 connector["connector_id"],
@@ -292,6 +337,8 @@ class MCPService:
             return {"error": _disabled(server)}
         if _datapro_tool_only(connector):
             return _datapro_narrow_error()
+        if _cua_tool_only(connector):
+            return _cua_narrow_error()
         try:
             return manager_factory().list_prompts(
                 connector["connector_id"],
@@ -314,6 +361,8 @@ class MCPService:
             return {"error": f"connector {server!r} is disabled"}
         if _datapro_tool_only(connector):
             return _datapro_narrow_error()
+        if _cua_tool_only(connector):
+            return _cua_narrow_error()
         try:
             return manager_factory().get_prompt(
                 connector["connector_id"],

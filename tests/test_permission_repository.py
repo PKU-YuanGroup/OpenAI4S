@@ -216,9 +216,58 @@ def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
         if rule["tool"] == "mcp_call"
     ]
     assert [(rule["pattern"], rule["decision"]) for rule in mcp_rules] == [
-        ("volcengine-datapro/dataPro_search", "allow")
+        ("volcengine-datapro/dataPro_search", "allow"),
+        ("cua/cua_ping", "allow"),
+        ("cua/cua_watch", "allow"),
+        ("cua/cua_observe", "allow"),
     ]
-    assert store.get_setting("perm_seed_version") == "3"
+    assert store.get_setting("perm_seed_version") == "4"
+
+
+def test_seed_v4_upgrade_adds_only_cua_read_only_rules_to_a_v3_store(tmp_path):
+    """A store seeded at version 3 gains exactly the three CUA allows.
+
+    The read-only trio (ping/watch/observe) is pre-allowed; the tools that
+    operate the real cloud desktop (delegate/answer/cancel) deliberately stay
+    on the wildcard ``ask`` default.
+    """
+
+    store, repository = _repository(tmp_path)
+    cua_patterns = {"cua/cua_ping", "cua/cua_watch", "cua/cua_observe"}
+    for tool, pattern, decision in DEFAULT_PERMISSION_RULES:
+        if pattern in cua_patterns:
+            continue
+        repository.set_rule(
+            scope="global",
+            tool=tool,
+            pattern=pattern,
+            decision=decision,
+        )
+    store.set_setting("perm_seeded", "1")
+    store.set_setting("perm_seed_version", "3")
+    before = len(repository.get_rules(scope="global"))
+
+    repository.seed_defaults()
+
+    assert len(repository.get_rules(scope="global")) == before + 3
+    for pattern in sorted(cua_patterns):
+        assert repository.resolve(tool="mcp_call", pattern_input=pattern) == "allow"
+    for pattern in ("cua/cua_delegate", "cua/cua_answer", "cua/cua_cancel"):
+        assert repository.resolve(tool="mcp_call", pattern_input=pattern) == "ask"
+    assert store.get_setting("perm_seed_version") == "4"
+
+    # The upgrade is idempotent and does not resurrect an operator's edit.
+    ping = next(
+        rule
+        for rule in repository.get_rules(scope="global")
+        if rule["pattern"] == "cua/cua_ping"
+    )
+    repository.delete_rule(ping["rule_id"])
+    repository.seed_defaults()
+    assert not any(
+        rule["pattern"] == "cua/cua_ping"
+        for rule in repository.get_rules(scope="global")
+    ), "a v4 store re-seeding must not restore a deliberately deleted default"
 
 
 def test_seed_rules_commit_before_marker_and_recover_after_marker_failure(tmp_path):

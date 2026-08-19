@@ -1100,6 +1100,72 @@
         "type": "object"
       }
     },
+    "DELETE /cua/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /cua/verify [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /datapro/config [error]": {
       "schema": {
         "properties": {
@@ -6898,6 +6964,76 @@
         "type": "object"
       }
     },
+    "GET /cua/config [ok]": {
+      "schema": {
+        "properties": {
+          "connector_enabled": {
+            "type": "boolean"
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "skill_enabled": {
+            "type": "boolean"
+          },
+          "skill_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_enabled",
+          "connector_id",
+          "endpoint",
+          "key_configured",
+          "server_name",
+          "skill_enabled",
+          "skill_name"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /cua/verify [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "GET /datapro/config [ok]": {
       "schema": {
         "properties": {
@@ -7050,9 +7186,6 @@
                   "type": "string"
                 },
                 "notable": {
-                  "items": {
-                    "type": "string"
-                  },
                   "type": "array"
                 },
                 "package_count": {
@@ -9934,9 +10067,6 @@
                   "type": "string"
                 },
                 "notable": {
-                  "items": {
-                    "type": "string"
-                  },
                   "type": "array"
                 },
                 "package_count": {
@@ -17008,6 +17138,64 @@
         "type": "object"
       }
     },
+    "PATCH /cua/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /cua/verify [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /datapro/config [error]": {
       "schema": {
         "properties": {
@@ -22642,6 +22830,97 @@
         },
         "required": [
           "csrf_token"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /cua/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /cua/config [ok]": {
+      "schema": {
+        "properties": {
+          "connector_enabled": {
+            "type": "boolean"
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "key_configured": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "skill_enabled": {
+            "type": "boolean"
+          },
+          "skill_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_enabled",
+          "connector_id",
+          "endpoint",
+          "key_configured",
+          "ok",
+          "server_name",
+          "skill_enabled",
+          "skill_name"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /cua/verify [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -33427,6 +33706,64 @@
         },
         "required": [
           "csrf_token"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /cua/config [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /cua/verify [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }

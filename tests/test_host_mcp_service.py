@@ -600,3 +600,107 @@ def test_datapro_availability_requires_strict_structured_integer_zero(code, avai
     assert projected["available"] is available
     if code == 4011:
         assert projected["message"] == datapro.AUTH_FAILURE_MESSAGE
+
+
+@pytest.mark.stubbed_backend
+def test_cua_host_path_answers_discovery_locally_and_redacts_an_echoed_key():
+    from openai4s import cua
+
+    canary = "cua-key-canary-do-not-project"
+    connector = _connector(
+        cua.CONNECTOR_ID,
+        "CUA Cloud Desktop",
+        command=cua.managed_connector_command(),
+    )
+    store = FakeStore([connector], secrets={cua.CUA_API_KEY_SETTING: canary})
+    manager = FakeManager()
+    manager.list_result = [
+        {"name": "cua_ping"},
+        {"name": "unrelated_tool"},
+    ]
+    manager.call_result = {
+        "is_error": False,
+        "text": "echo " + canary,
+        "raw": {
+            "content": [{"type": "text", "text": "echo " + canary}],
+            "structuredContent": {
+                "ok": True,
+                "value": canary,
+                canary: "reflected-key",
+            },
+        },
+    }
+    service = MCPService(store, manager_factory=lambda: manager)
+
+    # Discovery for the managed connector is answered locally: the six-tool
+    # surface is fixed, and dialling for it would put the Bearer credential on
+    # the wire behind the ungated `mcp_tools` capability. Zero dial, zero
+    # upstream reflection.
+    listed = service.tools(cua.CONNECTOR_ID)
+    assert [tool["name"] for tool in listed["tools"]] == list(cua.TOOL_NAMES)
+    assert canary not in str(listed)
+    assert manager.list_calls == []
+
+    result = service.call({"server": cua.CONNECTOR_ID, "tool": "cua_ping", "args": {}})
+    assert canary not in str(result)
+    assert "[REDACTED]" in str(result)
+    assert "index" not in result, "CUA results are envelopes, never indexed"
+    connector_id, call_config, tool, args = manager.tool_calls[0]
+    assert connector_id == cua.CONNECTOR_ID
+    assert call_config["transport"] == "streamable_http"
+    assert call_config["url"] == cua.ENDPOINT
+    assert call_config["timeout"] == cua.REQUEST_TIMEOUT_SECONDS
+    assert tool == "cua_ping"
+    assert args == {}
+
+    before = list(manager.tool_calls)
+    narrow = {"error": "cua only permits cua_* tools"}
+    assert (
+        service.call({"server": cua.CONNECTOR_ID, "tool": "dataPro_search", "args": {}})
+        == narrow
+    )
+    assert service.call(
+        {"server": cua.CONNECTOR_ID, "tool": "cua_delegate", "args": "objective"}
+    ) == {"error": "cua tool arguments must be an object"}
+    assert manager.tool_calls == before
+
+    assert service.resources({"server": cua.CONNECTOR_ID}) == narrow
+    assert (
+        service.read_resource({"server": cua.CONNECTOR_ID, "uri": "science://secret"})
+        == narrow
+    )
+    assert service.prompts({"server": cua.CONNECTOR_ID}) == narrow
+    assert service.get_prompt({"server": cua.CONNECTOR_ID, "name": "secret"}) == narrow
+    assert manager.resource_list_calls == []
+    assert manager.resource_read_calls == []
+    assert manager.prompt_list_calls == []
+    assert manager.prompt_get_calls == []
+
+
+def test_cua_discovery_and_call_are_zero_spawn_when_disabled():
+    from openai4s import cua
+
+    store = FakeStore(
+        [
+            _connector(
+                cua.CONNECTOR_ID,
+                "CUA Cloud Desktop",
+                command=cua.managed_connector_command(),
+                enabled=False,
+            )
+        ]
+    )
+
+    def manager_factory():
+        raise AssertionError("a disabled managed connector must not be dialled")
+
+    service = MCPService(store, manager_factory=manager_factory)
+    assert "disabled" in service.tools(cua.CONNECTOR_ID)["error"]
+    assert (
+        "disabled"
+        in service.call({"server": cua.CONNECTOR_ID, "tool": "cua_ping", "args": {}})[
+            "error"
+        ]
+    )
+    assert "disabled" in service.resources({"server": cua.CONNECTOR_ID})["error"]
+    assert "disabled" in service.prompts({"server": cua.CONNECTOR_ID})["error"]

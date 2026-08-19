@@ -456,6 +456,31 @@
         200
       ]
     },
+    "/cua/config": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        404
+      ]
+    },
+    "/cua/verify": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        503
+      ]
+    },
     "/datapro/config": {
       "content_types": [
         "application/json"
