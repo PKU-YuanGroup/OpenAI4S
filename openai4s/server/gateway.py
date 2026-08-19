@@ -1023,6 +1023,7 @@ class WSHub:
             "repair_started",
             "repair_completed",
             "auto_run_terminal",
+            "candidate_resolved",
         }
     )
 
@@ -7088,6 +7089,138 @@ class SessionRunner:
             "model_profile_revision": int(binding.get("model_profile_revision") or 0),
         }
 
+    def _deliver_final_answer(
+        self,
+        *,
+        st: Any,
+        emit: Callable[[dict], None],
+        root_frame_id: str,
+        project_id: str,
+        execution_id: str,
+        produced_artifacts: list,
+        assistant_visible: list,
+        final_text: str,
+        delivered_at: int,
+        language: str,
+        already_streamed: bool = False,
+    ) -> dict:
+        """Publish the turn's final answer; transactional where Stage 1 applies.
+
+        Lifted out of the turn body so the Stage 4 gate can run *between*
+        composing the candidate and publishing it, with one copy of the
+        delivery contract rather than one per ordering.
+
+        ``already_streamed`` says the same bytes already went out on the wire
+        marked provisional, so they must not be sent a second time; the caller
+        emits ``candidate_resolved`` to settle that block instead.
+
+        Failure is returned, not raised and not applied: only the caller knows
+        what else this turn did, so it owns turning ``ok=False`` into a failed
+        turn.
+        """
+
+        if self.stage1_trusted_delivery and produced_artifacts:
+            try:
+                delivery_service = self.completion_delivery
+                if delivery_service is None:
+                    raise RuntimeError("trusted completion delivery is unavailable")
+                verified = delivery_service.build_manifest(
+                    root_frame_id=root_frame_id,
+                    project_id=project_id,
+                    versions=produced_artifacts,
+                )
+                # Preserve the pre-existing live/reopen ordering:
+                # model prose comes first, then the transactional
+                # Artifact-bearing final message.
+                for block in assistant_visible:
+                    if (
+                        block.get("persisted")
+                        or not str(block.get("text") or "").strip()
+                    ):
+                        continue
+                    self.store.add_message(
+                        root_frame_id=root_frame_id,
+                        branch_id=st.branch_id,
+                        role="assistant",
+                        content=block["text"],
+                        frame_id=root_frame_id,
+                        created_at=block.get("at"),
+                    )
+                    block["persisted"] = True
+                delivery = delivery_service.commit_verified_manifest(
+                    verified=verified,
+                    idempotency_key=("artifact-completion:" + str(execution_id)),
+                    root_frame_id=root_frame_id,
+                    branch_id=st.branch_id,
+                    frame_id=root_frame_id,
+                    content=final_text,
+                    created_at=delivered_at,
+                )
+            except Exception as error:  # noqa: BLE001 - fail closed
+                # No verified row means no success link is emitted.
+                # The fixed public text carries no local path or raw
+                # storage exception; the diagnostic keeps those for
+                # the operator.
+                record_diagnostic(error, surface="completion:trusted_delivery")
+                return {
+                    "ok": False,
+                    "code": "artifact_delivery_unverified",
+                    "error_text": (
+                        "产物交付未能通过完整性校验；未发布完成链接。"
+                        if language == "zh"
+                        else "Artifact delivery could not be verified; "
+                        "no completion link was published."
+                    ),
+                    "delivery_id": None,
+                }
+            delivery_id = str(delivery["delivery_id"])
+            assistant_visible.append(
+                {
+                    "at": delivered_at,
+                    "text": final_text,
+                    "persisted": True,
+                    "delivery_id": delivery_id,
+                }
+            )
+            if not already_streamed:
+                emit(
+                    {
+                        "type": "text_chunk",
+                        "frame_id": root_frame_id,
+                        "block_type": "text",
+                        "chunk": final_text + "\n",
+                        "delivery_id": delivery_id,
+                    }
+                )
+            try:
+                self.store.mark_completion_delivery_published(delivery_id)
+            except Exception as error:  # noqa: BLE001
+                # Message+manifest are already durable. Leaving
+                # the row committed preserves a stable recovery
+                # key for REST reopen and future explicit
+                # reconciliation; Stage 1 does not re-emit here.
+                record_diagnostic(
+                    error,
+                    surface="completion:publication_reconcile",
+                )
+            return {
+                "ok": True,
+                "code": None,
+                "error_text": None,
+                "delivery_id": delivery_id,
+            }
+        assistant_visible.append({"at": delivered_at, "text": final_text})
+        if not already_streamed:
+            emit(
+                {
+                    "type": "text_chunk",
+                    "frame_id": root_frame_id,
+                    "block_type": "text",
+                    "chunk": final_text + "\n",
+                }
+            )
+        return {"ok": True, "code": None, "error_text": None, "delivery_id": None}
+
     def run_message(
         self,
         root_frame_id: str,
@@ -7359,6 +7492,18 @@ class SessionRunner:
                 traceback.print_exc()
             if st.cancel.is_set():
                 status = "cancelled"
+            # Armed for the whole turn, not just the branch that composes an
+            # answer: a tool-only turn is reviewed too, it simply has no
+            # candidate text to hold back. Resolved once, here, so the branch
+            # that decides to withhold delivery and the branch that runs the
+            # review can never disagree about whether this turn is gated.
+            gate_armed = bool(
+                status == "completed"
+                and self.cfg.roadmap_features.stage4_review_completion_gate
+                and self.completion_gate.gates_turn(root_frame_id)
+            )
+            # The composed final answer, withheld until the gate has run.
+            candidate_final: dict[str, Any] | None = None
             if status == "completed" and loop_reason == "submitted":
                 current_artifacts = self.store.list_artifacts(
                     {"root_frame_id": root_frame_id}
@@ -7410,63 +7555,50 @@ class SessionRunner:
                 )
                 if final_text:
                     delivered_at = int(time.time() * 1000)
-                    if self.stage1_trusted_delivery and produced_artifacts:
-                        try:
-                            delivery_service = self.completion_delivery
-                            if delivery_service is None:
-                                raise RuntimeError(
-                                    "trusted completion delivery is unavailable"
-                                )
-                            verified = delivery_service.build_manifest(
-                                root_frame_id=root_frame_id,
-                                project_id=project_id,
-                                versions=produced_artifacts,
-                            )
-                            # Preserve the pre-existing live/reopen ordering:
-                            # model prose comes first, then the transactional
-                            # Artifact-bearing final message.
-                            for block in assistant_visible:
-                                if (
-                                    block.get("persisted")
-                                    or not str(block.get("text") or "").strip()
-                                ):
-                                    continue
-                                self.store.add_message(
-                                    root_frame_id=root_frame_id,
-                                    branch_id=st.branch_id,
-                                    role="assistant",
-                                    content=block["text"],
-                                    frame_id=root_frame_id,
-                                    created_at=block.get("at"),
-                                )
-                                block["persisted"] = True
-                            delivery = delivery_service.commit_verified_manifest(
-                                verified=verified,
-                                idempotency_key=(
-                                    "artifact-completion:" + str(execution.execution_id)
-                                ),
-                                root_frame_id=root_frame_id,
-                                branch_id=st.branch_id,
-                                frame_id=root_frame_id,
-                                content=final_text,
-                                created_at=delivered_at,
-                            )
-                        except Exception as error:  # noqa: BLE001 - fail closed
-                            # No verified row means no success link is emitted.
-                            # The fixed public text carries no local path or raw
-                            # storage exception; the diagnostic keeps those for
-                            # the operator.
-                            record_diagnostic(
-                                error, surface="completion:trusted_delivery"
-                            )
+                    # Stage 4 orders the turn candidate -> frozen evidence ->
+                    # review -> promotion. While the gate is armed this text is
+                    # a CANDIDATE, not the answer: stream it so the user can
+                    # read the work as it lands, but marked provisional, and
+                    # hold back every durable and final-looking form of it --
+                    # the verified Artifact manifest, the message rows, the
+                    # completion link. Publishing resumes below, once a verdict
+                    # exists. Before this, the answer was fully readable as
+                    # final and already durable for the whole reviewer
+                    # round-trip, and a `kill -9` in that window left it that
+                    # way forever with nothing that would ever revisit it.
+                    if gate_armed:
+                        candidate_final = {
+                            "at": delivered_at,
+                            "text": final_text,
+                            "artifacts": produced_artifacts,
+                        }
+                        emit(
+                            {
+                                "type": "text_chunk",
+                                "frame_id": root_frame_id,
+                                "block_type": "text",
+                                "chunk": final_text + "\n",
+                                "provisional": True,
+                                "review_status": "candidate",
+                            }
+                        )
+                    else:
+                        published = self._deliver_final_answer(
+                            st=st,
+                            emit=emit,
+                            root_frame_id=root_frame_id,
+                            project_id=project_id,
+                            execution_id=str(execution.execution_id),
+                            produced_artifacts=produced_artifacts,
+                            assistant_visible=assistant_visible,
+                            final_text=final_text,
+                            delivered_at=delivered_at,
+                            language=response_language(user_text),
+                        )
+                        if not published["ok"]:
                             status = "failed"
-                            failure_meta["code"] = "artifact_delivery_unverified"
-                            err_text = (
-                                "产物交付未能通过完整性校验；未发布完成链接。"
-                                if response_language(user_text) == "zh"
-                                else "Artifact delivery could not be verified; "
-                                "no completion link was published."
-                            )
+                            failure_meta["code"] = str(published["code"])
+                            err_text = str(published["error_text"])
                             emit(
                                 {
                                     "type": "text_chunk",
@@ -7475,50 +7607,6 @@ class SessionRunner:
                                     "chunk": "\n\n" + err_text + "\n",
                                 }
                             )
-                        else:
-                            delivery_id = str(delivery["delivery_id"])
-                            assistant_visible.append(
-                                {
-                                    "at": delivered_at,
-                                    "text": final_text,
-                                    "persisted": True,
-                                    "delivery_id": delivery_id,
-                                }
-                            )
-                            emit(
-                                {
-                                    "type": "text_chunk",
-                                    "frame_id": root_frame_id,
-                                    "block_type": "text",
-                                    "chunk": final_text + "\n",
-                                    "delivery_id": delivery_id,
-                                }
-                            )
-                            try:
-                                self.store.mark_completion_delivery_published(
-                                    delivery_id
-                                )
-                            except Exception as error:  # noqa: BLE001
-                                # Message+manifest are already durable. Leaving
-                                # the row committed preserves a stable recovery
-                                # key for REST reopen and future explicit
-                                # reconciliation; Stage 1 does not re-emit here.
-                                record_diagnostic(
-                                    error,
-                                    surface="completion:publication_reconcile",
-                                )
-                    else:
-                        assistant_visible.append(
-                            {"at": delivered_at, "text": final_text}
-                        )
-                        emit(
-                            {
-                                "type": "text_chunk",
-                                "frame_id": root_frame_id,
-                                "block_type": "text",
-                                "chunk": final_text + "\n",
-                            }
-                        )
             # Persist each visible prose block with the time it was produced (see
             # _loop) rather than collapsing the whole turn's text into one message
             # stamped at turn-end. The latter sorted every step card into a single
@@ -7527,6 +7615,196 @@ class SessionRunner:
             # matching the live stream. Written here at the turn boundary (not
             # mid-loop) so an in-flight resume still rebuilds text from the WS
             # replay alone, with nothing double-rendered.
+            gated = gate_armed
+            gate: dict | None = None
+            gate_metadata: dict[str, object] | None = None
+            if gate_armed:
+                # Everything this turn wants to say, including the final answer
+                # withheld above. The reviewer has to read what the user will
+                # read; reviewing only the prose blocks would leave the
+                # conclusion -- the part carrying the numbers -- unexamined.
+                candidate_answer = "\n\n".join(
+                    [
+                        *(str(blk.get("text") or "") for blk in assistant_visible),
+                        *(
+                            [str(candidate_final["text"])]
+                            if candidate_final is not None
+                            else []
+                        ),
+                    ]
+                ).strip()
+                try:
+                    gate = self.completion_gate.gate_after_turn(
+                        root_frame_id=root_frame_id,
+                        project_id=project_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        turn_id=str(action_ledger.turn_id),
+                        execution_id=str(
+                            getattr(execution, "execution_id", "") or turn_request_id
+                        ),
+                        user_request=user_text,
+                        candidate_answer=candidate_answer,
+                        structured_completion=(
+                            st.last_engine_completion
+                            or getattr(st.dispatcher, "last_output", None)
+                        ),
+                        artifact_versions_before=artifact_versions_before,
+                        cell_count_before=cell_count_before,
+                        step_count_before=step_count_before,
+                        agent_cfg=llm_cfg,
+                        reviewer_cfg=self._review_llm_cfg(st),
+                        emit=emit,
+                        # `start_repair` refuses a repair without a restorable
+                        # branch checkpoint -- that is the durable form of the
+                        # plan's "Blocked · Safe rollback unavailable". Passing
+                        # None here bypassed the check entirely, so repairs
+                        # mutated state with no verified rollback point and no
+                        # repair_runs row was ever written.
+                        checkpoint_id=self._branch_head_checkpoint(st),
+                        # Without this the repair loop's cancel check is dead and
+                        # a user pressing Stop mid-repair is ignored.
+                        cancel=st.cancel.is_set,
+                        # Nothing is written yet, so the verdict goes on the row
+                        # the persist loop below is about to create. Stamping
+                        # the newest existing assistant row instead would label
+                        # the PREVIOUS turn's answer with this turn's result.
+                        stamp_message=False,
+                        # The answer has not been shown as final or stored, so a
+                        # repair that corrected it can still become the thing
+                        # the user reads. Without this the Stage 5 loop computed
+                        # a fix nobody could ever see and the gate could only
+                        # refuse to promote.
+                        deliver_replacement=candidate_final is not None,
+                    )
+                except (
+                    Exception
+                ):  # noqa: BLE001 - a failed gate is unverified, not fatal
+                    traceback.print_exc()
+                    gate = None
+                # A gate that could not reach a verdict -- it raised, or the
+                # reviewer was unavailable -- is `review_unavailable`, never a
+                # silent pass. `gated` stays true either way so the Stage 3
+                # shadow does not run a second review over the same turn.
+                gate_metadata = {
+                    "review_status": (
+                        gate.get("terminal") if gate else "review_unavailable"
+                    ),
+                    "user_truth": (
+                        gate.get("user_truth")
+                        if gate
+                        else "Unavailable · not verified (review_did_not_run)"
+                    ),
+                    "gates_completion": True,
+                    "unverified": bool(gate.get("unverified")) if gate else True,
+                }
+            # --- promotion ---------------------------------------------------
+            # The candidate withheld above is published now that a verdict
+            # exists, so the bytes the user is given and the bytes the reviewer
+            # read are the same bytes -- which is the entire content of the
+            # claim `verified` makes.
+            if candidate_final is not None:
+                promoted_text = str(candidate_final["text"])
+                replaced = bool(gate and gate.get("answer_replaced"))
+                if replaced:
+                    # A repair rewrote the answer, and the reviewed text spans
+                    # the whole turn. The streamed prose blocks are superseded
+                    # by it: keeping them would leave the corrected claim
+                    # sitting directly under the wrong one it corrects, with
+                    # nothing telling the reader which is which.
+                    promoted_text = str(gate.get("final_answer") or promoted_text)
+                    assistant_visible[:] = []
+                published = self._deliver_final_answer(
+                    st=st,
+                    emit=emit,
+                    root_frame_id=root_frame_id,
+                    project_id=project_id,
+                    execution_id=str(execution.execution_id),
+                    produced_artifacts=list(candidate_final["artifacts"]),
+                    assistant_visible=assistant_visible,
+                    final_text=promoted_text,
+                    delivered_at=int(candidate_final["at"]),
+                    language=response_language(user_text),
+                    # Unchanged text is already on the wire from the provisional
+                    # emit; only a replacement has bytes the user has not seen.
+                    already_streamed=not replaced,
+                )
+                if not published["ok"]:
+                    status = "failed"
+                    failure_meta["code"] = str(published["code"])
+                    err_text = str(published["error_text"])
+                    emit(
+                        {
+                            "type": "text_chunk",
+                            "frame_id": root_frame_id,
+                            "block_type": "text",
+                            "chunk": "\n\n" + err_text + "\n",
+                        }
+                    )
+                    # Delivery runs after the review, so it can still fail with
+                    # a Verified gate already written. Retract it: a turn that
+                    # delivered no answer has no verified answer.
+                    try:
+                        retracted = self.completion_gate.mark_delivery_failed(
+                            root_frame_id
+                        )
+                    except Exception:  # noqa: BLE001 - the turn already failed
+                        traceback.print_exc()
+                        retracted = None
+                    if retracted is not None:
+                        gate_metadata = {
+                            "review_status": retracted.get("terminal"),
+                            "user_truth": retracted.get("user_truth"),
+                            "gates_completion": True,
+                            "unverified": retracted.get("unverified"),
+                        }
+                emit(
+                    {
+                        "type": "candidate_resolved",
+                        "frame_id": root_frame_id,
+                        "review_status": (gate_metadata or {}).get("review_status"),
+                        "user_truth": (gate_metadata or {}).get("user_truth"),
+                        "replaced": replaced,
+                        "delivered": bool(published["ok"]),
+                        **({"text": promoted_text} if replaced else {}),
+                        **(
+                            {"delivery_id": published["delivery_id"]}
+                            if published["delivery_id"]
+                            else {}
+                        ),
+                    }
+                )
+            if gate_armed:
+                emit(
+                    {
+                        "type": "frame_update",
+                        "frame_id": root_frame_id,
+                        "status": "done" if status == "completed" else status,
+                        "review_status": (gate_metadata or {}).get("review_status"),
+                        "user_truth": (gate_metadata or {}).get("user_truth"),
+                    }
+                )
+            # Which prose rows THIS turn will write, recomputed after promotion
+            # because a repair can have emptied the list. The verdict rides on
+            # the last of them.
+            writable = [
+                blk
+                for blk in assistant_visible
+                if (blk.get("text") or "").strip() and not blk.get("persisted")
+            ]
+            if gate_metadata is not None and not writable:
+                # Stage 1 delivery already wrote every row itself, bound to an
+                # Artifact manifest, so there is nothing left for the persist
+                # loop to carry the verdict on. Stamping is correct here and
+                # only here: the newest assistant row in the branch is the one
+                # this turn just delivered.
+                try:
+                    self.completion_gate.stamp_delivered_answer(
+                        root_frame_id,
+                        str(st.branch_id or root_frame_id),
+                        gate_metadata,
+                    )
+                except Exception:  # noqa: BLE001 - reopen still has the setting
+                    traceback.print_exc()
             had_prose = False
             # The answer is persisted BEFORE the review, and marked provisional
             # in the same write. Running the gate first would have been worse,

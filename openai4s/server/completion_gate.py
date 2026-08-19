@@ -1,9 +1,14 @@
-"""Stage 4 completion gate: candidate → review → promotion.
+"""Stage 4 completion gate: candidate → frozen evidence → review → promotion.
 
-When the Stage 4 flag is on and result review is selected, the existing
-answer remains provisional until a durable review judgment is recorded.
-Promotion never happens before that review event. Repair is still Stage 5:
-``auto_fix`` issues stop as ``completed_with_issues``.
+When the Stage 4 flag is on and result review is selected, the candidate
+answer stays provisional until a durable review judgment is recorded: it is
+streamed marked as such, and nothing is persisted or shown as final before the
+verdict exists. Promotion never happens before that review event.
+
+The gate does not merely veto. It returns the text that may be delivered, so a
+Stage 5 repair that corrected the candidate reaches the user instead of dying
+as an undeliverable in-memory rewrite. Verified is only ever stamped on the
+exact bytes the passing review read.
 """
 
 from __future__ import annotations
@@ -69,6 +74,40 @@ class CompletionGateService:
         flags = getattr(self.config, "roadmap_features", None)
         return bool(getattr(flags, "stage4_review_completion_gate", False))
 
+    def active_mode(self, root_frame_id: str) -> str:
+        """The result-review mode in force for this session: the one resolver.
+
+        Read twice inside ``gate_after_turn`` and once by the gateway before it
+        decides whether to hold delivery back. Three copies of the lookup is
+        three chances for the gateway to stream a final answer the gate then
+        refuses to promote, or to hold back one that was never going to be
+        reviewed at all.
+        """
+
+        if not self.feature_enabled or self.auto_mode is None:
+            return "off" if not self.feature_enabled else "review_only"
+        try:
+            projected = self.auto_mode.get(root_frame_id)
+            return str(
+                ((projected or {}).get("selection") or {}).get("result_review_mode")
+                or "off"
+            )
+        except Exception:  # noqa: BLE001 - fail closed to off
+            return "off"
+
+    def gates_turn(self, root_frame_id: str) -> bool:
+        """True when this turn's answer must not be delivered before review.
+
+        Requires a reviewer that can actually run. Holding an answer back for a
+        review that is switched off would withhold delivery and then report
+        ``review_unavailable`` on every single turn -- all of the cost of the
+        gate and none of its meaning.
+        """
+
+        if not bool(getattr(self.scientific_review, "feature_enabled", False)):
+            return False
+        return self.active_mode(root_frame_id) != "off"
+
     def load(self, root_frame_id: str) -> dict[str, Any] | None:
         raw = self.store.get_setting(REVIEW_GATE_SETTING + str(root_frame_id))
         if not raw:
@@ -98,20 +137,24 @@ class CompletionGateService:
         emit: EventSink | None = None,
         checkpoint_id: str | None = None,
         cancel: Callable[[], bool] | None = None,
+        stamp_message: bool = True,
+        deliver_replacement: bool = False,
     ) -> dict[str, Any] | None:
+        """Review the candidate, then say what may be delivered as final.
+
+        ``deliver_replacement`` is the caller promising it can still change the
+        answer -- that nothing has been persisted or shown as final yet. Only
+        then may a repaired candidate be handed back as ``final_answer``; a
+        caller that has already delivered gets the conservative terminal
+        instead, because a repair it cannot deliver is not a repair the user
+        will ever read.
+        """
+
         if not self.feature_enabled:
             return None
-        if self.auto_mode is not None:
-            try:
-                projected = self.auto_mode.get(root_frame_id)
-                mode = str(
-                    ((projected or {}).get("selection") or {}).get("result_review_mode")
-                    or "off"
-                )
-            except Exception:  # noqa: BLE001
-                mode = "off"
-            if mode == "off":
-                return None
+        mode = self.active_mode(root_frame_id)
+        if mode == "off":
+            return None
         cursor_before = 0
         if hasattr(self.store, "auto_mode_event_cursor"):
             cursor_before = int(
@@ -148,21 +191,20 @@ class CompletionGateService:
             return None
         result = dict(result)
         result["gates_completion"] = True
-        mode = "off"
-        if self.auto_mode is not None:
-            try:
-                mode = str(
-                    (
-                        (self.auto_mode.get(root_frame_id) or {}).get("selection") or {}
-                    ).get("result_review_mode")
-                    or "off"
-                )
-            except Exception:  # noqa: BLE001
-                mode = "off"
+        # What the FIRST review read, which is what a later round is compared
+        # against to tell whether a repair actually changed the answer.
         delivered_answer = str(
             (result.get("snapshot") or {}).get("candidate_answer") or ""
         )
         repaired_but_undelivered = False
+        # What the caller holds and will deliver, verbatim. Deliberately NOT the
+        # snapshot's copy: reading both sides of the promotion invariant below
+        # out of the same field would make it compare a value with itself and
+        # pass unconditionally. The snapshot clips a candidate past 24k chars,
+        # and that clip already forces `complete=False` -> not verified, so the
+        # two can only disagree here in a case that is refused anyway.
+        final_answer = candidate_answer
+        answer_replaced = False
         if (
             self.auto_repair is not None
             and getattr(self.auto_repair, "feature_enabled", False)
@@ -181,19 +223,24 @@ class CompletionGateService:
                 )
             )
             result["gates_completion"] = True
-            # The repair loop rewrites the answer IN MEMORY to compute its
-            # verdict, but the message the user is reading was persisted and
-            # streamed before this ran. Promoting that to Verified would put a
-            # green badge on text the reviewer never approved -- the user would
+            # The repair loop rewrites the answer in memory to compute its
+            # verdict. Whether that rewrite may become the answer depends
+            # entirely on whether the caller can still change what the user
+            # sees. If it can, the repaired text IS the final answer and the
+            # verdict describes it honestly. If it cannot -- the message is
+            # already streamed and persisted -- promoting to Verified would put
+            # a green badge on text the reviewer never approved: the user would
             # be told "n=100, no missing values" is verified because "n=97,
-            # missing values in age=3" passed. Until the repaired candidate is
-            # actually delivered, the honest terminal is "not verified".
+            # missing values in age=3" passed.
             repaired_answer = str(
                 (result.get("snapshot") or {}).get("candidate_answer") or ""
             )
-            repaired_but_undelivered = bool(
-                repaired_answer and repaired_answer != delivered_answer
-            )
+            if repaired_answer and repaired_answer != delivered_answer:
+                if deliver_replacement:
+                    final_answer = repaired_answer
+                    answer_replaced = True
+                else:
+                    repaired_but_undelivered = True
         terminal, user_truth = terminal_for_review(result)
         storage_enabled = bool(
             getattr(self.scientific_review, "storage_enabled", False)
@@ -202,6 +249,20 @@ class CompletionGateService:
             terminal, user_truth = (
                 "completed_with_issues",
                 "Issues · repaired answer was not delivered",
+            )
+        # The invariant the whole gate exists to hold: Verified may only ever
+        # describe the exact text the passing review read. `repaired_but_
+        # undelivered` above catches the one route that is known to change the
+        # answer; this catches every other one, including any added later. A
+        # mismatch here is not a repair story -- it is the gate having lost
+        # track of what it is certifying, so it must fail closed.
+        reviewed_answer = str(
+            (result.get("snapshot") or {}).get("candidate_answer") or ""
+        )
+        if terminal == "verified" and final_answer.strip() != reviewed_answer.strip():
+            terminal, user_truth = (
+                "review_unavailable",
+                "Unavailable · not verified (candidate_delivery_mismatch)",
             )
         if terminal == "verified" and not storage_enabled:
             # `_assert_verified_locked` is the ONLY thing that checks "an
@@ -241,6 +302,7 @@ class CompletionGateService:
             "finding_count": len(result.get("findings") or []),
             "gates_completion": True,
             "unverified": terminal != "verified",
+            "answer_replaced": answer_replaced,
         }
         self.store.set_setting(
             REVIEW_GATE_SETTING + root_frame_id, json.dumps(gate, ensure_ascii=False)
@@ -262,7 +324,53 @@ class CompletionGateService:
         result["terminal"] = terminal
         result["user_truth"] = user_truth
         result["gate"] = gate
+        # What the caller must actually deliver. Equal to the candidate it
+        # passed in unless a repair rewrote it and the caller said it could
+        # still change the answer.
+        result["final_answer"] = final_answer
+        result["answer_replaced"] = answer_replaced
         return result
+
+    def mark_delivery_failed(
+        self,
+        root_frame_id: str,
+        *,
+        reason: str = "delivery_unverified",
+    ) -> dict[str, Any] | None:
+        """Retract a promotion whose answer never reached the user.
+
+        Delivery runs after the review, so it can still fail -- an Artifact
+        manifest that will not verify, a storage error -- with a Verified gate
+        already written. Leaving it there would claim a verified final answer
+        for a turn that delivered none.
+        """
+
+        gate = self.load(root_frame_id)
+        if not gate or gate.get("terminal") != "verified":
+            return gate
+        gate = dict(gate)
+        gate["terminal"] = "review_unavailable"
+        gate["user_truth"] = f"Unavailable · not verified ({reason})"
+        gate["unverified"] = True
+        gate["reason"] = reason
+        self.store.set_setting(
+            REVIEW_GATE_SETTING + str(root_frame_id),
+            json.dumps(gate, ensure_ascii=False),
+        )
+        return gate
+
+    def stamp_delivered_answer(
+        self, root_frame_id: str, branch_id: str, gate: Mapping[str, Any]
+    ) -> None:
+        """Record the verdict on an answer a caller already committed.
+
+        For the transactional Stage 1 delivery path, which writes its own
+        message row bound to an Artifact manifest and so cannot take the
+        verdict as an argument. Safe only immediately after that write, when
+        the newest assistant row in the branch is the one this turn delivered.
+        """
+
+        self._stamp_last_assistant(root_frame_id, branch_id, gate)
 
     def _stamp_last_assistant(
         self, root_frame_id: str, branch_id: str, gate: Mapping[str, Any]

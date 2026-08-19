@@ -1,0 +1,427 @@
+"""Stage 4: the candidate is provisional until a review promotes it.
+
+The turn used to emit the answer, persist it, and only then review it. Nothing
+about the emission or the row was conditional on the verdict, so a wrong
+numeric claim was readable and copyable for the whole reviewer round-trip, a
+`kill -9` in between left it durable forever with no review and nothing that
+would revisit it, and a repair that corrected the claim had no way to reach the
+user at all -- the gate could only refuse to promote the text it could not fix.
+
+These cover the contract that replaced it: candidate -> frozen evidence ->
+review -> promotion, with the delivered bytes and the reviewed bytes required
+to be the same bytes.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+from openai4s.config import AutoModeBudgets, AutoModeConfig, Config, RoadmapFeatureFlags
+from openai4s.server.completion_gate import CompletionGateService
+from openai4s.server.scientific_review import ScientificReviewService
+from openai4s.store import Store
+
+GATEWAY = Path("openai4s/server/gateway.py")
+
+
+def _cfg(*, stage5=True, mode="auto_fix", stage2=True, stage3=True):
+    return Config(
+        roadmap_features=RoadmapFeatureFlags(
+            stage2_auto_run_storage=stage2,
+            stage3_scientific_review_shadow=stage3,
+            stage4_review_completion_gate=True,
+            stage5_auto_repair=stage5,
+        ),
+        auto_mode=AutoModeConfig(
+            result_review_mode=mode,
+            budgets=AutoModeBudgets(max_repair_rounds=2),
+        ),
+    )
+
+
+def _llm(model):
+    return SimpleNamespace(
+        provider="openai",
+        model=model,
+        base_url="https://review.example/v1",
+        timeout_s=30,
+        max_tokens=400,
+    )
+
+
+def _store(tmp_path, name="stage4.db"):
+    store = Store(tmp_path / name)
+    store.create_project(name="p", project_id="project-1")
+    store._conn.execute(
+        "INSERT INTO frames(frame_id,parent_id,project_id,root_frame_id,kind,"
+        "status,depth,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        ("root-1", None, "project-1", "root-1", "turn", "processing", 0, 1, 1),
+    )
+    store._conn.commit()
+    store.ensure_session_branch(root_frame_id="root-1", branch_id="root-1")
+    return store
+
+
+def _services(store, cfg, chat, mode="auto_fix"):
+    auto = SimpleNamespace(
+        get=lambda frame_id: {
+            "selection": {
+                "result_review_mode": mode,
+                "preset": "autonomous",
+                "approvals_reviewer": "auto_review",
+            }
+        }
+    )
+    review = ScientificReviewService(
+        store=store, config=cfg, auto_mode=auto, chat_call=chat
+    )
+    return CompletionGateService(
+        store=store, config=cfg, scientific_review=review, auto_mode=auto
+    )
+
+
+def _pass_chat(messages, cfg, **kwargs):
+    return {
+        "content": json.dumps({"verdict": "pass", "summary": "ok", "findings": []}),
+        "usage": {},
+    }
+
+
+# --- promotion ---------------------------------------------------------------
+
+
+def test_gates_turn_is_false_when_no_reviewer_can_run(tmp_path):
+    """Holding an answer back for a review that cannot happen is pure cost.
+
+    Every turn would withhold delivery and then report `review_unavailable`,
+    which is the gate's price without any of its meaning.
+    """
+
+    store = _store(tmp_path)
+    gate = _services(store, _cfg(stage3=False), _pass_chat)
+    assert gate.gates_turn("root-1") is False
+    assert _services(store, _cfg(), _pass_chat).gates_turn("root-1") is True
+    assert (
+        _services(store, _cfg(), _pass_chat, mode="off").gates_turn("root-1") is False
+    )
+    store.close()
+
+
+def test_verified_requires_the_delivered_bytes_to_be_the_reviewed_bytes(tmp_path):
+    """The one claim `verified` makes, enforced as an invariant not a story.
+
+    `repaired_but_undelivered` covers the single route known to change the
+    answer. This is the backstop for every other one, including any added
+    later: if the gate cannot show that what it is certifying is what was read,
+    it fails closed rather than guessing.
+    """
+
+    store = _store(tmp_path)
+    gate = _services(store, _cfg(), _pass_chat, mode="review_only")
+
+    reviewed = gate.gate_after_turn(
+        root_frame_id="root-1",
+        project_id="project-1",
+        branch_id="root-1",
+        turn_id="turn-ok",
+        execution_id="exec-ok",
+        user_request="state it",
+        candidate_answer="a qualitative limitation",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+    )
+    assert reviewed["terminal"] == "verified"
+    assert reviewed["final_answer"] == "a qualitative limitation"
+    assert reviewed["answer_replaced"] is False
+
+    # Now make the snapshot the reviewer read disagree with the candidate the
+    # caller will deliver.
+    original = gate.scientific_review.evaluate
+
+    def _drifting(snapshot, **kwargs):
+        result = original(snapshot, **kwargs)
+        result["snapshot"] = {
+            **result["snapshot"],
+            "candidate_answer": "something else entirely",
+        }
+        return result
+
+    gate.scientific_review.evaluate = _drifting
+    drifted = gate.gate_after_turn(
+        root_frame_id="root-1",
+        project_id="project-1",
+        branch_id="root-1",
+        turn_id="turn-drift",
+        execution_id="exec-drift",
+        user_request="state it",
+        candidate_answer="a qualitative limitation",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+    )
+    assert drifted["terminal"] == "review_unavailable"
+    assert "candidate_delivery_mismatch" in drifted["user_truth"]
+    store.close()
+
+
+def test_mark_delivery_failed_retracts_a_promotion_that_never_reached_the_user(
+    tmp_path,
+):
+    """Delivery runs after the review, so it can still fail while Verified stands.
+
+    An Artifact manifest that will not verify fails the turn *after* the gate
+    has written `verified`. A turn that delivered no answer has no verified
+    answer.
+    """
+
+    store = _store(tmp_path)
+    gate = _services(store, _cfg(), _pass_chat, mode="review_only")
+    gate.gate_after_turn(
+        root_frame_id="root-1",
+        project_id="project-1",
+        branch_id="root-1",
+        turn_id="turn-retract",
+        execution_id="exec-retract",
+        user_request="state it",
+        candidate_answer="a qualitative limitation",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+    )
+    assert gate.load("root-1")["terminal"] == "verified"
+
+    retracted = gate.mark_delivery_failed("root-1")
+    assert retracted["terminal"] == "review_unavailable"
+    assert retracted["unverified"] is True
+    assert gate.load("root-1")["terminal"] == "review_unavailable"
+
+    # Idempotent, and it never upgrades: a second call leaves the retraction.
+    assert gate.mark_delivery_failed("root-1")["terminal"] == "review_unavailable"
+    store.close()
+
+
+# --- durability --------------------------------------------------------------
+
+
+def test_the_candidate_is_durable_before_the_reviewer_is_called(tmp_path):
+    """Freeze then review, in storage too, or the record proves nothing.
+
+    All four rows used to be written after `evaluate` returned, which made the
+    entire durable sequence conditional on the reviewer answering: a crash
+    during the round-trip left no candidate, no evidence and no open review --
+    indistinguishable from a turn that never produced an answer.
+    """
+
+    store = _store(tmp_path)
+    seen: dict[str, object] = {}
+
+    def _observing_chat(messages, cfg, **kwargs):
+        # What storage knows at the moment the reviewer is invoked.
+        seen["runs"] = store.list_auto_mode_events("root-1", branch_id="root-1")
+        return _pass_chat(messages, cfg, **kwargs)
+
+    gate = _services(store, _cfg(), _observing_chat, mode="review_only")
+    gate.gate_after_turn(
+        root_frame_id="root-1",
+        project_id="project-1",
+        branch_id="root-1",
+        turn_id="turn-durable",
+        execution_id="exec-durable",
+        user_request="state it",
+        candidate_answer="a qualitative limitation",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+    )
+    types = [str(item.get("type")) for item in (seen.get("runs") or [])]
+    assert "candidate_ready" in types, types
+    assert "auto_audit_started" in types, types
+    assert "auto_audit_completed" not in types, types
+    store.close()
+
+
+# --- ordering in the turn loop ----------------------------------------------
+
+
+def test_the_turn_loop_orders_candidate_review_then_promotion():
+    """gateway.py composes the phases in the order Stage 4 defines.
+
+    The gate is a composition-order contract, and the composition lives in the
+    one file CLAUDE.md keeps deliberately thin. Reordering these three phases
+    is exactly the regression this stage exists to prevent, and it is invisible
+    to every test that only calls the services directly.
+    """
+
+    source = GATEWAY.read_text("utf-8")
+
+    withhold_at = source.index('"provisional": True')
+    gate_at = source.index("self.completion_gate.gate_after_turn(")
+    promote_at = source.index("if candidate_final is not None:", gate_at)
+    persist_at = source.index("for blk in assistant_visible:\n", promote_at)
+
+    assert withhold_at < gate_at, "the candidate is streamed before the review"
+    assert gate_at < promote_at, "promotion must follow the review"
+    assert promote_at < persist_at, "the answer row is written after promotion"
+
+    # And the verdict rides on that row rather than being stamped onto whatever
+    # assistant row happens to be newest afterwards.
+    assert re.search(r"metadata=\(\s*gate_metadata", source)
+    # The delivery contract has exactly one implementation, so the gated and
+    # ungated orderings cannot drift apart.
+    assert source.count("def _deliver_final_answer(") == 1
+    assert source.count("self._deliver_final_answer(") == 2
+
+
+# --- the repaired candidate reaches the user ---------------------------------
+
+
+def _issues_chat(messages, cfg, **kwargs):
+    return {
+        "content": json.dumps(
+            {
+                "verdict": "issues",
+                "summary": "the count is wrong",
+                "findings": [
+                    {
+                        "severity": "high",
+                        "category": "wrong_claim",
+                        "claim_ref": "n=100",
+                        "evidence_refs": [],
+                        "reproduction": "the table has 97 rows",
+                    }
+                ],
+            }
+        ),
+        "usage": {},
+    }
+
+
+class _StubRepair:
+    """Stands in for Stage 5. The real repair logic is covered by its own suite.
+
+    What matters here is only what the gate does with a repaired candidate,
+    so the repair is reduced to "it returns corrected text and a clean verdict".
+    """
+
+    feature_enabled = True
+
+    def __init__(self, repaired: str) -> None:
+        self.repaired = repaired
+        self.calls: list[dict] = []
+
+    def run(self, *, initial, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            **dict(initial),
+            "verdict": "pass",
+            "findings": [],
+            "snapshot": {
+                **dict(initial.get("snapshot") or {}),
+                "candidate_answer": self.repaired,
+            },
+        }
+
+
+def _repairing_gate(store, repaired):
+    cfg = _cfg(stage2=False)
+    auto = SimpleNamespace(
+        get=lambda frame_id: {
+            "selection": {
+                "result_review_mode": "auto_fix",
+                "preset": "autonomous",
+                "approvals_reviewer": "auto_review",
+            }
+        }
+    )
+    review = ScientificReviewService(
+        store=store, config=cfg, auto_mode=auto, chat_call=_issues_chat
+    )
+    repair = _StubRepair(repaired)
+    gate = CompletionGateService(
+        store=store,
+        config=cfg,
+        scientific_review=review,
+        auto_mode=auto,
+        auto_repair=repair,
+    )
+    return gate, repair
+
+
+def _run(gate, *, turn_id, deliver_replacement):
+    return gate.gate_after_turn(
+        root_frame_id="root-1",
+        project_id="project-1",
+        branch_id="root-1",
+        turn_id=turn_id,
+        execution_id="exec-" + turn_id,
+        user_request="summarise the table",
+        candidate_answer="n=100, and there are no missing values",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        deliver_replacement=deliver_replacement,
+    )
+
+
+def test_a_repaired_candidate_is_handed_back_for_delivery(tmp_path):
+    """The fix has to be able to reach the user, not just exist in memory.
+
+    The repair loop rewrites the answer to compute its verdict, but the message
+    was streamed and persisted before it ran, so the correction had nowhere to
+    go: the gate's only remaining move was to refuse to promote text it could
+    not replace. The user was left reading the wrong number with a badge saying
+    the answer was unverified, and no way to see the right one.
+    """
+
+    store = _store(tmp_path, "repair-yes.db")
+    gate, repair = _repairing_gate(store, "n=97, and age has 3 missing values")
+
+    result = _run(gate, turn_id="turn-fixed", deliver_replacement=True)
+
+    assert result["answer_replaced"] is True
+    assert result["final_answer"] == "n=97, and age has 3 missing values"
+    # The repair ran, and it was not asked to certify itself.
+    assert repair.calls and repair.calls[0]["result_review_mode"] == "auto_fix"
+    # Deliverable, so the conservative "could not be delivered" downgrade is
+    # exactly what must NOT happen.
+    assert "repaired answer was not delivered" not in result["user_truth"]
+    store.close()
+
+
+def test_a_repair_the_caller_cannot_deliver_still_never_reaches_verified(tmp_path):
+    """The fail-closed half of the same contract, kept honest.
+
+    A caller that has already shown and stored the answer cannot deliver a
+    replacement. Promoting to Verified there would put a green badge on text
+    the reviewer never approved -- the user would be told "n=100, no missing
+    values" is verified because "n=97, missing values in age=3" passed.
+    """
+
+    store = _store(tmp_path, "repair-no.db")
+    gate, _ = _repairing_gate(store, "n=97, and age has 3 missing values")
+
+    result = _run(gate, turn_id="turn-stuck", deliver_replacement=False)
+
+    assert result["answer_replaced"] is False
+    assert result["final_answer"] == "n=100, and there are no missing values"
+    assert result["terminal"] != "verified"
+    assert result["gate"]["unverified"] is True
+    store.close()
+
+
+def test_an_unchanged_repair_leaves_the_candidate_alone(tmp_path):
+    """A repair that changed nothing is not a replacement.
+
+    Re-delivering identical bytes would blank and re-render the answer in the
+    live UI for no reason, and would persist a second row saying the same
+    thing.
+    """
+
+    store = _store(tmp_path, "repair-noop.db")
+    unchanged = "n=100, and there are no missing values"
+    gate, _ = _repairing_gate(store, unchanged)
+
+    result = _run(gate, turn_id="turn-noop", deliver_replacement=True)
+
+    assert result["answer_replaced"] is False
+    assert result["final_answer"] == unchanged
+    store.close()

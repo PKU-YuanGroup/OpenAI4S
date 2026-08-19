@@ -4995,13 +4995,19 @@ function onEvent(m) {
   else if (m.type === "await_permission") { if (mine(fid)) { renderPermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "permission_resolved") { if (mine(fid)) { resolvePermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "candidate_ready" && m.gates_completion) {
-    if (mine(fid) || mine(m.root_frame_id)) {
-      S.reviewGate = { status: "candidate", user_truth: m.user_truth || t("review.badge.candidate") };
-    }
+    if (mine(fid) || mine(m.root_frame_id)) setLiveReviewBadge("candidate", m.user_truth);
   }
   else if (m.type === "auto_run_terminal" && m.review_status) {
+    if (mine(fid) || mine(m.root_frame_id)) setLiveReviewBadge(m.review_status, m.user_truth);
+  }
+  // The verdict has been applied to what was actually delivered. `replaced`
+  // means a repair changed the answer and the text on screen is the one it
+  // corrected, so it must go -- promoting the badge over stale text would be
+  // the same lie in a different place.
+  else if (m.type === "candidate_resolved") {
     if (mine(fid) || mine(m.root_frame_id)) {
-      S.reviewGate = { status: m.review_status, user_truth: m.user_truth || t("review.badge." + m.review_status) };
+      if (m.replaced && m.text) replaceLiveAnswer(String(m.text));
+      if (m.review_status) setLiveReviewBadge(m.review_status, m.user_truth);
     }
   }
   else if (m.type === "frame_update") {
@@ -5205,8 +5211,41 @@ function feed(kind, chunk, event) {
       if (st.toolMeta) { const n = (st.toolPre.textContent.match(/\n/g) || []).length; st.toolMeta.textContent = n > 1 ? (n + (n === 1 ? " line" : " lines")) : "done"; }
       if (!structuredCellId) nbLiveAppend(add);
     }
-  } else { st.text += chunk; st.full += chunk; st.md.classList.add("cursor"); scheduleRender(st); return; }
+  } else {
+    st.text += chunk; st.full += chunk; st.md.classList.add("cursor");
+    // Stage 4: this chunk is a candidate, not the answer. It is readable and
+    // copyable for the whole reviewer round-trip, so it has to say so on the
+    // block itself -- a badge that only appears after the verdict would leave
+    // the most dangerous window, the one before it, unlabelled.
+    if (event && (event.provisional || event.review_status === "candidate")) {
+      setLiveReviewBadge("candidate");
+    }
+    scheduleRender(st); return;
+  }
   down();
+}
+// The live counterpart of the badge `renderStored` puts on a reopened message.
+// One node, replaced in place, so candidate -> verified never stacks two.
+function setLiveReviewBadge(status, userTruth) {
+  const st = S.stream; if (!st || !st.wrap || !status) return;
+  let badge = st.wrap.querySelector(":scope > .review-badge");
+  if (!badge) { badge = el("div", "review-badge"); st.wrap.appendChild(badge); }
+  badge.className = "review-badge review-badge-" + String(status).replace(/[^a-z_]/g, "");
+  badge.textContent = userTruth || t("review.badge." + status);
+  S.reviewGate = { status, user_truth: badge.textContent };
+}
+// A repair rewrote the answer, so what is on screen is the text it corrected.
+// Drop every prose block in the live turn and render the reviewed one; the
+// activity cards stay, they are what produced it. This mirrors the server,
+// which persists exactly one row in this case.
+function replaceLiveAnswer(text) {
+  const st = S.stream; if (!st || !st.wrap) return;
+  st.wrap.querySelectorAll(":scope > .md").forEach(n => n.remove());
+  const md = el("div", "md"); md.innerHTML = renderMd(text);
+  const badge = st.wrap.querySelector(":scope > .review-badge");
+  if (badge) st.wrap.insertBefore(md, badge); else st.wrap.appendChild(md);
+  st.md = md; st.text = text; st.full = text;
+  st._stableAt = 0; st._stableHtml = "";
 }
 // A turn's request ticket, guarded by a generation.
 //

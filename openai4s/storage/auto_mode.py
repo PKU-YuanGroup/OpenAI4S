@@ -2724,10 +2724,11 @@ class AutoModeRepository:
     ) -> list[dict[str, Any]]:
         """Drive runs left behind by a dead daemon to a definite terminal.
 
-        ``_persist_auto_mode`` commits start_run, record_candidate,
-        start_review and complete_review as four separate transactions, so a
-        ``kill -9`` between any two of them leaves a row in ``running``,
-        ``candidate``, ``reviewing`` or ``repairing`` -- none of which is in
+        ``shadow_after_turn`` commits start_run, record_candidate and
+        start_review before the reviewer is even called, and complete_review
+        after it answers -- four separate transactions, so a ``kill -9``
+        between any two of them leaves a row in ``running``, ``candidate``,
+        ``reviewing`` or ``repairing`` -- none of which is in
         ``_TERMINAL_STATUSES``.  ``start_run`` then refuses every later turn on
         that branch with "already has a recovery-required active run", the
         shadow caller swallows that conflict, and Auto Mode is silently dead

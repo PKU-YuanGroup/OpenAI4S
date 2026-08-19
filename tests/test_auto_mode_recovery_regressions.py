@@ -665,11 +665,12 @@ def test_unresolved_revert_barrier_denies_new_auto_and_action_work_but_keeps_evi
 # --------------------------------------------------------------------------
 # Boot-time reconciliation of runs a dead daemon left mid-flight.
 #
-# `_persist_auto_mode` commits start_run, record_candidate, start_review and
-# complete_review as four separate transactions. `kill -9` between the third
-# and the fourth leaves `reviewing` -- excluded from `_TERMINAL_STATUSES` --
-# with no `finished_at` and no `abandoned_at`, and every later turn on that
-# branch then dies inside a swallowed `AutoModeConflictError`.
+# `shadow_after_turn` commits start_run, record_candidate and start_review
+# before the reviewer is called, and complete_review after it answers -- four
+# separate transactions. `kill -9` between the third and the fourth leaves
+# `reviewing` -- excluded from `_TERMINAL_STATUSES` -- with no `finished_at`
+# and no `abandoned_at`, and every later turn on that branch then dies inside
+# a swallowed `AutoModeConflictError`.
 # --------------------------------------------------------------------------
 
 

@@ -625,8 +625,37 @@ class ScientificReviewService:
             )
         except Exception:  # noqa: BLE001
             profile = None
+        # Freeze here, not inside `evaluate`, so the bytes the reviewer is
+        # asked about are the same bytes the candidate row is hashed from. A
+        # snapshot frozen twice is frozen once: `evaluate` leaves an already
+        # frozen snapshot alone.
+        frozen = freeze_evidence_snapshot(snapshot)
+        identity = self.freeze_reviewer_identity(
+            agent_cfg=agent_cfg,
+            reviewer_cfg=reviewer_cfg,
+            profile=profile,
+        )
+        handle: dict[str, Any] | None = None
+        if self.storage_enabled:
+            try:
+                handle = self.open_review_run(
+                    root_frame_id=root_frame_id,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    turn_id=turn_id,
+                    execution_id=execution_id,
+                    mode=mode,
+                    selection=selection,
+                    snapshot=frozen,
+                    reviewer=identity,
+                )
+            except (AutoModeConflictError, ValueError, PermissionError, KeyError):
+                # Review must not fail the turn. Without a handle nothing durable
+                # backs the verdict, and `CompletionGateService` refuses to call
+                # anything Verified that storage did not confirm.
+                handle = None
         result = self.evaluate(
-            snapshot,
+            frozen,
             result_review_mode=mode,
             agent_cfg=agent_cfg,
             reviewer_cfg=reviewer_cfg,
@@ -637,20 +666,10 @@ class ScientificReviewService:
                 result, workspace=workspace, artifact_paths=artifact_paths
             )
         self._persist_shadow_step(root_frame_id, result, emit=emit)
-        if self.storage_enabled:
+        if handle is not None:
             try:
-                self._persist_auto_mode(
-                    root_frame_id=root_frame_id,
-                    project_id=project_id,
-                    branch_id=branch_id,
-                    turn_id=turn_id,
-                    execution_id=execution_id,
-                    mode=mode,
-                    selection=selection,
-                    result=result,
-                )
+                self.close_review_run(handle, result)
             except (AutoModeConflictError, ValueError, PermissionError, KeyError):
-                # Shadow must not fail the already-delivered turn.
                 pass
         return result
 
@@ -735,7 +754,7 @@ class ScientificReviewService:
             }
         )
 
-    def _persist_auto_mode(
+    def open_review_run(
         self,
         *,
         root_frame_id: str,
@@ -745,11 +764,28 @@ class ScientificReviewService:
         execution_id: str,
         mode: str,
         selection: Mapping[str, Any],
-        result: Mapping[str, Any],
-    ) -> None:
-        snapshot = dict(result.get("snapshot") or {})
+        snapshot: Mapping[str, Any],
+        reviewer: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Commit the candidate and open the review BEFORE the reviewer runs.
+
+        Stage 4 orders the turn as candidate -> frozen evidence -> review ->
+        promotion, and the durable record has to follow the same order or it
+        proves nothing.  Writing all four rows after ``evaluate`` returned made
+        the whole sequence conditional on the reviewer answering: a crash
+        during the round-trip left no candidate row, no evidence and no open
+        review -- exactly the state that cannot be told apart from a turn that
+        never produced an answer.  Opening the run first means a lost daemon
+        leaves a run in ``reviewing`` with the frozen evidence attached, which
+        recovery can abandon and an operator can read.
+
+        Returns the handle :meth:`close_review_run` needs.
+        """
+
         payload = {
-            key: value for key, value in snapshot.items() if key != "snapshot_sha256"
+            key: value
+            for key, value in dict(snapshot).items()
+            if key != "snapshot_sha256"
         }
         # Storage hashes the exact JSON object it persists.
         payload = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
@@ -791,7 +827,7 @@ class ScientificReviewService:
             evidence_snapshot_sha256=evidence_sha,
             candidate_version_ids=versions,
         )
-        reviewer = dict(result.get("reviewer") or {})
+        reviewer_identity = dict(reviewer)
         review_run_id = f"review-{turn_id}"
         self.store.start_auto_mode_review(
             run_id,
@@ -803,13 +839,35 @@ class ScientificReviewService:
             evidence_snapshot=payload,
             evidence_snapshot_sha256=evidence_sha,
             round_index=0,
-            attempt=int(result.get("attempts") or 1),
+            # The round's first attempt. How many transient reviewer retries it
+            # took is only knowable once the reviewer answered, and lands on the
+            # completion assessment instead -- this row exists precisely to be
+            # durable before that is known.
+            attempt=1,
             reviewer={
-                "profile_id": reviewer.get("profile_id") or "scientific-reviewer",
-                "profile_revision": int(reviewer.get("profile_revision") or 1),
-                "model_fingerprint": reviewer.get("model_fingerprint") or "unknown",
+                "profile_id": reviewer_identity.get("profile_id")
+                or "scientific-reviewer",
+                "profile_revision": int(reviewer_identity.get("profile_revision") or 1),
+                "model_fingerprint": reviewer_identity.get("model_fingerprint")
+                or "unknown",
             },
         )
+        return {
+            "run_id": run_id,
+            "review_run_id": review_run_id,
+            "candidate_id": candidate_id,
+            "turn_id": turn_id,
+        }
+
+    def close_review_run(
+        self,
+        handle: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> None:
+        """Record the verdict on the review opened by :meth:`open_review_run`."""
+
+        review_run_id = str(handle["review_run_id"])
+        turn_id = str(handle["turn_id"])
         findings = []
         for item in result.get("findings") or []:
             finding_id = item.get("finding_id")
@@ -844,7 +902,11 @@ class ScientificReviewService:
             idempotency_key=f"{turn_id}:review-complete",
             status=status,
             verdict=verdict,
-            assessment={"public_summary": result.get("summary"), "shadow": True},
+            assessment={
+                "public_summary": result.get("summary"),
+                "shadow": True,
+                "attempts": int(result.get("attempts") or 1),
+            },
             findings=findings,
             usage=result.get("usage") or {},
         )
