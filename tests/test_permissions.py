@@ -1523,3 +1523,79 @@ def test_the_real_gate_honours_import_quarantine_over_the_environment(
     store.set_setting(session_import_quarantine_key("fr-quarantined"), "1")
     assert gate("fr-quarantined") is False
     store.close()
+
+
+def test_the_credential_fence_does_not_fence_ordinary_project_files():
+    """Generic basenames need directory context to mean anything.
+
+    `config.json` and `token.json` are ordinary in a source tree. Denying them
+    made a normal read look like a policy violation, and three of those in one
+    conversation opened the denial circuit and bricked it.
+    """
+
+    from openai4s.permissions import _credential_shaped_path
+
+    for ordinary in (
+        "/work/proj/config.json",
+        "/work/proj/token.json",
+        "/work/proj/credentials.json",
+        "/work/proj/results/config.json",
+        "/work/proj/notes.txt",
+    ):
+        assert not _credential_shaped_path(ordinary), ordinary
+
+    for credential in (
+        "/Users/x/.docker/config.json",
+        "/Users/x/.aws/credentials",
+        "/Users/x/.ssh/authorized_keys",
+        "/Users/x/.config/gcloud/creds.json",
+    ):
+        assert _credential_shaped_path(credential), credential
+
+
+def test_the_credential_fence_does_not_resolve_relative_paths(tmp_path, monkeypatch):
+    """`realpath` anchors a relative path to the DAEMON cwd, but every workspace
+    file tool anchors the same string to the session workspace -- so resolving
+    it here answers a question about a different file."""
+
+    from openai4s.permissions import _credential_shaped_candidates
+
+    monkeypatch.chdir(tmp_path)
+    assert _credential_shaped_candidates("innocent.txt") == ["innocent.txt"]
+    absolute = str(tmp_path / "innocent.txt")
+    assert len(_credential_shaped_candidates(absolute)) == 2
+
+
+def test_guardian_hard_deny_does_not_read_a_filename_as_a_hostname(
+    tmp_path, monkeypatch
+):
+    """`egress.domain_of("notes.txt")` is `"notes.txt"`.
+
+    Without a scheme guard every relative file read was refused as "denied by
+    an existing hard policy" under OPENAI4S_EGRESS=allowlist -- a false denial
+    that also wrote a durable audit row naming a policy that never issued.
+    """
+
+    from openai4s.permissions import _guardian_hard_deny
+    from openai4s.store import Store
+
+    monkeypatch.setenv("OPENAI4S_EGRESS", "allowlist")
+    store = Store(tmp_path / "eg.db")
+    try:
+        for path in ("notes.txt", "data/results.csv", "README"):
+            assert not _guardian_hard_deny(
+                store,
+                root_frame_id="r",
+                project_id="default",
+                tool="read_file",
+                target=path,
+            ), path
+        assert _guardian_hard_deny(
+            store,
+            root_frame_id="r",
+            project_id="default",
+            tool="web_fetch",
+            target="https://evil.example.com/x",
+        )
+    finally:
+        store.close()

@@ -2250,14 +2250,22 @@ class SessionRunner:
         # the port; this is the Web adapter for it.
         from openai4s.permissions import broker
 
-        broker().set_approvals_reviewer_resolver(
-            lambda store, root_frame_id, project_id: str(
-                resolve_effective_selection(store, cfg, root_frame_id, project_id).get(
-                    "approvals_reviewer"
-                )
-                or ""
+        def _approvals_reviewer_for(store, root_frame_id, project_id):
+            selection = resolve_effective_selection(
+                store, cfg, root_frame_id, project_id
             )
-        )
+            # "" means nobody recorded a choice, and the broker then lets the
+            # operator's environment decide -- which is what keeps the existing
+            # OPENAI4S_UNATTENDED_APPROVAL escape hatch working for an ordinary
+            # session. A built-in default is exactly that absence, so it must
+            # not be reported as a decision; quarantine, a frame or project
+            # override, an explicit deployment setting and the legacy migration
+            # all are decisions, and are reported as themselves.
+            if not selection.get("explicit"):
+                return ""
+            return str(selection.get("approvals_reviewer") or "")
+
+        broker().set_approvals_reviewer_resolver(_approvals_reviewer_for)
         self.scientific_review = ScientificReviewService(
             store=self.store,
             config=cfg,

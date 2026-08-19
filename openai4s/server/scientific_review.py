@@ -278,34 +278,63 @@ class ScientificReviewService:
             # claim_mismatch against `height null_count=0` -- a correct answer
             # marked unverified, and under auto_fix a repair round spent on a
             # defect that does not exist.
+            counts = {
+                name: stats.get("null_count")
+                for name, stats in columns.items()
+                if isinstance(stats, Mapping) and type(stats.get("null_count")) is int
+            }
             for column, claimed_missing in _MISSING_COUNT.findall(answer):
-                target = None
-                target_name = column
-                if column and column in columns:
-                    target = columns[column]
-                elif not column and len(columns) == 1:
-                    target_name, target = next(iter(columns.items()))
-                if not isinstance(target, Mapping):
-                    continue
-                nulls = target.get("null_count")
-                if type(nulls) is not int:
-                    continue
                 try:
                     expected = int(claimed_missing)
                 except (TypeError, ValueError):
                     continue
-                if expected != nulls:
-                    findings.append(
-                        self._finding(
-                            severity="high",
-                            category="claim_mismatch",
-                            claim_ref=f"missing values={expected}",
-                            evidence_refs=(
-                                [ref] if ref in refs else ["source:candidate_answer"]
-                            ),
-                            reproduction=f"{target_name} null_count={nulls}",
+                if column:
+                    if column in counts:
+                        # Named and present: check THAT column, and only it.
+                        if expected != counts[column]:
+                            mismatch = f"{column} null_count={counts[column]}"
+                        else:
+                            continue
+                    else:
+                        # Named but absent. Silently skipping this was a hole:
+                        # a claim about a column the table does not have is a
+                        # claim about nothing, and "missing values in weight=0"
+                        # sailed through as if verified.
+                        mismatch = (
+                            f"no column {column!r} in the table "
+                            f"(columns: {', '.join(sorted(counts)) or 'none'})"
                         )
+                elif not counts:
+                    continue
+                elif len(counts) == 1:
+                    only_name, only_nulls = next(iter(counts.items()))
+                    if expected == only_nulls:
+                        continue
+                    mismatch = f"{only_name} null_count={only_nulls}"
+                elif expected == sum(counts.values()):
+                    # An unqualified count is a claim about the TABLE, so it is
+                    # checked against the table total -- the same reading
+                    # `_MISSING_NONE` already gives "no missing values".
+                    # Accepting it because SOME column happens to match would
+                    # pass "missing values = 0" on a table whose `age` column
+                    # has three, which is the claim this check exists to catch.
+                    continue
+                else:
+                    mismatch = "; ".join(
+                        f"{name} null_count={value}"
+                        for name, value in sorted(counts.items())
                     )
+                findings.append(
+                    self._finding(
+                        severity="high",
+                        category="claim_mismatch",
+                        claim_ref=f"missing values={expected}",
+                        evidence_refs=(
+                            [ref] if ref in refs else ["source:candidate_answer"]
+                        ),
+                        reproduction=mismatch,
+                    )
+                )
         for adapter in snapshot.get("adapters") or []:
             if (
                 not isinstance(adapter, Mapping)
@@ -831,8 +860,15 @@ class ScientificReviewService:
         suggested_fix: str = "",
         confidence: float = 1.0,
     ) -> dict[str, Any]:
+        # Severity is part of the identity. Without it two findings that share
+        # a category and claim collapse to one, and the first-wins dedup then
+        # keeps whichever arrived first -- so a `low` nit could evict the `high`
+        # finding about the same claim, taking it out of `material` and out of
+        # repair entirely.
         fingerprint = hashlib.sha256(
-            f"{category}|{claim_ref}|{','.join(evidence_refs)}".encode("utf-8")
+            f"{severity}|{category}|{claim_ref}|{','.join(evidence_refs)}".encode(
+                "utf-8"
+            )
         ).hexdigest()
         return {
             "finding_id": f"fnd-{fingerprint[:16]}",

@@ -45,20 +45,24 @@ def _scope(value: str | None) -> str:
 _CREDENTIAL_DIRS = frozenset(
     {".aws", ".ssh", ".gnupg", ".docker", ".kube", ".azure", ".config/gcloud"}
 )
+#: Basenames distinctive enough to deny wherever they appear. Deliberately does
+#: NOT include generic project filenames: `config.json`, `token.json` and
+#: `credentials.json` are ordinary in a source tree, and denying them made a
+#: normal read look like a policy violation -- three of which opened the denial
+#: circuit and bricked the conversation. Generic names are covered by
+#: :data:`_CREDENTIAL_DIRS` instead, where the directory supplies the meaning.
 _CREDENTIAL_BASENAMES = frozenset(
     {
         "credentials",
-        "credentials.json",
         "authorized_keys",
         "known_hosts",
-        "config.json",
-        "hosts.yml",
         "access-token",
-        "token.json",
         "service-account.json",
         ".npmrc",
         ".pypirc",
         ".git-credentials",
+        ".netrc",
+        ".pgpass",
     }
 )
 
@@ -75,10 +79,17 @@ def _credential_shaped_candidates(path: str) -> list[str]:
     """
 
     candidates = [path]
-    try:
-        candidates.append(os.path.realpath(path))
-    except (OSError, ValueError):  # symlink loop, ENAMETOOLONG, embedded NUL
-        pass
+    # ONLY for an absolute path. `realpath` anchors a relative one to the
+    # daemon's cwd, but every workspace file tool resolves the same string
+    # against `<data_dir>/agent-workspaces/<frame>` -- so resolving here would
+    # answer a question about a different file than the one the tool opens, and
+    # a fence that evaluates the wrong path is worse than one that admits it
+    # cannot resolve. The literal spelling is checked either way.
+    if os.path.isabs(path):
+        try:
+            candidates.append(os.path.realpath(path))
+        except (OSError, ValueError):  # symlink loop, ENAMETOOLONG, NUL
+            pass
     return candidates
 
 
@@ -137,13 +148,19 @@ def _guardian_hard_deny(
         return True
     if target and _credential_shaped_path(target):
         return True
-    try:
-        from openai4s.egress import domain_allowed, domain_of
+    if "://" in target:
+        # Guarded on a scheme because `egress.domain_of` reads ANY bare string
+        # as a hostname: `domain_of("notes.txt")` is `"notes.txt"`. Without this,
+        # every relative file read was refused as "denied by an existing hard
+        # policy" whenever OPENAI4S_EGRESS=allowlist -- a false denial that also
+        # wrote a durable audit row naming a policy that never issued.
+        try:
+            from openai4s.egress import domain_allowed
 
-        if target and domain_of(target) and not domain_allowed(target):
+            if not domain_allowed(target):
+                return True
+        except Exception:  # noqa: BLE001
             return True
-    except Exception:  # noqa: BLE001
-        return True
     try:
         if (
             store.resolve_permission(

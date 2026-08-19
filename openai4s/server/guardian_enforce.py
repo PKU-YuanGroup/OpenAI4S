@@ -176,9 +176,18 @@ def decide_unattended(
     the absence of a digest is a denial, not a bypass.
     """
 
-    if not feature_enabled(config) or not auto_review_requested(
-        config, approvals_reviewer
-    ):
+    if not feature_enabled(config):
+        return None
+    if not auto_review_requested(config, approvals_reviewer):
+        # A RECORDED "user" is a human decision that a human decides. Returning
+        # None here handed the call to the legacy path, where
+        # OPENAI4S_UNATTENDED_APPROVAL=allow approves everything -- so the safe
+        # default was strictly more permissive than opting in, and an imported
+        # session pinned to "user" by quarantine still auto-approved
+        # `curl | sh`. An absent selection is different: nobody recorded one,
+        # so the operator's environment remains the only expressed intent.
+        if str(approvals_reviewer or "") == "user":
+            return False, "this conversation requires a human approver"
         return None
 
     key = str(circuit_key or payload.get("frame_id") or "")
@@ -192,8 +201,21 @@ def decide_unattended(
     if key and _CIRCUIT.is_open(key):
         return False, "guardian circuit open: blocked_by_guardian"
 
-    def settle(allow: bool, message: str) -> tuple[bool, str]:
-        if key:
+    def settle(
+        allow: bool, message: str, *, structural: bool = False
+    ) -> tuple[bool, str]:
+        """Record the decision and return it.
+
+        ``structural`` marks a refusal that is a static property of the action
+        -- "this tool is not on the unattended allowlist" -- rather than
+        evidence of an agent pushing against policy. Counting those opened the
+        circuit almost immediately: only four gate-reaching tools are
+        allowlisted, so ordinary progress through the other twenty-two tripped
+        a breaker meant for a denial LOOP, and the conversation then refused
+        even the reads it had been allowing.
+        """
+
+        if key and not structural:
             opened = _CIRCUIT.record(
                 key,
                 denied=not allow,
@@ -222,6 +244,7 @@ def decide_unattended(
             False,
             f"{tool or 'action'} is not on the unattended allowlist; "
             "establish a narrow standing policy before the run",
+            structural=True,
         )
 
     envelope = exact_action_envelope(
