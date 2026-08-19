@@ -213,4 +213,3 @@ Ground Truth is evaluator-only and becomes visible after the run:
 12. **Hypothesis labelling:** LLM-derived conditions, yield, selectivity, safety, scale-up feasibility, and verdicts are explicit hypotheses with validation steps.
 13. **Model provenance:** External calls record model/version, checkpoint ID and SHA-256, training dataset, runtime packages, and failures. Weights stay outside the Skill and repository.
 14. **Failure honesty:** Missing checkpoints, unavailable backends, timeouts, unsolved searches, and hard-constraint rejection produce structured failures, never fabricated routes.
-

@@ -223,4 +223,3 @@ Ground Truth 只允许 evaluator 在运行结束后读取。建议至少包含�
 12. **Hypothesis Labeling：** 反应条件、收率、选择性、安全性、放大可行性和最终 verdict 若来自 LLM，必须明确标为假设并附验证步骤，不得表述成实验事实。
 13. **Model Provenance：** 外部模型调用必须记录模型名、版本、checkpoint 标识和 SHA-256、训练数据集、运行时包版本及失败信息。模型权重不得写入 Skill 目录或提交到仓库。
 14. **Failure Honesty：** 没有 solved route、后端不可用、checkpoint 缺失、搜索超时或全部路线未通过硬约束时，必须输出结构化失败和诊断，不得构造一条看似合理的路线掩盖失败。
-
