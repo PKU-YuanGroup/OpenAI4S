@@ -7527,86 +7527,33 @@ class SessionRunner:
             # matching the live stream. Written here at the turn boundary (not
             # mid-loop) so an in-flight resume still rebuilds text from the WS
             # replay alone, with nothing double-rendered.
-            # Which prose rows THIS turn will write. Computed before the gate
-            # because it decides who records the verdict: if we are writing a
-            # row we put the verdict on it, and the gate must not stamp -- at
-            # this point the newest assistant row in the branch still belongs to
-            # the PREVIOUS turn, and stamping would label it with this turn's
-            # result. When every block came through Stage 1 delivery there is no
-            # row left to write, so the gate stamps the delivered one instead.
-            writable = [
-                blk
-                for blk in assistant_visible
-                if (blk.get("text") or "").strip() and not blk.get("persisted")
-            ]
-            gated = False
-            gate_metadata: dict[str, object] | None = None
-            if (
-                self.cfg.roadmap_features.stage4_review_completion_gate
-                and status == "completed"
-            ):
-                try:
-                    gate = self.completion_gate.gate_after_turn(
-                        root_frame_id=root_frame_id,
-                        project_id=project_id,
-                        branch_id=str(st.branch_id or root_frame_id),
-                        turn_id=str(action_ledger.turn_id),
-                        execution_id=str(
-                            getattr(execution, "execution_id", "") or turn_request_id
-                        ),
-                        user_request=user_text,
-                        candidate_answer="\n\n".join(
-                            str(blk.get("text") or "") for blk in assistant_visible
-                        ).strip(),
-                        structured_completion=(
-                            st.last_engine_completion
-                            or getattr(st.dispatcher, "last_output", None)
-                        ),
-                        artifact_versions_before=artifact_versions_before,
-                        cell_count_before=cell_count_before,
-                        step_count_before=step_count_before,
-                        agent_cfg=llm_cfg,
-                        reviewer_cfg=self._review_llm_cfg(st),
-                        emit=emit,
-                        # `start_repair` refuses a repair without a restorable
-                        # branch checkpoint -- that is the durable form of the
-                        # plan's "Blocked · Safe rollback unavailable". Passing
-                        # None here bypassed the check entirely, so repairs
-                        # mutated state with no verified rollback point and no
-                        # repair_runs row was ever written.
-                        checkpoint_id=self._branch_head_checkpoint(st),
-                        # Without this the repair loop's cancel check is dead and
-                        # a user pressing Stop mid-repair is ignored.
-                        cancel=st.cancel.is_set,
-                        stamp_message=not writable,
-                    )
-                except Exception:  # noqa: BLE001 - never fail an already delivered turn
-                    traceback.print_exc()
-                    gate = None
-                if gate is not None:
-                    gated = True
-                    gate_metadata = {
-                        "review_status": gate.get("terminal"),
-                        "user_truth": gate.get("user_truth"),
-                        "gates_completion": True,
-                        "unverified": gate.get("unverified"),
-                    }
-                    emit(
-                        {
-                            "type": "frame_update",
-                            "frame_id": root_frame_id,
-                            "status": "done",
-                            "review_status": gate.get("terminal"),
-                            "user_truth": gate.get("user_truth"),
-                        }
-                    )
             had_prose = False
-            # The review verdict rides ON the row, written in the same call.
-            # Stamping it afterwards left a window where the answer was durable
-            # and its verdict was not: `kill -9` in between kept the answer
-            # forever with no review and nothing that would revisit it. The gate
-            # now runs above, so the message and what we know about it commit
-            # together.
+            # The answer is persisted BEFORE the review, and marked provisional
+            # in the same write. Running the gate first would have been worse,
+            # not better: the gate is the long part of the turn -- a reviewer
+            # round-trip and, under auto_fix, a whole repair loop -- so a hard
+            # exit during it would lose the entire answer the user is already
+            # reading, where the old order lost only the verdict.
+            #
+            # What the old order actually got wrong was leaving the row durable
+            # and UNMARKED, so a crash produced an answer that looked reviewed
+            # and never would be. A row that says "candidate" from the moment it
+            # exists is honest at every instant: the gate below promotes it, and
+            # if the daemon dies first the reconciler terminates the run and the
+            # row still says it was never verified.
+            provisional_metadata = (
+                {
+                    "review_status": "candidate",
+                    "user_truth": "Candidate · provisional / not verified",
+                    "gates_completion": True,
+                    "unverified": True,
+                }
+                if (
+                    self.cfg.roadmap_features.stage4_review_completion_gate
+                    and status == "completed"
+                )
+                else None
+            )
             for blk in assistant_visible:
                 if not (blk.get("text") or "").strip():
                     continue
@@ -7620,11 +7567,7 @@ class SessionRunner:
                     content=blk["text"],
                     frame_id=root_frame_id,
                     created_at=blk.get("at"),
-                    metadata=(
-                        gate_metadata
-                        if (gate_metadata and blk is writable[-1])
-                        else None
-                    ),
+                    metadata=provisional_metadata,
                 )
             # A friendly error, a cancel note, or an empty-turn placeholder is not
             # one of the prose blocks — persist it as a trailing assistant message
@@ -7701,6 +7644,59 @@ class SessionRunner:
                 )
                 if st.cancel.is_set():
                     status = "cancelled"
+            gated = False
+            if (
+                self.cfg.roadmap_features.stage4_review_completion_gate
+                and status == "completed"
+            ):
+                try:
+                    gate = self.completion_gate.gate_after_turn(
+                        root_frame_id=root_frame_id,
+                        project_id=project_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        turn_id=str(action_ledger.turn_id),
+                        execution_id=str(
+                            getattr(execution, "execution_id", "") or turn_request_id
+                        ),
+                        user_request=user_text,
+                        candidate_answer="\n\n".join(
+                            str(blk.get("text") or "") for blk in assistant_visible
+                        ).strip(),
+                        structured_completion=(
+                            st.last_engine_completion
+                            or getattr(st.dispatcher, "last_output", None)
+                        ),
+                        artifact_versions_before=artifact_versions_before,
+                        cell_count_before=cell_count_before,
+                        step_count_before=step_count_before,
+                        agent_cfg=llm_cfg,
+                        reviewer_cfg=self._review_llm_cfg(st),
+                        emit=emit,
+                        # `start_repair` refuses a repair without a restorable
+                        # branch checkpoint -- that is the durable form of the
+                        # plan's "Blocked · Safe rollback unavailable". Passing
+                        # None here bypassed the check entirely, so repairs
+                        # mutated state with no verified rollback point and no
+                        # repair_runs row was ever written.
+                        checkpoint_id=self._branch_head_checkpoint(st),
+                        # Without this the repair loop's cancel check is dead and
+                        # a user pressing Stop mid-repair is ignored.
+                        cancel=st.cancel.is_set,
+                    )
+                except Exception:  # noqa: BLE001 - never fail an already delivered turn
+                    traceback.print_exc()
+                    gate = None
+                if gate is not None:
+                    gated = True
+                    emit(
+                        {
+                            "type": "frame_update",
+                            "frame_id": root_frame_id,
+                            "status": "done",
+                            "review_status": gate.get("terminal"),
+                            "user_truth": gate.get("user_truth"),
+                        }
+                    )
             if (
                 (not gated)
                 and self.cfg.roadmap_features.stage3_scientific_review_shadow

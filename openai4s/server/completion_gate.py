@@ -98,7 +98,6 @@ class CompletionGateService:
         emit: EventSink | None = None,
         checkpoint_id: str | None = None,
         cancel: Callable[[], bool] | None = None,
-        stamp_message: bool = True,
     ) -> dict[str, Any] | None:
         if not self.feature_enabled:
             return None
@@ -246,13 +245,9 @@ class CompletionGateService:
         self.store.set_setting(
             REVIEW_GATE_SETTING + root_frame_id, json.dumps(gate, ensure_ascii=False)
         )
-        if stamp_message:
-            # The caller can persist the verdict on the row it is about to
-            # write, which is atomic where a later stamp is not. It says so by
-            # passing stamp_message=False; stamping anyway would label whatever
-            # assistant row happens to be newest -- last turn's, if this turn
-            # has not written one yet.
-            self._stamp_last_assistant(root_frame_id, branch_id, gate)
+        # Safe here because the caller persists this turn's rows BEFORE the
+        # gate runs, so the newest assistant row in the branch is this turn's.
+        self._stamp_last_assistant(root_frame_id, branch_id, gate)
         self._publish_new_events(root_frame_id, branch_id, cursor_before, emit)
         if emit is not None:
             emit(

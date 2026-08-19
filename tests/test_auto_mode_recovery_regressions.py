@@ -1084,3 +1084,66 @@ def test_one_sweep_reconciles_every_dead_session_and_spares_the_live_one(tmp_pat
         )
     finally:
         store.close()
+
+
+def test_one_unreconcilable_run_does_not_deny_the_others_recovery(tmp_path):
+    """Boot-time recovery is all-or-nothing exactly once: per row.
+
+    The per-run method can only guard what happens after control enters it, so
+    a failure outside its caught tuple escaped the sweep loop and cost every
+    remaining session the recovery this method exists to give it.
+    """
+
+    import sqlite3
+
+    from openai4s.store import Store
+
+    store = Store(tmp_path / "sweep.db")
+    store.create_project(name="p", project_id="proj-1")
+    for fid in ("root-1", "root-2"):
+        store._conn.execute(
+            "INSERT INTO frames(frame_id,parent_id,project_id,root_frame_id,kind,"
+            "status,depth,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (fid, None, "proj-1", fid, "turn", "processing", 0, 1, 1),
+        )
+    store._conn.commit()
+    try:
+        for fid in ("root-1", "root-2"):
+            store.ensure_session_branch(root_frame_id=fid, branch_id=fid)
+            store.start_auto_mode_run(
+                run_id=f"auto-{fid}",
+                root_frame_id=fid,
+                branch_id=fid,
+                turn_id="t1",
+                execution_id=f"e-{fid}",
+                mode="review_only",
+                selection={
+                    "preset": "off",
+                    "result_review_mode": "review_only",
+                    "approvals_reviewer": "user",
+                },
+                budgets={},
+                owner_instance_id="daemon-OLD",
+                idempotency_key="t1:start",
+                created_at=1000,
+            )
+
+        repo = store._auto_mode
+        original = repo._reconcile_orphaned_run_locked
+
+        def poisoned(run_id, *, now):
+            # Not in the per-run method's caught tuple, and raised before its
+            # own handlers can see it.
+            if run_id == "auto-root-1":
+                raise sqlite3.OperationalError("database is locked")
+            return original(run_id, now=now)
+
+        repo._reconcile_orphaned_run_locked = poisoned
+        outcomes = store.reconcile_orphaned_auto_mode_runs(
+            owner_instance_id="daemon-NEW", now=2000
+        )
+        by_run = {item["run_id"]: item for item in outcomes}
+        assert by_run["auto-root-1"]["unreconciled"]
+        assert by_run["auto-root-2"]["status"] == "review_unavailable"
+    finally:
+        store.close()

@@ -186,49 +186,19 @@ def test_terminal_mapping_refuses_to_call_incomplete_verified():
     assert terminal == "completed_with_issues"
 
 
-def test_the_gate_runs_before_the_answer_row_is_written(tmp_path):
-    """Stage 4 ordering: candidate → freeze → review → promotion.
+def test_the_answer_row_is_written_provisional_before_the_review(tmp_path):
+    """The row is durable and MARKED before the long part of the turn runs.
 
-    The turn loop used to emit and persist the answer and only then call the
-    gate, so neither the row nor the emission was conditional on the review and
-    a crash in between left the answer durable forever with no verdict and
-    nothing that would revisit it. The gate call now precedes the prose
-    `add_message`, and the caller writes the verdict onto that row.
+    Gating before the write would be worse, not better: the gate is a reviewer
+    round-trip plus, under auto_fix, a whole repair loop, so a hard exit during
+    it would lose the answer the user is already reading. What the old order got
+    wrong was leaving the row durable and UNMARKED -- an answer that looked
+    reviewed and never would be. Provisional-at-write is honest at every instant.
     """
-
-    import re
 
     source = __import__("pathlib").Path("openai4s/server/gateway.py").read_text("utf-8")
+    persist_at = source.index("for blk in assistant_visible:\n")
     gate_at = source.index("self.completion_gate.gate_after_turn(")
-    # The prose persist loop, identified by the block it iterates.
-    persist_at = source.index("for blk in assistant_visible:\n", gate_at)
-    assert gate_at < persist_at, "the gate must run before the answer row is written"
-    # And the verdict rides on that row rather than being stamped afterwards.
-    assert re.search(r"metadata=\(\s*gate_metadata", source)
-
-
-def test_stamp_message_false_leaves_an_earlier_turns_row_alone(tmp_path):
-    """When the caller will write the row itself, the gate must not stamp.
-
-    At gate time the newest assistant row in the branch still belongs to the
-    PREVIOUS turn, so stamping would label it with this turn's verdict.
-    """
-
-    store = _store(tmp_path)
-    before = store.list_messages("root-1")[-1]
-    _services(store, _cfg(stage2=True)).gate_after_turn(
-        root_frame_id="root-1",
-        project_id="project-1",
-        branch_id="root-1",
-        turn_id="turn-nostamp",
-        execution_id="exec-nostamp",
-        user_request="q",
-        candidate_answer="a",
-        agent_cfg=_llm("agent"),
-        reviewer_cfg=_llm("reviewer"),
-        stamp_message=False,
-    )
-    after = store.list_messages("root-1")[-1]
-    assert _message_review_gate(after) is None
-    assert after.get("message_id") == before.get("message_id")
-    store.close()
+    assert persist_at < gate_at, "the answer must be durable before the review"
+    assert "metadata=provisional_metadata," in source
+    assert '"review_status": "candidate"' in source

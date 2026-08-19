@@ -2766,7 +2766,25 @@ class AutoModeRepository:
                 ).fetchall()
             ]
             for run_id in run_ids:
-                outcomes.append(self._reconcile_orphaned_run_locked(run_id, now=now))
+                # Isolation belongs HERE, around the call, not only inside it.
+                # The per-run method can only guard what happens after control
+                # enters it; a failure raised on the way in -- or one its own
+                # handlers re-raise -- would still escape the loop and deny
+                # every remaining session the recovery this sweep exists to
+                # give it. Boot-time recovery is all-or-nothing exactly once:
+                # per row.
+                try:
+                    outcomes.append(
+                        self._reconcile_orphaned_run_locked(run_id, now=now)
+                    )
+                except Exception as unexpected:  # noqa: BLE001
+                    try:
+                        self._connection.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    outcomes.append(
+                        {"run_id": run_id, "unreconciled": str(unexpected)[:300]}
+                    )
         return outcomes
 
     def _reconcile_orphaned_run_locked(
@@ -2816,6 +2834,15 @@ class AutoModeRepository:
                     "unreconciled": str(release_error)[:300],
                     "error": str(exc)[:300],
                 }
+        except Exception as unexpected:  # noqa: BLE001
+            # The tuple above names the failures a phase can represent. Anything
+            # else -- a locked database, an integrity violation, a shape nobody
+            # anticipated -- was propagating out of the per-run call and out of
+            # the sweep loop, so ONE bad row denied every other session the
+            # recovery this method exists to give it. That is the same
+            # all-or-nothing the docstring above already rejects.
+            self._connection.rollback()
+            return {"run_id": run_id, "unreconciled": str(unexpected)[:300]}
 
     def _close_orphaned_phases_locked(self, run_id: str, *, now: int) -> None:
         """Terminalize every durable phase the dead daemon left ``started``."""
