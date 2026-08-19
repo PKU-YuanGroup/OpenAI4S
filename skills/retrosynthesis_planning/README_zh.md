@@ -78,8 +78,8 @@ audit = audit_routes(routes)
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | 外部模型后端与可信度说明的中文版本。 |
 | [`MODEL_TASKS.md`](MODEL_TASKS.md) | 六个可独立评测的模型任务、入选开源模型、备选项、许可证、部署证据和科学边界的工程审计。 |
 | [`MODEL_TASKS_zh.md`](MODEL_TASKS_zh.md) | 模型任务工程审计的中文版。 |
-| [`SCENARIO.md`](SCENARIO.md) | 四层逆合成问题体系英文版，区分核心预测、路线评价、合成执行扩展与可信系统，不再把所有能力称为独立化学问题。 |
-| [`SCENARIO_zh.md`](SCENARIO_zh.md) | 四层问题体系、可执行解法、独立评测边界、覆盖范围和实现缺口的中文版。 |
+| [`SCENARIO.md`](SCENARIO.md) | 六个模型化科学问题的英文 Scenario 规格；每项分别给出 Science Query、目标、输入、输出、技术、实现、指标和硬性约束，并说明狭义规划的必要子集。 |
+| [`SCENARIO_zh.md`](SCENARIO_zh.md) | 按用户给定科学问题格式编写的六问题中文版，不再写成串行 pipeline。 |
 
 这一层的定向回归测试位于 [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) 和 [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py)。
 

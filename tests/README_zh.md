@@ -205,7 +205,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_renderer_capability_honesty.py`](test_renderer_capability_honesty.py) | renderer 目录被允许宣称什么。没有实现的能力——`sort`、`filter`、`compare_versions`——必须直接删掉，而不是写进文档；没有解析器的列式二进制文件要明确声明为只能下载，而不是先承诺一张画不出来的表。 |
 | [`test_renderer_registry.py`](test_renderer_registry.py) | 三个测试：renderer 的选择是确定性的，重复的 renderer ID 会被拒绝，公开 descriptor 里的版本与溯源始终绑在产出它的那个 renderer 上。 |
 | [`test_retrosynthesis_evidence_regressions.py`](test_retrosynthesis_evidence_regressions.py) | 逆合成路线的证据检索。这里每个测试都是为了不让“候选”冒充“已核实”：只有候选来源时，coverage 不能被抬过 30；显式的空记录包装不能摇身变成伪证据；没有真正核实过，verified 就一直是 false。检索里的搜索或抓取失败会被隔离，不能把已经拿回来的来源一起拖没。 |
-| [`test_retrosynthesis_planning.py`](test_retrosynthesis_planning.py) | 逆合成 Skills，包括六个可独立评测反应任务的发现和模型身份。其余重点是两项渲染风险：LLM 标注在返回不可解析内容时必须带告警降级，图谱 payload 必须转义外部输入的分子名。 |
+| [`test_retrosynthesis_planning.py`](test_retrosynthesis_planning.py) | 逆合成 Skills，包括六个可独立评测任务的发现/模型身份，以及要求六个独立 Science Query 而非串行 pipeline 的 Scenario 合约。其余重点是两项渲染风险：LLM 标注在返回不可解析内容时必须带告警降级，图谱 payload 必须转义外部输入的分子名。 |
 | [`test_retrosynthesis_scoring_regressions.py`](test_retrosynthesis_scoring_regressions.py) | 路线打分与渲染，麻烦的 bug 都藏在这儿。重排之后，标注不能还指着它原来描述的那条路线。库存标志里的字符串 `"false"` 永远不算“有货”。归一化后的决策权重要精确加到 100。已解出但没有反应步骤的路线，不该因为根本用不上的证据被扣分。 |
 | [`test_revert_projection.py`](test_revert_projection.py) | 关于 Revert 与 Undo 历史的三个测试：它只追加、且扛得过重启；兄弟分支之间的消息从不混在一起；遗留数据会被回填到规范的根分支。 |
 | [`test_review.py`](test_review.py) | 经由网关走完整链路的 Reviewer。它的结论是受约束的：schema 不合法时报为“不可用”，而不是被硬掰成通过；provider 出错也不致命——一次失败的评审不该让被评审的那一轮跟着失败。 |

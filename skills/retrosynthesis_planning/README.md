@@ -78,8 +78,8 @@ See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | Chinese version of the external-model backend and trust guide. |
 | [`MODEL_TASKS.md`](MODEL_TASKS.md) | Engineering audit of six independently testable model tasks, their selected open models, alternatives, licenses, deployment evidence, and scientific limits. |
 | [`MODEL_TASKS_zh.md`](MODEL_TASKS_zh.md) | Chinese version of the model-backed task audit. |
-| [`SCENARIO.md`](SCENARIO.md) | A four-layer retrosynthesis problem system separating core prediction, route assessment, synthesis-execution extensions, and trust infrastructure without claiming every capability is an independent chemistry problem. |
-| [`SCENARIO_zh.md`](SCENARIO_zh.md) | Chinese version of the four-layer problem system, executable solutions, benchmark isolation, coverage boundary, and implementation gaps. |
+| [`SCENARIO.md`](SCENARIO.md) | Six model-backed scientific problems written as separate Science Queries, each with its own goal, input, output, technique, implementation, metrics, and hard constraints; also states which subset constitutes narrow planning. |
+| [`SCENARIO_zh.md`](SCENARIO_zh.md) | Chinese version of the six-problem Scenario specification, matching the requested scientific-problem format rather than a serial pipeline. |
 
 Focused regressions for this layer live in [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) and [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py).
 

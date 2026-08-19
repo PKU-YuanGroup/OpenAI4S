@@ -1,303 +1,328 @@
-# Retrosynthesis Problem System: Core Prediction, Route Assessment, Execution Extensions, and Trust
+# Model-backed scientific problems in retrosynthesis planning
+
+[中文说明](SCENARIO_zh.md)
 
 ## Scenario overview
 
-“Plan a synthesis route for this target” is neither one model task nor a collection of fully independent scientific questions. Single-step proposals shape tree search, stock definitions change solved status, validators affect ranking, and experimental or process constraints determine whether a route is worth executing.
+This Scenario covers locally deployable, open-model assistance for planning and
+reviewing synthesis routes from a target molecule. Retrosynthesis is not one
+model and the tasks below are not mandatory stages in a fixed pipeline. Each
+asks a different scientific question with its own input, output, model, and
+evaluator:
 
-This document therefore uses four layers instead of a serial pipeline:
+1. single-step precursor generation;
+2. multi-step route planning;
+3. reaction atom mapping and centre identification;
+4. forward product prediction and round-trip checking;
+5. reaction-condition recommendation;
+6. reaction-yield estimation.
 
-1. **Core retrosynthesis:** single-step proposal, multi-step search, and stock/user constraints;
-2. **Route assessment:** reaction/route feasibility and route quality/diversity decisions;
-3. **Synthesis execution extensions:** conditions/selectivity/yield and cost/supply/safety/green/scale-up decisions;
-4. **Trust infrastructure:** evidence, calibration, uncertainty, provenance, and failure diagnosis.
+Problems 1 and 2 are the necessary core of narrow retrosynthesis planning.
+Problems 3–6 are separately benchmarkable reaction-understanding, validation,
+and execution-support tasks. They can improve route review but are neither
+required in every planner nor experimental proof.
 
-Their scientific status differs. Q1, Q2, Q4, and Q6 are prediction or planning science; Q3 is the planning environment; Q5 and Q7 are multi-objective decisions; Q8 is assurance engineering. They can be benchmarked separately without being ontologically independent chemistry problems.
-
-## Scope
-
-- **Narrow computational retrosynthesis loop:** Q1–Q5, covering one-step proposals, tree search, fixed-stock termination, validation, and selection.
-- **Executable synthesis planning:** Q1–Q7, adding conditions, selectivity, yield, cost, supply, safety, sustainability, and scale-up.
-- **Auditable research system:** Q1–Q8, adding provenance, calibration, uncertainty, and honest failure.
-- **Not exhaustive of all synthesis research:** multi-target/common-intermediate planning, laboratory closed loops, production scheduling, freedom-to-operate analysis, and organization-specific decisions remain extensions.
-
-## Problem map
+## Relationship, not pipeline
 
 ```text
-┌──────────────────────── Core retrosynthesis ────────────────────────┐
-│ Q1 Single-step proposal ─▶ Q2 Multi-step search ─▶ Q3 Stock/limits │
-│ (center + precursors)       (AND-OR tree)          (environment)    │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ candidate routes
-                               ▼
-┌──────────────────────── Route assessment ───────────────────────────┐
-│ Q4 Reaction/route feasibility ─▶ Q5 Quality, ranking, diversity     │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │ reviewable routes
-                               ▼
-┌──────────────────── Synthesis execution extensions ────────────────┐
-│ Q6 Conditions/selectivity/yield ─▶ Q7 Cost/supply/EHS/green/scale  │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               ▼
-┌──────────────────────── Trust infrastructure ───────────────────────┐
-│ Q8 Evidence, calibration, uncertainty, provenance, failure         │
-│ Q8 constrains Q1–Q7; it is not an end-of-report disclaimer.        │
-└─────────────────────────────────────────────────────────────────────┘
+P1 product -> precursor sets
+          │ expansion policy
+          ▼
+P2 target + stock -> route trees
+          │ fixed candidate reactions
+          ├──────────────┬──────────────────┐
+          ▼              ▼                  ▼
+P3 reaction mapping  P4 forward product  P5 conditions
+                                            │ full context
+                                            ▼
+                                        P6 yield
 ```
 
-## Classification
+The arrows show input dependencies. P3 cannot map a target-only query, and P6
+cannot score a route step whose reaction context is unspecified.
 
-| ID | Problem | Nature | Separately benchmarkable | Role |
-| --- | --- | --- | --- | --- |
-| Q1 | Single-step proposal | Core prediction science | Yes | Produce one-reaction precursor candidates |
-| Q2 | Multi-step search | Core planning science | Yes | Recursively compose proposals |
-| Q3 | Stock and user constraints | Planning environment | Yes | Define termination and admissibility |
-| Q4 | Reaction/route feasibility | Scientific validation | Yes, with several evidence layers | Identify invalid or weak routes |
-| Q5 | Quality, ranking, diversity | Multi-objective decision science | Yes | Select complementary routes |
-| Q6 | Conditions, selectivity, yield | Adjacent prediction science | Yes | Turn reaction graphs into testable hypotheses |
-| Q7 | Cost, supply, safety, green, scale-up | Industrial decision problem | Yes | Decide whether execution is worthwhile |
-| Q8 | Evidence, calibration, provenance, failure | Trust engineering | Yes | Keep prediction, evidence, and hypotheses distinct |
+## Problem and implementation summary
 
-## Layer 1: core retrosynthesis
+| ID | Scientific problem | Minimum input | Output | Default model | Repository status |
+| --- | --- | --- | --- | --- | --- |
+| P1 | Single-step precursor generation | product SMILES | Top-K precursor sets | RetroChimera 1 | isolated worker, checkpoint verification, structured response |
+| P2 | Multi-step route planning | target, policy, stock, budget | solved/unsolved route trees | AiZynthFinder | command builder, import, normalization, audit, ranking |
+| P3 | Atom mapping/reaction centre | complete reaction SMILES | mapped reaction, changed bonds | RXNMapper | standalone Skill; optional model environment required |
+| P4 | Forward product prediction | reactants and reagents | Top-K products | ReactionT5v2-forward | standalone Skill; optional model environment required |
+| P5 | Condition recommendation | fixed reaction | condition sets, optional temperature | Parrot | conditional Skill; checkpoint terms require review |
+| P6 | Yield estimation | reactants, reagents, product | predicted yield | ReactionT5v2-yield | standalone Skill; in-domain screening only |
 
-## Q1. Single-step retrosynthetic proposal
+## Problem 1. Single-step precursor generation
 
-### Definition
+### Science query
 
-Given a target product, generate precursor sets that could reach it in one reaction. Reaction-center prediction and precursor generation are two modeling decompositions of this task, not universally independent problems: graph/synthon methods expose a center, template methods instantiate precursors, and sequence/generative models may directly emit reactants.
+Given one target product, generate precursor sets that could form it in one
+reaction without accessing reference precursors or route ground truth.
 
-### Fixed input and output
+### Goal, input, and output
 
-- **Input:** Canonical target, optional reaction class and structural constraints, Top-K.
-- **Output:** Unordered precursor set, reaction SMILES, optional center, raw score/type, model/checkpoint provenance.
+- **Goal:** propose one-step disconnections for chemist review and planner
+  expansion.
+- **Input:** canonical target, Top-K, optional structural constraints, frozen
+  model/checkpoint.
+- **Output:** unordered precursor sets, reaction SMILES, raw score/type,
+  optional centre, parse/duplicate state, and model provenance.
 
-### Executable solution
+### Technique and implementation
 
-Validate/canonicalize with RDKit; call an AiZynthFinder expansion policy or isolated `SyntheseusBackend`; canonicalize and deduplicate precursor sets; derive bond changes only when mapping exists; optionally add independent forward round-trip evidence; preserve each backend's score semantics.
+Use RetroChimera 1 through the isolated Syntheseus worker. Canonicalize and
+deduplicate unordered components while retaining source rank. Use
+ReactionT5v2-retrosynthesis only as a diversity model; do not average scores
+across model families. The repository Skill is `single-step-retrosynthesis`,
+and `SyntheseusBackend` is already implemented.
 
-### Metrics
+### Independent metrics
 
-Top-K precursor exact match or multi-reference feasibility recall, center bond precision/recall for explicit-center models, round-trip accuracy, invalid/empty/duplicate rates, diversity, latency, and cost.
+Precursor-set Top-1/Top-K exact match, multi-reference recall, invalid/empty/
+duplicate rates, reaction-centre bond F1 where applicable, diversity, latency,
+throughput, and memory.
 
-### Current status
+### Hard constraints
 
-External isolation, RetroChimera checkpoint verification, response schemas, Top-K outputs, and structured errors exist. Independent forward validation, atom mapping, and live scientific-accuracy gates remain gaps.
+Ground truth must be evaluator-only; precursor components compare as unordered
+sets; uncalibrated scores are not experimental probabilities; a missing centre
+must not be invented; structural filtering cannot use reference answers.
 
-## Q2. Multi-step route search
+## Problem 2. Multi-step route planning
 
-### Definition
+### Science query
 
-Recursively compose Q1 proposals into complete routes from target to terminal materials.
+Given a target, frozen one-step policy, frozen stock, and bounded search budget,
+find complete routes whose terminal materials all reach stock.
 
-### Fixed input and output
+### Goal, input, and output
 
-- **Input:** Target, expansion/filter policies, algorithm, budget, and Q3 termination definition.
-- **Output:** AND-OR route trees, solved state, depth/leaves, search statistics, original rank, and provenance.
+- **Goal:** compose local proposals into valid AND-OR route trees.
+- **Input:** target, expansion/filter policies, stock snapshot, algorithm,
+  budget, and hard user constraints.
+- **Output:** solved/unsolved trees, reactions, leaves, stock matches, search
+  statistics, raw rank/score, and configuration provenance.
 
-### Executable solution
+### Technique and implementation
 
-Use configured AiZynthFinder search; preserve OR molecule choices and AND precursor requirements; bound cycles, repeated states, depth, expansions, concurrency, and time; save raw exports/checkpoints; keep `solved=False` trees diagnostic rather than presenting them as complete routes.
+Use AiZynthFinder. Molecules are OR choices and all precursors of one reaction
+are an AND requirement. Bound depth, cycles, repeated states, expansions, and
+wall time; retain raw exports and checkpoints. OpenAI4S safely constructs the
+CLI, normalizes route trees, retains unresolved leaves, audits structure, and
+deduplicates review routes. Those review functions are engineering support, not
+additional scientific predictors.
 
-### Metrics
+### Independent metrics
 
-Solved rate, Top-N reference-route recovery, tree/reaction/intermediate similarity, expansions/depth/time/memory/model calls, timeout rate, replay consistency, and cost per solved target.
+Solved-target rate, Top-N reference recovery, reaction/intermediate/tree
+similarity, steps and unresolved leaves, expansions, model calls, time, memory,
+timeouts, replay consistency, and cost per solved target.
 
-### Current status
+### Hard constraints
 
-Safe command construction and route-tree normalization exist. Live search requires the optional AiZynthFinder environment/assets; offline fixtures do not establish planning accuracy.
+Freeze policy/filter/stock/budget across planners; never present `solved=False`
+as complete; preserve AND semantics; route ground truth cannot guide search;
+live supplier results cannot silently mutate benchmark stock.
 
-## Q3. Stock, termination, and user constraints
+## Problem 3. Reaction atom mapping and centre identification
 
-### Definition
+### Science query
 
-Q3 is not a chemistry predictor. It defines the planning environment: which leaves count as available and which routes violate price, lead-time, structural, equipment, or user constraints.
+For a complete known reaction, determine atom correspondence and which bonds
+were formed, broken, or changed order.
 
-### Fixed input and output
+### Goal, input, and output
 
-- **Input:** Frozen stock, salt/tautomer/stereo policy, price/lead-time limits, and hard constraints.
-- **Output:** Per-leaf stock match/tier/version/unresolved reason and per-route constraint status.
+- **Goal:** produce auditable correspondence and bond changes for reaction
+  analysis, cleaning, templates, and route-step checks.
+- **Input:** fixed complete reaction SMILES and participant/reagent rules.
+- **Output:** mapped reaction, mapper confidence, changed bonds, unmapped atoms,
+  conservation warnings, and provenance.
 
-### Executable solution
+### Technique and implementation
 
-Freeze/hash stock; perform exact canonical matching before declared normalization tiers; separate stock membership from timestamped supplier evidence; enforce hard constraints explicitly; expose match rules and unresolved leaves rather than only a solved Boolean.
+Use RXNMapper, preferably `BatchedMapper`, then derive bond changes from RDKit
+bond tables keyed by atom-map-number pairs. This is not target-only
+retrosynthesis; low mapping confidence is not reaction infeasibility. The
+repository Skill is `reaction-atom-mapping`.
 
-### Metrics
+### Independent metrics
 
-Stock precision/recall, full-termination rate, unresolved leaves, per-tier matches, constraint violations, and provenance completeness.
+Atom-mapping accuracy, changed-bond precision/recall/F1, conservation pass
+rate, invalid mapping rate, confidence calibration, throughput, and failure
+isolation.
 
-### Current status
+### Hard constraints
 
-AiZynthFinder stock termination and starting-material reporting exist. Stable per-leaf match provenance and commercial constraints remain incomplete.
+Freeze both reaction sides; never silently move/delete participants to improve
+mapping; retain original and mapped strings; derive changes from map numbers;
+do not interpret mapping confidence as reaction success.
 
-## Layer 2: route assessment
+## Problem 4. Forward product prediction and round-trip checking
 
-## Q4. Reaction-step and route feasibility
+### Science query
 
-### Definition
+Given candidate reactants and reagents, which products are predicted, and does
+the intended target appear in Top-K?
 
-Determine whether route structure is coherent, whether steps have plausible support, and whether one weak step invalidates the route. Q4 is layered rather than one universal feasibility score: deterministic integrity, mapping/conservation, independent forward prediction, literature/ELN precedent, and expert/experimental evidence are distinct.
+### Goal, input, and output
 
-### Fixed input and output
+- **Goal:** test model agreement with a retrosynthetic proposal and expose
+  competing products.
+- **Input:** separated reactant and reagent fields, optional intended product
+  used only after prediction, beam and Top-K.
+- **Output:** ranked canonical products, raw scores, parse state, intended rank,
+  Top-K recovery, and provenance.
 
-- **Input:** Fixed route tree, reactions/templates, optional forward model and evidence corpus.
-- **Output:** Layered errors/warnings, forward evidence, precedent status, weakest step, and unknowns.
+### Technique and implementation
 
-### Executable solution
+Use `sagawa/ReactionT5v2-forward` with its declared input format. Canonicalize
+all outputs and retain invalid raw strings. Round-trip recovery is agreement,
+not feasibility; shared training data makes the evidence correlated. The Skill
+is `reaction-forward-prediction`.
 
-Run deterministic checks first; add mapped bond-change/conservation checks; perform round trips with a model independent of Q1; distinguish exact from similarity precedents; aggregate route risk with weakest-link awareness; never collapse heterogeneous evidence into an uncalibrated probability.
+### Independent metrics
 
-### Metrics
+Product Top-1/Top-K accuracy, reciprocal rank, recovery rate, invalid/duplicate
+rate, stereochemistry-sensitive accuracy, latency, throughput, and memory.
 
-Structural errors/warnings, mapping/conservation pass rate, forward rank/round-trip, precedent coverage, expert-label precision/recall/AUROC, weakest-step detection, and appropriate abstention.
+### Hard constraints
 
-### Current status
+The model cannot read the intended product; freeze one forward checkpoint when
+comparing backward models; record missing reagents; do not multiply unjointly
+calibrated forward/backward scores; never emit `feasible=True` from recovery.
 
-`structural_audit.py` checks trees, SMILES, precursors, reaction identity, and simple elemental deficits. It is not a forward model. Forward/mapping/evidence evaluators and route-level weakest-link aggregation remain gaps.
+## Problem 5. Reaction-condition recommendation
 
-## Q5. Route quality, ranking, deduplication, and diversity
+### Science query
 
-### Definition
+For a fixed reaction, which catalyst, reagent, solvent, and checkpoint-supported
+temperature hypotheses should be validated first?
 
-Select routes worth reviewing under conflicting objectives while preserving genuinely different chemical strategies.
+### Goal, input, and output
 
-### Fixed input and output
+- **Goal:** narrow literature/ELN retrieval and experimental screening.
+- **Input:** fixed complete reaction, matching label dictionary/configuration,
+  Top-K, and explicit temperature-support status.
+- **Output:** complete ranked condition sets, raw/decoded labels, checkpoint
+  provenance, and validation state.
 
-- **Input:** Fixed candidates, Q3 constraints, Q4 findings, optional costs/preferences.
-- **Output:** Multi-objective/Pareto ranking, signatures, duplicate provenance, diversity diagnostics, and Top-N.
+### Technique and implementation
 
-### Executable solution
+Use Parrot conditionally. The code, data labels, environments, and CLI are
+public, but the downloader's external checkpoint archives do not separately
+declare machine-readable license terms, so organizational deployment requires
+terms review. USPTO and Reaxys configurations do not have identical temperature
+capabilities. The Skill is `reaction-condition-recommendation`.
 
-Apply hard constraints before scores; evaluate solved state, steps, stock completion, weakest step, evidence, cost, and complexity; merge stable route signatures while retaining counts/sources; select diversity across reaction/product/precursor/leaf features; keep weights evaluator-independent; expose `diversity_relaxed` when similar routes are restored.
+### Independent metrics
 
-### Metrics
+Component Top-K recall, complete-set exact/similarity, temperature MAE where
+supported, decoding failures, OOV/abstention, and agreement with exact
+literature or ELN records.
 
-Top-N valid/solved/stock-complete fraction, chemist NDCG/Spearman/pairwise agreement, reference recovery, duplicate removal, route clusters/feature coverage, maximum similarity, Pareto coverage, and weight-perturbation stability.
+### Hard constraints
 
-### Current status
+Freeze the reaction first; bind dictionaries to checkpoints; never fabricate
+unsupported temperature; keep LLM suggestions distinct from Parrot output; do
+not claim deployment approval before checkpoint-terms review.
 
-`workflow.py` and `route_review.py` implement baseline ranking, signature deduplication, Jaccard diversity, and `diversity_relaxed`. They are not an industrially calibrated route-value model and do not yet contain complete Q6/Q7 data.
+## Problem 6. Reaction-yield estimation
 
-## Layer 3: synthesis execution extensions
+### Science query
 
-## Q6. Conditions, selectivity, and yield
+For a fully specified reactant/reagent/product context, what isolated yield is
+predicted and is that number trustworthy in the deployment domain?
 
-### Definition
+### Goal, input, and output
 
-For one fixed reaction, propose catalysts/reagents/solvents/temperature/time and estimate selectivity/yield uncertainty. This is essential to full CASP but adjacent to narrow retrosynthesis generation. A benchmark fixes the reaction so upstream planning cannot inflate its score.
+- **Goal:** rank comparable in-domain reactions and identify steps requiring
+  experiments or domain fine-tuning.
+- **Input:** reactants, reagents/conditions, product, and frozen base or
+  domain-fine-tuned checkpoint.
+- **Output:** raw and display yield, matched/uncertain/OOD state, missing-input
+  flags, validated uncertainty only when available, and provenance.
 
-### Fixed input and output
+### Technique and implementation
 
-- **Input:** Fixed reactants/product/optional center, literature/ELN, optional condition model.
-- **Output:** Top-K condition sets, selectivity/yield predictions, scope, sources, and unknowns.
+Use `sagawa/ReactionT5v2-yield` through its official regression wrapper. Its
+reported benchmarks do not establish arbitrary-chemistry error. Without a
+deployment-matched held-out set, MAE/RMSE, and calibration, label output
+`screening_only`. The Skill is `reaction-yield-estimation`.
 
-### Executable solution
+### Independent metrics
 
-Retrieve exact/close precedents; optionally call a dedicated predictor; preserve several candidates and dependencies among context variables; use an LLM only to organize evidence/conflicts/experiments; return unknown rather than fabricated yield.
+MAE, RMSE, supplementary R2/Spearman, class/scale/time-split errors, uncertainty
+coverage where implemented, OOD abstention, and out-of-range raw predictions.
 
-### Metrics
+### Hard constraints
 
-Top-K reagent/catalyst/solvent recall, condition-set similarity, temperature/time error, chemo-/regio-/stereo-selectivity accuracy, yield MAE/calibration, evidence-backed rate, and abstention.
+No quantitative interpretation with missing reaction fields; prevent near-
+duplicate leakage; do not extrapolate across labs/scales/classes without
+validation; preserve raw values outside 0–100; never multiply step yields into
+a route-success probability; an LLM cannot invent uncertainty intervals.
 
-### Current status
+## Coverage of complete planning
 
-Guarded evidence retrieval and labelled LLM hypotheses exist. A validated condition/yield backend does not, so Q6 is assisted rather than scientifically solved.
+- **Narrow retrosynthesis planning:** P1 + P2 contain the necessary model
+  questions: expansion and search.
+- **Model-based route review:** add P3 + P4 for centres and forward agreement.
+- **Experimental hypothesis support:** add P5 + P6 for conditions and bounded
+  yield screening.
 
-## Q7. Cost, supply, safety, sustainability, and scale-up
-
-### Definition
-
-Decide whether a chemically plausible route is worth executing under a particular organization, region, date, facility, schedule, and scale. This is industrial multi-objective decision-making, not one chemistry prediction.
-
-### Fixed input and output
-
-- **Input:** Route/conditions, dated regional supply data, facility limits, EHS rules, scale, and green targets.
-- **Output:** Material cost, lead-time/supply risks, hazards, PMI/E-factor where calculable, facility/scale conflicts, and a Pareto diagnosis.
-
-### Executable solution
-
-Use dated supply data; audit hazardous materials, thermal/gas/pressure/temperature and unstable-intermediate risks; compute mass-based green metrics only with mass balance; check equipment/purification/solvent swaps/stability at target scale; report a Pareto front instead of a fake industrial-feasibility scalar.
-
-### Metrics
-
-Cost/lead-time error, supply-risk and hazard recall, severity agreement, PMI/E-factor error, facility/scale violations, and process-chemist pairwise preference.
-
-### Current status
-
-Reports can carry hypotheses, but no deterministic supply/EHS/facility/mass-balance connectors exist. Q7 is an explicit gap and cannot be replaced by route length.
-
-## Layer 4: trust infrastructure
-
-## Q8. Evidence, calibration, uncertainty, provenance, and failure
-
-### Definition
-
-Make clear which claims are backend predictions, deterministic calculations, external evidence, expert observations, or LLM hypotheses; return reliable unknown/failure states. Q8 is assurance engineering, not chemical prediction.
-
-### Fixed input and output
-
-- **Input:** Q1–Q7 outputs, manifests, raw exports, sources, environments, and logs.
-- **Output:** Source-labelled JSON, calibration/uncertainty, provenance, structured failures, and review artifacts.
-
-### Executable solution
-
-Label source types; record model/version/checkpoint/training/runtime/error identity; record stock/config/budget/raw exports/lineage; preserve retrieval request/time/digest; report calibration only where valid and mark other scores uncalibrated; return failure/unknown for missing assets, timeouts, unsolved searches, absent evidence, and conflicts.
-
-### Metrics
-
-Provenance completeness, replay/digest consistency, source-label accuracy, calibration error or correct uncalibrated labels, failure classification, appropriate abstention, and unsupported claims.
-
-### Current status
-
-Path-free manifests, checkpoint hashes, versioned responses, structured errors, artifact provenance, dashboards, and reports exist. A task-level confidence/calibration/evaluator schema remains incomplete.
-
-## Independent benchmark contracts
-
-| Benchmark | Fixed input | Evaluated | Isolated influence |
-| --- | --- | --- | --- |
-| Single-step | target + Top-K | Q1 | No tree search or evaluator-driven tuning |
-| Multi-step | target + policy + stock + budget | Q2 | Freeze Q1 and Q3 |
-| Stock/constraints | fixed leaves/routes + stock | Q3 | Planner quality cannot affect matching |
-| Feasibility | fixed reactions/routes | Q4 | Generator cannot validate itself |
-| Ranking | fixed route set | Q5 | Candidate recall cannot affect ranking |
-| Conditions/yield | fixed reaction | Q6 | Planner quality cannot affect conditions |
-| Industrial decision | fixed route/conditions/dated data | Q7 | Freeze region/date/scale/facility |
-| Trust output | recorded outputs/failures | Q8 | Replay without live models |
+This is not molecule-to-factory completeness. Procurement, dated supply,
+EHS/calorimetry, work-up, purification, analytical release, scale-up, equipment,
+mass balance, sustainability, patent/FTO, internal ELN knowledge, and laboratory
+closed loops remain database, rule, experiment, process, and decision problems.
 
 ## Automation status
 
-```text
-Q1 single-step proposal                ✓ backend integrated; live accuracy needed
-Q2 multi-step search                   ✓ optional AiZynthFinder environment/assets
-Q3 stock/constraints                   △ termination works; leaf provenance incomplete
-Q4 deterministic audit                ✓
-Q4 forward/literature/expert evidence  △ independent evaluators needed
-Q5 ranking/deduplication/diversity     ✓ baseline implemented
-Q6 conditions/selectivity/yield        △ evidence + LLM hypotheses today
-Q7 industrial supply/EHS/green/scale   ✗ connectors and deterministic metrics needed
-Q8 provenance/failure/review           ✓ baseline; calibration schema incomplete
-Experimental success and real scale-up ✗ expert and laboratory confirmation
-```
+| Problem | Offline interface test | Live inference | Scientific benchmark | Status |
+| --- | --- | --- | --- | --- |
+| P1 | yes | RetroChimera env/weights | public benchmark required | integrated; no default-CI weight download |
+| P2 | yes | AiZynthFinder assets/stock | frozen search benchmark | integrated; live search optional |
+| P3 | Skill discovery | RXNMapper env | mapping benchmark | recipe complete |
+| P4 | Skill discovery | ReactionT5v2 weights | forward benchmark | recipe complete |
+| P5 | Skill discovery | Parrot env/terms review | fixed condition set | conditional recipe complete |
+| P6 | Skill discovery | ReactionT5v2 weights | deployment held-out set | recipe complete; bounded interpretation |
 
-## Unified hard constraints
+## Scenario-wide hard constraints
 
-1. Ground Truth is evaluator-only for the relevant benchmark.
-2. Independent benchmarks freeze their inputs.
-3. Canonicalization, stock, salts/tautomers/stereo rules are predeclared.
-4. Search comparisons use equal or normalized budgets.
-5. Raw backend scores remain model-specific and are not success probabilities.
-6. Route nodes come only from declared backends; LLMs cannot repair and relabel them.
-7. Q4 validators should be independent of Q1 generators where possible.
-8. Deterministic audit precedes and survives language interpretation.
-9. Only frozen-stock matches are in-stock; live supply is dated regional evidence.
-10. Prediction, calculation, evidence, expert observation, and hypothesis have distinct labels.
-11. Unknown yield, cost, lead time, PMI, or facility data is never fabricated.
-12. Deduplication retains signatures/counts/sources; restored similar routes expose `diversity_relaxed`.
-13. External models retain version/checkpoint/training/runtime/failure provenance.
-14. Unsolved subproblems return structured failure/unknown rather than fluent success prose.
+1. **Ground-truth isolation:** each task sees only declared inputs; references
+   are evaluator-only after outputs are fixed.
+2. **Task isolation:** freeze other-task inputs/models when benchmarking one
+   problem.
+3. **Checkpoint freeze:** record model ID, revision, hash, training set,
+   license, dependencies, and inference parameters.
+4. **Representation consistency:** freeze parsing, canonicalization, salt/
+   tautomer/stereo, and unordered-component rules.
+5. **Search fairness:** freeze P2 policies, stock, budgets, constraints, and
+   stopping rules; preserve timeouts and unsolved outputs.
+6. **Held-out isolation:** intended products, true conditions, and yields cannot
+   guide generation, beam choice, reranking, or tuning.
+7. **No self-confirmation:** disclose shared data/model families; round trips
+   are not experiments.
+8. **Score-semantics isolation:** never collapse mapping confidence, beam score,
+   planner score, product rank, condition score, and yield error into one
+   uncalibrated confidence.
+9. **Evidence isolation:** distinguish model, deterministic calculation,
+   literature, ELN, vendor, expert, and LLM sources.
+10. **Domain and abstention:** return unknown/OOD/screening-only when inputs,
+    applicability, or calibration are insufficient.
+11. **No hidden model download:** keep weights out of git; require explicit
+    authorization, source/hash verification, and isolated loading.
+12. **Final evaluation constraint:** evaluator results cannot feed back into
+    models, filters, budgets, or ranking weights.
 
-## Reference boundaries
+## Skill directories in this checkout
 
-- AiZynthFinder 4.0 separates one-step models, search, stock, and route scoring: https://pmc.ncbi.nlm.nih.gov/articles/PMC11112899/
-- Retro* formulates multi-step planning as neural-guided AND-OR tree search: https://arxiv.org/abs/2006.15820
-- PaRoutes separately evaluates solved targets, reference-route quality, and diversity: https://doi.org/10.1039/D2DD00015F
-- Early seq2seq work defines precursor prediction as a module in multi-step retrosynthesis: https://doi.org/10.1021/acscentsci.7b00303
-- Condition recommendation treats catalyst, solvent, reagent, and temperature as a separate prediction task: https://doi.org/10.1021/acscentsci.8b00357
+| Problem | Absolute directory |
+| --- | --- |
+| P1 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/single-step-retrosynthesis/` |
+| P2 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/retrosynthesis_planning/` |
+| P3 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-atom-mapping/` |
+| P4 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-forward-prediction/` |
+| P5 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-condition-recommendation/` |
+| P6 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-yield-estimation/` |
+
+See `MODEL_TASKS.md` for model-admission evidence, alternatives, and exclusions.

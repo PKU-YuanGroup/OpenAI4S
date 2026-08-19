@@ -202,6 +202,26 @@ def test_model_backed_reaction_tasks_are_separate_discoverable_skills():
     assert "Do not recurse" in skills["single-step-retrosynthesis"].doc
 
 
+def test_science_scenario_specifies_six_independent_problem_contracts():
+    scenario = (
+        get_config().skills_dir / "retrosynthesis_planning" / "SCENARIO_zh.md"
+    ).read_text(encoding="utf-8")
+
+    assert scenario.count("### Science Query") == 6
+    for heading in (
+        "## Problem 1. 单步逆合成前体生成",
+        "## Problem 2. 多步逆合成路线规划",
+        "## Problem 3. 反应原子映射与反应中心识别",
+        "## Problem 4. 正向反应产物预测与 round-trip 验证",
+        "## Problem 5. 反应条件推荐",
+        "## Problem 6. 反应收率估计",
+        "## 全 Scenario 的硬性约束",
+    ):
+        assert heading in scenario
+    assert "不是一个单模型问题" in scenario
+    assert "不应被写成一条固定 pipeline" in scenario
+
+
 def test_aspirin_example_dashboard_is_documented():
     skill_root = get_config().skills_dir / "retrosynthesis_planning"
     skill_doc = (skill_root / "SKILL.md").read_text(encoding="utf-8")
