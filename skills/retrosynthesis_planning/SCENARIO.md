@@ -22,6 +22,11 @@ Problems 3–6 are separately benchmarkable reaction-understanding, validation,
 and execution-support tasks. They can improve route review but are neither
 required in every planner nor experimental proof.
 
+This file is the overview and boundary map. Six complete Chinese benchmark
+designs—with dataset construction, private ground truth, checkpoints, input
+trees, metrics, failure cases, and release blockers—are indexed in
+[`scenarios/README.md`](scenarios/README.md).
+
 ## Relationship, not pipeline
 
 ```text
@@ -325,4 +330,6 @@ closed loops remain database, rule, experiment, process, and decision problems.
 | P5 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-condition-recommendation/` |
 | P6 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-yield-estimation/` |
 
-See `MODEL_TASKS.md` for model-admission evidence, alternatives, and exclusions.
+See `MODEL_TASKS.md` for model-admission evidence, alternatives, and exclusions,
+and [`scenarios/README.md`](scenarios/README.md) for the detailed benchmark
+drafts.

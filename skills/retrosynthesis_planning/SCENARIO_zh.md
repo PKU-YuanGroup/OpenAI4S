@@ -17,6 +17,17 @@
 
 其中问题 1 和问题 2 构成狭义逆合成规划的必要核心。问题 3–6 是可独立评测的反应理解、验证和实验执行问题，可以增强路线评审，但并非每种 planner 都必须串行调用，也不能用来把一条模型路线宣称为实验可行。
 
+本文是总览与边界说明。六份按照 Benchmark 数据构建、Ground Truth 隔离、阶段检查点、输入/私有目录、评测指标和失败案例完整展开的规范位于 [`scenarios/`](scenarios/README_zh.md)：
+
+| ID | 独立详细规范 | 当前成熟度 |
+| --- | --- | --- |
+| P1 | [`scenarios/01_single_step_retrosynthesis.md`](scenarios/01_single_step_retrosynthesis.md) | 设计完成；发布前需冻结 USPTO 派生数据许可与 checkpoint split 审计 |
+| P2 | [`scenarios/02_multistep_route_planning.md`](scenarios/02_multistep_route_planning.md) | 设计完成；PaRoutes 数据与自动指标明确，可优先实现 |
+| P3 | [`scenarios/03_atom_mapping.md`](scenarios/03_atom_mapping.md) | 设计完成；正式 Ground Truth 的独立人工核验与许可仍是阻塞项 |
+| P4 | [`scenarios/04_forward_prediction.md`](scenarios/04_forward_prediction.md) | 设计完成；需冻结 USPTO_MIT 快照与 checkpoint 去重证明 |
+| P5 | [`scenarios/05_condition_recommendation.md`](scenarios/05_condition_recommendation.md) | 设计完成；v1 限于类别条件，数据/权重再分发条款待审计 |
+| P6 | [`scenarios/06_yield_estimation.md`](scenarios/06_yield_estimation.md) | 设计完成；以 Buchwald–Hartwig OOD split 为主，需冻结数据许可与去重清单 |
+
 ## 科学问题之间的关系
 
 ```text
@@ -411,12 +422,12 @@ Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没
 
 | 问题 | 离线接口测试 | 真实模型推理 | 科学精度评测 | 当前结论 |
 | --- | --- | --- | --- | --- |
-| P1 单步逆合成 | ✓ | 需 RetroChimera 环境/权重 | 需公开 benchmark | 已集成，未在默认 CI 下载权重 |
-| P2 多步规划 | ✓ | 需 AiZynthFinder policies/stock | 需固定搜索 benchmark | 已集成，live search 为可选环境 |
-| P3 原子映射 | ✓ Skill 发现 | 需 RXNMapper 环境 | 可用 mapping benchmark | recipe 完成 |
-| P4 正向预测 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | 可用 forward benchmark | recipe 完成 |
-| P5 条件推荐 | ✓ Skill 发现 | 需 Parrot 环境/条款审核 | 需固定 condition dataset | 条件型 recipe 完成 |
-| P6 收率估计 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | 强依赖部署域 held-out set | recipe 完成，解释受限 |
+| P1 单步逆合成 | ✓ | 需 RetroChimera 环境/权重 | USPTO-50K 详细设计已写 | 已集成；数据许可/split provenance 待冻结 |
+| P2 多步规划 | ✓ | 需 AiZynthFinder policies/stock | PaRoutes 详细设计已写 | 已集成；最接近可实现 Benchmark |
+| P3 原子映射 | ✓ Skill 发现 | 需 RXNMapper 环境 | 独立人工真值设计已写 | recipe 完成；可信 Ground Truth 待冻结 |
+| P4 正向预测 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | USPTO_MIT 详细设计已写 | recipe 完成；数据/去重 provenance 待冻结 |
+| P5 条件推荐 | ✓ Skill 发现 | 需 Parrot 环境/条款审核 | USPTO 类别条件设计已写 | 条件型 recipe 完成；不声称温度评测 |
+| P6 收率估计 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | C–N 偶联 OOD 设计已写 | recipe 完成；数据许可/预训练去重待冻结 |
 
 ## 全 Scenario 的硬性约束
 
@@ -444,4 +455,4 @@ Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没
 | P5 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-condition-recommendation/` |
 | P6 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-yield-estimation/` |
 
-模型准入证据、备选模型和排除理由见同目录的 `MODEL_TASKS_zh.md`。
+模型准入证据、备选模型和排除理由见同目录的 `MODEL_TASKS_zh.md`；各 Benchmark 的详细实现草案见 [`scenarios/README_zh.md`](scenarios/README_zh.md)。

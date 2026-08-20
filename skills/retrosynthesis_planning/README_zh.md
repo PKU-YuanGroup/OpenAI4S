@@ -88,3 +88,4 @@ audit = audit_routes(routes)
 | 目录 | 职责 |
 | --- | --- |
 | [`examples/`](examples/) | 确定性的 aspirin 路线与注释 fixture、由它们生成的 HTML 与报告，以及重建两者的脚本。 |
+| [`scenarios/`](scenarios/) | 六个独立科学场景的详细 Benchmark 规范，分别包含数据冻结、Ground Truth 隔离、阶段、评测、约束和失败案例。 |

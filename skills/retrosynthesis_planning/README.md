@@ -88,3 +88,4 @@ Focused regressions for this layer live in [`../../tests/test_retrosynthesis_sco
 | Directory | Responsibility |
 | --- | --- |
 | [`examples/`](examples/) | The deterministic aspirin-shaped route and annotation fixtures, the HTML and report generated from them, and the script that rebuilds both. |
+| [`scenarios/`](scenarios/) | Detailed benchmark specifications for six independent scientific scenarios, including frozen data, private ground truth, stages, metrics, constraints, and failure cases. |

@@ -222,6 +222,42 @@ def test_science_scenario_specifies_six_independent_problem_contracts():
     assert "不应被写成一条固定 pipeline" in scenario
 
 
+def test_six_detailed_science_scenarios_are_independent_benchmark_specs():
+    scenario_dir = get_config().skills_dir / "retrosynthesis_planning" / "scenarios"
+    expected = (
+        "01_single_step_retrosynthesis.md",
+        "02_multistep_route_planning.md",
+        "03_atom_mapping.md",
+        "04_forward_prediction.md",
+        "05_condition_recommendation.md",
+        "06_yield_estimation.md",
+    )
+    required_sections = (
+        "## Scenario Overview",
+        "## 数据可获取性与 Benchmark 构建方案",
+        "## Science Query",
+        "## 阶段介绍",
+        "## Input Data 与 Ground Truth 组织",
+        "## `intermediate_results.json` 最低要求",
+        "## 建议的 Reference Repository 结构",
+        "## 评估自动化实现难度",
+        "## 评测指标",
+        "## 代码与数据的硬性约束",
+        "## Domain-Specific Failure Cases",
+        "## 参考文献与一手资源",
+    )
+
+    for filename in expected:
+        body = (scenario_dir / filename).read_text(encoding="utf-8")
+        for heading in required_sections:
+            assert heading in body, f"{filename} is missing {heading}"
+        assert "private_evaluator/" in body
+        assert "Ground Truth" in body
+
+    assert (scenario_dir / "README.md").exists()
+    assert (scenario_dir / "README_zh.md").exists()
+
+
 def test_aspirin_example_dashboard_is_documented():
     skill_root = get_config().skills_dir / "retrosynthesis_planning"
     skill_doc = (skill_root / "SKILL.md").read_text(encoding="utf-8")
