@@ -574,8 +574,20 @@ class HTTPExchangeDeadline:
                     "HTTP exchange exceeded its absolute deadline"
                 ) from None
             raise
-        self.register_response(response)
-        self.remaining()
+        try:
+            self.register_response(response)
+            self.remaining()
+        except BaseException:
+            # ``opener.open`` transferred ownership here, but neither caller
+            # receives the response until this method returns.  Close it when
+            # registration or final deadline validation fails so its makefile
+            # cannot retain an otherwise closed socket descriptor through the
+            # exception traceback.
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001 - preserve the original failure
+                pass
+            raise
         return response
 
 

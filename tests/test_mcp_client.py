@@ -215,6 +215,34 @@ def test_absolute_exchange_deadline_preserves_http_status_errors():
 
 
 @pytest.mark.stubbed_backend
+def test_absolute_exchange_deadline_closes_a_response_rejected_after_open():
+    exchange = HTTPExchangeDeadline(1.0)
+
+    class _Response:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    response = _Response()
+
+    class _Opener:
+        def open(self, _request, timeout=None):
+            assert timeout is not None and timeout > 0
+            exchange._expire()
+            return response
+
+    with pytest.raises(HTTPExchangeTimeout):
+        exchange.open(
+            _Opener(),
+            urllib.request.Request("https://deadline.invalid/rejected-response"),
+        )
+
+    assert response.close_calls == 1
+
+
+@pytest.mark.stubbed_backend
 def test_absolute_exchange_deadline_preserves_a_normal_header_and_body_response():
     """The same opener path admits an ordinary response and cancels its timer."""
 
