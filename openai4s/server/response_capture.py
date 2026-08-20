@@ -18,8 +18,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -335,6 +337,34 @@ class Recorder:
             }
             for key, value in sorted(merged.items())
         }
+
+    def shapes_snapshot(self) -> dict[str, Any]:
+        """The raw, un-elided shapes, for reassembling a split run.
+
+        Un-elided on purpose. `document()` runs `elide_machine_state` over each
+        shape, and eliding a share before merging it is not the same operation
+        as eliding the merge: the elision replaces whole subtrees, so a field
+        that only one share saw could be elided out of that share and then have
+        nothing left to widen against. Shares carry what `observe` produced, and
+        the elision happens once, at the end, exactly where it does in a
+        single-process run.
+        """
+        return {key: self.shapes[key] for key in sorted(self.shapes)}
+
+    def absorb(self, shapes: Mapping[str, Any]) -> None:
+        """Merge another process's shapes in, exactly as `observe` would have.
+
+        The same `merge` call, on the same values, in a deterministic order.
+        `observe` widens each new observation into what it already had; this
+        widens each share into what it already has. Two observations of one
+        route reach the same schema whether they landed in one process or two.
+        """
+        for key in sorted(shapes):
+            observed = shapes[key]
+            existing = self.shapes.get(key)
+            self.shapes[key] = (
+                observed if existing is None else merge(existing, observed)
+            )
 
     def document(self) -> dict[str, Any]:
         return {
@@ -678,6 +708,76 @@ _CAPTURE_DECISION_ID = "dec-contractcapture0001"
 #: for the turn -- it fails immediately without a provider -- but a ceiling, so
 #: a gate can never block on one.
 _SEEDED_JOB_WAIT_S = 30.0
+
+
+#: The two listings whose entries carry `python_version`, driven a second time
+#: below with an environment that has no interpreter.
+_ENVIRONMENT_LISTING_ROUTES = ("/environments", "/frames/([^/]+)/environments")
+
+
+def _drive_environment_states(
+    recorder: "Recorder",
+    handler_class,
+    authenticated_headers: dict[str, str] | None = None,
+) -> None:
+    """Drive the environment listings again with an R-only environment present.
+
+    `python_version` is `str | None` -- None for an environment that has no
+    interpreter, which is exactly what an R-only conda env is, and
+    `setup.sh --with-kernel-envs` builds one. Which state the suite observed was
+    therefore decided by the host: a CI runner has no such env and froze
+    `string`, a developer machine with an R env observes `["null", "string"]`,
+    and the gate calls whichever ran second a breaking change. Test *ordering*
+    was hiding it too -- `tests/test_environments.py` leaves a populated
+    discovery cache behind, so the sweep saw the null only when it ran in a
+    process that file had not already touched. Under `--dist loadfile` that
+    stopped being alphabetical, which is how this surfaced.
+
+    So the other state is exercised here instead of left to the host. That is
+    what the note on `_MACHINE_STATE_KEYS` prescribes for an under-observed
+    field: eliding `python_version` would delete a real guarantee to silence a
+    coverage gap, and freezing one host's answer publishes the host rather than
+    the API.
+
+    Arranged, not fabricated. The response is whatever the real handler makes of
+    a real `Environment`, through the same `to_dict` every other listing goes
+    through; nothing here supplies a response body. Only *discovery* is
+    arranged -- and discovery is the host state this exists to stop depending
+    on. The real environments stay in the list, so the pass adds a state rather
+    than replacing the machine's.
+    """
+    from openai4s.kernel import environments as envmod
+
+    real_discover = envmod.discover_environments
+    without_an_interpreter = envmod.Environment(
+        name="r-only-probe",
+        language="r",
+        root=Path(tempfile.gettempdir()) / "openai4s-r-only-probe",
+        python=None,
+        rscript=None,
+        is_conda=True,
+        builtin=False,
+    )
+
+    def _with_an_r_only_env(force: bool = False):
+        return list(real_discover(force=force)) + [without_an_interpreter]
+
+    envmod.discover_environments = _with_an_r_only_env
+    try:
+        for route in _ENVIRONMENT_LISTING_ROUTES:
+            path = concrete_path(route)
+            handler = _probe_handler(
+                recorder, handler_class, "GET", path, route, authenticated_headers
+            )
+            try:
+                handler._api("GET", path)
+            except Exception:  # noqa: BLE001
+                # The parameterless sweep already recorded this route; this pass
+                # only adds the state that one could not reach, so a failure
+                # here withholds nothing the contract did not already have.
+                continue
+    finally:
+        envmod.discover_environments = real_discover
 
 
 def _drive_seeded_downloads(
@@ -1448,6 +1548,7 @@ def drive_all_routes(
                 )
                 continue
     _drive_seeded_downloads(recorder, handler_class, runner, authenticated_headers)
+    _drive_environment_states(recorder, handler_class, authenticated_headers)
 
 
 def load(path: Path | None = None) -> dict[str, Any]:
@@ -1468,6 +1569,68 @@ def save(document: dict[str, Any], path: Path | None = None) -> Path:
         encoding="utf-8",
     )
     return target
+
+
+#: What one xdist worker's share of a split capture is called. The share sits
+#: beside the destination rather than in it, so a half-finished run leaves no
+#: file anything downstream would mistake for a capture.
+PARTIAL_SUFFIX = ".share.json"
+
+
+def partial_path(destination: Path, worker: str) -> Path:
+    """Where one worker of a split run leaves its share."""
+    return Path(destination).with_name(
+        f"{Path(destination).name}.{worker}{PARTIAL_SUFFIX}"
+    )
+
+
+def save_partial(recorder: Recorder, destination: Path, worker: str) -> Path:
+    """Write one worker's un-elided shapes for `assemble` to merge later."""
+    target = partial_path(destination, worker)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "worker": str(worker),
+                "shapes": recorder.shapes_snapshot(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return target
+
+
+def assemble(destination: Path) -> int:
+    """Merge a split run's shares into one capture at `destination`.
+
+    Returns how many shares were merged, and 0 when the run was not split --
+    a single-process run writes `destination` itself and there is nothing here
+    to do.
+
+    Deliberately called *after* pytest has exited rather than from a controller
+    hook: at that point every worker process is gone, so the assembly cannot
+    race a writer, and "did the last worker finish before the controller
+    unconfigured" stops being a question anyone has to answer. A worker that
+    died without writing its share leaves its routes out of the merge, which
+    surfaces as `frozen but no longer observed` -- loudly, and on a run whose
+    exit code was already non-zero.
+    """
+    destination = Path(destination)
+    shares = sorted(
+        destination.parent.glob(f"{destination.name}.*{PARTIAL_SUFFIX}"),
+        key=lambda path: path.name,
+    )
+    if not shares:
+        return 0
+    recorder = Recorder()
+    for share in shares:
+        payload = json.loads(share.read_text("utf-8"))
+        recorder.absorb(payload.get("shapes") or {})
+    save(recorder.document(), destination)
+    return len(shares)
 
 
 def check(observed: dict[str, Any], frozen: dict[str, Any]) -> list[str]:

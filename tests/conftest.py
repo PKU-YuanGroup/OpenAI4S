@@ -211,4 +211,22 @@ def pytest_unconfigure(config):
     recorder, destination = captured
     from openai4s.server import response_capture
 
+    # Split runs. Under `-n`, every worker configures its own recorder and sees
+    # its own share of the suite; if each of them wrote `destination` the last
+    # one out would win and the capture would be a fraction of the routes while
+    # still looking complete. So a worker leaves its share beside the
+    # destination and `scripts/capture_response_schemas.py` merges them once
+    # pytest has exited -- after the workers are gone, which is what makes the
+    # merge unable to race a writer.
+    worker = getattr(config, "workerinput", {}).get("workerid")
+    if worker:
+        response_capture.save_partial(recorder, destination, worker)
+        return
+    # The controller of a split run executes no tests, so its recorder is
+    # empty. Writing it would put an empty capture where the merge is about to
+    # put the real one -- harmless today because `assemble` overwrites it, and
+    # a fabricated "the suite reached no route" the moment anything reads the
+    # file before the merge.
+    if getattr(config.option, "numprocesses", None):
+        return
     response_capture.save(recorder.document(), destination)

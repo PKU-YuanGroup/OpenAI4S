@@ -150,6 +150,34 @@ def test_no_verb_crashes_while_its_siblings_publish_the_route_s_contract(driven)
     )
 
 
+def test_the_environment_listings_observe_an_env_with_no_interpreter(driven):
+    """`python_version` is `str | None`, and the sweep has to see both states.
+
+    None is what an environment with no interpreter reports, which is what an
+    R-only conda env is -- `setup.sh --with-kernel-envs` builds one. Which state
+    got frozen used to be a property of the host: a CI runner has no such env
+    and froze `string`, a developer machine with an R env observed
+    `["null", "string"]`, and the gate called whichever ran second a breaking
+    change. Test ordering hid it further, because `tests/test_environments.py`
+    leaves a populated discovery cache behind and the sweep saw the null only in
+    a process that file had not already touched -- so parallelising the suite,
+    where file order stops being alphabetical, is what surfaced it.
+
+    Asserting the union rather than "not string" on purpose: a schema that lost
+    the populated state would be just as wrong as one that lost the null, and
+    only one of those two failures is the one anybody expects.
+    """
+    for route in ("/environments", "/frames/([^/]+)/environments"):
+        shape = driven.shapes[f"GET {route} [ok]"]
+        entry = shape["properties"]["environments"]["items"]["properties"]
+        assert entry["python_version"]["type"] == ["null", "string"], (
+            f"{route} froze python_version as "
+            f"{entry['python_version']['type']!r}; the sweep reached only one "
+            "of its two states, so the frozen shape describes this host rather "
+            "than the API"
+        )
+
+
 def test_a_download_route_is_recorded_as_the_download_it_is(driven):
     """The instance that proved the rule, pinned so it cannot regress."""
     for route in (

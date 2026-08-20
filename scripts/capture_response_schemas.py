@@ -33,7 +33,26 @@ def _run_suite(destination: Path) -> int:
     # and every route the run never reached would then be reported as "frozen
     # but no longer observed" -- drift that is really just an aborted run.
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--no-header", "tests"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--no-header",
+            # The same width and scheduler CI runs the suite under. This used
+            # to be the one gate that could not take them: the capture is
+            # written once per session, so four workers each wrote their own
+            # quarter of the routes over the top of each other. They now leave
+            # shares that `response_capture.assemble` merges below, which is
+            # the same `merge` call `Recorder.observe` makes -- so a route
+            # observed in two workers reaches the schema it would have reached
+            # in one process.
+            "-n",
+            "auto",
+            "--dist",
+            "loadfile",
+            "tests",
+        ],
         cwd=ROOT,
         env=env,
     )
@@ -52,6 +71,10 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         captured = Path(tmp) / "captured.json"
         code = _run_suite(captured)
+        # Merge the workers' shares, if the run was split. Here rather than in
+        # a pytest hook because every one of those processes has now exited:
+        # there is no writer left to race.
+        response_capture.assemble(captured)
         if code != 0 and args.check:
             # A failing suite exercises fewer routes, so comparing what it did
             # capture against the frozen file would blame this change for gaps

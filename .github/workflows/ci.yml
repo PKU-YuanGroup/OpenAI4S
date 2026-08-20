@@ -351,36 +351,22 @@ jobs:
   # schema gate ran and passed" are different facts, and as a step behind pytest
   # they looked identical on the summary page.
   #
-  # Not on pull requests, and this is the other half of making the suite
-  # parallel. 1098 of this job's 1115 seconds are a *second, serial* run of the
-  # whole suite, and it cannot take `-n auto` with the rest: the capture is
-  # written once per session by `pytest_sessionfinish` in tests/conftest.py, so
-  # four workers would each write their own quarter of the routes to the same
-  # path and the last one out would win -- a document that looks captured and
-  # is three-quarters missing, which is exactly the kind of wrong-rather-than-
-  # absent provenance the file's own note warns about. Merging worker documents
-  # means performing `Recorder.observe`'s schema union across processes; that is
-  # a real change to how the artifact is produced and does not belong in a
-  # change about CI latency.
+  # This job is a *second* run of the whole suite, so it was the one gate that
+  # could not simply be handed `-n auto` with the rest: the capture is written
+  # once per session by `pytest_unconfigure`, and four workers each writing the
+  # same path would have left whichever finished last -- a quarter of the
+  # routes in a document that still looked complete, which is precisely the
+  # wrong-rather-than-absent provenance the artifact's own note warns about.
   #
-  # So with the offline suite down to ~7 minutes this job *became* the critical
-  # path: every PR would sit for 18 minutes waiting on the one gate that is
-  # neither a required check nor one of the `CHECK_SUITE_GATES` the release
-  # pipeline reads from the release SHA.
-  #
-  # Path-filtering it instead does not work. The suite is the corpus, so a new
-  # test that reaches a new route legitimately changes the document -- and
-  # nearly every PR touches tests/.
-  #
-  # What is given up: drift is reported by the push-to-main run rather than by
-  # the PR that caused it. What is not given up: it still runs on every push to
-  # main and next, nightly, on dispatch, and -- decisively -- as the
-  # `response-schemas` entry in `scripts/release_gates.py:LOCAL_GATES`, which
-  # the release pipeline's quality job must pass before anything is staged. A
-  # release cannot ship a drifted docs/response-schemas.json.
+  # It is split now anyway. Each worker leaves its un-elided shapes beside the
+  # destination and `scripts/capture_response_schemas.py` merges them once
+  # pytest has exited -- after every writer process is gone -- through the same
+  # `merge` call `Recorder.observe` makes, so a route two workers both saw
+  # reaches the schema one process would have reached. That equality is the
+  # whole claim and it is asserted in tests/test_response_capture_assembly.py,
+  # not assumed.
   response-schemas:
     name: Frozen response shapes
-    if: github.event_name != 'pull_request'
     timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
