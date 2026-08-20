@@ -237,7 +237,8 @@ def _convert_tree(
         if not path.is_file():
             continue
         try:
-            original = path.read_text("utf-8", newline="")
+            with path.open("r", encoding="utf-8", newline="") as stream:
+                original = stream.read()
         except UnicodeDecodeError:
             continue
         rewritten = _compatibility_rewrites(original)
@@ -246,7 +247,8 @@ def _convert_tree(
             # and the default write translates LF back to os.linesep, so a
             # four-token safety rewrite would silently re-line-end the whole
             # file, differently on each maintainer's platform.
-            path.write_text(rewritten, encoding="utf-8", newline="")
+            with path.open("w", encoding="utf-8", newline="") as stream:
+                stream.write(rewritten)
 
     # Sorted and rendered as POSIX. `sorted()` over Path objects compares
     # `_str_normcase` (lower-cased, backslash-separated on Windows), so the
