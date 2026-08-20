@@ -95,7 +95,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4a518efee45b68121acaba2d30cfa4b98503b67d06f148c4383669e399be7de4"
+      "evidence_digest": "061fdb6257990b3492953f53d859dc6baa2538a21c87afc5de7fb452637cfb2b"
     },
     {
       "source": "R1",
@@ -163,7 +163,7 @@
       "tests": "tests/test_host_network_capability.py,tests/test_egress_surface.py,tests/test_egress.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "c5876da0f41820f62bf7053a95f7e9cc6280dd5b619da4001c06717b0afb8e79"
+      "evidence_digest": "882446639e3b005e8ebf18b2d2cde5a62bdd4c3b5fe4f6f6ae0897b692669f3e"
     },
     {
       "source": "R2",
@@ -329,7 +329,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4a518efee45b68121acaba2d30cfa4b98503b67d06f148c4383669e399be7de4"
+      "evidence_digest": "061fdb6257990b3492953f53d859dc6baa2538a21c87afc5de7fb452637cfb2b"
     },
     {
       "source": "R3",
