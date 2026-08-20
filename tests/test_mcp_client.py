@@ -10,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -43,12 +44,29 @@ class _HTTPHeaders(dict):
         )
 
 
+class _BoundedTransport:
+    """The read-bound carrier every socket-backed response has beneath it.
+
+    The reader refuses to read a body it cannot bound, so a double that omits
+    this is not a cheaper fake of an HTTP response -- it is a fake of a state
+    the transport does not produce.
+    """
+
+    def __init__(self):
+        self.timeouts = []
+
+    def settimeout(self, value):
+        self.timeouts.append(value)
+
+
 class _HTTPResponse:
     def __init__(self, status, body=b"", headers=None):
         self.status = status
         self._body = body
         self._offset = 0
         self.headers = _HTTPHeaders(headers or {})
+        self.socket = _BoundedTransport()
+        self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=self.socket))
 
     def __enter__(self):
         return self
@@ -323,10 +341,15 @@ def test_streamable_http_body_reader_stops_when_the_transport_retires():
         def isclosed(self):
             return self.fp is None
 
-        def read1(self, size):
+        def read1(self, size=-1):
+            # The stdlib signature, so a reader that drops the size argument
+            # or passes the default -1 is modelled instead of silently
+            # returning b"" from a backwards slice.
             self.read1_calls += 1
             if self.fp is None:
                 return b""
+            if size is None or size < 0:
+                size = self.length
             chunk = self._body[self._offset : self._offset + min(size, 8)]
             self._offset += len(chunk)
             self.length -= len(chunk)
@@ -356,7 +379,9 @@ def test_streamable_http_body_reader_stops_when_the_transport_retires():
 def test_streamable_http_slow_drip_cannot_refresh_the_absolute_timeout(monkeypatch):
     """Each byte may arrive in time, but the whole body still has one budget."""
 
-    from openai4s import mcp_http
+    # The clock the bounded reader consults now that the loop is shared: the
+    # budget is a property of the reader, not of either transport's module.
+    from openai4s import http_deadline
 
     class _Clock:
         now = 100.0
@@ -395,7 +420,7 @@ def test_streamable_http_slow_drip_cannot_refresh_the_absolute_timeout(monkeypat
         def read(self, _size=-1):
             raise AssertionError("slow-drip protection requires read1")
 
-    monkeypatch.setattr(mcp_http.time, "monotonic", _Clock.monotonic)
+    monkeypatch.setattr(http_deadline.time, "monotonic", _Clock.monotonic)
     connection = object.__new__(MCPHTTPConnection)
     connection._timeout = 1.0
     response = _SlowDripResponse()
