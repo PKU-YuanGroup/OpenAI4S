@@ -6009,7 +6009,10 @@
                   "type": "integer"
                 },
                 "python_version": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "root": {
                   "type": "string"
@@ -8656,7 +8659,10 @@
                   "type": "integer"
                 },
                 "python_version": {
-                  "type": "string"
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 },
                 "root": {
                   "type": "string"

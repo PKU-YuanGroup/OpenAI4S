@@ -253,7 +253,26 @@ jobs:
         run: uv run pytest --collect-only -q
       - name: Run the offline suite (no secrets, no network, no hardware)
         # addopts already passes -q; a second -q would suppress the summary line.
-        run: uv run pytest
+        #
+        # `-n auto` because this one command *was* CI: 1094 of this job's 1122
+        # seconds were spent here, and the other sixteen jobs put together came
+        # to under eight minutes. Nothing else on the critical path was worth
+        # optimising while the suite ran on one core.
+        #
+        # `--dist loadfile`, not the default `load`. The default hands out
+        # individual tests, which asserts that any two tests in a module may run
+        # in different processes -- a property nothing here has ever had to
+        # hold, because nothing here has ever run in parallel. loadfile asserts
+        # only that two *files* are independent, which is the boundary the suite
+        # was actually written to: `tests/conftest.py` redirects `~/.openai4s`
+        # per test, and every test server binds ("127.0.0.1", 0) rather than a
+        # fixed port, so files do not contend. Within a file, ordering and any
+        # module-level state stay exactly as they are today.
+        #
+        # Scaling is linear at this width (1572 worker-seconds over 4 workers in
+        # 393s), so the per-file granularity is costing nothing: no single file
+        # is long enough to be the tail.
+        run: uv run pytest -n auto --maxprocesses=4 --dist loadfile
       # After the suite, not before it: the pytest gate must never sit behind
       # a command that can fail it (tests/test_ci_gate_independence.py). The
       # importorskip guards make a missing science stack a *silent* skip, and
@@ -331,6 +350,21 @@ jobs:
   # guessing. Its own job anyway: "the schema gate did not get to run" and "the
   # schema gate ran and passed" are different facts, and as a step behind pytest
   # they looked identical on the summary page.
+  #
+  # This job is a *second* run of the whole suite. Each worker publishes its
+  # share during `pytest_sessionfinish`, before xdist can report that worker as
+  # successful, and records xdist's run id plus expected worker count. Four
+  # workers writing the same destination directly would leave whichever
+  # finished last -- a fraction of the evidence in a document that still
+  # looked complete, which is precisely the wrong-rather-than-absent
+  # provenance the artifact's own note warns about.
+  #
+  # It is split now anyway. Each worker leaves its un-elided shapes beside the
+  # destination and `scripts/capture_response_schemas.py` merges them once
+  # pytest has exited -- after every writer process is gone -- through the same
+  # `merge` call `Recorder.observe` makes. Assembly rejects missing or mixed-run
+  # shares before writing the capture. Equality and completeness are asserted
+  # in tests/test_response_capture_assembly.py, not assumed.
   response-schemas:
     name: Frozen response shapes
     timeout-minutes: 45
