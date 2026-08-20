@@ -140,6 +140,22 @@ none silently resubmits the same finding or action. Guardian timeout fails the
 proposed action closed. Either Guardian denial threshold opens its durable
 denial circuit. Cancellation remains separate and Auto Mode never resumes it.
 
+## Finding identity
+
+A finding has two keys and they answer different questions. Its **fingerprint**
+is content only -- severity, category, claim and evidence refs -- because Stage
+5 compares fingerprints across repair rounds to notice that a finding did not
+go away. Its **identity** (`finding_id`) is that content *within one review
+run*, so two sessions that reach the same conclusion record two findings rather
+than colliding on one row. `review_findings.finding_id` is globally unique, and
+must stay so: session import resolves a finding's owner by id alone.
+
+Deriving the identity from content alone made the two keys the same key. The
+second session to reach a given conclusion failed its `complete_review` insert
+on the primary key, its Auto Run stayed in `reviewing`, and the branch refused
+every later turn -- and a recurring wrong claim is precisely the finding most
+likely to recur.
+
 ## State vocabulary and sole entry conditions
 
 These names belong to one Auto Run. A run is identified by

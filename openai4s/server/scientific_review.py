@@ -34,6 +34,34 @@ from openai4s.server.review_scratch import (
 )
 from openai4s.storage.auto_mode import AutoModeConflictError
 
+
+def scoped_finding_id(review_run_id: str, fingerprint: str) -> str:
+    """The durable identity of one finding: its content *within one review*.
+
+    `fingerprint` is content-only on purpose -- Stage 5 compares fingerprints
+    across repair rounds to notice that a finding did not go away -- so it
+    cannot also be the identity. `review_findings.finding_id` is a global
+    PRIMARY KEY, so deriving the id from content alone meant two sessions that
+    reached the same conclusion collided: the second one's insert raised
+    `UNIQUE constraint failed: review_findings.finding_id`, its review died,
+    and the turn was reported `review_unavailable` instead of its real verdict.
+    A recurring wrong claim is exactly the finding most likely to recur, so the
+    collision landed on the case that mattered most.
+
+    Global uniqueness still has to hold, because the session-import owner check
+    looks a finding up by id alone (`SELECT run_id FROM review_findings WHERE
+    finding_id=?`). Hashing the review scope together with the fingerprint
+    keeps that: the table already declares `UNIQUE(review_run_id, fingerprint)`,
+    so at most one row can exist per pair, and this function is injective on
+    those pairs.
+    """
+
+    digest = hashlib.sha256(
+        f"{review_run_id}|{fingerprint}".encode("utf-8")
+    ).hexdigest()
+    return f"fnd-{digest[:16]}"
+
+
 EventSink = Callable[[dict], None]
 ChatCall = Callable[..., dict[str, Any]]
 
@@ -1388,9 +1416,8 @@ class ScientificReviewService:
         for item in result.get("findings") or []:
             if not isinstance(item, Mapping):
                 continue
-            finding_id = item.get("finding_id")
             fingerprint = item.get("fingerprint")
-            if not finding_id or not fingerprint:
+            if not fingerprint:
                 rebuilt = self._finding(
                     severity=str(item.get("severity") or "medium"),
                     category=str(item.get("category") or "other"),
@@ -1400,8 +1427,15 @@ class ScientificReviewService:
                     evidence_refs=list(item.get("evidence_refs") or []),
                     reproduction=str(item.get("reproduction") or ""),
                 )
-                finding_id = rebuilt["finding_id"]
                 fingerprint = rebuilt["fingerprint"]
+            # Assigned here, where the review scope first exists, and written
+            # back onto the caller's finding so the id it goes on to quote --
+            # Stage 5 passes these to `start_auto_mode_repair`, which checks
+            # they exist -- is the id that was actually stored.
+            finding_id = scoped_finding_id(review_run_id, str(fingerprint))
+            if isinstance(item, dict):
+                item["finding_id"] = finding_id
+                item["fingerprint"] = fingerprint
             findings.append(
                 {
                     "finding_id": finding_id,
