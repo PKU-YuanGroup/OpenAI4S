@@ -469,6 +469,21 @@ _TEAM_SCOPE_SHARE = re.compile(r"/shares/([^/]+)")
 #: spellings identical.
 _REPLAY_ROUTE = re.compile(r"/sessions/([^/]+)/replay")
 
+#: The auth paths a guest reaches. Sign-in and sign-out must work or a guest
+#: cannot leave, and `/auth/me` is what the page renders their identity from.
+#: `/auth/me/llm-key` is deliberately absent: it writes the credential broker,
+#: which is not a replay-only surface.
+#: API-relative, like every other value compared against `sub` here.
+_GUEST_AUTH_PATHS = frozenset(
+    {
+        "/auth/login",
+        "/auth/logout",
+        "/auth/me",
+        "/auth/status",
+        "/auth/redeem-invite",
+    }
+)
+
 #: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
 #: not a subtraction. The rule used to be "anything that is not `/api/v1/` and
 #: not `/static/`", which its own docstring described as "paths that serve the
@@ -606,6 +621,11 @@ class WSConnection:
     # outbound queue strictly larger than that snapshot plus its begin/end
     # envelope, with a little room for the execution/approval projections that
     # immediately follow subscription.
+    #: How long `may_receive` trusts a previous answer. Short enough that a
+    #: revocation lands promptly, long enough that a chatty turn does not run
+    #: one ownership query per stdout chunk per viewer.
+    _VIS_TTL_S = 5.0
+
     _QUEUE_CAP = (
         _WS_RESUME_BUFFER_CAP + _WS_REPLAY_ENVELOPE_EVENTS + _WS_REPLAY_QUEUE_HEADROOM
     )
@@ -615,6 +635,12 @@ class WSConnection:
         self.wfile = wfile
         self.subs: set[str] = set()
         self.alive = True
+        #: Team mode: "may this connection still receive that session?", set
+        #: by the WS handler which owns identity re-resolution. None (the
+        #: single-user default) means every subscription stays valid, which is
+        #: the behaviour a daemon with no team mode has always had.
+        self.visibility_check: Any = None
+        self._vis_cache: dict[str, tuple[float, bool]] = {}
         self._q: "queue.Queue" = queue.Queue(maxsize=self._QUEUE_CAP)
         self._q_budget_lock = threading.Lock()
         self._queued_bytes = 0
@@ -664,6 +690,55 @@ class WSConnection:
 
     def close(self) -> None:
         self._drop()
+
+    def may_receive(self, root_frame_id: str) -> bool:
+        """Is this subscription still authorized, right now?
+
+        Subscribing was checked once, at `view_session`, and nothing rechecked
+        it afterwards -- so making a session private, removing a member from
+        its project, or disabling the account revoked every *future* request
+        and none of the stream already flowing. The socket kept delivering
+        cell code, stdout and pending approval prompts for as long as the tab
+        stayed open.
+
+        Cached for a few seconds because this runs per event per subscriber
+        and the answer is a database read; revocation therefore takes effect
+        within `_VIS_TTL_S` rather than instantly, which is the same order as
+        the user noticing. A check that raises is a denial: an ownership row
+        we cannot read is not an open door.
+        """
+        if self.visibility_check is None:
+            return True
+        cached = self._vis_cache.get(root_frame_id)
+        if cached is None:
+            # Never asked. Refuse rather than assume: `refresh_visibility`
+            # runs before every fan-out, so the only way to be here is a
+            # connection that appeared between the refresh and the send.
+            return False
+        return cached[1]
+
+    def refresh_visibility(self, root_frame_id: str) -> None:
+        """Re-ask, at most once per `_VIS_TTL_S`. Never under the hub lock.
+
+        The check reads the database, and `broadcast` holds the hub lock over
+        its sequencing and enqueue — so doing the read there would take the
+        store lock while holding the hub lock, inverting the order every
+        producer that broadcasts *from* a store operation already uses. It is
+        a cheap dict lookup on the hot path and a query only when the cached
+        answer has aged out.
+        """
+        check = self.visibility_check
+        if check is None:
+            return
+        now = time.monotonic()
+        cached = self._vis_cache.get(root_frame_id)
+        if cached is not None and cached[0] > now:
+            return
+        try:
+            allowed = bool(check(root_frame_id))
+        except Exception:  # noqa: BLE001 — undecidable is refused
+            allowed = False
+        self._vis_cache[root_frame_id] = (now + self._VIS_TTL_S, allowed)
 
     def _drain(self) -> None:
         while True:
@@ -1359,6 +1434,14 @@ class WSHub:
         buf["event_bytes"] = sum(buf["event_sizes"])
 
     def broadcast(self, root_frame_id: str | None, obj: dict) -> None:
+        if root_frame_id:
+            # Before the lock, deliberately: see `WSConnection.refresh_visibility`.
+            with self._lock:
+                subscribers = [
+                    c for c in tuple(self._conns) if c.alive and root_frame_id in c.subs
+                ]
+            for c in subscribers:
+                c.refresh_visibility(root_frame_id)
         if root_frame_id is None:
             # No caller passes None today, and a None fan-out would reach
             # every connection regardless of subscription — in team mode that
@@ -1385,7 +1468,11 @@ class WSHub:
             # put.  Keeping enqueue under the hub lock makes its order atomic
             # with subscribe/replay without coupling producers to socket I/O.
             for c in tuple(self._conns):
-                if c.alive and (root_frame_id is None or root_frame_id in c.subs):
+                if (
+                    c.alive
+                    and (root_frame_id is None or root_frame_id in c.subs)
+                    and (root_frame_id is None or c.may_receive(root_frame_id))
+                ):
                     c.send_json(obj)
 
     def is_running(self, root_frame_id: str) -> bool:
@@ -1477,6 +1564,12 @@ class SessionState:
         self.project_id = project_id
         self.branch_id = branch_id or root_frame_id
         self.workspace = workspace
+        #: The workspace this session has when it runs on this machine. A
+        #: cluster placement repoints `workspace` at the workload's directory
+        #: (see `SessionRunner._sync_placement_workspace`); releasing it must
+        #: put the session back where its local files are, so the value it
+        #: came from is kept rather than recomputed.
+        self.local_workspace = workspace
         #: `(profile_id, revision)` this turn was ACCEPTED under, when it came
         #: through the queue. `_pinned_llm_config` prefers it over the frame's
         #: current pin, because the frame's pin is mutable by design and an item
@@ -2820,25 +2913,36 @@ class SessionRunner:
         usable before anybody has organised anything. A project somebody
         has claimed needs participation.
         """
-        from openai4s.server import team_policy
+        from openai4s.server import team_auth, team_policy
 
         if not getattr(self.cfg, "team_mode", False):
             return True
+        # The loopback CLI is admin-equivalent by decision D2 and has no row in
+        # `users`, so it is recognised by its own constant rather than by
+        # failing to be found. That distinction is the whole fix here: absence
+        # used to be the *service* answer AND the answer for a user id that is
+        # not an account AND the answer for a database that would not answer,
+        # and all three admitted.
+        if user_id == team_auth.SERVICE_IDENTITY.user_id:
+            return True
         try:
             user = self.store.team.get_user(user_id)
-        except Exception:  # noqa: BLE001
-            user = None
+        except Exception:  # noqa: BLE001 — undecidable is refused
+            # `team_policy`'s stated contract, applied to its own input: a
+            # lookup that failed is not a lookup that said "no restrictions".
+            return False
         if user is None:
-            return True  # service/loopback identity, or team mode not seeded
-        if str(user.get("role") or "") == "admin":
-            return True
-
-        class _Id:
-            def __init__(self, uid: str) -> None:
-                self.user_id = uid
-                self.is_admin = False
-
-        return team_policy.may_create_session_in(self.store, _Id(user_id), project_id)
+            return False
+        # A real Principal rather than a hand-rolled stand-in with the fields
+        # this one call happens to read. The stub hard-coded `is_admin = False`
+        # and the caller compensated with a role check above it, so "who is
+        # this" had two spellings that had to agree.
+        principal = execution_principal.Principal(
+            user_id=str(user.get("id") or user_id),
+            username=str(user.get("username") or ""),
+            role=str(user.get("role") or ""),
+        )
+        return team_policy.may_create_session_in(self.store, principal, project_id)
 
     def create_session(
         self,
@@ -2950,6 +3054,15 @@ class SessionRunner:
                 self.orchestration_backends["cluster"] = SlurmBackend(
                     cluster=cluster, log_dir=str(log_dir)
                 )
+                # And it becomes the default. `default_backend` was set to
+                # "local" once at construction and never moved, so on a
+                # daemon with a cluster configured every unqualified member
+                # submission resolved to the one backend `_may_submit_to`
+                # refuses them -- "submit to a cluster backend instead", on
+                # the daemon whose whole point is the cluster. The local
+                # backend stays registered and stays reachable by name for
+                # the operator.
+                self.default_backend = "cluster"
         except ClusterConfigError as exc:
             print(
                 f"[openai4s] cluster.toml ignored: {exc}", file=sys.stderr, flush=True
@@ -2983,6 +3096,9 @@ class SessionRunner:
         on_state_lost = None
         try:
             from openai4s.orchestration.bootstrap import (
+                STATE_FILENAME as bootstrap_state_filename,
+            )
+            from openai4s.orchestration.bootstrap import (
                 BootstrapAuthority,
                 load_or_mint_secret,
             )
@@ -2999,7 +3115,7 @@ class SessionRunner:
                 # the shared filesystem the job was given and stays valid for
                 # its whole TTL, so an in-memory nonce set un-burns every
                 # outstanding credential on restart.
-                state_path=self.cfg.data_dir / "worker-bootstrap-state.json",
+                state_path=self.cfg.data_dir / bootstrap_state_filename,
             )
             worker_gateway = gateway_from_environment(authority)
             if worker_gateway is not None:
@@ -4083,8 +4199,54 @@ class SessionRunner:
         except Exception:  # noqa: BLE001 - prompt/bootstrap remains available
             return self.skills
 
+    def _placement_workspace(self, st: SessionState) -> Path | None:
+        """Where this session's cells actually run, or None for this machine.
+
+        A cluster session's worker is started by the scheduler in the
+        workload's own directory (`AttemptPreparer` derives it from
+        `runtime_dir.parent`), so that -- not `agent-workspaces/<root>` -- is
+        the cwd a relative `open()` in a cell resolves against.
+        """
+        manager = getattr(self, "compute_sessions", None)
+        session_id = getattr(st, "root_frame_id", "") or ""
+        if manager is None or not session_id:
+            return None
+        try:
+            workload_id = self.store.leases.workload_for_session(session_id)
+            if not workload_id:
+                return None
+            return Path(manager.workspace_for(workload_id))
+        except Exception:  # noqa: BLE001 — no binding, no placement
+            return None
+
+    def _sync_placement_workspace(self, st: SessionState) -> None:
+        """Point the session's workspace at the directory its cells run in.
+
+        The remote kernel was built with the workload's directory as its cwd
+        while everything on this side of the socket -- the Host dispatcher's
+        file tools, artifact capture, the R kernel, the reported cwd -- stayed
+        anchored to `agent-workspaces/<root_frame_id>`. So a cluster cell
+        wrote `result.csv` and `capture` diffed a directory nothing had
+        touched: no Artifact row, no version, no lineage, and no error either.
+        The inverse failed too, `host.write_file` landing where the cell could
+        not see it.
+
+        Resolved here because `_ensure_runtime` is the one call every path
+        into a session passes through -- the turn, a Cell, the R kernel, the
+        Notebook -- so the answer cannot be current for one of them and stale
+        for the next. Symmetric on purpose: releasing the placement puts the
+        session back on its local workspace rather than leaving it pointed at
+        a workload that no longer exists.
+        """
+        placed = self._placement_workspace(st)
+        target = placed if placed is not None else st.local_workspace
+        if Path(st.workspace) != Path(target):
+            st.workspace = target
+
     def _ensure_runtime(self, st: SessionState):
         """Build the session control plane without acquiring a language worker."""
+
+        self._sync_placement_workspace(st)
 
         def factory():
             disp = build_dispatcher(
@@ -4127,6 +4289,14 @@ class SessionRunner:
             return disp
 
         dispatcher = st.runtime.ensure(factory)
+        # The dispatcher is built once and survives kernel restarts, so the
+        # workspace the factory captured is only right until a placement
+        # changes. `set_workspace` is what binds host-side file operations to
+        # the kernel's actual cwd, and the CLI path already uses it for the
+        # same reason.
+        rebind = getattr(dispatcher, "set_workspace", None)
+        if callable(rebind):
+            rebind(st.workspace)
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
         self._wire_delegation(st)
@@ -4981,6 +5151,22 @@ class SessionRunner:
         python — this never raises.
         """
         dispatcher = self._ensure_runtime(st)
+        # The same refusal `host.exec_background` makes, for the same reason.
+        # `spawn_r_kernel` starts a local child of the daemon, so on a session
+        # placed on a cluster an ```r cell ran on the head node with none of
+        # the allocated CPUs or GPUs -- silently, because it *worked*, just
+        # somewhere else and on whatever the shared filesystem happened to
+        # show it. Returned rather than raised: this method's contract is a
+        # soft-fail the model reads as an observation and can act on.
+        if self._placement_workspace(st) is not None:
+            return (
+                "R is not available on a cluster session: this session's cells "
+                "run on an allocated node, and an R kernel would start on the "
+                "daemon instead, with none of the allocated resources. Use "
+                "python for this session, submit a batch job with POST "
+                "/orchestration/jobs, or release the cluster resource to run "
+                "this session locally."
+            )
         want = getattr(dispatcher, "active_r_env", None)
         from openai4s.kernel.environments import get_environment
         from openai4s.kernel.r_kernel import spawn_r_kernel
@@ -10230,11 +10416,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # depend on no session state and must answer before any frame
             # guard can object. Deterministic in both modes — the contract
             # capture drives them with team mode off.
-            if team_routes.handle(self, method, sub, _team_auth, store):
-                return
-            # Guest gate (D3): a guest's whole API surface is auth + replay.
-            # Sits after the auth routes (logout must work) and before
-            # everything else, so no later route needs its own guest check.
+            # Guest gate (D3): a guest's whole API surface is sign-in, sign-out,
+            # who-am-I, and replay.
+            #
+            # It used to sit *after* `team_routes.handle`, on the reading that
+            # the auth routes are only login/logout/me. They are not: the same
+            # group carries `PUT`/`DELETE /auth/me/llm-key`, which write the
+            # credential broker -- so a replay-only guest could store secrets
+            # in the daemon. Naming what a guest may reach, and gating before
+            # the dispatch, keeps the claim in the comment below true.
             _identity = getattr(self, "_team_identity", None)
             if (
                 _team_auth is not None
@@ -10242,11 +10432,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 and _identity.kind == "user"
                 and _identity.role == "guest"
                 and not (method == "GET" and _REPLAY_ROUTE.fullmatch(sub))
+                and sub not in _GUEST_AUTH_PATHS
             ):
                 self._json(
                     {"error": "guests are replay-only", "code": "guest_readonly"},
                     403,
                 )
+                return
+            # Team auth routes (login/logout/me, invite redemption, and a
+            # member's own LLM key). They depend on no session state and must
+            # answer before any frame guard can object. Deterministic in both
+            # modes — the contract capture drives them with team mode off.
+            if team_routes.handle(self, method, sub, _team_auth, store):
                 return
             # Read-only session replay (M2-3): the web-share sanitized view,
             # served in place — no shares row, no snapshot, no relay. The
@@ -10569,33 +10766,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # ---- global search (⌘K command palette) ----
             if sub.split("?")[0] == "/search" and method == "GET":
                 query = (q.get("q") or [""])[0]
+                _scope = self._team_visibility_filter()
                 payload = (
-                    store.search(query)
+                    # Scoped in SQL, so `LIMIT` counts rows this caller may
+                    # actually see. Filtering afterwards emptied the page
+                    # whenever the newest matches were colleagues'.
+                    store.search(query, visible_to_user_id=_scope)
                     if query.strip()
                     else {"sessions": [], "artifacts": [], "datapro": []}
                 )
-                if self._team_visibility_filter() is not None:
+                if _scope is not None:
                     # Team mode (INV-13): the command palette must not
                     # enumerate other people's sessions or their artifacts.
                     _user = self._team_identity_dict()
-                    payload["sessions"] = [
-                        s
-                        for s in payload.get("sessions", [])
-                        if store.team.session_visible_to(str(s.get("id")), _user)
-                    ]
-                    payload["artifacts"] = [
-                        a
-                        for a in payload.get("artifacts", [])
-                        if a.get("root_frame_id")
-                        and store.team.session_visible_to(
-                            str(a["root_frame_id"]), _user
-                        )
-                    ]
-                    # The third family. Two of three were filtered and the
-                    # third -- indexed DataPro content, which is exactly the
-                    # query-matched *scientific* text -- rode through
-                    # unchanged. Same predicate, same fail-closed shape: a
-                    # hit with no root to check against is not shown.
+                    # Sessions and artifacts are already scoped by the query.
+                    # The third family -- indexed DataPro content, which is
+                    # exactly the query-matched *scientific* text -- lives in
+                    # its own repository and is still filtered here; same
+                    # fail-closed shape, a hit with no root to check against
+                    # is not shown.
                     payload["datapro"] = [
                         d
                         for d in payload.get("datapro", [])
@@ -11549,10 +11738,37 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"ok": False, "error": "session not found"}, 404)
                     return
                 root = frame.get("root_frame_id") or m.group(1)
+                # The scope arrives in the body and is written straight into
+                # the durable rule table by `permissions.resolve_result`, which
+                # has no identity to ask. Same rule as `POST /permissions`,
+                # asked here rather than duplicated: a member approving a
+                # prompt in their own session with `"scope": "global"` planted
+                # an allow that every other member's agent then honoured --
+                # exactly what the 403 on the other route refuses them.
+                _decision_scope = str(b.get("scope") or "once")
+                # The scope_id `permissions.resolve_result` will derive: the
+                # session for a conversation rule, its project for a project
+                # one. Asked about the same row the write lands on, so a member
+                # keeps the two scopes they can already reach.
+                _decision_scope_id = {
+                    "conversation": root,
+                    "project": str(frame.get("project_id") or "default"),
+                }.get(_decision_scope)
+                if not team_policy.may_write_permission_rule(
+                    store,
+                    getattr(self, "_team_identity", None),
+                    _decision_scope,
+                    _decision_scope_id,
+                ):
+                    raise GatewayError(
+                        403,
+                        f"a {_decision_scope} permission rule is admin only",
+                        "admin_only",
+                    )
                 resolution = broker().resolve_result(
                     b.get("decision_id"),
                     allow=bool(b.get("allow")),
-                    scope=b.get("scope") or "once",
+                    scope=_decision_scope,
                     pattern=b.get("pattern"),
                     message=b.get("message"),
                     store=store,
@@ -11647,21 +11863,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 _identity = getattr(self, "_team_identity", None)
                 if (
                     _team_auth is not None
-                    and _identity is not None
-                    and (not _identity.is_admin)
+                    and not team_policy.may_write_permission_rule(
+                        store, _identity, scope, scope_id
+                    )
                 ):
+                    # The predicate answers *whether*; the mapping below is
+                    # this route's answer about *what to say*, which differs
+                    # by scope on purpose (403 names the rule, 404 does not
+                    # confirm that a project or session exists).
                     if scope == "global":
                         raise GatewayError(
                             403, "global permission rules are admin only", "admin_only"
                         )
-                    if scope == "project" and not team_policy.may_read_project(
-                        store, _identity, str(scope_id or "")
-                    ):
-                        raise GatewayError(404, "project not found")
-                    if scope == "conversation" and not team_policy.may_use_session(
-                        store, _identity, str(scope_id or "")
-                    ):
-                        raise GatewayError(404, "session not found")
+                    raise GatewayError(
+                        404,
+                        (
+                            "project not found"
+                            if scope == "project"
+                            else "session not found"
+                        ),
+                    )
                 rid = store.set_permission_rule(
                     scope=scope,
                     scope_id=scope_id or "",
@@ -11700,26 +11921,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # deny as an absolute veto, so deleting a global deny is how
                 # a standing refusal becomes an allow for everyone.
                 _identity = getattr(self, "_team_identity", None)
-                if (
-                    rule
-                    and _team_auth is not None
-                    and _identity is not None
-                    and (not _identity.is_admin)
-                ):
+                if rule and _team_auth is not None:
                     _scope = str(rule.get("scope") or "")
                     _scope_id = str(rule.get("scope_id") or "")
-                    if _scope == "global":
+                    if not team_policy.may_write_permission_rule(
+                        store, _identity, _scope, _scope_id
+                    ):
+                        if _scope == "global":
+                            raise GatewayError(
+                                403,
+                                "global permission rules are admin only",
+                                "admin_only",
+                            )
                         raise GatewayError(
-                            403, "global permission rules are admin only", "admin_only"
+                            404,
+                            (
+                                "project not found"
+                                if _scope == "project"
+                                else "session not found"
+                            ),
                         )
-                    if _scope == "project" and not team_policy.may_read_project(
-                        store, _identity, _scope_id
-                    ):
-                        raise GatewayError(404, "project not found")
-                    if _scope == "conversation" and not team_policy.may_use_session(
-                        store, _identity, _scope_id
-                    ):
-                        raise GatewayError(404, "session not found")
                 store.delete_permission_rule(m.group(1))
                 self._json({"ok": True})
                 return
@@ -11886,6 +12107,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # record. See `_pinned_image_bytes` for why re-resolving the
                 # artifact at send time is the wrong answer.
                 bound = store.get_artifact(str(art_id)) or {}
+                # The frame is in the path and the artifact is in the *body*,
+                # so the path-matching team guard never saw the artifact --
+                # the same shape `/uploads` was already fixed for. A pin is
+                # not inert: `_pinned_image_bytes` reads the bound version off
+                # disk and inlines it into this session's next prompt, so
+                # pinning a colleague's figure had the model describe it back.
+                if bound and not team_policy.may_use_session(
+                    store,
+                    getattr(self, "_team_identity", None),
+                    str(bound.get("root_frame_id") or ""),
+                ):
+                    # Same sentence as an unknown artifact: which ids exist is
+                    # not this route's information to give out.
+                    self._json({"error": "artifact not found"}, 404)
+                    return
                 anno = store.add_annotation(
                     root_frame_id=fid,
                     artifact_id=str(art_id),
@@ -13814,6 +14050,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except OSError:
                 return
             conn = WSConnection(self.wfile)
+            # The predicate the fan-out re-asks (see `WSConnection.may_receive`).
+            # It is `_ws_session_visible`, which re-resolves the identity from
+            # the persisted handshake headers on every call -- so a revoked
+            # cookie, a demoted membership or a session flipped to private
+            # stops the *existing* stream, not just the next subscribe.
+            conn.visibility_check = lambda rid: _ws_session_visible(str(rid))
             # Team mode (M1-7): the identity is RE-RESOLVED from the persisted
             # handshake headers on every message, not captured once. A member
             # who is disabled or whose password is reset (both delete their

@@ -81,7 +81,15 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
     ref        TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_usage_user_kind_ts ON usage_ledger(user_id, kind, ts);
-CREATE INDEX IF NOT EXISTS ix_usage_project_ts ON usage_ledger(project_id, ts);
+-- `kind` first, exactly like the user index above. Without it `check_quota`'s
+-- `WHERE kind=? AND ts>=? AND project_id=?` could only range-scan on ts and
+-- then visit every row to test kind -- and `enforce_llm_quota` runs that twice
+-- (once per token kind) before *every* provider request, over a ledger with a
+-- 30-day window and no pruning. Dropped by its old name because
+-- `CREATE INDEX IF NOT EXISTS` will not redefine an index that already exists.
+DROP INDEX IF EXISTS ix_usage_project_ts;
+CREATE INDEX IF NOT EXISTS ix_usage_project_kind_ts
+    ON usage_ledger(project_id, kind, ts);
 CREATE TABLE IF NOT EXISTS quotas (
     scope        TEXT NOT NULL CHECK (scope IN ('user','project')),
     scope_id     TEXT NOT NULL,
@@ -279,6 +287,27 @@ class GovernanceRepository:
             ).fetchone()
             self._connection.commit()
         return {"project_id": row[0], "created_by": row[1]}
+
+    def invite_is_live(self, token: str) -> bool:
+        """Is this invite redeemable right now? Consumes nothing.
+
+        `POST /auth/redeem-invite` is unauthenticated, and it answered
+        "username 'alice' already exists" before it looked at the token at
+        all -- so anyone who could reach the port could enumerate every
+        account on the instance for free, and hand the login limiter a
+        confirmed target list. The route needs to know the invite is real
+        before it says anything about who exists, and it still must not burn
+        the token on a username typo. Hence a separate, read-only question.
+        """
+        digest = invite_digest(token or "")
+        now = self._clock_ms()
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM invites WHERE token_hash=? AND used_at IS NULL"
+                " AND expires_at>?",
+                (digest, now),
+            ).fetchone()
+        return row is not None
 
     def reinstate_invite(self, token: str) -> bool:
         """Undo a redemption whose follow-up work failed.

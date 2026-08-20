@@ -19,7 +19,9 @@ from openai4s.execution.dependencies import (
 from openai4s.storage.deletion import SessionDeletionRepository
 
 
-def visible_session_clause(user_id: str, *, table: str = "frames") -> tuple[str, list]:
+def visible_session_clause(
+    user_id: str, *, table: str = "frames", session_expr: str | None = None
+) -> tuple[str, list]:
     """The one team-mode visibility rule, as SQL over a frames-shaped table.
 
     Returns `(clause, params)` for a WHERE conjunct. One function because
@@ -55,7 +57,11 @@ def visible_session_clause(user_id: str, *, table: str = "frames") -> tuple[str,
     `frame_detail` the rows carry cell code and stdout, which a post-read
     filter would have already loaded.
     """
-    session = f"COALESCE({table}.root_frame_id, {table}.frame_id)"
+    # `session_expr` for a table that is not frames-shaped: `artifacts` has a
+    # `root_frame_id` and no `frame_id`, and the ⌘K search needs the same rule
+    # over it. Defaulted rather than required, so every existing caller keeps
+    # the frames spelling.
+    session = session_expr or f"COALESCE({table}.root_frame_id, {table}.frame_id)"
     clause = (
         "(NOT EXISTS (SELECT 1 FROM users gu WHERE gu.id = ? AND gu.role = 'guest')"
         " AND EXISTS (SELECT 1 FROM session_owners so"

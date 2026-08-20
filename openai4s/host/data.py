@@ -426,6 +426,16 @@ class HostDataService:
         parent = store.get_artifact(str(metadata.get("artifact_id") or ""))
         if parent is None or parent.get("project_id") != project_id:
             raise unknown
+        # A project bound is the right one for "may I reach a sibling
+        # session", and it is not the whole rule in team mode: a session in
+        # this project may still be `private`, and a session with no ownership
+        # row is admin-only. Every other reader of an artifact consults
+        # `session_visible_to`; this one did not, so a version id learned from
+        # a since-revoked share -- or from before the owner made the session
+        # private -- still hardlinked their frozen bytes into the caller's
+        # workspace and inlined them into the caller's prompt.
+        if not self._session_visible(store, str(parent.get("root_frame_id") or "")):
+            raise unknown
 
         snapshot = metadata.get("snapshot_path") or ""
         if not snapshot or not Path(str(snapshot)).is_file():
@@ -703,6 +713,28 @@ class HostDataService:
                 visible_to_user_id=viewer,
             ),
         }
+
+    def _session_visible(self, store: Any, root_frame_id: str) -> bool:
+        """May the principal running this execution read that session?
+
+        Fail-closed on an undecidable answer, the same way `team_policy` does:
+        an ownership row we cannot read is not an open door. Single-user and
+        service principals are unrestricted, so this is inert off team mode
+        (INV-1).
+        """
+        principal = execution_principal.resolve()
+        if principal.unrestricted:
+            return True
+        if not root_frame_id:
+            return False
+        try:
+            return bool(
+                store.team.session_visible_to(
+                    root_frame_id, principal.as_visibility_user()
+                )
+            )
+        except Exception:  # noqa: BLE001 — undecidable is refused
+            return False
 
     def _visibility_filter(self) -> str | None:
         """The user id these reads are scoped to, or None for unrestricted.

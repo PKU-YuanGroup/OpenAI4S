@@ -123,7 +123,7 @@ export OPENAI4S_WORKER_ADVERTISE=head01.lab     # 告诉它们去拨哪里
 daemon 默认绑 loopback，这也是推荐做法。从别处访问，两条受支持的路，按优先级：
 
 1. **SSH 隧道。** `ssh -N -L 8760:127.0.0.1:8760 you@lab-host`。什么都不暴露，鉴权用你已有的 SSH 配置，也没有新组件要运维。
-2. **实验室网内带 TLS 的反向代理**，并打开团队模式。代理终结 TLS 后转发到 loopback；`Host` 白名单仍然生效，所以要把代理的主机名加进 `OPENAI4S_ALLOWED_HOSTS`。
+2. **实验室网内带 TLS 的反向代理**，并打开团队模式。代理终结 TLS 后转发到 loopback；`Host` 白名单仍然生效，而这份白名单是由 `OPENAI4S_HOST` 加上 `127.0.0.1`、`localhost`、`::1` 组成的，并没有另一个可以往里加名字的变量。所以要么把 `OPENAI4S_HOST` 设成代理转发过来的主机名（daemon 仍然只绑这一个地址），要么让代理把 `Host` 改写成 `127.0.0.1:8760`。如果代理原样透传客户端的 `Host`，每个请求都会拿到 `403 host not allowed`。
 
 **relay 不是跑实验室服务器的第三条路。** `openai4s relay` 与 `openai4s share` 是另一件事——**单个**会话的只读、已脱敏快照，经由 daemon 主动拨出的隧道发送（见 [`webshare.md`](webshare.md)）。relay 看得到明文，而 share 投影刻意不是一个登录面：它不带 cookie、没有写路由、也没有活的内核。把它指向团队部署，得到的是某一个会话的投影，而不是把工作台开出去。
 

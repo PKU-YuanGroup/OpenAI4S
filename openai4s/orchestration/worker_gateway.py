@@ -27,6 +27,7 @@ and is not optional.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import socket
@@ -114,6 +115,32 @@ def parse_listen(spec: str | None) -> tuple[str, int] | None:
     # A compute node cannot reach the daemon's loopback, so the default bind
     # is every interface. The credential check is what makes that safe.
     return (host or "0.0.0.0", port)
+
+
+def _enable_keepalive(conn: socket.socket) -> None:
+    """Turn on TCP keepalive, as aggressively as this platform allows.
+
+    Best-effort by design: the per-idle/interval/count options are named
+    differently on Linux and macOS and are absent elsewhere, and a socket
+    without them is still better off with plain `SO_KEEPALIVE` than with
+    nothing. Every setting is individually guarded so an unsupported one
+    cannot cost us the ones that did apply.
+    """
+    for level, option, value in (
+        (socket.SOL_SOCKET, getattr(socket, "SO_KEEPALIVE", None), 1),
+        # Linux: idle seconds before the first probe, then interval and count.
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPIDLE", None), 60),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", None), 20),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", None), 6),
+        # macOS spells the idle timer differently.
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPALIVE", None), 60),
+    ):
+        if option is None:
+            continue
+        try:
+            conn.setsockopt(level, option, value)
+        except OSError:  # pragma: no cover - platform dependent
+            pass
 
 
 class WorkerGateway:
@@ -314,6 +341,13 @@ class WorkerGateway:
         # take hours, and a socket timeout there would look like a dead
         # worker every time somebody ran a real computation.
         conn.settimeout(None)
+        # Blocking forever is right for a cell that runs for hours; being
+        # unable to notice a peer that stopped existing is not. Without
+        # keepalive a remote node that dies without closing TCP (a fence, a
+        # power loss, a severed network) leaves the daemon's reader parked in
+        # `recv` with `alive()` still answering True, holding the kernel's
+        # protocol transaction lock for the life of the process.
+        _enable_keepalive(conn)
 
         hook = None
         if self._interrupt_hook_for is not None:
@@ -332,6 +366,13 @@ class WorkerGateway:
         )
         key = (credential.allocation_id, credential.epoch)
         with self._lock:
+            # Reap here as well as in `await_workers`. The leak `_reap_locked`
+            # was written for is a straggler nobody ever awaits -- a fenced-off
+            # epoch, a session released while its job was still queued -- and
+            # the only caller was the wait, so on a daemon where nothing waits
+            # again the fd triple it drops was never dropped. Arrival is the
+            # other moment the dict changes, so it is the other moment to sweep.
+            self._reap_locked()
             self.accepted += 1
             self._arrived.setdefault(key, []).append(registration)
             waiter = self._waiters.get(key)
@@ -494,7 +535,26 @@ class WorkerGateway:
                     # what "3 of 4, waiting for the rest" has to mean. The
                     # reaper below is what stops a set nobody ever awaits
                     # from living forever.
-                    return list(self._arrived.get(key) or ())
+                    #
+                    # But the reaper's rule is "old and unclaimed", and the
+                    # waiter is gone by the time it looks -- so a partial gang
+                    # held across the TTL had rank 0's transport closed
+                    # underneath a session that was still counting it, and the
+                    # last rank's arrival then built a Kernel over a closed
+                    # socket. Restamp what we hand out: for a partial set the
+                    # clock that matters is "how long since anybody asked",
+                    # not "how long since it arrived", and that restores the
+                    # reaper's own premise that a registration still in this
+                    # dict is one nobody has taken. A caller that stops asking
+                    # still ages out on the same TTL.
+                    now = time.monotonic()
+                    claimed = [
+                        dataclasses.replace(registration, arrived_at=now)
+                        for registration in (self._arrived.get(key) or ())
+                    ]
+                    if claimed:
+                        self._arrived[key] = claimed
+                    return list(claimed)
 
 
 def gateway_from_environment(

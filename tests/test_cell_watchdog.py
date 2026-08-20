@@ -255,3 +255,69 @@ def test_bootstrap_failure_detaches_the_restarted_generation():
 
     assert supervisor.current("python") is None
     assert kernel.restart_calls == kernel.shutdown_calls == 1
+
+
+def test_a_worker_that_cannot_be_respawned_is_not_reported_as_reset():
+    """The ladder assumed its last rung always lands.
+
+    A kernel this daemon did not spawn cannot be respawned by it -- a cluster
+    session's worker dialled in from a compute node, so `restart()` refuses --
+    and the refusal was swallowed one line before a message that told the user
+    their kernel had been reset and their variables cleared. Neither was true:
+    the interpreter is untouched on the node and the cell may still be running
+    there, which is exactly when a user needs to be told to go look.
+    """
+    from openai4s.execution.watchdog import KernelNotResetTimeout
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def _refuse_restart():
+        kernel.restart_calls += 1
+        raise RuntimeError("this worker cannot be respawned in place")
+
+    kernel.restart = _refuse_restart
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(KernelNotResetTimeout, match="could not be reset"):
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+        )
+    assert kernel.restart_calls == 1, "the ladder skipped the restart attempt"
+
+
+def test_a_real_reset_still_says_so():
+    """The positive control: the honest branch must not swallow the ordinary
+    case, or the reworded message becomes the only message."""
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(TimeoutError, match="the kernel was reset"):
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+        )

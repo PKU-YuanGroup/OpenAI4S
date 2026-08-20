@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from openai4s.execution.process_group import stop_process_group
+from openai4s.kernel.environment import name_can_carry_a_secret
 from openai4s.orchestration.models import (
     Allocation,
     ExternalHandle,
@@ -68,8 +70,11 @@ class _LocalJob:
     stderr_path: Path | None = None
     exit_code: int | None = None
     cancelled: bool = False
-    reaped: bool = False
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    #: The child's process group, read at *spawn*. `os.getpgid(pid)` fails once
+    #: the leader has been reaped -- which `observe()` does on every tick --
+    #: and that is exactly when the surviving group most needs signalling.
+    pgid: int | None = None
 
 
 class LocalBackend:
@@ -167,8 +172,13 @@ class LocalBackend:
                         except OSError:
                             pass
 
+            try:
+                job_pgid: int | None = os.getpgid(process.pid)
+            except OSError:  # pragma: no cover - the child died instantly
+                job_pgid = None
             self._jobs[allocation.id] = _LocalJob(
                 allocation_id=allocation.id,
+                pgid=job_pgid,
                 token=token,
                 process=process,
                 started_at=self._clock(),
@@ -191,7 +201,21 @@ class LocalBackend:
             for key in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
             if key in os.environ
         }
-        base.update(spec.environment)
+        # The spec's environment is caller-supplied -- `POST /orchestration/jobs`
+        # passes `body["environment"]` straight through, and `WorkloadSpec`
+        # validates only `command`. Taking it verbatim let a submission set
+        # `LD_PRELOAD` or `PYTHONSTARTUP` on a child of the daemon, and put a
+        # credential-shaped value into `/proc/<pid>/environ` where every other
+        # process of the same uid can read it. The scheduler sibling has
+        # refused exactly this since it was written; two backends disagreeing
+        # about the same field is the drift, not the rule.
+        for key, value in spec.environment.items():
+            if name_can_carry_a_secret(str(key)):
+                raise ValueError(
+                    f"refusing to put {key!r} in a job environment "
+                    f"(INV-9: pass a path to a 0600 file instead)"
+                )
+            base[str(key)] = str(value)
         return base
 
     # --- observation ------------------------------------------------------
@@ -220,7 +244,6 @@ class LocalBackend:
                     diagnostics=dict(job.diagnostics),
                 )
             job.exit_code = code
-            job.reaped = True
             diagnostics = dict(job.diagnostics, exit_code=code)
             if job.cancelled:
                 return Observation(
@@ -257,14 +280,15 @@ class LocalBackend:
             job.cancelled = True
             if job.process.poll() is not None:
                 return
-            try:
-                # The whole group: the command may have spawned the real work.
-                os.killpg(os.getpgid(job.process.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                try:
-                    job.process.terminate()
-                except OSError:
-                    return
+            # `stop_process_group`, not a bare `killpg(SIGTERM)`: it escalates
+            # to SIGKILL and then *confirms* the group is gone. A TERM that the
+            # work ignores used to return here as success, so the cancel
+            # barrier concluded "released" for a job still holding its CPUs --
+            # the one outcome the barrier exists to prevent. The shared helper
+            # is also where the escalation ladder is tuned, so this path gets
+            # future fixes instead of missing them.
+            stopped, detail = stop_process_group(job.process, job.pgid)
+            job.diagnostics["cancel"] = {"stopped": stopped, "detail": detail}
 
     def find_by_token(self, token: SubmissionToken) -> ExternalHandle | None:
         with self._lock:
@@ -296,10 +320,9 @@ class LocalBackend:
             jobs = list(self._jobs.values())
         for job in jobs:
             if job.process.poll() is None:
-                try:
-                    os.killpg(os.getpgid(job.process.pid), signal.SIGTERM)
-                except OSError:
-                    pass
+                # Same stopper as `cancel`: shutdown is the other place a
+                # group that ignores TERM turns into orphaned compute.
+                stop_process_group(job.process, job.pgid)
 
     # --- helpers ----------------------------------------------------------
 

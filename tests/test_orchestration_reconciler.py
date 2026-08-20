@@ -80,6 +80,19 @@ class _Store:
     def save_workload(self, workload: Workload) -> None:
         self.workloads[workload.id] = workload
 
+    def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
+        """The `WorkloadStore` Protocol's atomic retire-and-bump.
+
+        The double was missing it, which is why `Reconciler.recover` could
+        keep writing the two halves separately -- the fake answered whatever
+        the method under test happened to call, so the non-atomic version
+        looked fine here. Counted as one save of each, because that is what
+        the real repository does in one transaction.
+        """
+        self.saved_allocations += 1
+        self.allocations[allocation.id] = allocation
+        self.workloads[workload.id] = workload
+
 
 class _FakeBackend:
     """A backend whose every answer a test can dictate."""
@@ -364,18 +377,45 @@ def test_cancelling_a_workload_with_no_allocation_is_immediate():
 
 
 def test_recovery_is_a_new_epoch_not_a_rewrite():
-    """INV-6/INV-7: history stands, the epoch advances."""
+    """INV-6/INV-7: history stands, the epoch advances.
+
+    Driven through `tick()`, because there used to be two recoveries and this
+    test drove the one nothing called. The public `recover()` wrote the dead
+    allocation and the epoch bump as two commits -- the split the comment in
+    `_recover_session` exists to forbid, since a crash between them strands
+    the workload on an epoch whose allocation already exists -- so the method
+    under test could not fail in the way production could. There is one
+    recovery now, and this is it.
+    """
     store, backend = _Store(), _FakeBackend()
-    workload = store.add(_workload())
+    # A SESSION: `_recover_session` refuses a BATCH by design, so a batch
+    # workload would have exercised nothing.
+    workload = store.add(
+        Workload(
+            id=Workload.new_id(),
+            spec=WorkloadSpec(
+                kind=WorkloadKind.SESSION,
+                profile=ResourceProfile(name="cpu-interactive"),
+            ),
+            owner_user_id="user_1",
+        )
+    )
     rec = _reconciler(store, backend)
     rec.tick()
     first = store.active_allocation(workload.id)
     assert first.epoch == 0
 
-    rec.recover(workload, reason=Reason.NODE_FAILED)
+    # The node it was placed on goes away.
+    backend.observations.append(
+        Observation(phase=Phase.LOST, reason=Reason.NODE_FAILED)
+    )
+    rec.tick()
     assert store.allocations[first.id].phase is Phase.LOST
     assert store.allocations[first.id].reason is Reason.NODE_FAILED
-    assert workload.execution_epoch == 1
+    assert store.workloads[workload.id].execution_epoch == 1
+    assert not store.workloads[
+        workload.id
+    ].phase.is_terminal, "a recovered session is emphatically not terminal"
 
     rec.tick()
     second = store.active_allocation(workload.id)

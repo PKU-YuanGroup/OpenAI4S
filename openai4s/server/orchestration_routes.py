@@ -28,7 +28,7 @@ from openai4s.orchestration.models import (
     WorkloadSpec,
 )
 
-from . import contract
+from . import contract, team_policy
 
 _JOBS = contract.RouteSpec(
     "orchestration.jobs", "GET", r"/orchestration/jobs", mutates=False
@@ -128,7 +128,7 @@ def _job_json(workload: Any, allocation: Any = None) -> dict:
         "execution_epoch": workload.execution_epoch,
         "owner_user_id": workload.owner_user_id,
         "project_id": workload.project_id,
-        "backend": getattr(workload, "backend", "local"),
+        "backend": workload.backend or "local",
         "created_at": getattr(workload, "created_at", None),
         "updated_at": getattr(workload, "updated_at", None),
     }
@@ -213,7 +213,7 @@ def handle(
         if target is not None:
             tail["allocation_id"] = target.id
             backends = getattr(runner, "orchestration_backends", {}) or {}
-            backend = backends.get(getattr(workload, "backend", "local"))
+            backend = backends.get(workload.backend or "local")
             log_paths = getattr(backend, "log_paths", None)
             if callable(log_paths):
                 out_path, err_path = log_paths(target.id)
@@ -343,10 +343,21 @@ def handle(
             )
             return True
 
+        # The project is caller-supplied and lands in the workload row, the
+        # audit trail and the project-scoped usage reporting. The sibling
+        # write -- creating a session -- checks participation for exactly this
+        # reason; this one did not, so a member could file a job into another
+        # team's project and write into their audit log.
+        submit_project = body.get("project_id") or None
+        if submit_project and not team_policy.may_read_project(
+            store, _identity(self), str(submit_project)
+        ):
+            self._json({"error": "project not found", "code": "not_found"}, 404)
+            return True
         workload = store.workloads.create_workload(
             spec=spec,
             owner_user_id=_owner_id(self),
-            project_id=body.get("project_id") or None,
+            project_id=submit_project,
             backend=backend,
         )
         try:

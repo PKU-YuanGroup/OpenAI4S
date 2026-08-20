@@ -169,6 +169,7 @@ class WorkloadRepository:
             spec=spec,
             owner_user_id=owner_user_id,
             project_id=project_id,
+            backend=backend,
         )
         now = self._clock_ms()
         with self._lock:
@@ -194,7 +195,6 @@ class WorkloadRepository:
                 ),
             )
             self._connection.commit()
-        setattr(workload, "backend", backend)
         return workload
 
     def _row_to_workload(self, row: Any) -> Workload:
@@ -207,9 +207,8 @@ class WorkloadRepository:
             phase=Phase(row["phase"]),
             execution_epoch=int(row["execution_epoch"] or 0),
             reason=Reason(row["reason"]) if row["reason"] else None,
+            backend=row["backend"] or "",
         )
-        # Which backend runs it is persistence's business, not the model's.
-        setattr(workload, "backend", row["backend"])
         setattr(workload, "created_at", row["created_at"])
         setattr(workload, "updated_at", row["updated_at"])
         return workload

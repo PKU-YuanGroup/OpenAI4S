@@ -45,6 +45,12 @@ _ROLES = ("admin", "member", "guest")
 #: not re-authenticating daily, short enough that a leaked cookie dies.
 SESSION_TTL_S = 14 * 24 * 3600
 
+#: How stale `auth_sessions.last_seen_at` may get before a read refreshes it.
+#: It answers "when was this session last used", which nothing reads at finer
+#: resolution than minutes -- and writing it per request made every read a
+#: durable write. See `resolve_auth_session`.
+_LAST_SEEN_RESOLUTION_MS = 60_000
+
 TEAM_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id            TEXT PRIMARY KEY,
@@ -191,6 +197,31 @@ class TeamRepository:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         now = self._clock_ms()
         with self._lock:
+            # Case-insensitively unique, not just `UNIQUE` on the column.
+            #
+            # SQLite's UNIQUE is case-sensitive, so `Alice` and `alice` were
+            # two accounts -- and the file area names each member's personal
+            # directory `<root>/users/<username>/`, which on a
+            # case-insensitive filesystem (APFS by default, most SMB/NFS
+            # exports, Windows) is ONE directory. `personal_area_owner` then
+            # compares the segment the client spelled against the reader's
+            # name with `!=`, so `alice` reading `<root>/users/alice/x.csv`
+            # passed the guard and was served `Alice`'s file -- and could
+            # overwrite it. The two accounts also read as the same person to
+            # every human looking at an audit row.
+            #
+            # Refused at creation rather than papered over at comparison:
+            # casefolding the *guard* would make the collision permitted
+            # rather than impossible.
+            clash = self._connection.execute(
+                "SELECT username FROM users WHERE username=? COLLATE NOCASE",
+                (username,),
+            ).fetchone()
+            if clash is not None:
+                raise ValueError(
+                    f"username {username!r} already exists "
+                    f"(as {str(clash[0])!r}; usernames differ by more than case)"
+                )
             try:
                 self._connection.execute(
                     "INSERT INTO users(id, username, display_name, role,"
@@ -327,25 +358,35 @@ class TeamRepository:
         now = self._clock_ms()
         with self._lock:
             row = self._connection.execute(
-                "SELECT s.user_id, s.expires_at FROM auth_sessions s"
+                "SELECT s.user_id, s.expires_at, s.last_seen_at FROM auth_sessions s"
                 " JOIN users u ON u.id = s.user_id"
                 " WHERE s.token_hash=? AND u.disabled=0",
                 (digest,),
             ).fetchone()
             if row is None:
                 return None
-            user_id, expires_at = row
+            user_id, expires_at, last_seen = row
             if int(expires_at) <= now:
                 self._connection.execute(
                     "DELETE FROM auth_sessions WHERE token_hash=?", (digest,)
                 )
                 self._connection.commit()
                 return None
-            self._connection.execute(
-                "UPDATE auth_sessions SET last_seen_at=? WHERE token_hash=?",
-                (now, digest),
-            )
-            self._connection.commit()
+            # Coarsened deliberately. This runs on *every* request in team
+            # mode -- `_team_admit` resolves the identity before it even
+            # consults the exempt-path list, so each static asset paid for it
+            # too -- and it was an UPDATE plus a durable `commit()` on the
+            # daemon's single shared connection, behind the same lock a turn
+            # needs to append frames. A page load is a dozen requests and an
+            # idle dashboard polls every four seconds, so a handful of users
+            # produced a steady stream of fsync-bearing write transactions to
+            # maintain a field whose value is measured in minutes.
+            if int(last_seen or 0) < now - _LAST_SEEN_RESOLUTION_MS:
+                self._connection.execute(
+                    "UPDATE auth_sessions SET last_seen_at=? WHERE token_hash=?",
+                    (now, digest),
+                )
+                self._connection.commit()
         return self.get_user(str(user_id))
 
     def revoke_auth_session(self, token: str | None) -> bool:

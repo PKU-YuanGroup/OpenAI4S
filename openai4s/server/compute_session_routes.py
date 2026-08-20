@@ -31,7 +31,7 @@ from openai4s.orchestration.models import (
     UnsupportedRecoveryStrategy,
 )
 
-from . import contract
+from . import contract, team_policy
 
 _STATUS = contract.RouteSpec(
     "session.compute", "GET", r"/sessions/([^/]+)/compute", mutates=False
@@ -64,16 +64,17 @@ def _identity(self):
 def _may_use(self, session_id: str, store: Any) -> bool:
     """The same rule the rest of the session surface uses, called rather
     than reimplemented — a second copy of a visibility rule is a second
-    place for it to be wrong."""
-    identity = _identity(self)
-    if identity is None:  # team mode off: single user, everything is theirs
-        return True
-    try:
-        return bool(
-            store.team.session_visible_to(session_id, self._team_identity_dict())
-        )
-    except Exception:  # noqa: BLE001 — undecidable visibility fails closed
-        return False
+    place for it to be wrong.
+
+    That is what the docstring claimed while the body called
+    `session_visible_to` directly, through a *different* identity adapter
+    (`_team_identity_dict`, which drops `username`) than the one
+    `team_policy` uses. Two copies of one rule, one of them already
+    drifted. `may_use_session` is the canonical predicate — four gateway
+    call sites reach it — and it already fails closed on an undecidable
+    answer, so this is now the same code and not merely the same intent.
+    """
+    return team_policy.may_use_session(store, _identity(self), session_id)
 
 
 def _status_json(manager: Any, store: Any, session_id: str) -> dict:

@@ -232,8 +232,13 @@ supported ways to reach it from elsewhere, in order of preference:
    new component to operate.
 2. **Reverse proxy with TLS** on the lab network, with team mode on. The
    proxy terminates TLS and forwards to loopback; the `Host` allowlist
-   stays on, so you must include the proxy's hostname in
-   `OPENAI4S_ALLOWED_HOSTS`.
+   stays on, and it is built from `OPENAI4S_HOST` plus `127.0.0.1`,
+   `localhost` and `::1` — there is no separate list to add names to. So
+   either set `OPENAI4S_HOST` to the hostname the proxy forwards (the
+   daemon still binds only that address) or configure the proxy to rewrite
+   `Host` to `127.0.0.1:8760`. A proxy that passes the client's `Host`
+   through unchanged to a loopback daemon gets `403 host not allowed` on
+   every request.
 
 **The relay is not a third way to run a lab server.** `openai4s relay` and
 `openai4s share` exist for a different purpose — a read-only, redacted

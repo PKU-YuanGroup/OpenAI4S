@@ -42,7 +42,15 @@ def _project_id(daemon) -> str:
     return str(daemon.store.list_projects()[0]["project_id"])
 
 
-def _create_session(daemon, cookie: str) -> str:
+def _create_session(daemon, cookie: str, *, name: str | None = None) -> str:
+    """A session, and by default a *named* one.
+
+    The listing hides "abandoned empty" sessions -- no messages, no cells, no
+    name -- so a bare frame is invisible to everybody including its owner.
+    The enumeration tests below then compared two empty sets and passed with
+    the ownership filter removed entirely; a name is the cheapest thing that
+    makes the row real.
+    """
     status, raw = _post(
         daemon.port,
         "/api/v1/frames",
@@ -52,6 +60,15 @@ def _create_session(daemon, cookie: str) -> str:
     assert status == 200, raw[:300]
     fid = _body(raw).get("frame_id") or _body(raw).get("id")
     assert fid
+    # The listing route hides "abandoned empty" sessions -- no messages, no
+    # cells, no name -- and an invisible row makes every assertion below
+    # vacuous. A *message* rather than a name, because `frames.name` is null
+    # in every other offline test and the frozen response shapes record it as
+    # null-only; naming sessions here would widen that contract for a reason
+    # that has nothing to do with the contract.
+    daemon.store.add_message(
+        root_frame_id=str(fid), role="user", content=name or "seeded activity"
+    )
     return str(fid)
 
 
@@ -73,11 +90,14 @@ def test_enumeration_is_ownership_filtered(daemon):
     status, raw = _get(daemon.port, "/api/v1/frames?project_id=all", cookie=a)
     assert status == 200
     ids = {f.get("frame_id") or f.get("id") for f in _body(raw)["frames"]}
-    assert fid_a in ids or ids == set()  # empty-session hiding may drop both
+    # The positive control first: without it `fid_b not in ids` is satisfied
+    # by an empty listing, which is what this assertion used to allow.
+    assert fid_a in ids, ids
     assert fid_b not in ids
 
     status, raw = _get(daemon.port, "/api/v1/frames?project_id=all", cookie=b)
     ids = {f.get("frame_id") or f.get("id") for f in _body(raw)["frames"]}
+    assert fid_b in ids, ids
     assert fid_a not in ids
 
 
@@ -205,3 +225,37 @@ def test_service_identity_sees_everything(daemon):
     fid_a = _create_session(daemon, a)
     status, _ = _get(daemon.port, f"/api/v1/frames/{fid_a}", token=daemon.token)
     assert status == 200
+
+
+def test_an_undecidable_creator_is_refused_not_admitted(daemon, monkeypatch):
+    """`team_policy`'s contract is "undecidable means refused", and its caller
+    was the exception.
+
+    `_may_create_session_in` reconstructed an identity from a bare user id and
+    read three different absences as the same permissive answer: the loopback
+    service (correct), a user id that is not an account, and a database that
+    would not answer. Only the first is a decision.
+    """
+    from openai4s.server import team_auth
+
+    runner = daemon.runner
+    project_id = _project_id(daemon)
+    alice = daemon.store.team.get_user_by_username("alice")["id"]
+
+    # The service identity is admin-equivalent by decision D2, and is
+    # recognised by its own constant rather than by failing to be found.
+    assert runner._may_create_session_in(project_id, team_auth.SERVICE_IDENTITY.user_id)
+    # A real member still gets the ordinary participation answer.
+    assert runner._may_create_session_in(project_id, alice) in (True, False)
+
+    # An id that is not an account is not "no restrictions".
+    assert not runner._may_create_session_in(project_id, "user_does_not_exist")
+
+    # Nor is a lookup that raised.
+    from openai4s.storage.team import TeamRepository
+
+    def _boom(self, user_id):
+        raise RuntimeError("team table unreadable")
+
+    monkeypatch.setattr(TeamRepository, "get_user", _boom)
+    assert not runner._may_create_session_in(project_id, alice)

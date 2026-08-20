@@ -23,6 +23,15 @@ def _never() -> bool:
     return False
 
 
+class KernelNotResetTimeout(TimeoutError):
+    """A cell was stopped, but its worker was not respawned.
+
+    A `TimeoutError` subclass so every existing `except TimeoutError` keeps
+    catching it; a distinct type so the surfaces that tell a user what
+    happened to their variables can tell the two apart.
+    """
+
+
 @dataclass(frozen=True)
 class WatchdogPolicy:
     """Timing policy for a long-running persistent-kernel cell."""
@@ -118,22 +127,44 @@ def execute_with_watchdog(
 
     supervisor.kill_if_current(lease)
     worker.join(max(0.0, policy.kill_grace_s))
+    # Whether the ladder actually finished. It was assumed, and the assumption
+    # is false for a worker this daemon did not spawn: `kill_if_current` drops
+    # a remote worker's *socket*, `restart()` refuses to respawn something that
+    # dialled in from elsewhere, and the refusal was swallowed one line below.
+    # The message then told the user their kernel had been reset and their
+    # variables cleared, while the interpreter was untouched on a compute node
+    # and the cell was very possibly still running there. Reporting a reset
+    # that did not happen is worse than reporting a timeout, because the user
+    # stops looking for the work.
+    was_reset = False
     if worker.is_alive():
         supervisor.abandon_if_current(lease)
     else:
         try:
             restarted = supervisor.restart_if_current(lease)
+            was_reset = restarted is not None
             if restarted is not None and after_restart is not None:
                 try:
                     after_restart(restarted.kernel)
                 except Exception:
                     supervisor.shutdown_if_current(restarted)
+                    was_reset = False
         except Exception:  # noqa: BLE001 — next ensure lazily recovers the slot
             pass
-    raise TimeoutError(
-        f"cell exceeded {int(policy.timeout_s)}s with no result and was stopped; "
-        "the kernel was reset (variables from earlier cells were cleared). Break "
-        "the work into smaller steps, or raise OPENAI4S_CELL_TIMEOUT."
+    if was_reset:
+        raise TimeoutError(
+            f"cell exceeded {int(policy.timeout_s)}s with no result and was "
+            "stopped; the kernel was reset (variables from earlier cells were "
+            "cleared). Break the work into smaller steps, or raise "
+            "OPENAI4S_CELL_TIMEOUT."
+        )
+    raise KernelNotResetTimeout(
+        f"cell exceeded {int(policy.timeout_s)}s with no result and was "
+        "stopped here, but its worker could not be reset from this daemon. If "
+        "the session runs on a cluster the work may still be running on its "
+        "allocation; recover or release the session rather than assuming it "
+        "stopped. Break the work into smaller steps, or raise "
+        "OPENAI4S_CELL_TIMEOUT."
     )
 
 

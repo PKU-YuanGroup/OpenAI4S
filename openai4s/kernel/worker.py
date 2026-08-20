@@ -122,13 +122,24 @@ def _connect_remote_protocol():
         host, _, port = target.rpartition(":")
         sock = _socket.create_connection((host or "127.0.0.1", int(port)), timeout=60)
         sock.sendall((credential + "\n").encode("utf-8"))
+        # One byte at a time, deliberately. A chunked read consumes whatever
+        # arrived in the same segment as the handshake reply, and the previous
+        # version then threw the remainder away -- so a protocol frame the
+        # daemon wrote immediately afterwards (registration wakes a thread
+        # that builds the Kernel and executes at once, so "immediately" is the
+        # normal case) was lost before the reader wrapper existed to see it,
+        # and the daemon blocked forever on a reply to a cell the worker never
+        # received. The reply is one short line; the syscalls are cheap and
+        # happen once.
         reply = b""
-        while b"\n" not in reply:
-            chunk = sock.recv(4096)
+        while not reply.endswith(b"\n"):
+            chunk = sock.recv(1)
             if not chunk:
                 raise OSError("daemon closed during handshake")
             reply += chunk
-        answer = _json.loads(reply.split(b"\n", 1)[0].decode("utf-8"))
+            if len(reply) > 65536:
+                raise OSError("handshake reply too long")
+        answer = _json.loads(reply.rstrip(b"\n").decode("utf-8"))
         if not answer.get("ok"):
             raise OSError(f"daemon refused this worker: {answer.get('error')}")
         # The generation the Host admitted this connection under. A local

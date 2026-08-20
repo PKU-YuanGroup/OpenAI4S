@@ -339,6 +339,15 @@ class Workload:
     phase: Phase = Phase.PENDING
     execution_epoch: int = 0
     reason: Reason | None = None
+    #: Which registered backend runs it -- a *name*, never a backend object,
+    #: so this stays a description of the ask rather than a reference to a
+    #: scheduler (INV-2). Declared rather than attached: persistence used to
+    #: `setattr` it after construction, and the reconciler and the routes both
+    #: read it back with `getattr` and two different fallbacks, so the one
+    #: field that decides *where work runs* was invisible to the type checker
+    #: and had no single default. Empty means "the caller did not say", which
+    #: is what makes `workload.backend or <default>` a meaningful sentence.
+    backend: str = ""
 
     @staticmethod
     def new_id() -> str:

@@ -14,6 +14,7 @@ from typing import Any, Callable, Protocol
 
 from openai4s.agent.actions import is_completion_only_cell
 from openai4s.execution import CaptureResult, CellExecutionResult, CellRequest
+from openai4s.execution.watchdog import KernelNotResetTimeout
 from openai4s.kernel import KernelLease, KernelSupervisor
 
 NOTEBOOK_DIVIDER = "----- output -----"
@@ -102,6 +103,15 @@ CELL_TIMEOUT_MESSAGE = (
     "the cell exceeded its time limit and was stopped; the kernel was reset, so "
     "variables from earlier cells were cleared"
 )
+#: The same event where the reset did not happen -- a worker this daemon did
+#: not spawn cannot be respawned by it. Saying "variables were cleared" there
+#: is not a harmless simplification: it tells the user the work stopped, and
+#: on a cluster session the allocation may still be running the cell.
+CELL_TIMEOUT_NO_RESET_MESSAGE = (
+    "the cell exceeded its time limit and was stopped here, but its kernel "
+    "could not be reset from this daemon; if the session runs on a cluster the "
+    "work may still be running on its allocation"
+)
 
 
 def _worker_failure_text(exc: BaseException, public: dict) -> str:
@@ -116,6 +126,8 @@ def _worker_failure_text(exc: BaseException, public: dict) -> str:
 
     if isinstance(exc, GatewayError):
         base = str(public.get("error") or KERNEL_FAILURE_MESSAGE)
+    elif isinstance(exc, KernelNotResetTimeout):
+        base = CELL_TIMEOUT_NO_RESET_MESSAGE
     elif isinstance(exc, TimeoutError):
         base = CELL_TIMEOUT_MESSAGE
     else:

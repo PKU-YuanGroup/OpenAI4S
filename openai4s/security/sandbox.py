@@ -165,6 +165,24 @@ def _default_secret_read_denials(
     # Shares carry relay credentials, and the per-share tokens are what make a
     # read-only snapshot reachable from outside this machine.
     entries.append(("subpath", str(data_dir / "shares")))
+    # The worker-bootstrap signing secret and its replay fence -- siblings of
+    # the DB, exactly like `access-token` above, and missed for the same
+    # reason. `BootstrapAuthority.verify` is pure HMAC plus expiry, epoch and
+    # nonce: it never asks whether the allocation exists, so anyone holding
+    # these 32 bytes can mint a credential for an arbitrary
+    # (allocation_id, epoch, rank) and have `WorkerGateway` hand them an
+    # `OutboundTcpTransport` -- which carries, per its own module docstring,
+    # "arbitrary Host RPC" inside another tenant's session. The fence is
+    # denied alongside it because a cell that can *write* it un-burns every
+    # consumed nonce and drops every epoch a recovery fenced off.
+    # Imported rather than spelled, so a rename cannot reopen the read.
+    from openai4s.orchestration.bootstrap import SECRET_FILENAME, STATE_FILENAME
+
+    entries.append(("literal", str(data_dir / SECRET_FILENAME)))
+    entries.append(("literal", str(data_dir / STATE_FILENAME)))
+    # The per-allocation credential files themselves, written into each
+    # workload's runtime directory. Same credential, one indirection away.
+    entries.append(("subpath", str(data_dir / "cluster-workspaces")))
     # The git-ignored daemon .env, discovered the same way config._load_dotenv
     # walks for it.
     try:

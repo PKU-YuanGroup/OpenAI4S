@@ -175,9 +175,18 @@ class Reconciler:
 
     def stop(self, *, timeout_s: float = 5.0) -> None:
         self._stop.set()
-        thread, self._thread = self._thread, None
+        thread = self._thread
         if thread is not None:
             thread.join(timeout=timeout_s)
+        # Only forget the thread once it is actually gone. Clearing the
+        # reference on a join *timeout* made `running()` answer False for a
+        # thread that was still ticking, and `start()` then both revived it
+        # (`_stop.clear()`) and spawned a second one beside it -- two
+        # reconcilers submitting for the same workloads. A tick can outlast
+        # five seconds honestly -- a backend query has its own, longer,
+        # timeout -- so the join timing out is an ordinary event.
+        if thread is None or not thread.is_alive():
+            self._thread = None
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -222,7 +231,7 @@ class Reconciler:
         return report
 
     def _backend_for(self, workload: Workload) -> AllocationBackend:
-        name = getattr(workload, "backend", None) or self._default_backend
+        name = workload.backend or self._default_backend
         try:
             return self._backends[name]
         except KeyError:
@@ -359,13 +368,31 @@ class Reconciler:
             allocation.handle = result.handle
             allocation.phase = Phase.PENDING
             allocation.reason = None
+            # Both of these were missing here and present in `_submit_new`.
+            # The row this path loads was written by the *previous* attempt
+            # with `BACKEND_SUBMISSION_UNKNOWN` and its failure detail, and
+            # `save_allocation` re-serialises whatever `diagnostics` holds --
+            # so every allocation that recovered through INV-8 carried the
+            # dead attempt's error text for the rest of its life, and the
+            # successful resubmission emitted no event at all even though
+            # `report.submitted` counted it.
+            allocation.diagnostics = dict(result.diagnostics)
             self._store.save_allocation(allocation)
             workload.phase = Phase.PENDING
             self._store.save_workload(workload)
             report.submitted += 1
+            self._emit(
+                "allocation_submitted",
+                {
+                    "workload_id": workload.id,
+                    "allocation_id": allocation.id,
+                    "existing": isinstance(result, Existing),
+                },
+            )
         elif isinstance(result, Rejected):
             allocation.phase = Phase.FAILED
             allocation.reason = result.reason
+            allocation.diagnostics = dict(result.diagnostics, detail=result.detail)
             self._store.save_allocation(allocation)
             self._fail(workload, result.reason, report)
         # still Unknown -> leave it; the next tick asks again.
@@ -387,7 +414,15 @@ class Reconciler:
             )
             return
 
-        changed = observed.phase is not allocation.phase
+        # Against the *workload*, not the allocation this method is about to
+        # overwrite. Comparing with `allocation.phase` made the comparison
+        # answer a question that had already been answered: `save_allocation`
+        # commits first, so a `save_workload` that fails after it leaves the
+        # next tick seeing observed == allocation, `changed` False, and the
+        # workload row stale for the rest of the run. "Safe to run twice" is
+        # the property this module claims, and it needs the predicate to be
+        # about the state that is still wrong.
+        changed = observed.phase is not workload.phase
         allocation.phase = observed.phase
         allocation.reason = observed.reason
         if observed.handle is not None:
@@ -422,8 +457,6 @@ class Reconciler:
                 "workload_phase",
                 {"workload_id": workload.id, "phase": observed.phase.value},
             )
-
-    # --- recovery ---------------------------------------------------------
 
     def _recover_session(
         self,
@@ -532,6 +565,19 @@ class Reconciler:
             workload.reason = reason
             self._store.save_workload(workload)
             report.cancelled += 1
+            # And say so. Every other terminal transition in this file emits
+            # `workload_terminal`, and it is one of the two kinds the daemon
+            # acts on -- so cancelling before an allocation ever existed was
+            # the one ending that happened invisibly: nothing in the log,
+            # nothing on the operator page.
+            self._emit(
+                "workload_terminal",
+                {
+                    "workload_id": workload.id,
+                    "phase": Phase.CANCELLED.value,
+                    "reason": reason.value if reason else None,
+                },
+            )
             return
 
         # 2-3. cancel active tasks and drain. The task plane is the kernel's
@@ -647,32 +693,6 @@ class Reconciler:
             },
         )
 
-    # --- recovery ---------------------------------------------------------
-
-    def recover(self, workload: Workload, *, reason: Reason) -> Allocation | None:
-        """Start a new epoch after a lost allocation (INV-6/INV-7).
-
-        History is not rewritten: the old allocation keeps its terminal
-        phase, the workload's epoch increments, and the next tick submits
-        under a *new* token. An old epoch's callbacks are refused by whoever
-        holds the epoch fence, which is why this returns the new allocation
-        rather than mutating the old one.
-        """
-        current = self._store.active_allocation(workload.id)
-        if current is not None:
-            current.phase = Phase.LOST
-            current.reason = reason
-            self._store.save_allocation(current)
-        workload.execution_epoch += 1
-        workload.phase = Phase.PENDING
-        workload.reason = reason
-        self._store.save_workload(workload)
-        self._emit(
-            "workload_recovered",
-            {"workload_id": workload.id, "epoch": workload.execution_epoch},
-        )
-        return None
-
     # --- helpers ----------------------------------------------------------
 
     def _fail(self, workload: Workload, reason: Reason, report: TickReport) -> None:
@@ -706,15 +726,9 @@ def _store_is_gone(exc: BaseException) -> bool:
     return "closed database" in str(exc).lower()
 
 
-def new_token() -> SubmissionToken:
-    """Re-exported so a store implementation need not import models directly."""
-    return SubmissionToken.mint()
-
-
 __all__ = [
     "DEFAULT_INTERVAL_S",
     "Reconciler",
     "TickReport",
     "WorkloadStore",
-    "new_token",
 ]

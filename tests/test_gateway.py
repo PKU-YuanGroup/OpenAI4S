@@ -832,6 +832,17 @@ def test_ws_subscribe_replay_enqueue_is_atomic_with_live_broadcast():
             self.replay_started = threading.Event()
             self.release_replay = threading.Event()
 
+        def refresh_visibility(self, root_frame_id):
+            """Re-asked outside the hub lock before every fan-out; a no-op
+            here, as it is on a daemon with no team mode."""
+
+        def may_receive(self, root_frame_id):
+            """The fan-out re-checks team visibility per delivery. A double
+            that is a subscriber has to answer the same question a real
+            connection does -- single-user is the permissive answer, which is
+            what this test is about."""
+            return True
+
         def send_json(self, event):
             self.events.append(dict(event))
             if event.get("type") == "replay_begin":

@@ -22,7 +22,12 @@ import re
 
 import pytest
 
-from openai4s.orchestration.models import Phase, ResourceProfile
+from openai4s.orchestration.models import (
+    Phase,
+    ResourceProfile,
+    WorkloadKind,
+    WorkloadSpec,
+)
 from tests.test_team_auth_routes import (  # noqa: F401  (fixture reuse)
     _fast_pbkdf2,
     _free_port,
@@ -290,3 +295,102 @@ def test_a_recovery_does_not_reuse_the_dead_workers_kernel(daemon):
 
     _, second_key = daemon.runner._remote_kernel_factory(st, disp)
     assert first_key != second_key, "a recovered session would reuse the dead kernel"
+
+
+def test_the_session_workspace_follows_the_placement(daemon):
+    """Where the cells run and where the daemon looks have to be one directory.
+
+    The remote kernel was built with the workload's directory as its cwd while
+    artifact capture, the Host dispatcher's file tools and the R kernel stayed
+    on `agent-workspaces/<root_frame_id>`. So a cluster cell wrote `result.csv`
+    into one directory and `capture` diffed another: empty figures, empty
+    files_written, no Artifact row -- and no error to say so. Asserted through
+    `_ensure_runtime`, because that is the call every path into a session makes
+    and therefore the one that has to agree with the kernel.
+    """
+    session_id, project_id = _session(daemon)
+    st = daemon.runner._state(session_id, project_id)
+    manager = daemon.runner.compute_sessions
+
+    local = st.workspace
+    daemon.runner._ensure_runtime(st)
+    assert st.workspace == local, "a session with no placement must not move"
+
+    workload = _request_cluster(daemon, session_id)
+    placed = manager.workspace_for(workload.id)
+    assert placed != local
+
+    disp = daemon.runner._ensure_runtime(st)
+    assert st.workspace == placed, (
+        "the session still points at its local workspace while its cells run "
+        "on the workload's -- artifact capture would diff a directory nothing "
+        "wrote to"
+    )
+    assert (
+        disp.workspace_path == placed.resolve()
+    ), "host.write_file would land where the remote cell cannot see it"
+
+    # And back again: a released placement must not leave the session pointed
+    # at a workload that no longer exists.
+    from openai4s.orchestration.models import Reason
+
+    manager.release(session_id, reason=Reason.USER_CANCELLED)
+    daemon.runner._ensure_runtime(st)
+    assert st.workspace == local
+
+
+def test_r_is_refused_on_a_cluster_session(daemon):
+    """`spawn_r_kernel` starts a child of the daemon, so an ```r cell on a
+    placed session ran on the head node with none of the allocated resources
+    -- and worked, which is what made it silent. `host.exec_background`
+    already refuses for the same reason; this is the other half."""
+    session_id, project_id = _session(daemon)
+    st = daemon.runner._state(session_id, project_id)
+
+    _request_cluster(daemon, session_id)
+    refusal = daemon.runner._ensure_r_kernel(st)
+    assert refusal is not None and "cluster session" in refusal, refusal
+    assert st.kernels.lease("r") is None, "an R worker was started anyway"
+
+
+def test_a_backend_that_will_not_answer_is_unknown_not_absent(daemon):
+    """INV-8 inverted: `submit` asked whether anything already carries this
+    token, caught the scheduler being unreachable, and read the silence as
+    "nothing does" -- then submitted. `find_by_comment` raises on a timeout
+    precisely because absence of an answer is not an answer of absence."""
+    from openai4s.orchestration.ports import Unknown
+    from openai4s.orchestration.slurm.backend import SlurmBackend
+    from openai4s.orchestration.slurm.broker import SlurmCommandError
+
+    class _MuteBroker:
+        submitted: list = []
+
+        def find_by_comment(self, comment):
+            raise SlurmCommandError(
+                "squeue timed out", command=("squeue",), timed_out=True
+            )
+
+        def submit(self, spec):  # pragma: no cover - must not be reached
+            _MuteBroker.submitted.append(spec)
+            return "12345"
+
+    cluster = daemon.runner.cluster_config
+    backend = SlurmBackend(cluster=cluster, log_dir="/tmp", broker=_MuteBroker())
+    workload = daemon.store.workloads.create_workload(
+        spec=WorkloadSpec(
+            kind=WorkloadKind.BATCH,
+            profile=ResourceProfile(name="cpu"),
+            command=("true",),
+        ),
+        owner_user_id="u",
+        backend="cluster",
+    )
+    allocation = daemon.store.workloads.create_allocation(workload.id, 0)
+
+    result = backend.submit(
+        allocation=allocation,
+        spec=workload.spec,
+        profile=ResourceProfile(name="cpu"),
+    )
+    assert isinstance(result, Unknown), result
+    assert not _MuteBroker.submitted, "a second job was submitted on a silence"

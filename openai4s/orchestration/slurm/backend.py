@@ -173,8 +173,21 @@ class SlurmBackend:
         # Existing rather than a second job.
         try:
             already = self._broker.find_by_comment(allocation.submission_token.value)
-        except SlurmCommandError:
-            already = None
+        except SlurmCommandError as exc:
+            # An unanswerable lookup is `Unknown`, not "nothing carries it".
+            # Swallowing the error to None and carrying on inverted the whole
+            # invariant: `find_by_comment` raises on a timeout or an
+            # unreachable controller precisely because absence of an answer is
+            # not an answer of absence -- and the next statement submitted a
+            # second job for a token that may well already have one. The
+            # reconciler's `_reconcile_unknown` is what is allowed to decide a
+            # fresh submission is safe, and only after the backend has
+            # actually answered.
+            return Unknown(
+                token=allocation.submission_token,
+                detail=str(exc),
+                diagnostics={"command": list(exc.command), "phase": "find_by_token"},
+            )
         if already:
             return Existing(handle=self._handle(already))
 
@@ -291,11 +304,11 @@ class SlurmBackend:
         phase, reason = _STATE_MAP.get(status.state, (Phase.ACTIVE, None))
         if phase is Phase.PENDING and status.reason in _UNSCHEDULABLE_REASONS:
             phase, reason = Phase.FAILED, Reason.UNSCHEDULABLE
-        if phase is Phase.FAILED and reason is None and status.exit_code:
-            # An exit code is the detail an operator wants, but it does not
-            # change the reason: a nonzero exit is a failure of the work,
-            # which has no more specific cause than "it failed".
-            pass
+        # No branch on `status.exit_code` here: an exit code is the detail an
+        # operator wants and it is already carried in `diagnostics`, but it
+        # does not change the *reason* -- a nonzero exit is a failure of the
+        # work, which has no more specific cause than "it failed". The
+        # condition used to be spelled out and then do nothing.
         return Observation(
             phase=phase,
             reason=reason,

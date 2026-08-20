@@ -102,9 +102,13 @@ class LeaseReclaimer:
 
     def stop(self, *, timeout_s: float = 5.0) -> None:
         self._stop.set()
-        thread, self._thread = self._thread, None
+        thread = self._thread
         if thread is not None:
             thread.join(timeout=timeout_s)
+        # See `Reconciler.stop`: forgetting a thread the join did not reap
+        # lets `start()` clear the stop flag under it and run two sweepers.
+        if thread is None or not thread.is_alive():
+            self._thread = None
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -177,7 +181,7 @@ class LeaseReclaimer:
 
 def _store_is_gone(exc: BaseException) -> bool:
     text = str(exc).lower()
-    return "closed database" in text or "cannot operate on a closed database" in text
+    return "closed database" in text
 
 
 __all__ = ["DEFAULT_SWEEP_S", "LeaseReclaimer", "SweepReport"]

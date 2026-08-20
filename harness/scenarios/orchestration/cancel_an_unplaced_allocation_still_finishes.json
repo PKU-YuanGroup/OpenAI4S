@@ -36,6 +36,7 @@
       "run_started",
       "stop_requested",
       "workload_releasing",
+      "workload_terminal",
       "run_finished"
     ],
     "invariants": [

@@ -284,12 +284,30 @@ def handle(self, method: str, sub: str, q: dict, team_auth: Any, store: Any) -> 
         return True
     if _QUOTA_SET.match(method, sub):
         body = self._body()
+        # `or 0` collapsed "field absent or misspelled" into "limit is zero",
+        # and zero is the engine's hard block (`used >= limit` is true at
+        # used == 0). An admin who wrote `"limit": 100000` got a 200 and a
+        # quota of 0, and every LLM call by that member was refused from that
+        # moment with a number the admin believed said otherwise.
+        raw_limit = body.get("limit_amount")
+        if raw_limit is None:
+            self._json(
+                {"error": "limit_amount is required", "code": "invalid_quota"}, 400
+            )
+            return True
+        try:
+            limit_amount = float(raw_limit)
+        except (TypeError, ValueError):
+            self._json(
+                {"error": "limit_amount must be a number", "code": "invalid_quota"}, 400
+            )
+            return True
         try:
             store.governance.set_quota(
                 scope=str(body.get("scope") or ""),
                 scope_id=str(body.get("scope_id") or ""),
                 kind=str(body.get("kind") or ""),
-                limit_amount=float(body.get("limit_amount") or 0),
+                limit_amount=limit_amount,
                 window=str(body.get("window") or ""),
             )
         except (ValueError, TypeError) as e:

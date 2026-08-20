@@ -705,3 +705,31 @@ def test_a_member_may_not_publish_a_global_specialist(daemon):
     assert status == 403, raw[:300]
     assert _body(raw)["code"] == "admin_only"
     assert daemon.store.get_agent("planted") is None
+
+
+def test_search_does_not_lose_your_own_hits_behind_colleagues(daemon):
+    """The palette filtered after `LIMIT 20`, so a full page of other people's
+    matches came back empty instead of showing yours.
+
+    Twenty-one sessions match; the twenty most recently updated are bob's, and
+    alice's is the oldest. Post-filtering drops all twenty and tells alice her
+    own session does not exist.
+    """
+    a = _login(daemon, "alice", "fake-pw-a")
+    b = _login(daemon, "bob", "fake-pw-b")
+
+    mine = _create_session(daemon, a)
+    daemon.store.update_frame(mine, name="RNA-seq run alice")
+    for index in range(20):
+        theirs = _create_session(daemon, b)
+        daemon.store.update_frame(theirs, name=f"RNA-seq run bob {index}")
+
+    status, raw = _get(daemon.port, "/api/v1/search?q=RNA-seq", cookie=a)
+    assert status == 200, raw[:200]
+    payload = _body(raw)
+    ids = {s.get("id") for s in payload.get("sessions", [])}
+    assert mine in ids, (
+        "alice's own matching session is missing; the visible page was spent "
+        "on rows she may not see"
+    )
+    assert not (ids - {mine}), f"a colleague's session leaked into the palette: {ids}"

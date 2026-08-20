@@ -23,7 +23,7 @@ import tempfile
 from typing import Any
 from urllib.parse import quote
 
-from . import contract
+from . import contract, team_policy
 from .file_area import MAX_UPLOAD_BYTES, FileAreaError
 
 _LIST = contract.RouteSpec("files.list", "GET", r"/files", mutates=False)
@@ -111,6 +111,26 @@ def handle(
                 409,
             )
             return True
+        if target.exists():
+            # Overwriting is the destructive verb, so it is the one that needs
+            # an owner. `_scoped_upload_dir` confines a *member* to their own
+            # subtree, which is containment and not ownership -- and an admin
+            # is not scoped at all, so `POST /files/upload?dir=<shared>&
+            # overwrite=1` replaced a member's shared-area file with nothing
+            # consulted. `team_policy.may_overwrite_file` was written for
+            # exactly this question and had no caller; this is the caller.
+            root = file_area.root_of(target)
+            existing_owner = (
+                file_area.personal_area_owner(root, target)
+                if root is not None
+                else None
+            )
+            if not team_policy.may_overwrite_file(identity, existing_owner):
+                self._json(
+                    {"error": "path not found", "code": "path_not_found"},
+                    404,
+                )
+                return True
         length = self._content_length()
         if length <= 0:
             self._json({"error": "empty upload", "code": "empty_upload"}, 400)

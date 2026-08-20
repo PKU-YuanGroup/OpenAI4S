@@ -200,6 +200,15 @@ def handle(self, method: str, sub: str, team_auth: Any, store: Any) -> bool:
         if not username or not password:
             self._json({"error": "username and password are required"}, 400)
             return True
+        # The invite first, and read-only. Answering about usernames ahead of
+        # it made this unauthenticated route an enumeration oracle for every
+        # account on the instance: "already exists" and "invalid invite" are
+        # distinguishable with no valid token at all. Asked without consuming
+        # anything, so the property the ordering was written for -- a typo'd
+        # username must not burn a single-use token -- still holds.
+        if not store.governance.invite_is_live(token):
+            self._json({"error": "invalid invite", "code": "invalid_invite"}, 403)
+            return True
         if store.team.get_user_by_username(username) is not None:
             self._json({"error": f"username {username!r} already exists"}, 409)
             return True

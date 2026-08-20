@@ -48,6 +48,7 @@
     "event_kinds": [
       "run_started",
       "allocation_submission_unknown",
+      "allocation_submitted",
       "workload_phase",
       "run_finished"
     ],

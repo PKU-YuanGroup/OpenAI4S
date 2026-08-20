@@ -174,7 +174,13 @@ class KernelSupervisor:
                     # interrupted", and a worker with no signal path was not.
                     continue
                 except Exception:  # noqa: BLE001 — interruption is best-effort
-                    pass
+                    # Nor is one whose signal delivery raised. Best-effort is
+                    # about not propagating the error, not about counting the
+                    # attempt as a success: an OSError out of `interrupt()`
+                    # answered a nonzero count for a cell that was still
+                    # running, which is the same silence the branch above was
+                    # added to close.
+                    continue
                 count += 1
             return count
 
@@ -386,7 +392,10 @@ class KernelSupervisor:
                 # the silence `Kernel.interrupt` started raising to prevent.
                 return False
             except Exception:  # noqa: BLE001 — interruption is best-effort
-                pass
+                # Same reasoning as `interrupt()` above: the caller reads this
+                # as "the interrupt was delivered", so a delivery that raised
+                # is False rather than swallowed-and-affirmed.
+                return False
             return True
 
     def touch(

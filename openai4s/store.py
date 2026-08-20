@@ -81,7 +81,7 @@ from openai4s.storage.datapro_index import (
     create_datapro_index_schema,
 )
 from openai4s.storage.delegation import DelegationProjectionRepository
-from openai4s.storage.frames import FrameRepository
+from openai4s.storage.frames import FrameRepository, visible_session_clause
 from openai4s.storage.governance import (
     GovernanceRepository,
     create_governance_schema,
@@ -812,6 +812,32 @@ _SCOPED_VIEWS = frozenset(
     }
 )
 
+#: A CTE binding one of `_SCOPED_VIEWS` by name. The authorizer's fifth
+#: argument names "the view responsible for this read", and SQLite fills it in
+#: for a *common table expression* exactly as it does for a view -- measured:
+#: `WITH my_messages AS (SELECT * FROM main.messages) SELECT content FROM
+#: my_messages` hands the authorizer `(20, 'messages', 'content', 'main',
+#: 'my_messages')`, which is byte-for-byte what the real temp view produces.
+#: So the one string the escape hatch trusts was a string the caller could
+#: mint, and in team mode that string was the entire tenant boundary for
+#: `host.query`: one CTE returned every colleague's prompts, replies, cell
+#: code and stdout.
+#:
+#: A CTE is the only construct that can bind it -- a subquery alias
+#: (`FROM (SELECT …) AS my_messages`) and a table alias both leave the fifth
+#: argument None, and are already refused. So the rule is narrow: a CTE may
+#: not be named after a scoped view. Matched on the literal-stripped text as
+#: a *pre*-check, with the authorizer's own published-view test below as the
+#: second layer: a text rule and a parse-time rule fail differently, and this
+#: boundary has already been the whole of tenant isolation once.
+_CTE_SHADOW_RE = re.compile(
+    r"\b(" + "|".join(sorted(_SCOPED_VIEWS)) + r")\b"
+    r"\s*(?:\([^()]*\)\s*)?"
+    r"\bas\b\s*(?:not\s+)?(?:materialized\s*)?\(",
+    re.IGNORECASE,
+)
+
+
 #: Base tables reachable only through `_SCOPED_VIEWS`. These were readable
 #: directly and were not on `QUERY_DENYLIST` at all, so one `SELECT` returned
 #: every project's artifacts with their filenames, checksums and absolute
@@ -901,8 +927,19 @@ class _QueryAuthorizer:
     interface, so matching on it would work until it did not.
     """
 
-    def __init__(self, view_only: frozenset[str] | None = None) -> None:
+    def __init__(
+        self,
+        view_only: frozenset[str] | None = None,
+        *,
+        published_views: frozenset[str] = frozenset(),
+    ) -> None:
         self.denied: list[str] = []
+        # Which scoped views this statement may be read *through*. Empty when
+        # the caller supplied no scope, so a query with no scope cannot reach
+        # a view-only base table by claiming a view that was never created --
+        # the escape hatch used to accept the name whether or not anything
+        # answered to it.
+        self._published_views = frozenset(published_views)
         # Which base tables are reachable only through a scoped view. Passed
         # in rather than read from a module constant because the answer
         # depends on the deployment: a team daemon closes the conversation
@@ -953,8 +990,10 @@ class _QueryAuthorizer:
         if table in QUERY_DENYLIST:
             return self._deny(table)
         if table in self._view_only:
-            # Permitted only as the underlying read of a trusted scoped view.
-            if (source or "").lower() in _SCOPED_VIEWS:
+            # Permitted only as the underlying read of a trusted scoped view
+            # that this statement actually published. `_SCOPED_VIEWS` alone was
+            # the test, and the name is caller-mintable through a CTE.
+            if (source or "").lower() in self._published_views:
                 return sqlite3.SQLITE_OK
             return self._deny(table)
         return sqlite3.SQLITE_OK
@@ -4266,21 +4305,46 @@ class Store:
         self._datapro_index.delete_batch(batch_id)
 
     # --- global search (command palette) --------------------------------
-    def search(self, query: str, limit: int = 20) -> dict:
-        """Search sessions, artifacts, and indexed DataPro content for ⌘K."""
+    def search(
+        self, query: str, limit: int = 20, *, visible_to_user_id: str | None = None
+    ) -> dict:
+        """Search sessions, artifacts, and indexed DataPro content for ⌘K.
+
+        `visible_to_user_id` narrows the queries themselves. It used to be a
+        post-filter in the route, applied *after* `LIMIT 20` -- so on a team
+        where the twenty most recently updated matches belong to colleagues,
+        every one of them was dropped and the caller was told their own
+        session does not exist. `visible_session_clause` is the same rule the
+        frame listings use, and it exists precisely because "filter after the
+        read" turns a full page of hidden rows into a phantom empty result.
+        """
         q = f"%{query.strip()}%"
+        frame_scope = artifact_scope = ""
+        frame_params: list = []
+        artifact_params: list = []
+        if visible_to_user_id is not None:
+            clause, frame_params = visible_session_clause(visible_to_user_id)
+            frame_scope = " AND " + clause
+            clause, artifact_params = visible_session_clause(
+                visible_to_user_id,
+                table="artifacts",
+                session_expr="artifacts.root_frame_id",
+            )
+            artifact_scope = " AND " + clause
         with self._lock:
             frames = self._conn.execute(
                 "SELECT frame_id,project_id,name,task_summary,updated_at FROM frames "
-                "WHERE parent_id IS NULL AND (name LIKE ? OR task_summary LIKE ?) "
+                "WHERE parent_id IS NULL AND (name LIKE ? OR task_summary LIKE ?)"
+                f"{frame_scope} "
                 "ORDER BY updated_at DESC LIMIT ?",
-                (q, q, limit),
+                (q, q, *frame_params, limit),
             ).fetchall()
             arts = self._conn.execute(
                 "SELECT artifact_id,filename,content_type,root_frame_id,project_id "
-                "FROM artifacts WHERE filename LIKE ? ORDER BY created_at DESC "
+                f"FROM artifacts WHERE filename LIKE ?{artifact_scope} "
+                "ORDER BY created_at DESC "
                 "LIMIT ?",
-                (q, limit),
+                (q, *artifact_params, limit),
             ).fetchall()
         return {
             "sessions": [
@@ -4727,6 +4791,16 @@ class Store:
         bad = _DENY_WORD_RE.search(deny_scan)
         if bad is not None:
             raise PermissionError(f"host.query: table '{bad.group(0)}' is not readable")
+        shadow = _CTE_SHADOW_RE.search(deny_scan)
+        if shadow is not None:
+            # See `_CTE_SHADOW_RE`: naming a CTE after a scoped view makes
+            # SQLite hand the authorizer that name as the view responsible for
+            # the read, which is how the escape hatch below came to trust a
+            # string the caller wrote.
+            raise PermissionError(
+                f"host.query: {shadow.group(1)!r} is a scoped view and cannot "
+                f"be used as a CTE name"
+            )
         stripped = lowered.lstrip()
         if not (stripped.startswith("select") or stripped.startswith("with")):
             raise ValueError("host.query only allows read-only SELECT/CTE")
@@ -4743,7 +4817,10 @@ class Store:
         # by rule and not by keyword.
         conn = self._conn
         with self._lock:
-            guard = _QueryAuthorizer(view_only=self._query_view_only())
+            guard = _QueryAuthorizer(
+                view_only=self._query_view_only(),
+                published_views=_SCOPED_VIEWS if scope else frozenset(),
+            )
             try:
                 # Views first, with the guard off: creating them is a privileged
                 # setup step, not part of the caller's statement.

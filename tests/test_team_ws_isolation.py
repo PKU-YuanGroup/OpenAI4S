@@ -223,3 +223,59 @@ def test_cross_user_ws_cancel_is_refused(daemon):
         assert reply["reason"] == "session not found"
     finally:
         ws.close()
+
+
+def test_a_live_stream_stops_when_the_subscription_is_revoked(daemon, monkeypatch):
+    """Subscribing was checked once and never again.
+
+    `test_ws_subscription_stops_working_after_the_user_is_disabled` in
+    tests/test_team_isolation_hardening.py asserts that a *new* subscribe and
+    a *mutating* inbound are refused after revocation — which they were. The
+    standing subscription was not: `WSHub.broadcast` fanned out on
+    `root_frame_id in c.subs` alone, so the socket kept delivering cell code,
+    stdout and pending approval prompts to an account that had just been
+    disabled, for as long as the tab stayed open.
+
+    The re-check is cached for a few seconds so a chatty turn does not run an
+    ownership query per chunk per viewer; pinned to 0 here so the test is
+    about the rule and not about the clock.
+    """
+    from openai4s.server.gateway import WSConnection
+
+    monkeypatch.setattr(WSConnection, "_VIS_TTL_S", 0.0)
+
+    a = _login(daemon, "alice", "fake-pw-a")
+    fid_a = _session_for(daemon, a)
+
+    ws = _WSClient(daemon.port, a)
+    try:
+        ws.send({"type": "view_session", "root_frame_id": fid_a})
+        first = ws.recv_json()
+        assert first is not None and first["type"] != "view_denied"
+        while ws.recv_json(timeout=0.5) is not None:
+            pass
+
+        # Still hers: the broadcast arrives.
+        daemon.runner.hub.broadcast(fid_a, {"type": "frame_update", "frame_id": fid_a})
+        seen = []
+        while True:
+            msg = ws.recv_json(timeout=1.0)
+            if msg is None:
+                break
+            seen.append(msg)
+        assert any(m.get("type") == "frame_update" for m in seen), seen
+
+        # Revoked. The socket is still open and still subscribed.
+        uid = daemon.store.team.get_user_by_username("alice")["id"]
+        daemon.store.team.set_disabled(uid, True)
+
+        daemon.runner.hub.broadcast(fid_a, {"type": "frame_update", "frame_id": fid_a})
+        after = []
+        while True:
+            msg = ws.recv_json(timeout=1.0)
+            if msg is None:
+                break
+            after.append(msg)
+        assert not [m for m in after if m.get("type") == "frame_update"], after
+    finally:
+        ws.close()

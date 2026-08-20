@@ -31,6 +31,8 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
+from openai4s.kernel.environment import name_can_carry_a_secret
+
 #: What a job name or comment may contain. Slurm accepts more, but these are
 #: values WE mint and later match on, and a comma or a newline in a
 #: `--format`-parsed field is a parser bug waiting for an unusual input.
@@ -51,9 +53,17 @@ _ENV_VALUE_RE = re.compile(r"\A[^,\r\n\x00]{0,4096}\Z")
 #: variables. Checked after assembly as well, so a future field that skips
 #: the dataclass cannot reintroduce the same thing.
 _EXPORT_KEYWORDS = frozenset({"all", "none", "nil"})
-_CREDENTIAL_HINT_RE = re.compile(
-    r"(SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|CREDENTIAL|PRIVATE)", re.IGNORECASE
-)
+#: "Can this variable name carry a secret, or inject code?" -- answered by the
+#: kernel's own list rather than by a second, narrower rule. The regex that
+#: used to live here matched SECRET/TOKEN/PASSWORD/PASSWD/API_?KEY/CREDENTIAL/
+#: PRIVATE and therefore missed ACCESS_KEY, OAUTH, BEARER and COOKIE -- so
+#: `AWS_ACCESS_KEY_ID` rode `--export` into the scheduler's job record, which
+#: `scontrol show job` reads back to anyone on the cluster. It also had no
+#: equivalent of the loader-injection block (`LD_*`, `DYLD_*`, `BASH_ENV`,
+#: `PYTHONSTARTUP`, `R_PROFILE`, ...), which is the other half of what a job
+#: environment can do. One list, so a marker added for the kernel protects
+#: the scheduler path too.
+_credential_hint = name_can_carry_a_secret
 
 #: Default timeout for a scheduler command. A cluster under load answers
 #: slowly; a cluster that is gone does not answer at all, and the daemon's
@@ -152,7 +162,7 @@ class StepSpec:
         for key, value in self.environment.items():
             if not _ENV_NAME_RE.fullmatch(key):
                 raise ValueError(f"invalid environment variable name {key!r}")
-            if _CREDENTIAL_HINT_RE.search(key):
+            if _credential_hint(key):
                 raise ValueError(
                     f"refusing to put {key!r} in a step environment "
                     f"(INV-9: pass a path to a 0600 file instead)"
@@ -199,7 +209,7 @@ class SubmitSpec:
         for key, value in self.environment.items():
             if not _ENV_NAME_RE.fullmatch(key):
                 raise ValueError(f"invalid environment variable name {key!r}")
-            if _CREDENTIAL_HINT_RE.search(key):
+            if _credential_hint(key):
                 raise ValueError(
                     f"refusing to put {key!r} in a submission environment "
                     f"(INV-9): a credential belongs in an 0600 file whose "

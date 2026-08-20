@@ -2432,6 +2432,15 @@ class _FakeConn:
     def send_json(self, obj: dict) -> None:
         self.sent.append(dict(obj))
 
+    # Team mode re-checks visibility per delivery: the hub refreshes outside
+    # its lock and then asks. A daemon with no team mode has no check to run,
+    # which is what these two answer.
+    def refresh_visibility(self, root_frame_id):
+        return None
+
+    def may_receive(self, root_frame_id):
+        return True
+
 
 def _turn_events(conn):
     return [

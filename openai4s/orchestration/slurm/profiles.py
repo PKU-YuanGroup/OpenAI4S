@@ -198,6 +198,69 @@ def _parse_scalar(raw: str, *, where: str) -> Any:
     )
 
 
+def _split_table_path(header: str) -> list[str]:
+    """`profiles."gpu.big"` -> `["profiles", "gpu.big"]`.
+
+    Splitting on `.` and unquoting afterwards is the obvious order and the
+    wrong one: a quoted key containing a dot became two nested tables, so
+    `[profiles."gpu.big"]` silently defined a profile named `gpu` -- with no
+    partition, no QoS, and every resource at its default -- where `tomllib`
+    defines one named `gpu.big` with the operator's real values. Both readers
+    are production paths (3.10 is the `requires-python` floor), and the
+    divergence surfaced as a 4-GPU job landing on the default queue asking for
+    one CPU, with `configured: true` and no error anywhere.
+
+    A dot inside quotes is part of the key; only a bare dot separates.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    quote = ""
+    for char in header:
+        if quote:
+            if char == quote:
+                quote = ""
+            else:
+                current.append(char)
+        elif char in ("'", '"'):
+            quote = char
+        elif char == ".":
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    if quote:
+        raise ValueError("unterminated quoted key")
+    parts.append("".join(current).strip())
+    return parts
+
+
+def _strip_trailing_comment(value_text: str) -> str:
+    """Drop a `# comment` that follows a value, quotes respected.
+
+    Skipping the strip entirely for a quoted value was the simple reading and
+    the wrong one: `partition = "gpu"   # the GPU queue` then reached
+    `_parse_scalar` as `"gpu"   # the GPU queue`, whose last character is not
+    the closing quote, so it raised "unterminated string". `tomllib` accepts
+    that line, which means a `cluster.toml` that works on 3.11+ made the whole
+    cluster backend unavailable on 3.10 -- the `requires-python` floor this
+    fallback exists for -- and the failure surfaced only as one stderr line
+    at boot and `configured: false` afterwards.
+
+    So walk the value instead: a `#` inside quotes is data, a `#` outside them
+    starts a comment.
+    """
+    quote = ""
+    for index, char in enumerate(value_text):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "#":
+            return value_text[:index].strip()
+    return value_text.strip()
+
+
 def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
     """The 3.10 fallback. See the module docstring for the supported subset."""
     data: dict[str, Any] = {}
@@ -216,7 +279,12 @@ def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
                 raise ClusterConfigError(
                     f"{where}: array-of-tables is not supported by this reader"
                 )
-            path = [part.strip().strip('"') for part in line[1:-1].split(".")]
+            try:
+                path = _split_table_path(line[1:-1])
+            except ValueError as exc:
+                raise ClusterConfigError(
+                    f"{where}: malformed table header {line!r} ({exc})"
+                ) from None
             if not all(path):
                 raise ClusterConfigError(f"{where}: malformed table header {line!r}")
             current = data
@@ -236,8 +304,7 @@ def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
         if not key:
             raise ClusterConfigError(f"{where}: empty key")
         value_text = value_text.strip()
-        if not value_text.startswith(("'", '"')):
-            value_text = value_text.split("#", 1)[0].strip()
+        value_text = _strip_trailing_comment(value_text)
         current[key] = _parse_scalar(value_text, where=where)
     return data
 

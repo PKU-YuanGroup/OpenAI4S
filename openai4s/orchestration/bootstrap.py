@@ -56,6 +56,11 @@ from openai4s.security.permissions import (
 #: Filename of the per-daemon signing secret, under the data dir.
 SECRET_FILENAME = "worker-bootstrap-secret"
 
+#: Filename of the durable replay fence, beside the secret. Named here rather
+#: than spelled at the one construction site, because the sandbox has to deny
+#: reads of it too and a second spelling is how the first one gets missed.
+STATE_FILENAME = "worker-bootstrap-state.json"
+
 #: Default credential lifetime. Long enough to cover a start-up that waits
 #: on a shared filesystem and a slow interpreter; short enough that a
 #: credential found in a stale workspace is already useless.
@@ -288,8 +293,23 @@ class BootstrapAuthority:
         """
         if self._state_path is None:
             return
+        # Prune here, not only in `_load_state`. The claim there -- "pruned on
+        # load, so the file cannot grow without bound across a long-lived
+        # install" -- was true only of installs that restart: load happens once,
+        # at construction, and a daemon that stays up for a month accumulated
+        # every nonce it ever burned and rewrote all of them on every worker
+        # registration. An expired nonce is refused by the expiry check anyway,
+        # so dropping it here costs nothing and bounds the file by the TTL.
+        now = self._clock()
+        live = {
+            nonce: expires
+            for nonce, expires in (getattr(self, "_consumed_expiry", {}) or {}).items()
+            if expires > now
+        }
+        self._consumed_expiry = live
+        self._consumed = set(live)
         payload = {
-            "consumed": getattr(self, "_consumed_expiry", {}),
+            "consumed": live,
             "epochs": self._current_epoch,
         }
         tmp = self._state_path.with_suffix(".tmp")
@@ -301,7 +321,19 @@ class BootstrapAuthority:
                 encoding="utf-8",
             ) as handle:
                 json.dump(payload, handle)
+                handle.flush()
+                # `os.replace` is atomic about the *directory entry*, not
+                # about the bytes: without this the rename can reach disk
+                # before the data does, and a power loss leaves the new name
+                # pointing at an empty file. `_load_state` reads an
+                # unparseable fence as tampering and fails admission closed
+                # *permanently*, so the missing fsync turned an ordinary
+                # crash into "no worker may ever register again". The sibling
+                # protocol twenty lines up (`load_or_mint_secret`) has done
+                # both of these since it was written.
+                os.fsync(handle.fileno())
             os.replace(tmp, self._state_path)
+            _fsync_dir(self._state_path.parent)
         except Exception:  # noqa: BLE001
             try:
                 tmp.unlink(missing_ok=True)
@@ -434,6 +466,7 @@ __all__ = [
     "CREDENTIAL_PATH_ENV",
     "DEFAULT_TTL_S",
     "SECRET_FILENAME",
+    "STATE_FILENAME",
     "BootstrapAuthority",
     "BootstrapCredential",
     "BootstrapError",

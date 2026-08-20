@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "3986e2a5927d9a747e365a13e2cba9829f1965a4c8d96cceff7e2b5b23497359"
+      "evidence_digest": "c486248a50380f9698f135a6f658eb2c2df8cfaaed6c84ccd149bd41e018d32d"
     },
     {
       "source": "R2",
@@ -524,7 +524,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "736afa942985e7f56b1c887a9428972da21d43b72775672f079bd5cc6f507f7c"
+      "evidence_digest": "2c803240bb401db1406857d9ed478607a17cc53632f85f44351bce8e08d1dba9"
     },
     {
       "source": "R5",
@@ -593,7 +593,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "531ec346056953cfc093292b169b339a42f02d83c5d0617d7bafa875c36e8110"
+      "evidence_digest": "d8c2d62117a0eb8cd24fef4dae743a54e2cfce73a0dd829caeea68ac5c0090da"
     },
     {
       "source": "R6",
@@ -607,7 +607,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "b5cb389c0692ae2732bb8302dce059bb46d0f061e66d6f46c9cdf7efa259aa54"
+      "evidence_digest": "2539931c7aefd485e4feee37910f49d347984c5b33e87120062826fdcfa4cd4c"
     },
     {
       "source": "R6",
@@ -718,7 +718,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "736afa942985e7f56b1c887a9428972da21d43b72775672f079bd5cc6f507f7c"
+      "evidence_digest": "2c803240bb401db1406857d9ed478607a17cc53632f85f44351bce8e08d1dba9"
     },
     {
       "source": "R7",
