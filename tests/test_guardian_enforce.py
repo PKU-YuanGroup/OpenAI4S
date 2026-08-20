@@ -44,7 +44,7 @@ def _payload(**over):
         "tool": "read_file",
         "target": "a.txt",
         "dangerous": False,
-        "side_effect_class": "read",
+        "side_effect_class": "read_only",
         "canonical_arguments": {"path": "a.txt"},
         "resource_keys": [],
     }
@@ -55,6 +55,7 @@ def _payload(**over):
 def _decide(payload=None, **kw):
     kw.setdefault("config", _Cfg())
     kw.setdefault("expected_digest", _DIGEST)
+    kw.setdefault("recomputed_digest", _DIGEST)
     kw.setdefault("audit_persisted", True)
     kw.setdefault("circuit_key", None)
     return decide_unattended(payload or _payload(), **kw)
@@ -79,9 +80,15 @@ def test_dangerous_action_is_denied():
 
 
 def test_tool_off_the_allowlist_is_denied():
-    for tool in ("write_file", "edit_file", "bash", "exec_background", "web_fetch"):
+    for tool in (
+        "write_file",
+        "edit_file",
+        "authorize_bash",
+        "exec_background",
+        "web_fetch",
+    ):
         allowed, message = _decide(
-            _payload(tool=tool, side_effect_class="read"), circuit_key=None
+            _payload(tool=tool, side_effect_class="read_only"), circuit_key=None
         )
         assert allowed is False, tool
         assert "allowlist" in message
@@ -162,11 +169,72 @@ def test_a_non_denial_resets_the_consecutive_count():
     assert _decide(circuit_key="k")[0] is True
 
 
-def test_allowlists_are_read_only():
-    assert "write_file" not in ALLOWED_TOOLS
-    assert "bash" not in ALLOWED_TOOLS
-    assert "web_fetch" not in ALLOWED_TOOLS
-    assert "write" not in ALLOWED_SIDE_EFFECTS
+def test_the_allowlist_names_what_the_gate_actually_sees():
+    """Entries the gate can never match are policy-shaped comments.
+
+    `PermissionBroker.gate` is called with the HOST METHOD name, so a
+    control-tool name like `glob_files` or a tool that never reaches the gate
+    at all matches nothing. And `read_only` is not sufficient on its own:
+    `web_fetch`/`web_search` carry it too, so the tool allowlist is what keeps
+    an outbound network call from being auto-approved.
+    """
+
+    from openai4s.host_dispatch import GATEABLE_TOOLS
+
+    assert ALLOWED_TOOLS <= set(GATEABLE_TOOLS), sorted(
+        ALLOWED_TOOLS - set(GATEABLE_TOOLS)
+    )
+    for never in ("write_file", "authorize_bash", "web_fetch", "web_search"):
+        assert never not in ALLOWED_TOOLS
+    assert ALLOWED_SIDE_EFFECTS == {"read_only"}
+
+
+def test_a_digest_that_does_not_verify_is_not_a_binding():
+    """A single digest checked only for non-emptiness binds to nothing.
+
+    Any string satisfied it, so an allowlisted read was auto-approved on an
+    action nobody had hashed. The stored digest and a fresh recomputation of
+    the same envelope must agree.
+    """
+
+    allowed, message = _decide(expected_digest=_DIGEST, recomputed_digest="b" * 64)
+    assert allowed is False
+    assert "mismatch" in message
+
+    allowed, message = _decide(expected_digest=_DIGEST, recomputed_digest=None)
+    assert allowed is False
+    assert "digest" in message
+
+
+def test_a_configured_ceiling_can_tighten_but_not_loosen():
+    """A project setting must not be able to disable the breaker.
+
+    Raising `guardian_consecutive_denial_limit` to 1000 would leave the circuit
+    looking configured and never opening.
+    """
+
+    from openai4s.server.guardian_enforce import _budget
+
+    class _Loose:
+        guardian_consecutive_denial_limit = 1000
+
+    class _Tight:
+        guardian_consecutive_denial_limit = 2
+
+    def cfg(budgets):
+        return type(
+            "C",
+            (),
+            {
+                "roadmap_features": _Flags(),
+                "auto_mode": type(
+                    "A", (), {"approvals_reviewer": "auto_review", "budgets": budgets}
+                )(),
+            },
+        )()
+
+    assert _budget(cfg(_Loose()), "guardian_consecutive_denial_limit", 3) == 3
+    assert _budget(cfg(_Tight()), "guardian_consecutive_denial_limit", 3) == 2
 
 
 def test_a_recorded_selection_of_user_beats_the_environment(monkeypatch):

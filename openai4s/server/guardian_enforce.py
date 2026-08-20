@@ -20,30 +20,24 @@ import threading
 from collections.abc import Mapping
 from typing import Any
 
-from openai4s.server.guardian_shadow import assess_shadow, exact_action_envelope
-
-#: Tools an unattended Guardian may auto-approve. Read-only surfaces only.
-ALLOWED_TOOLS = frozenset(
-    {
-        "read_file",
-        "read_text_file",
-        "list_dir",
-        "glob_files",
-        "content_search",
-        "get_artifact_metadata",
-        "list_artifacts",
-        "list_artifact_versions",
-        "lineage_get",
-        "lineage_graph",
-        "query",
-        "query_schema",
-    }
-)
+#: Tools an unattended Guardian may auto-approve, named the way the gate
+#: actually sees them: HOST METHOD names from ``GATEABLE_TOOLS``, not the
+#: control-tool names. `PermissionBroker.gate` is called with the host method,
+#: so an entry like ``glob_files`` or ``query`` matches nothing and is a comment
+#: pretending to be policy. These four are the entire read-only surface that
+#: reaches the gate.
+ALLOWED_TOOLS = frozenset({"read_file", "list_dir", "glob", "grep"})
 
 #: Side-effect classes an unattended Guardian may auto-approve. A tool must
 #: satisfy BOTH this and :data:`ALLOWED_TOOLS`; an empty/unknown class denies,
 #: because an action whose effect we cannot name is not one we can bound.
-ALLOWED_SIDE_EFFECTS = frozenset({"read", "read_only", "none"})
+#:
+#: ``read_only`` is the only value production emits for a read. It is NOT
+#: sufficient on its own, which is why the tool allowlist above exists:
+#: `web_fetch` and `web_search` are also classified ``read_only`` even though
+#: they leave the machine, so a side-effect-only rule would auto-approve
+#: outbound network calls.
+ALLOWED_SIDE_EFFECTS = frozenset({"read_only"})
 
 #: Plan defaults. Overridden per-run by ``config.auto_mode`` when supplied.
 DEFAULT_CONSECUTIVE_DENIAL_LIMIT = 3
@@ -54,9 +48,15 @@ DEFAULT_WINDOW_DENIAL_LIMIT = 10
 class _DenialCircuit:
     """Per-conversation denial counters. Opening the circuit is terminal.
 
-    Explicit policy denials and infrastructure failures are counted separately,
-    per the plan: a timeout does not prove the action was dangerous, but a run
-    of them must still terminate rather than retry forever.
+    One counter, not two. The plan asks for explicit policy denials and
+    infrastructure failures to be counted separately -- a timeout does not
+    prove an action was dangerous -- and this does not do that: `record` takes
+    a single `denied` flag. Saying so is better than a docstring that describes
+    a split the code never made. Splitting them needs an infra-failure signal
+    the enforce path does not yet produce, since every denial it can currently
+    reach is a policy decision.
+
+    In-memory and process-global, so it also does not survive a restart.
     """
 
     def __init__(self) -> None:
@@ -150,13 +150,23 @@ def auto_review_requested(
 
 
 def _budget(config: Any | None, name: str, fallback: int) -> int:
+    """A configured Guardian ceiling, clamped so it can only TIGHTEN.
+
+    The plan is explicit that these thresholds "不能由普通 project setting 无限
+    放宽": a setting that raised `guardian_consecutive_denial_limit` to 1000
+    would disable the breaker while still looking configured. Anything at or
+    below the default is honoured; anything above it is the default.
+    """
+
     auto = getattr(config, "auto_mode", None) if config is not None else None
     budgets = getattr(auto, "budgets", None) if auto is not None else None
     try:
         value = int(getattr(budgets, name, fallback) or fallback)
     except (TypeError, ValueError):
         return fallback
-    return value if value > 0 else fallback
+    if value <= 0:
+        return fallback
+    return min(value, fallback)
 
 
 def decide_unattended(
@@ -165,15 +175,20 @@ def decide_unattended(
     config: Any | None = None,
     approvals_reviewer: str | None = None,
     expected_digest: str | None = None,
+    recomputed_digest: str | None = None,
     hard_deny: bool = False,
     audit_persisted: bool = False,
     circuit_key: str | None = None,
 ) -> tuple[bool, str] | None:
     """Return (allow, message) or None to keep the legacy unattended path.
 
-    ``expected_digest`` is the durable ``action_digest`` of the request row.
-    Without it there is nothing binding the approval to a specific action, so
-    the absence of a digest is a denial, not a bypass.
+    ``expected_digest`` is the ``action_digest`` stored on the request row;
+    ``recomputed_digest`` is that same envelope hashed again from the row's own
+    fields. They are required to be equal, and both must be present. Taking a
+    single digest and merely checking it is non-empty would bind the approval
+    to nothing -- any string would do -- which is why the equality lives here,
+    with the decision, rather than at the call site where a later edit could
+    quietly drop it.
     """
 
     if not feature_enabled(config):
@@ -235,8 +250,13 @@ def decide_unattended(
         return settle(False, "denied by an existing hard policy")
     if dangerous:
         return settle(False, "guardian never auto-approves a dangerous action")
-    if not expected_digest:
+    if not expected_digest or not recomputed_digest:
         return settle(False, "no durable action digest to bind the approval to")
+    if expected_digest != recomputed_digest:
+        # The stored envelope does not hash to what its own fields say it
+        # should. Something rewrote the row, or the canonicalization moved
+        # under it; either way this is not the action anyone approved.
+        return settle(False, "action digest mismatch")
     if not audit_persisted:
         return settle(False, "approval audit is not durable yet")
     if tool not in ALLOWED_TOOLS or side_effect not in ALLOWED_SIDE_EFFECTS:
@@ -247,24 +267,4 @@ def decide_unattended(
             structural=True,
         )
 
-    envelope = exact_action_envelope(
-        tool=tool,
-        target=str(payload.get("target") or ""),
-        canonical_arguments=payload.get("canonical_arguments"),
-        side_effect_class=side_effect,
-        resource_keys=list(payload.get("resource_keys") or ()),
-        dangerous=dangerous,
-    )
-    assessment = assess_shadow(
-        envelope,
-        expected_digest=None,
-        requested_scope="once",
-        hard_deny=hard_deny,
-    )
-    if (
-        assessment.get("outcome") != "shadow_allow"
-        or assessment.get("standing_allow") is not False
-        or assessment.get("fail_closed")
-    ):
-        return settle(False, str(assessment.get("rationale") or "guardian denied"))
     return settle(True, "guardian allow_once for exact action " + expected_digest[:12])

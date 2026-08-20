@@ -122,6 +122,24 @@ def _daemon_config():
     return get_config()
 
 
+def _recomputed_action_digest(request) -> str | None:
+    """Re-derive the request row's canonical action digest, or None.
+
+    Deliberately the Store's own canonicalization rather than a second one:
+    the digest Guardian binds to has to be the digest
+    ``resolve_permission_request`` will CAS against, or the approval is bound
+    to something the store never agreed to. None on any failure -- an envelope
+    we cannot re-derive is one we cannot vouch for.
+    """
+
+    try:
+        from openai4s.storage.permissions import canonical_permission_action_digest
+
+        return canonical_permission_action_digest(request)
+    except Exception:  # noqa: BLE001 — unverifiable is not approvable
+        return None
+
+
 def _guardian_hard_deny(
     store,
     *,
@@ -619,6 +637,11 @@ class PermissionBroker:
                         store, root, proj or "default"
                     ),
                     expected_digest=created_request.get("action_digest"),
+                    # The SAME envelope the Store hashes, hashed again from the
+                    # row's own fields. Guardian compares the two: one identity
+                    # for the action, not a second one that could never agree
+                    # with the durable record it claims to bind.
+                    recomputed_digest=_recomputed_action_digest(created_request),
                     hard_deny=_guardian_hard_deny(
                         store,
                         root_frame_id=root,

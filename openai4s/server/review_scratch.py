@@ -41,22 +41,12 @@ import os
 import sys
 
 scratch = os.path.realpath(os.environ["OPENAI4S_REVIEW_SCRATCH"])
-workspace = os.path.realpath(os.environ.get("OPENAI4S_REVIEW_WORKSPACE") or scratch)
 real_open = builtins.open
 
 def open(file, mode="r", *args, **kwargs):
     path = os.path.realpath(str(file))
     writing = any(flag in str(mode) for flag in "wax+")
     if writing and not path.startswith(scratch + os.sep) and path != scratch:
-        raise RuntimeError("review scratch cannot write the formal workspace")
-    # The guard above already permits writes ONLY inside the scratch, so this
-    # second fence can add nothing but false positives once the path is known
-    # to be in the scratch. It fired on every write when no workspace was
-    # supplied, because `workspace` then defaults to the scratch itself --
-    # leaving the reviewer unable to write the one directory it owns, and so
-    # unable to recompute anything, which is the whole reason scratch exists.
-    in_scratch = path == scratch or path.startswith(scratch + os.sep)
-    if writing and workspace and not in_scratch and path.startswith(workspace + os.sep):
         raise RuntimeError("review scratch cannot write the formal workspace")
     return real_open(file, mode, *args, **kwargs)
 
