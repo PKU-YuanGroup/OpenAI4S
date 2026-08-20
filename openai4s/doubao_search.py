@@ -120,7 +120,7 @@ def _read_capped(
     response: Any,
     *,
     limit: int,
-    deadline: float,
+    exchange: HTTPExchangeDeadline,
     require_bound: bool = True,
 ) -> bytes:
     """This service's failure vocabulary over the shared bounded reader.
@@ -140,7 +140,7 @@ def _read_capped(
     return read_body_capped(
         response,
         limit=limit,
-        deadline=deadline,
+        exchange=exchange,
         on_timeout=lambda: DoubaoSearchError("Doubao search request timed out"),
         on_oversize=_oversize,
         on_truncated=lambda: DoubaoSearchError(
@@ -443,7 +443,7 @@ class DoubaoSearchService:
                 raw = _read_capped(
                     response,
                     limit=MAX_RESPONSE_BYTES,
-                    deadline=exchange.deadline,
+                    exchange=exchange,
                     require_bound=self._opener is None,
                 )
         except urllib.error.HTTPError as error:

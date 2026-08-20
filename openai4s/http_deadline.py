@@ -22,6 +22,7 @@ import http.client
 import socket
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Iterable, Iterator
 from typing import Any, Callable
@@ -189,7 +190,7 @@ def read_body_capped(
     response: Any,
     *,
     limit: int,
-    deadline: float,
+    exchange: HTTPExchangeDeadline,
     on_timeout: Callable[[], BaseException],
     on_oversize: Callable[[], BaseException],
     on_truncated: Callable[[], BaseException],
@@ -220,6 +221,12 @@ def read_body_capped(
     * An empty read is not proof of a complete body.  If the reader is still
       owed bytes, the peer cut the connection, and that is a transport failure
       -- not the invalid-JSON the caller would otherwise diagnose.
+    * The exchange owns timeout classification as well as the clock.  Its
+      watchdog can close the body socket between a positive budget check and
+      either ``settimeout`` or ``read1``; those operations can then report
+      ``OSError``, ``IncompleteRead``, or an empty chunk.  Only failures that
+      coincide with an actual watchdog expiry become ``on_timeout``.  A merely
+      late clock still cannot invalidate a body already known to be complete.
     * ``on_unbounded`` makes a missing read bound fatal.  Pass ``None`` only
       where the transport is known not to be a socket at all.
     """
@@ -244,23 +251,45 @@ def read_body_capped(
     if not callable(read_once):
         read_once = response.read
 
+    def raise_truncated_or_timeout() -> None:
+        if exchange.expired:
+            raise on_timeout() from None
+        raise on_truncated()
+
     chunks: list[bytes] = []
     total = 0
-    while not exhausted():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise on_timeout()
-        if arm is not None:
-            arm(remaining)
-        chunk = read_once(min(65_536, limit + 1 - total))
-        if not chunk:
+    while True:
+        if exhausted():
             if (_remaining_body_bytes(response) or 0) > 0:
-                raise on_truncated()
+                raise_truncated_or_timeout()
+            break
+        try:
+            remaining = exchange.remaining()
+        except HTTPExchangeTimeout:
+            raise on_timeout() from None
+        try:
+            if arm is not None:
+                arm(remaining)
+            chunk = read_once(min(65_536, limit + 1 - total))
+        except Exception:
+            # Socket shutdown is intentionally allowed to surface through
+            # several stdlib exception types.  Convert only when the watchdog
+            # really fired; otherwise preserve the transport/protocol failure.
+            if exchange.expired:
+                raise on_timeout() from None
+            raise
+        if not chunk:
+            if exchange.expired:
+                raise on_timeout() from None
+            if (_remaining_body_bytes(response) or 0) > 0:
+                raise_truncated_or_timeout()
             break
         total += len(chunk)
         if total > limit:
             raise on_oversize()
         chunks.append(chunk)
+    if exchange.expired:
+        raise on_timeout() from None
     return b"".join(chunks)
 
 
@@ -533,7 +562,18 @@ class HTTPExchangeDeadline:
     def open(self, opener: Any, request: urllib.request.Request) -> Any:
         """Open through urllib while the same budget covers response headers."""
 
-        response = opener.open(request, timeout=self.remaining())  # noqa: S310
+        try:
+            response = opener.open(request, timeout=self.remaining())  # noqa: S310
+        except urllib.error.HTTPError:
+            # HTTP status handling is a caller contract (including MCP session
+            # expiry) and must not be replaced by a coincident watchdog tick.
+            raise
+        except (OSError, http.client.HTTPException):
+            if self.expired:
+                raise HTTPExchangeTimeout(
+                    "HTTP exchange exceeded its absolute deadline"
+                ) from None
+            raise
         self.register_response(response)
         self.remaining()
         return response

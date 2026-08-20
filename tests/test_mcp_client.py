@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from openai4s import mcp_client
+from openai4s import mcp_client, mcp_http
 from openai4s.http_deadline import (
     HTTPExchangeDeadline,
     HTTPExchangeTimeout,
@@ -31,7 +31,7 @@ from openai4s.mcp_client import (
     example_server_config,
 )
 from openai4s.mcp_http import MCPHTTPConnection
-from openai4s.mcp_protocol import MCPTimeout
+from openai4s.mcp_protocol import MCPOversizedResponse, MCPTimeout
 from openai4s.mcp_servers.example_server import RESOURCE_URI
 
 
@@ -123,7 +123,16 @@ def _socketpair_deadline_opener(
 
 
 @pytest.mark.stubbed_backend
-def test_absolute_exchange_deadline_interrupts_opener_during_response_headers():
+@pytest.mark.parametrize(
+    "initial_response",
+    [
+        b"HTTP/1.1 200 OK\r\nX-Slow: unfinished",
+        b"HTTP/1.",
+    ],
+)
+def test_absolute_exchange_deadline_interrupts_opener_during_response_headers(
+    initial_response,
+):
     """A slow header cannot turn urllib's idle timeout into an infinite open.
 
     The peer supplies a valid status and starts a header, but never terminates
@@ -133,7 +142,7 @@ def test_absolute_exchange_deadline_interrupts_opener_during_response_headers():
 
     secret = "timer-secret-canary"
     client, peer = socket.socketpair()
-    peer.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: unfinished")
+    peer.sendall(initial_response)
     stop_drip = threading.Event()
 
     def drip_header() -> None:
@@ -177,6 +186,32 @@ def test_absolute_exchange_deadline_interrupts_opener_during_response_headers():
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
     assert secret not in repr(exchange.__dict__)
+
+
+@pytest.mark.stubbed_backend
+def test_absolute_exchange_deadline_preserves_http_status_errors():
+    exchange = HTTPExchangeDeadline(1.0)
+    status_error = urllib.error.HTTPError(
+        "https://deadline.invalid/status",
+        404,
+        "not found",
+        {},
+        None,
+    )
+
+    class _Opener:
+        def open(self, _request, timeout=None):
+            assert timeout is not None and timeout > 0
+            exchange._expire()
+            raise status_error
+
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        exchange.open(
+            _Opener(),
+            urllib.request.Request("https://deadline.invalid/status"),
+        )
+
+    assert caught.value is status_error
 
 
 @pytest.mark.stubbed_backend
@@ -286,7 +321,8 @@ def test_streamable_http_body_reader_prefers_one_raw_read_per_deadline_check():
     connection._timeout = 2.0
     response = _Read1OnlyResponse()
 
-    body = connection._read_body(response, time.monotonic() + 2.0)
+    exchange = HTTPExchangeDeadline(2.0)
+    body = connection._read_body(response, exchange)
 
     assert body == b"one-read"
     assert response.read1_calls == 3
@@ -366,13 +402,63 @@ def test_streamable_http_body_reader_stops_when_the_transport_retires():
     connection._timeout = 2.0
     response = _EndOfBodyClosingResponse(payload)
 
-    body = connection._read_body(response, time.monotonic() + 2.0)
+    exchange = HTTPExchangeDeadline(2.0)
+    body = connection._read_body(response, exchange)
 
     assert body == payload
     assert response.isclosed() is True
     assert response.socket.fileno() == -1
     assert len(response.socket.timeouts) == response.read1_calls
     assert all(0 < value <= 2.0 for value in response.socket.timeouts)
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_body_watchdog_interrupts_a_chunked_slow_drip():
+    client, peer = socket.socketpair()
+    peer.sendall(
+        b"HTTP/1.1 200 OK\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"Content-Type: application/json\r\n"
+        b"\r\n"
+    )
+    stop_drip = threading.Event()
+
+    def drip_partial_chunk_line() -> None:
+        for piece in (b"1", b"\r"):
+            if stop_drip.wait(0.05):
+                return
+            try:
+                peer.sendall(piece)
+            except OSError:
+                return
+
+    producer = threading.Thread(
+        target=drip_partial_chunk_line,
+        name="slow-chunked-body-upstream",
+    )
+    producer.start()
+    exchange = HTTPExchangeDeadline(0.2)
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 0.2
+    started = time.monotonic()
+    try:
+        with pytest.raises(MCPTimeout, match="exceeded 0.2s"):
+            with exchange:
+                opener = _socketpair_deadline_opener(exchange, client)
+                with exchange.open(
+                    opener,
+                    urllib.request.Request("https://deadline.invalid/slow-body"),
+                ) as response:
+                    connection._read_body(response, exchange)
+    finally:
+        stop_drip.set()
+        peer.close()
+        client.close()
+        producer.join(1.0)
+
+    assert 0.15 <= time.monotonic() - started < 1.0
+    assert exchange.expired is True
+    assert not producer.is_alive()
 
 
 @pytest.mark.stubbed_backend
@@ -425,8 +511,9 @@ def test_streamable_http_slow_drip_cannot_refresh_the_absolute_timeout(monkeypat
     connection._timeout = 1.0
     response = _SlowDripResponse()
 
+    exchange = HTTPExchangeDeadline(1.0)
     with pytest.raises(MCPTimeout, match="exceeded 1s"):
-        connection._read_body(response, 101.0)
+        connection._read_body(response, exchange)
 
     assert response.read1_calls == 3
     assert response.socket.timeouts == pytest.approx([1.0, 0.6, 0.2])
@@ -436,6 +523,123 @@ def test_streamable_http_slow_drip_cannot_refresh_the_absolute_timeout(monkeypat
             response.socket.timeouts, response.socket.timeouts[1:]
         )
     )
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_rejects_truncated_and_unbounded_bodies():
+    class _ShortResponse(_HTTPResponse):
+        def __init__(self, body, declared):
+            super().__init__(
+                200,
+                body,
+                {"Content-Length": str(declared)},
+            )
+            self.length = declared
+
+        def read(self, size=-1):
+            chunk = super().read(size)
+            self.length -= len(chunk)
+            return chunk
+
+    class _UnboundedResponse:
+        headers = _HTTPHeaders()
+
+        def read(self, _size=-1):
+            raise AssertionError("an unbounded response must not be read")
+
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+    body = b'{"jsonrpc":"2.0"}'
+    short = _ShortResponse(body, len(body) + 9)
+
+    with pytest.raises(MCPError, match="ended before its declared length"):
+        connection._read_body(short, HTTPExchangeDeadline(2.0))
+    assert short.length == 9
+
+    with pytest.raises(MCPError, match="no bounded read transport"):
+        connection._read_body(_UnboundedResponse(), HTTPExchangeDeadline(2.0))
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("failure_point", ["arm", "read", "empty"])
+def test_streamable_http_watchdog_failures_remain_timeouts(failure_point):
+    exchange = HTTPExchangeDeadline(2.0)
+
+    class _Transport:
+        def settimeout(self, _value):
+            if failure_point == "arm":
+                exchange._expire()
+                raise OSError(errno.EBADF, "watchdog closed the socket")
+
+    class _Response:
+        headers = _HTTPHeaders(
+            {"Content-Length": "1"} if failure_point == "empty" else {}
+        )
+        length = 1 if failure_point == "empty" else None
+
+        def __init__(self):
+            transport = _Transport()
+            self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=transport))
+
+        def read1(self, _size):
+            exchange._expire()
+            if failure_point == "read":
+                raise http.client.IncompleteRead(b"")
+            return b""
+
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+
+    with pytest.raises(MCPTimeout, match="exceeded 2s"):
+        connection._read_body(_Response(), exchange)
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_complete_body_survives_a_late_clock_without_expiry():
+    response = _HTTPResponse(200, b"", {"Content-Length": "0"})
+    response.length = 0
+    exchange = HTTPExchangeDeadline(2.0)
+    exchange.deadline = time.monotonic() - 1.0
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+
+    assert connection._read_body(response, exchange) == b""
+    assert exchange.expired is False
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_observed_truncation_survives_a_late_clock_without_expiry():
+    response = _HTTPResponse(200, b"", {"Content-Length": "1"})
+    response.length = 1
+    response.isclosed = lambda: True
+    exchange = HTTPExchangeDeadline(2.0)
+    exchange.deadline = time.monotonic() - 1.0
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+
+    with pytest.raises(MCPError, match="ended before its declared length"):
+        connection._read_body(response, exchange)
+    assert exchange.expired is False
+
+
+@pytest.mark.stubbed_backend
+def test_streamable_http_body_cap_covers_header_stream_and_exact_boundary(
+    monkeypatch,
+):
+    monkeypatch.setattr(mcp_http, "_MAX_FRAME_BYTES", 4)
+    connection = object.__new__(MCPHTTPConnection)
+    connection._timeout = 2.0
+
+    announced = _HTTPResponse(200, b"1234", {"Content-Length": "5"})
+    with pytest.raises(MCPOversizedResponse):
+        connection._read_body(announced, HTTPExchangeDeadline(2.0))
+
+    streamed = _HTTPResponse(200, b"12345")
+    with pytest.raises(MCPOversizedResponse):
+        connection._read_body(streamed, HTTPExchangeDeadline(2.0))
+
+    exact = _HTTPResponse(200, b"1234")
+    assert connection._read_body(exact, HTTPExchangeDeadline(2.0)) == b"1234"
 
 
 def test_connector_environment_is_allowlisted_and_explicit_env_is_the_secret_boundary():

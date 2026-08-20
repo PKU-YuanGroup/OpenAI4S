@@ -332,7 +332,11 @@ class MCPHTTPConnection:
                 f"MCP HTTP request was blocked by network policy ({type(exc).__name__})"
             ) from None
 
-    def _read_body(self, response: Any, deadline: float) -> bytes:
+    def _read_body(
+        self,
+        response: Any,
+        exchange: HTTPExchangeDeadline,
+    ) -> bytes:
         """This transport's failure vocabulary over the shared bounded reader.
 
         The loop itself lives in ``http_deadline`` so that the properties it
@@ -348,7 +352,7 @@ class MCPHTTPConnection:
         return read_body_capped(
             response,
             limit=_MAX_FRAME_BYTES,
-            deadline=deadline,
+            exchange=exchange,
             on_timeout=lambda: MCPTimeout(
                 f"MCP HTTP request exceeded {self._timeout:g}s"
             ),
@@ -420,7 +424,7 @@ class MCPHTTPConnection:
                     if session is not None:
                         self._session = _session_id(session)
                     content_type = response.headers.get("Content-Type", "")
-                    response_body = self._read_body(response, exchange.deadline)
+                    response_body = self._read_body(response, exchange)
                     if expected_id is None:
                         return None
         except urllib.error.HTTPError as exc:

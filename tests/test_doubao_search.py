@@ -36,6 +36,7 @@ from openai4s.http_deadline import (
     HTTPExchangeTimeout,
     _arm_read_timeout,
     _socket_retired,
+    response_body_exhausted,
 )
 from openai4s.store import Store
 
@@ -109,16 +110,22 @@ class _EndOfBodyClosingResponse:
     whichever interpreter happens to run the suite.
     """
 
-    def __init__(self, payload, *, chunk_bytes: int = 16):
+    def __init__(
+        self,
+        payload,
+        *,
+        chunk_bytes: int = 16,
+        declared_extra: int = 0,
+    ):
         self._body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._offset = 0
         self._chunk_bytes = chunk_bytes
-        self.length = len(self._body)
+        self.length = len(self._body) + declared_extra
         self.socket = _RetiringSocket()
         self.fp = types.SimpleNamespace(_sock=self.socket)
         self.headers = {
             "Content-Type": "application/json",
-            "Content-Length": str(len(self._body)),
+            "Content-Length": str(self.length),
         }
         self.status = 200
         self.read1_calls = 0
@@ -661,6 +668,37 @@ def test_a_completely_read_body_is_not_reported_as_a_failed_request(tmp_path):
     assert len(response.socket.timeouts) == response.read1_calls
     assert all(0 < value <= 15.0 for value in response.socket.timeouts)
     assert response.socket.timeouts == sorted(response.socket.timeouts, reverse=True)
+
+
+def test_a_body_cut_short_of_content_length_is_a_transport_failure(tmp_path):
+    response = _EndOfBodyClosingResponse(
+        _successful_payload(),
+        declared_extra=17,
+    )
+    opener = _RecordingOpener([response])
+    _store_obj, service = _service(tmp_path, opener)
+
+    with pytest.raises(DoubaoSearchError, match="ended before its declared length"):
+        service.search("valid JSON must still obey HTTP framing")
+
+    assert response.length == 17
+
+
+def test_body_exhaustion_requires_exact_stdlib_signals():
+    class _RaisingClosedProbe:
+        length = 0
+
+        def isclosed(self):
+            raise ValueError("reader already closed")
+
+    assert response_body_exhausted(_RaisingClosedProbe()) is True
+    assert (
+        response_body_exhausted(
+            types.SimpleNamespace(isclosed=lambda: object(), length=1)
+        )
+        is False
+    )
+    assert response_body_exhausted(types.SimpleNamespace(length=False)) is False
 
 
 def test_a_socket_urllib_already_closed_still_takes_its_read_bound():
