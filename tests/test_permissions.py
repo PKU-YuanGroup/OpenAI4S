@@ -1604,3 +1604,91 @@ def test_guardian_hard_deny_does_not_read_a_filename_as_a_hostname(
         )
     finally:
         store.close()
+
+
+def _web_session(monkeypatch, tmp_path, selection):
+    import threading
+
+    monkeypatch.setenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", "1")
+    from openai4s.store import Store
+
+    store = Store(tmp_path / "web.db")
+    broker().set_approvals_reviewer_resolver(lambda st, r, p: selection)
+    events: list[dict] = []
+    broker().register_channel("fr-web", events.append, threading.Event(), store=store)
+    return store, events
+
+
+def test_a_web_session_on_auto_review_is_adjudicated_not_parked(monkeypatch, tmp_path):
+    """Gating the Guardian on `chan is None` meant Web Auto Mode still waited
+    on an approval card -- so the mode did nothing in the surface where it is
+    actually configured. A browser being open does not withdraw the choice."""
+
+    from openai4s.server.guardian_enforce import circuit
+
+    store, events = _web_session(monkeypatch, tmp_path, "auto_review")
+    try:
+
+        def gate(method, target, side_effect):
+            circuit().reset("fr-web")
+            return bool(
+                broker()
+                .gate(
+                    store=store,
+                    frame_id="fr-web",
+                    method=method,
+                    target=target,
+                    side_effect_class=side_effect,
+                    view=(method, method, {}),
+                    timeout=3.0,
+                )
+                .get("allow")
+            )
+
+        assert gate("read_file", str(tmp_path / "d.csv"), "read_only") is True
+        assert gate("write_file", str(tmp_path / "o.txt"), "workspace_write") is False
+
+        kinds = [item.get("type") for item in events]
+        assert "await_permission" not in kinds, "a human card was raised anyway"
+        actors = {
+            item.get("resolution_actor")
+            for item in events
+            if item.get("type") == "permission_resolved"
+        }
+        assert actors == {"guardian"}
+    finally:
+        broker().unregister_channel("fr-web")
+        broker().set_approvals_reviewer_resolver(None)
+        store.close()
+
+
+def test_a_web_session_on_user_still_raises_the_approval_card(monkeypatch, tmp_path):
+    """ "user" means a HUMAN decides, and here one is reachable."""
+
+    import threading
+
+    store, events = _web_session(monkeypatch, tmp_path, "user")
+    try:
+        done = threading.Event()
+
+        def run():
+            broker().gate(
+                store=store,
+                frame_id="fr-web",
+                method="read_file",
+                target=str(tmp_path / "d.csv"),
+                side_effect_class="read_only",
+                view=("read_file", "read", {}),
+                timeout=1.0,
+            )
+            done.set()
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        done.wait(timeout=15)
+        worker.join(timeout=5)
+        assert "await_permission" in [item.get("type") for item in events]
+    finally:
+        broker().unregister_channel("fr-web")
+        broker().set_approvals_reviewer_resolver(None)
+        store.close()

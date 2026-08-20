@@ -744,8 +744,13 @@ def cmd_url(args) -> int:
 
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
+    from openai4s.agent.loop import enable_auto_run_environment, review_cli_result
     from openai4s.kernel.readiness import EnvironmentReadinessError
 
+    auto_applied: dict[str, str] = {}
+    if getattr(args, "auto", False):
+        # Before get_config(), which reads these at construction.
+        auto_applied = enable_auto_run_environment()
     cfg = get_config()
     try:
         result = Agent(cfg=cfg, verbose=args.verbose).run(args.task)
@@ -764,6 +769,16 @@ def cmd_run(args) -> int:
         else:
             print(f"error: {payload['error']}", file=sys.stderr)
         return 2
+    if getattr(args, "auto", False):
+        # A machine-readable terminal is the point of --auto: CI needs to tell
+        # "ran and was verified" from "ran and nobody checked".
+        review = review_cli_result(args.task, result, cfg=cfg)
+        result = dict(result)
+        result["auto_mode"] = {
+            "preset": "autonomous",
+            "enabled_environment": auto_applied,
+            **review,
+        }
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -775,6 +790,14 @@ def cmd_run(args) -> int:
             )
         if result.get("final_message"):
             print("final:", result["final_message"])
+        auto = result.get("auto_mode")
+        if auto:
+            print(f"=== review: {auto['terminal']} — {auto['user_truth']} ===")
+            for item in auto.get("findings") or []:
+                print(
+                    f"  - {item.get('severity')} {item.get('category')}: "
+                    f"{str(item.get('claim_ref'))[:80]}"
+                )
     return 0
 
 
@@ -1858,6 +1881,16 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    pr.add_argument(
+        "--auto",
+        action="store_true",
+        help=(
+            "autonomous Auto Mode: boundary actions go to the Guardian instead "
+            "of failing closed, and the result is reviewed before the run "
+            "reports a terminal. NOT full access -- the Guardian's active "
+            "surface is a read-only allowlist bound to a verified action digest"
+        ),
+    )
     pr.set_defaults(fn=cmd_run)
 
     pi = sub.add_parser("init", help="guided first-run model configuration")

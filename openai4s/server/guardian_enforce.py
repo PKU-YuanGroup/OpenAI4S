@@ -178,6 +178,7 @@ def decide_unattended(
     recomputed_digest: str | None = None,
     hard_deny: bool = False,
     audit_persisted: bool = False,
+    interactive: bool = False,
     circuit_key: str | None = None,
 ) -> tuple[bool, str] | None:
     """Return (allow, message) or None to keep the legacy unattended path.
@@ -202,6 +203,14 @@ def decide_unattended(
         # `curl | sh`. An absent selection is different: nobody recorded one,
         # so the operator's environment remains the only expressed intent.
         if str(approvals_reviewer or "") == "user":
+            # "user" means a HUMAN decides. When one is reachable, say nothing
+            # and let the approval card do its job. When one is not, this is a
+            # denial rather than a hand-back: returning None headless drops to
+            # the legacy path, where OPENAI4S_UNATTENDED_APPROVAL=allow approves
+            # everything -- which made the safe default more permissive than
+            # opting in, and let a quarantined session auto-approve `curl | sh`.
+            if interactive:
+                return None
             return False, "this conversation requires a human approver"
         return None
 

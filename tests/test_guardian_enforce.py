@@ -341,3 +341,36 @@ def test_structural_refusals_do_not_open_the_circuit():
     assert allowed is False
     assert "blocked_by_guardian" in message
     circuit().reset("k")
+
+
+def test_user_selection_defers_to_the_card_only_when_someone_is_there():
+    """ "user" means a HUMAN decides -- so it depends on one being reachable.
+
+    Interactive: say nothing and let the approval card do its job. Headless:
+    deny, because returning None there drops to the legacy path where
+    OPENAI4S_UNATTENDED_APPROVAL=allow approves everything.
+    """
+
+    assert _decide(approvals_reviewer="user", interactive=True) is None
+
+    allowed, message = _decide(approvals_reviewer="user", interactive=False)
+    assert allowed is False
+    assert "human approver" in message
+
+
+def test_auto_review_is_adjudicated_whether_or_not_a_browser_is_open():
+    """A session that chose auto_review asked not to wait for a human, and an
+    open browser does not withdraw that."""
+
+    for interactive in (True, False):
+        allowed, message = _decide(
+            approvals_reviewer="auto_review", interactive=interactive
+        )
+        assert allowed is True, interactive
+        assert "allow_once" in message
+        denied, _ = _decide(
+            _payload(tool="write_file", side_effect_class="workspace_write"),
+            approvals_reviewer="auto_review",
+            interactive=interactive,
+        )
+        assert denied is False, interactive

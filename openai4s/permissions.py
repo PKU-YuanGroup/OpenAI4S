@@ -473,6 +473,67 @@ class PermissionBroker:
         except Exception:  # noqa: BLE001 — an unreadable selection is not consent
             return "user"
 
+    def _resolve_guardian_decision(
+        self,
+        store,
+        *,
+        decision_id: str,
+        root: str | None,
+        chan: dict | None,
+        created_request: dict,
+        decision: tuple[bool, str],
+    ) -> dict:
+        """Commit one Guardian verdict and tell the UI, if anyone is watching.
+
+        The durable resolution is the decision; the event is only how a browser
+        finds out. A CAS failure here downgrades to deny, because an approval
+        the store would not commit is not an approval.
+        """
+
+        allowed, message = decision
+        state = "allowed" if allowed else "denied"
+        try:
+            resolved = store.resolve_permission_request(
+                decision_id,
+                state=state,
+                scope="once",
+                message=message,
+                resolution_context="guardian",
+                expected_action_digest=(
+                    created_request.get("action_digest") if allowed else None
+                ),
+            )
+            allowed = bool(allowed and resolved.get("state") == "allowed")
+            actual_state = str(resolved.get("state") or state)
+            if state == "allowed" and not allowed:
+                message = "approval expired before it could be committed"
+        except Exception:  # noqa: BLE001 — an uncommittable approval is a denial
+            allowed = False
+            actual_state = "failed"
+            message = "approval persistence failed closed"
+        if chan is not None:
+            # Same event the human path emits, so an open browser sees the card
+            # resolve instead of waiting on an answer that already happened.
+            try:
+                chan["emit"](
+                    {
+                        "type": "permission_resolved",
+                        "frame_id": root,
+                        "decision_id": decision_id,
+                        "allow": allowed,
+                        "scope": "once",
+                        "state": actual_state,
+                        "resolution_actor": "guardian",
+                    }
+                )
+            except Exception:  # noqa: BLE001 — delivery is not the decision
+                pass
+        return {
+            "allow": allowed,
+            "decision_id": decision_id,
+            **({} if allowed else {"message": message}),
+        }
+
     # --- the gate (called by HostDispatcher, on the turn thread) ----------
     def gate(
         self,
@@ -613,56 +674,75 @@ class PermissionBroker:
             chan = self._channels.get(root)
             if chan is not None and chan.get("store") is None:
                 chan["store"] = store
+
+        # Guardian is consulted BEFORE the channel is considered. A session that
+        # selected `approvals_reviewer=auto_review` asked not to wait for a
+        # human, and a browser being open does not withdraw that: gating the
+        # consult on `chan is None` meant Web Auto Mode still parked on an
+        # approval card, so the mode did nothing in the surface where it is
+        # actually configured. `approvals_reviewer=user` is the human-card path,
+        # and it stays exactly that -- `decide_unattended` returns a denial for
+        # a recorded `user` and None when nobody recorded anything.
+        guardian_decision = None
+        try:
+            from openai4s.server.guardian_enforce import decide_unattended
+
+            # The Guardian is asked about the DURABLE action, not the UI
+            # projection: `action_digest` is what `resolve_permission_request`
+            # will CAS against below, so binding the approval to anything
+            # else would grant permission for an action the store cannot
+            # confirm. `canonical_arguments` likewise comes from the row,
+            # not from `payload["input"]`, which is truncated and redacted.
+            guardian_decision = decide_unattended(
+                {
+                    **payload,
+                    "canonical_arguments": canonical_arguments,
+                },
+                config=_daemon_config(),
+                approvals_reviewer=self._approvals_reviewer(
+                    store, root, proj or "default"
+                ),
+                expected_digest=created_request.get("action_digest"),
+                # The SAME envelope the Store hashes, hashed again from the
+                # row's own fields. Guardian compares the two: one identity
+                # for the action, not a second one that could never agree
+                # with the durable record it claims to bind.
+                recomputed_digest=_recomputed_action_digest(created_request),
+                hard_deny=_guardian_hard_deny(
+                    store,
+                    root_frame_id=root,
+                    project_id=proj or "default",
+                    tool=method,
+                    target=target,
+                ),
+                audit_persisted=bool(created_request.get("decision_id")),
+                circuit_key=str(root or did),
+                # Only the broker knows whether anyone is actually there to ask.
+                interactive=chan is not None,
+            )
+        except Exception:  # noqa: BLE001 - fall back to fail-closed deny
+            guardian_decision = None
+
+        if guardian_decision is not None:
+            return self._resolve_guardian_decision(
+                store,
+                decision_id=did,
+                root=root,
+                chan=chan,
+                created_request=created_request,
+                decision=guardian_decision,
+            )
+
         if chan is None:
             unattended = (
                 os.environ.get("OPENAI4S_UNATTENDED_APPROVAL", "deny").strip().lower()
             )
-            guardian_decision = None
-            try:
-                from openai4s.server.guardian_enforce import decide_unattended
-
-                # The Guardian is asked about the DURABLE action, not the UI
-                # projection: `action_digest` is what `resolve_permission_request`
-                # will CAS against below, so binding the approval to anything
-                # else would grant permission for an action the store cannot
-                # confirm. `canonical_arguments` likewise comes from the row,
-                # not from `payload["input"]`, which is truncated and redacted.
-                guardian_decision = decide_unattended(
-                    {
-                        **payload,
-                        "canonical_arguments": canonical_arguments,
-                    },
-                    config=_daemon_config(),
-                    approvals_reviewer=self._approvals_reviewer(
-                        store, root, proj or "default"
-                    ),
-                    expected_digest=created_request.get("action_digest"),
-                    # The SAME envelope the Store hashes, hashed again from the
-                    # row's own fields. Guardian compares the two: one identity
-                    # for the action, not a second one that could never agree
-                    # with the durable record it claims to bind.
-                    recomputed_digest=_recomputed_action_digest(created_request),
-                    hard_deny=_guardian_hard_deny(
-                        store,
-                        root_frame_id=root,
-                        project_id=proj or "default",
-                        tool=method,
-                        target=target,
-                    ),
-                    audit_persisted=bool(created_request.get("decision_id")),
-                    circuit_key=str(root or did),
-                )
-            except Exception:  # noqa: BLE001 - fall back to fail-closed deny
-                guardian_decision = None
-            if guardian_decision is not None:
-                allowed, message = guardian_decision
-            else:
-                allowed = unattended == "allow"
-                message = (
-                    "allowed by explicit unattended approval policy"
-                    if allowed
-                    else "approval required but no interactive channel is attached"
-                )
+            allowed = unattended == "allow"
+            message = (
+                "allowed by explicit unattended approval policy"
+                if allowed
+                else "approval required but no interactive channel is attached"
+            )
             state = "allowed" if allowed else "denied"
             try:
                 resolved_request = store.resolve_permission_request(
