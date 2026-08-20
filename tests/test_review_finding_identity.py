@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -219,14 +219,14 @@ def test_a_collision_no_longer_strands_the_branch_in_reviewing(tmp_path):
     """Why the fix needs no data migration for existing databases.
 
     The collision rolled `complete_review` back, so the Auto Run stayed in
-    `reviewing` -- not a terminal status -- and `start_run` then refused every
-    later turn on that branch. Because the exception escaped, the gate never
-    reached `terminate_auto_mode_run`, so nothing closed the run either.
+    `reviewing` -- not a terminal status -- and later work on that branch was
+    refused. The current gate returns a reviewed proposal first; the delivery
+    finalizer then commits its terminal state.
 
-    Both frames now reach a terminal, so no branch is left blocked. Databases
-    that were already stranded do not need a migration: the run carries the
-    dead daemon's `owner_instance_id`, and boot-time reconciliation abandons it
-    (see `test_auto_mode_recovery_regressions.py`).
+    Both proposals can now be finalized, so no branch is left blocked.
+    Databases that were already stranded do not need a migration: the run
+    carries the dead daemon's `owner_instance_id`, and boot-time reconciliation
+    abandons it (see `test_auto_mode_recovery_regressions.py`).
     """
 
     store = _store(tmp_path)
@@ -234,12 +234,82 @@ def test_a_collision_no_longer_strands_the_branch_in_reviewing(tmp_path):
     _frame(store, "root-2")
     gate = _gate(store, _cfg())
 
-    _run(gate, "root-1", "turn-1")
-    _run(gate, "root-2", "turn-2")
+    first = _run(gate, "root-1", "turn-1")
+    second = _run(gate, "root-2", "turn-2")
+    for frame_id, reviewed in (("root-1", first), ("root-2", second)):
+        finalized = gate.finalize_after_delivery(
+            frame_id, frame_id, reviewed, delivered=True
+        )
+        assert finalized["terminal"] == "completed_with_issues", finalized
+        assert finalized["durable_terminal"] is True
 
     for frame_id in ("root-1", "root-2"):
         run = store.project_auto_mode_run(frame_id, frame_id)["run"]
         assert run is not None, frame_id
         assert run["status"] != "reviewing", (frame_id, run["status"])
         assert run["status"] == "completed_with_issues", (frame_id, run["status"])
+    store.close()
+
+
+def test_the_review_step_and_the_findings_table_agree_on_every_id(tmp_path):
+    """Three records of one finding, one id.
+
+    The durable close writes the findings table before the visible review step,
+    whose output JSON embeds the same findings. Binding before that close keeps
+    both records aligned; assigning an id to only one writer would recreate the
+    same two-records-disagreeing shape one layer up, and a test that reads only
+    the table would miss it.
+    """
+
+    store = _store(tmp_path)
+    _frame(store, "root-1")
+    _run(_gate(store, _cfg()), "root-1", "turn-1")
+
+    stored = {
+        row["finding_id"]
+        for row in store._conn.execute("SELECT finding_id FROM review_findings")
+    }
+    assert stored
+
+    steps = [
+        json.loads(row["output"])
+        for row in store._conn.execute(
+            "SELECT output FROM frame_steps WHERE kind='review' AND output IS NOT NULL"
+        )
+    ]
+    quoted = {
+        str(finding["finding_id"])
+        for step in steps
+        for finding in (step.get("findings") or [])
+        if finding.get("finding_id")
+    }
+    assert quoted, "the review step records its findings"
+    assert quoted <= stored, sorted(quoted - stored)
+    store.close()
+
+
+def test_read_only_mapping_finding_is_normalized_and_persisted(tmp_path):
+    """A valid Mapping must not disappear merely because it is immutable."""
+
+    store = _store(tmp_path)
+    _frame(store, "root-1")
+    gate = _gate(store, _cfg())
+    review = gate.scientific_review
+    evaluate = review.evaluate
+
+    def _read_only_findings(*args, **kwargs):
+        result = evaluate(*args, **kwargs)
+        result["findings"] = [
+            MappingProxyType(dict(item)) for item in result.get("findings") or []
+        ]
+        return result
+
+    review.evaluate = _read_only_findings
+    result = _run(gate, "root-1", "turn-1")
+
+    assert len(result["findings"]) == 1
+    assert isinstance(result["findings"][0], dict)
+    finding_id = result["findings"][0]["finding_id"]
+    stored = store._conn.execute("SELECT finding_id FROM review_findings").fetchall()
+    assert [row["finding_id"] for row in stored] == [finding_id]
     store.close()

@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import asdict
 from typing import Any
 
@@ -50,10 +50,9 @@ def scoped_finding_id(review_run_id: str, fingerprint: str) -> str:
 
     Global uniqueness still has to hold, because the session-import owner check
     looks a finding up by id alone (`SELECT run_id FROM review_findings WHERE
-    finding_id=?`). Hashing the review scope together with the fingerprint
-    keeps that: the table already declares `UNIQUE(review_run_id, fingerprint)`,
-    so at most one row can exist per pair, and this function is injective on
-    those pairs.
+    finding_id=?`). Hashing the review scope together with the fingerprint gives
+    each allowed pair a stable, collision-resistant identity; the table also
+    declares `UNIQUE(review_run_id, fingerprint)`.
     """
 
     digest = hashlib.sha256(
@@ -1402,6 +1401,46 @@ class ScientificReviewService:
             "close_event_id": close_event.get("event_id") if closed else None,
         }
 
+    def _bind_finding_identities(
+        self, review_run_id: str, result: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Give every finding the durable id it will be stored under.
+
+        Idempotent: :func:`scoped_finding_id` is a pure function of the review
+        run and the fingerprint, so calling this again cannot change an answer.
+        That is what lets `close_review_run` stay correct when called on its
+        own, without the caller having to remember to bind first. Read-only
+        mappings are normalized so a valid finding is never silently omitted.
+        """
+
+        bound: list[dict[str, Any]] = []
+        for item in result.get("findings") or []:
+            if not isinstance(item, Mapping):
+                continue
+            normalized = dict(item)
+            fingerprint = normalized.get("fingerprint")
+            if not fingerprint:
+                rebuilt = self._finding(
+                    severity=str(normalized.get("severity") or "medium"),
+                    category=str(normalized.get("category") or "other"),
+                    claim_ref=str(
+                        normalized.get("claim_ref")
+                        or normalized.get("claim")
+                        or "finding"
+                    ),
+                    evidence_refs=list(normalized.get("evidence_refs") or []),
+                    reproduction=str(normalized.get("reproduction") or ""),
+                )
+                fingerprint = rebuilt["fingerprint"]
+                normalized["fingerprint"] = fingerprint
+            normalized["finding_id"] = scoped_finding_id(
+                review_run_id, str(fingerprint)
+            )
+            bound.append(normalized)
+        if isinstance(result, MutableMapping):
+            result["findings"] = bound
+        return bound
+
     def close_review_run(
         self,
         handle: Mapping[str, Any],
@@ -1412,30 +1451,14 @@ class ScientificReviewService:
         """Record the verdict on the review opened by :meth:`open_review_run`."""
 
         review_run_id = str(handle["review_run_id"])
+        # Idempotent, and the reason the id the caller goes on to quote is the
+        # id that was stored: Stage 5 hands these to `start_auto_mode_repair`,
+        # which checks they exist.
+        bound_findings = self._bind_finding_identities(review_run_id, result)
         findings = []
-        for item in result.get("findings") or []:
-            if not isinstance(item, Mapping):
-                continue
-            fingerprint = item.get("fingerprint")
-            if not fingerprint:
-                rebuilt = self._finding(
-                    severity=str(item.get("severity") or "medium"),
-                    category=str(item.get("category") or "other"),
-                    claim_ref=str(
-                        item.get("claim_ref") or item.get("claim") or "finding"
-                    ),
-                    evidence_refs=list(item.get("evidence_refs") or []),
-                    reproduction=str(item.get("reproduction") or ""),
-                )
-                fingerprint = rebuilt["fingerprint"]
-            # Assigned here, where the review scope first exists, and written
-            # back onto the caller's finding so the id it goes on to quote --
-            # Stage 5 passes these to `start_auto_mode_repair`, which checks
-            # they exist -- is the id that was actually stored.
-            finding_id = scoped_finding_id(review_run_id, str(fingerprint))
-            if isinstance(item, dict):
-                item["finding_id"] = finding_id
-                item["fingerprint"] = fingerprint
+        for item in bound_findings:
+            fingerprint = str(item.get("fingerprint") or "")
+            finding_id = str(item.get("finding_id") or "")
             findings.append(
                 {
                     "finding_id": finding_id,
