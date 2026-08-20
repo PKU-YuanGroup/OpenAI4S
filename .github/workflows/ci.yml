@@ -253,7 +253,26 @@ jobs:
         run: uv run pytest --collect-only -q
       - name: Run the offline suite (no secrets, no network, no hardware)
         # addopts already passes -q; a second -q would suppress the summary line.
-        run: uv run pytest
+        #
+        # `-n auto` because this one command *was* CI: 1094 of this job's 1122
+        # seconds were spent here, and the other sixteen jobs put together came
+        # to under eight minutes. Nothing else on the critical path was worth
+        # optimising while the suite ran on one core.
+        #
+        # `--dist loadfile`, not the default `load`. The default hands out
+        # individual tests, which asserts that any two tests in a module may run
+        # in different processes -- a property nothing here has ever had to
+        # hold, because nothing here has ever run in parallel. loadfile asserts
+        # only that two *files* are independent, which is the boundary the suite
+        # was actually written to: `tests/conftest.py` redirects `~/.openai4s`
+        # per test, and every test server binds ("127.0.0.1", 0) rather than a
+        # fixed port, so files do not contend. Within a file, ordering and any
+        # module-level state stay exactly as they are today.
+        #
+        # Scaling is linear at this width (1572 worker-seconds over 4 workers in
+        # 393s), so the per-file granularity is costing nothing: no single file
+        # is long enough to be the tail.
+        run: uv run pytest -n auto --dist loadfile
       # After the suite, not before it: the pytest gate must never sit behind
       # a command that can fail it (tests/test_ci_gate_independence.py). The
       # importorskip guards make a missing science stack a *silent* skip, and
@@ -331,8 +350,37 @@ jobs:
   # guessing. Its own job anyway: "the schema gate did not get to run" and "the
   # schema gate ran and passed" are different facts, and as a step behind pytest
   # they looked identical on the summary page.
+  #
+  # Not on pull requests, and this is the other half of making the suite
+  # parallel. 1098 of this job's 1115 seconds are a *second, serial* run of the
+  # whole suite, and it cannot take `-n auto` with the rest: the capture is
+  # written once per session by `pytest_sessionfinish` in tests/conftest.py, so
+  # four workers would each write their own quarter of the routes to the same
+  # path and the last one out would win -- a document that looks captured and
+  # is three-quarters missing, which is exactly the kind of wrong-rather-than-
+  # absent provenance the file's own note warns about. Merging worker documents
+  # means performing `Recorder.observe`'s schema union across processes; that is
+  # a real change to how the artifact is produced and does not belong in a
+  # change about CI latency.
+  #
+  # So with the offline suite down to ~7 minutes this job *became* the critical
+  # path: every PR would sit for 18 minutes waiting on the one gate that is
+  # neither a required check nor one of the `CHECK_SUITE_GATES` the release
+  # pipeline reads from the release SHA.
+  #
+  # Path-filtering it instead does not work. The suite is the corpus, so a new
+  # test that reaches a new route legitimately changes the document -- and
+  # nearly every PR touches tests/.
+  #
+  # What is given up: drift is reported by the push-to-main run rather than by
+  # the PR that caused it. What is not given up: it still runs on every push to
+  # main and next, nightly, on dispatch, and -- decisively -- as the
+  # `response-schemas` entry in `scripts/release_gates.py:LOCAL_GATES`, which
+  # the release pipeline's quality job must pass before anything is staged. A
+  # release cannot ship a drifted docs/response-schemas.json.
   response-schemas:
     name: Frozen response shapes
+    if: github.event_name != 'pull_request'
     timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
