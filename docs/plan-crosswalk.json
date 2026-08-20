@@ -95,7 +95,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4a518efee45b68121acaba2d30cfa4b98503b67d06f148c4383669e399be7de4"
+      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
     },
     {
       "source": "R1",
@@ -329,7 +329,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4a518efee45b68121acaba2d30cfa4b98503b67d06f148c4383669e399be7de4"
+      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
     },
     {
       "source": "R3",

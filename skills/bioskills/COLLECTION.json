@@ -1,0 +1,6 @@
+{
+  "_comment": "Declares this directory as one Skill collection rather than N peer bundled Skills. The loader discovers it by this file's presence, so no directory name or retrieval policy is hardcoded in openai4s/skills_loader/loader.py. `prompt_line` is rendered verbatim as the collection's single line in the system prompt; {count} is the number of members the caller can actually see.",
+  "id": "bioskills",
+  "prompt_line": "bioSkills collection: {count} pinned third-party bioinformatics recipes are available on demand across genomics, transcriptomics, variants, single-cell/spatial omics, structural biology, proteomics, metabolomics, chemoinformatics, clinical statistics, and workflow management. For ANY bioinformatics task, search this collection before writing the pipeline, using English method, tool, data-type, and workflow keywords even when the user asks in another language. Use list_skills only when exact enumeration is required.",
+  "schema_version": 1
+}

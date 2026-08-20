@@ -16,7 +16,18 @@ The catalog has two maintenance tiers: 36 curated OpenAI4S Skills and a pinned,
 read-only import of all 561 MIT-licensed
 [GPTomics/bioSkills](../skills/bioskills/) recipes. Every imported recipe is
 individually searchable and loadable, but the system prompt represents the
-collection with one aggregate line rather than 561 descriptions. The bundle's
+collection with one aggregate line rather than 561 descriptions.
+
+A **collection** is any directory under `skills/` that holds a
+`COLLECTION.json` (`id`, plus the `prompt_line` it wants in the system prompt,
+where `{count}` is the number of members the caller can see) and keeps its
+member Skills one level lower. The loader discovers collections from that
+marker alone — no directory name, id, or retrieval policy lives in
+`skills_loader/loader.py` — and every surface reads the same object:
+`system_context` prints one line per collection, `list_skills` returns curated
+names plus one entry per collection (pass `collection=<id>`, paging with
+`offset`, to enumerate one), and the Web catalog renders it as a single
+collapsed row. The bundle's
 source commit, conversion rules, license, complete inventory, and per-file
 hashes live at its linked boundary; importing it installs no scientific
 packages and does not imply that every optional tool is ready locally.

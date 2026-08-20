@@ -568,6 +568,10 @@ Object.assign(I18N.zh, {
   "cust.perm.scope.project": "本项目",
   "cust.perm.title": "权限",
   "cust.perm.toolPlaceholder": "工具（bash / write_file / *）",
+  "cust.skills.collection": "{0} 合集（{1} 个技能）",
+  "cust.skills.collectionDesc": "固定版本、只读的第三方配方，默认收起；展开后可逐个启用或停用。",
+  "cust.skills.collectionHide": "收起",
+  "cust.skills.collectionShow": "展开",
   "cust.skills.deleteConfirm": "删除技能 {0}？",
   "cust.skills.desc": "{0} 个科研技能；开关控制智能体是否可用，也可新建/导入自己的技能",
   "cust.skills.importBtn": "导入 SKILL.md",
@@ -1597,6 +1601,10 @@ Object.assign(I18N.en, {
   "cust.perm.scope.project": "This project",
   "cust.perm.title": "Permissions",
   "cust.perm.toolPlaceholder": "Tool (bash / write_file / *)",
+  "cust.skills.collection": "{0} collection ({1} skills)",
+  "cust.skills.collectionDesc": "Pinned read-only third-party recipes, collapsed by default; expand to enable or disable them individually.",
+  "cust.skills.collectionHide": "Hide",
+  "cust.skills.collectionShow": "Show",
   "cust.skills.deleteConfirm": "Delete skill {0}?",
   "cust.skills.desc": "{0} research skills; toggles control whether the agent can use them, and you can create/import your own",
   "cust.skills.importBtn": "Import SKILL.md",
@@ -9959,7 +9967,7 @@ async function custSkills(c) {
     const nb = el("button", "outline-btn small", t("cust.skills.newBtn")); nb.onclick = () => skillEditor(null);
     const ib = el("button", "outline-btn small", t("cust.skills.importBtn")); ib.onclick = () => skillImport();
     acts.appendChild(nb); acts.appendChild(ib); bi.appendChild(el("div", "nm", t("cust.skills.yourSkills"))); bi.appendChild(acts); bar.appendChild(bi); c.appendChild(bar);
-    skills.forEach(s => {
+    const skillRow = (s) => {
       const scope = s.scope === "project" ? "project" : (s.scope === "bundled" ? "bundled" : "personal");
       const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm");
       nm.appendChild(el("span", null, s.displayName || s.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", t(`skill.scope.${scope}`)));
@@ -9968,7 +9976,32 @@ async function custSkills(c) {
       if (s.versioned) { const vb = el("button", "icon-ghost"); vb.title = t("skill.historyBtn"); vb.innerHTML = icon("clock", 15); vb.onclick = () => skillVersionHistory(s.name, scope, scope === "project" ? pid : null); row.appendChild(vb); }
       if (s.editable && scope === "personal") { const eb = el("button", "icon-ghost"); eb.title = t("common.edit"); eb.innerHTML = icon("pencil", 15); eb.onclick = () => skillEditor(s.name); row.appendChild(eb); const db = el("button", "icon-ghost"); db.title = t("common.delete"); db.innerHTML = icon("trash-2", 15); db.onclick = async () => { if (!confirm(t("cust.skills.deleteConfirm", s.name))) return; try { await api(`/skills/${encodeURIComponent(s.name)}`, { method: "DELETE" }); S.skillsCatalog = null; custTab("skills"); } catch (e) { hint(t("toast.deleteFailed", apiErrorText(e)), true); } }; row.appendChild(db); }
       if (scope !== "project") { const tg = el("button", "toggle" + (s.enabled !== false ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { await api(`/skills/catalog/${encodeURIComponent(s.name)}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: on }) }); } catch {} }; row.appendChild(tg); }
-      c.appendChild(row);
+      return row;
+    };
+    // `collection` is why the field exists on the wire: a pinned third-party
+    // bundle is one collapsed entry, not hundreds of rows the user has to
+    // scroll past -- and its rows are only built when they ask for them.
+    const collections = new Map();
+    skills.forEach(s => {
+      const cid = s.collection || "";
+      if (!cid) { c.appendChild(skillRow(s)); return; }
+      if (!collections.has(cid)) collections.set(cid, []);
+      collections.get(cid).push(s);
+    });
+    [...collections.keys()].sort().forEach(cid => {
+      const members = collections.get(cid);
+      const head = el("div", "cust-row"); const info = el("div", "info");
+      info.appendChild(el("div", "nm", t("cust.skills.collection", cid, members.length)));
+      info.appendChild(el("div", "ds", t("cust.skills.collectionDesc")));
+      head.appendChild(info);
+      const body = el("div", null); body.classList.add("hidden");
+      const tgl = el("button", "outline-btn small", t("cust.skills.collectionShow"));
+      tgl.onclick = () => {
+        if (!body.childElementCount) members.forEach(s => body.appendChild(skillRow(s)));
+        const open = body.classList.toggle("hidden") === false;
+        tgl.textContent = t(open ? "cust.skills.collectionHide" : "cust.skills.collectionShow");
+      };
+      head.appendChild(tgl); c.appendChild(head); c.appendChild(body);
     });
   } catch (e) { c.textContent = t("versions.load.err", e.message); }
 }
