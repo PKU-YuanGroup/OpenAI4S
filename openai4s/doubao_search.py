@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 import socket
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,7 +17,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from openai4s import datapro, egress, webtools
-from openai4s.http_deadline import HTTPExchangeDeadline, socket_timeout_setter
+from openai4s.http_deadline import HTTPExchangeDeadline, read_body_capped
 from openai4s.mcp_protocol import redact_reflected_secret
 
 ENDPOINT = "https://open.feedcoopapi.com/search_api/web_search"
@@ -121,44 +120,45 @@ def _read_capped(
     response: Any,
     *,
     limit: int,
-    deadline: float,
-    timeout_setter: Callable[[float], Any] | None = None,
+    exchange: HTTPExchangeDeadline,
+    require_bound: bool = True,
 ) -> bytes:
-    raw_length = response.headers.get("Content-Length")
-    if raw_length:
-        try:
-            if int(raw_length) > limit:
-                raise DoubaoSearchResponseError(
-                    f"Doubao search response exceeded the {limit}-byte limit"
-                )
-        except ValueError:
-            pass
+    """This service's failure vocabulary over the shared bounded reader.
 
-    chunks: list[bytes] = []
-    total = 0
-    read_once = getattr(response, "read1", None)
-    if not callable(read_once):
-        read_once = response.read
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise DoubaoSearchError("Doubao search request timed out")
-        if timeout_setter is not None:
-            timeout_setter(remaining)
-        # ``BufferedReader.read(n)`` may issue multiple recv calls while trying
-        # to fill ``n``; a slow-drip peer can therefore refresh the same
-        # relative socket timeout indefinitely. ``read1`` performs at most one
-        # raw read, returning here so the absolute deadline and remaining
-        # socket timeout are recomputed for every chunk.
-        chunk = read_once(min(65_536, limit + 1 - total))
-        if not chunk:
-            return b"".join(chunks)
-        total += len(chunk)
-        if total > limit:
-            raise DoubaoSearchResponseError(
-                f"Doubao search response exceeded the {limit}-byte limit"
+    Every property of the loop -- ``read1`` over buffered ``read``, the
+    absolute deadline, the byte cap, stopping at end-of-body, refusing a
+    truncated body -- is stated once in ``http_deadline`` and shared with the
+    MCP transport, which had to be given each of them separately while the two
+    loops were maintained side by side.
+    """
+
+    def _oversize() -> BaseException:
+        return DoubaoSearchResponseError(
+            f"Doubao search response exceeded the {limit}-byte limit"
+        )
+
+    return read_body_capped(
+        response,
+        limit=limit,
+        exchange=exchange,
+        on_timeout=lambda: DoubaoSearchError("Doubao search request timed out"),
+        on_oversize=_oversize,
+        on_truncated=lambda: DoubaoSearchError(
+            "Doubao search response ended before its declared length"
+        ),
+        # An injected opener is a test transport with no socket beneath it.  The
+        # daemon's own opener always has one, and a body read with no bound
+        # there is the slow-drip exposure this module exists to close.
+        on_unbounded=(
+            (
+                lambda: DoubaoSearchError(
+                    "Doubao search response has no bounded read transport"
+                )
             )
-        chunks.append(chunk)
+            if require_bound
+            else None
+        ),
+    )
 
 
 def _safe_error_code(value: Any) -> str:
@@ -440,16 +440,11 @@ class DoubaoSearchService:
                     raise DoubaoSearchError(
                         f"Doubao search request failed with HTTP {int(status)}"
                     )
-                timeout_setter = socket_timeout_setter(response)
-                if self._opener is None and timeout_setter is None:
-                    raise DoubaoSearchError(
-                        "Doubao search response has no bounded read transport"
-                    )
                 raw = _read_capped(
                     response,
                     limit=MAX_RESPONSE_BYTES,
-                    deadline=exchange.deadline,
-                    timeout_setter=timeout_setter,
+                    exchange=exchange,
+                    require_bound=self._opener is None,
                 )
         except urllib.error.HTTPError as error:
             status = int(error.code)
