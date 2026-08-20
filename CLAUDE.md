@@ -18,7 +18,7 @@ Keep future guidance platform-neutral unless a section explicitly calls out a Cl
 ./setup.sh --update-kernel-envs     # sync existing Python + R envs, without pruning
 ./start.sh                          # launch daemon + web UI at http://127.0.0.1:8760/
 uv run pytest                       # full offline test suite (LLM is mocked — no network, no keys)
-uv run pytest -n auto --dist loadfile   # the same suite, the way CI runs it (~7min vs ~20min)
+uv run pytest -n auto --maxprocesses=4 --dist loadfile   # the same suite, the way CI runs it (~7min vs ~20min)
 uv run pytest tests/test_agent.py::test_max_turns_stop   # a single test
 uv run pytest tests/test_kernel.py -k background         # tests matching a pattern
 uv run mypy                         # strict types on the agent core + Host dispatcher
@@ -35,7 +35,7 @@ CLI subcommands (`openai4s <cmd>`): `serve` · `status` · `stop` · `url` · `r
 ```bash
 uv run python scripts/check_directory_readmes.py            # bilingual per-directory README coverage
 uv run python -m harness.cli run --tier pr --offline        # deterministic scenario contracts
-uv run python scripts/capture_response_schemas.py --check   # frozen response shapes still match reality (NOT on PRs; see below)
+uv run python scripts/capture_response_schemas.py --check   # frozen response shapes still match reality
 uv run python scripts/capture_response_contract.py --check  # every routable route still has a contract
 python scripts/source_secret_scan.py                        # no credential-shaped literal in release sources
 bash scripts/container_smoke.sh                             # the image builds AND the daemon runs inside it
@@ -107,7 +107,7 @@ Read `docs/architecture.md` first. The system is two nested loops:
 Tests are the floor, not the ceiling — much of what matters here is runtime behavior a unit test won't exercise.
 
 - `uv run pytest` for the offline suite; scope kernel/engine work with `tests/test_kernel.py` / `tests/test_agent.py` and run them explicitly after protocol changes — but always finish with the **whole** suite. Per-module runs miss cross-test collisions (a global `Popen` patch in one file breaks the next file that spawns a real subprocess), and `pre-commit run --files X` can pass while `--all-files` fails.
-- **The response capture is split and reassembled, not captured once.** `capture_response_schemas.py` runs the suite under `-n auto --dist loadfile` like every other gate, but the capture is written once per session — so each xdist worker leaves its un-elided shapes beside the destination and the script merges them *after* pytest exits, through the same `merge` call `Recorder.observe` makes. Assembly belongs there and not in a pytest hook: by then every writer process is gone, so it cannot race one. A worker that dies without writing its share shows up as `frozen but no longer observed`, on a run whose exit code was already non-zero. `tests/test_response_capture_assembly.py` asserts the split result equals the single-process one.
+- **The response capture is split and reassembled, not captured once.** `capture_response_schemas.py` runs the suite under `-n auto --maxprocesses=4 --dist loadfile` like every other gate. Each xdist worker atomically publishes its un-elided shapes during `pytest_sessionfinish`, before xdist can report that worker successful, together with the run ID and expected worker count. The script merges shares *after* pytest exits, through the same `merge` call `Recorder.observe` makes; it rejects a missing or mixed-run share before writing the capture. `tests/test_response_capture_assembly.py` asserts both completeness and equality with the single-process result.
 - **Match the gate to what you touched:** a gateway route or serializer → `capture_response_schemas.py --check` *and* `capture_response_contract.py --check`; agent core or `host_dispatch.py` → `uv run mypy`; scenario/fault/trace code → `python -m harness.cli run --tier pr --offline`; a new directory → `check_directory_readmes.py`; packaging or resource files → `uv build` + `scripts/verify_release_artifacts.py dist`.
 - For anything touching the kernel, host RPC, gateway streaming, or the web UI, **drive it end-to-end in a real browser** against a running `./start.sh` (the UI streams turns over WebSocket; behavior like figure capture, provenance, and live-Notebook kernel sharing only surfaces at runtime). A one-shot `uv run openai4s run "…" -v` is the fastest Code-as-Action smoke test without the UI.
 - **Green on macOS is not green in CI.** CI is Linux: `sh` execs where macOS forks, there is no Seatbelt but there is bubblewrap, and platform branches you never take locally are the ones that run there. Force the Linux branch locally when you change sandbox, subprocess, or platform-detection code.

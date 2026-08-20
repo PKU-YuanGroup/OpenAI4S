@@ -62,10 +62,10 @@ dev = [
     "pytest>=7.4",
     # The offline suite is ~4800 tests and was the whole critical path of CI:
     # 1094 of the offline-test job's 1122 seconds were this one command. xdist
-    # splits it across the runner's cores. CI runs it as `-n auto --dist
-    # loadfile`; the scheduler choice is argued where it is written, in
-    # .github/workflows/ci.yml. >=3.6 is where the `loadfile` spelling used
-    # there is stable.
+    # splits it across the runner's cores. CI runs it as `-n auto
+    # --maxprocesses=4 --dist loadfile`; the cap and scheduler choice are
+    # argued where they are written, in .github/workflows/ci.yml. >=3.6 is
+    # where the `loadfile` spelling used there is stable.
     "pytest-xdist>=3.6",
     # >=3.2 because the pre-commit-hooks and isort hooks pinned in
     # .pre-commit-config.yaml declare `minimum_pre_commit_version: 3.2.0`,

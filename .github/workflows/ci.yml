@@ -272,7 +272,7 @@ jobs:
         # Scaling is linear at this width (1572 worker-seconds over 4 workers in
         # 393s), so the per-file granularity is costing nothing: no single file
         # is long enough to be the tail.
-        run: uv run pytest -n auto --dist loadfile
+        run: uv run pytest -n auto --maxprocesses=4 --dist loadfile
       # After the suite, not before it: the pytest gate must never sit behind
       # a command that can fail it (tests/test_ci_gate_independence.py). The
       # importorskip guards make a missing science stack a *silent* skip, and
@@ -351,20 +351,20 @@ jobs:
   # schema gate ran and passed" are different facts, and as a step behind pytest
   # they looked identical on the summary page.
   #
-  # This job is a *second* run of the whole suite, so it was the one gate that
-  # could not simply be handed `-n auto` with the rest: the capture is written
-  # once per session by `pytest_unconfigure`, and four workers each writing the
-  # same path would have left whichever finished last -- a quarter of the
-  # routes in a document that still looked complete, which is precisely the
-  # wrong-rather-than-absent provenance the artifact's own note warns about.
+  # This job is a *second* run of the whole suite. Each worker publishes its
+  # share during `pytest_sessionfinish`, before xdist can report that worker as
+  # successful, and records xdist's run id plus expected worker count. Four
+  # workers writing the same destination directly would leave whichever
+  # finished last -- a fraction of the evidence in a document that still
+  # looked complete, which is precisely the wrong-rather-than-absent
+  # provenance the artifact's own note warns about.
   #
   # It is split now anyway. Each worker leaves its un-elided shapes beside the
   # destination and `scripts/capture_response_schemas.py` merges them once
   # pytest has exited -- after every writer process is gone -- through the same
-  # `merge` call `Recorder.observe` makes, so a route two workers both saw
-  # reaches the schema one process would have reached. That equality is the
-  # whole claim and it is asserted in tests/test_response_capture_assembly.py,
-  # not assumed.
+  # `merge` call `Recorder.observe` makes. Assembly rejects missing or mixed-run
+  # shares before writing the capture. Equality and completeness are asserted
+  # in tests/test_response_capture_assembly.py, not assumed.
   response-schemas:
     name: Frozen response shapes
     timeout-minutes: 45

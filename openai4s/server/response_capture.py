@@ -1584,52 +1584,194 @@ def partial_path(destination: Path, worker: str) -> Path:
     )
 
 
-def save_partial(recorder: Recorder, destination: Path, worker: str) -> Path:
-    """Write one worker's un-elided shapes for `assemble` to merge later."""
-    target = partial_path(destination, worker)
+def save_partial(
+    recorder: Recorder,
+    destination: Path,
+    worker: str,
+    *,
+    worker_count: int | None = None,
+    run_id: str | None = None,
+) -> Path:
+    """Write one worker's un-elided shapes for `assemble` to merge later.
+
+    Xdist supplies ``worker_count`` and ``run_id``.  They let assembly prove it
+    has one complete, unmixed run rather than treating whatever files happened
+    to arrive as the whole capture.  The optional form keeps the helper useful
+    for serial unit assembly outside pytest.
+    """
+    worker_id = str(worker).strip()
+    if not worker_id:
+        raise ValueError("worker must not be empty")
+    if (worker_count is None) != (run_id is None):
+        raise ValueError("worker_count and run_id must be supplied together")
+    target = partial_path(destination, worker_id)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "worker": str(worker),
-                "shapes": recorder.shapes_snapshot(),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    record: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "worker": worker_id,
+        "shapes": recorder.shapes_snapshot(),
+    }
+    if worker_count is not None:
+        count = int(worker_count)
+        if count < 1:
+            raise ValueError("worker_count must be positive")
+        record["worker_count"] = count
+    if run_id is not None:
+        identifier = str(run_id).strip()
+        if not identifier:
+            raise ValueError("run_id must not be empty")
+        record["run_id"] = identifier
+    payload = json.dumps(
+        record,
+        ensure_ascii=False,
+        sort_keys=True,
     )
+    temporary: Path | None = None
+    try:
+        # Publish only a complete JSON document.  If a worker is killed while
+        # writing, its ignored temporary file may remain but the final share is
+        # absent; completeness validation then rejects the run instead of
+        # parsing a truncated file or publishing narrower evidence.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+        temporary.replace(target)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
     return target
 
 
-def assemble(destination: Path) -> int:
+def assemble(destination: Path, *, require_complete: bool = False) -> int:
     """Merge a split run's shares into one capture at `destination`.
 
     Returns how many shares were merged, and 0 when the run was not split --
     a single-process run writes `destination` itself and there is nothing here
-    to do.
+    to do.  ``require_complete`` is for the xdist capture gate: every share
+    must carry one consistent run ID and expected worker count, and assembly
+    refuses to write unless exactly that many unique workers arrived.
 
     Deliberately called *after* pytest has exited rather than from a controller
     hook: at that point every worker process is gone, so the assembly cannot
-    race a writer, and "did the last worker finish before the controller
-    unconfigured" stops being a question anyone has to answer. A worker that
-    died without writing its share leaves its routes out of the merge, which
-    surfaces as `frozen but no longer observed` -- loudly, and on a run whose
-    exit code was already non-zero.
+    race a writer.  A worker that died without publishing its share is an
+    incomplete run, not a narrower schema: its missing observations may only
+    have made a field nullable or optional, which the compatibility checker
+    intentionally treats as non-breaking drift.
     """
     destination = Path(destination)
+    parent = destination.parent
+    if not parent.is_dir():
+        if require_complete:
+            raise ValueError(f"capture share directory does not exist: {parent}")
+        return 0
+    prefix = f"{destination.name}."
     shares = sorted(
-        destination.parent.glob(f"{destination.name}.*{PARTIAL_SUFFIX}"),
+        (
+            path
+            for path in parent.iterdir()
+            if path.is_file()
+            and path.name.startswith(prefix)
+            and path.name.endswith(PARTIAL_SUFFIX)
+        ),
         key=lambda path: path.name,
     )
+    if not shares and require_complete:
+        raise ValueError("capture assembly found no xdist worker shares")
     if not shares:
         return 0
-    recorder = Recorder()
+
+    payloads: list[tuple[Path, Mapping[str, Any]]] = []
+    workers: set[str] = set()
+    expected_counts: set[int] = set()
+    run_ids: set[str] = set()
+    has_completion_metadata = False
     for share in shares:
-        payload = json.loads(share.read_text("utf-8"))
-        recorder.absorb(payload.get("shapes") or {})
+        try:
+            loaded = json.loads(share.read_text("utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(f"invalid capture share {share.name}: {error}") from error
+        if not isinstance(loaded, Mapping):
+            raise ValueError(f"invalid capture share {share.name}: expected an object")
+        if loaded.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError(
+                f"invalid capture share {share.name}: schema_version must be "
+                f"{SCHEMA_VERSION}"
+            )
+        shapes = loaded.get("shapes")
+        if not isinstance(shapes, Mapping):
+            raise ValueError(
+                f"invalid capture share {share.name}: shapes must be an object"
+            )
+        worker = str(loaded.get("worker") or "").strip()
+        if not worker:
+            raise ValueError(f"invalid capture share {share.name}: worker is missing")
+        if partial_path(destination, worker).name != share.name:
+            raise ValueError(
+                f"invalid capture share {share.name}: payload names worker {worker!r}"
+            )
+        if worker in workers:
+            raise ValueError(f"duplicate capture share for worker {worker!r}")
+        workers.add(worker)
+
+        count_value = loaded.get("worker_count")
+        run_value = loaded.get("run_id")
+        if count_value is not None or run_value is not None:
+            has_completion_metadata = True
+        if count_value is not None:
+            if isinstance(count_value, bool) or not isinstance(count_value, int):
+                raise ValueError(
+                    f"invalid capture share {share.name}: worker_count must be an integer"
+                )
+            if count_value < 1:
+                raise ValueError(
+                    f"invalid capture share {share.name}: worker_count must be positive"
+                )
+            expected_counts.add(count_value)
+        if run_value is not None:
+            run_id = str(run_value).strip()
+            if not run_id:
+                raise ValueError(
+                    f"invalid capture share {share.name}: run_id must not be empty"
+                )
+            run_ids.add(run_id)
+        payloads.append((share, loaded))
+
+    if require_complete or has_completion_metadata:
+        if any(
+            "worker_count" not in payload or "run_id" not in payload
+            for _share, payload in payloads
+        ):
+            raise ValueError("capture shares do not all carry completion metadata")
+        if len(expected_counts) != 1:
+            raise ValueError("capture shares disagree about the expected worker count")
+        if len(run_ids) != 1:
+            raise ValueError("capture shares come from different xdist runs")
+        expected = next(iter(expected_counts))
+        if len(workers) != expected:
+            raise ValueError(
+                f"incomplete capture: expected {expected} worker shares, "
+                f"found {len(workers)}"
+            )
+
+    recorder = Recorder()
+    for _share, payload in payloads:
+        recorder.absorb(payload["shapes"])
     save(recorder.document(), destination)
+    # Shares belong to one assembly, not to the destination forever.  Leaving
+    # them behind lets a later run with fewer workers silently inherit routes
+    # or variants from the earlier run.
+    for share in shares:
+        share.unlink()
     return len(shares)
 
 

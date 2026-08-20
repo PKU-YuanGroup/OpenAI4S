@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regenerate (or verify) the frozen response shapes in docs/response-schemas.json.
 
-    python scripts/capture_response_schemas.py            # rewrite the artifact
-    python scripts/capture_response_schemas.py --check     # fail on drift
+    uv run python scripts/capture_response_schemas.py            # rewrite the artifact
+    uv run python scripts/capture_response_schemas.py --check     # fail on drift
 
 Runs the offline suite with the capture installed and records what every route
 actually returned. The suite is the corpus: routes it exercises get a schema,
@@ -25,6 +25,8 @@ sys.path.insert(0, str(ROOT))
 
 from openai4s.server import contract, response_capture  # noqa: E402
 
+_MAX_WORKERS = 4
+
 
 def _run_suite(destination: Path) -> int:
     env = dict(os.environ)
@@ -41,14 +43,16 @@ def _run_suite(destination: Path) -> int:
             "--no-header",
             # The same width and scheduler CI runs the suite under. This used
             # to be the one gate that could not take them: the capture is
-            # written once per session, so four workers each wrote their own
-            # quarter of the routes over the top of each other. They now leave
-            # shares that `response_capture.assemble` merges below, which is
-            # the same `merge` call `Recorder.observe` makes -- so a route
-            # observed in two workers reaches the schema it would have reached
-            # in one process.
+            # written once per session, so four workers each writing the same
+            # destination would retain only the last one's fraction of the
+            # evidence. They now leave shares that `response_capture.assemble`
+            # merges below through the same `merge` call `Recorder.observe`
+            # makes, so a route observed in two workers reaches the schema it
+            # would have reached in one process.
             "-n",
             "auto",
+            "--maxprocesses",
+            str(_MAX_WORKERS),
             "--dist",
             "loadfile",
             "tests",
@@ -71,14 +75,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         captured = Path(tmp) / "captured.json"
         code = _run_suite(captured)
-        # Merge the workers' shares, if the run was split. Here rather than in
-        # a pytest hook because every one of those processes has now exited:
-        # there is no writer left to race.
-        response_capture.assemble(captured)
         if code != 0 and args.check:
-            # A failing suite exercises fewer routes, so comparing what it did
-            # capture against the frozen file would blame this change for gaps
-            # the failures caused. Fix the tests first.
+            # Do not assemble a known-aborted run.  Besides being incomplete,
+            # a worker failure may be the reason a share is absent; the pytest
+            # failure is the useful result and must not be hidden by a second
+            # assembly error.
             print(
                 f"the suite failed (pytest exited {code}); the capture would be "
                 "incomplete and any drift it reported would be an artefact of "
@@ -86,6 +87,17 @@ def main() -> int:
                 file=sys.stderr,
             )
             return code
+        # Merge the workers' shares, if the run was split. Here rather than in
+        # a pytest hook because every one of those processes has now exited:
+        # there is no writer left to race.
+        try:
+            response_capture.assemble(captured, require_complete=True)
+        except (OSError, ValueError) as error:
+            print(
+                f"the xdist response capture was incomplete: {error}",
+                file=sys.stderr,
+            )
+            return code or 1
         if code != 0:
             # Regeneration must still work here. The suite contains tests that
             # validate this very artifact, so a stale file makes them fail --
