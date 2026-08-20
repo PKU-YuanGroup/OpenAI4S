@@ -136,8 +136,15 @@ def merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """
     types = _type_set(left) | _type_set(right)
     # An observed null does not make the field optional; it makes it nullable.
-    if types == {"integer", "number"}:
-        types = {"number"}
+    # ``number`` already admits integers (see ``validate``), even when a third
+    # alternative such as ``null`` is present.  Keeping both spellings in that
+    # case makes this merge order-dependent: ``null -> integer -> number`` used
+    # to retain all three, while merging the integer and number in another
+    # worker first produced only ``[null, number]``.  A split capture must be
+    # independent of how xdist groups its observations, so always keep the
+    # canonical wider numeric type.
+    if "number" in types:
+        types.discard("integer")
 
     merged: dict[str, Any] = {
         "type": sorted(types)[0] if len(types) == 1 else sorted(types)

@@ -18,8 +18,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -335,6 +337,34 @@ class Recorder:
             }
             for key, value in sorted(merged.items())
         }
+
+    def shapes_snapshot(self) -> dict[str, Any]:
+        """The raw, un-elided shapes, for reassembling a split run.
+
+        Un-elided on purpose. `document()` runs `elide_machine_state` over each
+        shape, and eliding a share before merging it is not the same operation
+        as eliding the merge: the elision replaces whole subtrees, so a field
+        that only one share saw could be elided out of that share and then have
+        nothing left to widen against. Shares carry what `observe` produced, and
+        the elision happens once, at the end, exactly where it does in a
+        single-process run.
+        """
+        return {key: self.shapes[key] for key in sorted(self.shapes)}
+
+    def absorb(self, shapes: Mapping[str, Any]) -> None:
+        """Merge another process's shapes in, exactly as `observe` would have.
+
+        The same `merge` call, on the same values, in a deterministic order.
+        `observe` widens each new observation into what it already had; this
+        widens each share into what it already has. Two observations of one
+        route reach the same schema whether they landed in one process or two.
+        """
+        for key in sorted(shapes):
+            observed = shapes[key]
+            existing = self.shapes.get(key)
+            self.shapes[key] = (
+                observed if existing is None else merge(existing, observed)
+            )
 
     def document(self) -> dict[str, Any]:
         return {
@@ -678,6 +708,76 @@ _CAPTURE_DECISION_ID = "dec-contractcapture0001"
 #: for the turn -- it fails immediately without a provider -- but a ceiling, so
 #: a gate can never block on one.
 _SEEDED_JOB_WAIT_S = 30.0
+
+
+#: The two listings whose entries carry `python_version`, driven a second time
+#: below with an environment that has no interpreter.
+_ENVIRONMENT_LISTING_ROUTES = ("/environments", "/frames/([^/]+)/environments")
+
+
+def _drive_environment_states(
+    recorder: "Recorder",
+    handler_class,
+    authenticated_headers: dict[str, str] | None = None,
+) -> None:
+    """Drive the environment listings again with an R-only environment present.
+
+    `python_version` is `str | None` -- None for an environment that has no
+    interpreter, which is exactly what an R-only conda env is, and
+    `setup.sh --with-kernel-envs` builds one. Which state the suite observed was
+    therefore decided by the host: a CI runner has no such env and froze
+    `string`, a developer machine with an R env observes `["null", "string"]`,
+    and the gate calls whichever ran second a breaking change. Test *ordering*
+    was hiding it too -- `tests/test_environments.py` leaves a populated
+    discovery cache behind, so the sweep saw the null only when it ran in a
+    process that file had not already touched. Under `--dist loadfile` that
+    stopped being alphabetical, which is how this surfaced.
+
+    So the other state is exercised here instead of left to the host. That is
+    what the note on `_MACHINE_STATE_KEYS` prescribes for an under-observed
+    field: eliding `python_version` would delete a real guarantee to silence a
+    coverage gap, and freezing one host's answer publishes the host rather than
+    the API.
+
+    Arranged, not fabricated. The response is whatever the real handler makes of
+    a real `Environment`, through the same `to_dict` every other listing goes
+    through; nothing here supplies a response body. Only *discovery* is
+    arranged -- and discovery is the host state this exists to stop depending
+    on. The real environments stay in the list, so the pass adds a state rather
+    than replacing the machine's.
+    """
+    from openai4s.kernel import environments as envmod
+
+    real_discover = envmod.discover_environments
+    without_an_interpreter = envmod.Environment(
+        name="r-only-probe",
+        language="r",
+        root=Path(tempfile.gettempdir()) / "openai4s-r-only-probe",
+        python=None,
+        rscript=None,
+        is_conda=True,
+        builtin=False,
+    )
+
+    def _with_an_r_only_env(force: bool = False):
+        return list(real_discover(force=force)) + [without_an_interpreter]
+
+    envmod.discover_environments = _with_an_r_only_env
+    try:
+        for route in _ENVIRONMENT_LISTING_ROUTES:
+            path = concrete_path(route)
+            handler = _probe_handler(
+                recorder, handler_class, "GET", path, route, authenticated_headers
+            )
+            try:
+                handler._api("GET", path)
+            except Exception:  # noqa: BLE001
+                # The parameterless sweep already recorded this route; this pass
+                # only adds the state that one could not reach, so a failure
+                # here withholds nothing the contract did not already have.
+                continue
+    finally:
+        envmod.discover_environments = real_discover
 
 
 def _drive_seeded_downloads(
@@ -1448,6 +1548,7 @@ def drive_all_routes(
                 )
                 continue
     _drive_seeded_downloads(recorder, handler_class, runner, authenticated_headers)
+    _drive_environment_states(recorder, handler_class, authenticated_headers)
 
 
 def load(path: Path | None = None) -> dict[str, Any]:
@@ -1468,6 +1569,210 @@ def save(document: dict[str, Any], path: Path | None = None) -> Path:
         encoding="utf-8",
     )
     return target
+
+
+#: What one xdist worker's share of a split capture is called. The share sits
+#: beside the destination rather than in it, so a half-finished run leaves no
+#: file anything downstream would mistake for a capture.
+PARTIAL_SUFFIX = ".share.json"
+
+
+def partial_path(destination: Path, worker: str) -> Path:
+    """Where one worker of a split run leaves its share."""
+    return Path(destination).with_name(
+        f"{Path(destination).name}.{worker}{PARTIAL_SUFFIX}"
+    )
+
+
+def save_partial(
+    recorder: Recorder,
+    destination: Path,
+    worker: str,
+    *,
+    worker_count: int | None = None,
+    run_id: str | None = None,
+) -> Path:
+    """Write one worker's un-elided shapes for `assemble` to merge later.
+
+    Xdist supplies ``worker_count`` and ``run_id``.  They let assembly prove it
+    has one complete, unmixed run rather than treating whatever files happened
+    to arrive as the whole capture.  The optional form keeps the helper useful
+    for serial unit assembly outside pytest.
+    """
+    worker_id = str(worker).strip()
+    if not worker_id:
+        raise ValueError("worker must not be empty")
+    if (worker_count is None) != (run_id is None):
+        raise ValueError("worker_count and run_id must be supplied together")
+    target = partial_path(destination, worker_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    record: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "worker": worker_id,
+        "shapes": recorder.shapes_snapshot(),
+    }
+    if worker_count is not None:
+        count = int(worker_count)
+        if count < 1:
+            raise ValueError("worker_count must be positive")
+        record["worker_count"] = count
+    if run_id is not None:
+        identifier = str(run_id).strip()
+        if not identifier:
+            raise ValueError("run_id must not be empty")
+        record["run_id"] = identifier
+    payload = json.dumps(
+        record,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    temporary: Path | None = None
+    try:
+        # Publish only a complete JSON document.  If a worker is killed while
+        # writing, its ignored temporary file may remain but the final share is
+        # absent; completeness validation then rejects the run instead of
+        # parsing a truncated file or publishing narrower evidence.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+        temporary.replace(target)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    return target
+
+
+def assemble(destination: Path, *, require_complete: bool = False) -> int:
+    """Merge a split run's shares into one capture at `destination`.
+
+    Returns how many shares were merged, and 0 when the run was not split --
+    a single-process run writes `destination` itself and there is nothing here
+    to do.  ``require_complete`` is for the xdist capture gate: every share
+    must carry one consistent run ID and expected worker count, and assembly
+    refuses to write unless exactly that many unique workers arrived.
+
+    Deliberately called *after* pytest has exited rather than from a controller
+    hook: at that point every worker process is gone, so the assembly cannot
+    race a writer.  A worker that died without publishing its share is an
+    incomplete run, not a narrower schema: its missing observations may only
+    have made a field nullable or optional, which the compatibility checker
+    intentionally treats as non-breaking drift.
+    """
+    destination = Path(destination)
+    parent = destination.parent
+    if not parent.is_dir():
+        if require_complete:
+            raise ValueError(f"capture share directory does not exist: {parent}")
+        return 0
+    prefix = f"{destination.name}."
+    shares = sorted(
+        (
+            path
+            for path in parent.iterdir()
+            if path.is_file()
+            and path.name.startswith(prefix)
+            and path.name.endswith(PARTIAL_SUFFIX)
+        ),
+        key=lambda path: path.name,
+    )
+    if not shares and require_complete:
+        raise ValueError("capture assembly found no xdist worker shares")
+    if not shares:
+        return 0
+
+    payloads: list[tuple[Path, Mapping[str, Any]]] = []
+    workers: set[str] = set()
+    expected_counts: set[int] = set()
+    run_ids: set[str] = set()
+    has_completion_metadata = False
+    for share in shares:
+        try:
+            loaded = json.loads(share.read_text("utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(f"invalid capture share {share.name}: {error}") from error
+        if not isinstance(loaded, Mapping):
+            raise ValueError(f"invalid capture share {share.name}: expected an object")
+        if loaded.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError(
+                f"invalid capture share {share.name}: schema_version must be "
+                f"{SCHEMA_VERSION}"
+            )
+        shapes = loaded.get("shapes")
+        if not isinstance(shapes, Mapping):
+            raise ValueError(
+                f"invalid capture share {share.name}: shapes must be an object"
+            )
+        worker = str(loaded.get("worker") or "").strip()
+        if not worker:
+            raise ValueError(f"invalid capture share {share.name}: worker is missing")
+        if partial_path(destination, worker).name != share.name:
+            raise ValueError(
+                f"invalid capture share {share.name}: payload names worker {worker!r}"
+            )
+        if worker in workers:
+            raise ValueError(f"duplicate capture share for worker {worker!r}")
+        workers.add(worker)
+
+        count_value = loaded.get("worker_count")
+        run_value = loaded.get("run_id")
+        if count_value is not None or run_value is not None:
+            has_completion_metadata = True
+        if count_value is not None:
+            if isinstance(count_value, bool) or not isinstance(count_value, int):
+                raise ValueError(
+                    f"invalid capture share {share.name}: worker_count must be an integer"
+                )
+            if count_value < 1:
+                raise ValueError(
+                    f"invalid capture share {share.name}: worker_count must be positive"
+                )
+            expected_counts.add(count_value)
+        if run_value is not None:
+            run_id = str(run_value).strip()
+            if not run_id:
+                raise ValueError(
+                    f"invalid capture share {share.name}: run_id must not be empty"
+                )
+            run_ids.add(run_id)
+        payloads.append((share, loaded))
+
+    if require_complete or has_completion_metadata:
+        if any(
+            "worker_count" not in payload or "run_id" not in payload
+            for _share, payload in payloads
+        ):
+            raise ValueError("capture shares do not all carry completion metadata")
+        if len(expected_counts) != 1:
+            raise ValueError("capture shares disagree about the expected worker count")
+        if len(run_ids) != 1:
+            raise ValueError("capture shares come from different xdist runs")
+        expected = next(iter(expected_counts))
+        if len(workers) != expected:
+            raise ValueError(
+                f"incomplete capture: expected {expected} worker shares, "
+                f"found {len(workers)}"
+            )
+
+    recorder = Recorder()
+    for _share, payload in payloads:
+        recorder.absorb(payload["shapes"])
+    save(recorder.document(), destination)
+    # Shares belong to one assembly, not to the destination forever.  Leaving
+    # them behind lets a later run with fewer workers silently inherit routes
+    # or variants from the earlier run.
+    for share in shares:
+        share.unlink()
+    return len(shares)
 
 
 def check(observed: dict[str, Any], frozen: dict[str, Any]) -> list[str]:

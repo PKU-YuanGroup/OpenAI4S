@@ -222,11 +222,52 @@ def _pause_capture_for_stubbed_backends(request):
         recorder.paused = previous
 
 
-def pytest_unconfigure(config):
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    config = session.config
     captured = getattr(config, "_openai4s_recorder", None)
     if not captured:
         return
     recorder, destination = captured
     from openai4s.server import response_capture
 
+    # Split runs. Publish inside sessionfinish, before xdist's hookwrapper sends
+    # `workerfinished`; pytest_unconfigure is too late, because a write failure
+    # there occurs after the controller has already accepted exit status 0.
+    worker_input = getattr(config, "workerinput", {})
+    worker = worker_input.get("workerid")
+    if worker:
+        try:
+            response_capture.save_partial(
+                recorder,
+                destination,
+                worker,
+                worker_count=worker_input.get("workercount"),
+                run_id=worker_input.get("testrunuid"),
+            )
+        except Exception as error:
+            # Xdist snapshots the original exit status before yielding to this
+            # hook and otherwise reports success even when share publication
+            # raises. Mutate the worker output it is about to send as well as
+            # the local session; assembly's expected-count check remains the
+            # independent backstop if the worker disappears entirely.
+            message = (
+                f"response capture share for {worker} could not be published: "
+                f"{type(error).__name__}: {error}"
+            )
+            session.shouldfail = message
+            session.exitstatus = pytest.ExitCode.INTERNAL_ERROR
+            worker_output = getattr(config, "workeroutput", None)
+            if isinstance(worker_output, dict):
+                worker_output["shouldfail"] = message
+                worker_output["exitstatus"] = int(pytest.ExitCode.INTERNAL_ERROR)
+            raise
+        return
+    # The controller of a split run executes no tests, so its recorder is
+    # empty. Writing it would put an empty capture where the merge is about to
+    # put the real one -- harmless today because `assemble` overwrites it, and
+    # a fabricated "the suite reached no route" the moment anything reads the
+    # file before the merge.
+    if getattr(config.option, "numprocesses", None):
+        return
     response_capture.save(recorder.document(), destination)

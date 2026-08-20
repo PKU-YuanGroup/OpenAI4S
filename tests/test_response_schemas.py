@@ -91,6 +91,20 @@ def test_int_and_float_observations_widen_to_number():
     assert merge(infer(1), infer(1.5))["type"] == "number"
 
 
+def test_number_subsumes_integer_inside_a_larger_union():
+    """Numeric widening must not depend on how observations are grouped.
+
+    Parallel capture workers merge their local observations before the
+    controller merges the shares.  If ``integer`` survived alongside
+    ``number`` whenever another type was present, grouping ``null`` separately
+    produced a different document from the same observations in one process.
+    """
+    serial = merge(merge(infer(None), infer(1)), infer(1.5))
+    grouped = merge(infer(None), merge(infer(1), infer(1.5)))
+
+    assert serial == grouped == {"type": ["null", "number"]}
+
+
 def test_a_booleans_type_is_not_integer():
     """`bool` is a subclass of `int` in Python, so the naive check types every
     `true` as an integer and a client generated from that expects a number."""
