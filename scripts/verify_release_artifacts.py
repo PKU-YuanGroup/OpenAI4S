@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import email.parser
+import json
 import stat
 import sys
 import tarfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 _WHEEL_REQUIRED = frozenset(
@@ -83,6 +85,55 @@ def _safe_names(names: list[str], *, archive: str) -> set[str]:
             raise ReleaseCheckError(f"{archive} contains a duplicate path: {raw}")
         normalized.add(value)
     return normalized
+
+
+def _verify_collections(names: set[str], read: "Callable[[str], bytes]") -> None:
+    """Every shipped collection carries the whole payload its manifest claims.
+
+    Three hardcoded paths cannot tell a wheel with 561 recipes from one with
+    three: the collection is a pinned provenance boundary, so the artifact has
+    to be checked against the inventory it ships rather than against a sample
+    of it. Reads the manifest out of the archive, so this is a statement about
+    the artifact and not about the working tree.
+    """
+
+    for marker in sorted(n for n in names if n.endswith("/COLLECTION.json")):
+        root = marker.rsplit("/", 1)[0]
+        manifest_name = f"{root}/MANIFEST.json"
+        if manifest_name not in names:
+            raise ReleaseCheckError(f"collection {root} ships no MANIFEST.json")
+        try:
+            manifest = json.loads(read(manifest_name).decode("utf-8"))
+        except (OSError, KeyError, ValueError) as error:
+            raise ReleaseCheckError(
+                f"collection {root} has an unreadable manifest: {error}"
+            ) from error
+        declared = manifest.get("skills") or []
+        expected = manifest.get("skill_count")
+        if expected is not None and len(declared) != expected:
+            raise ReleaseCheckError(
+                f"collection {root} manifest claims {expected} skills but lists "
+                f"{len(declared)}"
+            )
+        absent = sorted(
+            f"{root}/{entry.get('directory')}/SKILL.md"
+            for entry in declared
+            if f"{root}/{entry.get('directory')}/SKILL.md" not in names
+        )
+        if absent:
+            raise ReleaseCheckError(
+                f"collection {root} is missing {len(absent)} of {len(declared)} "
+                f"recipes, e.g. {', '.join(absent[:3])}"
+            )
+        payload = [str(row.get("path") or "") for row in (manifest.get("files") or [])]
+        missing_payload = sorted(
+            path for path in payload if f"{root}/{path}" not in names
+        )
+        if missing_payload:
+            raise ReleaseCheckError(
+                f"collection {root} is missing {len(missing_payload)} manifested "
+                f"payload file(s), e.g. {', '.join(missing_payload[:3])}"
+            )
 
 
 def _missing(required: frozenset[str], names: set[str], *, label: str) -> None:
@@ -165,6 +216,7 @@ def verify_wheel(path: Path) -> set[str]:
             raise ReleaseCheckError(
                 "wheel must remain platform-independent (py3-none-any)"
             )
+        _verify_collections(names, archive.read)
     return names
 
 

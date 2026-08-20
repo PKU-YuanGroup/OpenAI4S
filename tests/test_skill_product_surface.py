@@ -40,9 +40,25 @@ def test_skill_control_tools_keep_schema_policy_and_behavior_in_named_classes():
     rollback = get_tool("rollback_skill_version")
 
     assert type(listing).__name__ == "ListSkillsTool"
+    # Both arguments are optional: the zero-argument call is the catalog
+    # overview, and `collection` (paged by `offset`) enumerates one bundled
+    # collection. That is what lets the overview stay small enough for the
+    # 10k observation ceiling with 561 imported recipes present -- at the cost
+    # of provider-strict generation, which requires every declared property to
+    # be required (see tests/test_native_tools.py).
     assert listing.input_schema() == {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "collection": {
+                "type": "string",
+                "description": "Enumerate this collection's Skill names instead.",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Start index when paging a collection listing.",
+            },
+        },
         "required": [],
         "additionalProperties": False,
     }
@@ -86,7 +102,9 @@ def test_list_skills_native_tool_dispatches_to_existing_catalog(tmp_path):
     finally:
         dispatcher.store.close()
 
-    assert catalog == {"count": 1, "names": ["Trusted"]}
+    # `count` is the whole catalog; `names` is the curated tier; each bundled
+    # collection is one entry rather than N peers.
+    assert catalog == {"count": 1, "names": ["Trusted"], "collections": []}
 
 
 @pytest.mark.parametrize("arguments", ["example_stats", {"name": "example_stats"}])

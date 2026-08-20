@@ -371,8 +371,70 @@ class Skill:
         }
 
 
+#: A collection declares itself with this file at its own root.
+COLLECTION_MARKER = "COLLECTION.json"
+
+
+@dataclass(frozen=True)
+class SkillCollection:
+    """A bundled tree that is ONE catalog entry, not N peer Skills.
+
+    The loader used to hardcode the directory name, the collection id, and an
+    eight-line bioinformatics policy paragraph, and `system_context` read back
+    exactly one key -- so `collection` was a tag three surfaces interpreted
+    differently and a second collection would have been dropped from the
+    prompt. The tree now declares itself: drop a `COLLECTION.json` beside its
+    LICENSE and README pair and every surface picks it up, with its own
+    retrieval guidance living next to the recipes it describes rather than in
+    a provider-neutral discovery component.
+    """
+
+    id: str
+    root: Path
+    #: Rendered verbatim as the collection's single line in the system prompt.
+    #: ``{count}`` is substituted with the number of members actually visible
+    #: to the caller, which is not 561 once an allowlist has filtered them.
+    prompt_line: str
+
+    def summary_line(self, count: int) -> str:
+        try:
+            body = self.prompt_line.format(count=count)
+        except (IndexError, KeyError, ValueError):
+            # A malformed template must not take the prompt down with it, and
+            # must not silently drop the collection either.
+            body = self.prompt_line
+        return f"- {body}"
+
+
+def _read_collection(root: Path) -> SkillCollection | None:
+    """Return the collection a bundled subdirectory declares, if any."""
+
+    marker = root / COLLECTION_MARKER
+    if not marker.is_file():
+        return None
+    try:
+        declared = json.loads(marker.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(declared, dict):
+        return None
+    identifier = str(declared.get("id") or root.name).strip() or root.name
+    prompt_line = str(declared.get("prompt_line") or "").strip()
+    if not prompt_line:
+        prompt_line = (
+            f"{identifier} collection: {{count}} pinned third-party recipes are "
+            "available on demand. Use search_skills before writing a pipeline "
+            "in this area, and list_skills only when exact enumeration is "
+            "required."
+        )
+    return SkillCollection(id=identifier, root=root, prompt_line=prompt_line)
+
+
 def _bootstrap_runtime_code(
-    manifest: dict, roots: list[str], denied: frozenset[str] = frozenset()
+    manifest: dict,
+    roots: list[str],
+    denied: frozenset[str] = frozenset(),
+    collection_prefixes: frozenset[str] = frozenset(),
 ) -> str:
     """Generate the in-kernel import gate/tracker for one manifest snapshot.
 
@@ -381,6 +443,15 @@ def _bootstrap_runtime_code(
     skill a Specialist policy withheld was still importable inside the
     child's cell. The allowlist closed the Host RPC and left the sidecar,
     which is the half that runs code.
+
+    `collection_prefixes` names the collection roots that are themselves a
+    package under another root -- ``skills/bioskills`` is importable as
+    ``bioskills`` because its parent ``skills/`` is on ``sys.path``. The gate
+    keys on the leaf directory, so without this the second segment of
+    ``bioskills.<dir>.<module>`` was never looked up at all: ``find_spec`` saw
+    ``top == 'bioskills'``, found no entry, returned ``None``, and ordinary
+    ``PathFinder`` imported a withheld or disabled recipe's code. Both spellings
+    must resolve to the same skill identity before any decision is taken.
     """
 
     entries = manifest.get("entries") or []
@@ -394,6 +465,24 @@ def _bootstrap_runtime_code(
         for directory, entry in known.items()
         if not entry.get("enabled", True)
     }
+    # Only entries the tracked loader can actually use are embedded. The gate
+    # needs a skill's *identity* to deny or disable an import, which is one
+    # short directory string; it needs the full entry only to hash, record and
+    # mark a sidecar. 561 of the 597 bundled Skills carry no `kernel.py`, so
+    # `repr()`-ing the whole manifest into the generated source shipped a
+    # quarter-megabyte -- compiled at every kernel start, stored verbatim as
+    # `init_hooks` in the durable generation record, and copied into
+    # `generation_refs` of every cursor checkpoint -- to feed a sidecar gate
+    # that can never fire for them.
+    sidecar_entries = [
+        entry for entry in entries if (entry.get("sidecar") or {}).get("present")
+    ]
+    embedded = {
+        "manifest_id": manifest.get("manifest_id"),
+        "kind": manifest.get("kind"),
+        "entries": sidecar_entries,
+        "load_events": manifest.get("load_events") or [],
+    }
     # Keep this generated snippet self-contained: a scientific kernel may not
     # import openai4s internals from its selected environment.
     return (
@@ -403,10 +492,11 @@ def _bootstrap_runtime_code(
         "import importlib.machinery as _o4s_machinery\n"
         "import sys as _o4s_sys\n"
         "import time as _o4s_time\n"
-        f"__openai4s_skill_bootstrap_manifest__ = {manifest!r}\n"
+        f"__openai4s_skill_bootstrap_manifest__ = {embedded!r}\n"
         "__openai4s_skill_load_events__ = "
         "__openai4s_skill_bootstrap_manifest__['load_events']\n"
         f"_o4s_skill_roots = {roots!r}\n"
+        f"_o4s_skill_dirs = {set(known)!r}\n"
         "_o4s_skill_entries = {\n"
         "    _o4s_entry['directory']: _o4s_entry\n"
         "    for _o4s_entry in "
@@ -414,11 +504,16 @@ def _bootstrap_runtime_code(
         "}\n"
         f"_o4s_disabled_skills = {disabled!r}\n"
         f"_o4s_denied_skills = {set(denied)!r}\n"
+        f"_o4s_collection_prefixes = {set(collection_prefixes)!r}\n"
         "for _o4s_root in reversed(_o4s_skill_roots):\n"
         "    if _o4s_root not in _o4s_sys.path:\n"
         "        _o4s_sys.path.insert(0, _o4s_root)\n"
         "for _o4s_module in list(_o4s_sys.modules):\n"
-        "    if _o4s_module.partition('.')[0] in _o4s_skill_entries:\n"
+        "    _o4s_head = _o4s_module.partition('.')[0]\n"
+        "    if (\n"
+        "        _o4s_head in _o4s_skill_dirs\n"
+        "        or _o4s_head in _o4s_collection_prefixes\n"
+        "    ):\n"
         "        _o4s_sys.modules.pop(_o4s_module, None)\n"
         "_o4s_sys.meta_path[:] = [\n"
         "    _o4s_finder for _o4s_finder in _o4s_sys.meta_path\n"
@@ -483,10 +578,16 @@ def _bootstrap_runtime_code(
         "class _OpenAI4SSkillGate(_o4s_abc.MetaPathFinder):\n"
         "    _openai4s_skill_gate = True\n"
         "    def find_spec(self, fullname, path=None, target=None):\n"
-        "        top = fullname.partition('.')[0]\n"
-        "        entry = _o4s_skill_entries.get(top)\n"
-        "        if entry is None:\n"
+        "        head, _o4s_dot, _o4s_rest = fullname.partition('.')\n"
+        "        if head in _o4s_collection_prefixes and _o4s_rest:\n"
+        "            top = _o4s_rest.partition('.')[0]\n"
+        "            sidecar_module = head + '.' + top + '.kernel'\n"
+        "        else:\n"
+        "            top = head\n"
+        "            sidecar_module = top + '.kernel'\n"
+        "        if top not in _o4s_skill_dirs:\n"
         "            return None\n"
+        "        entry = _o4s_skill_entries.get(top)\n"
         "        if top in _o4s_denied_skills:\n"
         "            raise ModuleNotFoundError(\n"
         '                f"skill sidecar {top!r} is not available to this agent"\n'
@@ -497,7 +598,8 @@ def _bootstrap_runtime_code(
         "            )\n"
         "        spec = _o4s_machinery.PathFinder.find_spec(fullname, path)\n"
         "        if (\n"
-        "            spec is not None and fullname == top + '.kernel'\n"
+        "            spec is not None and entry is not None\n"
+        "            and fullname == sidecar_module\n"
         "            and spec.loader is not None\n"
         "        ):\n"
         "            spec.loader = _OpenAI4STrackedSkillLoader(\n"
@@ -566,19 +668,33 @@ class SkillLoader:
             return None
         return project_skills_root(self.cfg, self.project_id)
 
-    def bundled_roots(self) -> tuple[tuple[Path, str | None], ...]:
-        """Return maintained bundled roots and their optional collection id.
+    def collections(self) -> dict[str, SkillCollection]:
+        """Every bundled collection, discovered from its own marker file.
 
-        Ordinary OpenAI4S Skills remain one directory below ``skills/``.  The
-        pinned bioSkills import is a generated third-party collection one
-        level lower, which lets its provenance/license live at a single stable
-        boundary instead of pretending 561 independently maintained packages.
+        Ordinary OpenAI4S Skills remain one directory below ``skills/``. A
+        collection is a directory that declares itself with
+        ``COLLECTION.json`` and holds its members one level lower, which lets
+        its provenance, license and retrieval guidance live at a single stable
+        boundary instead of pretending N independently maintained packages.
         """
 
+        found: dict[str, SkillCollection] = {}
+        if not self.skills_dir.is_dir():
+            return found
+        for child in sorted(self.skills_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            collection = _read_collection(child)
+            if collection is not None and collection.id not in found:
+                found[collection.id] = collection
+        return found
+
+    def bundled_roots(self) -> tuple[tuple[Path, str | None], ...]:
+        """Return maintained bundled roots and their optional collection id."""
+
         roots: list[tuple[Path, str | None]] = [(self.skills_dir, None)]
-        bioskills = self.skills_dir / "bioskills"
-        if bioskills.is_dir():
-            roots.append((bioskills, "bioskills"))
+        for collection in self.collections().values():
+            roots.append((collection.root, collection.id))
         return tuple(roots)
 
     @staticmethod
@@ -639,8 +755,12 @@ class SkillLoader:
                     continue
                 document_sha256 = hashlib.sha256(raw.encode("utf-8")).hexdigest()
                 sidecar = child / "kernel.py"
+                # One stat, reused below for `has_kernel`. At 597 skills the
+                # duplicated `(child / "kernel.py").exists()` was 597 extra
+                # syscalls on a path walked by every Host skill RPC.
+                has_sidecar = sidecar.exists()
                 sidecar_sha256 = None
-                if sidecar.exists():
+                if has_sidecar:
                     try:
                         sidecar_sha256 = hashlib.sha256(
                             sidecar.read_bytes()
@@ -654,7 +774,7 @@ class SkillLoader:
                     name=name,
                     root=child,
                     doc=body,
-                    has_kernel=(child / "kernel.py").exists(),
+                    has_kernel=has_sidecar,
                     description=description,
                     origin=origin,
                     source=source,
@@ -728,6 +848,49 @@ class SkillLoader:
                 return s
         return None
 
+    def resolve(
+        self,
+        name: str,
+        *,
+        permits: "Callable[[str], bool] | None" = None,
+    ) -> Skill | None:
+        """Resolve a requested name to a Skill, with a GUARDED fuzzy fallback.
+
+        `get()` handles the two exact identities (directory key, declared
+        name). The historical fallback then asked the lexical index for its
+        single best match, which is fine over 36 curated recipes and actively
+        misleading over 597: `load("alpha-fold2")` returned
+        `bio-crispr-screens-mageck-analysis` and `load("boltz2")` returned
+        `bio-ml-docking-rescoring` -- a different skill's full recipe, under a
+        `name` the caller did not ask for, from a tool whose whole contract is
+        "load one Skill's guidance BY NAME".
+
+        The distinction is what the request looks like, not how well it
+        scores. A single bare token IS a name -- a near-miss for one, usually
+        a typo -- so it has to match on the candidate's *name*; that keeps
+        `proteinMPNN`, `retrosynthesis` and `literature` working and refuses
+        `boltz2` and `esmfold` rather than answering them with something else.
+        A multi-word phrase is a description, and matching it against recipe
+        bodies is exactly what the fallback is for, so `Fourier signal` still
+        resolves to `spectral`.
+        """
+
+        skill = self.get(name)
+        if skill is not None:
+            return skill
+        requested = str(name or "").strip()
+        wanted = _tokenize(requested)
+        if not wanted:
+            return None
+        name_shaped = len(requested.split()) == 1
+        for hit in self.search(requested, limit=5, permits=permits):
+            candidate = self.get(str(hit.get("name") or ""))
+            if candidate is None:
+                continue
+            if not name_shaped or wanted <= _tokenize(candidate.name):
+                return candidate
+        return None
+
     def read(self, name: str, path: str = "SKILL.md") -> str:
         """Read an enabled skill resource without escaping its directory."""
 
@@ -790,12 +953,19 @@ class SkillLoader:
                 for entry in (manifest.get("entries") or [])
                 if entry.get("directory") and entry.get("name") not in allowed
             )
-        roots = [str(root) for root, _collection in self.bundled_roots()]
+        bundled = self.bundled_roots()
+        roots = [str(root) for root, _collection in bundled]
+        # A collection root lives *under* `skills/`, which is itself on
+        # sys.path, so its directory name is a second importable spelling of
+        # every skill inside it. The gate has to know both or it guards one.
+        collection_prefixes = frozenset(
+            root.name for root, collection in bundled if collection
+        )
         project_root = self.project_skills_dir()
         if project_root is not None:
             roots.append(str(project_root))
         roots.append(str(self.user_skills_dir()))
-        return _bootstrap_runtime_code(manifest, roots, denied)
+        return _bootstrap_runtime_code(manifest, roots, denied, collection_prefixes)
 
     def record_sidecar_loaded(
         self,
@@ -822,17 +992,35 @@ class SkillLoader:
             },
         )
 
-    def search(self, query: str, *, limit: int = 5) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        permits: "Callable[[str], bool] | None" = None,
+    ) -> list[dict]:
         """Keyword-overlap skill retrieval (openai4s's search_skills route).
 
         Scores each skill by literal token overlap between the query and the
         skill's name/description/body. Purely lexical — no synonym expansion —
         matching the documented limitation of the skill-retrieval prompt.
         Returns the full doc of the top matches so the agent can then use them.
+
+        `permits` is the caller's allowlist predicate, applied AFTER scoring
+        and BEFORE the limit slice. Ranking still happens over the whole
+        corpus, so a permitted skill keeps the position it earned -- but the
+        caller gets `limit` results it can actually open. Slicing first and
+        filtering afterwards is what a Specialist saw instead: with 561
+        collection recipes in the same lexical index, the global top 5 for
+        "protein structure prediction and design pipeline" contains none of
+        the two skills it is allowed, so a child whose allowlist is its whole
+        reason to exist retrieved nothing at all.
         """
         q_tokens = _tokenize(query)
         scored: list[tuple[float, Skill]] = []
         for s in self.skills().values():
+            if permits is not None and not permits(s.name):
+                continue
             if not q_tokens:
                 score = 0.0
             else:
@@ -850,6 +1038,15 @@ class SkillLoader:
                 {
                     "name": s.name,
                     "origin": s.origin,
+                    # `origin` marks the read-only distribution boundary, not
+                    # authorship: a vendored collection carries `openai4s`
+                    # there too. `collection` is the only field on this
+                    # surface that says the recipe is third-party, and search
+                    # is the path the collection's own prompt line makes
+                    # primary -- `doc` is the frontmatter-stripped body, so
+                    # the upstream repository/commit/license never reach the
+                    # model through it.
+                    "collection": s.collection,
                     "description": s.description,
                     "import": s.import_hint,
                     "score": round(score, 2),
@@ -920,31 +1117,48 @@ class SkillLoader:
             "import its sidecar and use it. Do NOT invent a skill, API, or "
             "Cell-runner function. For enumeration or an all-Skills audit, use "
             "native `list_skills`, then native `load_skill` with each exact "
-            "returned name; only inside a fenced Python Cell use "
+            "returned name; it lists curated Skills by name and each bundled "
+            "collection as one entry, so pass `collection=<id>` (paging with "
+            "`offset`) to enumerate a collection's members. Only inside a "
+            "fenced Python Cell use "
             "`host.skills.list()`. Never use `list_dir` for the Skill catalog. "
             "Catalog metadata is not a path: do not use `read_text_file` or "
             "`glob_files` for Skill retrieval.",
             "",
         ]
+        # `only` has already filtered `skills` above, so grouping is
+        # unconditional and the aggregate line carries the POST-filter count.
+        # Gating it on `only is None` switched the whole prompt-size fix off on
+        # the delegation path -- the one surface `only=` exists for -- and a
+        # child allowlisted to the collection got 134,759 bytes of summaries
+        # where the parent got 8,902.
         collections: dict[str, list[Skill]] = {}
         for skill in skills.values():
-            if skill.collection and only is None:
+            if skill.collection:
                 collections.setdefault(skill.collection, []).append(skill)
             else:
                 lines.append(skill.summary_line())
-        bioskills = collections.get("bioskills", [])
-        if bioskills:
-            lines.append(
-                "- bioSkills collection: "
-                f"{len(bioskills)} pinned third-party bioinformatics recipes are "
-                "available on demand across genomics, transcriptomics, variants, "
-                "single-cell/spatial omics, structural biology, proteomics, "
-                "metabolomics, chemoinformatics, clinical statistics, and workflow "
-                "management. For ANY bioinformatics task, search this collection "
-                "before writing the pipeline, using English method, tool, data-type, "
-                "and workflow keywords even when the user asks in another language. "
-                "Use list_skills only when exact enumeration is required."
-            )
+        # Drain EVERY bucket. Reading back only "bioskills" would divert any
+        # other collection out of the per-skill branch above and then never
+        # emit it, so a second root added through `bundled_roots()` would be
+        # discoverable, enabled, searchable and loadable while being absent
+        # from the prompt entirely -- silently undisclosed rather than
+        # compactly disclosed, with no error anywhere to say so.
+        declared = self.collections()
+        for collection_id, members in sorted(collections.items()):
+            if not members:
+                continue
+            collection = declared.get(collection_id)
+            if collection is None:
+                collection = SkillCollection(
+                    id=collection_id,
+                    root=self.skills_dir / collection_id,
+                    prompt_line=(
+                        f"{collection_id} collection: {{count}} pinned "
+                        "third-party recipes are available on demand."
+                    ),
+                )
+            lines.append(collection.summary_line(len(members)))
         return "\n".join(lines)
 
 

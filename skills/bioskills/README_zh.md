@@ -13,7 +13,8 @@
 
 资源包覆盖 63 个类别，包括序列与比对文件 I/O、变异检测、表达与表观组学、单细胞与空间
 分析、结构生物学、蛋白质组、代谢组、微生物组、群体遗传学、临床生物统计、可视化、
-报告和工作流管理。`MANIFEST.json` 是权威清单：记录每个公开 Skill 名称、上游路径、
+报告和工作流管理。`COLLECTION.json` 是让本目录成为一个目录项、而不是 561 个平级 Skill 的关键：它记录
+集合 id 和该集合在 system prompt 中占用的那一行文案。`MANIFEST.json` 是权威清单：记录每个公开 Skill 名称、上游路径、
 转换后目录、来源 commit，以及每个导入文件的 SHA-256 与大小。
 
 上游的 `clawhub-installer` 元 Skill 被有意排除；它是另一个 agent 平台的安装器，不是
@@ -30,10 +31,12 @@
 | 没有分发来源信息 | 补 `origin: openai4s`、类别、仓库、commit 与许可证元数据 |
 
 `origin: openai4s` 表示只读分发边界；作者与许可证仍是相邻元数据所记录的
-GPTomics/MIT。命令示例也按本仓库的中转安全约定做了规范化：Python 命令使用
-`python3`，静默 curl 示例改用遇错即停的参数，两处把下载内容直接交给 shell 的
-Nextflow 安装示例改为文档已有的 bioconda 安装方式。所有转换都写入
-`MANIFEST.json`。
+GPTomics/MIT。命令示例也按本仓库的中转安全约定做了规范化：`python -m` / `python -c`
+片段改用 `python3`，静默 `curl` 的各种写法补上遇错即停的参数，两处把下载内容直接交给
+shell 的 Nextflow 安装示例改为文档已有的 bioconda 安装方式。所用规则写入
+`MANIFEST.json`。这只是写法层面的规范化，不是一次安全审计：裸 `python script.py`、
+`wget`、`pip install git+`、`install_github(...)`、`docker run` 和 `sudo apt install`
+等指令都原样保留，它们仍然受 shell、egress 与人工审批控制。
 
 ## 发现机制与上下文成本
 
@@ -41,11 +44,13 @@ Nextflow 安装示例改为文档已有的 bioconda 安装方式。所有转换�
 常驻 system prompt 只用一行摘要表示整个集合，不注入 561 条 description——上游安装器
 估算那些描述约占 109,000 token。搜索仍为每份完整配方建立索引；集合提示明确要求
 agent 在编写任何生物信息学 pipeline 前先搜索，若用户使用其他语言，则把方法、工具、
-数据类型和工作流转换成英文关键词。显式限定能力的 specialist 则会看到它获准加载的
-具体 Skill 摘要。
+数据类型和工作流转换成英文关键词。显式限定能力的 specialist 看到的同样是这一行汇总，
+只是计数换成它的允许名单里的配方数量。
 
 各 Skill 子目录属于机械生成的第三方资产，不执行仓库通用的「每个目录一对中英 README」
-规则；由本说明文档对、`LICENSE` 和 `MANIFEST.json` 统一记录并校验其边界。
+规则；由本说明文档对、`LICENSE` 和 `MANIFEST.json` 统一记录其边界。manifest 不是一句
+声明而是可校验的：`python3 scripts/import_bioskills.py --check` 会逐个文件重算哈希与
+目录树比对，离线测试套件也会跑这一步。
 
 ## 依赖与执行安全
 

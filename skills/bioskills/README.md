@@ -16,7 +16,9 @@ The collection covers 63 categories, including sequence and alignment I/O,
 variant calling, expression and epigenomics, single-cell and spatial analysis,
 structural biology, proteomics, metabolomics, microbiome analysis, population
 genetics, clinical biostatistics, visualization, reporting, and workflow
-management. `MANIFEST.json` is the authoritative inventory: it records every
+management. `COLLECTION.json` is what makes this directory one catalog entry rather than
+561 peers: it carries the collection id and the single line the system prompt
+shows for it. `MANIFEST.json` is the authoritative inventory: it records every
 public Skill name, upstream path, converted directory, source commit, and
 SHA-256/size for every imported payload file.
 
@@ -35,10 +37,14 @@ installer for another agent platform, not a scientific recipe.
 
 `origin: openai4s` identifies the read-only distribution boundary; authorship
 and licensing remain GPTomics/MIT as recorded beside it. Command snippets are
-also normalized to this repository's relay-safety convention: Python command
-examples use `python3`, silent curl examples use fail-fast flags, and the two
-download-to-shell Nextflow examples use the documented bioconda package route.
-All such transformations are recorded in `MANIFEST.json`.
+also normalized to this repository's relay-safety convention: `python -m` /
+`python -c` snippets use `python3`, silent `curl` flag spellings gain fail-fast
+flags, and the two download-to-shell Nextflow examples use the documented
+bioconda package route. The rules applied are recorded in `MANIFEST.json`.
+This is spelling normalization, not an audit: bare `python script.py`, `wget`,
+`pip install git+`, `install_github(...)`, `docker run` and `sudo apt install`
+instructions survive untouched, and each still runs under the normal shell,
+egress and approval controls.
 
 ## Discovery and context cost
 
@@ -49,11 +55,15 @@ collection as one summary line instead of injecting 561 descriptions (about
 recipe. The aggregate prompt explicitly tells the agent to search before any
 bioinformatics pipeline, translating the method, tool, data type, and workflow
 to English keywords when the user's query is in another language. An explicitly
-scoped specialist receives the individual summaries it is allowed to load.
+scoped specialist receives the same collapsed line, counting only the
+recipes its allowlist permits.
 
 The per-Skill directories are generated third-party assets. They are excluded
 from the repository's per-directory bilingual-README rule; this README pair,
-`LICENSE`, and `MANIFEST.json` document and verify their owning boundary.
+`LICENSE`, and `MANIFEST.json` document their owning boundary. The manifest is
+verified rather than merely asserted: `python3 scripts/import_bioskills.py
+--check` re-derives every recorded hash against the tree, and the offline test
+suite runs it.
 
 ## Dependencies and execution safety
 

@@ -10,7 +10,12 @@ include scripts/*.py
 # missing file rather than reporting anything about the artifact.
 include scripts/bundled_packages.txt
 recursive-include docs *.md
-recursive-include skills *.R *.Rmd *.aln *.csv *.cwl *.fasta *.fastq *.gb *.html *.ini *.json *.lock *.md *.nf *.py *.qmd *.sh *.toml *.wdl *.yml LICENSE rnaseq_snakefile
+# Ship the Skill tree as a tree. Enumerating extensions here meant one
+# upstream file type per token -- and a literal `rnaseq_snakefile`, the
+# exact name of a single vendored file, in a repo-wide packaging rule.
+# The next extensionless or novel-suffix recipe asset would have gone
+# missing from the sdist with no gate able to notice.
+recursive-include skills *
 recursive-include workflows *.json
 recursive-include openai4s/compute/templates *.tmpl
 recursive-include openai4s/kernel *.R

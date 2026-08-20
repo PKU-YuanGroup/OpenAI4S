@@ -57,11 +57,21 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="openai4s-release-smoke-") as temp:
         cfg = Config(data_dir=Path(temp))
-        skills = sorted(cfg.skills_dir.glob("*/SKILL.md"))
-        skills.extend(sorted((cfg.skills_dir / "bioskills").glob("*/SKILL.md")))
-        if len(skills) < 20:
+        # Counted separately: a single total lets the 561-recipe collection
+        # satisfy the floor on its own, so a wheel that dropped every curated
+        # Skill would still report a healthy catalog.
+        curated = sorted(cfg.skills_dir.glob("*/SKILL.md"))
+        collection = sorted((cfg.skills_dir / "bioskills").glob("*/SKILL.md"))
+        skills = curated + collection
+        if len(curated) < 20:
             raise RuntimeError(
-                f"installed skill catalog is incomplete: {len(skills)} skill(s) at {cfg.skills_dir}"
+                f"installed skill catalog is incomplete: {len(curated)} curated "
+                f"skill(s) at {cfg.skills_dir}"
+            )
+        if collection and len(collection) < 561:
+            raise RuntimeError(
+                f"installed bioSkills collection is incomplete: {len(collection)} "
+                f"recipe(s) at {cfg.skills_dir / 'bioskills'}"
             )
 
         env_dir = package_root.parent / "envs"

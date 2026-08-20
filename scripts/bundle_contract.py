@@ -57,6 +57,8 @@ FORBIDDEN_SOURCES = (".git", ".venv", ".build", "tests", ".claude")
 ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
 
 MIN_SKILLS = 20
+#: Floor for the pinned bioSkills collection when it is present at all.
+MIN_COLLECTION_SKILLS = 561
 
 #: Below this, the bundle was not precompiled — see :func:`check_bytecode`.
 MIN_PYC = 500
@@ -127,8 +129,22 @@ def check_sources(src: Path) -> int:
     missing = [name for name in REQUIRED_SOURCES if not (src / name).is_file()]
     if missing:
         raise BundleCheckError("source tree is missing: " + ", ".join(missing))
-    skills = sorted(src.glob("skills/*/SKILL.md"))
-    skills.extend(sorted(src.glob("skills/bioskills/*/SKILL.md")))
+    # Two floors, not one total. Folding the 561-recipe collection into the
+    # same count made the curated floor unfalsifiable: a bundle that shipped
+    # bioskills and dropped every curated Skill still cleared 20.
+    curated = sorted(src.glob("skills/*/SKILL.md"))
+    collection = sorted(src.glob("skills/bioskills/*/SKILL.md"))
+    skills = curated + collection
+    if len(curated) < MIN_SKILLS:
+        raise BundleCheckError(
+            f"bundle ships only {len(curated)} curated Skills; "
+            f"expected at least {MIN_SKILLS}"
+        )
+    if collection and len(collection) < MIN_COLLECTION_SKILLS:
+        raise BundleCheckError(
+            f"bundle ships only {len(collection)} bioSkills recipes; "
+            f"expected at least {MIN_COLLECTION_SKILLS}"
+        )
     if len(skills) < MIN_SKILLS:
         raise BundleCheckError(
             f"bundle ships only {len(skills)} Skills; expected at least {MIN_SKILLS}"
@@ -225,6 +241,7 @@ __all__ = [
     "MANIFEST",
     "MIN_PYC",
     "MIN_SCANNED_FILES",
+    "MIN_COLLECTION_SKILLS",
     "MIN_SKILLS",
     "REQUIRED_SOURCES",
     "bundled_imports",

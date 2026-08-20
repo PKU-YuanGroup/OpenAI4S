@@ -16,6 +16,7 @@ socket. Asserted by making both an error while the real route runs.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import urllib.request
@@ -48,8 +49,15 @@ def bundled(tmp_path):
     _write_skill(skills_dir, "gpu-skill", "requirements: [gpu]\n")
     _write_skill(skills_dir, "odd-skill", "requirements: [quantum-annealer]\n")
     _write_skill(skills_dir, "plain-skill", "")
+    # A collection declares itself with COLLECTION.json; the loader no longer
+    # knows any directory name. Registering the marker is what makes the four
+    # members below one catalog entry instead of four peers.
     collection = skills_dir / "bioskills"
     collection.mkdir()
+    (collection / "COLLECTION.json").write_text(
+        json.dumps({"id": "bioskills", "prompt_line": "bioskills: {count} recipes"}),
+        encoding="utf-8",
+    )
     _write_skill(collection, "bio-example", "")
     return Config(data_dir=tmp_path / "data", skills_dir=skills_dir)
 
