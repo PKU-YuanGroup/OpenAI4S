@@ -109,8 +109,49 @@ def _sidecar_names(skill_dir: Path) -> set[str]:
     return names
 
 
+#: Imported recipes that fail this gate at the pinned upstream commit.
+#:
+#: The bioSkills tree is byte-exact vendored content, so these cannot be fixed
+#: in place without invalidating `skills/bioskills/MANIFEST.json` — they have
+#: to be carried upstream or shimmed on the next re-pin. Listing them here is
+#: the point: the gate now runs over the other 554 imported recipes instead of
+#: skipping the whole collection, and a re-pin that fixes one of these fails
+#: loudly (see `test_the_known_gaps_are_still_real`) rather than quietly
+#: keeping a stale exemption.
+KNOWN_COLLECTION_GAPS: dict[str, set[str]] = {
+    "bio-atac-seq-allele-specific-accessibility": {"map_snps_to_peaks"},
+    "bio-atac-seq-deep-learning-atac": {"load_chrombpnet_model"},
+    "bio-chemoinformatics-shape-similarity": {"ecfp_tanimoto"},
+    "bio-chip-seq-chip-deep-learning": {
+        "encode",
+        "encode_dna_one_hot",
+        "one_hot_encode",
+    },
+    "bio-clinical-biostatistics-subgroup-analysis": {
+        "GradientBoostingRegressor",
+        "LogisticRegression",
+    },
+    "bio-sequence-io-paired-end-fastq": {"process_pair"},
+    "bio-workflows-liquid-biopsy-pipeline": {
+        "call_variants",
+        "preprocess_with_fgbio",
+        "run_ichorcna",
+    },
+}
+
+
 def _bundled_skills() -> list[Path]:
-    return sorted(p.parent for p in _SKILLS.glob("*/SKILL.md"))
+    """Every bundled recipe, curated and collection alike.
+
+    The collection lives one directory lower, so a single `skills/*/SKILL.md`
+    glob silently narrowed this gate to 36 of 597 Skills — 94% of the shipped
+    catalog, and the newest 94%, went unchecked. Running all of them costs
+    ~0.3s.
+    """
+
+    curated = sorted(p.parent for p in _SKILLS.glob("*/SKILL.md"))
+    collection = sorted(p.parent for p in _SKILLS.glob("*/*/SKILL.md"))
+    return curated + collection
 
 
 def _unresolved(skill_dir: Path) -> tuple[set[str], int, int]:
@@ -138,6 +179,7 @@ def test_every_bare_call_in_a_recipe_resolves(skill_dir):
     """The gate. A name the recipe calls must exist by the time the agent runs
     it, or the recipe fails at exactly the step it was written to perform."""
     unresolved, _blocks, _skipped = _unresolved(skill_dir)
+    unresolved -= KNOWN_COLLECTION_GAPS.get(skill_dir.name, set())
     assert not unresolved, (
         f"{skill_dir.name}/SKILL.md calls names nothing defines: "
         f"{sorted(unresolved)}. The kernel injects only {sorted(INJECTED_NAMES)}; "
@@ -146,20 +188,64 @@ def test_every_bare_call_in_a_recipe_resolves(skill_dir):
     )
 
 
+#: Imported recipes with ```python blocks that do not parse as Python, and the
+#: exact number in each. Two kinds, both worth keeping visible:
+#:
+#:   * Snakemake DSL (`rule x:`, `configfile:`, `include:`) fenced as python.
+#:     Never was Python; the fence label is wrong upstream.
+#:   * genuinely broken code — an unclosed `[` and a malformed dict literal —
+#:     in recipes the agent is told to run.
+#:
+#: Pinned per skill and by count so a re-pin that introduces a ninth
+#: unparseable block fails instead of widening the exemption silently.
+KNOWN_UNPARSEABLE_BLOCKS: dict[str, int] = {
+    "bio-crispr-screens-perturb-seq-analysis": 1,
+    "bio-data-visualization-circos-plots": 1,
+    "bio-workflow-management-snakemake-workflows": 6,
+}
+
+
 def test_the_gate_actually_reads_the_recipes():
     """A parser that silently skipped every block would pass the test above
     while checking nothing. Assert it is really looking at code."""
     total_blocks = total_skipped = 0
+    unexpected: dict[str, int] = {}
     for skill_dir in _bundled_skills():
         _unresolved_names, blocks, skipped = _unresolved(skill_dir)
         total_blocks += blocks
         total_skipped += skipped
+        allowed = KNOWN_UNPARSEABLE_BLOCKS.get(skill_dir.name, 0)
+        if skipped != allowed:
+            unexpected[skill_dir.name] = skipped
 
     assert total_blocks >= 50, f"only {total_blocks} python blocks found"
-    assert total_skipped == 0, (
-        f"{total_skipped} of {total_blocks} python blocks failed to parse; a "
-        f"recipe the gate cannot read is a recipe it cannot check"
+    assert not unexpected, (
+        f"python blocks that failed to parse, against the pinned allowance: "
+        f"{sorted(unexpected.items())} (of {total_blocks} blocks, "
+        f"{total_skipped} skipped). A recipe the gate cannot read is a recipe "
+        f"it cannot check — fix it, or pin it in KNOWN_UNPARSEABLE_BLOCKS "
+        f"deliberately."
     )
+
+
+def test_the_known_gaps_are_still_real():
+    """An exemption that has stopped applying is worse than no exemption.
+
+    It reads as "this recipe was checked" while covering a name the gate would
+    now resolve on its own, so the next re-pin inherits a stale allowance for a
+    defect that may have come back somewhere else in the same document.
+    """
+
+    for name, expected in sorted(KNOWN_COLLECTION_GAPS.items()):
+        skill_dir = _SKILLS / "bioskills" / name
+        if not skill_dir.is_dir():
+            pytest.fail(f"{name} is exempted but no longer exists; drop the entry")
+        unresolved, _blocks, _skipped = _unresolved(skill_dir)
+        assert unresolved == expected, (
+            f"{name}: the gate now reports {sorted(unresolved)} but the "
+            f"exemption still claims {sorted(expected)}. Update "
+            f"KNOWN_COLLECTION_GAPS deliberately."
+        )
 
 
 def test_the_injected_namespace_matches_the_worker():

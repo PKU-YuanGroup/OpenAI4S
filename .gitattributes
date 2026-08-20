@@ -1,2 +1,7 @@
-# Preserve byte-exact vendored bioSkills payloads from the pinned upstream commit.
-skills/bioskills/** -whitespace
+# Preserve byte-exact vendored bioSkills payloads from the pinned upstream
+# commit. `-text` is the attribute that actually does this: it disables git's
+# end-of-line conversion, so a clone with core.autocrlf=true (the Git for
+# Windows default) does not rewrite all 1,962 files to CRLF and invalidate
+# every SHA-256 in skills/bioskills/MANIFEST.json. `-whitespace` only turns
+# off git's whitespace *error* checks and does not preserve a single byte.
+skills/bioskills/** -text -whitespace

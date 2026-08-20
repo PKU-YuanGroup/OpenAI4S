@@ -377,9 +377,205 @@ def test_bioskills_exact_load_search_and_scoped_prompt():
     hits = loader.search("MolProbity R-free predicted structure validation", limit=3)
     assert name in {hit["name"] for hit in hits}
 
+    # A scoped specialist gets the collapsed line too, with the count of what
+    # IT may load -- not 561, and not one summary line per permitted recipe.
     scoped = loader.system_context(only=frozenset({name}))
-    assert f"- {name}:" in scoped
-    assert "bioSkills collection:" not in scoped
+    assert f"- {name}:" not in scoped
+    assert "bioSkills collection: 1 pinned third-party" in scoped
+    assert len(scoped) < 10_000, "a scoped prompt must not re-expand the corpus"
+
+
+def test_a_wide_search_loses_detail_rather_than_hits():
+    """`format_tool_result` truncates from the tail, so an oversized result set
+    does not degrade — it deletes the last hits, names and all, mid-JSON.
+
+    With ~18k-char imported recipes, a default `limit=5` search rendered
+    101,701 chars against a 20,000-char limit and the model saw one hit. Rank
+    the results, then let the transport decide which of them survive, and the
+    ranking was for nothing.
+    """
+
+    from openai4s.tools.registry import format_tool_result
+    from openai4s.tools.skills import SearchSkillsTool
+
+    loader = SkillLoader()
+    loader.discover()
+    tool = SearchSkillsTool()
+
+    for query, limit in (
+        ("rna seq differential expression deseq2", 5),
+        ("variant calling gatk best practices", 20),
+    ):
+        hits = loader.search(query, limit=limit)
+        if len(hits) < 2:
+            continue
+        rendered = format_tool_result(tool, tool.fit_to_budget(hits))
+        assert not rendered.endswith(
+            "… [truncated]"
+        ), f"{query!r} at limit={limit} still overflows the tool observation"
+        for hit in hits:
+            assert f'"{hit["name"]}"' in rendered, (
+                f"{hit['name']} was ranked into the results and then dropped "
+                f"by the transport"
+            )
+
+    # A result set that already fits is handed back untouched.
+    small = loader.search("descriptive statistics mean std quantile", limit=1)
+    assert tool.fit_to_budget(small) == small
+    # Non-list payloads (a soft-fail {"error": ...}) pass straight through.
+    assert tool.fit_to_budget({"error": "nope"}) == {"error": "nope"}
+
+
+def test_a_specialist_still_retrieves_its_own_skills():
+    """The allowlist filters inside the ranking, not after the slice.
+
+    `SkillService.search` used to take the loader's global top 5 and drop the
+    names the specialist could not see. Over 36 curated recipes that was "ask
+    for 5, get 3". With 561 collection recipes in the same lexical index the
+    top 5 can be entirely third-party, so a child whose allowlist is its whole
+    reason to exist retrieved nothing at all.
+    """
+
+    import tempfile
+    from pathlib import Path
+
+    from openai4s.config import Config
+    from openai4s.host.skills import SkillService
+
+    cfg = Config(data_dir=Path(tempfile.mkdtemp()))
+    cfg.ensure_dirs()
+    service = SkillService(cfg)
+    service.loader.discover()
+    allowed = ["rfdiffusion", "proteinmpnn"]
+    if any(service.loader.get(name) is None for name in allowed):
+        pytest.skip("the curated protein-design Skills are not present")
+    service.set_allowed_skills(allowed)
+
+    # Ranked 6th and 13th globally, so both are past a global top-5 slice.
+    for query in (
+        "protein structure prediction and design pipeline",
+        "alphafold structure prediction of a complex",
+    ):
+        names = [hit["name"] for hit in service.search({"query": query, "limit": 5})]
+        assert names, f"a specialist retrieved nothing for {query!r}"
+        assert set(names) <= set(allowed), names
+
+
+def test_a_curated_skill_is_still_retrievable_by_its_own_query():
+    """561 full-text bodies must not push a curated recipe out of reach.
+
+    Rank 1 is not asserted -- a longer, keyword-dense collection document can
+    legitimately edge one out -- but a recipe that does not survive into the
+    result set at all is one the agent cannot use.
+    """
+
+    loader = SkillLoader()
+    loader.discover()
+    for name, query in (
+        ("alphafold2", "alphafold2 colabfold msa protein structure prediction"),
+        ("rfdiffusion", "rfdiffusion contigs hotspot backbone generation trb"),
+        ("proteinmpnn", "proteinmpnn inverse folding backbone to sequence"),
+        ("boltz", "boltz open weights cofolding affinity"),
+        ("evaluate-model", "evaluate a model against a benchmark"),
+        ("example_stats", "zscore mean std quantile descriptive statistics"),
+        ("retrosynthesis_planning", "aizynthfinder retrosynthesis route dashboard"),
+    ):
+        if loader.get(name) is None:
+            continue
+        hits = [hit["name"] for hit in loader.search(query, limit=5)]
+        assert name in hits, f"{name} fell out of the top 5 for {query!r}: {hits}"
+
+
+def test_load_refuses_a_near_miss_name_rather_than_answering_with_another_skill():
+    """`load_skill` promises one Skill's guidance BY NAME.
+
+    The unguarded fuzzy fallback answered `boltz2` with
+    `bio-ml-docking-rescoring` and `alpha-fold2` with a CRISPR screen recipe --
+    a different skill's full document under a name the caller never asked for.
+    A descriptive phrase may still match on content; a bare token may not.
+    """
+
+    import tempfile
+    from pathlib import Path
+
+    from openai4s.config import Config
+    from openai4s.host.skills import SkillService
+
+    cfg = Config(data_dir=Path(tempfile.mkdtemp()))
+    cfg.ensure_dirs()
+    service = SkillService(cfg)
+    service.loader.discover()
+
+    for typo in ("alpha-fold2", "boltz2", "esmfold"):
+        assert service.load(typo) == {"error": f"no such skill: {typo!r}"}
+    # The cases the fallback exists for still resolve.
+    assert service.load("proteinMPNN")["name"] == "proteinmpnn"
+    assert service.load("retrosynthesis")["name"] == "retrosynthesis_planning"
+    assert service.load("figure composer")["name"] == "figure-composer"
+
+
+def test_a_collection_skill_resolves_by_directory_and_by_declared_name():
+    """143 imported directories declare a different name than they live under.
+
+    `catalog()`, `search()`, capability state and `system_context(only=...)`
+    all key on the declared name; the loader's own map is keyed by directory.
+    Both spellings have to reach the same Skill, or an allowlist and a listing
+    disagree about what the agent may open.
+    """
+
+    loader = SkillLoader()
+    skills = loader.discover()
+    mismatched = [
+        (key, skill)
+        for key, skill in skills.items()
+        if skill.collection and skill.name != key
+    ]
+    if not mismatched:
+        pytest.skip("no imported Skill declares a name other than its directory")
+    directory, skill = mismatched[0]
+
+    assert loader.get(directory) is skill
+    assert loader.get(skill.name) is skill
+    # The public identity is the declared name, on every agent-facing surface.
+    catalog = {row["name"] for row in loader.catalog()}
+    assert skill.name in catalog and directory not in catalog
+    # An allowlist keys on the declared name -- the collection then collapses
+    # to one line counting what this caller may actually load.
+    scoped = loader.system_context(only=frozenset({skill.name}))
+    assert f"{skill.collection} collection: 1 " in scoped.replace(
+        "bioSkills", "bioskills"
+    )
+    assert loader.system_context(only=frozenset({directory})) == ""
+
+
+def test_the_pinned_collection_still_matches_its_manifest():
+    """`MANIFEST.json` is a claim until something rechecks it.
+
+    `skills/bioskills/README.md` calls it "the authoritative inventory", and
+    the tree is excluded from pre-commit and from the directory-README gate —
+    so nothing else in CI reads a single one of those 1,962 hashes. Without
+    this, the first typo fix, bad merge, or line-ending rewrite leaves the
+    manifest asserting a digest the checkout no longer has, with every gate
+    still green.
+    """
+
+    import importlib.util
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    collection = repo / "skills" / "bioskills"
+    if not collection.is_dir():
+        pytest.skip("the pinned bioSkills collection is not present")
+
+    spec = importlib.util.spec_from_file_location(
+        "import_bioskills", repo / "scripts" / "import_bioskills.py"
+    )
+    assert spec is not None and spec.loader is not None
+    importer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(importer)
+
+    problems = importer.verify_collection(collection)
+    assert problems == [], "\n".join(problems)
 
 
 if __name__ == "__main__":

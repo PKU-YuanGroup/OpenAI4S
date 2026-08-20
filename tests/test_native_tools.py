@@ -15,9 +15,14 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
     assert [spec.name for spec in specs] == [tool.name for tool in REGISTRY]
     assert all(isinstance(spec, ToolSpec) for spec in specs)
     strict_names = {spec.name for spec in specs if spec.strict}
+    # `list_skills` is deliberately NOT here. Strict generation requires every
+    # declared property to be required, and its two arguments are optional by
+    # design: the zero-argument call is the catalog overview and
+    # `collection`/`offset` enumerate one bundled collection. Argument
+    # validation still runs on every call; only the provider-side constrained
+    # decoding is given up.
     assert strict_names == {
         "search_capabilities",
-        "list_skills",
         "write_file",
         "env_use",
         "load_skill",

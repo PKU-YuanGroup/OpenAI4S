@@ -152,7 +152,20 @@ class SkillCustomizationService:
                     f"'{slug}' collides with a built-in skill — "
                     "pick a different name",
                 )
-            if not existing and (self.loader.skills_dir / slug).is_dir():
+            # Every bundled root, not just `skills/`. `bundled_name_collision`
+            # only knows DECLARED names, and 143 of the imported collection's
+            # directories declare a different one -- so a slug matching such a
+            # directory passed both checks, was created on disk, and was then
+            # dropped by `discover()` (which keys the bundled map by directory
+            # name). The user got a success and a Skill they could never see,
+            # list, or edit.
+            bundled_roots = getattr(self.loader, "bundled_roots", None)
+            roots = (
+                [root for root, _c in bundled_roots()]
+                if callable(bundled_roots)
+                else [self.loader.skills_dir]
+            )
+            if not existing and any((root / slug).is_dir() for root in roots):
                 return _fail(
                     "skill_name_conflict",
                     f"'{slug}' collides with a built-in skill — "
