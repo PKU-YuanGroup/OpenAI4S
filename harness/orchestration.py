@@ -96,6 +96,16 @@ class _MemoryStore:
     def save_workload(self, workload: Workload) -> None:
         return None
 
+    def save_allocation_and_workload(
+        self, allocation: Allocation, workload: Workload
+    ) -> None:
+        # The production repository commits these two rows atomically.  This
+        # in-memory harness has no split persistence boundary: both objects
+        # are the rows, and the reconciler mutates them before calling us.
+        # Keeping the method explicit makes the harness implement the real
+        # WorkloadStore protocol without re-implementing transition policy.
+        return None
+
     def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
         # One durable fact in the real store; here the objects *are* the
         # rows, so both mutations are already visible and this is a no-op

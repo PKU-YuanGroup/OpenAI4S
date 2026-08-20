@@ -88,6 +88,10 @@ class WorkloadStore(Protocol):
 
     def save_workload(self, workload: Workload) -> None: ...
 
+    def save_allocation_and_workload(
+        self, allocation: Allocation, workload: Workload
+    ) -> None: ...
+
     def open_recovery_epoch(
         self, allocation: Allocation, workload: Workload
     ) -> None: ...
@@ -303,9 +307,8 @@ class Reconciler:
             allocation.phase = Phase.PENDING
             allocation.reason = None
             allocation.diagnostics = dict(result.diagnostics)
-            self._store.save_allocation(allocation)
             workload.phase = Phase.PENDING
-            self._store.save_workload(workload)
+            self._store.save_allocation_and_workload(allocation, workload)
             report.submitted += 1
             self._emit(
                 "allocation_submitted",
@@ -320,8 +323,7 @@ class Reconciler:
             allocation.phase = Phase.FAILED
             allocation.reason = result.reason
             allocation.diagnostics = dict(result.diagnostics, detail=result.detail)
-            self._store.save_allocation(allocation)
-            self._fail(workload, result.reason, report)
+            self._fail(workload, result.reason, report, allocation=allocation)
             return
         # Unknown: record it and stop. The next tick reconciles by token —
         # retrying here is exactly the double-submission INV-8 exists to
@@ -348,9 +350,8 @@ class Reconciler:
             allocation.handle = handle
             allocation.phase = Phase.PENDING
             allocation.reason = None
-            self._store.save_allocation(allocation)
             workload.phase = Phase.PENDING
-            self._store.save_workload(workload)
+            self._store.save_allocation_and_workload(allocation, workload)
             report.adopted += 1
             self._emit(
                 "allocation_adopted",
@@ -377,9 +378,8 @@ class Reconciler:
             # successful resubmission emitted no event at all even though
             # `report.submitted` counted it.
             allocation.diagnostics = dict(result.diagnostics)
-            self._store.save_allocation(allocation)
             workload.phase = Phase.PENDING
-            self._store.save_workload(workload)
+            self._store.save_allocation_and_workload(allocation, workload)
             report.submitted += 1
             self._emit(
                 "allocation_submitted",
@@ -393,8 +393,7 @@ class Reconciler:
             allocation.phase = Phase.FAILED
             allocation.reason = result.reason
             allocation.diagnostics = dict(result.diagnostics, detail=result.detail)
-            self._store.save_allocation(allocation)
-            self._fail(workload, result.reason, report)
+            self._fail(workload, result.reason, report, allocation=allocation)
         # still Unknown -> leave it; the next tick asks again.
 
     def _advance(
@@ -428,14 +427,12 @@ class Reconciler:
         if observed.handle is not None:
             allocation.handle = observed.handle
         allocation.diagnostics = dict(observed.diagnostics)
-        self._store.save_allocation(allocation)
-
         if observed.phase.is_terminal:
             if self._recover_session(workload, allocation, observed, report):
                 return
             workload.phase = observed.phase
             workload.reason = observed.reason
-            self._store.save_workload(workload)
+            self._store.save_allocation_and_workload(allocation, workload)
             report.advanced += 1
             if observed.phase is not Phase.COMPLETED:
                 report.failed += 1
@@ -451,12 +448,14 @@ class Reconciler:
 
         if changed:
             workload.phase = observed.phase
-            self._store.save_workload(workload)
+            self._store.save_allocation_and_workload(allocation, workload)
             report.advanced += 1
             self._emit(
                 "workload_phase",
                 {"workload_id": workload.id, "phase": observed.phase.value},
             )
+        else:
+            self._store.save_allocation(allocation)
 
     def _recover_session(
         self,
@@ -631,10 +630,9 @@ class Reconciler:
             if allocation.handle is None:
                 allocation.phase = Phase.CANCELLED
                 allocation.reason = reason
-                self._store.save_allocation(allocation)
                 workload.phase = Phase.CANCELLED
                 workload.reason = reason
-                self._store.save_workload(workload)
+                self._store.save_allocation_and_workload(allocation, workload)
                 report.cancelled += 1
                 self._emit(
                     "workload_terminal",
@@ -677,12 +675,11 @@ class Reconciler:
         allocation.phase = observed.phase
         allocation.reason = observed.reason or reason
         allocation.diagnostics = dict(observed.diagnostics)
-        self._store.save_allocation(allocation)
         workload.phase = (
             Phase.CANCELLED if observed.phase is Phase.CANCELLED else observed.phase
         )
         workload.reason = reason
-        self._store.save_workload(workload)
+        self._store.save_allocation_and_workload(allocation, workload)
         report.cancelled += 1
         self._emit(
             "workload_terminal",
@@ -695,10 +692,20 @@ class Reconciler:
 
     # --- helpers ----------------------------------------------------------
 
-    def _fail(self, workload: Workload, reason: Reason, report: TickReport) -> None:
+    def _fail(
+        self,
+        workload: Workload,
+        reason: Reason,
+        report: TickReport,
+        *,
+        allocation: Allocation | None = None,
+    ) -> None:
         workload.phase = Phase.FAILED
         workload.reason = reason
-        self._store.save_workload(workload)
+        if allocation is None:
+            self._store.save_workload(workload)
+        else:
+            self._store.save_allocation_and_workload(allocation, workload)
         report.failed += 1
         self._emit(
             "workload_terminal",

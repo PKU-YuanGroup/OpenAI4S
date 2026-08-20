@@ -43,7 +43,7 @@ import os
 import re
 from typing import Any
 
-from . import contract, errors
+from . import contract, errors, team_policy
 
 _EXECUTION = contract.RouteSpec(
     "kernel.execution",
@@ -142,6 +142,31 @@ ROUTES = contract.validate_routes(
         _ENV,
     )
 )
+
+
+def _require_session_control(self: Any, store: Any, frame_id: str) -> None:
+    """Keep readable project sessions from becoming shared namespaces."""
+
+    identity = getattr(self, "_team_identity", None)
+    if not team_policy.may_control_session(store, identity, frame_id):
+        raise errors.GatewayError(
+            403,
+            "only the session owner or an admin may control its kernel",
+            "owner_only",
+        )
+
+
+def _require_instance_admin(self: Any, operation: str) -> None:
+    """Gate instance-global mutations while preserving single-user mode."""
+
+    identity = getattr(self, "_team_identity", None)
+    if identity is not None and not identity.is_admin:
+        raise errors.GatewayError(
+            403,
+            f"only an admin may {operation}",
+            "admin_only",
+        )
+
 
 #: Every pattern above is under `/frames/`, so a request that is not cannot
 #: match any of them -- and 56 of the 91 non-`/frames` routes are declared
@@ -248,6 +273,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         pid = f.get("project_id") or "default"
         self._json(runner.restart_kernel(fid, pid))
         return True
@@ -263,6 +289,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         self._json(runner.stop_kernel(fid, f.get("project_id") or "default"))
         return True
     m = _INTERRUPT.match(method, sub)
@@ -275,6 +302,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
                 403,
             )
             return True
+        fid = m.group(1)
+        _require_session_control(self, store, fid)
         body = self._body()
         owner = body.get("owner") or body.get("owner_kind")
         owner_kind = owner.get("kind") if isinstance(owner, dict) else owner
@@ -283,7 +312,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             self._json(
                 {
                     "ok": False,
-                    "frame_id": m.group(1),
+                    "frame_id": fid,
                     "error": ("execution_id, owner.kind, and owner.id are required"),
                     "reason": ("execution_id, owner.kind, and owner.id are required"),
                 },
@@ -295,7 +324,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             "owner": owner,
             "owner_id": str(owner_id),
         }
-        self._json(runner.interrupt_kernel(m.group(1), **kwargs))
+        self._json(runner.interrupt_kernel(fid, **kwargs))
         return True
     m = _START.match(method, sub)
     if m:
@@ -309,6 +338,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         self._json(runner.start_kernel(fid, f.get("project_id") or "default"))
         return True
     m = _VARIABLES.match(method, sub)
@@ -354,8 +384,10 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
     m = _INSTALL.match(method, sub)
     if m:
         # NOT gated by notebook_repl: prebuilt-env package install is a
-        # separate Customize → Compute affordance, not the code REPL, and
-        # the global /kernel/install route is ungated too.
+        # separate Customize → Compute affordance, not the code REPL. Both
+        # this route and global /kernel/install are nevertheless admin-only
+        # in team mode because they mutate the shared runtime environment.
+        _require_instance_admin(self, "install shared kernel packages")
         fid = m.group(1)
         f = store.get_frame(fid) or {}
         pid = f.get("project_id") or "default"
@@ -387,6 +419,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         pid = f.get("project_id") or "default"
         b = self._body()
         name = b.get("env") or b.get("name") or ""

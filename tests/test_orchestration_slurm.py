@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -44,9 +45,16 @@ from openai4s.orchestration.slurm import (
     SlurmBroker,
     SlurmCommandError,
     SubmitSpec,
+)
+from openai4s.orchestration.slurm import broker as broker_mod
+from openai4s.orchestration.slurm import (
     parse_cluster_config,
 )
-from openai4s.orchestration.slurm.profiles import EXAMPLE_CLUSTER_TOML
+from openai4s.orchestration.slurm.broker import StepSpec
+from openai4s.orchestration.slurm.profiles import (
+    EXAMPLE_CLUSTER_TOML,
+    _parse_toml_subset,
+)
 
 # -- the fake cluster ---------------------------------------------------------
 
@@ -83,8 +91,12 @@ def fake_cluster(tmp_path, monkeypatch):
         script={
             "sbatch": f"""
 comment=""
+job_name=""
 for arg in "$@"; do
-  case "$arg" in --comment=*) comment="${{arg#--comment=}}" ;; esac
+  case "$arg" in
+    --comment=*) comment="${{arg#--comment=}}" ;;
+    --job-name=*) job_name="${{arg#--job-name=}}" ;;
+  esac
 done
 cat > "{s}/last_script"
 printf '%s\\n' "$@" > "{s}/last_argv"
@@ -93,6 +105,7 @@ if [ -f "{s}/sbatch_hang" ]; then sleep 30; fi
 if [ -f "{s}/sbatch_fail" ]; then echo "sbatch: error: refused" >&2; exit 1; fi
 jid=$(cat "{s}/next_job_id")
 printf '%s' "$comment" > "{s}/job_comment"
+printf '%s' "$job_name" > "{s}/job_name"
 printf '%s' "$jid" > "{s}/job_id"
 echo "$jid"
 """,
@@ -106,6 +119,7 @@ if [ "$(cat "{s}/in_queue")" != "1" ]; then exit 0; fi
 jid=$(cat "{s}/job_id")
 st=$(cat "{s}/queue_state")
 cm=$(cat "{s}/job_comment")
+jn=$(cat "{s}/job_name")
 reason=""
 if [ -f "{s}/queue_reason" ]; then reason=$(cat "{s}/queue_reason"); fi
 fmt=""
@@ -117,6 +131,7 @@ for arg in "$@"; do
 done
 case "$fmt" in
   *%r*) echo "$jid|$st|$reason|$cm" ;;
+  *%j*) echo "$jid|$cm|$jn" ;;
   *) echo "$jid|$cm" ;;
 esac
 """,
@@ -126,12 +141,14 @@ st=$(cat "{s}/acct_state")
 if [ -z "$st" ]; then exit 0; fi
 jid=$(cat "{s}/job_id")
 cm=$(cat "{s}/job_comment")
+jn=$(cat "{s}/job_name")
 fmt=""
 for arg in "$@"; do
   case "$arg" in --format=*) fmt="${{arg#--format=}}" ;; esac
 done
 case "$fmt" in
   *ExitCode*) echo "$jid|$st|0:0|$cm" ;;
+  *JobName*) echo "$jid|$cm|$jn" ;;
   *) echo "$jid|$cm" ;;
 esac
 """,
@@ -140,6 +157,7 @@ echo cancelled > "{s}/cancelled"
 printf '0' > "{s}/in_queue"
 printf 'CANCELLED' > "{s}/acct_state"
 """,
+            "srun": 'exec "$@"\n',
         },
     )
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
@@ -211,6 +229,29 @@ def test_submit_observe_complete(fake_cluster):
     assert observed.reason is None
 
 
+def test_reconciliation_survives_sites_that_do_not_account_job_comments(
+    fake_cluster,
+):
+    backend = _backend()
+    allocation = _allocation()
+    spec = _spec()
+    assert isinstance(
+        backend.submit(allocation=allocation, spec=spec, profile=spec.profile), Created
+    )
+    fake_cluster.set("in_queue", "0")
+    fake_cluster.set("acct_state", "COMPLETED")
+    # Slurm persists Comment only with AccountingStoreFlags=job_comment.
+    fake_cluster.set("job_comment", "")
+
+    assert (
+        backend._broker.find_by_comment(
+            allocation.submission_token.value,
+            job_name=backend._job_name_for_token(allocation.submission_token),
+        )
+        == "4242"
+    )
+
+
 @pytest.mark.parametrize(
     "state,phase,reason",
     [
@@ -220,6 +261,8 @@ def test_submit_observe_complete(fake_cluster):
         ("PREEMPTED", Phase.LOST, Reason.PREEMPTED),
         ("CANCELLED", Phase.CANCELLED, Reason.USER_CANCELLED),
         ("FAILED", Phase.FAILED, None),
+        ("LAUNCH_FAILED", Phase.FAILED, Reason.BOOTSTRAP_FAILED),
+        ("RECONFIG_FAIL", Phase.FAILED, None),
     ],
 )
 def test_terminal_state_mapping(fake_cluster, state, phase, reason):
@@ -236,6 +279,21 @@ def test_terminal_state_mapping(fake_cluster, state, phase, reason):
     assert observed.reason is reason
     # the scheduler's own word survives where nothing branches on it
     assert observed.diagnostics.get("state") == state
+
+
+@pytest.mark.parametrize(
+    "state", ["SPECIAL_EXIT", "REQUEUE_HOLD", "REQUEUE_FED", "RESV_DEL_HOLD"]
+)
+def test_requeue_hold_states_remain_pending(fake_cluster, state):
+    backend = _backend()
+    allocation = _allocation()
+    spec = _spec()
+    allocation.handle = backend.submit(
+        allocation=allocation, spec=spec, profile=spec.profile
+    ).handle
+    fake_cluster.set("queue_state", state)
+
+    assert backend.observe(allocation).phase is Phase.PENDING
 
 
 def test_cancel_is_idempotent(fake_cluster):
@@ -342,6 +400,95 @@ def test_an_unreachable_scheduler_is_not_a_failed_job(tmp_path, monkeypatch):
     assert observed.reason is Reason.BACKEND_UNAVAILABLE
 
 
+@pytest.mark.parametrize("operation", ["queue", "accounting", "find", "cancel"])
+def test_a_generic_scheduler_error_is_not_treated_as_absence(operation):
+    """Permission/configuration/controller failures are unknown answers. Only
+    a successful empty query is evidence that a job is absent."""
+
+    def refused(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, returncode=1, stdout="", stderr="permission denied"
+        )
+
+    broker = SlurmBroker(runner=refused)
+    call = {
+        "queue": lambda: broker.queue_status("42"),
+        "accounting": lambda: broker.accounting_status("42"),
+        "find": lambda: broker.find_by_comment("tok_a", job_name="openai4s-tok_a"),
+        "cancel": lambda: broker.cancel("42"),
+    }[operation]
+
+    with pytest.raises(SlurmCommandError) as failed:
+        call()
+    assert failed.value.returncode == 1
+    assert failed.value.stderr == "permission denied"
+
+
+def test_the_specific_unknown_job_error_falls_back_to_accounting():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command[0])
+        if command[0] == "squeue":
+            return subprocess.CompletedProcess(
+                command,
+                returncode=1,
+                stdout="",
+                stderr="slurm_load_jobs error: Invalid job id specified",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            returncode=0,
+            stdout="42|COMPLETED|0:0|tok_a\n",
+            stderr="",
+        )
+
+    broker = SlurmBroker(runner=runner)
+    assert broker.queue_status("42") is None
+    assert broker.accounting_status("42").state == "COMPLETED"
+    assert calls == ["squeue", "sacct"]
+
+
+def test_a_failed_token_lookup_never_reaches_sbatch():
+    calls = []
+
+    def refused(command, **kwargs):
+        calls.append(command[0])
+        return subprocess.CompletedProcess(
+            command, returncode=1, stdout="", stderr="permission denied"
+        )
+
+    backend = SlurmBackend(broker=SlurmBroker(runner=refused))
+    allocation = _allocation()
+    spec = _spec()
+
+    result = backend.submit(allocation=allocation, spec=spec, profile=spec.profile)
+
+    assert isinstance(result, Unknown)
+    assert calls == ["squeue"], "an unknown lookup submitted a second job"
+
+
+def test_a_failed_accounting_query_preserves_the_last_known_phase():
+    def runner(command, **kwargs):
+        if command[0] == "squeue":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="accounting permission denied"
+        )
+
+    from openai4s.orchestration.models import ExternalHandle
+
+    backend = SlurmBackend(broker=SlurmBroker(runner=runner))
+    allocation = _allocation()
+    allocation.phase = Phase.ACTIVE
+    allocation.handle = ExternalHandle(backend="slurm", external_id="42")
+
+    observed = backend.observe(allocation)
+
+    assert observed.phase is Phase.ACTIVE
+    assert observed.reason is Reason.BACKEND_UNAVAILABLE
+
+
 def test_a_refused_submission_is_rejected(fake_cluster):
     fake_cluster.touch("sbatch_fail")
     backend = _backend()
@@ -367,6 +514,9 @@ def test_unschedulable_pending_reason_becomes_a_failure(fake_cluster):
     # ordinary waiting stays waiting — a busy cluster is not a broken one
     fake_cluster.set("queue_reason", "Resources")
     assert backend.observe(allocation).phase is Phase.PENDING
+    for temporary_reason in ("QOSGrpCpuLimit", "NodeDown"):
+        fake_cluster.set("queue_reason", temporary_reason)
+        assert backend.observe(allocation).phase is Phase.PENDING
 
 
 # -- INV-9: argv construction and secret hygiene ------------------------------
@@ -398,6 +548,39 @@ def test_argv_is_constructed_not_concatenated():
     # no environment named -> nothing inherited, so daemon API keys cannot
     # ride along by default
     assert "--export=NONE" in argv
+
+
+def test_a_step_with_no_environment_inherits_nothing():
+    argv = SlurmBroker().build_step_argv("4242", StepSpec(command=("hostname",)))
+    assert "--export=NONE" in argv
+
+
+def test_a_long_step_has_no_control_plane_timeout():
+    seen = {}
+
+    def runner(command, **kwargs):
+        seen.update(kwargs)
+
+        class Done:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        return Done()
+
+    assert (
+        SlurmBroker(timeout_s=0.01, runner=runner).run_step(
+            "4242", StepSpec(command=("sleep", "60"))
+        )
+        == "ok"
+    )
+    assert seen["timeout"] is None
+
+
+def test_step_output_is_drained_but_retained_with_a_hard_cap(monkeypatch):
+    monkeypatch.setattr(broker_mod, "MAX_STEP_OUTPUT_BYTES", 64)
+    output = SlurmBroker()._run_step_capped([sys.executable, "-c", "print('x' * 1000)"])
+    assert output == "x" * 64
 
 
 def test_a_hostile_name_is_an_argument_never_a_command(fake_cluster):
@@ -458,6 +641,22 @@ def test_the_submitted_script_quotes_its_command(fake_cluster):
     assert "'print('\"'\"'it works'\"'\"')'" in script
 
 
+def test_a_multi_node_session_launches_one_ranked_worker_per_node():
+    profile = ResourceProfile(name="gang", cpus=3, nodes=2)
+    spec = WorkloadSpec(
+        kind=WorkloadKind.SESSION,
+        profile=profile,
+        command=("python", "-u", "/opt/openai4s/worker.py"),
+        environment={"OPENAI4S_WORKER_BOOTSTRAP_PATH_TEMPLATE": "/run/r{rank}.json"},
+    )
+
+    submitted = _backend()._submit_spec(_allocation(), spec, profile)
+
+    assert "'srun' '--nodes=2' '--ntasks=2' '--ntasks-per-node=1'" in submitted.script
+    assert "'--cpus-per-task=3'" in submitted.script
+    assert submitted.environment["OPENAI4S_WORKER_RANK_ENV"] == "SLURM_PROCID"
+
+
 # -- cluster.toml -------------------------------------------------------------
 
 
@@ -472,6 +671,15 @@ def test_example_config_parses_on_every_supported_python():
     assert batch.resources.gpus == 1
     assert batch.resources.walltime_s == 172800
     assert cfg.job_name_prefix == "openai4s"
+
+
+def test_the_python310_reader_accepts_a_comment_after_a_table_header():
+    data = _parse_toml_subset(
+        '[profiles."gpu#large"] # site-local profile\npartition = "gpu"\n',
+        source="cluster.toml",
+    )
+
+    assert data == {"profiles": {"gpu#large": {"partition": "gpu"}}}
 
 
 def test_profile_public_view_never_names_a_queue():
@@ -494,6 +702,28 @@ def test_malformed_config_is_refused_with_its_location():
     ):
         with pytest.raises(ClusterConfigError):
             parse_cluster_config(text, source="cluster.toml")
+
+
+@pytest.mark.parametrize(
+    "text,unknown",
+    [
+        ("[cluster]\npartiton = 'gpu'\n", "partiton"),
+        ("[profiles.x]\ngpu = 4\n", "gpu"),
+        ("[profiles.x]\nmem_mb = 8192\n", "mem_mb"),
+        ("[extra]\nvalue = 1\n", "extra"),
+    ],
+)
+def test_unknown_cluster_keys_are_refused_instead_of_using_defaults(text, unknown):
+    with pytest.raises(ClusterConfigError, match=unknown):
+        parse_cluster_config(text, source="cluster.toml")
+
+
+def test_the_python310_reader_refuses_basic_string_escapes_it_cannot_decode():
+    with pytest.raises(ClusterConfigError, match="escape sequences"):
+        _parse_toml_subset(
+            '[profiles.x]\npartition = "gpu\\\\queue"\n',
+            source="cluster.toml",
+        )
 
 
 def test_absent_config_is_not_an_error(tmp_path):

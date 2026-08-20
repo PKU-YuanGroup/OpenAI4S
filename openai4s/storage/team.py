@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import secrets
 import sqlite3
+import unicodedata
 import uuid
 from typing import Any, Callable
 
@@ -163,6 +164,12 @@ def validate_username(username: str) -> str:
     return name
 
 
+def _username_key(username: str) -> str:
+    """Portable account identity for collision checks, not display/storage."""
+
+    return unicodedata.normalize("NFKC", username).casefold()
+
+
 class TeamRepository:
     """Accounts, login sessions, and the team audit log."""
 
@@ -176,6 +183,34 @@ class TeamRepository:
         self._connection = connection
         self._lock = lock
         self._clock_ms = clock_ms
+        self._assert_portable_username_keys()
+
+    def _assert_portable_username_keys(self) -> None:
+        """Fail closed when an upgraded database already contains a clash.
+
+        New account creation prevents these pairs, but databases created by
+        an older release may already contain them.  Continuing would map two
+        authenticated identities onto one case/compatibility-normalizing
+        personal-directory path on common filesystems.  Refusing startup is
+        safer than guessing which account owns the shared files.
+        """
+
+        seen: dict[str, str] = {}
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT username FROM users ORDER BY created_at, username"
+            ).fetchall()
+        for row in rows:
+            username = str(row[0])
+            key = _username_key(username)
+            previous = seen.get(key)
+            if previous is not None:
+                raise RuntimeError(
+                    "team database contains usernames with the same portable "
+                    f"filesystem identity: {previous!r} and {username!r}; "
+                    "rename or remove one account before starting the daemon"
+                )
+            seen[key] = username
 
     # --- users -----------------------------------------------------------
 
@@ -197,30 +232,33 @@ class TeamRepository:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         now = self._clock_ms()
         with self._lock:
-            # Case-insensitively unique, not just `UNIQUE` on the column.
+            # Compatibility- and case-insensitively unique, not just `UNIQUE`
+            # on the column.
             #
-            # SQLite's UNIQUE is case-sensitive, so `Alice` and `alice` were
-            # two accounts -- and the file area names each member's personal
-            # directory `<root>/users/<username>/`, which on a
-            # case-insensitive filesystem (APFS by default, most SMB/NFS
-            # exports, Windows) is ONE directory. `personal_area_owner` then
-            # compares the segment the client spelled against the reader's
-            # name with `!=`, so `alice` reading `<root>/users/alice/x.csv`
-            # passed the guard and was served `Alice`'s file -- and could
-            # overwrite it. The two accounts also read as the same person to
-            # every human looking at an audit row.
+            # SQLite NOCASE is ASCII-only, so it catches `Alice`/`alice` but
+            # not Unicode pairs such as `K`/`K`. The file area names each
+            # member's personal directory `<root>/users/<username>/`, and
+            # compatibility/case normalization is common in filesystems and
+            # identity providers. NFKC + casefold is therefore the one account
+            # key, while the original spelling remains the displayed/stored
+            # username.
             #
             # Refused at creation rather than papered over at comparison:
             # casefolding the *guard* would make the collision permitted
             # rather than impossible.
-            clash = self._connection.execute(
-                "SELECT username FROM users WHERE username=? COLLATE NOCASE",
-                (username,),
-            ).fetchone()
+            key = _username_key(username)
+            clash = next(
+                (
+                    row
+                    for row in self._connection.execute("SELECT username FROM users")
+                    if _username_key(str(row[0])) == key
+                ),
+                None,
+            )
             if clash is not None:
                 raise ValueError(
                     f"username {username!r} already exists "
-                    f"(as {str(clash[0])!r}; usernames differ by more than case)"
+                    f"(as {str(clash[0])!r}; usernames have the same canonical key)"
                 )
             try:
                 self._connection.execute(

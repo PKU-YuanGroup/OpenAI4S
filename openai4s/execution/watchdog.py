@@ -13,6 +13,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, TypeVar
 
+from openai4s.kernel.errors import KernelRestartFailed
 from openai4s.kernel.supervisor import KernelLease, KernelSupervisor
 
 T = TypeVar("T")
@@ -29,6 +30,15 @@ class KernelNotResetTimeout(TimeoutError):
     A `TimeoutError` subclass so every existing `except TimeoutError` keeps
     catching it; a distinct type so the surfaces that tell a user what
     happened to their variables can tell the two apart.
+    """
+
+
+class KernelResetUnavailableTimeout(TimeoutError):
+    """The timed-out namespace was cleared, but its replacement is unusable.
+
+    This is distinct from :class:`KernelNotResetTimeout`: the old local worker
+    was destroyed, so no cluster allocation may still be running the cell, but
+    bootstrap failed and the replacement was detached rather than left ready.
     """
 
 
@@ -137,6 +147,7 @@ def execute_with_watchdog(
     # that did not happen is worse than reporting a timeout, because the user
     # stops looking for the work.
     was_reset = False
+    replacement_unavailable = False
     if worker.is_alive():
         supervisor.abandon_if_current(lease)
     else:
@@ -148,9 +159,28 @@ def execute_with_watchdog(
                     after_restart(restarted.kernel)
                 except Exception:
                     supervisor.shutdown_if_current(restarted)
-                    was_reset = False
-        except Exception:  # noqa: BLE001 — next ensure lazily recovers the slot
+                    replacement_unavailable = True
+        except KernelRestartFailed:
+            # Local restart tears down the old namespace before spawning its
+            # replacement. A spawn/generation failure is therefore a reset
+            # that left no usable worker, not the remote/no-reset case whose
+            # warning says cluster work may still be running.
+            supervisor.shutdown_if_current(
+                lease,
+                reason="watchdog_restart_failed",
+                terminal_state="crashed",
+            )
+            replacement_unavailable = True
+        except Exception:  # noqa: BLE001 — remote/no-reset stays distinguishable
             pass
+    if replacement_unavailable:
+        raise KernelResetUnavailableTimeout(
+            f"cell exceeded {int(policy.timeout_s)}s with no result and was "
+            "stopped; the old kernel was reset and its variables were cleared, "
+            "but the replacement failed to initialize and is unavailable. "
+            "Retry to start a fresh kernel, break the work into smaller steps, "
+            "or raise OPENAI4S_CELL_TIMEOUT."
+        )
     if was_reset:
         raise TimeoutError(
             f"cell exceeded {int(policy.timeout_s)}s with no result and was "

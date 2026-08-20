@@ -134,6 +134,25 @@ def may_use_session(store: Any, identity: Any, session_id: str | None) -> bool:
         return False
 
 
+def may_control_session(store: Any, identity: Any, session_id: str | None) -> bool:
+    """May this principal perform owner-level lifecycle mutations?
+
+    Project visibility is intentionally broader than ownership.  It can make a
+    session readable/collaborative, but it must not let another project member
+    cancel the owner's scheduler allocation or destroy its kernel namespace.
+    """
+
+    if identity is None or identity.is_admin:
+        return True
+    if not session_id:
+        return False
+    try:
+        owner = store.team.session_owner(session_id)
+    except Exception:  # noqa: BLE001 — undecidable is refused
+        return False
+    return bool(owner and owner.get("user_id") == identity.user_id)
+
+
 def may_use_share(store: Any, identity: Any, share_row: Any) -> bool:
     """A share is a projection of a session, so it inherits that session's
     answer. A share whose session cannot be resolved is refused rather than

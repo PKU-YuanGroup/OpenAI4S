@@ -657,7 +657,15 @@ class Kernel:
         except Exception:  # noqa: BLE001
             pass
         self.authorization_generation = f"kernel:{uuid.uuid4()}"
-        self._proc = self._spawn()
+        try:
+            self._proc = self._spawn()
+        except Exception as exc:
+            from openai4s.kernel.errors import KernelRestartFailed
+
+            raise KernelRestartFailed(
+                "the old kernel was cleared but its replacement could not "
+                f"start: {exc}"
+            ) from exc
         # Every respawn bumps the generation: a lease, a watchdog or an
         # in-flight interrupt naming the previous incarnation has to be
         # refused, and this counter is the whole of how it is refused.
@@ -667,7 +675,9 @@ class Kernel:
             # refused at the top of this method, before the old worker is
             # torn down, so reaching here means the fresh local process did
             # not come up.
-            raise RuntimeError(
+            from openai4s.kernel.errors import KernelRestartFailed
+
+            raise KernelRestartFailed(
                 "the restarted worker is not alive: its process failed to "
                 "start or exited immediately"
             )

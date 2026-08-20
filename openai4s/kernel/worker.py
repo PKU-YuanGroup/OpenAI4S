@@ -90,6 +90,27 @@ _MAX_CACHED_CELLS = 128  # linecache retention, evicted by counter
 #: secret ever appears in a job's environment (INV-9).
 _CONNECT_ENV = "OPENAI4S_WORKER_CONNECT"
 _CREDENTIAL_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH"
+_CREDENTIAL_TEMPLATE_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH_TEMPLATE"
+_RANK_ENV_NAME_ENV = "OPENAI4S_WORKER_RANK_ENV"
+
+
+def _remote_credential_path() -> str:
+    template = (os.environ.get(_CREDENTIAL_TEMPLATE_ENV) or "").strip()
+    if not template:
+        return (os.environ.get(_CREDENTIAL_ENV) or "").strip()
+    rank_env = (os.environ.get(_RANK_ENV_NAME_ENV) or "").strip()
+    if not rank_env:
+        raise ValueError(
+            f"{_CREDENTIAL_TEMPLATE_ENV} is set but {_RANK_ENV_NAME_ENV} is not"
+        )
+    raw_rank = (os.environ.get(rank_env) or "").strip()
+    try:
+        rank = int(raw_rank)
+    except ValueError as exc:
+        raise ValueError(f"invalid worker rank in {rank_env}: {raw_rank!r}") from exc
+    if rank < 0 or "{rank}" not in template:
+        raise ValueError("worker credential template/rank is invalid")
+    return template.replace("{rank}", str(rank))
 
 
 def _connect_remote_protocol():
@@ -107,16 +128,13 @@ def _connect_remote_protocol():
     import json as _json
     import socket as _socket
 
-    credential_path = (os.environ.get(_CREDENTIAL_ENV) or "").strip()
-    if not credential_path:
-        print(
-            f"{_CONNECT_ENV} is set but {_CREDENTIAL_ENV} is not; refusing to "
-            f"connect without a credential",
-            file=sys.stderr,
-            flush=True,
-        )
-        raise SystemExit(70)
     try:
+        credential_path = _remote_credential_path()
+        if not credential_path:
+            raise ValueError(
+                f"{_CONNECT_ENV} is set but {_CREDENTIAL_ENV} is not; refusing "
+                "to connect without a credential"
+            )
         with open(credential_path, encoding="utf-8") as handle:
             credential = handle.read().strip()
         host, _, port = target.rpartition(":")

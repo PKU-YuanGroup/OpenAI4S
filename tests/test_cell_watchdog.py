@@ -228,6 +228,11 @@ def test_host_call_zombie_is_abandoned_without_touching_a_future_worker():
 
 
 def test_bootstrap_failure_detaches_the_restarted_generation():
+    from openai4s.execution.watchdog import (
+        KernelNotResetTimeout,
+        KernelResetUnavailableTimeout,
+    )
+
     supervisor, kernel, lease = _lease()
     release = threading.Event()
     kernel.on_kill = release.set
@@ -239,7 +244,9 @@ def test_bootstrap_failure_detaches_the_restarted_generation():
     def broken_bootstrap(worker):
         raise RuntimeError("bootstrap failed")
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(
+        KernelResetUnavailableTimeout, match="replacement failed to initialize"
+    ) as raised:
         execute_with_watchdog(
             supervisor,
             lease,
@@ -253,6 +260,48 @@ def test_bootstrap_failure_detaches_the_restarted_generation():
             after_restart=broken_bootstrap,
         )
 
+    assert not isinstance(raised.value, KernelNotResetTimeout)
+    assert supervisor.current("python") is None
+    assert kernel.restart_calls == kernel.shutdown_calls == 1
+
+
+def test_local_respawn_failure_is_a_cleared_but_unavailable_namespace():
+    from openai4s.execution.watchdog import (
+        KernelNotResetTimeout,
+        KernelResetUnavailableTimeout,
+    )
+    from openai4s.kernel.errors import KernelRestartFailed
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("old worker pipe closed")
+
+    def failed_local_respawn():
+        kernel.restart_calls += 1
+        kernel.live = False
+        raise KernelRestartFailed("replacement process failed to start")
+
+    kernel.restart = failed_local_respawn
+    with pytest.raises(
+        KernelResetUnavailableTimeout, match="replacement failed to initialize"
+    ) as raised:
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+        )
+
+    assert not isinstance(raised.value, KernelNotResetTimeout)
     assert supervisor.current("python") is None
     assert kernel.restart_calls == kernel.shutdown_calls == 1
 

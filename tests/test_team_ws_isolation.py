@@ -225,7 +225,84 @@ def test_cross_user_ws_cancel_is_refused(daemon):
         ws.close()
 
 
-def test_a_live_stream_stops_when_the_subscription_is_revoked(daemon, monkeypatch):
+@pytest.mark.stubbed_backend
+def test_project_member_may_view_but_cannot_cancel_the_owners_execution(daemon):
+    """Project visibility must not become an execution-control capability."""
+
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = str(daemon.store.list_projects()[0]["project_id"])
+    for username in ("alice", "bob"):
+        user = daemon.store.team.get_user_by_username(username)
+        daemon.store.governance.set_member(pid, str(user["id"]), "member")
+    fid = _session_for(daemon, alice)
+
+    called = []
+    daemon.runner.cancel = lambda *args, **kwargs: called.append((args, kwargs)) or {
+        "ok": True
+    }
+
+    ws = _WSClient(daemon.port, bob)
+    try:
+        ws.send({"type": "view_session", "root_frame_id": fid})
+        first = ws.recv_json()
+        assert first is not None and first["type"] != "view_denied", first
+        while ws.recv_json(timeout=0.5) is not None:
+            pass
+
+        ws.send(
+            {
+                "type": "cancel_execution",
+                "root_frame_id": fid,
+                "execution_id": "owner-active-run",
+                "owner": "agent",
+                "owner_id": "owner-agent",
+            }
+        )
+        reply = ws.recv_json()
+        assert reply is not None
+        assert reply["type"] == "execution_cancel_result"
+        assert reply["ok"] is False
+        assert reply["code"] == "owner_only"
+        assert called == [], "a visible project member reached runner.cancel"
+    finally:
+        ws.close()
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("username", ["alice", "root"])
+def test_owner_and_admin_may_cancel_an_execution_over_ws(daemon, username):
+    if username == "root":
+        daemon.seed_user("root", "fake-pw-r", role="admin")
+    alice = _login(daemon, "alice", "fake-pw-a")
+    caller = alice if username == "alice" else _login(daemon, "root", "fake-pw-r")
+    fid = _session_for(daemon, alice)
+    called = []
+
+    def cancel(*args, **kwargs):
+        called.append((args, kwargs))
+        return {"ok": True, "frame_id": fid}
+
+    daemon.runner.cancel = cancel
+    ws = _WSClient(daemon.port, caller)
+    try:
+        ws.send(
+            {
+                "type": "cancel_execution",
+                "root_frame_id": fid,
+                "execution_id": "owner-active-run",
+                "owner": "agent",
+                "owner_id": "owner-agent",
+            }
+        )
+        reply = ws.recv_json()
+        assert reply is not None and reply["ok"] is True, reply
+        assert len(called) == 1
+    finally:
+        ws.close()
+
+
+def test_a_live_stream_stops_when_the_subscription_is_revoked(daemon):
     """Subscribing was checked once and never again.
 
     `test_ws_subscription_stops_working_after_the_user_is_disabled` in
@@ -236,14 +313,10 @@ def test_a_live_stream_stops_when_the_subscription_is_revoked(daemon, monkeypatc
     stdout and pending approval prompts to an account that had just been
     disabled, for as long as the tab stayed open.
 
-    The re-check is cached for a few seconds so a chatty turn does not run an
-    ownership query per chunk per viewer; pinned to 0 here so the test is
-    about the rule and not about the clock.
+    A successful check is deliberately not cached: the next event must see a
+    revocation immediately under the production defaults, not only after a
+    test shortens an authorization TTL.
     """
-    from openai4s.server.gateway import WSConnection
-
-    monkeypatch.setattr(WSConnection, "_VIS_TTL_S", 0.0)
-
     a = _login(daemon, "alice", "fake-pw-a")
     fid_a = _session_for(daemon, a)
 
@@ -277,5 +350,6 @@ def test_a_live_stream_stops_when_the_subscription_is_revoked(daemon, monkeypatc
                 break
             after.append(msg)
         assert not [m for m in after if m.get("type") == "frame_update"], after
+
     finally:
         ws.close()

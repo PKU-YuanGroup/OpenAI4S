@@ -273,11 +273,16 @@ class OutboundTcpTransport:
             raise WorkerConnectionRefused(
                 f"remote worker {self._peer} sent a line over {MAX_LINE_BYTES} bytes"
             )
-        # `replace`, not strict: a mangled byte is the peer's problem to have
-        # produced, and `json.loads` above will refuse the frame anyway --
-        # whereas a UnicodeDecodeError here would surface as a transport
-        # failure and lose which frame it was.
-        return raw.decode("utf-8", "replace")
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # U+FFFD is legal inside a JSON string, so replacement decoding
+            # silently changed source code, paths and host responses while
+            # still producing a valid frame.  Protocol bytes are exact.
+            self._alive = False
+            raise WorkerConnectionRefused(
+                f"remote worker {self._peer} sent invalid UTF-8"
+            ) from exc
 
     def alive(self) -> bool:
         """Latched, and honest about being latched.
@@ -315,6 +320,14 @@ class OutboundTcpTransport:
             except Exception:  # noqa: BLE001
                 pass
         self._alive = False
+        # A makefile reader may be blocked in ``readline`` on another thread.
+        # Closing that BufferedReader first can wait forever for the read to
+        # return; shutting down the socket is what wakes it.  Only then is it
+        # safe to close the wrappers and their shared descriptor.
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         for handle in (self._reader, self._writer):
             try:
                 handle.close()

@@ -86,6 +86,22 @@ class ClusterConfigError(ValueError):
     """cluster.toml exists but cannot be used, with the reason and the path."""
 
 
+_TOP_LEVEL_KEYS = frozenset({"cluster", "profiles"})
+_CLUSTER_KEYS = frozenset({"name", "job_name_prefix"})
+_PROFILE_KEYS = frozenset(
+    {
+        "partition",
+        "qos",
+        "cpus",
+        "memory_mb",
+        "gpus",
+        "walltime_s",
+        "nodes",
+        "description",
+    }
+)
+
+
 @dataclass(frozen=True)
 class ClusterProfile:
     """One named profile: what a user asks for, plus how to ask the scheduler.
@@ -166,6 +182,24 @@ def _optional_str(table: dict, key: str, *, where: str) -> str | None:
     return value.strip()
 
 
+def _reject_unknown_keys(table: dict, allowed: frozenset[str], *, where: str) -> None:
+    unknown = sorted(str(key) for key in table if key not in allowed)
+    if unknown:
+        raise ClusterConfigError(
+            f"{where}: unknown key(s): {', '.join(unknown)}; "
+            "refusing to guess at scheduler configuration"
+        )
+
+
+def _plain_str(
+    table: dict, key: str, default: str, *, where: str, allow_empty: bool = True
+) -> str:
+    value = table.get(key, default)
+    if not isinstance(value, str) or (not allow_empty and not value.strip()):
+        raise ClusterConfigError(f"{where}.{key} must be a string")
+    return value.strip()
+
+
 def _parse_scalar(raw: str, *, where: str) -> Any:
     """One TOML value, from the subset this file uses.
 
@@ -184,6 +218,13 @@ def _parse_scalar(raw: str, *, where: str) -> Any:
         inner = value[1:-1]
         if quote in inner:
             raise ClusterConfigError(f"{where}: unsupported quoting in {value!r}")
+        if quote == '"' and "\\" in inner:
+            # The tiny 3.10 reader does not implement TOML basic-string
+            # escapes.  Returning the backslash literally diverged from
+            # tomllib and could silently select a different queue/path.
+            raise ClusterConfigError(
+                f"{where}: escape sequences in basic strings are unsupported"
+            )
         return inner
     if value in ("true", "false"):
         return value == "true"
@@ -273,6 +314,10 @@ def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
         # A '#' inside a quoted value is not a comment; only strip one that
         # starts a bare token. Cheap to get wrong, so it is explicit.
         if line.startswith("["):
+            # TOML permits a comment after a table header too. Apply the same
+            # quote-aware rule as values so `[profiles."gpu#big"] # note`
+            # keeps the hash inside the key and drops only the real comment.
+            line = _strip_trailing_comment(line)
             if not line.endswith("]"):
                 raise ClusterConfigError(f"{where}: malformed table header {line!r}")
             if line.startswith("[["):
@@ -321,9 +366,14 @@ def parse_cluster_config(text: str, *, source: str = "cluster.toml") -> ClusterC
         except Exception as exc:  # tomllib.TOMLDecodeError, but be liberal
             raise ClusterConfigError(f"{source} is not valid TOML: {exc}") from exc
 
+    if not isinstance(data, dict):
+        raise ClusterConfigError(f"{source}: expected a TOML document")
+    _reject_unknown_keys(data, _TOP_LEVEL_KEYS, where=source)
+
     cluster = data.get("cluster") or {}
     if not isinstance(cluster, dict):
         raise ClusterConfigError(f"{source}: [cluster] must be a table")
+    _reject_unknown_keys(cluster, _CLUSTER_KEYS, where=f"{source}: cluster")
     profiles_table = data.get("profiles") or {}
     if not isinstance(profiles_table, dict):
         raise ClusterConfigError(f"{source}: [profiles] must be a table")
@@ -333,6 +383,7 @@ def parse_cluster_config(text: str, *, source: str = "cluster.toml") -> ClusterC
         where = f"{source}: profiles.{name}"
         if not isinstance(raw, dict):
             raise ClusterConfigError(f"{where} must be a table")
+        _reject_unknown_keys(raw, _PROFILE_KEYS, where=where)
         try:
             resources = ResourceProfile(
                 name=str(name),
@@ -351,12 +402,18 @@ def parse_cluster_config(text: str, *, source: str = "cluster.toml") -> ClusterC
             resources=resources,
             partition=_optional_str(raw, "partition", where=where),
             qos=_optional_str(raw, "qos", where=where),
-            description=str(raw.get("description") or ""),
+            description=_plain_str(raw, "description", "", where=where),
         )
 
     return ClusterConfig(
-        name=str(cluster.get("name") or ""),
-        job_name_prefix=str(cluster.get("job_name_prefix") or "openai4s"),
+        name=_plain_str(cluster, "name", "", where=f"{source}: cluster"),
+        job_name_prefix=_plain_str(
+            cluster,
+            "job_name_prefix",
+            "openai4s",
+            where=f"{source}: cluster",
+            allow_empty=False,
+        ),
         profiles=profiles,
     )
 

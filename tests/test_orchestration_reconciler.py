@@ -80,6 +80,13 @@ class _Store:
     def save_workload(self, workload: Workload) -> None:
         self.workloads[workload.id] = workload
 
+    def save_allocation_and_workload(
+        self, allocation: Allocation, workload: Workload
+    ) -> None:
+        self.saved_allocations += 1
+        self.allocations[allocation.id] = allocation
+        self.workloads[workload.id] = workload
+
     def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
         """The `WorkloadStore` Protocol's atomic retire-and-bump.
 
@@ -89,9 +96,7 @@ class _Store:
         looked fine here. Counted as one save of each, because that is what
         the real repository does in one transaction.
         """
-        self.saved_allocations += 1
-        self.allocations[allocation.id] = allocation
-        self.workloads[workload.id] = workload
+        self.save_allocation_and_workload(allocation, workload)
 
 
 class _FakeBackend:
@@ -424,6 +429,113 @@ def test_recovery_is_a_new_epoch_not_a_rewrite():
     assert second.submission_token != first.submission_token
 
 
+def test_recovery_never_commits_the_dead_allocation_before_the_epoch_bump(tmp_path):
+    """A crash before the atomic pair must leave a retryable old attempt."""
+    from openai4s.config import Config
+    from openai4s.store import get_store
+
+    real_store = get_store(Config(data_dir=tmp_path).db_path)
+    workload = real_store.workloads.create_workload(
+        spec=WorkloadSpec(
+            kind=WorkloadKind.SESSION,
+            profile=ResourceProfile(name="cpu-interactive"),
+        ),
+        owner_user_id="u1",
+    )
+    workload.phase = Phase.ACTIVE
+    real_store.workloads.save_workload(workload)
+    allocation = real_store.workloads.create_allocation(workload.id, 0)
+    allocation.phase = Phase.ACTIVE
+    allocation.handle = ExternalHandle(backend="fake", external_id="1")
+    real_store.workloads.save_allocation(allocation)
+
+    class _FailFirstRecoveryCommit:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.fail = True
+
+        def __getattr__(self, name):
+            return getattr(self.delegate, name)
+
+        def open_recovery_epoch(self, dead, recovering):
+            if self.fail:
+                raise RuntimeError("crash before atomic recovery commit")
+            return self.delegate.open_recovery_epoch(dead, recovering)
+
+    repository = _FailFirstRecoveryCommit(real_store.workloads)
+    backend = _FakeBackend()
+    backend.observations = [Observation(phase=Phase.LOST, reason=Reason.NODE_FAILED)]
+    rec = Reconciler(store=repository, backends={"local": backend})
+
+    first = rec.tick()
+    assert first.errors
+    persisted_allocation = real_store.workloads.active_allocation(workload.id)
+    persisted_workload = real_store.workloads.get_workload(workload.id)
+    assert persisted_allocation is not None
+    assert persisted_allocation.phase is Phase.ACTIVE
+    assert persisted_workload.execution_epoch == 0
+
+    repository.fail = False
+    backend.observations = [Observation(phase=Phase.LOST, reason=Reason.NODE_FAILED)]
+    assert not rec.tick().errors
+    assert real_store.workloads.active_allocation(workload.id) is None
+    recovered = real_store.workloads.get_workload(workload.id)
+    assert recovered.execution_epoch == 1
+    assert recovered.phase is Phase.PENDING
+    real_store.close()
+
+
+def test_a_batch_terminal_transition_is_one_database_commit(tmp_path):
+    """A failed pair leaves both rows active and the next tick retryable."""
+    from openai4s.config import Config
+    from openai4s.store import get_store
+
+    real_store = get_store(Config(data_dir=tmp_path).db_path)
+    workload = real_store.workloads.create_workload(
+        spec=WorkloadSpec(
+            kind=WorkloadKind.BATCH,
+            profile=ResourceProfile(name="cpu"),
+            command=("true",),
+        ),
+        owner_user_id="u1",
+    )
+    workload.phase = Phase.ACTIVE
+    real_store.workloads.save_workload(workload)
+    allocation = real_store.workloads.create_allocation(workload.id, 0)
+    allocation.phase = Phase.ACTIVE
+    allocation.handle = ExternalHandle(backend="fake", external_id="1")
+    real_store.workloads.save_allocation(allocation)
+
+    class _FailFirstPair:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.fail = True
+
+        def __getattr__(self, name):
+            return getattr(self.delegate, name)
+
+        def save_allocation_and_workload(self, observed, parent):
+            if self.fail:
+                raise RuntimeError("crash before atomic terminal commit")
+            return self.delegate.save_allocation_and_workload(observed, parent)
+
+    repository = _FailFirstPair(real_store.workloads)
+    backend = _FakeBackend()
+    backend.observations = [Observation(phase=Phase.COMPLETED)]
+    rec = Reconciler(store=repository, backends={"local": backend})
+
+    assert rec.tick().errors
+    assert real_store.workloads.get_workload(workload.id).phase is Phase.ACTIVE
+    assert real_store.workloads.active_allocation(workload.id).phase is Phase.ACTIVE
+
+    repository.fail = False
+    backend.observations = [Observation(phase=Phase.COMPLETED)]
+    assert not rec.tick().errors
+    assert real_store.workloads.get_workload(workload.id).phase is Phase.COMPLETED
+    assert real_store.workloads.active_allocation(workload.id) is None
+    real_store.close()
+
+
 # -- resilience ---------------------------------------------------------------
 
 
@@ -531,6 +643,46 @@ def test_local_backend_cancels_a_running_process(local_backend):
 
     workload.desired_state = DesiredState.STOPPED
     assert _drive_to_terminal(rec, store, workload) is Phase.CANCELLED
+
+
+def test_local_backend_cancels_descendants_after_the_leader_exits(local_backend):
+    """A short-lived wrapper is not the allocation when its child survives."""
+    from openai4s.execution.process_group import group_alive
+
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_descendant",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    # The wrapper launches the actual work into its inherited process group
+    # and exits cleanly. This is the exact state where a leader-only poll used
+    # to publish COMPLETED and make cancel return without signalling anything.
+    code = (
+        "import subprocess,sys; "
+        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])"
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", code),
+    )
+    created = local_backend.submit(
+        allocation=allocation, spec=spec, profile=spec.profile
+    )
+    assert isinstance(created, Created)
+    job = local_backend._jobs[allocation.id]
+    deadline = time.monotonic() + 5
+    while job.process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert job.process.poll() == 0
+    assert group_alive(job.pgid), "the child did not survive its wrapper"
+    assert local_backend.observe(allocation).phase is Phase.ACTIVE
+
+    local_backend.cancel(allocation, reason=Reason.USER_CANCELLED)
+
+    assert not group_alive(job.pgid)
+    assert local_backend.observe(allocation).phase is Phase.CANCELLED
 
 
 def test_local_backend_honours_the_token_like_a_cluster_does(local_backend):

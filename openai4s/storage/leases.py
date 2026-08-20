@@ -33,6 +33,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from openai4s.orchestration.models import DesiredState, Reason
 from openai4s.storage.migrations import apply_ddl_script
 
 LEASE_SCHEMA = """
@@ -211,6 +212,76 @@ class LeaseRepository:
                 " WHERE released_at IS NULL"
             ).fetchall()
         return [_row_to_lease(row) for row in rows]
+
+    def expire_if_unchanged(
+        self, lease: Lease, *, now_ms: int, reason: Reason
+    ) -> tuple[bool, bool]:
+        """Atomically stop and release an unchanged, still-expired lease.
+
+        Returns ``(expired, stop_requested)``. ``expired`` is false when a
+        user touched or reopened the lease after the reclaimer took its
+        snapshot. Checking that fact and writing both rows in one transaction
+        is the CAS that prevents a successful renewal from being reclaimed by
+        a stale sweep.
+        """
+
+        if reason is Reason.SESSION_MAX_LIFETIME_EXCEEDED:
+            # Touching renews idle time, never the hard lifetime.  Including
+            # ``last_active_at`` in this CAS let a touch racing a maximum-age
+            # sweep make an already-over-age session immortal one race at a
+            # time.  Reopen still wins because it replaces ``created_at``.
+            unchanged_and_expired = (
+                "workload_id=? AND released_at IS NULL"
+                " AND created_at=? AND max_lifetime_s=?"
+                " AND ? >= created_at + max_lifetime_s * 1000"
+            )
+            snapshot = (
+                lease.workload_id,
+                lease.created_at,
+                lease.max_lifetime_s,
+                int(now_ms),
+            )
+        else:
+            unchanged_and_expired = (
+                "workload_id=? AND released_at IS NULL"
+                " AND created_at=? AND last_active_at=?"
+                " AND idle_ttl_s=? AND max_lifetime_s=?"
+                " AND ? >= last_active_at + idle_ttl_s * 1000"
+            )
+            snapshot = (
+                lease.workload_id,
+                lease.created_at,
+                lease.last_active_at,
+                lease.idle_ttl_s,
+                lease.max_lifetime_s,
+                int(now_ms),
+            )
+        with self._lock:
+            try:
+                stopped = self._conn.execute(
+                    "UPDATE workloads SET desired_state=?, reason=?, updated_at=?"
+                    " WHERE id=? AND phase NOT IN"
+                    " ('COMPLETED','FAILED','CANCELLED','LOST')"
+                    " AND EXISTS (SELECT 1 FROM leases WHERE "
+                    + unchanged_and_expired
+                    + ")",
+                    (
+                        DesiredState.STOPPED.value,
+                        reason.value,
+                        int(now_ms),
+                        lease.workload_id,
+                        *snapshot,
+                    ),
+                )
+                released = self._conn.execute(
+                    "UPDATE leases SET released_at=? WHERE " + unchanged_and_expired,
+                    (int(now_ms), *snapshot),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return released.rowcount > 0, stopped.rowcount > 0
 
     def release(self, workload_id: str) -> None:
         with self._lock:

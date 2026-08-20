@@ -171,13 +171,44 @@ def test_a_cte_cannot_impersonate_a_scoped_view(store, monkeypatch):
         ("my_execution_log", "execution_log"),
         ("my_artifacts", "artifacts"),
     ):
-        sql = f"WITH {view} AS (SELECT * FROM main.{table}) SELECT * FROM {view}"
-        with pytest.raises(PermissionError, match=view):
-            store.query(sql, scope=scope)
+        for quoted in (
+            view,
+            f'"{view}"',
+            f"[{view}]",
+            f"`{view}`",
+            f"'{view}'",
+        ):
+            sql = (
+                f"WITH {quoted} AS (SELECT * FROM main.{table}) "
+                f"SELECT * FROM {quoted}"
+            )
+            with pytest.raises(PermissionError, match=view):
+                store.query(sql, scope=scope)
+
+    # SQLite treats every non-ASCII code point as part of a bare identifier.
+    # A combining mark therefore used to stop the small lexer at the first,
+    # harmless CTE and hide the scoped shadow after the comma.
+    with pytest.raises(PermissionError, match="my_messages"):
+        store.query(
+            "WITH e\u0301 AS (SELECT 1), "
+            "my_messages AS (SELECT * FROM main.messages) "
+            "SELECT content FROM my_messages",
+            scope=scope,
+        )
 
     # The real view still answers, and still answers only for this session.
     rows = store.query("SELECT content FROM my_messages", scope=scope)
     assert [r["content"] for r in rows] == ["my own question"]
+
+    # A named WINDOW uses the same ``name AS (...)`` spelling but is not a
+    # CTE and cannot replace a scoped view. The guard must not reject valid
+    # SQLite syntax merely because the window happens to share a view name.
+    ranked = store.query(
+        "SELECT row_number() OVER my_messages AS n FROM my_frames "
+        "WINDOW my_messages AS (ORDER BY frame_id)",
+        scope=scope,
+    )
+    assert [row["n"] for row in ranked] == [1]
 
 
 def test_the_authorizer_refuses_a_view_name_nothing_published(monkeypatch):

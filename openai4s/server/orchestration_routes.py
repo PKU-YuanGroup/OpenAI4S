@@ -79,23 +79,22 @@ def _may_see(self, workload: Any) -> bool:
     return workload.owner_user_id == identity.user_id
 
 
-#: Backends that execute as the daemon process itself rather than handing the
-#: work to a scheduler that runs it under the submitting user's own account.
+#: Backends that launch work with daemon-controlled identity or credentials.
 #:
 #: `LocalBackend` runs `Popen(argv)` as the daemon's uid, outside the kernel
 #: sandbox, with the daemon's filesystem access -- which in team mode is every
-#: tenant's sessions, the access-token file and the group LLM credential. That
-#: is the hazard `team_policy.DAEMON_OPERATION_PATHS` already names for
-#: `/compute/jobs`, and it is a property of the *backend*, not of the route:
-#: a member submitting to a scheduler is submitting as themselves, and keeps
-#: it.
+#: tenant's sessions, the access-token file and the group LLM credential.
+#: `SlurmBackend` invokes the scheduler with the daemon's Unix identity and
+#: site credential; OpenAI4S has no authenticated member-to-scheduler-account
+#: mapping, so a browser member is not thereby submitting as themselves. Both
+#: can read or spend instance resources and are operator actions in team mode.
 #:
 #: Deliberately not solved by wrapping `LocalBackend` in the kernel sandbox.
 #: The sandbox degrades visibly rather than failing closed on hosts that
 #: cannot give it namespaces, and a privilege boundary that sometimes is not
 #: there is worse than a refusal. Member-submitted local work wants its own
 #: fail-closed `local-sandboxed` backend, designed as such.
-PRIVILEGED_BACKENDS = frozenset({"local"})
+PRIVILEGED_BACKENDS = frozenset({"cluster", "local"})
 
 
 def backend_for(runner: Any, body: Any) -> str:
@@ -333,8 +332,8 @@ def handle(
             self._json(
                 {
                     "error": (
-                        f"the {backend!r} backend runs jobs as the daemon and is "
-                        f"admin only; submit to a cluster backend instead"
+                        f"the {backend!r} backend launches work with "
+                        f"daemon-managed identity or credentials and is admin only"
                     ),
                     "code": "admin_only",
                     "backend": backend,

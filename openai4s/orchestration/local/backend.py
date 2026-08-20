@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from openai4s.execution.process_group import stop_process_group
+from openai4s.execution.process_group import group_alive, stop_process_group
 from openai4s.kernel.environment import name_can_carry_a_secret
 from openai4s.orchestration.models import (
     Allocation,
@@ -100,11 +100,34 @@ class LocalBackend:
     # --- submission -------------------------------------------------------
 
     def _live_count(self) -> int:
-        return sum(
-            1
-            for job in self._jobs.values()
-            if job.exit_code is None and job.process.poll() is None
-        )
+        live = 0
+        for job in self._jobs.values():
+            code, whole_group_alive = self._poll_job(job)
+            if code is None or whole_group_alive:
+                live += 1
+        return live
+
+    @staticmethod
+    def _poll_job(job: _LocalJob) -> tuple[int | None, bool]:
+        """Return leader status/group liveness and freeze a terminal job.
+
+        A saved pgid is needed only for the short leader-exited/child-alive
+        window. Keeping it after the group is confirmed empty lets OS pgid
+        reuse resurrect a completed allocation or makes a later cancel/close
+        signal an unrelated process group. Once terminal, cache the exit code
+        and discard the pgid permanently.
+        """
+
+        if job.exit_code is not None:
+            return job.exit_code, False
+        code = job.process.poll()
+        if code is None:
+            return None, True
+        whole_group_alive = group_alive(job.pgid)
+        if not whole_group_alive:
+            job.exit_code = code
+            job.pgid = None
+        return code, whole_group_alive
 
     def submit(
         self,
@@ -172,10 +195,13 @@ class LocalBackend:
                         except OSError:
                             pass
 
-            try:
-                job_pgid: int | None = os.getpgid(process.pid)
-            except OSError:  # pragma: no cover - the child died instantly
-                job_pgid = None
+            # ``start_new_session=True`` makes the child a POSIX session
+            # leader, so its process group id is its pid by definition.  Do
+            # not ask the kernel for it after spawn: a wrapper may already
+            # have exited while a descendant remains in that group, and
+            # ``getpgid`` then loses the only handle capable of stopping the
+            # surviving work.
+            job_pgid: int | None = process.pid if os.name == "posix" else None
             self._jobs[allocation.id] = _LocalJob(
                 allocation_id=allocation.id,
                 pgid=job_pgid,
@@ -236,14 +262,22 @@ class LocalBackend:
                     )
                 return Observation(phase=Phase.SUBMITTING)
 
-            code = job.process.poll()
-            if code is None:
+            code, whole_group_alive = self._poll_job(job)
+            if code is None or whole_group_alive:
+                diagnostics = dict(job.diagnostics)
+                if code is not None:
+                    # The process we spawned was only the group leader. A
+                    # wrapper may exit after starting the real work, and that
+                    # work is still the allocation until the whole group is
+                    # empty. Publishing COMPLETED here made the reconciler
+                    # release capacity while descendants kept consuming it.
+                    diagnostics["leader_exit_code"] = code
                 return Observation(
                     phase=Phase.ACTIVE,
                     handle=self._handle(job.allocation_id),
-                    diagnostics=dict(job.diagnostics),
+                    diagnostics=diagnostics,
                 )
-            job.exit_code = code
+            assert code is not None
             diagnostics = dict(job.diagnostics, exit_code=code)
             if job.cancelled:
                 return Observation(
@@ -277,9 +311,10 @@ class LocalBackend:
             job = self._jobs.get(allocation.id)
             if job is None:
                 return
-            job.cancelled = True
-            if job.process.poll() is not None:
+            code, whole_group_alive = self._poll_job(job)
+            if code is not None and not whole_group_alive:
                 return
+            job.cancelled = True
             # `stop_process_group`, not a bare `killpg(SIGTERM)`: it escalates
             # to SIGKILL and then *confirms* the group is gone. A TERM that the
             # work ignores used to return here as success, so the cancel
@@ -289,6 +324,11 @@ class LocalBackend:
             # future fixes instead of missing them.
             stopped, detail = stop_process_group(job.process, job.pgid)
             job.diagnostics["cancel"] = {"stopped": stopped, "detail": detail}
+            if stopped:
+                code = job.process.poll()
+                if code is not None:
+                    job.exit_code = code
+                    job.pgid = None
 
     def find_by_token(self, token: SubmissionToken) -> ExternalHandle | None:
         with self._lock:
@@ -319,10 +359,21 @@ class LocalBackend:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
-            if job.process.poll() is None:
-                # Same stopper as `cancel`: shutdown is the other place a
-                # group that ignores TERM turns into orphaned compute.
-                stop_process_group(job.process, job.pgid)
+            with self._lock:
+                code, whole_group_alive = self._poll_job(job)
+            if code is not None and not whole_group_alive:
+                continue
+            # Same stopper as `cancel`: shutdown is the other place a group
+            # that ignores TERM turns into orphaned compute. The helper also
+            # handles a reaped leader with surviving descendants, which a
+            # `poll()` guard would skip.
+            stopped, _detail = stop_process_group(job.process, job.pgid)
+            if stopped:
+                with self._lock:
+                    code = job.process.poll()
+                    if code is not None:
+                        job.exit_code = code
+                        job.pgid = None
 
     # --- helpers ----------------------------------------------------------
 

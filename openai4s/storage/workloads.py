@@ -197,6 +197,151 @@ class WorkloadRepository:
             self._connection.commit()
         return workload
 
+    def create_session_workload(
+        self,
+        *,
+        session_id: str,
+        spec: WorkloadSpec,
+        owner_user_id: str,
+        project_id: str | None,
+        backend: str,
+        idle_ttl_s: int,
+        max_lifetime_s: int,
+    ) -> Workload:
+        """Atomically create a session workload, binding and live lease.
+
+        A reconciler submits every RUNNING workload it can see. Committing the
+        workload before its session binding/lease meant a crash or later write
+        failure produced an unreachable orphan that was nevertheless eligible
+        for cluster submission. These three rows are one durable fact.
+        """
+
+        workload = Workload(
+            id=Workload.new_id(),
+            spec=spec,
+            owner_user_id=owner_user_id,
+            project_id=project_id,
+            backend=backend,
+        )
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._connection.execute(
+                    "INSERT INTO workloads(id, kind, owner_user_id, project_id,"
+                    " backend, spec_json, spec_revision, desired_state, phase,"
+                    " execution_epoch, reason, created_at, updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        workload.id,
+                        spec.kind.value,
+                        owner_user_id,
+                        project_id,
+                        backend,
+                        _spec_to_json(spec),
+                        spec.spec_revision,
+                        workload.desired_state.value,
+                        workload.phase.value,
+                        workload.execution_epoch,
+                        None,
+                        now,
+                        now,
+                    ),
+                )
+                self._connection.execute(
+                    "INSERT INTO session_workloads"
+                    " (session_id, workload_id, created_at) VALUES (?,?,?)"
+                    " ON CONFLICT(session_id) DO UPDATE SET"
+                    " workload_id=excluded.workload_id,"
+                    " created_at=excluded.created_at",
+                    (session_id, workload.id, now),
+                )
+                self._connection.execute(
+                    "INSERT INTO leases"
+                    " (workload_id, created_at, last_active_at, idle_ttl_s,"
+                    " max_lifetime_s, released_at) VALUES (?,?,?,?,?,NULL)",
+                    (
+                        workload.id,
+                        now,
+                        now,
+                        int(idle_ttl_s),
+                        int(max_lifetime_s),
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return workload
+
+    def release_session_workload(
+        self,
+        *,
+        session_id: str,
+        reason: Reason,
+        expected_workload_id: str | None = None,
+    ) -> str | None:
+        """Atomically stop, release and unbind one session workload.
+
+        These rows describe one durable lifecycle fact.  Committing them in
+        three repository calls allowed a crash (or a failed DELETE) to leave
+        a STOPPED, released workload still bound to the session.  On restart
+        ``request_session`` then returned that unusable workload forever.
+
+        The optional workload id is an ABA fence for delayed reclaimer and
+        terminal-event cleanup: an event for W1 must never consume a newer W2
+        binding for the same chat session.
+        """
+
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._connection.execute(
+                    "SELECT workload_id FROM session_workloads" " WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    self._connection.rollback()
+                    return None
+                workload_id = str(row[0])
+                if (
+                    expected_workload_id is not None
+                    and workload_id != expected_workload_id
+                ):
+                    self._connection.rollback()
+                    return None
+                self._connection.execute(
+                    "UPDATE workloads SET desired_state=?, reason=?, updated_at=?"
+                    " WHERE id=? AND phase NOT IN"
+                    " ('COMPLETED','FAILED','CANCELLED','LOST')",
+                    (
+                        DesiredState.STOPPED.value,
+                        reason.value,
+                        now,
+                        workload_id,
+                    ),
+                )
+                self._connection.execute(
+                    "UPDATE leases SET released_at=?"
+                    " WHERE workload_id=? AND released_at IS NULL",
+                    (now, workload_id),
+                )
+                deleted = self._connection.execute(
+                    "DELETE FROM session_workloads"
+                    " WHERE session_id=? AND workload_id=?",
+                    (session_id, workload_id),
+                )
+                if deleted.rowcount != 1:
+                    raise RuntimeError(
+                        "session workload binding changed during release"
+                    )
+                self._connection.commit()
+                return workload_id
+            except Exception:
+                self._connection.rollback()
+                raise
+
     def _row_to_workload(self, row: Any) -> Workload:
         workload = Workload(
             id=row["id"],
@@ -247,6 +392,38 @@ class WorkloadRepository:
             ).fetchall()
         return [self._row_to_workload(r) for r in rows]
 
+    def session_cleanup_candidates(self) -> list[tuple[str, str, Reason | None]]:
+        """Return bound sessions whose durable compute cleanup is unfinished.
+
+        Terminal events are edge-triggered, while daemon restart is not. A
+        terminal/stopped workload or a missing/released lease that remains in
+        ``session_workloads`` is therefore a durable cleanup intent which the
+        gateway must replay. Keep this join in the repository so the gateway
+        neither reaches into Store internals nor imposes an arbitrary list
+        limit that can strand an older binding forever.
+        """
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT sw.session_id, sw.workload_id, w.reason "
+                "FROM session_workloads AS sw "
+                "JOIN workloads AS w ON w.id=sw.workload_id "
+                "LEFT JOIN leases AS l ON l.workload_id=sw.workload_id "
+                "WHERE w.phase IN ('COMPLETED','FAILED','CANCELLED','LOST') "
+                "OR w.desired_state='STOPPED' "
+                "OR l.workload_id IS NULL OR l.released_at IS NOT NULL "
+                "ORDER BY sw.created_at, sw.session_id"
+            ).fetchall()
+        candidates = []
+        for row in rows:
+            raw_reason = row["reason"]
+            try:
+                reason = Reason(raw_reason) if raw_reason else None
+            except ValueError:
+                reason = None
+            candidates.append((str(row["session_id"]), str(row["workload_id"]), reason))
+        return candidates
+
     def workloads_needing_attention(self) -> list[Workload]:
         """The reconciler's queue: everything not yet terminal."""
         with self._lock:
@@ -290,16 +467,17 @@ class WorkloadRepository:
             )
             self._connection.commit()
 
-    def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
-        """Retire the dead allocation and start the next epoch, atomically.
+    def save_allocation_and_workload(
+        self, allocation: Allocation, workload: Workload
+    ) -> None:
+        """Persist one allocation/workload state transition atomically.
 
         Two writes, one commit. Split, the window between them is not
-        theoretical: the allocation goes terminal, the process dies, and the
-        workload comes back still on the old epoch -- so the next tick calls
-        `create_allocation(workload_id, epoch)` with an epoch that already
-        has a row, hits `UNIQUE (workload_id, epoch)`, and raises. Every
-        subsequent tick raises identically, so the session never recovers
-        and the failure repeats forever with no state that can move.
+        theoretical for terminal and rejected attempts: the allocation goes
+        terminal, the process dies, and the workload can come back nonterminal
+        on the same epoch. The next tick then calls
+        `create_allocation(workload_id, epoch)` where a row already exists,
+        hits `UNIQUE (workload_id, epoch)`, and repeats forever.
 
         Swapping the order does not fix it: bumping the epoch first leaves
         the *old* allocation still in the active set, and INV-3's partial
@@ -308,29 +486,41 @@ class WorkloadRepository:
         """
         now = self._clock_ms()
         with self._lock:
-            self._connection.execute(
-                "UPDATE allocations SET phase=?, reason=?, observed_json=?,"
-                " released_at=? WHERE id=?",
-                (
-                    allocation.phase.value,
-                    allocation.reason.value if allocation.reason else None,
-                    json.dumps(allocation.diagnostics or {}, ensure_ascii=False),
-                    now,
-                    allocation.id,
-                ),
-            )
-            self._connection.execute(
-                "UPDATE workloads SET phase=?, execution_epoch=?,"
-                " reason=COALESCE(?, reason), updated_at=? WHERE id=?",
-                (
-                    workload.phase.value,
-                    workload.execution_epoch,
-                    workload.reason.value if workload.reason else None,
-                    now,
-                    workload.id,
-                ),
-            )
-            self._connection.commit()
+            try:
+                self._connection.execute(
+                    "UPDATE allocations SET phase=?, external_backend=?,"
+                    " external_ns=?, external_id=?, reason=?, observed_json=?,"
+                    " released_at=COALESCE(released_at, ?) WHERE id=?",
+                    (
+                        allocation.phase.value,
+                        allocation.handle.backend if allocation.handle else None,
+                        allocation.handle.namespace if allocation.handle else None,
+                        allocation.handle.external_id if allocation.handle else None,
+                        allocation.reason.value if allocation.reason else None,
+                        json.dumps(allocation.diagnostics, sort_keys=True),
+                        now if allocation.phase.is_terminal else None,
+                        allocation.id,
+                    ),
+                )
+                self._connection.execute(
+                    "UPDATE workloads SET phase=?, execution_epoch=?,"
+                    " reason=COALESCE(?, reason), updated_at=? WHERE id=?",
+                    (
+                        workload.phase.value,
+                        workload.execution_epoch,
+                        workload.reason.value if workload.reason else None,
+                        now,
+                        workload.id,
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
+        """Retire the dead allocation and start the next epoch, atomically."""
+        self.save_allocation_and_workload(allocation, workload)
 
     def request_stop(self, workload_id: str, *, reason: Reason) -> bool:
         """Ask for cancellation. The reconciler runs the barrier; this only
@@ -410,6 +600,33 @@ class WorkloadRepository:
                 (workload_id,),
             ).fetchone()
         return self._row_to_allocation(row) if row else None
+
+    def session_registration_expected(self, allocation_id: str, epoch: int) -> bool:
+        """Whether an authenticated worker still belongs to a live session.
+
+        A scheduler may start the worker long before the user's first Cell.
+        Such a registration is parked in ``WorkerGateway`` but is not an
+        orphan: the durable binding, live lease and active allocation are its
+        owner.  This single query lets gateway housekeeping distinguish that
+        case from a straggler after release/recovery without caching lifecycle
+        state in the transport layer.
+        """
+
+        with self._lock:
+            row = self._connection.execute(
+                f"SELECT 1 FROM allocations AS a"
+                " JOIN workloads AS w ON w.id=a.workload_id"
+                " JOIN session_workloads AS sw ON sw.workload_id=w.id"
+                " JOIN leases AS l ON l.workload_id=w.id"
+                " WHERE a.id=? AND a.epoch=?"
+                f" AND a.phase IN ({_ACTIVE_SQL})"
+                " AND w.execution_epoch=a.epoch"
+                " AND w.desired_state='RUNNING'"
+                " AND w.phase NOT IN ('COMPLETED','FAILED','CANCELLED','LOST')"
+                " AND l.released_at IS NULL LIMIT 1",
+                (allocation_id, int(epoch)),
+            ).fetchone()
+        return row is not None
 
     def list_allocations(self, workload_id: str) -> list[Allocation]:
         with self._lock:

@@ -159,10 +159,13 @@ class WorkerGateway:
         self._bind = bind
         self._on_register = on_register
         self._interrupt_hook_for = interrupt_hook_for
+        self._registration_is_expected: Callable[[str, int], bool] | None = None
         self._server: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self._generation = 0
+        self._handshakes: dict[threading.Thread, socket.socket] = {}
         self._waiters: dict[tuple[str, int], threading.Event] = {}
         # A *list* per attempt, not one registration. A multi-node job
         # places one worker per rank and all of them present a credential
@@ -188,6 +191,13 @@ class WorkerGateway:
     def address(self) -> tuple[str, int] | None:
         return self._server.getsockname() if self._server is not None else None
 
+    def set_registration_expectation(
+        self, predicate: Callable[[str, int], bool] | None
+    ) -> None:
+        """Install the durable ownership check used by orphan housekeeping."""
+        with self._lock:
+            self._registration_is_expected = predicate
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -198,12 +208,15 @@ class WorkerGateway:
         server.settimeout(0.5)  # so stop() is prompt rather than eventual
         self._server = server
         self._stop.clear()
+        with self._lock:
+            self._generation += 1
         self._thread = threading.Thread(
             target=self._serve, name="openai4s-worker-gateway", daemon=True
         )
         self._thread.start()
 
     def stop(self, *, timeout_s: float = 5.0) -> None:
+        deadline = time.monotonic() + max(0.0, timeout_s)
         self._stop.set()
         server, self._server = self._server, None
         if server is not None:
@@ -213,7 +226,20 @@ class WorkerGateway:
                 pass
         thread, self._thread = self._thread, None
         if thread is not None:
-            thread.join(timeout=timeout_s)
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        # Accepted sockets are not owned by the listener any more. Close every
+        # in-flight handshake to wake recv/send, then join those threads before
+        # clearing parked registrations. Otherwise a verified peer can publish
+        # into `_arrived` *after* stop() has emptied it.
+        with self._lock:
+            handshakes = list(self._handshakes.items())
+        for _handshake, conn in handshakes:
+            try:
+                conn.close()
+            except OSError:
+                pass
+        for handshake, _conn in handshakes:
+            handshake.join(timeout=max(0.0, deadline - time.monotonic()))
         # Close what nobody collected. `stop()` used to close only the
         # listening socket, so every parked registration's accepted socket
         # and its two makefile wrappers survived the gateway that owned them
@@ -236,6 +262,13 @@ class WorkerGateway:
             try:
                 conn, addr = server.accept()
             except socket.timeout:  # noqa: UP041 — stdlib alias
+                # The accept timeout is also the gateway's housekeeping tick.
+                # Reaping only from `await_workers` or another arrival leaves
+                # the final straggler parked forever when the daemon becomes
+                # otherwise idle -- exactly the case an orphan timeout is
+                # supposed to bound.
+                with self._lock:
+                    self._reap_locked()
                 continue
             except OSError:
                 return
@@ -256,14 +289,28 @@ class WorkerGateway:
                 except OSError:
                     pass
                 continue
-            threading.Thread(
+            with self._lock:
+                generation = self._generation
+            handshake = threading.Thread(
                 target=self._handshake_bounded,
-                args=(conn, addr),
+                args=(conn, addr, generation),
                 name="openai4s-worker-handshake",
                 daemon=True,
-            ).start()
+            )
+            with self._lock:
+                if self._stop.is_set() or generation != self._generation:
+                    self._handshake_slots.release()
+                    try:
+                        conn.close()
+                    except OSError:
+                        pass
+                    continue
+                self._handshakes[handshake] = conn
+            handshake.start()
 
-    def _handshake_bounded(self, conn: socket.socket, addr: Any) -> None:
+    def _handshake_bounded(
+        self, conn: socket.socket, addr: Any, generation: int
+    ) -> None:
         """`_handshake` with the pre-auth slot released the moment it ends.
 
         Released here rather than inside `_handshake` so that every exit
@@ -272,13 +319,17 @@ class WorkerGateway:
         a smaller unbounded one, one connection at a time.
         """
         try:
-            self._handshake(conn, addr)
+            self._handshake(conn, addr, gateway_generation=generation)
         finally:
+            with self._lock:
+                self._handshakes.pop(threading.current_thread(), None)
             self._handshake_slots.release()
 
     # --- admission --------------------------------------------------------
 
-    def _handshake(self, conn: socket.socket, addr: Any) -> None:
+    def _handshake(
+        self, conn: socket.socket, addr: Any, *, gateway_generation: int | None = None
+    ) -> None:
         peer = f"{addr[0]}:{addr[1]}" if isinstance(addr, tuple) else str(addr)
         conn.settimeout(HANDSHAKE_TIMEOUT_S)
         try:
@@ -326,10 +377,12 @@ class WorkerGateway:
         # a recovery each get their own: reusing one across attempts would
         # let a worker from the epoch before a recovery keep authorizing
         # against the generation the new one is using.
-        generation = f"kernel:{uuid.uuid4()}"
+        worker_generation = f"kernel:{uuid.uuid4()}"
         try:
             conn.sendall(
-                (json.dumps({"ok": True, "generation": generation}) + "\n").encode()
+                (
+                    json.dumps({"ok": True, "generation": worker_generation}) + "\n"
+                ).encode()
             )
         except OSError:
             try:
@@ -362,9 +415,10 @@ class WorkerGateway:
             rank=credential.rank,
             transport=transport,
             peer=peer,
-            generation=generation,
+            generation=worker_generation,
         )
         key = (credential.allocation_id, credential.epoch)
+        admitted = False
         with self._lock:
             # Reap here as well as in `await_workers`. The leak `_reap_locked`
             # was written for is a straggler nobody ever awaits -- a fenced-off
@@ -372,10 +426,22 @@ class WorkerGateway:
             # the only caller was the wait, so on a daemon where nothing waits
             # again the fd triple it drops was never dropped. Arrival is the
             # other moment the dict changes, so it is the other moment to sweep.
-            self._reap_locked()
-            self.accepted += 1
-            self._arrived.setdefault(key, []).append(registration)
-            waiter = self._waiters.get(key)
+            if not self._stop.is_set() and (
+                gateway_generation is None or gateway_generation == self._generation
+            ):
+                self._reap_locked()
+                self.accepted += 1
+                self._arrived.setdefault(key, []).append(registration)
+                waiter = self._waiters.get(key)
+                admitted = True
+            else:
+                waiter = None
+        if not admitted:
+            try:
+                transport.close(graceful=False)
+            except Exception:  # noqa: BLE001 — shutdown race must not publish
+                pass
+            return
         if waiter is not None:
             waiter.set()
         if self._on_register is not None:
@@ -411,7 +477,7 @@ class WorkerGateway:
                 break
             if total > MAX_HANDSHAKE_BYTES:
                 raise BootstrapError("handshake line too long")
-        return b"".join(chunks).split(b"\n", 1)[0].decode("utf-8", "replace")
+        return b"".join(chunks).split(b"\n", 1)[0].decode("utf-8")
 
     def _reap_locked(self) -> int:
         """Close and drop arrivals nobody is going to await. Caller holds the lock.
@@ -435,6 +501,21 @@ class WorkerGateway:
         cutoff = time.monotonic() - ORPHAN_REGISTRATION_TTL_S
         dropped = 0
         for key in [k for k in self._arrived if k not in self._waiters]:
+            expected = self._registration_is_expected
+            if expected is not None:
+                try:
+                    if expected(key[0], key[1]):
+                        # A live session may legitimately sit between worker
+                        # registration and its first Cell longer than the
+                        # orphan TTL. Its lease, not user think-time here,
+                        # owns that resource.
+                        continue
+                except Exception:  # noqa: BLE001 — uncertainty must not kill it
+                    # Storage can be briefly busy or closing.  Reaping a valid
+                    # scheduler worker is irreversible; keeping it until the
+                    # next housekeeping tick is bounded by the same TTL and
+                    # becomes decidable again once storage recovers.
+                    continue
             keep: list[Registration] = []
             for registration in self._arrived.get(key) or ():
                 # `getattr`, because `_arrived` is also written directly by
@@ -518,6 +599,13 @@ class WorkerGateway:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not waiter.wait(timeout=remaining):
                 with self._lock:
+                    # Sweep while this key still has its waiter: a partial gang
+                    # belongs to the caller below and must be restamped, while
+                    # an unrelated registration that arrived after the sweep at
+                    # the top of the loop is now old and unclaimed. Without this
+                    # second sweep, the ack-before-parking race could miss that
+                    # orphan until some future gateway activity (or forever).
+                    self._reap_locked()
                     self._waiters.pop(key, None)
                     # Hand back a *copy* of the partial set and keep it.
                     #

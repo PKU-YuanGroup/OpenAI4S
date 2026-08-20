@@ -17,6 +17,7 @@ information about what a colleague is working on (INV-13).
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -76,8 +77,8 @@ def test_a_daemon_with_no_listener_says_the_session_runs_locally(daemon):
 def test_asking_for_a_cluster_session_without_a_listener_is_refused_with_a_reason(
     daemon,
 ):
-    cookie = _login(daemon, "alice", "fake-pw-a")
-    session_id = _session_of(daemon, "alice")
+    cookie = _login(daemon, "root", "fake-pw-r")
+    session_id = _session_of(daemon, "root")
 
     status, raw = _post(
         daemon.port,
@@ -151,8 +152,12 @@ def _put(port: int, path: str, body: dict, cookie: str, method: str = "POST"):
 def listening_daemon(tmp_path, monkeypatch):
     """A daemon that actually has a worker listener, so the requests that a
     default install refuses at the door get as far as the code under test."""
+    from openai4s.orchestration.slurm.profiles import EXAMPLE_CLUSTER_TOML
+
+    (tmp_path / "cluster.toml").write_text(EXAMPLE_CLUSTER_TOML, encoding="utf-8")
     monkeypatch.setenv("OPENAI4S_WORKER_LISTEN", f"127.0.0.1:{_free_port()}")
     node = _TeamDaemon(tmp_path)
+    node.seed_user("root", "fake-pw-r", role="admin")
     node.seed_user("alice", "fake-pw-a")
     try:
         yield node
@@ -168,8 +173,8 @@ def test_checkpoint_recovery_answers_501_not_400(listening_daemon):
     assert (
         daemon.runner.compute_sessions is not None
     ), "the listener did not come up, so this would be testing the 409 path"
-    cookie = _login(daemon, "alice", "fake-pw-a")
-    session_id = _session_of(daemon, "alice")
+    cookie = _login(daemon, "root", "fake-pw-r")
+    session_id = _session_of(daemon, "root")
     status, raw = _put(
         daemon.port,
         f"/api/v1/sessions/{session_id}/compute",
@@ -185,8 +190,8 @@ def test_checkpoint_recovery_answers_501_not_400(listening_daemon):
 
 def test_an_unconfigured_profile_is_refused_rather_than_guessed(listening_daemon):
     daemon = listening_daemon
-    cookie = _login(daemon, "alice", "fake-pw-a")
-    session_id = _session_of(daemon, "alice")
+    cookie = _login(daemon, "root", "fake-pw-r")
+    session_id = _session_of(daemon, "root")
     status, raw = _put(
         daemon.port,
         f"/api/v1/sessions/{session_id}/compute",
@@ -195,3 +200,57 @@ def test_an_unconfigured_profile_is_refused_rather_than_guessed(listening_daemon
     )
     assert status == 400
     assert _body(raw)["code"] == "unknown_profile"
+
+
+def test_cluster_session_placement_is_admin_only_before_any_write(
+    listening_daemon,
+):
+    daemon = listening_daemon
+    member = _login(daemon, "alice", "fake-pw-a")
+    member_session = _session_of(daemon, "alice")
+
+    status, raw = _put(
+        daemon.port,
+        f"/api/v1/sessions/{member_session}/compute",
+        {"profile": "gpu-interactive"},
+        member,
+    )
+    assert status == 403, raw[:300]
+    assert _body(raw)["code"] == "admin_only"
+    assert daemon.store.leases.workload_for_session(member_session) is None
+
+    admin = _login(daemon, "root", "fake-pw-r")
+    admin_session = _session_of(daemon, "root")
+    status, raw = _put(
+        daemon.port,
+        f"/api/v1/sessions/{admin_session}/compute",
+        {"profile": "gpu-interactive"},
+        admin,
+    )
+    assert status == 201, raw[:300]
+    first = _body(raw)
+    assert first["workload"] is not None
+    assert first["allocation"] is None
+
+    workload_id = first["workload"]["id"]
+    deadline = time.monotonic() + 2.0
+    while (
+        daemon.store.workloads.active_allocation(workload_id) is None
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert daemon.store.workloads.active_allocation(workload_id) is not None
+
+    # Repeating the idempotent request returns the same durable workload and
+    # the now-existing allocation. Exercising both eventual states in one
+    # real HTTP test keeps the frozen response schema deterministic.
+    status, raw = _put(
+        daemon.port,
+        f"/api/v1/sessions/{admin_session}/compute",
+        {"profile": "gpu-interactive"},
+        admin,
+    )
+    assert status == 201, raw[:300]
+    second = _body(raw)
+    assert second["workload"]["id"] == workload_id
+    assert second["allocation"] is not None
