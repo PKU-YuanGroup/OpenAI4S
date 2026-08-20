@@ -17,27 +17,141 @@ import fnmatch
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+#: Basenames that carry a credential wherever they appear, matched
+#: case-insensitively against the last path segment.
 _SECRET_BASENAMES = (
     "*.env",
     ".env",
     ".env.*",
     "*.pem",
     "*.key",
+    "*.p12",
+    "*.pfx",
     "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
     "id_ed25519",
     ".netrc",
     ".pgpass",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".htpasswd",
+)
+
+#: Directories whose *contents* are credentials whatever the file is called.
+#:
+#: A basename-only denylist is not a fence around credentials, it is a fence
+#: around credential-shaped *names*: `~/.aws/credentials`, `~/.ssh/known_hosts`
+#: and `~/.ssh/authorized_keys` all passed it, because the secret lives in the
+#: directory rather than in the name. The rest of this codebase already knows
+#: that -- the kernel OS sandbox denies the whole `~/.ssh` subtree to a cell
+#: (`security/sandbox._default_secret_read_denials`), the export boundary
+#: matches every path segment (`server/session_package._is_secret_path`), and
+#: the code classifier flags `~/.aws/credentials` in a cell. The host tool
+#: plane was the one surface still matching only the last segment, so this
+#: aligns it with three existing policies rather than inventing a fourth.
+#:
+#: Matched on any segment, the last one included: naming the directory itself
+#: is the same request as naming a file in it.
+#:
+#: Measured before widening, over 182,494 files across real project trees and
+#: 52,876 under `$HOME`: 2 and 10 additional denials respectively, every one of
+#: them a genuine credential file (`.npmrc` auth tokens, `~/.ssh/*`,
+#: `~/.config/gh/hosts.yml`). Zero additional denials in this repository. The
+#: interactive cost of directory awareness is not the reason to keep a
+#: basename-only denylist; there is no such cost to speak of.
+_SECRET_DIR_SEGMENTS = frozenset(
+    {".ssh", ".aws", ".gnupg", ".docker", ".kube", ".azure"}
+)
+
+#: Credential directories that only bear credentials under a specific parent,
+#: matched as an adjacent run of segments: `gcloud` and `gh` on their own are
+#: ordinary words, and a substring test over the joined path would also match
+#: `notes/.config/gcloud-migration-plan.md`.
+_SECRET_DIR_SEQUENCES = ((".config", "gcloud"), (".config", "gh"))
+
+#: Names credential-bearing often enough to refuse when *no human will ever
+#: see the path*, and not often enough to refuse when one will.
+#:
+#: This is the second tier, and it exists because the same table cannot serve
+#: both call sites. `config.json` is the whole argument: it is the Docker
+#: registry auth file and it is also an utterly ordinary filename -- 7 of the 8
+#: paths this tier adds over `is_secret_path` under `$HOME`, and 2 of 2 under
+#: `~/Documents`, were ordinary `config.json` files. Refusing those in
+#: `is_secret_path` would deny an interactive read with no approval path (the
+#: denylist is a hard pre-gate, not a prompt), to buy nothing: under `.docker/`
+#: the directory rule already catches it.
+#:
+#: For an unattended approval the trade runs the other way. A denial there
+#: costs a fallback to asking a human, not a refusal, and no human is looking
+#: at the path -- which is exactly the case the interactive tier is calibrated
+#: for. Use this one from the Guardian/unattended path; use `is_secret_path`
+#: for anything a person is watching.
+_UNATTENDED_SECRET_BASENAMES = frozenset(
+    {
+        "credentials",
+        "credentials.json",
+        "service-account.json",
+        "service_account.json",
+        "known_hosts",
+        "authorized_keys",
+        "hosts.yml",
+        "hosts.json",
+        "token.json",
+        "access-token",
+        "config.json",
+    }
 )
 
 
-def is_secret_path(path: str) -> bool:
-    """Return whether a basename belongs to the host tool secret denylist."""
-    import posixpath
+def _path_segments(path: str) -> tuple[str, ...]:
+    """Lowercased path segments, separator- and case-normalised."""
+    normalized = (path or "").replace("\\", "/").strip().lower()
+    return tuple(part for part in normalized.split("/") if part and part != ".")
 
-    basename = posixpath.basename((path or "").replace("\\", "/").rstrip("/")).lower()
-    if not basename:
+
+def _has_secret_directory(segments: tuple[str, ...]) -> bool:
+    """Whether any segment (or adjacent run) names a credential directory."""
+    if any(segment in _SECRET_DIR_SEGMENTS for segment in segments):
+        return True
+    for sequence in _SECRET_DIR_SEQUENCES:
+        span = len(sequence)
+        for start in range(len(segments) - span + 1):
+            if segments[start : start + span] == sequence:
+                return True
+    return False
+
+
+def is_secret_path(path: str) -> bool:
+    """Return whether a path is on the host tool secret denylist.
+
+    Directory-aware: a credential-bearing parent segment refuses the read even
+    when the basename is generic. Callers pass a workspace-*relative* path, so
+    a workspace that itself sits inside a credential directory stays readable
+    -- the same carve-out `_default_secret_read_denials` makes for the kernel,
+    and for the same reason: a boundary that denies its own root is unusable
+    rather than strict.
+    """
+    segments = _path_segments(path)
+    if not segments:
         return False
-    return any(fnmatch.fnmatchcase(basename, pattern) for pattern in _SECRET_BASENAMES)
+    if any(fnmatch.fnmatchcase(segments[-1], pattern) for pattern in _SECRET_BASENAMES):
+        return True
+    return _has_secret_directory(segments)
+
+
+def is_credential_path(path: str) -> bool:
+    """``is_secret_path`` widened for a decision no human will review.
+
+    The one predicate for unattended approval, so the Guardian does not carry a
+    private copy of this knowledge that drifts from the copy the tools enforce.
+    See `_UNATTENDED_SECRET_BASENAMES` for why the two tiers are not one.
+    """
+    segments = _path_segments(path)
+    if not segments:
+        return False
+    return is_secret_path(path) or segments[-1] in _UNATTENDED_SECRET_BASENAMES
 
 
 #: How much of one file a workspace tool will pull into the daemon. Every
@@ -306,11 +420,24 @@ class WorkspaceFileService:
         path = Path(relative)
         target = (path if path.is_absolute() else workspace / path).resolve()
         try:
-            target.relative_to(workspace)
+            inside = target.relative_to(workspace)
         except ValueError:
             raise ValueError(
                 f"path escapes the workspace: {relative!r} "
                 "(stay inside your working dir)"
+            )
+        # The denylist applied to the RESOLVED path, not only to the string the
+        # caller wrote. `HostDispatcher` pre-gates the raw argument, which a
+        # symlink walks straight around: with the workspace at `$HOME` (what
+        # the CLI does -- `agent/loop.py` sets it to the run cwd), a cell that
+        # cannot read `~/.ssh/id_rsa` under the OS sandbox could link it to
+        # `notes.txt` and have the unsandboxed daemon read it through
+        # `read_file`. One check here covers read, write, edit, glob, grep,
+        # list_dir and web_download, which is the whole set that resolves.
+        if is_secret_path(str(inside)):
+            raise ValueError(
+                "access to secret files (.env / keys / credential directories) "
+                f"is blocked: {relative}"
             )
         if must_exist and not target.exists():
             raise FileNotFoundError(f"no such file: {relative}")
@@ -358,5 +485,6 @@ __all__ = [
     "BoundedSelection",
     "BoundedTextReader",
     "WorkspaceFileService",
+    "is_credential_path",
     "is_secret_path",
 ]

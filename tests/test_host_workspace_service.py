@@ -270,3 +270,148 @@ def test_the_workspace_is_resolved_once_per_identity_not_once_per_call(tmp_path)
         assert len(made) > after_create
     finally:
         Path.mkdir = real_mkdir  # type: ignore[method-assign]
+
+
+def test_secret_denylist_matches_credential_directories_not_only_basenames():
+    """A credential is in the directory as often as it is in the name.
+
+    Before this, the denylist tested the basename alone, so every one of these
+    was readable through `read_file` with no prompt: none of `credentials`,
+    `known_hosts`, `authorized_keys`, `config` or `hosts.yml` is a
+    secret-shaped name, and all five are secrets where they live.
+    """
+    from openai4s.host.files import is_secret_path
+
+    for path in (
+        ".aws/credentials",
+        ".ssh/known_hosts",
+        ".ssh/authorized_keys",
+        ".ssh/config",
+        ".kube/config",
+        ".docker/config.json",
+        ".gnupg/trustdb.gpg",
+        ".config/gcloud/credentials.db",
+        ".config/gh/hosts.yml",
+        "home/user/.aws/CREDENTIALS",
+        "backup/.ssh",
+        ".git-credentials",
+        "project/.npmrc",
+        "project/.pypirc",
+    ):
+        assert is_secret_path(path), path
+
+    # Still true of the names the basename tier always covered.
+    assert is_secret_path(".env") and is_secret_path("cfg/.ENV")
+    assert is_secret_path("deploy/prod.env") and is_secret_path("id_rsa")
+
+
+def test_secret_denylist_does_not_widen_into_ordinary_science_paths():
+    """The measured trade-off, pinned.
+
+    Over 182,494 files across real project trees, directory awareness added
+    exactly two denials, both `.npmrc`. These are the shapes that must keep
+    reading -- in particular a `.config` directory that is not gcloud/gh, which
+    a substring test over the joined path would have matched.
+    """
+    from openai4s.host.files import is_secret_path
+
+    for path in (
+        "data/results.csv",
+        "notes.txt",
+        "src/main.py",
+        "config.json",
+        "config/settings.yaml",
+        "docs/config",
+        ".config/nvim/init.lua",
+        ".config/gcloud-migration/plan.md",
+        "runs/gh/summary.tsv",
+        "figures/ssh-latency.png",
+        "",
+    ):
+        assert not is_secret_path(path), path
+
+
+def test_unattended_tier_is_wider_than_the_interactive_denylist():
+    """Two tiers, one table -- and the reason they cannot be one tier.
+
+    `is_credential_path` is what an unattended approval must consult: no human
+    sees the path, so a false positive costs a fallback to asking. The hard
+    pre-gate cannot be that wide, because it has no fallback -- a denied
+    interactive read is a refusal, and `config.json` is an ordinary filename
+    (7 of the 8 paths this tier adds under `$HOME` were exactly that).
+    """
+    from openai4s.host.files import is_credential_path, is_secret_path
+
+    for path in ("config.json", "credentials", "token.json", "known_hosts"):
+        assert is_credential_path(path) and not is_secret_path(path), path
+
+    # Wider, never narrower: everything the tools refuse, the Guardian refuses.
+    for path in (".env", "id_rsa", ".aws/credentials", "project/.npmrc"):
+        assert is_secret_path(path) and is_credential_path(path), path
+
+    assert not is_credential_path("results.csv") and not is_credential_path("")
+
+
+def test_a_symlink_cannot_walk_a_secret_past_the_raw_path_pre_gate(tmp_path):
+    """The denylist is applied to what is opened, not to what was typed.
+
+    `HostDispatcher` screens the raw argument, which a symlink inside the
+    workspace does not contain. With the workspace at the run cwd -- what the
+    CLI sets -- that turned the unsandboxed daemon into a read primitive for a
+    file the kernel sandbox denies the cell directly.
+    """
+    from openai4s.host.files import WorkspaceFileService
+
+    workspace = tmp_path / "run"
+    (workspace / ".ssh").mkdir(parents=True)
+    (workspace / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
+    (workspace / "notes.txt").symlink_to(workspace / ".ssh" / "id_rsa")
+    service = WorkspaceFileService(
+        data_dir=tmp_path / "data",
+        frame_id=lambda: "frame-symlink",
+        workspace=lambda: workspace,
+    )
+
+    with pytest.raises(ValueError, match="secret"):
+        service.resolve("notes.txt", must_exist=True)
+    with pytest.raises(ValueError, match="secret"):
+        service.resolve(".ssh/id_rsa", must_exist=True)
+    # An ordinary file in the same workspace is untouched.
+    (workspace / "data.csv").write_text("a,b\n")
+    assert service.resolve("data.csv", must_exist=True).name == "data.csv"
+
+
+def test_a_workspace_inside_a_credential_directory_is_still_usable(tmp_path):
+    """The boundary must not deny its own root.
+
+    Paths are tested workspace-*relative*, so running from inside `.aws` does
+    not make every file in the run unreadable -- the same carve-out the kernel
+    sandbox makes in `_default_secret_read_denials`.
+    """
+    from openai4s.host.files import WorkspaceFileService
+
+    workspace = tmp_path / ".aws"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("hi")
+    service = WorkspaceFileService(
+        data_dir=tmp_path / "data",
+        frame_id=lambda: "frame-inside",
+        workspace=lambda: workspace,
+    )
+
+    assert service.resolve("notes.txt", must_exist=True).read_text() == "hi"
+
+
+def test_read_file_hard_denies_a_credential_directory_without_a_prompt(tmp_path):
+    """End to end through the dispatcher, not just the predicate."""
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / ".aws").mkdir(parents=True, exist_ok=True)
+    (workspace / ".aws" / "credentials").write_text(
+        "[default]\naws_secret_access_key=x"
+    )
+
+    result = dispatcher("read_file", [{"path": ".aws/credentials"}])
+
+    assert set(result.keys()) == {"error"}
+    assert "secret" in result["error"].lower()

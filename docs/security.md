@@ -43,7 +43,12 @@ kernel OS sandbox or authorize arbitrary worker networking.
 
 Additional enforcement: an opencode-style **permission broker** gates
 risk-bearing tools, a **secret-file guard** blocks `.env` / `*.key` / `id_rsa`
-from file tools, and file-tool paths are workspace-confined. `host.bash` binds
+from file tools — and, because a credential is in the directory as often as it
+is in the name, every path under `.ssh` / `.aws` / `.gnupg` / `.docker` /
+`.kube` / `.azure` / `.config/gcloud` / `.config/gh` whatever the file is
+called. The guard is applied to the *resolved* path as well as to the string
+the caller wrote, so a symlink inside the workspace cannot walk a secret past
+it. File-tool paths are workspace-confined. `host.bash` binds
 its canonical working directory to the workspace or an explicitly trusted
 extra root, but it does not parse every command argument as a path jail:
 outside reads can remain possible, and outside writes are not an OS guarantee

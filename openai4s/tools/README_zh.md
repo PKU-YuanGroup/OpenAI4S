@@ -33,7 +33,7 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 | [`env_list.py`](./env_list.py) | 发现预构建好的环境，并可选地对比它们的依赖包覆盖情况。 |
 | [`env_use.py`](./env_use.py) | 排队切换到指定的 Python 或 R 环境，在下一个科学 Cell 生效。 |
 | [`fs.py`](./fs.py) | 目录列表与文本文件读写工具的兼容 facade。 |
-| [`glob_files.py`](./glob_files.py) | 按 glob 在工作区里找文件，结果中会剔除形似 credential 的文件名。生成器逐条消费，只经由 `BoundedSelection` 保留最小的那一批，于是回答一个「一千条」的问题，不必为一个百万文件的目录留住一百万条路径；遍历本身也受条目数和秒数两个预算约束，而不只是约束留下来的东西。`count` 就是实际返回的数量——它以前是切片**之前**的总数，却印在切片后的列表旁边，而且和同一族里 `content_search` 的 `count` 含义相左；原先那份信息现在由 `total_count`、`dropped` 和 `truncated` 承担。 |
+| [`glob_files.py`](./glob_files.py) | 按 glob 在工作区里找文件，结果中会剔除形似 credential 的路径——文件名与 credential 目录一并剔除。生成器逐条消费，只经由 `BoundedSelection` 保留最小的那一批，于是回答一个「一千条」的问题，不必为一个百万文件的目录留住一百万条路径；遍历本身也受条目数和秒数两个预算约束，而不只是约束留下来的东西。`count` 就是实际返回的数量——它以前是切片**之前**的总数，却印在切片后的列表旁边，而且和同一族里 `content_search` 的 `count` 含义相左；原先那份信息现在由 `total_count`、`dropped` 和 `truncated` 承担。 |
 | [`list_directory.py`](./list_directory.py) | 列出一个工作区目录，且只限于这个目录之内——沿用 `glob_files` 的条目上限和同一套截断计数，于是两个工具在同一处截断、也用同一种方式说明。它原先根本没有上限，还要为每个条目付一次 `stat()` 和一个 dict。 |
 | [`mcp.py`](./mcp.py) | MCP 的 server/tool/resource/prompt 发现，以及工具调用和 resource/prompt 读取。外部服务器返回的内容不可信，统一在 Host 边界筛查。 |
 | [`native.py`](./native.py) | 把已声明的工具转成可移植、供应商中立的 `ToolSpec` 元数据，并校验函数名在每一个受支持的供应商上都合法。 |
