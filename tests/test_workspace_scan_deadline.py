@@ -41,6 +41,7 @@ def workspace(tmp_path):
         resolve=lambda name: root / name,
         relative=lambda path: str(path.relative_to(root)),
         is_secret_path=lambda relative: False,
+        resolved_secret_checker=lambda: lambda _path: False,
         root=root,
     )
 

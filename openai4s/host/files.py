@@ -14,6 +14,11 @@ from __future__ import annotations
 import bisect
 import codecs
 import fnmatch
+import os
+import stat
+import time
+import unicodedata
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -83,11 +88,10 @@ _SECRET_DIR_SEQUENCES = ((".config", "gcloud"), (".config", "gh"))
 #: denylist is a hard pre-gate, not a prompt), to buy nothing: under `.docker/`
 #: the directory rule already catches it.
 #:
-#: For an unattended approval the trade runs the other way. A denial there
-#: costs a fallback to asking a human, not a refusal, and no human is looking
-#: at the path -- which is exactly the case the interactive tier is calibrated
-#: for. Use this one from the Guardian/unattended path; use `is_secret_path`
-#: for anything a person is watching.
+#: For automatic approval the trade runs the other way. A match is promoted to
+#: an audited `ask`: an attached human can review the false positive, while a
+#: headless run refuses it instead of guessing. Use this one from that review
+#: policy; use `is_secret_path` for the unconditional tool pre-gate.
 _UNATTENDED_SECRET_BASENAMES = frozenset(
     {
         "credentials",
@@ -105,10 +109,27 @@ _UNATTENDED_SECRET_BASENAMES = frozenset(
 )
 
 
+def _normalize_policy_segment(value: str) -> str:
+    """Filesystem-compatible case normalization shared by every policy path.
+
+    Default macOS filesystems treat spellings such as ``.Kube`` and ``.kube``,
+    or NFC/NFD forms such as ``Café`` and ``Café``, as the same object.
+    Case-folding plus NFC keeps the raw gate, complete directory inventory, and
+    prospective-path matching aligned with that identity; an incomplete
+    inventory fails closed instead of weakening this normalization.
+    """
+
+    return unicodedata.normalize("NFC", value.casefold())
+
+
 def _path_segments(path: str) -> tuple[str, ...]:
-    """Lowercased path segments, separator- and case-normalised."""
-    normalized = (path or "").replace("\\", "/").strip().lower()
-    return tuple(part for part in normalized.split("/") if part and part != ".")
+    """Case-folded path segments with both separators normalized."""
+    normalized = (path or "").replace("\\", "/").strip()
+    return tuple(
+        _normalize_policy_segment(part)
+        for part in normalized.split("/")
+        if part and part != "."
+    )
 
 
 def _has_secret_directory(segments: tuple[str, ...]) -> bool:
@@ -142,16 +163,589 @@ def is_secret_path(path: str) -> bool:
 
 
 def is_credential_path(path: str) -> bool:
-    """``is_secret_path`` widened for a decision no human will review.
+    """``is_secret_path`` widened for automatic approval review.
 
-    The one predicate for unattended approval, so the Guardian does not carry a
-    private copy of this knowledge that drifts from the copy the tools enforce.
+    The one predicate for the allow-to-ask fence, so its automatic reviewer
+    does not carry a private copy that drifts from the copy the tools enforce.
     See `_UNATTENDED_SECRET_BASENAMES` for why the two tiers are not one.
     """
     segments = _path_segments(path)
     if not segments:
         return False
     return is_secret_path(path) or segments[-1] in _UNATTENDED_SECRET_BASENAMES
+
+
+class _UnsafeAliasInspection(ValueError):
+    """A secret-alias check could not prove that a path is safe."""
+
+
+def _traverses_secret_symlink_path(workspace: Path, path: Path) -> bool:
+    """Whether a stable symlink chain names a secret path before resolving.
+
+    ``Path.resolve()`` deliberately forgets the names used to reach a file. If
+    ``.ssh`` is itself a symlink to ``vault``, resolving an innocuous alias to
+    ``.ssh/known_hosts`` leaves only ``vault/known_hosts`` for the final check.
+    Walk the chain lexically as well, so every intermediate destination is
+    classified before its credential-bearing segment disappears.
+
+    This complements the final canonical-path check; it does not make the
+    later pathname open atomic against concurrent filesystem mutation.
+    """
+    if path.is_absolute():
+        try:
+            inside = path.relative_to(workspace)
+        except ValueError:
+            raise _UnsafeAliasInspection(
+                "path escapes the workspace during secret alias inspection"
+            ) from None
+        current = workspace
+        pending = deque(inside.parts)
+    else:
+        current = workspace
+        pending = deque(path.parts)
+
+    symlink_hops = 0
+    while pending:
+        segment = pending.popleft()
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            # Apply `..` to the already-resolved prefix. Calling abspath on the
+            # whole candidate first is wrong for `link/..`: POSIX applies the
+            # parent step to the link destination, not to the link's spelling.
+            current = current.parent
+            try:
+                current.relative_to(workspace)
+            except ValueError:
+                raise _UnsafeAliasInspection(
+                    "path escapes the workspace during secret alias inspection"
+                ) from None
+            continue
+
+        current /= segment
+        try:
+            inside = current.relative_to(workspace)
+        except ValueError:
+            inside = None
+        if inside is not None and is_secret_path(str(inside)):
+            return True
+
+        try:
+            is_link = current.is_symlink()
+        except OSError as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not read the path"
+            ) from error
+        if not is_link:
+            continue
+
+        symlink_hops += 1
+        if symlink_hops > 40:
+            raise _UnsafeAliasInspection("secret alias inspection exceeded link limit")
+        try:
+            destination = Path(os.readlink(current))
+        except OSError as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not read a link"
+            ) from error
+        if destination.is_absolute():
+            try:
+                inside_destination = destination.relative_to(workspace)
+            except ValueError:
+                raise _UnsafeAliasInspection(
+                    "path escapes the workspace during secret alias inspection"
+                ) from None
+            current = workspace
+            destination_parts = inside_destination.parts
+        else:
+            current = current.parent
+            destination_parts = destination.parts
+        pending.extendleft(reversed(destination_parts))
+    return False
+
+
+class _SecretAliasSnapshot:
+    """One bounded tool-call inventory of credential-bearing aliases.
+
+    Reverse symlink lookup does not exist: proving that ``vault/file`` is not
+    also named ``nested/.ssh/file`` requires inspecting the workspace, not only
+    the target's ancestors. The inventory therefore completes a no-follow DFS
+    before answering its first candidate. It retains only canonical secret
+    roots/exact files and prospective sequence parents; work is capped by the
+    shared entry/time budgets, and any unreadable or incomplete walk refuses
+    the operation instead of treating missing evidence as safety.
+
+    The snapshot is deliberately operation-scoped. Concurrent mutations after
+    the completed inventory remain part of the documented check/open race; a
+    cross-operation negative cache would turn ordinary later file creation
+    into a persistent bypass and is not used.
+    """
+
+    def __init__(
+        self, workspace: Path, *, include_unattended_basenames: bool = False
+    ) -> None:
+        self.workspace = workspace
+        self._include_unattended_basenames = include_unattended_basenames
+        self._deadline = time.monotonic() + MAX_SCAN_SECONDS
+        self._remaining_entries = MAX_SCAN_ENTRIES
+        self._prepared = False
+        self._secret_roots: tuple[Path, ...] = ()
+        self._secret_root_identities: frozenset[tuple[int, int]] = frozenset()
+        self._secret_exact: frozenset[Path] = frozenset()
+        self._secret_exact_identities: frozenset[tuple[int, int]] = frozenset()
+        self._sequence_parents: tuple[
+            tuple[Path, tuple[str, ...], tuple[int, int] | None], ...
+        ] = ()
+
+    def _check_time(self) -> None:
+        if time.monotonic() > self._deadline:
+            raise _UnsafeAliasInspection("secret alias inspection timed out")
+
+    def _consume_entry(self) -> None:
+        self._check_time()
+        if self._remaining_entries <= 0:
+            raise _UnsafeAliasInspection("secret alias inspection exceeded its budget")
+        self._remaining_entries -= 1
+
+    def _signature(
+        self, directory: Path, *, missing_ok: bool = False
+    ) -> tuple[int, int, int, int, int] | None:
+        self._check_time()
+        try:
+            metadata = directory.stat()
+        except FileNotFoundError:
+            if missing_ok:
+                # A `.config` symlink may deliberately point at a directory a
+                # later write would create. Its prospective canonical suffix
+                # is still recorded even though there are no children to scan.
+                return None
+            raise _UnsafeAliasInspection(
+                "secret alias inventory changed while it was scanned"
+            ) from None
+        except OSError as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not stat a directory"
+            ) from error
+        return (
+            int(metadata.st_dev),
+            int(metadata.st_ino),
+            int(metadata.st_mtime_ns),
+            int(metadata.st_ctime_ns),
+            int(metadata.st_mode),
+        )
+
+    def _resolve_candidate(self, candidate: Path) -> Path:
+        self._check_time()
+        try:
+            return candidate.resolve()
+        except (OSError, RuntimeError) as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not resolve a candidate"
+            ) from error
+
+    def _resolve_subtree_candidate(self, candidate: Path) -> Path:
+        """Resolve a directory-shaped alias without inventorying outside."""
+
+        resolved = self._resolve_candidate(candidate)
+        try:
+            resolved.relative_to(self.workspace)
+        except ValueError:
+            # Following a credential directory outside to search for a later
+            # symlink back in would cross the workspace inspection boundary.
+            # Ignoring it is also unsafe, so refuse the operation instead.
+            raise _UnsafeAliasInspection(
+                "secret directory alias leaves the workspace"
+            ) from None
+        return resolved
+
+    def _resolve_inside_candidate(self, candidate: Path, *, kind: str) -> Path:
+        resolved = self._resolve_candidate(candidate)
+        try:
+            resolved.relative_to(self.workspace)
+        except ValueError:
+            raise _UnsafeAliasInspection(
+                f"secret {kind} alias leaves the workspace"
+            ) from None
+        return resolved
+
+    def _identity(self, candidate: Path, *, missing_ok: bool) -> tuple[int, int] | None:
+        self._check_time()
+        try:
+            metadata = candidate.stat()
+        except FileNotFoundError:
+            if missing_ok:
+                return None
+            raise _UnsafeAliasInspection(
+                "secret alias target changed during inspection"
+            ) from None
+        except OSError as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not stat a target"
+            ) from error
+        return (int(metadata.st_dev), int(metadata.st_ino))
+
+    @staticmethod
+    def _policy_relative(path: Path, parent: Path) -> tuple[str, ...] | None:
+        """Component-relative path under the policy's case-fold semantics."""
+
+        path_parts = path.parts
+        parent_parts = parent.parts
+        if len(path_parts) < len(parent_parts):
+            return None
+        normalized_path = tuple(
+            _normalize_policy_segment(part) for part in path_parts[: len(parent_parts)]
+        )
+        normalized_parent = tuple(
+            _normalize_policy_segment(part) for part in parent_parts
+        )
+        if normalized_path != normalized_parent:
+            return None
+        return path_parts[len(parent_parts) :]
+
+    def _target_ancestor_identities(
+        self, target: Path
+    ) -> tuple[tuple[Path, tuple[int, int]], ...]:
+        """Existing target/ancestors, retaining target spelling for suffixes."""
+
+        ancestors: list[tuple[Path, tuple[int, int]]] = []
+        cursor = target
+        while True:
+            identity = self._identity(cursor, missing_ok=True)
+            if identity is not None:
+                ancestors.append((cursor, identity))
+            if cursor == self.workspace:
+                break
+            parent = cursor.parent
+            if parent == cursor:
+                break
+            cursor = parent
+        return tuple(ancestors)
+
+    @staticmethod
+    def _secret_root_length(parts: tuple[str, ...]) -> int | None:
+        """Length through the first credential-directory run in ``parts``."""
+
+        normalized = tuple(_normalize_policy_segment(part) for part in parts)
+        for start, segment in enumerate(normalized):
+            if segment in _SECRET_DIR_SEGMENTS:
+                return start + 1
+            for sequence in _SECRET_DIR_SEQUENCES:
+                span = len(sequence)
+                if normalized[start : start + span] == sequence:
+                    return start + span
+        return None
+
+    def _is_secret_basename(self, name: str) -> bool:
+        normalized = _normalize_policy_segment(name)
+        hard_secret = any(
+            fnmatch.fnmatchcase(normalized, pattern) for pattern in _SECRET_BASENAMES
+        )
+        return hard_secret or (
+            self._include_unattended_basenames
+            and normalized in _UNATTENDED_SECRET_BASENAMES
+        )
+
+    def _entry_is_dir(self, entry: os.DirEntry[str], *, follow: bool) -> bool:
+        try:
+            return entry.is_dir(follow_symlinks=follow)
+        except OSError as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not classify an entry"
+            ) from error
+
+    def _entry_is_symlink(self, entry: os.DirEntry[str]) -> bool:
+        try:
+            return entry.is_symlink()
+        except OSError as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not classify a link"
+            ) from error
+
+    def _matching_children(self, directory: Path, wanted: str) -> list[Path]:
+        """Complete direct-child scan used only below a `.config` symlink."""
+
+        before = self._signature(directory, missing_ok=True)
+        if before is None or not stat.S_ISDIR(before[-1]):
+            return []
+        matches: list[Path] = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    self._consume_entry()
+                    if _normalize_policy_segment(entry.name) == wanted:
+                        matches.append(directory / entry.name)
+        except FileNotFoundError:
+            return []
+        except OSError as error:
+            raise _UnsafeAliasInspection(
+                "secret alias inspection could not scan a sequence directory"
+            ) from error
+        after = self._signature(directory, missing_ok=True)
+        if before != after:
+            raise _UnsafeAliasInspection(
+                "secret alias inventory changed while it was scanned"
+            )
+        return matches
+
+    def _scan_workspace(
+        self,
+    ) -> tuple[set[Path], set[Path], dict[Path, str], set[Path]]:
+        """Return subtree, exact, sequence-prefix and symlink-prefix candidates."""
+
+        subtree_candidates: set[Path] = set()
+        exact_candidates: set[Path] = set()
+        sequence_candidates: dict[Path, str] = {}
+        sequence_aliases: set[Path] = set()
+        stack = [self.workspace]
+        visited: set[tuple[int, int]] = set()
+
+        while stack:
+            directory = stack.pop()
+            before = self._signature(directory)
+            assert before is not None
+            if not stat.S_ISDIR(before[-1]):
+                raise _UnsafeAliasInspection(
+                    "secret alias inventory encountered a non-directory"
+                )
+            identity = (before[0], before[1])
+            if identity in visited:
+                continue
+            visited.add(identity)
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        self._consume_entry()
+                        path = directory / entry.name
+                        relative = path.relative_to(self.workspace)
+                        parts = relative.parts
+                        root_length = self._secret_root_length(parts)
+                        nofollow_directory = self._entry_is_dir(entry, follow=False)
+
+                        if root_length is not None:
+                            root = self.workspace.joinpath(*parts[:root_length])
+                            subtree_candidates.add(root)
+                            if len(parts) > root_length:
+                                if self._entry_is_dir(entry, follow=True):
+                                    subtree_candidates.add(path)
+                                else:
+                                    exact_candidates.add(path)
+                        elif self._is_secret_basename(entry.name):
+                            exact_candidates.add(path)
+
+                        normalized = _normalize_policy_segment(entry.name)
+                        sequence = next(
+                            (
+                                item
+                                for item in _SECRET_DIR_SEQUENCES
+                                if item[0] == normalized
+                            ),
+                            None,
+                        )
+                        if sequence is not None:
+                            sequence_candidates[path] = normalized
+                            if not nofollow_directory:
+                                sequence_aliases.add(path)
+
+                        if nofollow_directory:
+                            stack.append(path)
+            except OSError as error:
+                raise _UnsafeAliasInspection(
+                    "secret alias inventory could not scan the workspace"
+                ) from error
+            after = self._signature(directory)
+            if before != after:
+                raise _UnsafeAliasInspection(
+                    "secret alias inventory changed while it was scanned"
+                )
+
+        return (
+            subtree_candidates,
+            exact_candidates,
+            sequence_candidates,
+            sequence_aliases,
+        )
+
+    def _collect_secret_descendants(
+        self, roots: set[Path]
+    ) -> tuple[set[Path], set[Path], set[tuple[int, int]], set[tuple[int, int]]]:
+        """Expand secret roots and collect file identities below them.
+
+        The workspace DFS intentionally does not follow `.ssh -> vault`, so it
+        sees `vault/file` before knowing that the same tree is credential data.
+        This bounded second pass over only the resolved secret roots records
+        file identities too, preventing a hardlink outside the tree from
+        shedding that classification.
+        """
+
+        canonical_roots = set(roots)
+        exact_paths: set[Path] = set()
+        root_identities: set[tuple[int, int]] = set()
+        exact_identities: set[tuple[int, int]] = set()
+        stack = list(roots)
+        visited: set[tuple[int, int]] = set()
+
+        while stack:
+            directory = stack.pop()
+            before = self._signature(directory, missing_ok=True)
+            if before is None:
+                continue
+            identity = (before[0], before[1])
+            if not stat.S_ISDIR(before[-1]):
+                exact_paths.add(directory)
+                exact_identities.add(identity)
+                continue
+            root_identities.add(identity)
+            if identity in visited:
+                continue
+            visited.add(identity)
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        self._consume_entry()
+                        path = directory / entry.name
+                        if self._entry_is_dir(entry, follow=False):
+                            stack.append(path)
+                            continue
+                        if self._entry_is_symlink(entry):
+                            linked_root = self._resolve_subtree_candidate(path)
+                            if linked_root not in canonical_roots:
+                                canonical_roots.add(linked_root)
+                                stack.append(linked_root)
+                            continue
+                        exact_paths.add(
+                            self._resolve_inside_candidate(path, kind="file")
+                        )
+                        file_identity = self._identity(path, missing_ok=True)
+                        if file_identity is not None:
+                            exact_identities.add(file_identity)
+            except OSError as error:
+                raise _UnsafeAliasInspection(
+                    "secret alias inspection could not scan a secret root"
+                ) from error
+            after = self._signature(directory, missing_ok=True)
+            if before != after:
+                raise _UnsafeAliasInspection(
+                    "secret alias inventory changed while it was scanned"
+                )
+
+        return canonical_roots, exact_paths, root_identities, exact_identities
+
+    def _prepare(self) -> None:
+        if self._prepared:
+            return
+        (
+            subtree_candidates,
+            exact_candidates,
+            sequence_candidates,
+            sequence_aliases,
+        ) = self._scan_workspace()
+
+        sequence_parents: set[tuple[Path, tuple[str, ...], tuple[int, int] | None]] = (
+            set()
+        )
+        for candidate, first in sequence_candidates.items():
+            parent = self._resolve_subtree_candidate(candidate)
+            parent_identity = self._identity(parent, missing_ok=True)
+            for sequence in _SECRET_DIR_SEQUENCES:
+                if sequence[0] == first:
+                    sequence_parents.add((parent, sequence[1:], parent_identity))
+
+        # A real `.config` directory was already walked above. A symlink was
+        # intentionally not followed by the workspace DFS, so inspect only its
+        # fixed sequence children and retain no ordinary entry.
+        for candidate in sequence_aliases:
+            first = _normalize_policy_segment(candidate.name)
+            for sequence in _SECRET_DIR_SEQUENCES:
+                if sequence[0] != first:
+                    continue
+                level = [candidate]
+                for segment in sequence[1:]:
+                    level = [
+                        child
+                        for directory in level
+                        for child in self._matching_children(directory, segment)
+                    ]
+                subtree_candidates.update(level)
+
+        canonical_roots = {
+            self._resolve_subtree_candidate(path) for path in subtree_candidates
+        }
+        (
+            canonical_roots,
+            descendant_exact,
+            root_identities,
+            descendant_identities,
+        ) = self._collect_secret_descendants(canonical_roots)
+        self._secret_roots = tuple(sorted(canonical_roots, key=str))
+        self._secret_root_identities = frozenset(root_identities)
+
+        resolved_exact: set[Path] = set(descendant_exact)
+        exact_identities: set[tuple[int, int]] = set(descendant_identities)
+        for path in exact_candidates:
+            resolved_exact.add(self._resolve_inside_candidate(path, kind="file"))
+            identity = self._identity(path, missing_ok=True)
+            if identity is not None:
+                exact_identities.add(identity)
+        self._secret_exact = frozenset(resolved_exact)
+        self._secret_exact_identities = frozenset(exact_identities)
+        self._sequence_parents = tuple(
+            sorted(sequence_parents, key=lambda item: (str(item[0]), item[1]))
+        )
+        self._prepared = True
+
+    def contains(self, target: Path) -> bool:
+        """Whether a named credential directory resolves over ``target``.
+
+        The lexical walk catches ``notes -> .ssh/known_hosts``. This snapshot
+        additionally catches ``notes -> vault/known_hosts`` when a separate
+        case-insensitive ``.ssh -> vault`` alias names the same canonical tree.
+        """
+
+        try:
+            target.relative_to(self.workspace)
+        except ValueError:
+            return False
+        self._prepare()
+        if any(
+            self._policy_relative(target, secret_file) == ()
+            for secret_file in self._secret_exact
+        ):
+            return True
+        ancestors = self._target_ancestor_identities(target)
+        if ancestors and ancestors[0][0] == target:
+            target_identity = ancestors[0][1]
+        else:
+            target_identity = None
+        if target_identity in self._secret_exact_identities:
+            return True
+        for secret_root in self._secret_roots:
+            if self._policy_relative(target, secret_root) is not None:
+                return True
+        if any(
+            identity in self._secret_root_identities
+            for _ancestor, identity in ancestors
+        ):
+            return True
+        for parent, suffix, parent_identity in self._sequence_parents:
+            remainder = self._policy_relative(target, parent)
+            if remainder is not None:
+                normalized = tuple(
+                    _normalize_policy_segment(part) for part in remainder[: len(suffix)]
+                )
+                if normalized == suffix:
+                    return True
+            if parent_identity is None:
+                continue
+            for ancestor, identity in ancestors:
+                if identity != parent_identity:
+                    continue
+                remainder = target.parts[len(ancestor.parts) :]
+                normalized = tuple(
+                    _normalize_policy_segment(part) for part in remainder[: len(suffix)]
+                )
+                if normalized == suffix:
+                    return True
+        return False
 
 
 #: How much of one file a workspace tool will pull into the daemon. Every
@@ -414,10 +1008,58 @@ class WorkspaceFileService:
         except (ValueError, OSError):
             return None
 
+    def _resolved_path_checker(
+        self, *, include_unattended_basenames: bool
+    ) -> Callable[[Path], bool]:
+        """Build one operation-scoped checker for actual file candidates.
+
+        Bulk tools reuse its alias snapshot so every file is classified by the
+        same directory-aware rule without rescanning the workspace. A fresh
+        checker is created for every tool execution, and its bounded inventory
+        completes before the first candidate decision.
+        """
+
+        workspace = self.workspace()
+        aliases = _SecretAliasSnapshot(
+            workspace,
+            include_unattended_basenames=include_unattended_basenames,
+        )
+        predicate = (
+            is_credential_path if include_unattended_basenames else is_secret_path
+        )
+
+        def is_secret(candidate: Path) -> bool:
+            path = Path(candidate)
+            if _traverses_secret_symlink_path(workspace, path):
+                return True
+            try:
+                target = (path if path.is_absolute() else workspace / path).resolve()
+                inside = target.relative_to(workspace)
+            except ValueError:
+                return True
+            except (OSError, RuntimeError) as error:
+                raise _UnsafeAliasInspection(
+                    "secret alias inspection could not resolve a path"
+                ) from error
+            return predicate(str(inside)) or aliases.contains(target)
+
+        return is_secret
+
+    def resolved_secret_checker(self) -> Callable[[Path], bool]:
+        """Return the hard secret guard used by interactive file tools."""
+
+        return self._resolved_path_checker(include_unattended_basenames=False)
+
+    def resolved_credential_checker(self) -> Callable[[Path], bool]:
+        """Return the wider alias/inode guard used only by auto-review."""
+
+        return self._resolved_path_checker(include_unattended_basenames=True)
+
     def resolve(self, relative: str, *, must_exist: bool = False) -> Path:
         """Resolve a path and reject parent, absolute, and symlink escapes."""
         workspace = self.workspace()
         path = Path(relative)
+        traverses_secret = _traverses_secret_symlink_path(workspace, path)
         target = (path if path.is_absolute() else workspace / path).resolve()
         try:
             inside = target.relative_to(workspace)
@@ -432,9 +1074,15 @@ class WorkspaceFileService:
         # the CLI does -- `agent/loop.py` sets it to the run cwd), a cell that
         # cannot read `~/.ssh/id_rsa` under the OS sandbox could link it to
         # `notes.txt` and have the unsandboxed daemon read it through
-        # `read_file`. One check here covers read, write, edit, glob, grep,
-        # list_dir and web_download, which is the whole set that resolves.
-        if is_secret_path(str(inside)):
+        # `read_file`. One static check here covers read, write, edit, glob,
+        # grep, list_dir and web_download, which is the whole set that resolves.
+        # Those callers still open by pathname after this check, so this is not
+        # an atomic defence against a concurrent filesystem mutation.
+        if (
+            traverses_secret
+            or is_secret_path(str(inside))
+            or _SecretAliasSnapshot(workspace).contains(target)
+        ):
             raise ValueError(
                 "access to secret files (.env / keys / credential directories) "
                 f"is blocked: {relative}"

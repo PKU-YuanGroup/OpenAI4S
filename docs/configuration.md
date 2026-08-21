@@ -131,17 +131,17 @@ exposes to an unauthenticated caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 
-## Auto Mode roadmap flags (Stage 2)
+## Auto Mode rollout flags
 
 Every rollout flag defaults off. Stage 1 implements trusted delivery, Stage 2
 implements the durable Auto Run/configuration/projection foundation, and
 Stage 3 implements Scientific Reviewer V2 shadow recording, and Stage 4
 implements the review-only completion gate, and Stage 5 implements bounded
-auto-fix / re-review, and Stage 6 records Permission Guardian shadow
-assessments. Stage 7–12 flags remain inert reservations and cannot grant
-standing authority.
+auto-fix / re-review, Stage 6 records Permission Guardian shadow assessments,
+and Stages 7–12 provide their listed independently gated behavior. No later
+flag implicitly enables an earlier one or grants standing authority.
 
-| Config field under `Config.roadmap_features` | Environment variable | Reserved behavior |
+| Config field under `Config.roadmap_features` | Environment variable | Behavior |
 | --- | --- | --- |
 | `stage1_trusted_delivery` | `OPENAI4S_STAGE1_TRUSTED_DELIVERY` | Implemented opt-in: exact immutable Artifact delivery, same-head capture observations, and standard-profile readiness admission. |
 | `stage2_auto_run_storage` | `OPENAI4S_STAGE2_AUTO_RUN_STORAGE` | Implemented opt-in: durable Auto Run/review/finding/repair/permission-assessment records, canonical post-commit events, CAS selection PATCH, and REST/reopen projection. No Reviewer/Repair/Guardian execution. |
@@ -149,7 +149,7 @@ standing authority.
 | `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Implemented opt-in: candidate stays provisional until review; pass promotes Verified, issues become completed_with_issues, failures become review_unavailable. Does not start Repair. |
 | `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Implemented opt-in: bounded Repair Agent plus independent re-review. Reviewer stays read-only; Repair cannot self-certify; identical bytes reuse the prior version. |
 | `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Implemented opt-in: exact-action Guardian shadow assessment. It does not execute, cannot create standing allow, and fails closed on hash mismatch. |
-| `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | Implemented opt-in: unattended ``ask`` may ``allow_once`` only for non-dangerous exact actions. Standing allow remains forbidden. |
+| `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | Implemented opt-in: unattended `ask` may `allow_once` only for non-dangerous exact actions. The credential review fence promotes a matching default file `allow` to an audited `ask`; an attached human may decide it, while the headless deterministic policy refuses it before Guardian. Standing allow remains forbidden. |
 | `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Implemented opt-in: official live Notebook on the shared kernel generation, host-side Python/R read→version mapping, and automatic write lineage. |
 | `stage9_artifact_workbench` | `OPENAI4S_STAGE9_ARTIFACT_WORKBENCH` | Implemented opt-in: interactive CSV/Parquet tables, version diffs, PDF/HTML locators in the next turn, and real vendored Ketcher 3.7.0. |
 | `stage10_scientific_connectors` | `OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS` | Implemented opt-in: ClinVar, PubMed, and ClinicalTrials.gov with pagination, cache, honest errors, and versioned Artifact provenance. |
@@ -176,7 +176,7 @@ behavior is preserved. `GET /api/v1/environments/status` still includes a
 `enabled:false`/`reason:"feature_disabled"` projection and performs no
 discovery.
 
-The reserved product selections live under `Config.auto_mode`:
+The product selections live under `Config.auto_mode`:
 
 | Environment variable | Allowed values | Default |
 | --- | --- | --- |

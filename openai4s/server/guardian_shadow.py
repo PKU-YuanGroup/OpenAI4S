@@ -74,6 +74,7 @@ def assess_shadow(
     expected_digest: str | None = None,
     requested_scope: str = "once",
     hard_deny: bool = False,
+    hard_deny_reason: str | None = None,
 ) -> dict[str, Any]:
     """Return a non-executing Guardian judgment."""
 
@@ -101,23 +102,30 @@ def assess_shadow(
             "executes": False,
             "fail_closed": True,
         }
-    if hard_deny or envelope.get("dangerous"):
+    if hard_deny or hard_deny_reason or envelope.get("dangerous"):
         outcome = "shadow_deny"
-        risk = "critical" if hard_deny else "high"
+        risk = "critical" if hard_deny or hard_deny_reason else "high"
     else:
         outcome = "shadow_allow"
         risk = "low"
-    return {
+    result = {
         "outcome": outcome,
         "risk": risk,
         "user_authorization": "none",
-        "rationale": "shadow adjudication does not execute the action",
+        "rationale": (
+            hard_deny_reason or "shadow adjudication does not execute the action"
+        ),
         "action_digest": digest,
         "standing_allow": False,
         "executes": False,
         "fail_closed": False,
         "policy_version": POLICY_VERSION,
     }
+    if hard_deny_reason:
+        # The shadow records that Guardian cannot override a deterministic
+        # policy boundary; the boundary remains the decision source.
+        result["decision_source"] = "deterministic_policy"
+    return result
 
 
 def maybe_record_shadow(
@@ -126,6 +134,9 @@ def maybe_record_shadow(
     payload: Mapping[str, Any],
     *,
     config: Any | None = None,
+    canonical_arguments: Any = None,
+    hard_deny: bool = False,
+    hard_deny_reason: str | None = None,
 ) -> dict[str, Any] | None:
     """Best-effort shadow record after a durable ask is created."""
 
@@ -134,7 +145,11 @@ def maybe_record_shadow(
     envelope = exact_action_envelope(
         tool=str(payload.get("tool") or request.get("tool") or ""),
         target=str(payload.get("target") or request.get("target") or ""),
-        canonical_arguments=request.get("canonical_arguments") or payload.get("input"),
+        canonical_arguments=(
+            canonical_arguments
+            if canonical_arguments is not None
+            else request.get("canonical_arguments") or payload.get("input")
+        ),
         side_effect_class=str(
             payload.get("side_effect_class") or request.get("side_effect_class") or ""
         ),
@@ -145,7 +160,10 @@ def maybe_record_shadow(
     )
     expected = request.get("expected_envelope_digest")
     assessment = assess_shadow(
-        envelope, expected_digest=str(expected) if expected else None
+        envelope,
+        expected_digest=str(expected) if expected else None,
+        hard_deny=hard_deny,
+        hard_deny_reason=hard_deny_reason,
     )
     decision_id = str(request.get("decision_id") or "")
     if decision_id and hasattr(store, "set_setting"):

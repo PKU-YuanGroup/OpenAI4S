@@ -29,10 +29,93 @@ import uuid
 from typing import Any, Callable
 
 _SCOPES = ("once", "conversation", "project", "global")
+_TRUE = frozenset({"1", "true", "yes", "on"})
 
 
 def _scope(value: str | None) -> str:
     return value if value in _SCOPES else "once"
+
+
+def _stage7_auto_review_requested(config: Any = None) -> bool:
+    """Freeze Stage 7 selection before importing its policy predicate.
+
+    A predicate/import failure must not erase a config-only selection and turn
+    a gentle default ``allow`` into a fail-open. This mirrors
+    ``guardian_enforce.feature_enabled`` + ``auto_review_requested`` without
+    depending on the module whose later policy check may fail.
+    """
+
+    stage7_env = (
+        os.environ.get("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", "").strip().lower()
+        in _TRUE
+    )
+    auto_env = (
+        os.environ.get("OPENAI4S_UNATTENDED_APPROVAL", "deny").strip().lower()
+        == "auto_review"
+    )
+    try:
+        flags = getattr(config, "roadmap_features", None)
+        stage7 = (
+            bool(getattr(flags, "stage7_guardian_enforcement", False))
+            if flags is not None
+            else stage7_env
+        )
+        auto = getattr(config, "auto_mode", None)
+        config_auto = getattr(auto, "approvals_reviewer", "") == "auto_review"
+    except Exception:  # noqa: BLE001 - malformed config cannot weaken env policy
+        return stage7_env and auto_env
+    return stage7 and (auto_env or config_auto)
+
+
+def _unattended_file_policy_reason(
+    *,
+    enabled: bool,
+    tool: str,
+    target: str,
+    canonical_arguments: Any,
+    resolved_file_path: str | None,
+    resolved_file_is_credential: bool,
+) -> str | None:
+    if not enabled:
+        return None
+    try:
+        from openai4s.server.guardian_enforce import unattended_file_deny_reason
+
+        return unattended_file_deny_reason(
+            tool=tool,
+            target=target,
+            canonical_arguments=canonical_arguments,
+            resolved_file_path=resolved_file_path,
+            resolved_file_is_credential=resolved_file_is_credential,
+        )
+    except Exception:  # noqa: BLE001 - automatic review verification fails closed
+        return "unattended file policy could not verify access"
+
+
+def _file_policy_review_kind(reason: str) -> str:
+    """Stable UI category for one deterministic file-policy rationale."""
+
+    if "credential path" in reason:
+        return "credential_path"
+    if "data-dependent file search" in reason:
+        return "dynamic_file_search"
+    if "without a reviewable path" in reason:
+        return "unreviewable_path"
+    return "verification_failed"
+
+
+def _safe_resolved_review_path(value: str | None) -> str | None:
+    """Keep only a bounded workspace-relative path for an approval card."""
+
+    normalized = str(value or "").replace("\\", "/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:/", normalized)
+        or any(part == ".." for part in normalized.split("/"))
+    ):
+        return None
+    return normalized[:1000]
 
 
 def _restart_resolution_marker(store, request: dict, *, allow: bool) -> bool:
@@ -281,6 +364,9 @@ class PermissionBroker:
         resource_keys: list[str] | tuple[str, ...] | None = None,
         dangerous: bool = False,
         canonical_arguments: Any = None,
+        resolved_file_path: str | None = None,
+        resolved_file_is_credential: bool = False,
+        guardian_config: Any = None,
         timeout: float | None = None,
     ) -> dict:
         # Resolve the conversation identity + project from the dispatcher's frame
@@ -311,28 +397,45 @@ class PermissionBroker:
             )
         except Exception:  # noqa: BLE001
             decision = "ask"
+        guardian_requested = _stage7_auto_review_requested(guardian_config)
+        file_policy_reason = _unattended_file_policy_reason(
+            enabled=guardian_requested,
+            tool=method,
+            target=target,
+            canonical_arguments=canonical_arguments,
+            resolved_file_path=resolved_file_path,
+            resolved_file_is_credential=resolved_file_is_credential,
+        )
         if decision == "allow":
-            return {"allow": True}
+            if file_policy_reason is not None:
+                # The gentle defaults allow routine workspace file tools.
+                # Upgrade a review-fence match to `ask`: an attached channel
+                # gets a real human fallback; a headless run records and
+                # refuses the deterministic policy match.
+                decision = "ask"
+            if decision == "allow":
+                return {"allow": True}
         if decision == "deny":
             return {
                 "allow": False,
                 "message": "blocked by a standing 'deny' permission rule",
             }
         restart_once_grant = None
-        try:
-            if root:
-                restart_once_grant = store.consume_restart_permission_grant(
-                    root_frame_id=root,
-                    project_id=proj or "default",
-                    tool=method,
-                    target=target,
-                    side_effect_class=side_effect_class,
-                    resource_keys=resource_keys,
-                    dangerous=dangerous,
-                    canonical_arguments=canonical_arguments,
-                )
-        except Exception:  # noqa: BLE001 - an unusable grant never fails open
-            restart_once_grant = None
+        if file_policy_reason is None:
+            try:
+                if root:
+                    restart_once_grant = store.consume_restart_permission_grant(
+                        root_frame_id=root,
+                        project_id=proj or "default",
+                        tool=method,
+                        target=target,
+                        side_effect_class=side_effect_class,
+                        resource_keys=resource_keys,
+                        dangerous=dangerous,
+                        canonical_arguments=canonical_arguments,
+                    )
+            except Exception:  # noqa: BLE001 - an unusable grant never fails open
+                restart_once_grant = None
         if restart_once_grant is not None:
             return {
                 "allow": True,
@@ -369,6 +472,17 @@ class PermissionBroker:
             # fact without a migration.
             "dangerous": bool(dangerous),
         }
+        if file_policy_reason is not None:
+            # The standing rule stays bound to the raw permission target. The
+            # approval card additionally needs the reason automatic review
+            # stopped and the safe, workspace-relative destination: otherwise
+            # `notes.txt -> config.json` asks a human to approve only the
+            # innocuous alias and hides the fact they actually need to judge.
+            payload["policy_review_kind"] = _file_policy_review_kind(file_policy_reason)
+            payload["policy_review_reason"] = file_policy_reason
+            review_path = _safe_resolved_review_path(resolved_file_path)
+            if review_path is not None:
+                payload["resolved_file_path"] = review_path
         wait_seconds = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         try:
             created_request = store.create_permission_request(
@@ -393,17 +507,26 @@ class PermissionBroker:
                 "allow": False,
                 "message": "approval required but its durable request could not be recorded",
             }
-        try:
-            from openai4s.server.guardian_shadow import maybe_record_shadow
-
-            maybe_record_shadow(store, created_request, payload)
-        except Exception:  # noqa: BLE001 - shadow must not block the ask
-            pass
-
         with self._lock:
             chan = self._channels.get(root)
             if chan is not None and chan.get("store") is None:
                 chan["store"] = store
+        unattended_policy_reason = file_policy_reason if chan is None else None
+        try:
+            from openai4s.server.guardian_shadow import maybe_record_shadow
+
+            maybe_record_shadow(
+                store,
+                created_request,
+                payload,
+                config=guardian_config,
+                canonical_arguments=canonical_arguments,
+                hard_deny=unattended_policy_reason is not None,
+                hard_deny_reason=unattended_policy_reason,
+            )
+        except Exception:  # noqa: BLE001 - shadow must not block the ask
+            pass
+
         if chan is None:
             unattended = (
                 os.environ.get("OPENAI4S_UNATTENDED_APPROVAL", "deny").strip().lower()
@@ -412,11 +535,23 @@ class PermissionBroker:
             try:
                 from openai4s.server.guardian_enforce import decide_unattended
 
-                guardian_decision = decide_unattended(payload)
+                guardian_decision = decide_unattended(
+                    payload,
+                    canonical_arguments=canonical_arguments,
+                    resolved_file_path=resolved_file_path,
+                    resolved_file_is_credential=resolved_file_is_credential,
+                    config=guardian_config,
+                )
             except Exception:  # noqa: BLE001 - fall back to fail-closed deny
                 guardian_decision = None
             if guardian_decision is not None:
                 allowed, message = guardian_decision
+            elif unattended_policy_reason is not None:
+                allowed = False
+                message = unattended_policy_reason
+            elif guardian_requested:
+                allowed = False
+                message = "automatic approval review failed closed"
             else:
                 allowed = unattended == "allow"
                 message = (

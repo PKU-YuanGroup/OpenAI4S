@@ -55,20 +55,25 @@ class ListDirectoryTool(Tool):
         if not base.exists():
             return {"error": f"list_dir: no such directory: {relative}"}
         selection = BoundedSelection(_MAX_ENTRIES)
+        resolved_is_secret = workspace.resolved_secret_checker()
         scan_truncated = False
+        scanned = 0
         try:
             deadline = time.monotonic() + MAX_SCAN_SECONDS
             with os.scandir(base) as scan:
                 for entry in scan:
+                    scanned += 1
                     # Seconds as well as entries: see `MAX_SCAN_SECONDS`. One
                     # directory can hold enough cold entries that `scandir`
                     # outlives the caller's timeout well under the entry cap.
-                    if (
-                        selection.seen >= MAX_SCAN_ENTRIES
-                        or time.monotonic() > deadline
-                    ):
+                    if scanned > MAX_SCAN_ENTRIES or time.monotonic() > deadline:
                         scan_truncated = True
                         break
+                    try:
+                        if resolved_is_secret(Path(entry.path)):
+                            continue
+                    except ValueError as error:
+                        return {"error": f"list_dir: {error}"}
                     selection.offer(entry.name, entry)
         except OSError as error:
             # Was an unhandled `NotADirectoryError` when the path named a file.

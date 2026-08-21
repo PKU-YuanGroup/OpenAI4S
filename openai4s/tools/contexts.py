@@ -22,6 +22,8 @@ class WorkspaceToolContext(Protocol):
 
     def is_secret_path(self, path: str) -> bool: ...
 
+    def resolved_secret_checker(self) -> Callable[[Path], bool]: ...
+
 
 class EnvironmentToolContext(Protocol):
     """Mutable session hooks required by environment control tools."""
@@ -70,6 +72,9 @@ class ControlToolContext:
 
     def is_secret_path(self, path: str) -> bool:
         return self._workspace.is_secret_path(path)
+
+    def resolved_secret_checker(self) -> Callable[[Path], bool]:
+        return self._workspace.resolved_secret_checker()
 
     @property
     def active_env_bin(self) -> str | None:

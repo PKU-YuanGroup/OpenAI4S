@@ -290,13 +290,23 @@ def test_secret_denylist_matches_credential_directories_not_only_basenames():
         ".kube/config",
         ".docker/config.json",
         ".gnupg/trustdb.gpg",
+        ".azure/accessTokens.json",
         ".config/gcloud/credentials.db",
         ".config/gh/hosts.yml",
+        ".Kube/config",
+        ".ſſh/known_hosts",
+        ".conﬁg/gh/hosts.yml",
         "home/user/.aws/CREDENTIALS",
+        r"HOME\USER\.AWS\credentials",
         "backup/.ssh",
         ".git-credentials",
         "project/.npmrc",
         "project/.pypirc",
+        "certificates/client.p12",
+        "certificates/client.PFX",
+        "keys/id_dsa",
+        "keys/ID_ECDSA",
+        "auth/.htpasswd",
     ):
         assert is_secret_path(path), path
 
@@ -331,21 +341,39 @@ def test_secret_denylist_does_not_widen_into_ordinary_science_paths():
         assert not is_secret_path(path), path
 
 
+def test_unicode_filesystem_case_equivalents_are_denied_end_to_end(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "Vault").mkdir()
+    (workspace / "Vault" / "config").write_text("SECRET")
+    (workspace / ".Kube").symlink_to(workspace / "Vault", target_is_directory=True)
+    # Path.resolve preserves the spelling supplied by the caller even when
+    # APFS maps it to the same inode as `Vault`.
+    (workspace / "notes.txt").symlink_to(workspace / "vault" / "config")
+
+    # `notes.txt` contains no credential-shaped segment. Only the complete
+    # inventory's case-folded `.Kube -> vault` reverse alias can classify it.
+    with pytest.raises(ValueError, match="secret"):
+        dispatcher("read_file", [{"path": "notes.txt"}])
+    with pytest.raises(ValueError, match="secret"):
+        dispatcher._files.resolve("notes.txt", must_exist=True)
+
+
 def test_unattended_tier_is_wider_than_the_interactive_denylist():
     """Two tiers, one table -- and the reason they cannot be one tier.
 
-    `is_credential_path` is what an unattended approval must consult: no human
-    sees the path, so a false positive costs a fallback to asking. The hard
-    pre-gate cannot be that wide, because it has no fallback -- a denied
-    interactive read is a refusal, and `config.json` is an ordinary filename
-    (7 of the 8 paths this tier adds under `$HOME` were exactly that).
+    `is_credential_path` is what automatic approval must consult. A match
+    becomes an audited ask, so an attached human can review a false positive;
+    without a channel it is denied. The hard pre-gate cannot be that wide,
+    because it has no review path -- `config.json` is an ordinary filename (7
+    of the 8 paths this tier adds under `$HOME` were exactly that).
     """
     from openai4s.host.files import is_credential_path, is_secret_path
 
     for path in ("config.json", "credentials", "token.json", "known_hosts"):
         assert is_credential_path(path) and not is_secret_path(path), path
 
-    # Wider, never narrower: everything the tools refuse, the Guardian refuses.
+    # Wider, never narrower: everything the tools refuse, auto approval refuses.
     for path in (".env", "id_rsa", ".aws/credentials", "project/.npmrc"):
         assert is_secret_path(path) and is_credential_path(path), path
 
@@ -360,25 +388,242 @@ def test_a_symlink_cannot_walk_a_secret_past_the_raw_path_pre_gate(tmp_path):
     CLI sets -- that turned the unsandboxed daemon into a read primitive for a
     file the kernel sandbox denies the cell directly.
     """
-    from openai4s.host.files import WorkspaceFileService
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "vault").mkdir(parents=True)
+    secret = "PRIVATE HOST INVENTORY"
+    (workspace / "vault" / "known_hosts").write_text(secret)
+    # Resolving `.ssh` erases the credential-bearing segment and leaves only
+    # `vault/known_hosts`. The service must inspect each stable symlink hop as
+    # well as the final canonical path.
+    # Mixed case pins the same case-insensitive policy on case-sensitive Linux.
+    (workspace / ".SSH").symlink_to(workspace / "vault", target_is_directory=True)
+    (workspace / "via-chain.txt").symlink_to(workspace / ".SSH" / "known_hosts")
+    # A second alias skips the `.ssh` name entirely. The canonical root of the
+    # separately named `.ssh` link must still classify the same underlying dir.
+    (workspace / "notes.txt").symlink_to(workspace / "vault" / "known_hosts")
 
-    workspace = tmp_path / "run"
-    (workspace / ".ssh").mkdir(parents=True)
-    (workspace / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
-    (workspace / "notes.txt").symlink_to(workspace / ".ssh" / "id_rsa")
-    service = WorkspaceFileService(
-        data_dir=tmp_path / "data",
-        frame_id=lambda: "frame-symlink",
-        workspace=lambda: workspace,
-    )
+    # The raw argument is innocuous, so only the resolved-path check can stop
+    # this. Exercise the real dispatcher/tool/service chain rather than calling
+    # WorkspaceFileService.resolve() directly.
+    for alias in ("via-chain.txt", "notes.txt"):
+        with pytest.raises(ValueError, match="secret") as denied:
+            dispatcher("read_file", [{"path": alias}])
+        assert secret not in str(denied.value)
 
-    with pytest.raises(ValueError, match="secret"):
-        service.resolve("notes.txt", must_exist=True)
-    with pytest.raises(ValueError, match="secret"):
-        service.resolve(".ssh/id_rsa", must_exist=True)
     # An ordinary file in the same workspace is untouched.
     (workspace / "data.csv").write_text("a,b\n")
-    assert service.resolve("data.csv", must_exist=True).name == "data.csv"
+    result = dispatcher("read_file", [{"path": "data.csv"}])
+    assert result["content"] == "a,b"
+
+
+def test_symlink_chain_cannot_leave_workspace_and_reenter_through_secret_alias(
+    tmp_path,
+):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    outside = tmp_path / "outside-aliases"
+    outside.mkdir()
+    (workspace / "vault").mkdir()
+    secret = "ESCAPE_REENTER_ALIAS_VALUE"
+    (workspace / "vault" / "known_hosts").write_text(secret)
+    (outside / ".ssh").symlink_to(workspace / "vault", target_is_directory=True)
+    (outside / "back").symlink_to(outside / ".ssh", target_is_directory=True)
+    (workspace / "bridge").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="path escapes the workspace") as denied:
+        dispatcher("read_file", [{"path": "bridge/back/known_hosts"}])
+    assert secret not in str(denied.value)
+
+
+def test_alias_inspection_does_not_treat_scandir_failure_as_no_alias(
+    tmp_path, monkeypatch
+):
+    from openai4s.host import files as files_mod
+
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "vault").mkdir()
+    secret = "PRIVATE FALLBACK INVENTORY"
+    (workspace / "vault" / "known_hosts").write_text(secret)
+    (workspace / ".SSH").symlink_to(workspace / "vault", target_is_directory=True)
+    (workspace / "notes.txt").symlink_to(workspace / "vault" / "known_hosts")
+    real_scandir = files_mod.os.scandir
+
+    def unreadable(directory):
+        if Path(directory) == workspace:
+            raise PermissionError("directory is traverse-only")
+        return real_scandir(directory)
+
+    monkeypatch.setattr(files_mod.os, "scandir", unreadable)
+
+    with pytest.raises(ValueError, match="secret") as denied:
+        dispatcher("read_file", [{"path": "notes.txt"}])
+    assert secret not in str(denied.value)
+
+
+def test_nested_sibling_secret_alias_marks_the_canonical_tree(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "vault").mkdir()
+    secret = "PRIVATE_NESTED_SIBLING_ALIAS_VALUE"
+    (workspace / "vault" / "known_hosts").write_text(secret)
+    (workspace / "nested").mkdir()
+    (workspace / "nested" / ".ssh").symlink_to(
+        workspace / "vault", target_is_directory=True
+    )
+    (workspace / "notes.txt").symlink_to(workspace / "vault" / "known_hosts")
+
+    with pytest.raises(ValueError, match="secret") as denied:
+        dispatcher("read_file", [{"path": "notes.txt"}])
+    assert secret not in str(denied.value)
+    searched = dispatcher("grep", [{"pattern": "PRIVATE_NESTED_SIBLING", "path": "."}])
+    assert searched["matches"] == []
+    assert secret not in repr(searched)
+
+
+def test_secret_basename_alias_marks_the_same_canonical_file(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "vault").mkdir()
+    secret = "PRIVATE_BASENAME_ALIAS"
+    target = workspace / "vault" / "token-data"
+    target.write_text(secret)
+    (workspace / ".env").symlink_to(target)
+    (workspace / "notes.txt").symlink_to(target)
+
+    with pytest.raises(ValueError, match="secret") as denied:
+        dispatcher("read_file", [{"path": "notes.txt"}])
+    assert secret not in str(denied.value)
+
+
+def test_secret_root_descendant_hardlink_is_denied_by_inode_identity(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    secret = "PRIVATE_HARDLINK_VALUE"
+    (workspace / "vault").mkdir()
+    credential = workspace / "vault" / "known_hosts"
+    credential.write_text(secret)
+    (workspace / ".ssh").symlink_to(workspace / "vault", target_is_directory=True)
+    (workspace / "notes.txt").hardlink_to(credential)
+
+    with pytest.raises(ValueError, match="secret") as denied:
+        dispatcher("read_file", [{"path": "notes.txt"}])
+    assert secret not in str(denied.value)
+
+
+def test_dangling_exact_alias_blocks_casefold_equivalent_future_write(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / ".env").symlink_to(workspace / "Token")
+
+    with pytest.raises(ValueError, match="secret"):
+        dispatcher("write_file", [{"path": "token", "content": "PRIVATE"}])
+
+    assert not (workspace / "token").exists()
+    assert not (workspace / "Token").exists()
+
+
+def test_dangling_root_alias_blocks_unicode_equivalent_future_write(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    composed = workspace / "Caf\u00e9"
+    decomposed = "Cafe\u0301"
+    (workspace / ".ssh").symlink_to(composed, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="secret"):
+        dispatcher(
+            "write_file",
+            [{"path": f"{decomposed}/future.txt", "content": "PRIVATE"}],
+        )
+
+    assert not (workspace / decomposed).exists()
+    assert not composed.exists()
+
+
+@pytest.mark.parametrize("vault_exists", [False, True])
+def test_secret_sequence_alias_blocks_paths_before_write_creates_them(
+    tmp_path, vault_exists
+):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    vault = workspace / "Vault"
+    if vault_exists:
+        vault.mkdir()
+    (workspace / ".config").symlink_to(vault, target_is_directory=True)
+
+    target = workspace / "vault" / "GCLOUD" / "future-token.txt"
+    with pytest.raises(ValueError, match="secret"):
+        dispatcher(
+            "write_file",
+            [{"path": "vault/GCLOUD/future-token.txt", "content": "PRIVATE"}],
+        )
+
+    assert not target.exists()
+    assert not target.parent.exists()
+    assert not (vault / "gcloud" / "future-token.txt").exists()
+
+
+def test_alias_inventory_is_bounded_and_truncation_fails_closed(tmp_path, monkeypatch):
+    from openai4s.host import files as files_mod
+
+    workspace = tmp_path / "bounded-alias-scan"
+    workspace.mkdir()
+    yielded = 0
+
+    class Entry:
+        def __init__(self, name):
+            self.name = name
+
+        def is_dir(self, *, follow_symlinks=True):
+            return False
+
+    class Scan:
+        def __enter__(self):
+            def entries():
+                nonlocal yielded
+                for index in range(50_000):
+                    yielded += 1
+                    yield Entry(f"ordinary-{index}.dat")
+
+            return entries()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(files_mod, "MAX_SCAN_ENTRIES", 4096)
+    monkeypatch.setattr(files_mod.os, "scandir", lambda _directory: Scan())
+    snapshot = files_mod._SecretAliasSnapshot(workspace)
+
+    with pytest.raises(ValueError, match="budget"):
+        snapshot.contains(workspace / "results.csv")
+    assert yielded == 4097
+    assert snapshot._secret_roots == ()
+
+
+@pytest.mark.parametrize("absolute_target", [False, True])
+def test_symlink_parent_steps_do_not_erase_secret_directory_hops(
+    tmp_path, absolute_target
+):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "vault" / "nested").mkdir(parents=True)
+    (workspace / "vault" / "public").mkdir()
+    secret = "PRIVATE INVENTORY"
+    (workspace / "vault" / "public" / "inventory").write_text(secret)
+    (workspace / ".ssh").symlink_to(
+        workspace / "vault" / "nested", target_is_directory=True
+    )
+    link_target = Path(".ssh/../public/inventory")
+    if absolute_target:
+        link_target = workspace / link_target
+    (workspace / "alias.txt").symlink_to(link_target)
+
+    # POSIX applies `..` after expanding `.ssh` to `vault/nested`. Normalizing
+    # the spelling first erases the credential hop and reaches the private file.
+    with pytest.raises(ValueError, match="secret") as denied:
+        dispatcher("read_file", [{"path": "alias.txt"}])
+    assert secret not in str(denied.value)
 
 
 def test_a_workspace_inside_a_credential_directory_is_still_usable(tmp_path):
@@ -400,6 +645,82 @@ def test_a_workspace_inside_a_credential_directory_is_still_usable(tmp_path):
     )
 
     assert service.resolve("notes.txt", must_exist=True).read_text() == "hi"
+
+    cfg = Config(
+        data_dir=tmp_path / "dispatcher-data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    dispatcher = HostDispatcher(
+        cfg=cfg,
+        frame_id="frame-inside-credential-root",
+        workspace=workspace,
+    )
+    absolute = dispatcher("read_file", [{"path": str(workspace / "notes.txt")}])
+    assert absolute["content"] == "hi"
+
+
+def test_collection_tools_filter_files_reached_by_a_secret_directory_alias(tmp_path):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / "vault").mkdir()
+    secret = "PRIVATE_GREP_SECRET_VALUE"
+    (workspace / "vault" / "known_hosts").write_text(secret)
+    (workspace / ".ssh").symlink_to(workspace / "vault", target_is_directory=True)
+    (workspace / "notes.txt").symlink_to(workspace / "vault" / "known_hosts")
+    (workspace / "public.txt").write_text("PUBLIC_CONTROL")
+
+    grep_secret = dispatcher("grep", [{"pattern": "PRIVATE_GREP", "path": "."}])
+    assert grep_secret["matches"] == []
+    assert secret not in repr(grep_secret)
+    grep_public = dispatcher("grep", [{"pattern": "PUBLIC_CONTROL", "path": "."}])
+    assert [match["file"] for match in grep_public["matches"]] == ["public.txt"]
+
+    globbed = dispatcher("glob", [{"pattern": "**/*"}])
+    assert globbed["matches"] == ["public.txt"]
+    listed = dispatcher("list_dir", [{"path": "."}])
+    assert [entry["name"] for entry in listed["entries"]] == ["public.txt"]
+
+
+def test_content_search_rechecks_a_candidate_immediately_before_open(
+    tmp_path, monkeypatch
+):
+    dispatcher = _dispatcher(tmp_path)
+    workspace = dispatcher._workspace()
+    (workspace / ".ssh").mkdir()
+    secret = "PRIVATE_SECOND_CHECK_VALUE"
+    credential = workspace / ".ssh" / "known_hosts"
+    credential.write_text(secret)
+    candidate = workspace / "candidate.txt"
+    candidate.write_text("ordinary")
+    real_factory = dispatcher._files.resolved_secret_checker
+    swapped = False
+    checks = 0
+
+    def checker_factory():
+        real_checker = real_factory()
+
+        def check(path):
+            nonlocal swapped, checks
+            checks += 1
+            verdict = real_checker(Path(path))
+            if Path(path) == candidate and not swapped:
+                assert verdict is False
+                candidate.unlink()
+                candidate.symlink_to(credential)
+                swapped = True
+                return False
+            return verdict
+
+        return check
+
+    monkeypatch.setattr(dispatcher._files, "resolved_secret_checker", checker_factory)
+
+    searched = dispatcher(
+        "grep", [{"pattern": "PRIVATE_SECOND_CHECK", "include": "candidate.txt"}]
+    )
+    assert swapped is True and checks >= 2
+    assert searched["matches"] == []
+    assert secret not in repr(searched)
 
 
 def test_read_file_hard_denies_a_credential_directory_without_a_prompt(tmp_path):

@@ -85,6 +85,7 @@ class ContentSearchTool(Tool):
         # bounded one has to be able to say which files it chose.
         paths = base.rglob(include) if include else base.rglob("*")
         candidates = BoundedSelection(_MAX_FILES)
+        resolved_is_secret = workspace.resolved_secret_checker()
         scanned = 0
         scan_truncated = False
         deadline = time.monotonic() + MAX_SCAN_SECONDS
@@ -99,7 +100,11 @@ class ContentSearchTool(Tool):
             if not path.is_file():
                 continue
             relative = workspace.relative(path)
-            if relative is None or workspace.is_secret_path(relative):
+            try:
+                secret = resolved_is_secret(path)
+            except ValueError as error:
+                return {"error": f"grep: {error}"}
+            if relative is None or secret:
                 continue
             candidates.offer(relative, path)
         hits: list[dict] = []
@@ -107,6 +112,11 @@ class ContentSearchTool(Tool):
         files_searched = 0
         files_truncated = 0
         for relative, path in candidates.items():
+            try:
+                if resolved_is_secret(path):
+                    continue
+            except ValueError as error:
+                return {"error": f"grep: {error}"}
             files_searched += 1
             # Streamed under a byte budget: `path.read_text()` measured a
             # 192 MB peak searching a single 64 MB file, and the daemon that

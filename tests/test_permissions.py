@@ -176,6 +176,204 @@ def test_broker_headless_fails_closed_unless_operator_explicitly_allows(
     assert res["allow"] is False
 
 
+def test_broker_guardian_fence_precedes_default_allow_rule(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", "1")
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "auto_review")
+    st = _store(tmp_path)
+    broker = PermissionBroker()
+    assert (
+        st.resolve_permission(tool="read_file", pattern_input="config.json") == "allow"
+    )
+
+    denied = broker.gate(
+        store=st,
+        frame_id=None,
+        method="read_file",
+        target="config.json",
+        canonical_arguments=[{"path": "config.json"}],
+    )
+    assert denied["allow"] is False
+    assert "credential path" in denied["message"]
+
+    allowed = broker.gate(
+        store=st,
+        frame_id=None,
+        method="read_file",
+        target="results.csv",
+        canonical_arguments=[{"path": "results.csv"}],
+    )
+    assert allowed["allow"] is True
+
+    # With a real channel, the same false-positive-prone tier becomes an ask
+    # that a human can approve instead of an unconditional refusal. The card
+    # must show what the alias resolves to, or that review is uninformed.
+    events = []
+    watched = {}
+    broker.register_channel("watched-frame", lambda event: events.append(event))
+    try:
+        thread = threading.Thread(
+            target=lambda: watched.update(
+                broker.gate(
+                    store=st,
+                    frame_id="watched-frame",
+                    method="read_file",
+                    target="notes.txt",
+                    view=("read", "Reading notes.txt", {"path": "notes.txt"}),
+                    canonical_arguments=[{"path": "notes.txt"}],
+                    resolved_file_path="config.json",
+                    timeout=5,
+                )
+            )
+        )
+        thread.start()
+        ask = _wait_ask(events)
+        assert ask["target"] == "notes.txt"
+        assert ask["input"]["path"] == "notes.txt"
+        assert ask["policy_review_kind"] == "credential_path"
+        assert ask["resolved_file_path"] == "config.json"
+        assert "credential path" in ask["policy_review_reason"]
+        broker.resolve(ask["decision_id"], allow=True, scope="once")
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert watched["allow"] is True
+    finally:
+        broker.unregister_channel("watched-frame")
+
+
+def test_broker_guardian_uses_config_selection_without_legacy_env(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", raising=False)
+    monkeypatch.delenv("OPENAI4S_UNATTENDED_APPROVAL", raising=False)
+
+    class GuardianConfig:
+        roadmap_features = type(
+            "Flags",
+            (),
+            {
+                "stage6_guardian_shadow": True,
+                "stage7_guardian_enforcement": True,
+            },
+        )()
+        auto_mode = type("Auto", (), {"approvals_reviewer": "auto_review"})()
+
+    st = _store(tmp_path)
+    denied = PermissionBroker().gate(
+        store=st,
+        frame_id=None,
+        method="read_file",
+        target="token.json",
+        canonical_arguments=[{"path": "token.json"}],
+        guardian_config=GuardianConfig(),
+    )
+    assert denied["allow"] is False
+    assert "credential path" in denied["message"]
+    shadow = json.loads(st.get_setting(f"guardian-shadow:{denied['decision_id']}"))
+    assert shadow["outcome"] == "shadow_deny"
+    assert shadow["risk"] == "critical"
+    assert shadow["decision_source"] == "deterministic_policy"
+    assert shadow["rationale"] == denied["message"]
+
+
+def test_broker_config_only_guardian_predicate_failure_fails_closed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", raising=False)
+    monkeypatch.delenv("OPENAI4S_UNATTENDED_APPROVAL", raising=False)
+
+    class GuardianConfig:
+        roadmap_features = type("Flags", (), {"stage7_guardian_enforcement": True})()
+        auto_mode = type("Auto", (), {"approvals_reviewer": "auto_review"})()
+
+    def fail_policy_check(**_kwargs):
+        raise RuntimeError("policy unavailable")
+
+    monkeypatch.setattr(
+        "openai4s.server.guardian_enforce.unattended_file_deny_reason",
+        fail_policy_check,
+    )
+    st = _store(tmp_path)
+    assert (
+        st.resolve_permission(tool="read_file", pattern_input="config.json") == "allow"
+    )
+
+    denied = PermissionBroker().gate(
+        store=st,
+        frame_id=None,
+        method="read_file",
+        target="config.json",
+        canonical_arguments=[{"path": "config.json"}],
+        guardian_config=GuardianConfig(),
+    )
+
+    assert denied["allow"] is False
+    assert "could not verify" in denied["message"]
+
+
+def test_guardian_file_policy_precedes_restart_once_grant(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", "1")
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "auto_review")
+    st = _store(tmp_path)
+    broker = PermissionBroker()
+    root = st.new_frame(kind="turn")
+    arguments = [{"path": "notes.txt"}]
+    st.set_permission_rule(
+        scope="conversation",
+        scope_id=root,
+        tool="read_file",
+        pattern="notes.txt",
+        decision="ask",
+    )
+    created = st.create_permission_request(
+        decision_id="perm-old-notes",
+        root_frame_id=root,
+        frame_id=root,
+        project_id="default",
+        tool="read_file",
+        target="notes.txt",
+        canonical_arguments=arguments,
+        expires_at=int((time.time() + 60) * 1000),
+    )
+    st.resolve_permission_request(
+        "perm-old-notes",
+        state="allowed",
+        scope="once",
+        resolution_context="after_restart",
+        expected_action_digest=created["action_digest"],
+    )
+    st.activate_restart_permission_continuation(
+        "perm-old-notes", expires_at=int((time.time() + 60) * 1000)
+    )
+
+    denied = broker.gate(
+        store=st,
+        frame_id=root,
+        method="read_file",
+        target="notes.txt",
+        canonical_arguments=arguments,
+        resolved_file_path="config.json",
+    )
+
+    assert denied["allow"] is False
+    assert "credential path" in denied["message"]
+    assert (
+        st.get_permission_request("perm-old-notes")["continuation_consumed_at"] is None
+    )
+
+    safe = broker.gate(
+        store=st,
+        frame_id=root,
+        method="read_file",
+        target="notes.txt",
+        canonical_arguments=arguments,
+        resolved_file_path="notes.txt",
+    )
+    assert safe == {
+        "allow": True,
+        "continuation_decision_id": "perm-old-notes",
+    }
+
+
 def test_broker_blocks_until_allowed_and_persists(tmp_path):
     st = _store(tmp_path)
     b = PermissionBroker()
@@ -876,6 +1074,126 @@ def _wait_ask(events):
                 return e
         time.sleep(0.01)
     raise AssertionError("no await_permission emitted")
+
+
+def test_dispatcher_skips_wider_file_inventory_when_stage7_is_disabled(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", raising=False)
+    monkeypatch.delenv("OPENAI4S_UNATTENDED_APPROVAL", raising=False)
+    disp, _frame, _st = _dispatcher(tmp_path)
+    (disp._workspace() / "results.csv").write_text("a,b\n1,2\n")
+
+    def unexpected_wider_inventory():
+        raise AssertionError("Stage 7 disabled but wider inventory ran")
+
+    monkeypatch.setattr(
+        disp._files,
+        "resolved_credential_checker",
+        unexpected_wider_inventory,
+    )
+
+    allowed = disp("read_file", [{"path": "results.csv"}])
+    assert allowed["content"] == "a,b\n1,2"
+
+
+def test_dispatcher_passes_web_download_destination_separately_from_domain(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", "1")
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "auto_review")
+    disp, _frame, _st = _dispatcher(tmp_path)
+    captured = {}
+
+    class CapturingBroker:
+        def gate(self, **kwargs):
+            captured.update(kwargs)
+            return {"allow": False, "message": "captured before network"}
+
+    monkeypatch.setattr("openai4s.permissions.broker", lambda: CapturingBroker())
+
+    denied = disp(
+        "web_download",
+        [{"url": "https://config.json/archive", "path": "results.csv"}],
+    )
+
+    assert set(denied) == {"error"}
+    assert captured["target"] == "config.json"
+    assert captured["resolved_file_path"] == "results.csv"
+    assert captured["canonical_arguments"] == [
+        {"url": "https://config.json/archive", "path": "results.csv"}
+    ]
+
+
+def test_dispatcher_reports_default_recursive_search_scope_to_permission_card(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", "1")
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "auto_review")
+    disp, _frame, _st = _dispatcher(tmp_path)
+    captured = {}
+
+    class CapturingBroker:
+        def gate(self, **kwargs):
+            captured.update(kwargs)
+            return {"allow": False, "message": "captured before search"}
+
+    monkeypatch.setattr("openai4s.permissions.broker", lambda: CapturingBroker())
+
+    denied = disp("grep", [{"pattern": "needle"}])
+
+    assert set(denied) == {"error"}
+    assert captured["target"] == "needle"
+    assert captured["resolved_file_path"] == "."
+    assert captured["canonical_arguments"] == [{"pattern": "needle"}]
+
+
+def test_dispatcher_guardian_denies_unattended_credential_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", "1")
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "auto_review")
+    disp, frame, st = _dispatcher(tmp_path)
+    (disp._workspace() / "config.json").write_text("SENSITIVE")
+    (disp._workspace() / "notes.txt").symlink_to(disp._workspace() / "config.json")
+    (disp._workspace() / "report.txt").hardlink_to(disp._workspace() / "config.json")
+    (disp._workspace() / "results.csv").write_text("a,b\n1,2\n")
+
+    denied = disp("read_file", [{"path": "config.json"}])
+    assert set(denied) == {"error"}
+    assert "credential path" in denied["error"]
+    assert "SENSITIVE" not in denied["error"]
+
+    alias_denied = disp("read_file", [{"path": "notes.txt"}])
+    assert set(alias_denied) == {"error"}
+    assert "credential path" in alias_denied["error"]
+    assert "SENSITIVE" not in alias_denied["error"]
+
+    hardlink_denied = disp("read_file", [{"path": "report.txt"}])
+    assert set(hardlink_denied) == {"error"}
+    assert "credential path" in hardlink_denied["error"]
+    assert "SENSITIVE" not in hardlink_denied["error"]
+
+    search_denied = disp("grep", [{"pattern": "SENSITIVE", "path": "."}])
+    assert set(search_denied) == {"error"}
+    assert "data-dependent file search" in search_denied["error"]
+    assert "SENSITIVE" not in search_denied["error"]
+
+    # web_download's permission target is a domain, so this denial can only
+    # come from the canonical destination path forwarded by HostDispatcher.
+    download_denied = disp(
+        "web_download",
+        [{"url": "https://example.com/archive", "path": "config.json"}],
+    )
+    assert set(download_denied) == {"error"}
+    assert "credential path" in download_denied["error"]
+
+    allowed = disp("read_file", [{"path": "results.csv"}])
+    assert allowed["content"] == "a,b\n1,2"
+    requests = {request["target"]: request for request in st.list_permission_requests()}
+    assert requests["config.json"]["canonical_arguments_sha256"]
+    assert requests["notes.txt"]["canonical_arguments_sha256"]
+    assert requests["report.txt"]["canonical_arguments_sha256"]
+    assert requests["SENSITIVE"]["canonical_arguments_sha256"]
+    assert requests["example.com"]["canonical_arguments_sha256"]
 
 
 def test_dispatcher_gate_denies_write_file_soft_fail(tmp_path):

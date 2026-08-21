@@ -51,6 +51,27 @@ def test_shadow_allow_does_not_execute(tmp_path):
     store.close()
 
 
+def test_shadow_attributes_a_hard_policy_boundary_to_policy(tmp_path):
+    store = Store(tmp_path / "hard-policy.db")
+    assessment = maybe_record_shadow(
+        store,
+        {"decision_id": "dec-policy"},
+        {"tool": "read_file", "target": "config.json"},
+        config=type(
+            "Cfg",
+            (),
+            {"roadmap_features": type("F", (), {"stage6_guardian_shadow": True})()},
+        )(),
+        hard_deny_reason="unattended credential policy denied access",
+    )
+
+    assert assessment is not None
+    assert assessment["outcome"] == "shadow_deny"
+    assert assessment["decision_source"] == "deterministic_policy"
+    assert "credential policy" in assessment["rationale"]
+    store.close()
+
+
 def test_flag_off_records_nothing(tmp_path):
     store = Store(tmp_path / "off.db")
     assert (

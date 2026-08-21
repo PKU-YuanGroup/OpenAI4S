@@ -500,6 +500,84 @@ def _gate_target(method: str, args: list) -> str:
     return ""
 
 
+_GUARDIAN_FILE_PATH_KEYS = {
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "glob": "path",
+    "grep": "path",
+    "list_dir": "path",
+    "web_download": "path",
+    "save_artifact": "path",
+    "materialise_artifact": "filename",
+}
+_GUARDIAN_FILE_PATH_DEFAULTS = {
+    "glob": ".",
+    "grep": ".",
+    "list_dir": ".",
+}
+
+
+def _guardian_file_review(
+    method: str,
+    args: list,
+    files: WorkspaceFileService,
+    config: Config,
+) -> tuple[str | None, bool]:
+    """Resolve a stable target and wider alias verdict for auto-review.
+
+    Permission targets are sometimes patterns, domains, or version ids. The
+    actual file argument is resolved separately so a harmless alias cannot
+    hide an unattended-only basename such as ``config.json``. Resolution here
+    is advisory input to Guardian; the owning service still resolves again at
+    the sink and remains the confinement authority.
+    """
+    key = _GUARDIAN_FILE_PATH_KEYS.get(method)
+    try:
+        from openai4s.server.guardian_enforce import (
+            auto_review_requested,
+            feature_enabled,
+        )
+
+        if not feature_enabled(config) or not auto_review_requested(config):
+            return None, False
+    except Exception:  # noqa: BLE001 - an active broker will fail closed below
+        return None, True
+    spec = args[0] if args and isinstance(args[0], dict) else {}
+    value = spec.get(key) if key is not None else None
+    if value in (None, ""):
+        value = _GUARDIAN_FILE_PATH_DEFAULTS.get(method)
+    if value in (None, ""):
+        return None, False
+    try:
+        path = Path(str(value))
+        is_credential = files.resolved_credential_checker()(path)
+        target = (path if path.is_absolute() else files.workspace() / path).resolve()
+        relative = files.relative(target)
+        if relative is None:
+            return None, True
+        return relative, is_credential
+    except (OSError, RuntimeError, ValueError):
+        # The service will return the authoritative refusal. If automatic
+        # review is active, inability to establish the wider alias verdict is
+        # itself evidence that Guardian must not authorize the action.
+        return None, True
+
+
+def _secret_pre_gate_path(
+    target: str,
+    files: WorkspaceFileService,
+) -> str:
+    """Classify an absolute in-workspace target relative to the trusted root."""
+
+    path = Path(target)
+    if path.is_absolute():
+        confined = files.relative(path)
+        if confined is not None:
+            return confined
+    return target
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
@@ -1246,7 +1324,12 @@ class HostDispatcher:
                     else None
                 )
             )
-            if secret_target is not None and _is_secret_path(secret_target):
+            secret_check_target = (
+                _secret_pre_gate_path(secret_target, self._files)
+                if secret_target is not None
+                else None
+            )
+            if secret_check_target is not None and _is_secret_path(secret_check_target):
                 result = {
                     "error": "Permission denied: access to secret files "
                     f"(e.g. .env / keys) is blocked: {secret_target}"
@@ -1256,6 +1339,15 @@ class HostDispatcher:
             if requires_approval:
                 permission_method = "bash" if method == "authorize_bash" else method
                 target = _gate_target(permission_method, args)
+                (
+                    resolved_file_path,
+                    resolved_file_is_credential,
+                ) = _guardian_file_review(
+                    permission_method,
+                    args,
+                    self._files,
+                    self.cfg,
+                )
                 from openai4s.permissions import broker
 
                 gate = broker().gate(
@@ -1271,6 +1363,9 @@ class HostDispatcher:
                     resource_keys=audit_resources,
                     dangerous=audit_dangerous,
                     canonical_arguments=args,
+                    resolved_file_path=resolved_file_path,
+                    resolved_file_is_credential=resolved_file_is_credential,
+                    guardian_config=self.cfg,
                 )
                 permission_decision_id = gate.get("decision_id") or gate.get(
                     "continuation_decision_id"

@@ -179,7 +179,10 @@ def test_malformed_capture_lease_fails_before_cell_identity_or_admission(tmp_pat
     )
     session = _session(tmp_path)
 
-    with pytest.raises(TypeError):
+    # Python 3.10 exposes the missing context-manager method as AttributeError;
+    # newer interpreters normalize the same protocol failure to TypeError. The
+    # invariant here is that either failure happens before admission/identity.
+    with pytest.raises((AttributeError, TypeError)):
         service.execute(
             session,
             CellRequest("print('must not run')", "agent"),

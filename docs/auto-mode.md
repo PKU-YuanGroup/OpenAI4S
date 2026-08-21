@@ -1,15 +1,12 @@
 # Auto Mode product and terminal-state contract
 
-Status: **Stage 0 Auto Mode contract; Stage 1 trusted delivery, Stage 2
-durable Auto Run storage, and Stage 3 Scientific Reviewer shadow implemented
-as default-off opt-in**.
+Status: **Stages 1–12 implemented as independent, default-off rollout
+opt-ins**.
 
-This document freezes the product truth that Stages 1–12 must implement. It is
-normative for the new Auto Mode states, but it is not evidence that later
-gates exist today. Stage 1 consumes only `stage1_trusted_delivery`. Stage 2
-consumes only `stage2_auto_run_storage`. Stage 3 consumes only
-`stage3_scientific_review_shadow` and records a shadow judgment without
-gating completion. Stage 4–12 roadmap flags remain inert.
+This document freezes the product truth implemented by Stages 1–12 and is
+normative for the Auto Mode states. Each stage consumes only its own rollout
+flag; enabling a later stage never implicitly enables an earlier one. The
+configuration guide lists the behavior behind every flag.
 
 The existing `review:auto:<frame>` setting remains the old single-call,
 post-completion Reviewer. It records an ordinary review step after the final
@@ -93,10 +90,10 @@ permission policy are outside this selection order and always take precedence.
 These are hard ceilings for the autonomous preset. A deployment default and,
 later, project/frame policy may tighten the monotonic limits but cannot loosen
 them. The rolling circuit window stays fixed at 50 so changing its denominator
-cannot ambiguously weaken the rate threshold. All are reserved and inert in
-Stage 0.
+cannot ambiguously weaken the rate threshold. A component consumes its budget
+only when that component's rollout stage is enabled.
 
-| Limit | Default ceiling | Reserved environment variable |
+| Limit | Default ceiling | Environment variable |
 | --- | ---: | --- |
 | Reviewer attempts per candidate, including at most one transient retry | 2 | `OPENAI4S_AUTO_MAX_REVIEW_ROUNDS` |
 | Repair rounds | 2 | `OPENAI4S_AUTO_MAX_REPAIR_ROUNDS` |
@@ -260,6 +257,11 @@ stopped an action does not by itself choose the terminal label. The committed
 reason does. These non-Guardian terminal truths remain outside the five Auto
 Mode states:
 
+Stage 7's credential-shaped file fence is one such deterministic control. It
+may promote a permissive file rule to `ask`, but a headless refusal and its
+audit remain attributed to policy rather than being relabelled as a Guardian
+verdict. With an attached channel, the same `ask` can be reviewed by a human.
+
 | Durable terminal reason | Sole trigger and user truth |
 | --- | --- |
 | `policy_requires_explicit_setup` | A dangerous/unknown tool, non-canonicalizable target, or deterministic policy conflict refused the unexecuted action and its refusal audit committed. UI: **Blocked · Policy requires explicit setup**. A plain egress allowlist refusal may use this reason; it is not a Guardian verdict. |
@@ -280,8 +282,8 @@ five states merely to make an Auto Run look complete.
 
 ## Durable sources and projection truth
 
-Stages 2–7 will make the following records authoritative. Until those stages
-land, every row in this table is **planned and absent**.
+Stages 2–7 make the following records authoritative when their corresponding
+rollout flag is enabled. A disabled stage projects no claim from its rows.
 
 | Fact | Durable source required before the fact may be shown |
 | --- | --- |

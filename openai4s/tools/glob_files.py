@@ -13,7 +13,7 @@ _MAX_MATCHES = 1000
 
 
 class GlobFilesTool(Tool):
-    """Find files by glob while filtering credential-shaped basenames."""
+    """Find files by glob while filtering secret basenames and credential directories."""
 
     name = "glob_files"
     host_method = "glob"
@@ -58,6 +58,7 @@ class GlobFilesTool(Tool):
         # the smallest `_MAX_MATCHES` names are ever held -- same answer, same
         # order, bounded memory.
         matches = BoundedSelection(_MAX_MATCHES)
+        resolved_is_secret = workspace.resolved_secret_checker()
         scanned = 0
         scan_truncated = False
         deadline = time.monotonic() + MAX_SCAN_SECONDS
@@ -73,7 +74,11 @@ class GlobFilesTool(Tool):
             if not path.is_file():
                 continue
             relative = workspace.relative(path)
-            if relative is None or workspace.is_secret_path(relative):
+            try:
+                secret = resolved_is_secret(path)
+            except ValueError as error:
+                return {"error": f"glob: {error}"}
+            if relative is None or secret:
                 continue
             matches.offer(relative)
         # `count` used to be the PRE-slice total beside a sliced list, with no

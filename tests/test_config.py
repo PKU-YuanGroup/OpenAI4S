@@ -413,8 +413,9 @@ def test_landed_stages_consume_only_their_roadmap_flags_without_changing_legacy_
     assert consumers.pop("stage6_guardian_shadow") == [
         "openai4s/server/guardian_shadow.py"
     ]
-    assert consumers.pop("stage7_guardian_enforcement") == [
-        "openai4s/server/guardian_enforce.py"
+    assert sorted(consumers.pop("stage7_guardian_enforcement")) == [
+        "openai4s/permissions.py",
+        "openai4s/server/guardian_enforce.py",
     ]
     assert sorted(consumers.pop("stage8_live_notebook_lineage")) == [
         "openai4s/server/gateway.py",

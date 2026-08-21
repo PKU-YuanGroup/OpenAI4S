@@ -1006,6 +1006,7 @@ Object.assign(I18N.zh, {
   "perm.continuePrompt": "继续。刚才批准的是守护进程重启前被中断的操作；请先重新评估当前状态，只在仍有必要时发起新的操作，不要假设原操作已经执行。",
   "perm.lbl.rememberRule": "记住规则（可用 * 通配）",
   "perm.lbl.rememberScope": "记住范围",
+  "perm.lbl.resolvedPath": "解析后路径：{0}",
   "perm.placeholder.denyReason": "（可选）拒绝原因，会反馈给智能体",
   "perm.scope.conversation": "本对话",
   "perm.scope.global": "全局",
@@ -1017,6 +1018,10 @@ Object.assign(I18N.zh, {
   "perm.status.afterRestartDenied": "已拒绝；守护进程重启后，原操作未执行。",
   "perm.status.denied": "已拒绝",
   "perm.sub.approvalNeeded": "智能体请求执行下面的操作，需要你的批准。",
+  "perm.review.credential_path": "解析后的目标命中了凭据路径规则。允许前请核对实际路径。",
+  "perm.review.dynamic_file_search": "此搜索会在开始后才确定要读取的文件。允许前请核对搜索范围。",
+  "perm.review.unreviewable_path": "自动复核无法确定目标路径，需要人工确认。",
+  "perm.review.verification_failed": "自动文件安全复核失败，需要人工确认。",
   "perm.title.run": "运行 {0}",
   "plan.approve": "批准并执行",
   "plan.approveFailed": "批准失败：{0}",
@@ -2092,6 +2097,7 @@ Object.assign(I18N.en, {
   "perm.continuePrompt": "Continue. The operation I just approved was interrupted before the daemon restarted. Re-evaluate the current state first, issue a fresh action only if it is still needed, and do not assume the original operation executed.",
   "perm.lbl.rememberRule": "Remember rule (use * as wildcard)",
   "perm.lbl.rememberScope": "Remember scope",
+  "perm.lbl.resolvedPath": "Resolved path: {0}",
   "perm.placeholder.denyReason": "(Optional) reason for denial, will be sent to the agent",
   "perm.scope.conversation": "This conversation",
   "perm.scope.global": "Global",
@@ -2103,6 +2109,10 @@ Object.assign(I18N.en, {
   "perm.status.afterRestartDenied": "Denied; the original operation did not execute after the daemon restart.",
   "perm.status.denied": "Denied",
   "perm.sub.approvalNeeded": "The agent requests to perform the operation below and needs your approval.",
+  "perm.review.credential_path": "The resolved destination matches a credential-path rule. Verify the actual path before allowing it.",
+  "perm.review.dynamic_file_search": "This search chooses the files it will read only after it starts. Verify the search scope before allowing it.",
+  "perm.review.unreviewable_path": "Automatic review could not establish the destination path. Manual confirmation is required.",
+  "perm.review.verification_failed": "Automatic file-safety verification failed. Manual confirmation is required.",
   "perm.title.run": "Run {0}",
   "plan.approve": "Approve and execute",
   "plan.approveFailed": "Approval failed: {0}",
@@ -5971,6 +5981,18 @@ function renderPermissionCard(m) {
   card.appendChild(el("div", "perm-sub", t("perm.sub.approvalNeeded")));
   const act = permActionLine(m);
   if (act.text) card.appendChild(el("div", "perm-detail" + (act.mono ? " mono" : ""), act.text));
+  const fileReviewKeys = {
+    credential_path: "perm.review.credential_path",
+    dynamic_file_search: "perm.review.dynamic_file_search",
+    unreviewable_path: "perm.review.unreviewable_path",
+    verification_failed: "perm.review.verification_failed",
+  };
+  const fileReviewKey = fileReviewKeys[m.policy_review_kind];
+  if (fileReviewKey) {
+    card.appendChild(el("div", "perm-sub", t(fileReviewKey)));
+    if (m.resolved_file_path)
+      card.appendChild(el("div", "perm-detail mono", t("perm.lbl.resolvedPath", m.resolved_file_path)));
+  }
 
   let scope = defaultRememberScope(m);
   card.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberScope")));
