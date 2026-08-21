@@ -1,0 +1,40 @@
+# Reference: REINVENT 4 staged-learning schema; validate with installed release
+# Minimal built-in scoring example. Add model-backed endpoints only by copying
+# the matching release's documented component parameters.
+# Batch size, DAP settings, learning rate, and stage limits below are repository
+# starting defaults; tune them from learning curves, diversity, and oracle cost.
+
+run_type = "staged_learning"
+device = "cuda:0"
+
+[parameters]
+prior_file = "priors/reinvent.prior"
+agent_file = "priors/reinvent.prior"
+batch_size = 64
+unique_sequences = true
+randomize_smiles = true
+summary_csv_prefix = "outputs/reinvent"
+use_checkpoint = false
+purge_memories = false
+
+[learning_strategy]
+type = "dap"
+sigma = 128
+rate = 0.0001
+
+[[stage]]
+chkpt_file = "checkpoints/stage1.chkpt"
+termination = "simple"
+max_score = 1.0
+min_steps = 25
+max_steps = 500
+
+[stage.scoring]
+type = "geometric_mean"
+
+[[stage.scoring.component]]
+[stage.scoring.component.QED]
+
+[[stage.scoring.component.QED.endpoint]]
+name = "QED"
+weight = 1

@@ -152,12 +152,40 @@ class SkillCustomizationService:
                     f"'{slug}' collides with a built-in skill — "
                     "pick a different name",
                 )
-            if not existing and (self.loader.skills_dir / slug).is_dir():
+            # Every bundled root, not just `skills/`. `bundled_name_collision`
+            # only knows DECLARED names, and 143 of the imported collection's
+            # directories declare a different one -- so a slug matching such a
+            # directory passed both checks, was created on disk, and was then
+            # dropped by `discover()` (which keys the bundled map by directory
+            # name). The user got a success and a Skill they could never see,
+            # list, or edit.
+            directory_collision = getattr(
+                self.loader, "bundled_directory_collision", None
+            )
+            if callable(directory_collision):
+                reserved_directory = directory_collision(slug)
+            else:
+                bundled_roots = getattr(self.loader, "bundled_roots", None)
+                roots = (
+                    [root for root, _c in bundled_roots()]
+                    if callable(bundled_roots)
+                    else [self.loader.skills_dir]
+                )
+                reserved_directory = next(
+                    (root / slug for root in roots if (root / slug).is_dir()), None
+                )
+            if reserved_directory is not None:
                 return _fail(
                     "skill_name_conflict",
                     f"'{slug}' collides with a built-in skill — "
                     "pick a different name",
                 )
+        except ValueError as error:
+            # Duplicate bundled collection ids/directories/declared identities
+            # are invalid catalog state, not an absent optional collision API.
+            # Fail before creating a version or writing a document; swallowing
+            # this error writes a Skill and then crashes on the final refresh.
+            return _fail("skill_write_failed", str(error))
         except Exception:  # noqa: BLE001 - preserve the legacy soft collision check
             pass
 
@@ -395,6 +423,9 @@ class SkillCustomizationService:
                         else ""
                     ),
                     "origin": origin,
+                    "collection": (
+                        item.get("collection") if isinstance(item, dict) else None
+                    ),
                     "scope": item_scope,
                     "editable": editable.get(name, origin == "user"),
                     "enabled": name not in disabled_names,

@@ -35,3 +35,8 @@ docs/nextgen-progress.md
 # subtrees carry no bilingual README pairs, so one stray `git add -A` would
 # fail the directory-docs CI gate.
 epibench_eval/
+# Local manuscript drafts and the per-run daemon scratch dir. Neither is
+# a maintained source directory, so both would fail the bilingual
+# per-directory README gate on a stray `git add -A`.
+paper/
+.openai4s-runtime/

@@ -22,8 +22,11 @@ installed.
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import re
-from pathlib import Path
+import unicodedata
+from pathlib import Path, PurePosixPath
 
 _HERE = Path(__file__).resolve().parent
 
@@ -48,6 +51,11 @@ REQUIRED_SOURCES = (
     "openai4s_worker_runtime/__init__.py",
     "envs/python.yml",
     "envs/r.yml",
+    "skills/bioskills/COLLECTION.json",
+    "skills/bioskills/LICENSE",
+    "skills/bioskills/MANIFEST.json",
+    "skills/bioskills/README.md",
+    "skills/bioskills/README_zh.md",
 )
 
 #: Only ever checked against the top of our own source tree: `tests/` and
@@ -57,6 +65,19 @@ FORBIDDEN_SOURCES = (".git", ".venv", ".build", "tests", ".claude")
 ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
 
 MIN_SKILLS = 20
+#: Floor for the required pinned bioSkills collection.
+MIN_COLLECTION_SKILLS = 561
+BIOSKILLS_COMMIT = "d91ed3d563019e649dc854c56ccd62551359488a"
+BIOSKILLS_MANIFEST_SHA256 = (
+    "e1747551da95e9320368d4d4f7002d3b9708a808d0b9b0f117e36ed66968530b"
+)
+_COLLECTION_BOUNDARY_FILES = frozenset(
+    {"COLLECTION.json", "MANIFEST.json", "README.md", "README_zh.md"}
+)
+_RUNTIME_SENTINELS = {
+    unicodedata.normalize("NFKC", name).casefold(): name
+    for name in ("SKILL.md", "kernel.py", "COLLECTION.json", "MANIFEST.json")
+}
 
 #: Below this, the bundle was not precompiled — see :func:`check_bytecode`.
 MIN_PYC = 500
@@ -122,12 +143,136 @@ def declared_version(src: Path) -> str:
     raise BundleCheckError("bundled openai4s.__version__ is not a literal string")
 
 
+def _check_bioskills_payload(root: Path) -> None:
+    """Bind every desktop bundle byte to the same reviewed collection pin."""
+
+    if root.is_symlink():
+        raise BundleCheckError("bioSkills collection root must not be a symlink")
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise BundleCheckError(
+                "bioSkills payload must not contain symlinks: "
+                f"{path.relative_to(root).as_posix()}"
+            )
+    manifest_path = root / "MANIFEST.json"
+    payload = manifest_path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != BIOSKILLS_MANIFEST_SHA256:
+        raise BundleCheckError(
+            "bioSkills MANIFEST.json digest does not match the reviewed pin"
+        )
+    try:
+        manifest = json.loads(payload)
+    except ValueError as error:
+        raise BundleCheckError(f"invalid bioSkills manifest: {error}") from error
+    if manifest.get("skill_count") != MIN_COLLECTION_SKILLS:
+        raise BundleCheckError(
+            f"bioSkills manifest must list {MIN_COLLECTION_SKILLS} recipes"
+        )
+    upstream = manifest.get("upstream") or {}
+    if upstream.get("commit") != BIOSKILLS_COMMIT:
+        raise BundleCheckError(
+            f"bioSkills manifest must pin upstream commit {BIOSKILLS_COMMIT}"
+        )
+    rows = manifest.get("files")
+    if not isinstance(rows, list):
+        raise BundleCheckError("bioSkills manifest has no files list")
+    recorded: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise BundleCheckError("bioSkills manifest file row is not an object")
+        relative = row.get("path")
+        if not isinstance(relative, str) or not relative:
+            raise BundleCheckError("bioSkills manifest file row has no path")
+        path = PurePosixPath(relative)
+        if (
+            path.is_absolute()
+            or "\\" in relative
+            or ".." in path.parts
+            or path.as_posix() != relative
+        ):
+            raise BundleCheckError(f"unsafe bioSkills manifest path: {relative!r}")
+        if relative in recorded:
+            raise BundleCheckError(f"duplicate bioSkills manifest path: {relative}")
+        recorded[relative] = row
+    shipped = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    expected = set(recorded) | _COLLECTION_BOUNDARY_FILES
+    missing = sorted(expected - shipped)
+    extra = sorted(shipped - expected)
+    if missing or extra:
+        detail = []
+        if missing:
+            detail.append(f"missing {len(missing)} file(s), e.g. {missing[0]}")
+        if extra:
+            detail.append(f"unmanifested {len(extra)} file(s), e.g. {extra[0]}")
+        raise BundleCheckError("bioSkills inventory mismatch: " + "; ".join(detail))
+    for relative, row in recorded.items():
+        target = root.joinpath(*PurePosixPath(relative).parts)
+        data = target.read_bytes()
+        if len(data) != row.get("size"):
+            raise BundleCheckError(f"bioSkills payload size mismatch: {relative}")
+        if hashlib.sha256(data).hexdigest() != row.get("sha256"):
+            raise BundleCheckError(f"bioSkills payload hash mismatch: {relative}")
+
+
 def check_sources(src: Path) -> int:
     """Every runtime-only resource is present, and the Skill catalog is real."""
+    src = Path(src)
+    if src.is_symlink():
+        raise BundleCheckError("source tree root must not be a symlink")
+    # ``Path.is_file`` and ``rglob`` follow symlinked ancestors. A copied app
+    # whose ``src/skills`` points back to the build machine could therefore
+    # satisfy every inventory/hash check while shipping no self-contained
+    # catalog at all. Reject every component on each required path before any
+    # read follows it.
+    for relative in REQUIRED_SOURCES:
+        current = src
+        for part in PurePosixPath(relative).parts:
+            current /= part
+            if current.is_symlink():
+                shown = current.relative_to(src).as_posix()
+                raise BundleCheckError(
+                    f"source tree must not contain symlinks: {shown}"
+                )
+    skills_root = src / "skills"
+    if skills_root.exists():
+        for path in skills_root.rglob("*"):
+            if path.is_symlink():
+                raise BundleCheckError(
+                    "source tree must not contain symlinks: "
+                    f"{path.relative_to(src).as_posix()}"
+                )
+            expected = _RUNTIME_SENTINELS.get(
+                unicodedata.normalize("NFKC", path.name).casefold()
+            )
+            if expected is not None and path.name != expected:
+                raise BundleCheckError(
+                    "source tree contains mis-cased runtime sentinel "
+                    f"{path.relative_to(src).as_posix()!r}; expected {expected!r}"
+                )
     missing = [name for name in REQUIRED_SOURCES if not (src / name).is_file()]
     if missing:
         raise BundleCheckError("source tree is missing: " + ", ".join(missing))
-    skills = sorted(src.glob("skills/*/SKILL.md"))
+    # Two floors, not one total. Folding the 561-recipe collection into the
+    # same count made the curated floor unfalsifiable: a bundle that shipped
+    # bioskills and dropped every curated Skill still cleared 20.
+    curated = sorted(src.glob("skills/*/SKILL.md"))
+    collection = sorted(src.glob("skills/bioskills/*/SKILL.md"))
+    skills = curated + collection
+    if len(curated) < MIN_SKILLS:
+        raise BundleCheckError(
+            f"bundle ships only {len(curated)} curated Skills; "
+            f"expected at least {MIN_SKILLS}"
+        )
+    if len(collection) < MIN_COLLECTION_SKILLS:
+        raise BundleCheckError(
+            f"bundle ships only {len(collection)} bioSkills recipes; "
+            f"expected at least {MIN_COLLECTION_SKILLS}"
+        )
+    _check_bioskills_payload(src / "skills" / "bioskills")
     if len(skills) < MIN_SKILLS:
         raise BundleCheckError(
             f"bundle ships only {len(skills)} Skills; expected at least {MIN_SKILLS}"
@@ -224,6 +369,7 @@ __all__ = [
     "MANIFEST",
     "MIN_PYC",
     "MIN_SCANNED_FILES",
+    "MIN_COLLECTION_SKILLS",
     "MIN_SKILLS",
     "REQUIRED_SOURCES",
     "bundled_imports",

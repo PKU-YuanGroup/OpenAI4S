@@ -412,6 +412,10 @@ def test_molecule_briefs_and_query_urls():
 def test_rdkit_structure_depiction_when_available():
     if importlib.util.find_spec("rdkit") is None:
         pytest.skip("RDKit is an optional chemistry dependency")
+    try:
+        from rdkit.Chem import Draw  # noqa: F401
+    except ImportError:
+        pytest.skip("RDKit drawing support is unavailable in this environment")
 
     funcs = _import_skill()
     svg = _svg_source_text(

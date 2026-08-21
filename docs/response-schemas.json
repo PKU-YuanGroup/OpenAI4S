@@ -12265,6 +12265,12 @@
                 "activeVersionId": {
                   "type": "string"
                 },
+                "collection": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
                 "description": {
                   "type": "string"
                 },
@@ -12318,6 +12324,7 @@
               },
               "required": [
                 "activeVersionId",
+                "collection",
                 "description",
                 "displayName",
                 "editable",
@@ -13138,6 +13145,12 @@
                     "string"
                   ]
                 },
+                "collection": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
                 "description": {
                   "type": "string"
                 },
@@ -13200,6 +13213,7 @@
               },
               "required": [
                 "activeVersionId",
+                "collection",
                 "description",
                 "displayName",
                 "editable",

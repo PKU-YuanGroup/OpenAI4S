@@ -112,7 +112,15 @@ openai4s = [
     "server/webui/vendor/*.js",
     "server/webui/vendor/fonts/*.woff2",
 ]
-"*" = ["*.html", "*.json", "*.lock", "*.md", "*.yml"]
+# Data-only trees (skills*, envs*, workflows*) ship whole rather than by
+# extension. The enumerated list needed one entry per upstream file type and
+# ended with the literal basename of a single vendored Snakemake file, so a
+# re-pin that renamed it -- or added a `Dockerfile`, `nextflow.config`, or a
+# `.bed` fixture -- would have dropped it from the wheel silently.
+"*" = ["**/*"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["**/__pycache__/**", "**/*.py[cod]"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
