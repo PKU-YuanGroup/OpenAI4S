@@ -21,7 +21,7 @@ Tool，`openai4s/` 下也没有任何模块会导入它们。
 | `bundled_packages.txt` | 预装进每一个发出去的桌面包的科学栈，每行 `<pip 名> <import 名>`——即默认 `python.yml` 内核环境里可 pip 安装的超集（rdkit、scanpy、numba、umap、单细胞、化学信息学……）。跨平台的单一事实来源：两个构建脚本都按 pip 名安装，每个校验器都断言这些 import 是从包内解析的，所以既不会「装的」和「查的」漂移，也不会两个平台悄悄装了不同的栈。torch/fair-esm 以及 conda 专属的 R 与 bioconda 工具刻意不含。 |
 | `make_app_icon.py` | 按品牌标识的实测几何——五个成键原子、中央终端方块、红色提示符 `>` 与光标条——用平面矢量图元重绘 `assets/app-icon-1024.png`，超采样后落到 Big Sur 图标网格上。该标识在仓库里只有 150px 的字形和 64px 的 favicon 两份位图，放大到 `.icns` 需要的 1024px 都会糊。仅开发用：依赖 Pillow，而 DMG 构建真正消费的是它提交进仓库的产物。 |
 | `fold_remote.sh` | 在事先配置好的可信 GPU 主机上做 Protenix 单序列折叠，全程离线，不用 MSA。输出 `model.pdb`、`model.cif`、`confidence.json` 和 `plddt.csv`，再把一行 JSON manifest 和 base64 编码的交付物打到 stdout，调用方从日志里就能全部取回。需要显式启用。 |
-| `release_import_smoke.py` | 用隔离环境的解释器、在 checkout 之外导入已安装的零依赖 wheel；一旦发现导入的其实是源码树就判失败。随后检查普通 import 测试照不到的地方：打包进去的 R worker、compute 模板与 Web UI、四份环境规格、Skill 目录、`python -m openai4s --help` 能否跑通，以及核心是否仍然没有非 extra 依赖。 |
+| `release_import_smoke.py` | 用隔离环境的解释器、在 checkout 之外导入已安装的零依赖 wheel；一旦发现导入的其实是源码树就判失败。随后检查普通 import 测试照不到的地方：打包进去的 R worker、compute 模板与 Web UI、四份环境规格、Skill 目录、`python -m openai4s --help` 与 checkpoint registry 模块入口能否跑通，以及核心是否仍然没有非 extra 依赖。 |
 | `setup_envs.sh` | `python -m openai4s setup` 的一层薄 `sh` 包装，用来创建四个 conda 环境。参数原样透传，所以 `--only python`、`--dry-run` 经它照样可用。 |
 | `source_secret_scan.py` | 扫描发布源码树里形似凭据的内容，失败即拒绝。它只打印检测器名、路径和行号，绝不回显匹配到的值。零依赖：候选文件由 git 挑出，git 不可用时（例如解包后的源码归档）退回到确定性的文件系统遍历。 |
 | `update_contributors.py` | 重建 Community Contributors 墙。用仓库自己的 token 从 GitHub API 拉取 commit 贡献者，追加一份维护中的、已公开署名的非 commit 贡献者名单，把每个头像裁成圆形 PNG 写入 `.github/contributors/`，再改写两份根 README 中 `CONTRIBUTORS` 标记之间的区块。需要 Pillow。 |

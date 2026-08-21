@@ -1,6 +1,6 @@
 ---
 name: retrosynthesis_planning
-description: Perform multi-step retrosynthesis route search from a target to a declared stock with AiZynthFinder, then normalize, audit, rank, and review the route trees. Use for recursive planning after single-step proposals exist; use separate reaction Skills for mapping, forward validation, conditions, and yield.
+description: Search multi-step retrosynthesis routes from a target to stock with AiZynthFinder, then audit and rank route trees. Use for recursive planning, not mapping, forward prediction, conditions, or yield.
 origin: openai4s
 category: chemistry
 ---

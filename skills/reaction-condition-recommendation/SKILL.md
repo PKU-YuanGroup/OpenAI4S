@@ -1,7 +1,8 @@
 ---
 name: reaction-condition-recommendation
-description: Recommend ranked catalysts, reagents, solvents, and checkpoint-supported temperatures for a fixed reaction with the open Parrot model. Use when both reaction sides are known and condition hypotheses are needed for literature search or route triage; do not use it to invent conditions for an unspecified transformation or to claim an executable laboratory procedure.
+description: Recommend ranked catalyst, reagent, solvent, and supported temperature labels for a fully specified reaction using Parrot after checkpoint-terms review. Not for unknown reactions or lab procedures.
 license: MIT
+origin: openai4s
 metadata:
   third_party:
     - kind: code
@@ -17,33 +18,79 @@ does a trained model rank highest? Conditions are hypotheses used to focus
 literature/ELN retrieval. They are not an experimental procedure and must not be
 generated before reactants and products are specified.
 
-Use Parrot by default. Its official repository publishes code, checkpoints,
-dataset label dictionaries, CPU/GPU environment files, a CLI, and a web app.
-The repository code is MIT. The externally hosted checkpoint archives do not
-carry a separate machine-readable license in the official downloader; review
-their terms before organizational or commercial deployment and record the
-decision in the model manifest.
+Parrot is the conditional implementation. Its official repository publishes
+code, checkpoints, dataset label dictionaries, CPU/GPU environment files, a
+CLI, and a web app. The repository code is MIT, but the externally hosted
+checkpoint archives do not carry a separate machine-readable license in the
+official downloader. Do not download or run a checkpoint, call it open, or make
+it an organizational default until its terms have been reviewed and the
+decision recorded in the model manifest.
 
 ## Install and run
 
-Keep Parrot in its own environment because it pins an older Transformers stack:
+Keep Parrot in its own environment because it pins an older Transformers stack.
+This recipe is Linux-only: upstream states that Parrot was tested on Linux, and
+`envs_cpu.yaml` contains Linux-specific packages such as
+`ld_impl_linux-64` and `libgcc-ng`. On macOS or another non-Linux platform,
+stop and route the task to a reviewed Linux container or remote host rather than
+trying to solve that lock file locally.
+
+From an operator terminal whose current directory is the writable session
+workspace, clone the code under a workspace-owned model root and detach at the
+reviewed commit. Do not run a moving branch:
 
 ```bash
-git clone https://github.com/wangxr0526/Parrot.git /opt/models/Parrot
-conda env create -n parrot -f /opt/models/Parrot/envs_cpu.yaml
-conda run -n parrot python /opt/models/Parrot/preprocess_script/download_data.py
+set -eu
+
+PARROT_ROOT="$PWD/models/parrot"
+PARROT_COMMIT="0fb2325567e21011589641544e32427c8244e2a9"
+
+mkdir -p "$PARROT_ROOT"
+if [ ! -d "$PARROT_ROOT/source/.git" ]; then
+  git clone https://github.com/wangxr0526/Parrot.git "$PARROT_ROOT/source"
+fi
+git -C "$PARROT_ROOT/source" cat-file -e "${PARROT_COMMIT}^{commit}"
+git -C "$PARROT_ROOT/source" checkout --detach "$PARROT_COMMIT"
+test "$(git -C "$PARROT_ROOT/source" rev-parse HEAD)" = "$PARROT_COMMIT"
+SOURCE_STATUS="$(git -C "$PARROT_ROOT/source" status \
+  --porcelain --untracked-files=all)"
+test -z "$SOURCE_STATUS"
+conda env create -n parrot -f "$PARROT_ROOT/source/envs_cpu.yaml"
 ```
 
-Review the downloader URLs and hash downloaded archives before extracting them.
-Write one complete reaction SMILES per line, then run the official CLI:
+The final assertion must remain empty; if a reused checkout has modified or
+untracked files, stop instead of executing it as reviewed source.
+
+Do not execute the official `download_data.py` directly. At the reviewed
+revision it constructs an unquoted `shell=True` extraction command and does not
+propagate extraction failure, so a workspace path containing spaces can fail
+silently and shell metacharacters are unsafe. Review the downloader URLs and
+checkpoint terms and record an explicit `allow` decision in the model manifest
+before acquiring anything; a missing or `deny` decision must stop. Only after
+that decision, use an approved operator workflow that streams each archive to
+private staging, verifies its recorded size and digest, and extracts it without
+a shell while rejecting traversal and links. Place only the verified dataset,
+label dictionaries, and checkpoint at the repository-relative paths named by
+the reviewed configuration, and add the acquisition receipts to the manifest
+before inference.
+
+Write one complete reaction SMILES per line. Parrot's configuration contains
+repository-relative model and dataset paths, so keep its repository as the
+process working directory and make session input/output paths absolute:
 
 ```bash
-conda run -n parrot python /opt/models/Parrot/inference.py \
-  --config_path /opt/models/Parrot/configs/config_inference_use_uspto.yaml \
-  --input_path reactions.txt \
-  --output_path predicted_conditions.csv \
+SESSION_WORKSPACE="$PWD"
+PARROT_ROOT="$SESSION_WORKSPACE/models/parrot"
+conda run -n parrot --cwd "$PARROT_ROOT/source" python inference.py \
+  --config_path configs/config_inference_use_uspto.yaml \
+  --input_path "$SESSION_WORKSPACE/reactions.txt" \
+  --output_path "$SESSION_WORKSPACE/predicted_conditions.csv" \
   --num_workers 2 --inference_batch_size 8 --gpu -1
 ```
+
+Run these blocks from the session workspace root. Shell expansion makes both
+input and output absolute before `conda run` changes to the repository working
+directory; do not rely on Parrot's process directory for session I/O.
 
 The USPTO checkpoint recommends categorical condition components. Use the
 Reaxys configuration only when its separately obtained data/checkpoint terms
@@ -73,6 +120,7 @@ and validation state (`model_only`, `literature_analog`, `exact_precedent`, or
 
 | Symptom | Action |
 | --- | --- |
+| checkpoint terms not reviewed | Stop before download or inference, return `terms_review_required`, and do not substitute LLM-generated conditions. |
 | only target or only precursors are known | Stop; select a concrete reaction before recommending conditions. |
 | label ID is absent from the dictionary | Preserve the raw ID, mark decoding failure, and do not guess a name. |
 | requested temperature with USPTO config | Report unsupported and switch only to a reviewed temperature-capable checkpoint. |

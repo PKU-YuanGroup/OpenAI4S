@@ -4,8 +4,10 @@
 
 ## Scenario overview
 
-This Scenario covers locally deployable, open-model assistance for planning and
-reviewing synthesis routes from a target molecule. Retrosynthesis is not one
+This Scenario covers local model assistance for planning and reviewing
+synthesis routes from a target molecule. Publicly available code or artifacts
+do not by themselves authorize checkpoint use; each artifact must satisfy its
+applicable admission and terms policy before use. Retrosynthesis is not one
 model and the tasks below are not mandatory stages in a fixed pipeline. Each
 asks a different scientific question with its own input, output, model, and
 evaluator:
@@ -48,13 +50,13 @@ cannot score a route step whose reaction context is unspecified.
 
 ## Problem and implementation summary
 
-| ID | Scientific problem | Minimum input | Output | Default model | Repository status |
+| ID | Scientific problem | Minimum input | Output | Selected model | Repository status |
 | --- | --- | --- | --- | --- | --- |
 | P1 | Single-step precursor generation | product SMILES | Top-K precursor sets | RetroChimera 1 | isolated worker, checkpoint verification, structured response |
 | P2 | Multi-step route planning | target, policy, stock, budget | solved/unsolved route trees | AiZynthFinder | command builder, import, normalization, audit, ranking |
 | P3 | Atom mapping/reaction centre | complete reaction SMILES | mapped reaction, changed bonds | RXNMapper | standalone Skill; optional model environment required |
 | P4 | Forward product prediction | reactants and reagents | Top-K products | ReactionT5v2-forward | standalone Skill; optional model environment required |
-| P5 | Condition recommendation | fixed reaction | condition sets, optional temperature | Parrot | conditional Skill; checkpoint terms require review |
+| P5 | Condition recommendation | fixed reaction | condition sets, optional temperature | Parrot (conditional candidate) | terms review and a manifest allow decision are required before any checkpoint download or inference |
 | P6 | Yield estimation | reactants, reagents, product | predicted yield | ReactionT5v2-yield | standalone Skill; in-domain screening only |
 
 ## Problem 1. Single-step precursor generation
@@ -214,11 +216,13 @@ temperature hypotheses should be validated first?
 
 ### Technique and implementation
 
-Use Parrot conditionally. The code, data labels, environments, and CLI are
-public, but the downloader's external checkpoint archives do not separately
-declare machine-readable license terms, so organizational deployment requires
-terms review. USPTO and Reaxys configurations do not have identical temperature
-capabilities. The Skill is `reaction-condition-recommendation`.
+Use Parrot only as a conditional candidate. The code, data labels,
+environments, and CLI are public, but the downloader's external checkpoint
+archives do not separately declare machine-readable license terms. Review the
+terms for the exact checkpoint and record an explicit allow/deny decision in
+the model manifest before any checkpoint download or inference; a missing or deny
+decision means stop. USPTO and Reaxys configurations do not have identical
+temperature capabilities. The Skill is `reaction-condition-recommendation`.
 
 ### Independent metrics
 
@@ -229,8 +233,9 @@ literature or ELN records.
 ### Hard constraints
 
 Freeze the reaction first; bind dictionaries to checkpoints; never fabricate
-unsupported temperature; keep LLM suggestions distinct from Parrot output; do
-not claim deployment approval before checkpoint-terms review.
+unsupported temperature; keep LLM suggestions distinct from Parrot output. Do
+not download or run a Parrot checkpoint until its terms are reviewed and the
+model manifest records an allow decision; refuse on a missing or deny decision.
 
 ## Problem 6. Reaction-yield estimation
 
@@ -288,7 +293,7 @@ closed loops remain database, rule, experiment, process, and decision problems.
 | P2 | yes | AiZynthFinder assets/stock | frozen search benchmark | integrated; live search optional |
 | P3 | Skill discovery | RXNMapper env | mapping benchmark | recipe complete |
 | P4 | Skill discovery | ReactionT5v2 weights | forward benchmark | recipe complete |
-| P5 | Skill discovery | Parrot env/terms review | fixed condition set | conditional recipe complete |
+| P5 | Skill discovery | Parrot env plus pre-download terms decision | fixed condition set | conditional recipe; manifest allow required before inference |
 | P6 | Skill discovery | ReactionT5v2 weights | deployment held-out set | recipe complete; bounded interpretation |
 
 ## Scenario-wide hard constraints
@@ -315,20 +320,22 @@ closed loops remain database, rule, experiment, process, and decision problems.
 10. **Domain and abstention:** return unknown/OOD/screening-only when inputs,
     applicability, or calibration are insufficient.
 11. **No hidden model download:** keep weights out of git; require explicit
-    authorization, source/hash verification, and isolated loading.
+    authorization, source/hash verification, and isolated loading. For Parrot,
+    record the checkpoint-terms allow/deny decision in the model manifest before
+    any download or inference.
 12. **Final evaluation constraint:** evaluator results cannot feed back into
     models, filters, budgets, or ranking weights.
 
-## Skill directories in this checkout
+## Skill directories
 
-| Problem | Absolute directory |
+| Problem | Repository-relative directory |
 | --- | --- |
-| P1 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/single-step-retrosynthesis/` |
-| P2 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/retrosynthesis_planning/` |
-| P3 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-atom-mapping/` |
-| P4 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-forward-prediction/` |
-| P5 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-condition-recommendation/` |
-| P6 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-yield-estimation/` |
+| P1 | [`../single-step-retrosynthesis/`](../single-step-retrosynthesis/) |
+| P2 | [`./`](./) |
+| P3 | [`../reaction-atom-mapping/`](../reaction-atom-mapping/) |
+| P4 | [`../reaction-forward-prediction/`](../reaction-forward-prediction/) |
+| P5 | [`../reaction-condition-recommendation/`](../reaction-condition-recommendation/) |
+| P6 | [`../reaction-yield-estimation/`](../reaction-yield-estimation/) |
 
 See `MODEL_TASKS.md` for model-admission evidence, alternatives, and exclusions,
 and [`scenarios/README.md`](scenarios/README.md) for the detailed benchmark

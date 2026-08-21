@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import json
 import os
 import subprocess
 import sys
@@ -90,6 +91,40 @@ def main() -> int:
         )
         if completed.returncode != 0 or "serve" not in completed.stdout:
             raise RuntimeError("installed `python -m openai4s --help` smoke failed")
+
+        deployment = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "skills.retrosynthesis_planning.model_deployment",
+                "list",
+            ],
+            cwd=temp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=30,
+        )
+        try:
+            checkpoints = json.loads(deployment.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "installed checkpoint registry did not return JSON"
+            ) from exc
+        if not isinstance(checkpoints, list):
+            raise RuntimeError("installed checkpoint registry did not return a list")
+        variants = {item.get("name") for item in checkpoints if isinstance(item, dict)}
+        if deployment.returncode != 0 or variants != {
+            "pistachio",
+            "uspto50k",
+            "uspto-full",
+        }:
+            raise RuntimeError(
+                "installed `python -m skills.retrosynthesis_planning."
+                "model_deployment list` smoke failed"
+            )
 
     requirements = importlib.metadata.requires("openai4s") or []
     core = [

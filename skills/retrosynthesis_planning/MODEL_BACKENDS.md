@@ -81,6 +81,10 @@ conda activate openai4s-retro
 pip install syntheseus==0.7.2 retrochimera==1.2.0
 ```
 
+The USPTO-50K checkpoint uses the optional Graphium architecture. Install
+`retrochimera[graphium]==1.2.0` instead of the plain package before loading that
+variant; the Pistachio and USPTO-FULL paths do not require the extra.
+
 Other Syntheseus model wrappers have model-specific optional dependencies. Follow the upstream installation instructions for the selected model rather than installing every model family by default.
 
 The adapter does not add `syntheseus`, `retrochimera`, PyTorch or CUDA to `pyproject.toml`. The worker reports installed package versions at runtime, and a missing or incompatible package is returned as a structured backend error.
@@ -90,41 +94,62 @@ The adapter does not add `syntheseus`, `retrochimera`, PyTorch or CUDA to `pypro
 `model_deployment.py` records the public Pistachio, USPTO-FULL and USPTO-50K RetroChimera archives and their upstream byte counts, MD5 values, DOI records and MIT license. Listing the registry is offline:
 
 ```bash
-python skills/retrosynthesis_planning/model_deployment.py list
+python -m skills.retrosynthesis_planning.model_deployment list
 ```
 
 Downloading is disabled unless the caller explicitly opts in, and it runs through OpenAI4S `host.web_download` so every redirect is checked by the egress allowlist and SSRF guard. Run this in an OpenAI4S Python cell, with a destination inside the session workspace:
 
 ```python
+from pathlib import Path
+
 from retrosynthesis_planning.model_deployment import (
     checkpoint_spec,
     download_checkpoint,
 )
 
+workspace = Path.cwd().resolve()
+archive = workspace / "models" / "retrochimera" / "retrochimera_uspto50k.zip"
 spec = checkpoint_spec("uspto50k")
 download_checkpoint(
     spec,
-    "models/retrochimera/retrochimera_uspto50k.zip",
+    archive,
     allow_network=True,
+    web_download=host.web_download,
 )
 ```
 
-For multi-gigabyte checkpoints, an operator may instead use the deployment environment's approved streaming downloader, then run the offline `verify` command below before extraction. The standalone script deliberately does not open the network itself.
+`host` is the singleton already injected into the cell; it is not an importable
+module. Passing the capability explicitly also keeps the helper testable and
+prevents a standalone script from silently opening the network itself.
+
+`host.web_download` streams the response to an atomic temporary file while enforcing the byte ceiling and computing SHA-256; it does not accumulate a multi-gigabyte checkpoint in daemon memory. An operator may instead use the deployment environment's approved streaming downloader, then run the offline `verify` command below before extraction. The standalone module deliberately does not open the network itself.
 
 The smaller USPTO-50K archive is useful for an installation smoke test but is not a substitute for the broader main checkpoint. Upstream describes Pistachio as the main and most powerful released checkpoint. Install either archive only after validation:
 
 ```bash
-python skills/retrosynthesis_planning/model_deployment.py verify \
-  uspto50k /models/retrochimera/retrochimera_uspto50k.zip
+CHECKPOINT_ROOT="$PWD/models/retrochimera"
 
-python skills/retrosynthesis_planning/model_deployment.py extract \
+python -m skills.retrosynthesis_planning.model_deployment verify \
+  uspto50k "$CHECKPOINT_ROOT/retrochimera_uspto50k.zip"
+
+python -m skills.retrosynthesis_planning.model_deployment extract \
   uspto50k \
-  /models/retrochimera/retrochimera_uspto50k.zip \
-  /models/retrochimera/uspto50k \
-  --manifest /models/retrochimera/uspto50k-manifest.json
+  "$CHECKPOINT_ROOT/retrochimera_uspto50k.zip" \
+  "$CHECKPOINT_ROOT/uspto50k" \
+  --manifest "$CHECKPOINT_ROOT/uspto50k/model-manifest.json"
 ```
 
-The command validates the reviewed byte count and MD5, computes SHA-256, rejects absolute paths, traversal, backslashes and symlinks in the ZIP, bounds member count and expanded size, and publishes the model directory only after extraction succeeds. It refuses to replace an existing model directory. The generated manifest is path-free and can be passed directly to `SyntheseusBackend`.
+Run that block from the same session workspace root used by the download Cell.
+`$PWD/models/retrochimera` is therefore the one writable checkpoint root for
+download, verification, extraction, manifest creation, and inference.
+
+The command copies no more than the reviewed archive size to a private snapshot while validating byte count and MD5 and computing SHA-256, then extracts only that verified snapshot. It rejects non-regular and oversized sources, absolute paths, traversal, backslashes, Windows drive-relative/alternate-stream/device names and symlinks, and bounds member count and expanded size. A requested manifest must live inside the new model directory; it is written in private staging so the manifest and extracted files become visible together in one atomic directory publication. The command refuses a model directory that exists when extraction starts. Callers must serialize extraction attempts for the same destination: the existence check and final POSIX directory rename are not a cross-process lock, and a concurrently created empty directory can otherwise be replaced. The generated manifest is path-free and can be passed directly to `SyntheseusBackend`.
+
+Downloads and standalone manifest writes bind publication to the verified file
+inode when the workspace filesystem supports hard links. On filesystems such as
+exFAT or some SMB mounts that reject hard links, they retain private staging,
+pre/post byte verification, and atomic rename, but callers must also serialize
+writes to the same destination.
 
 ## Model manifest
 
@@ -136,29 +161,37 @@ A model manifest is public provenance, not an environment configuration file. It
   "provider": "Microsoft Research",
   "model": "RetroChimera",
   "model_version": "1.2.0",
-  "checkpoint_id": "reviewed-pistachio-checkpoint",
+  "checkpoint_id": "reviewed-uspto50k-checkpoint",
   "checkpoint_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "training_dataset": "Pistachio",
+  "training_dataset": "USPTO-50K",
   "code_license": "MIT",
   "checkpoint_license": "MIT",
-  "source_url": "https://doi.org/10.6084/m9.figshare.30591107.v1",
+  "source_url": "https://doi.org/10.6084/m9.figshare.30601718.v1",
   "metadata": {
     "reviewed_by": "replace-with-public-review-role"
   }
 }
 ```
 
-`provenance_status` is `complete` only when a checkpoint SHA-256 is present, the training dataset is identified, and both code and checkpoint licenses are explicit rather than `unknown`, `unspecified` or `review-required`. A manifest fingerprint is computed from canonical JSON so a changed manifest is visible even when the human-readable checkpoint ID stays the same. The worker echoes the manifest back untouched — redaction applies to model-reported metadata, never to the operator's own document, because filtering it would mean the published fingerprint no longer reproduces from the reviewed file. `SyntheseusBackend` compares the fingerprint it gets back against the manifest it sent and raises `manifest_mismatch` if they differ, so a worker cannot quietly substitute a provenance record nobody approved.
+`provenance_status` is `complete` only when a checkpoint SHA-256 is present, the training dataset is identified, both code and checkpoint licenses are explicit rather than `unknown`, `unspecified` or `review-required`, and the digest is not explicitly scoped only to a source archive. The deployment helper records `checkpoint_sha256_scope: source_archive` and `runtime_integrity: unverified`: its digest proves which reviewed ZIP was installed, not that the mutable extracted directory still contains those bytes when inference runs, so its status remains `incomplete`. Writing `runtime_integrity: verified` into a manifest cannot upgrade that status; a real host-side directory verifier would be required. A manifest fingerprint is computed from canonical JSON so a changed manifest is visible even when the human-readable checkpoint ID stays the same. The worker echoes the manifest back untouched — redaction applies to model-reported metadata, never to the operator's own document, because filtering it would mean the published fingerprint no longer reproduces from the reviewed file. `SyntheseusBackend` compares the fingerprint it gets back against the manifest it sent and raises `manifest_mismatch` if they differ, so a worker cannot quietly substitute a provenance record nobody approved.
 
 ## Usage
 
 ```python
+from pathlib import Path
+
 from retrosynthesis_planning.external_backends import SyntheseusBackend
+
+workspace = Path.cwd().resolve()
+model_dir = workspace / "models" / "retrochimera" / "uspto50k"
+manifest = model_dir / "model-manifest.json"
+cache_dir = workspace / "models" / "syntheseus-cache"
+cache_dir.mkdir(parents=True, exist_ok=True)
 
 backend = SyntheseusBackend(
     model="RetroChimera",
-    model_dir="/models/retrochimera/checkpoint",
-    manifest="/models/retrochimera/model-manifest.json",
+    model_dir=model_dir,
+    manifest=manifest,
     python_command=(
         "conda",
         "run",
@@ -170,7 +203,7 @@ backend = SyntheseusBackend(
     timeout_seconds=600,
     env={
         "WANDB_MODE": "offline",
-        "SYNTHESEUS_CACHE_DIR": "/models/syntheseus-cache",
+        "SYNTHESEUS_CACHE_DIR": str(cache_dir),
     },
 )
 ```

@@ -163,7 +163,7 @@
       "tests": "tests/test_host_network_capability.py,tests/test_egress_surface.py,tests/test_egress.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4c773a3f342607cfaed877e7a628be12882394a716acca2cd61c5206830f95d6"
+      "evidence_digest": "c5876da0f41820f62bf7053a95f7e9cc6280dd5b619da4001c06717b0afb8e79"
     },
     {
       "source": "R2",

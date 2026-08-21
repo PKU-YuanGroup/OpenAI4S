@@ -242,10 +242,16 @@ class ModelManifest:
             self.checkpoint_license.strip().lower(),
         }
         incomplete_licenses = {"unknown", "unspecified", "review-required"}
+        # Manifest metadata is operator-supplied documentation, not the result
+        # of a host-side model-directory verifier. An archive digest therefore
+        # cannot be promoted to complete runtime provenance by writing
+        # ``runtime_integrity: verified`` into the same document.
+        archive_only = self.metadata.get("checkpoint_sha256_scope") == "source_archive"
         if (
             self.checkpoint_sha256
             and self.training_dataset.strip().lower() not in {"unknown", "unspecified"}
             and not (license_values & incomplete_licenses)
+            and not archive_only
         ):
             return "complete"
         return "incomplete"

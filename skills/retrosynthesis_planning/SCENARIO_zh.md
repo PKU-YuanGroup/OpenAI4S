@@ -4,7 +4,7 @@
 
 ## Scenario Overview
 
-该 Scenario 面向“给定一个目标分子，利用可本地部署的开源模型提出并评审合成路线”的任务。逆合成规划不是一个单模型问题，也不应被写成一条固定 pipeline。不同模型实际回答的是不同的科学问题：一步前体是什么、怎样把一步提案组合成多步路线、一个已知反应中的原子如何对应、给定前体会生成什么产物、固定反应需要什么条件，以及完整反应可能得到多少收率。
+该 Scenario 面向“给定一个目标分子，使用可本地执行的模型组件提出并评审合成路线”的任务。代码或模型 artifact 可公开取得，并不等于 checkpoint 已获准使用；每个 artifact 在使用前都必须满足相应的准入和条款政策。逆合成规划不是一个单模型问题，也不应被写成一条固定 pipeline。不同模型实际回答的是不同的科学问题：一步前体是什么、怎样把一步提案组合成多步路线、一个已知反应中的原子如何对应、给定前体会生成什么产物、固定反应需要什么条件，以及完整反应可能得到多少收率。
 
 本文只保留当前有公开代码、可取得权重和脚本化推理入口的模型任务，不把去重、画图、日志、证据展示等工程功能硬凑成科学问题。共定义六个可分别输入、分别输出、分别评测的问题：
 
@@ -25,7 +25,7 @@
 | P2 | [`scenarios/02_multistep_route_planning.md`](scenarios/02_multistep_route_planning.md) | 设计完成；PaRoutes 数据与自动指标明确，可优先实现 |
 | P3 | [`scenarios/03_atom_mapping.md`](scenarios/03_atom_mapping.md) | 设计完成；正式 Ground Truth 的独立人工核验与许可仍是阻塞项 |
 | P4 | [`scenarios/04_forward_prediction.md`](scenarios/04_forward_prediction.md) | 设计完成；需冻结 USPTO_MIT 快照与 checkpoint 去重证明 |
-| P5 | [`scenarios/05_condition_recommendation.md`](scenarios/05_condition_recommendation.md) | 设计完成；v1 限于类别条件，数据/权重再分发条款待审计 |
+| P5 | [`scenarios/05_condition_recommendation.md`](scenarios/05_condition_recommendation.md) | 设计完成；v1 限于类别条件，数据许可待审计；任何 checkpoint 下载或推理前须审核其条款并在 manifest 记录允许/拒绝决定 |
 | P6 | [`scenarios/06_yield_estimation.md`](scenarios/06_yield_estimation.md) | 设计完成；以 Buchwald–Hartwig OOD split 为主，需冻结数据许可与去重清单 |
 
 ## 科学问题之间的关系
@@ -61,13 +61,13 @@
 
 ## 问题与模型总览
 
-| ID | 独立科学问题 | 最小输入 | 主要输出 | 当前默认模型 | 当前工程状态 |
+| ID | 独立科学问题 | 最小输入 | 主要输出 | 入选模型 | 当前工程状态 |
 | --- | --- | --- | --- | --- | --- |
 | P1 | 单步逆合成前体生成 | 目标产物 SMILES | Top-K 前体集合 | RetroChimera 1 | 已有隔离 worker、checkpoint 校验和结构化返回 |
 | P2 | 多步逆合成路线规划 | 目标、单步策略、库存、预算 | solved/unsolved 路线树 | AiZynthFinder | 已有命令构造、路线导入、规范化、审计和排序 |
 | P3 | 原子映射与反应中心识别 | 完整 reaction SMILES | mapped reaction、变化键 | RXNMapper | 已写独立 Skill；需可选模型环境 |
 | P4 | 正向反应产物预测 | 反应物、试剂 | Top-K 产物 | ReactionT5v2-forward | 已写独立 Skill；需可选模型环境 |
-| P5 | 反应条件推荐 | 固定反应两侧 | 条件组合、可选温度 | Parrot | 已写条件型 Skill；checkpoint 条款需部署审核 |
+| P5 | 反应条件推荐 | 固定反应两侧 | 条件组合、可选温度 | Parrot（有条件候选） | 已写条件型 Skill；任何 checkpoint 下载或推理前须完成条款审核并在 manifest 记录允许决定 |
 | P6 | 反应收率估计 | 反应物、试剂、产物 | 预测收率 | ReactionT5v2-yield | 已写独立 Skill；只允许域内筛选解释 |
 
 ## Problem 1. 单步逆合成前体生成
@@ -317,13 +317,13 @@ round-trip recovery 只表示正向模型与逆向提案一致，不是实验可
 
 当前候选模型为 Parrot。它提供公开推理代码、condition label 数据、CPU/GPU 环境和 CLI。USPTO checkpoint 主要输出类别条件；只有适当的 Reaxys 配置才涉及温度预测，不能宣称所有 checkpoint 都支持 temperature。
 
-Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没有单独声明的机器可读许可证，因此该模型在组织或商业部署前必须完成 checkpoint 条款审核。模型输出只作为检索与实验假设；文献或 ELN 验证必须另行记录。
+Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没有单独声明的机器可读许可证。因此，在任何 checkpoint 下载或推理前，必须审核所选 checkpoint 的条款，并在模型 manifest 中记录明确的允许/拒绝决定；记录缺失或决定为拒绝时必须停止。模型输出只作为检索与实验假设；文献或 ELN 验证必须另行记录。
 
 ### 模型实现
 
-- 条件型默认：Parrot；
+- 有条件候选：Parrot（非默认实现）；
 - 仓库 Skill：`reaction-condition-recommendation`；
-- 当前状态：有公开代码、权重下载和 CLI，但权重条款需部署审核。
+- 当前状态：有公开代码、checkpoint 下载器和 CLI，但任何下载或推理前都须完成所选 checkpoint 的条款审核，并在模型 manifest 中记录允许决定。
 
 ### 独立评测指标
 
@@ -340,7 +340,7 @@ Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没
 2. label dictionary 必须与 checkpoint 配套并写入 provenance。
 3. 不支持温度的 checkpoint 不得输出伪造温度。
 4. LLM 补充的条件不得标记为 Parrot 输出。
-5. 未完成 checkpoint 许可证审核时不得声称已满足组织部署要求。
+5. 未完成 checkpoint 条款审核且模型 manifest 未记录允许决定时，不得下载或运行 Parrot checkpoint；记录缺失或决定为拒绝时必须停止。
 
 ## Problem 6. 反应收率估计
 
@@ -426,7 +426,7 @@ Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没
 | P2 多步规划 | ✓ | 需 AiZynthFinder policies/stock | PaRoutes 详细设计已写 | 已集成；最接近可实现 Benchmark |
 | P3 原子映射 | ✓ Skill 发现 | 需 RXNMapper 环境 | 独立人工真值设计已写 | recipe 完成；可信 Ground Truth 待冻结 |
 | P4 正向预测 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | USPTO_MIT 详细设计已写 | recipe 完成；数据/去重 provenance 待冻结 |
-| P5 条件推荐 | ✓ Skill 发现 | 需 Parrot 环境/条款审核 | USPTO 类别条件设计已写 | 条件型 recipe 完成；不声称温度评测 |
+| P5 条件推荐 | ✓ Skill 发现 | 需 Parrot 环境及下载前条款决定 | USPTO 类别条件设计已写 | 条件型 recipe；推理前 manifest 必须记录允许决定 |
 | P6 收率估计 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | C–N 偶联 OOD 设计已写 | recipe 完成；数据许可/预训练去重待冻结 |
 
 ## 全 Scenario 的硬性约束
@@ -441,18 +441,18 @@ Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没
 8. **Score Semantics Isolation：** mapping confidence、beam likelihood、planner score、product rank、condition probability 和 yield error 不得压缩成一个未经校准的总可信度。
 9. **Evidence Isolation：** 模型输出、确定性计算、文献、ELN、供应商数据、专家判断和 LLM 假设必须使用不同 source type；LLM 不能把假设升级为证据。
 10. **Domain and Abstention：** 条件与收率模型必须记录适用域；缺少输入、超出训练域或缺少校准时应输出 unknown、out_of_domain 或 screening_only。
-11. **No Hidden Model Download：** 权重不得提交进仓库；下载必须显式授权、校验来源和哈希，并在隔离环境加载。
+11. **No Hidden Model Download：** 权重不得提交进仓库；下载必须显式授权、校验来源和哈希，并在隔离环境加载。对 Parrot，必须在任何下载或推理前将 checkpoint 条款的允许/拒绝决定记录到模型 manifest。
 12. **Final Evaluation Constraint：** evaluator 只能计算预先声明的指标，不得根据测试集结果反向修改模型、过滤规则、搜索预算或排序权重。
 
 ## 当前仓库中的对应 Skills
 
-| 问题 | Skill 绝对目录 |
+| 问题 | 仓库相对目录 |
 | --- | --- |
-| P1 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/single-step-retrosynthesis/` |
-| P2 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/retrosynthesis_planning/` |
-| P3 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-atom-mapping/` |
-| P4 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-forward-prediction/` |
-| P5 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-condition-recommendation/` |
-| P6 | `/aaa/fionafyang/buddy1/whaleywang/OpenAI4S/skills/reaction-yield-estimation/` |
+| P1 | [`../single-step-retrosynthesis/`](../single-step-retrosynthesis/) |
+| P2 | [`./`](./) |
+| P3 | [`../reaction-atom-mapping/`](../reaction-atom-mapping/) |
+| P4 | [`../reaction-forward-prediction/`](../reaction-forward-prediction/) |
+| P5 | [`../reaction-condition-recommendation/`](../reaction-condition-recommendation/) |
+| P6 | [`../reaction-yield-estimation/`](../reaction-yield-estimation/) |
 
 模型准入证据、备选模型和排除理由见同目录的 `MODEL_TASKS_zh.md`；各 Benchmark 的详细实现草案见 [`scenarios/README_zh.md`](scenarios/README_zh.md)。

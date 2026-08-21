@@ -1,7 +1,8 @@
 ---
 name: reaction-atom-mapping
-description: Map atoms across a complete reaction and extract changed bonds with the open RXNMapper model. Use when a known or proposed reaction SMILES needs atom correspondence, reaction-centre identification, bond-change auditing, or mapped input for another reaction model; do not use for target-only retrosynthesis or reaction feasibility.
+description: Map atoms and changed bonds for a complete reaction with RXNMapper. Use for reactant/product correspondence and reaction-centre audits, not target-only retrosynthesis or feasibility.
 license: MIT
+origin: openai4s
 metadata:
   third_party:
     - kind: model
@@ -26,8 +27,17 @@ Install it in the optional chemistry environment:
 
 ```bash
 conda create -n rxnmapper python=3.11 -y
-conda run -n rxnmapper python -m pip install "rxnmapper[rdkit]"
+conda run -n rxnmapper python -m pip install "rxnmapper[rdkit]==0.4.3"
 ```
+
+Select that interpreter in its own OpenAI4S Python Cell. The switch is applied
+before the following Cell, so do not combine this call with the import:
+
+```python
+host.env.use("rxnmapper")
+```
+
+After the switch succeeds, run the mapping code in a new Cell:
 
 ```python
 from rxnmapper import BatchedMapper
@@ -38,6 +48,11 @@ record = next(mapper.map_reactions_with_info([reaction]))
 print(record["mapped_rxn"], record["confidence"])
 ```
 
+Outside a Web session, where `host.env.use(...)` is unavailable, save the same
+code as a workspace script and execute it with `conda run -n rxnmapper python`.
+Do not run the bare import in the original kernel after installing into another
+environment.
+
 Use `BatchedMapper` for campaigns because it handles invalid records without
 aborting the whole batch. Keep the original reaction string alongside the
 mapped result.
@@ -45,7 +60,7 @@ mapped result.
 ## Derive the reaction centre
 
 Parse the mapped reactant and product sides with RDKit. Build bond dictionaries
-keyed by sorted atom-map-number pairs and bond type. Report:
+keyed by sorted atom-map-number pairs, with bond type as the value. Report:
 
 - bonds present only on the reactant side as broken;
 - bonds present only on the product side as formed;

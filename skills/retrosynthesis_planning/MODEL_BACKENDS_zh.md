@@ -81,6 +81,10 @@ conda activate openai4s-retro
 pip install syntheseus==0.7.2 retrochimera==1.2.0
 ```
 
+USPTO-50K checkpoint 使用可选的 Graphium 架构。加载该变体前，应以
+`retrochimera[graphium]==1.2.0` 取代普通包；Pistachio 与 USPTO-FULL 路径
+不需要这个 extra。
+
 其他 Syntheseus wrapper 有各自的模型依赖。应根据选定模型遵循上游安装说明，而不是默认安装所有模型家族。
 
 Adapter 不会把 `syntheseus`、`retrochimera`、PyTorch 或 CUDA 加进 `pyproject.toml`。Worker 会报告运行时安装的包版本；缺少或不兼容的依赖会返回结构化 backend error。
@@ -90,41 +94,59 @@ Adapter 不会把 `syntheseus`、`retrochimera`、PyTorch 或 CUDA 加进 `pypro
 `model_deployment.py` 登记公开的 Pistachio、USPTO-FULL 和 USPTO-50K RetroChimera 归档，以及上游字节数、MD5、DOI 记录和 MIT 许可证。列出注册表不需要联网：
 
 ```bash
-python skills/retrosynthesis_planning/model_deployment.py list
+python -m skills.retrosynthesis_planning.model_deployment list
 ```
 
 除非调用方显式授权，否则禁止下载；下载通过 OpenAI4S `host.web_download` 执行，因此每次重定向都会经过出网允许名单和 SSRF 防护。请在 OpenAI4S Python cell 中运行，并把目标放在 session workspace 内：
 
 ```python
+from pathlib import Path
+
 from retrosynthesis_planning.model_deployment import (
     checkpoint_spec,
     download_checkpoint,
 )
 
+workspace = Path.cwd().resolve()
+archive = workspace / "models" / "retrochimera" / "retrochimera_uspto50k.zip"
 spec = checkpoint_spec("uspto50k")
 download_checkpoint(
     spec,
-    "models/retrochimera/retrochimera_uspto50k.zip",
+    archive,
     allow_network=True,
+    web_download=host.web_download,
 )
 ```
 
-对于数 GB 的 checkpoint，操作者也可以改用部署环境批准的流式下载器，然后在解压前运行下面的离线 `verify` 命令。独立脚本本身不会直接联网。
+`host` 是 cell 中已经注入的 singleton，并不是可导入的模块。显式传入该
+capability 也让 helper 易于测试，并阻止独立脚本悄悄自行联网。
+
+`host.web_download` 会在强制执行字节上限并计算 SHA-256 的同时，把响应流式写入原子临时文件；它不会在 daemon 内存中聚合数 GB 的 checkpoint。操作者也可以改用部署环境批准的流式下载器，然后在解压前运行下面的离线 `verify` 命令。独立模块本身不会直接联网。
 
 较小的 USPTO-50K 归档适合安装冒烟测试，但不能替代覆盖更广的主 checkpoint。上游把 Pistachio 描述为发布的主力且最强 checkpoint。只有通过校验后才安装归档：
 
 ```bash
-python skills/retrosynthesis_planning/model_deployment.py verify \
-  uspto50k /models/retrochimera/retrochimera_uspto50k.zip
+CHECKPOINT_ROOT="$PWD/models/retrochimera"
 
-python skills/retrosynthesis_planning/model_deployment.py extract \
+python -m skills.retrosynthesis_planning.model_deployment verify \
+  uspto50k "$CHECKPOINT_ROOT/retrochimera_uspto50k.zip"
+
+python -m skills.retrosynthesis_planning.model_deployment extract \
   uspto50k \
-  /models/retrochimera/retrochimera_uspto50k.zip \
-  /models/retrochimera/uspto50k \
-  --manifest /models/retrochimera/uspto50k-manifest.json
+  "$CHECKPOINT_ROOT/retrochimera_uspto50k.zip" \
+  "$CHECKPOINT_ROOT/uspto50k" \
+  --manifest "$CHECKPOINT_ROOT/uspto50k/model-manifest.json"
 ```
 
-该命令会校验经审阅的字节数和 MD5、计算 SHA-256，拒绝 ZIP 中的绝对路径、路径穿越、反斜杠和符号链接，限制 member 数量及展开大小，并且仅在解压成功后发布模型目录。它拒绝替换已有模型目录。生成的 manifest 不含路径，可以直接传给 `SyntheseusBackend`。
+请从下载 Cell 使用的同一个 session workspace 根目录运行该命令块。因此，
+`$PWD/models/retrochimera` 是下载、校验、解压、manifest 创建和推理共用的唯一
+可写 checkpoint 根目录。
+
+该命令最多只把经审阅大小的归档复制到私有快照，同时校验字节数和 MD5 并计算 SHA-256，随后只解压这份已验证快照。它拒绝非普通文件及超大源、ZIP 中的绝对路径、路径穿越、反斜杠、Windows 盘符相对路径/备用数据流/设备名和符号链接，并限制 member 数量及展开大小。请求的 manifest 必须位于新模型目录内；它会在私有 staging 中写好，因此 manifest 与解压文件通过一次原子目录发布同时可见。命令会拒绝在解压开始时已经存在的模型目录。调用方必须串行化针对同一目标的解压：初始存在性检查与最终 POSIX 目录 rename 并不是跨进程锁，否则竞态创建的空目录仍可能被替换。生成的 manifest 不含路径，可以直接传给 `SyntheseusBackend`。
+
+当 workspace 文件系统支持硬链接时，下载与独立 manifest 写入会把发布对象绑定到
+已验证 inode。对于 exFAT 或部分 SMB 挂载等拒绝硬链接的文件系统，它们仍使用私有
+staging、发布前后字节校验和原子 rename，但调用方也必须串行化针对同一目标的写入。
 
 ## Model manifest
 
@@ -136,29 +158,37 @@ Model manifest 是公开 provenance，不是环境配置文件。它不能包含
   "provider": "Microsoft Research",
   "model": "RetroChimera",
   "model_version": "1.2.0",
-  "checkpoint_id": "reviewed-pistachio-checkpoint",
+  "checkpoint_id": "reviewed-uspto50k-checkpoint",
   "checkpoint_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "training_dataset": "Pistachio",
+  "training_dataset": "USPTO-50K",
   "code_license": "MIT",
   "checkpoint_license": "MIT",
-  "source_url": "https://doi.org/10.6084/m9.figshare.30591107.v1",
+  "source_url": "https://doi.org/10.6084/m9.figshare.30601718.v1",
   "metadata": {
     "reviewed_by": "replace-with-public-review-role"
   }
 }
 ```
 
-只有在 checkpoint SHA-256 存在、训练数据集已明确，并且代码与 checkpoint 许可证不是 `unknown`、`unspecified` 或 `review-required` 时，`provenance_status` 才会是 `complete`。系统会基于 canonical JSON 计算 manifest fingerprint，因此即使人类可读 checkpoint ID 不变，manifest 的修改仍然可见。worker 会原样回显 manifest——清洗只作用于模型返回的 metadata，绝不作用于操作者自己的文档，因为一旦过滤，公布的 fingerprint 就无法从被审阅的文件复算出来。`SyntheseusBackend` 会把回传的 fingerprint 与自己发出的 manifest 比对，不一致时抛出 `manifest_mismatch`，因此 worker 无法悄悄替换一份没有人批准的 provenance 记录。
+只有在 checkpoint SHA-256 存在、训练数据集已明确、代码与 checkpoint 许可证不是 `unknown`、`unspecified` 或 `review-required`，且 digest 没有被明确限定为仅覆盖源归档时，`provenance_status` 才会是 `complete`。部署 helper 会记录 `checkpoint_sha256_scope: source_archive` 和 `runtime_integrity: unverified`：这个 digest 证明安装的是哪份经审阅 ZIP，并不能证明执行推理时可变的解压目录仍是相同字节，因此其状态保持 `incomplete`。仅在 manifest 中写入 `runtime_integrity: verified` 不能升级该状态；这需要真正的 host 侧目录验证器。系统会基于 canonical JSON 计算 manifest fingerprint，因此即使人类可读 checkpoint ID 不变，manifest 的修改仍然可见。worker 会原样回显 manifest——清洗只作用于模型返回的 metadata，绝不作用于操作者自己的文档，因为一旦过滤，公布的 fingerprint 就无法从被审阅的文件复算出来。`SyntheseusBackend` 会把回传的 fingerprint 与自己发出的 manifest 比对，不一致时抛出 `manifest_mismatch`，因此 worker 无法悄悄替换一份没有人批准的 provenance 记录。
 
 ## 使用方法
 
 ```python
+from pathlib import Path
+
 from retrosynthesis_planning.external_backends import SyntheseusBackend
+
+workspace = Path.cwd().resolve()
+model_dir = workspace / "models" / "retrochimera" / "uspto50k"
+manifest = model_dir / "model-manifest.json"
+cache_dir = workspace / "models" / "syntheseus-cache"
+cache_dir.mkdir(parents=True, exist_ok=True)
 
 backend = SyntheseusBackend(
     model="RetroChimera",
-    model_dir="/models/retrochimera/checkpoint",
-    manifest="/models/retrochimera/model-manifest.json",
+    model_dir=model_dir,
+    manifest=manifest,
     python_command=(
         "conda",
         "run",
@@ -170,7 +200,7 @@ backend = SyntheseusBackend(
     timeout_seconds=600,
     env={
         "WANDB_MODE": "offline",
-        "SYNTHESEUS_CACHE_DIR": "/models/syntheseus-cache",
+        "SYNTHESEUS_CACHE_DIR": str(cache_dir),
     },
 )
 ```

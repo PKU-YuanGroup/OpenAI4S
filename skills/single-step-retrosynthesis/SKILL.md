@@ -1,7 +1,8 @@
 ---
 name: single-step-retrosynthesis
-description: Generate and compare ranked one-step precursor sets for a product SMILES with open local models. Use RetroChimera as the primary model and ReactionT5v2-retrosynthesis only as a diversity baseline; use this Skill for disconnection ideation, expansion-policy calls, or single-step benchmark work, not for complete route planning.
+description: Generate ranked one-step precursor sets for a product with RetroChimera; use for disconnection ideas or expansion-policy calls. Do not recurse, search stock, or call the result a complete route.
 license: MIT
+origin: openai4s
 metadata:
   third_party:
     - kind: model
@@ -29,20 +30,53 @@ Create a separate environment and install the model:
 
 ```bash
 conda create -n retrochimera python=3.10 -y
-conda run -n retrochimera python -m pip install retrochimera
+conda run -n retrochimera python -m pip install "retrochimera==1.2.0"
 ```
+
+The USPTO-50K checkpoint uses RetroChimera's Graphium architecture and requires
+`"retrochimera[graphium]==1.2.0"` instead. Install that extra before using the
+smaller checkpoint as a smoke test.
 
 Acquire and verify a reviewed checkpoint with
 `retrosynthesis_planning/model_deployment.py`; keep weights outside git. Then:
 
+The checked adapter and deployment notes are deliberately owned by the
+`retrosynthesis_planning` Skill. A delegated specialist that runs this recipe
+must therefore be allowlisted for both `single-step-retrosynthesis` and
+`retrosynthesis_planning`; loading a Skill never widens that allowlist. Load and
+read the dependency through the Skill APIs before importing it:
+
 ```python
+host.load_skill("retrosynthesis_planning")
+backend_notes = host.skills.read("retrosynthesis_planning", "MODEL_BACKENDS.md")
+```
+
+If either call is refused, stop and ask the caller to add the dependency to the
+specialist profile. Do not bypass the gate with workspace file reads or a `../`
+resource path. Once access is confirmed, the USPTO-50K smoke-test checkpoint
+created by those notes lives under the same workspace root. Run the adapter:
+
+```python
+from pathlib import Path
+
 from retrosynthesis_planning.external_backends import SyntheseusBackend
+
+workspace = Path.cwd().resolve()
+model_dir = workspace / "models" / "retrochimera" / "uspto50k"
+manifest = model_dir / "model-manifest.json"
 
 backend = SyntheseusBackend(
     model="RetroChimera",
-    model_dir="/models/retrochimera_pistachio",
-    manifest="/models/retrochimera_pistachio/manifest.json",
-    python_command=("conda", "run", "-n", "retrochimera", "python"),
+    model_dir=model_dir,
+    manifest=manifest,
+    python_command=(
+        "conda",
+        "run",
+        "--no-capture-output",
+        "-n",
+        "retrochimera",
+        "python",
+    ),
 )
 result = backend.single_step("Oc1ccc(OCc2ccccc2)c(Br)c1", num_results=5)
 for proposal in result["predictions"]:
@@ -91,6 +125,7 @@ selectivity, available conditions, yield, safety, or experimental success.
 | many invalid or repeated beams | Stop expanding the beam; report low candidate diversity and try an independent model. |
 | high score but failed forward recovery | Keep it as a disagreement requiring chemistry review; never overwrite either raw result. |
 
-Primary model source: <https://github.com/microsoft/retrochimera>. Deployment
-details and reviewed checkpoint metadata live in
-`../retrosynthesis_planning/MODEL_BACKENDS.md`.
+Primary model source: <https://github.com/microsoft/retrochimera>. Read deployment
+details and reviewed checkpoint metadata with
+`host.skills.read("retrosynthesis_planning", "MODEL_BACKENDS.md")` after the
+dependency has been allowed and loaded.

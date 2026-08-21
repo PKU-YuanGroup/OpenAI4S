@@ -1,7 +1,8 @@
 ---
 name: reaction-forward-prediction
-description: Predict ranked products from reactants and reagents with the open ReactionT5v2-forward model, and use product recovery as a round-trip check for proposed retrosynthetic steps. Use for forward reaction outcome prediction, precursor-set validation, byproduct hypotheses, or reaction-model benchmarking; do not treat product rank as experimental feasibility.
+description: Predict ranked products from reactants and reagents with ReactionT5v2-forward; use for outcome prediction or round-trip recovery. Product rank is not reaction feasibility.
 license: MIT
+origin: openai4s
 metadata:
   third_party:
     - kind: weights
@@ -29,17 +30,86 @@ Install in a separate environment; do not add these packages to OpenAI4S core:
 ```bash
 conda create -n reactiont5 python=3.11 -y
 conda run -n reactiont5 python -m pip install \
-  "torch" "transformers==4.40.2" "tokenizers==0.19.1" sentencepiece rdkit
+  "torch" "transformers==4.40.2" "tokenizers==0.19.1" \
+  "huggingface_hub[cli]==0.35.0" \
+  sentencepiece rdkit datasets accelerate pandas
 ```
 
-Run the official repository CLI for batches, or use the direct model-card API:
+Acquire an immutable local model snapshot and a reviewed source checkout from an
+operator terminal whose current directory is the writable session workspace.
+The revisions below are the reviewed revisions for this recipe; do not replace
+either with `main`. A future revision requires a new review and provenance
+record before use.
+
+```bash
+set -eu
+
+REACTIONT5_ROOT="$PWD/models/reactiont5"
+SOURCE_COMMIT="76eb08068e10fe255cae5d563a91e1c1e9abac54"
+FORWARD_REVISION="933114058cb2604dc1bf536dbebdfcefbe83d4fc"
+
+mkdir -p "$REACTIONT5_ROOT"
+if [ ! -d "$REACTIONT5_ROOT/source/.git" ]; then
+  git clone https://github.com/sagawatatsuya/ReactionT5v2.git \
+    "$REACTIONT5_ROOT/source"
+fi
+git -C "$REACTIONT5_ROOT/source" cat-file -e "${SOURCE_COMMIT}^{commit}"
+git -C "$REACTIONT5_ROOT/source" checkout --detach "$SOURCE_COMMIT"
+test "$(git -C "$REACTIONT5_ROOT/source" rev-parse HEAD)" = "$SOURCE_COMMIT"
+SOURCE_STATUS="$(git -C "$REACTIONT5_ROOT/source" status \
+  --porcelain --untracked-files=all)"
+test -z "$SOURCE_STATUS"
+
+conda run -n reactiont5 hf download sagawa/ReactionT5v2-forward \
+  --revision "$FORWARD_REVISION" \
+  --local-dir "$REACTIONT5_ROOT/forward-$FORWARD_REVISION"
+```
+
+The final assertion must remain empty; if a reused checkout has modified or
+untracked files, stop instead of executing it as reviewed source.
+
+Record the two revisions and hashes of the downloaded regular files. Keep the
+snapshot outside version control. The batch CLI imports repository-local
+modules, so run `prediction.py` with `task_forward` as its working directory and
+pass only the reviewed local snapshot:
+
+```bash
+REACTIONT5_ROOT="$PWD/models/reactiont5"
+FORWARD_REVISION="933114058cb2604dc1bf536dbebdfcefbe83d4fc"
+
+HF_HUB_OFFLINE=1 conda run -n reactiont5 \
+  --cwd "$REACTIONT5_ROOT/source/task_forward" \
+  python prediction.py \
+  --input_data "$PWD/reactions.csv" \
+  --model_name_or_path "$REACTIONT5_ROOT/forward-$FORWARD_REVISION" \
+  --input_max_length 150 --num_beams 5 --num_return_sequences 5 \
+  --batch_size 16 --output_dir "$PWD/forward-output"
+```
+
+Run that block from the session workspace root so `$PWD` expands to absolute
+workspace input/output paths. For a single record, select the environment in
+its own OpenAI4S Python Cell:
 
 ```python
+host.env.use("reactiont5")
+```
+
+After the switch succeeds, load only the reviewed local snapshot in a new Cell:
+
+```python
+import os
+from pathlib import Path
+
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-model_id = "sagawa/ReactionT5v2-forward"
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+reviewed_revision = "933114058cb2604dc1bf536dbebdfcefbe83d4fc"
+snapshot = Path.cwd() / "models" / "reactiont5" / f"forward-{reviewed_revision}"
+if not snapshot.is_dir():
+    raise FileNotFoundError(f"reviewed snapshot is missing: {snapshot}")
+os.environ["HF_HUB_OFFLINE"] = "1"
+tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+model = AutoModelForSeq2SeqLM.from_pretrained(snapshot, local_files_only=True)
+model.eval()
 text = "REACTANT:CCBr.OCCREAGENT:"
 inputs = tokenizer(text, return_tensors="pt")
 generated = model.generate(
@@ -55,8 +125,9 @@ products = [
 ]
 ```
 
-Pin the Hugging Face revision for reproducible work and record resolved commit,
-model ID, package versions, device, beam settings, and input string.
+Record the model ID, reviewed revision, local file hashes, source commit, package
+versions, device, beam settings, and input string. Never fall back from a
+missing local snapshot to a moving Hub model ID.
 
 ## Round-trip check
 
