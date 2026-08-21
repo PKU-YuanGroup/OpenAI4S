@@ -1,9 +1,9 @@
 # `workflows/`
 
-The versioned science-workflow benchmark's manifests: ten workflows and 20
+The versioned science-workflow benchmark's manifests: eleven workflows and 31
 cases, each workflow JSON declaring what a run is supposed to do and what
 counts as having done it. The root-level `next-round-acceptance.json` is a
-separate Stage 0 field/safety pack, not an eleventh science workflow.
+separate Stage 0 field/safety pack, not a twelfth science workflow.
 
 They live in the repository rather than in a fixture directory for one reason:
 a case change has to be a reviewable diff. The runner that executes them is
@@ -30,6 +30,7 @@ about the half of the system whose job is to refuse.
 | [`remote-compute/`](remote-compute/README.md) | submit -> poll -> harvest against a real shell |
 | [`science-retrieval/`](science-retrieval/README.md) | Scientific retrieval with source evidence |
 | [`telemetry-identity/`](telemetry-identity/README.md) | Revoking telemetry destroys the identity with it |
+| [`tool-bringup/`](tool-bringup/README.md) | Tool bring-up: build, weights, canary, admission, frozen record |
 
 Replay the strict Stage 0 pack, with a JSON report suitable for a gate, using
 `openai4s benchmark --acceptance --json`. A matching baseline gap is printed as

@@ -359,6 +359,394 @@ def environment_transaction(ctx: Context, inputs: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# tool bring-up
+# --------------------------------------------------------------------------
+
+
+#: The fake design tool a bring-up installs: reads ``--target``/``--weights``
+#: and prints a deterministic JSON report. Flagged modes exist so a case can
+#: inject each way a canary fails. Run with ``sys.executable`` — no shebang,
+#: no PATH dependence.
+_TOOL_SCRIPT = """\
+import hashlib
+import json
+import sys
+
+
+def _value(argv, flag, default):
+    try:
+        return argv[argv.index(flag) + 1]
+    except (ValueError, IndexError):
+        return default
+
+
+argv = sys.argv[1:]
+if "--fail" in argv:
+    sys.exit(3)
+if "--no-output" in argv:
+    sys.exit(0)
+if "--unparseable" in argv:
+    print("not json")
+    sys.exit(0)
+target = _value(argv, "--target", "unknown")
+weights = _value(argv, "--weights", "")
+digest = hashlib.sha256(open(weights, "rb").read()).hexdigest()
+plddt = 75.0 + (int(hashlib.sha256(target.encode()).hexdigest()[:2], 16) % 200) / 10
+print(json.dumps(
+    {
+        "target": target,
+        "sequence": "SEQ" + target.replace(".", "").replace("_", ""),
+        "plddt": plddt,
+        "weights_sha256": digest,
+    },
+    sort_keys=True,
+))
+"""
+
+
+#: The fake downstream sequence-design adapter: consumes the canary JSON and
+#: writes a consumption record. ``--refuse`` exits 1 without writing — the
+#: injected way a downstream consumer fails.
+_ADAPTER_SCRIPT = """\
+import json
+import sys
+
+refuse = "--refuse" in sys.argv[1:]
+if refuse:
+    sys.exit(1)
+argv = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+with open(argv[0], encoding="utf-8") as handle:
+    canary = json.load(handle)
+with open(argv[1], "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "consumer": "sequence-design",
+            "target": canary.get("target"),
+            "sequence": canary.get("sequence"),
+            "plddt": canary.get("plddt"),
+            "consumed_weights_sha256": canary.get("weights_sha256"),
+        },
+        handle,
+        sort_keys=True,
+    )
+"""
+
+
+def tool_bringup(ctx: Context, inputs: dict) -> dict:
+    """Simulate an agent bringing a design tool up: build the environment,
+    download weights, run a canary, prove the output parses and a downstream
+    adapter consumes it, and freeze the whole thing into ``bringup.json``.
+
+    Every simulated failure is recorded in the frozen record rather than
+    raised — the gate is the ``verify_bringup`` step that follows.
+    """
+    import time
+
+    from openai4s import pkgscan
+    from openai4s.benchmark import bringup
+    from openai4s.kernel import env_generations as eg
+
+    started = time.monotonic()
+    root = ctx.root
+    record_dir = root / bringup.RECORD_DIR
+    record_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Build the tool environment through the real EnvironmentStore
+    #    transaction: the package manager is injected (the same fake-conda
+    #    seam environment_transaction uses), the transaction is real.
+    spec = root / "spec.yml"
+    spec.write_text(inputs.get("spec", "design-tool==1.0.0\n"), encoding="utf-8")
+
+    def runner(argv, cwd):
+        prefix = Path(argv[argv.index("--prefix") + 1])
+        (prefix / "bin").mkdir(parents=True, exist_ok=True)
+        (prefix / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+        (prefix / "bin" / "tool").write_text(_TOOL_SCRIPT, encoding="utf-8")
+        (prefix / "conda-meta").mkdir(parents=True, exist_ok=True)
+        meta = prefix / "conda-meta" / "design-tool-1.0.0-0.json"
+        meta.write_text(
+            json.dumps({"name": "design-tool", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(argv, 0, stderr=b"")
+
+    store = eg.EnvironmentStore(root / "environments", runner=runner)
+
+    def build(prefix, staged_spec):
+        return ["fake-conda", "env", "create", "--prefix", str(prefix)]
+
+    def verify(prefix):
+        if not (prefix / "bin" / "tool").is_file():
+            raise RuntimeError("the build produced no tool")
+        return str(prefix / "bin" / "python"), ["design-tool==1.0.0"]
+
+    name = inputs.get("environment", "design-tool")
+    plan = store.plan(name, spec, tool="fake-conda")
+    result = store.apply(plan, spec, tool="fake-conda", build=build, verify=verify)
+    generation = result.generation
+    prefix = Path(generation.prefix) if generation else None
+    pkgscan_ok = False
+    if prefix is not None:
+        packages = pkgscan.collect_packages(prefix)
+        pkgscan_ok = pkgscan.normalize_pkg("design-tool") in packages
+
+    # 2. "Download" weights: deterministic bytes with a recorded digest.
+    weights_dir = root / "weights"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    weights_bytes = hashlib.sha256(
+        f"openai4s.bringup:weights:{inputs.get('weights_seed', 'v1')}".encode()
+    ).digest()
+    weights_path = weights_dir / "model.weights"
+    weights_path.write_bytes(weights_bytes)
+    weights_sha256 = hashlib.sha256(weights_bytes).hexdigest()
+
+    # 3. Run the canary against a real campaign target.
+    target = inputs.get("target", "P01308")
+    canary_flags = []
+    if inputs.get("fail_canary"):
+        canary_flags.append("--fail")
+    elif inputs.get("canary_no_output"):
+        canary_flags.append("--no-output")
+    elif inputs.get("canary_unparseable"):
+        canary_flags.append("--unparseable")
+    canary_command = [
+        sys.executable,
+        str(prefix / "bin" / "tool"),
+        "--target",
+        target,
+        "--weights",
+        str(weights_path),
+        *canary_flags,
+    ]
+    canary = subprocess.run(canary_command, capture_output=True, text=True)
+    canary_exit = canary.returncode
+    canary_stdout = canary.stdout or ""
+
+    canary_output_path = record_dir / "canary_output.json"
+    parse_ok = False
+    parsed = None
+    required_fields = inputs.get(
+        "canary_fields", ["target", "sequence", "plddt", "weights_sha256"]
+    )
+    if canary_exit == 0 and canary_stdout.strip():
+        canary_output_path.write_text(canary_stdout, encoding="utf-8")
+        try:
+            parsed = json.loads(canary_stdout)
+        except ValueError:
+            parsed = None
+        parse_ok = isinstance(parsed, dict) and all(
+            field in parsed for field in required_fields
+        )
+
+    # 4. Prove the downstream sequence-design adapter consumes the output.
+    downstream_ok = False
+    downstream_path = record_dir / "downstream_result.json"
+    if parse_ok:
+        adapter_path = record_dir / "adapter.py"
+        adapter_path.write_text(_ADAPTER_SCRIPT, encoding="utf-8")
+        adapter_flags = ["--refuse"] if inputs.get("refuse_downstream") else []
+        downstream = subprocess.run(
+            [
+                sys.executable,
+                str(adapter_path),
+                str(canary_output_path),
+                str(downstream_path),
+                *adapter_flags,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        downstream_ok = downstream.returncode == 0 and downstream_path.is_file()
+
+    # 5. Admit only when the whole chain passed within the declared budget.
+    cost_gpu_h = float(inputs.get("cost_gpu_h", 0.5))
+    budget_hours = float(inputs.get("budget_hours", 8.0))
+    within_budget = cost_gpu_h <= budget_hours
+    attempt_ok = bool(
+        canary_exit == 0 and parse_ok and downstream_ok and pkgscan_ok and within_budget
+    )
+    if attempt_ok:
+        attempt_status, attempt_reason = "passed", ""
+    elif not within_budget:
+        attempt_status, attempt_reason = "failed", "cost exceeds declared budget"
+    elif canary_exit != 0:
+        attempt_status, attempt_reason = "failed", f"canary exited {canary_exit}"
+    elif not canary_stdout.strip():
+        attempt_status, attempt_reason = "failed", "canary produced no output"
+    elif not parse_ok:
+        attempt_status, attempt_reason = "failed", "canary output does not parse"
+    elif not downstream_ok:
+        attempt_status, attempt_reason = "failed", "downstream consumer refused"
+    else:
+        attempt_status, attempt_reason = (
+            "failed",
+            "installed packages do not match the spec",
+        )
+
+    attempts = ctx.state.setdefault("bringup_attempts", [])
+    attempts.append({"status": attempt_status, "reason": attempt_reason})
+
+    # 6. Freeze the record.
+    reasons = ["weights verified", "canary parseable", "downstream consumed"]
+    record = {
+        "schema_version": bringup.SCHEMA_VERSION,
+        "tool": {
+            "name": "design-tool",
+            "version": "1.0.0",
+            "source": "https://github.com/openai4s/offline-design-tool",
+            "revision": "abc123",
+            "adapter": "bringup/adapter.py",
+            "env_name": name,
+            "env_generation": generation.id if generation else None,
+        },
+        "weights": [
+            {
+                "path": "weights/model.weights",
+                "sha256": weights_sha256,
+                "size": len(weights_bytes),
+                "source": "https://example.com/design-tool/weights",
+                "verified": True,
+            }
+        ],
+        "canary": {
+            "target": target,
+            "command": canary_command,
+            "outputs": (
+                [
+                    {
+                        "path": "bringup/canary_output.json",
+                        "sha256": hashlib.sha256(canary_stdout.encode()).hexdigest(),
+                    }
+                ]
+                if canary_exit == 0 and canary_stdout.strip()
+                else []
+            ),
+            "parse": {
+                "status": "ok" if parse_ok else "failed",
+                "format": "json",
+                "fields": list(required_fields),
+            },
+            "downstream": {
+                "consumer": "sequence-design",
+                "status": (
+                    "passed"
+                    if downstream_ok
+                    else "refused" if inputs.get("refuse_downstream") else "failed"
+                ),
+                "output": "bringup/downstream_result.json" if downstream_ok else None,
+                "sha256": (
+                    hashlib.sha256(downstream_path.read_bytes()).hexdigest()
+                    if downstream_ok
+                    else None
+                ),
+            },
+        },
+        "admission": {
+            "status": "verified" if attempt_ok else "refused",
+            "reasons": reasons if attempt_ok else [attempt_reason],
+        },
+        "runtime": {
+            "wall_s": time.monotonic() - started,
+            "attempts": list(attempts),
+        },
+        "cost": {"gpu_h": cost_gpu_h, "budget_hours": budget_hours},
+    }
+    record = bringup.seal_record(record)
+    (record_dir / bringup.BRINGUP_FILENAME).write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return {
+        "admitted": attempt_ok,
+        "attempts": len(attempts),
+        "weights_sha256": weights_sha256,
+        "weights_verified": 1,
+        "parse": parse_ok,
+        "parse_fields": sum(
+            1
+            for field in required_fields
+            if isinstance(parsed, dict) and field in parsed
+        ),
+        "downstream": downstream_ok,
+        "env_generation": generation.id if generation else None,
+        "record_sha256": record["record_sha256"],
+        "canary_exit": canary_exit,
+        "pkgscan_ok": pkgscan_ok,
+    }
+
+
+def verify_bringup_step(ctx: Context, inputs: dict) -> dict:
+    """The harness gate. A frozen bring-up record that fails verification
+    refuses the workflow — every bring-up failure case scores here, on this
+    one refusal point, rather than being given its own mechanism."""
+    from openai4s.benchmark import bringup
+
+    report = bringup.verify_bringup(
+        ctx.root, expected_weights=inputs.get("expected_weights")
+    )
+    if not report["ok"]:
+        raise RuntimeError(
+            "bringup record failed verification: " + "; ".join(report["problems"])
+        )
+    return {
+        "admitted": report["admitted"],
+        "problems": len(report["problems"]),
+        "checks": report["checks"],
+        "record_sha256": report["record_sha256"],
+        "weights_verified": report["weights_verified"],
+        "canary_parse": report["canary_parse"],
+        "downstream": report["downstream"],
+        "admission": report["admission"],
+        "attempts": report["attempts"],
+        "runtime_wall_s": report["runtime_wall_s"],
+        "cost_gpu_h": report["cost_gpu_h"],
+    }
+
+
+def tamper_bringup(ctx: Context, inputs: dict) -> dict:
+    """Flip, delete, or forge a frozen bring-up artifact.
+
+    The forge is the interesting action: it rewrites the file *and* the
+    record's own digest and re-seals the record, so every internal check
+    passes — only the evaluator-held reference digests notice, which is why
+    ``verify_bringup`` accepts them.
+    """
+    from openai4s.benchmark import bringup
+
+    root = ctx.root
+    record_path = root / bringup.RECORD_DIR / bringup.BRINGUP_FILENAME
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    target = inputs["target"]
+    action = inputs.get("action", "flip")
+    if target == "weights":
+        entry = record["weights"][0]
+    elif target == "canary":
+        entry = record["canary"]["outputs"][0]
+    elif target == "downstream":
+        entry = record["canary"]["downstream"]
+    else:
+        raise ValueError(f"unknown tamper target {target!r}")
+    path = root / entry["path"]
+    if action == "flip":
+        data = path.read_bytes()
+        path.write_bytes(data[:-1] + bytes([data[-1] ^ 0x01]))
+    elif action == "delete":
+        path.unlink()
+    elif action == "forge":
+        data = path.read_bytes()
+        forged = data[:-1] + bytes([data[-1] ^ 0x01])
+        path.write_bytes(forged)
+        entry["sha256"] = hashlib.sha256(forged).hexdigest()
+        entry["size"] = len(forged)
+        record = bringup.seal_record(record)
+        record_path.write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    else:
+        raise ValueError(f"unknown tamper action {action!r}")
+    return {"tampered": str(path), "action": action, "target": target}
+
+
+# --------------------------------------------------------------------------
 # remote compute
 # --------------------------------------------------------------------------
 
@@ -661,6 +1049,13 @@ STEPS: dict[str, Callable[[Context, dict], dict]] = {
     "export_session_package": export_session_package,
     "tamper_with_package": tamper_with_package,
     "environment_transaction": environment_transaction,
+    # A bring-up retry runs the same function under a second step name, because
+    # the runner keys a step's inputs by its name — reusing the name would feed
+    # the retry the first run's failure flags.
+    "tool_bringup": tool_bringup,
+    "tool_bringup_retry": tool_bringup,
+    "verify_bringup": verify_bringup_step,
+    "tamper_bringup": tamper_bringup,
     "remote_job": remote_job,
     "science_query": science_query,
     "connector_drift_check": connector_drift_check,
