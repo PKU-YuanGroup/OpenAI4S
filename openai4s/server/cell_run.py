@@ -168,7 +168,17 @@ class CellExecutionService:
         # Acquire before readiness or identity allocation.  A background race
         # must refuse the Cell without inventing a Cell id/attempt, touching a
         # runtime, or allowing any workspace side effect.
-        with self.ports.capture_lease(session, request):
+        capture_lease = self.ports.capture_lease(session, request)
+        lease_type = type(capture_lease)
+        if not callable(getattr(lease_type, "__enter__", None)) or not callable(
+            getattr(lease_type, "__exit__", None)
+        ):
+            # CPython 3.10 raises AttributeError here while 3.11+ raises
+            # TypeError.  Reject the malformed port explicitly so the safety
+            # boundary has one stable failure contract on every supported
+            # interpreter.
+            raise TypeError("capture_lease must return a context manager")
+        with capture_lease:
             return self._execute_admitted(
                 session,
                 request,

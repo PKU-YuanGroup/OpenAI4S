@@ -179,7 +179,7 @@ def test_malformed_capture_lease_fails_before_cell_identity_or_admission(tmp_pat
     )
     session = _session(tmp_path)
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="capture_lease must return a context manager"):
         service.execute(
             session,
             CellRequest("print('must not run')", "agent"),
