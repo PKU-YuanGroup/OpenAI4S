@@ -1482,6 +1482,22 @@ def test_customize_skills_exposes_scoped_version_history_and_safe_rollback() -> 
     assert ".skill-version-card" in STYLE_CSS
 
 
+def test_send_loads_the_skill_catalog_only_for_slash_token_candidates() -> None:
+    send = _extract_js_function(APP_JS, "send")
+
+    assert "const skillCandidates = [];" in send
+    assert re.search(
+        r"if \(!planNow\) text\.replace\(/\(\^\|\\s\)\\/\(\[A-Za-z0-9\]",
+        send,
+    )
+    assert re.search(
+        r"if \(skillCandidates\.length\) \{\s*try \{\s*"
+        r"const cat = await loadSkillsCatalog\(\);",
+        send,
+    )
+    assert send.count("await loadSkillsCatalog()") == 1
+
+
 def test_no_tabular_parser_hardcodes_a_delimiter() -> None:
     """`csv()` split on a literal comma, so every `.tsv` parsed as one column.
 

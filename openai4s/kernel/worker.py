@@ -400,6 +400,7 @@ def _peak_rss_kb() -> int:
 
 _HOST_CALL_SEQ = 0
 _ACTIVE_CELL_ID: list[str | None] = [None]
+_ACTIVE_CELL_ORIGIN = [""]
 
 
 def _attach_cell_context(method: str, args: list) -> list:
@@ -495,6 +496,78 @@ _NS: dict = {"__name__": "__openai4s__", "__builtins__": __builtins__}
 _CELL_SEQ = 0
 _LIVE_TAGS: list[str] = []
 _SKILL_LOAD_EVENT_STATE: list[object] = [None, 0]
+_SKILL_LOAD_PROTOCOL_FRAMES = [0]
+
+
+def _publish_skill_sidecar_event(
+    event: object,
+    _emit=_write_frame,
+    _cell_state=_ACTIVE_CELL_ID,
+    _frame_count=_SKILL_LOAD_PROTOCOL_FRAMES,
+) -> None:
+    """Publish one audit-attested import before user code can revoke it.
+
+    The CPython audit hook calls this sink only when the caller's code object is
+    the loader registered by a system/recovery bootstrap Cell. The sink itself
+    is never placed in the persistent user namespace.
+    """
+
+    payload = dict(event) if type(event) is dict else {}
+    event_name = payload.get("event")
+    attestation_id = payload.get("attestation_id")
+    attestation_mac = payload.get("attestation_mac")
+    if (
+        type(attestation_mac) is not str
+        or len(attestation_mac) != 64
+        or any(char not in "0123456789abcdef" for char in attestation_mac)
+    ):
+        payload = {"event": "invalid_sidecar_event"}
+        event_name = "invalid_sidecar_event"
+        attestation_id = ""
+    if event_name == "sidecar_capture_started":
+        source_sha256 = payload.get("sha256")
+        if (
+            type(attestation_id) is not str
+            or not attestation_id
+            or type(source_sha256) is not str
+            or len(source_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in source_sha256)
+        ):
+            payload = {"event": "invalid_sidecar_event"}
+    elif event_name == "invalid_sidecar_event":
+        payload = {
+            "event": "invalid_sidecar_event",
+            "attestation_id": (attestation_id if type(attestation_id) is str else ""),
+            **(
+                {"attestation_mac": attestation_mac}
+                if type(attestation_mac) is str
+                else {}
+            ),
+        }
+    else:
+        source_b64 = payload.get("source_b64")
+        if (
+            type(attestation_id) is not str
+            or not attestation_id
+            or type(source_b64) is not str
+            or len(source_b64) > 2_666_672
+        ):
+            payload = {"event": "invalid_sidecar_event"}
+    _emit(
+        {
+            "type": "skill_sidecar_load",
+            "id": _cell_state[0],
+            "event": payload,
+        }
+    )
+    _frame_count[0] += 1
+
+
+def _complete_skill_sidecar_attestations(_audit=sys.audit) -> None:
+    """End one Cell's hidden loader attestations before its response frame."""
+
+    _audit("openai4s.skill_cell_complete")
+
 
 # SIGINT discipline
 _in_user_code = [False]
@@ -546,11 +619,14 @@ def _error_lineno(tb, tag: str) -> tuple[int | None, str | None]:
 def _drain_skill_sidecar_loads() -> list[dict]:
     """Return worker-generated successful imports not reported by prior Cells.
 
-    Bootstrap can replace its event list when a generation is reinitialized;
-    list identity resets the cursor.  This is result metadata only—no extra
-    protocol reader, Host call, or sidecar execution happens here.
+    Current loaders publish a separate protocol frame as soon as execution
+    succeeds.  The visible list remains as compatibility result metadata for
+    an older bootstrap hook; the manager prefers an already-received event
+    frame when both are present.
     """
 
+    protocol_frames = _SKILL_LOAD_PROTOCOL_FRAMES[0]
+    _SKILL_LOAD_PROTOCOL_FRAMES[0] = 0
     events = _NS.get("__openai4s_skill_load_events__")
     if type(events) is not list:
         _SKILL_LOAD_EVENT_STATE[:] = [None, 0]
@@ -566,7 +642,7 @@ def _drain_skill_sidecar_loads() -> list[dict]:
     if len(captured) != len(pending):
         captured.append({"event": "invalid_sidecar_event"})
     _SKILL_LOAD_EVENT_STATE[1] = len(events)
-    return captured
+    return [] if protocol_frames else captured
 
 
 def _install_host(ns: dict) -> None:
@@ -795,6 +871,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     tag = f"<kernel:{_CELL_SEQ}>"
     _register_cell(code, tag)
     _ACTIVE_CELL_ID[0] = cell_id
+    _ACTIVE_CELL_ORIGIN[0] = origin
 
     if "host" not in _NS:
         _install_host(_NS)
@@ -896,6 +973,12 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
             guard_report = guard.after_cell()
         except Exception:  # noqa: BLE001
             guard_report = {}
+
+    # Any loader that announced a source compile but did not prove execution
+    # remains unmatched in the manager and makes the generation unrecoverable.
+    # Clear the audit hook's frame references now that no loader frame can
+    # legitimately complete after this Cell response.
+    _complete_skill_sidecar_attestations()
 
     response = {
         "type": "response",
@@ -1167,31 +1250,87 @@ def _inspect_namespace(limit: int) -> dict:
     }
 
 
-def _install_audit_hook() -> None:
-    """Arm the in-kernel dlopen guard (defense layer 3).
+def _install_audit_hook(event_key: bytes) -> bool:
+    """Arm the in-kernel dlopen guard and Skill-load attestation hook.
 
     Runs inside THIS worker process — an audit hook only sees events raised in
-    its own interpreter. Opt out with OPENAI4S_SAFETY_AUDIT_HOOK=0. Best-effort:
-    a failure here must never stop the kernel from serving cells.
+    its own interpreter. ``OPENAI4S_SAFETY_AUDIT_HOOK=0`` disables the dlopen
+    policy, but not the result-integrity event channel. Best-effort: a failure
+    here must never stop the kernel from serving cells.
     """
-    if os.environ.get("OPENAI4S_SAFETY_AUDIT_HOOK", "1").strip().lower() in (
-        "0",
-        "false",
-        "no",
-        "off",
-    ):
-        return
+    dlopen_enabled = os.environ.get(
+        "OPENAI4S_SAFETY_AUDIT_HOOK", "1"
+    ).strip().lower() not in ("0", "false", "no", "off")
     try:
         from openai4s.security.audit_hook import install
 
-        install(enabled=True)
+        def skill_event_origin() -> str:
+            return str(_ACTIVE_CELL_ORIGIN[0])
+
+        event_sink = _publish_skill_sidecar_event
+        install(
+            enabled=dlopen_enabled,
+            skill_event_sink=event_sink,
+            skill_event_origin=skill_event_origin,
+            skill_event_key=event_key,
+        )
+        # The audit hook owns the sole live publisher reference. In particular,
+        # ``import __main__`` from a Cell must not expose a callable that can
+        # manufacture manager protocol frames.
+        globals().pop("_publish_skill_sidecar_event", None)
+        return True
     except Exception as e:  # noqa: BLE001
         _write_frame({"type": "log", "msg": f"audit hook unavailable: {e}"})
+        return False
+
+
+def _initialize_manager_attestation() -> bool:
+    """Consume the one pre-Cell manager handshake and arm the hidden hook."""
+
+    raw_line = _readline_protocol()
+    if not raw_line:
+        return False
+    try:
+        request = json.loads(raw_line)
+    except ValueError:
+        return False
+    request_id = request.get("id", "unknown")
+    raw_key = request.get("skill_attestation_key")
+    if request.get("type") != "initialize" or type(raw_key) is not str:
+        _write_frame(
+            {
+                "type": "initialization_error",
+                "id": request_id,
+                "error": "missing manager attestation handshake",
+            }
+        )
+        return False
+    try:
+        event_key = bytes.fromhex(raw_key)
+    except ValueError:
+        event_key = b""
+    # Drop the protocol document before any user frame exists. The only live
+    # key reference after this helper returns is inside the hidden audit hook.
+    request.clear()
+    raw_line = ""
+    raw_key = ""
+    if len(event_key) != 32 or not _install_audit_hook(event_key):
+        _write_frame(
+            {
+                "type": "initialization_error",
+                "id": request_id,
+                "error": "invalid manager attestation handshake",
+            }
+        )
+        return False
+    _write_frame({"type": "initialized", "id": request_id})
+    return True
 
 
 def main() -> None:
     _setup_protocol_channels()
-    _install_audit_hook()
+    if not _initialize_manager_attestation():
+        return
     while True:
         raw_line = _readline_protocol()
         if not raw_line:

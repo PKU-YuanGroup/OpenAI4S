@@ -1,0 +1,180 @@
+# Count Matrix Ingestion - Usage Guide
+
+## Overview
+Load gene expression count matrices from various quantification tools (featureCounts, Salmon, kallisto, STAR, HTSeq, 10X) into pandas DataFrames for downstream analysis.
+
+## Prerequisites
+```bash
+pip install pandas numpy scipy
+```
+
+## Quick Start
+Tell your AI agent what you want to do:
+- "Load my featureCounts output file into a pandas DataFrame"
+- "Combine Salmon quantification files from multiple samples"
+- "Import STAR gene counts with reverse strand specificity"
+
+## Example Prompts
+### Loading Specific Formats
+> "Load the featureCounts file at counts.txt and clean up the sample names"
+
+> "Read all Salmon quant.sf files from the salmon_quants directory into a combined count matrix"
+
+> "Import STAR ReadsPerGene.out.tab files with reverse strandedness"
+
+### Quality Checks
+> "Load my count matrix and show me basic QC statistics"
+
+> "Check my count matrix for duplicate gene IDs and sum them"
+
+### Format Detection
+> "Figure out what delimiter my counts file uses and load it"
+
+## What the Agent Will Do
+1. Identify the input format based on file structure or user specification
+2. Load the data with appropriate parsing (skip headers, set index, clean sample names)
+3. Run basic quality checks (shape, library sizes, zero counts, NaN values)
+4. Optionally convert to sparse format for memory efficiency if matrix is highly sparse
+
+## Common Formats
+
+| Source | Format | Key Columns | Notes |
+|--------|--------|-------------|-------|
+| featureCounts | TSV | Geneid + 5 meta cols + counts | Integer counts; discards multi-mapped reads by default |
+| Salmon | quant.sf per sample | NumReads, TPM | Fractional estimates from EM; use tximport for gene-level |
+| kallisto | abundance.tsv per sample | est_counts, tpm | Fractional estimates; use tximport for gene-level |
+| STAR | ReadsPerGene.out.tab | gene_id + 3 strand columns | Must select correct strandedness column |
+| 10X | matrix.mtx + features/barcodes | Sparse format | Use scanpy or cellranger |
+| HTSeq | TSV | gene_id, count | Last 5 rows are summary stats (prefixed `__`) |
+
+### Critical: Salmon/kallisto Require tximport
+
+Salmon and kallisto produce transcript-level estimates. Loading NumReads/est_counts directly and summing to gene level introduces length bias (genes switching isoforms appear falsely DE). Always use tximport (R) or equivalent offset handling. See rna-quantification/tximport-workflow.
+
+### Critical: STAR Strandedness Column Selection
+
+STAR ReadsPerGene.out.tab columns: gene_id | unstranded | sense | antisense. For Illumina TruSeq stranded libraries, the antisense column (column 4) is correct. Verify by comparing total counts in columns 3 vs 4 -- the larger total indicates the correct strand.
+
+## Complete Loading Pipeline
+
+```python
+import pandas as pd
+import numpy as np
+from pathlib import Path
+
+class CountMatrixLoader:
+    @staticmethod
+    def from_featurecounts(filepath):
+        df = pd.read_csv(filepath, sep='\t', comment='#')
+        counts = df.set_index('Geneid').iloc[:, 5:]
+        counts.columns = [c.replace('.bam', '').split('/')[-1] for c in counts.columns]
+        return counts
+
+    @staticmethod
+    def from_salmon_dir(base_dir):
+        base = Path(base_dir)
+        samples = [d.name for d in base.iterdir() if d.is_dir() and (d / 'quant.sf').exists()]
+        dfs = {}
+        for sample in samples:
+            sf = pd.read_csv(base / sample / 'quant.sf', sep='\t', index_col=0)
+            dfs[sample] = sf['NumReads']
+        return pd.DataFrame(dfs)
+
+    @staticmethod
+    def from_star_genecounts(filepaths, strandedness='reverse'):
+        # File cols (1-indexed): 1=gene_id, 2=unstranded, 3=forward, 4=reverse
+        # After index_col=0, remaining cols are 0=unstranded, 1=forward, 2=reverse
+        col_map = {'unstranded': 0, 'forward': 1, 'reverse': 2}
+        col_idx = col_map[strandedness]
+        dfs = {}
+        for fp in filepaths:
+            sample = Path(fp).name.replace('_ReadsPerGene.out.tab', '')
+            df = pd.read_csv(fp, sep='\t', header=None, index_col=0)
+            dfs[sample] = df.iloc[4:, col_idx]
+        return pd.DataFrame(dfs)
+
+counts = CountMatrixLoader.from_featurecounts('counts.txt')
+counts = CountMatrixLoader.from_salmon_dir('salmon_quants/')
+```
+
+## Quality Checks After Loading
+
+```python
+def check_count_matrix(counts):
+    print(f'Shape: {counts.shape[0]} genes x {counts.shape[1]} samples')
+    print(f'Total counts per sample:\n{counts.sum().describe()}')
+    print(f'Genes with zero counts: {(counts.sum(axis=1) == 0).sum()}')
+    print(f'Any NaN values: {counts.isna().any().any()}')
+    print(f'Library sizes range: {counts.sum().min():.0f} - {counts.sum().max():.0f}')
+    return counts
+
+counts = check_count_matrix(counts)
+```
+
+## Handling Different Organisms
+
+| Organism | Ensembl Format | Example |
+|----------|----------------|---------|
+| Human | ENSG | ENSG00000141510 |
+| Mouse | ENSMUSG | ENSMUSG00000059552 |
+| Zebrafish | ENSDARG | ENSDARG00000002354 |
+| Fly | FBgn | FBgn0000008 |
+| Worm | WBGene | WBGene00000001 |
+
+```python
+sample_ids = counts.index[:5].tolist()
+print(sample_ids)
+
+if counts.index.str.startswith('ENSG').any():
+    print('Human Ensembl gene IDs')
+elif counts.index.str.startswith('ENSMUSG').any():
+    print('Mouse Ensembl gene IDs')
+```
+
+## Troubleshooting
+
+### Duplicate Gene IDs
+```python
+if counts.index.duplicated().any():
+    print(f'Duplicate IDs: {counts.index.duplicated().sum()}')
+    counts = counts.groupby(counts.index).sum()
+```
+
+### Missing Samples
+```python
+expected = ['sample1', 'sample2', 'sample3']
+actual = counts.columns.tolist()
+missing = set(expected) - set(actual)
+if missing:
+    print(f'Missing samples: {missing}')
+```
+
+### Wrong Delimiter
+```python
+import csv
+with open('counts.txt', 'r') as f:
+    dialect = csv.Sniffer().sniff(f.read(1024))
+    print(f'Detected delimiter: {repr(dialect.delimiter)}')
+```
+
+## Tips
+
+- Always check the matrix shape and library sizes after loading to catch parsing errors early
+- Remove version suffixes from Ensembl IDs (e.g., ENSG00000141510.15 -> ENSG00000141510) before downstream analysis; but keep versions when reproducibility with a specific Ensembl release is needed
+- For Salmon/kallisto, always use tximport rather than manually loading and summing transcript counts -- naive summation introduces length bias
+- Verify STAR strandedness before loading: compare column totals to determine the correct strand
+- Use sparse matrices for single-cell data or bulk RNA-seq with >90% zeros
+- For DE analysis, always provide raw integer counts; DE tools normalize internally
+- featureCounts and HTSeq discard multi-mapped reads by default, which systematically undercounts genes with overlapping isoforms or paralogs
+- featureCounts paired-end runs need `-p --countReadPairs` since Subread v2.0.2; the `-p` flag alone counts each mate separately and inflates counts ~2x
+- tximport `countsFromAbundance='lengthScaledTPM'` returns count-scale values for limma-voom; despite the name, the output is NOT TPM and should not be reported as such
+- For 3'-tagged libraries (10x bulk, QuantSeq), use `countsFromAbundance='no'` WITHOUT length offset -- length bias is negligible
+
+## Related Skills
+
+- rna-quantification/featurecounts-counting - Generate featureCounts output
+- rna-quantification/alignment-free-quant - Generate Salmon/kallisto output
+- rna-quantification/tximport-workflow - Import Salmon/kallisto with length-offset correction
+- expression-matrix/normalization - Normalize counts for downstream analysis
+- expression-matrix/sparse-handling - Memory-efficient storage
+- expression-matrix/gene-id-mapping - Convert gene identifiers

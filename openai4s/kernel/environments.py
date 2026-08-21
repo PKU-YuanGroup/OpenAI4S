@@ -495,6 +495,13 @@ def get_environment(name: str | None) -> Environment | None:
     for env in discover_environments():
         if env.name == name:
             return env
+    # A conda environment can be created by an operator while the daemon is
+    # already running. Ordinary conda roots have no generation pointer whose
+    # fingerprint could invalidate our cache, so retry a miss with one forced
+    # scan before declaring the requested environment unknown.
+    for env in discover_environments(force=True):
+        if env.name == name:
+            return env
     return None
 
 

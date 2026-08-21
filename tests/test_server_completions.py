@@ -144,6 +144,9 @@ def test_agent_prompt_never_claims_post_fence_prose_runs_after_submit():
     assert "exact name present in the current tool declarations" in SYSTEM_PROMPT
     assert "must never replace an ordinary foreground Cell" in SYSTEM_PROMPT
     assert "exact native `list_skills`" in SYSTEM_PROMPT
+    assert "zero-argument overview returns the exact total count" in SYSTEM_PROMPT
+    assert "`collection` id and `offset=0`" in SYSTEM_PROMPT
+    assert "returned `next_offset`" in SYSTEM_PROMPT
     assert "`list_dir` lists workspace files only" in SYSTEM_PROMPT
     assert "`host.skills.list()` only inside" in SYSTEM_PROMPT
     assert "1-4 completed" in SYSTEM_PROMPT
@@ -160,6 +163,8 @@ def test_gateway_prompt_keeps_native_cells_and_host_rpcs_distinct():
     assert "`host.*` syntax is Python source" in _GATEWAY_PROMPT_EXTRA
     assert "a foreground Cell has no runner function" in _GATEWAY_PROMPT_EXTRA
     assert "exact native `list_skills`" in _GATEWAY_PROMPT_EXTRA
+    assert "overview gives the exact total, curated names" in _GATEWAY_PROMPT_EXTRA
+    assert "returned `next_offset`" in _GATEWAY_PROMPT_EXTRA
     assert "Only inside a fenced Python Cell use `host.skills.list()`" in (
         _GATEWAY_PROMPT_EXTRA
     )

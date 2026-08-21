@@ -35,6 +35,6 @@ repos:
         pass_filenames: false
         always_run: true
 
-# Never reformat: vendored third-party assets (minified 3Dmol, web fonts) and
-# captured test fixtures (byte-exact real-world data).
-exclude: '^(openai4s/server/webui/vendor/|tests/fixtures/)'
+# Never reformat: vendored third-party assets and Skills, plus captured test
+# fixtures. These trees preserve byte-exact upstream or real-world payloads.
+exclude: '^(openai4s/server/webui/vendor/|skills/bioskills/|tests/fixtures/)'

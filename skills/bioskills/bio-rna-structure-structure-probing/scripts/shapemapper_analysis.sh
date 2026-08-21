@@ -1,0 +1,48 @@
+#!/bin/bash
+# Reference: ShapeMapper2 2.1.5+, ViennaRNA 2.6+ | Verify API if version differs
+# SHAPE-MaP analysis with ShapeMapper2: modified + untreated samples -> per-nucleotide reactivities.
+
+TARGET_FA=$1
+NAME=${2:-"my_rna"}
+MOD_R1=$3
+MOD_R2=$4
+UNMOD_R1=$5
+UNMOD_R2=$6
+OUTPUT_DIR=${7:-"results"}
+THREADS=${8:-8}
+
+if [ -z "$TARGET_FA" ] || [ -z "$MOD_R1" ]; then
+    echo "Usage: $0 <target.fa> <name> <mod_R1.fq.gz> <mod_R2.fq.gz> <unmod_R1.fq.gz> <unmod_R2.fq.gz> [output_dir] [threads]"
+    echo ""
+    echo "ShapeMapper2 is Linux-only. On macOS use Docker:"
+    echo "  docker run -v \$(pwd):/data shapemapper2/shapemapper2 shapemapper \\"
+    echo "    --target /data/target.fa --modified --R1 /data/mod_R1.fq.gz ..."
+    exit 1
+fi
+
+echo "=== Running ShapeMapper2 ==="
+# Three samples: modified = signal, untreated = background subtraction, denatured (optional) = normalization.
+shapemapper \
+    --target "$TARGET_FA" \
+    --name "$NAME" \
+    --modified --R1 "$MOD_R1" --R2 "$MOD_R2" \
+    --untreated --R1 "$UNMOD_R1" --R2 "$UNMOD_R2" \
+    --out "$OUTPUT_DIR" \
+    --nproc "$THREADS" \
+    --min-depth 5000 \
+    --overwrite
+
+echo ""
+echo "=== QC (effective depth, mutation rates) ==="
+LOG="$OUTPUT_DIR/${NAME}_shapemapper_log.txt"
+[ -f "$LOG" ] && grep -E "Effective read depth|Mutation rate|quality" "$LOG"
+
+echo ""
+echo "=== Output files (note: .shape and .map are SEPARATE files) ==="
+echo "  ${OUTPUT_DIR}/${NAME}_${NAME}_profile.txt   - reactivity table (Norm_profile column)"
+echo "  ${OUTPUT_DIR}/${NAME}_${NAME}.shape          - 2 columns (position, normalized reactivity) for RNAfold"
+echo "  ${OUTPUT_DIR}/${NAME}_${NAME}.map            - 4 columns (position, reactivity, stderr, base)"
+
+echo ""
+echo "=== Restrain folding with the reactivities (already normalized) ==="
+echo "  RNAfold --shape=${OUTPUT_DIR}/${NAME}_${NAME}.shape --shapeMethod=\"Dm1.8b-0.6\" --noPS < ${TARGET_FA}"

@@ -8,6 +8,8 @@ this is the inner synchronous RPC loop.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -46,6 +48,7 @@ Dispatcher = Callable[[str, list], Any]
 #: chatty R `system()` fits; the point is that it is a ceiling on what the
 #: daemon allocates, not on what the caller is shown.
 _STDERR_TAIL_BYTES = 64 * 1024
+_SKILL_SIDECAR_CAPTURE_B64_BYTES = 10_000_000
 
 
 class _StderrTail:
@@ -156,6 +159,13 @@ class Kernel:
         # reader racing an executing Cell's host_call/response loop.
         self._protocol_transaction_lock = threading.Lock()
         self._action_context_local = threading.local()
+        # Sidecar source capture is a generation-wide budget. Keeping it on
+        # the manager prevents a Cell from resetting accounting by clearing a
+        # worker-side diagnostic list between execute requests.
+        self._skill_sidecar_capture_b64_bytes = 0
+        self._skill_sidecar_capture_failed = False
+        self._skill_sidecar_attestation_key = b""
+        self._skill_sidecar_attestation_ids: set[str] = set()
         self.generation = 0  # bumped on every (re)spawn
         # Minted here for a local worker, which learns it through
         # `_child_env`. A remote worker cannot: the transport branch of
@@ -199,6 +209,14 @@ class Kernel:
         from openai4s.platform_support import require_supported
 
         require_supported()
+        is_python_worker = self.argv is None
+        if is_python_worker:
+            self._skill_sidecar_attestation_key = os.urandom(32)
+            self._skill_sidecar_attestation_ids.clear()
+        else:
+            self._skill_sidecar_attestation_key = b""
+            self._skill_sidecar_attestation_ids.clear()
+
         if self.transport_factory is not None:
             # `enforce` is the posture that promises the boundary is really
             # there and fails closed when it is not. A remote worker is
@@ -218,17 +236,67 @@ class Kernel:
                 )
             self._transport = self.transport_factory()
             self._stderr_tail = self._transport.stderr_tail
+            if is_python_worker:
+                self._initialize_skill_sidecar_attestation()
             return self._transport.process
 
         command = self.argv or [self.python, "-u", str(_WORKER)]
+        child_environment = self._child_env()
         self._transport = PipeTransport(
             self._sandbox.wrap_command(command),
             cwd=self.cwd,
-            env=self._sandbox.apply_environment(self._child_env()),
+            env=self._sandbox.apply_environment(child_environment),
             stderr_tail_factory=lambda: _StderrTail(_STDERR_TAIL_BYTES),
         )
         self._stderr_tail = self._transport.stderr_tail
+        if is_python_worker:
+            self._initialize_skill_sidecar_attestation()
         return self._transport.process
+
+    def _initialize_skill_sidecar_attestation(self) -> None:
+        """Give a Python worker its per-generation sidecar signing key.
+
+        This handshake belongs above the transport boundary: local workers use
+        pipes and cluster workers use a socket, but both run the same Python
+        worker and must receive the initialization frame before any Cell. The
+        key cannot ride in the environment because Linux retains the initial
+        environment bytes in ``/proc/self/environ`` after ``unsetenv()``.
+        """
+        initialization_id = f"initialize-{uuid.uuid4()}"
+        self._send(
+            {
+                "type": "initialize",
+                "id": initialization_id,
+                "skill_attestation_key": self._skill_sidecar_attestation_key.hex(),
+            }
+        )
+        initialized = False
+        diagnostic_frames = 0
+        while diagnostic_frames <= 8:
+            try:
+                frame = self._readline()
+            except (TypeError, ValueError):
+                break
+            if not isinstance(frame, dict):
+                break
+            if frame.get("type") == "log":
+                diagnostic_frames += 1
+                continue
+            initialized = (
+                frame.get("type") == "initialized"
+                and frame.get("id") == initialization_id
+            )
+            break
+        if initialized:
+            return
+        try:
+            self._transport.close(graceful=True)
+        except Exception:  # noqa: BLE001 — initialization already failed
+            try:
+                self._transport.kill()
+            except Exception:  # noqa: BLE001 — best-effort final cleanup
+                pass
+        raise RuntimeError("kernel worker attestation initialization failed")
 
     def _child_env(self) -> dict:
         # Build from a strict runtime allowlist: daemon LLM/provider keys,
@@ -305,6 +373,10 @@ class Kernel:
                 self._send(request)
 
                 stdout_chunks: list[str] = []
+                sidecar_loads: list[dict[str, Any]] = []
+                pending_sidecar_attestations: dict[str, str] = {}
+                sidecar_capture_bytes = self._skill_sidecar_capture_b64_bytes
+                sidecar_capture_failed = self._skill_sidecar_capture_failed
                 while True:
                     frame = self._readline()
                     if frame is None:
@@ -331,6 +403,13 @@ class Kernel:
                         raise RuntimeError(f"kernel worker exited unexpectedly: {err}")
                     ftype = frame.get("type")
                     if ftype == "response":
+                        if pending_sidecar_attestations:
+                            self._skill_sidecar_attestation_ids.update(
+                                pending_sidecar_attestations
+                            )
+                            sidecar_loads.append({"event": "invalid_sidecar_event"})
+                            sidecar_capture_failed = True
+                            self._skill_sidecar_capture_failed = True
                         if capture is not None and frame.get("sink_capture"):
                             # The worker declares it sank to the host's fifos,
                             # so the host — not the worker — is what has the
@@ -350,6 +429,17 @@ class Kernel:
                                 usage.update(capture.counters())
                         elif stdout_chunks and not frame.get("stdout"):
                             frame["stdout"] = "".join(stdout_chunks)
+                        # A successful sidecar import is published before the
+                        # Cell resumes, so clearing/replacing objects in the
+                        # persistent user namespace cannot retract it. Prefer
+                        # those manager-held frames over the worker response's
+                        # legacy diagnostic-list snapshot.
+                        # Never trust the worker response's user-visible legacy
+                        # mirror. Only independently MAC-authenticated protocol
+                        # frames are recovery evidence.
+                        frame.pop("skill_sidecar_loads", None)
+                        if sidecar_loads:
+                            frame["skill_sidecar_loads"] = sidecar_loads
                         # Host-side annotation, not a protocol field: the
                         # observation formatter needs somewhere inside the
                         # workspace to spill an oversized stdout, and the
@@ -366,6 +456,99 @@ class Kernel:
                         stdout_chunks.append(text)
                         if on_chunk is not None and text:
                             on_chunk(text)
+                    elif ftype == "skill_sidecar_load":
+                        if sidecar_capture_failed:
+                            if not sidecar_loads:
+                                sidecar_loads.append({"event": "invalid_sidecar_event"})
+                            continue
+                        event = frame.get("event")
+                        if frame.get("id") != cell_id or not isinstance(event, dict):
+                            sidecar_loads.append({"event": "invalid_sidecar_event"})
+                            sidecar_capture_failed = True
+                            self._skill_sidecar_capture_failed = True
+                            continue
+                        event = dict(event)
+                        attestation_mac = event.pop("attestation_mac", None)
+                        encoded_event = json.dumps(
+                            event,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                        expected_mac = hmac.new(
+                            self._skill_sidecar_attestation_key,
+                            encoded_event,
+                            hashlib.sha256,
+                        ).hexdigest()
+                        if (
+                            len(self._skill_sidecar_attestation_key) != 32
+                            or not isinstance(attestation_mac, str)
+                            or not hmac.compare_digest(attestation_mac, expected_mac)
+                        ):
+                            sidecar_loads.append({"event": "invalid_sidecar_event"})
+                            sidecar_capture_failed = True
+                            self._skill_sidecar_capture_failed = True
+                            continue
+                        event_name = event.get("event")
+                        attestation_id = event.get("attestation_id")
+                        if event_name == "sidecar_capture_started":
+                            source_sha256 = event.get("sha256")
+                            if (
+                                not isinstance(attestation_id, str)
+                                or not attestation_id
+                                or attestation_id in pending_sidecar_attestations
+                                or attestation_id in self._skill_sidecar_attestation_ids
+                                or not isinstance(source_sha256, str)
+                                or len(source_sha256) != 64
+                                or any(
+                                    char not in "0123456789abcdef"
+                                    for char in source_sha256
+                                )
+                            ):
+                                sidecar_loads.append({"event": "invalid_sidecar_event"})
+                                sidecar_capture_failed = True
+                                self._skill_sidecar_capture_failed = True
+                                continue
+                            pending_sidecar_attestations[attestation_id] = source_sha256
+                            continue
+                        if event_name == "invalid_sidecar_event":
+                            if isinstance(attestation_id, str):
+                                pending_sidecar_attestations.pop(attestation_id, None)
+                                if attestation_id:
+                                    self._skill_sidecar_attestation_ids.add(
+                                        attestation_id
+                                    )
+                            sidecar_loads.append({"event": "invalid_sidecar_event"})
+                            sidecar_capture_failed = True
+                            self._skill_sidecar_capture_failed = True
+                            continue
+                        source_b64 = event.get("source_b64")
+                        source_sha256 = event.get("sha256")
+                        expected_sha256 = (
+                            pending_sidecar_attestations.pop(attestation_id, None)
+                            if isinstance(attestation_id, str)
+                            else None
+                        )
+                        if (
+                            expected_sha256 is None
+                            or source_sha256 != expected_sha256
+                            or not isinstance(source_b64, str)
+                        ):
+                            sidecar_loads.append({"event": "invalid_sidecar_event"})
+                            sidecar_capture_failed = True
+                            self._skill_sidecar_capture_failed = True
+                            continue
+                        self._skill_sidecar_attestation_ids.add(attestation_id)
+                        sidecar_capture_bytes += len(source_b64)
+                        if sidecar_capture_bytes > _SKILL_SIDECAR_CAPTURE_B64_BYTES:
+                            sidecar_loads.append({"event": "invalid_sidecar_event"})
+                            sidecar_capture_failed = True
+                            self._skill_sidecar_capture_failed = True
+                            continue
+                        self._skill_sidecar_capture_b64_bytes = sidecar_capture_bytes
+                        recorded_event = dict(event)
+                        recorded_event.pop("attestation_id", None)
+                        sidecar_loads.append(recorded_event)
                     elif ftype == "log":
                         # diagnostic from worker; ignore or log
                         pass
@@ -669,6 +852,8 @@ class Kernel:
         # Every respawn bumps the generation: a lease, a watchdog or an
         # in-flight interrupt naming the previous incarnation has to be
         # refused, and this counter is the whole of how it is refused.
+        self._skill_sidecar_capture_b64_bytes = 0
+        self._skill_sidecar_capture_failed = False
         self.generation += 1
         if not self._transport.alive():
             # A local respawn that produced a dead child. The remote case is

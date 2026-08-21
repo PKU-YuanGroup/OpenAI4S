@@ -9,6 +9,12 @@
 #   dependencies:
 #     - pytorch=2.12.1   # (from the conda-forge / pytorch channel)
 # and drop torch from the pip: section below.
+#
+# RFdiffusion is intentionally NOT installed in this shared environment. Its
+# official environment/container is Python 3.9 plus a CUDA-specific older
+# PyTorch/DGL stack, which is incompatible with this portable Python 3.13 CPU
+# environment. Run RFdiffusion in a pinned dedicated env or container; keep
+# interoperable structure-analysis dependencies here.
 name: struct
 channels:
   - conda-forge
@@ -18,6 +24,9 @@ dependencies:
   # structural biology
   - biotite=1.7.1
   - biotraj=1.2.2
+  - biopython=1.88
+  - freesasa=2.2.1
+  - dssp=4.6.1
   # numerics / plotting
   - numpy
   - scipy

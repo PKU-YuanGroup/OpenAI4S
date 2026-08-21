@@ -83,6 +83,22 @@ _RISKY_TEXT = re.compile(
     r"(?i)\b(subprocess|os\.system|system2?|shell|requests?\.|urllib\.|"
     r"socket\.|curl\b|wget\b|ssh\b|scp\b|writeLines\s*\(|saveRDS\s*\()"
 )
+# ``importlib.import_module`` accepts package-directory spellings that are not
+# Python identifiers (the Skill loader deliberately emits that form for names
+# such as ``foo bar`` and ``x:y``).  Preserve that contract while rejecting
+# hierarchy/path injection and control characters in an untrusted load event.
+_SIDECAR_MODULE_SEGMENT = re.compile(r"[^./\\\x00-\x1f\x7f]+")
+_UNFROZEN_BUILTIN_EXECUTORS = frozenset({"exec", "eval", "compile"})
+_UNFROZEN_ATTRIBUTE_EXECUTORS = frozenset(
+    {
+        "spec_from_file_location",
+        "SourceFileLoader",
+        "SourcelessFileLoader",
+        "load_module",
+        "exec_module",
+        "run_path",
+    }
+)
 # Import roots that reach the process/filesystem/network directly.  A recovery
 # cell that imports any of these is never replay-safe regardless of its label.
 _REPLAY_RISKY_IMPORT_ROOTS = frozenset(
@@ -134,6 +150,7 @@ class SidecarManifest:
     exports: tuple[str, ...] = ()
     import_mode: str = "module"
     source_path: str | None = None
+    local_import_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -142,6 +159,32 @@ class SidecarManifest:
             raise ValueError("sidecar order must be non-negative")
         if not isinstance(self.source, bytes):
             raise TypeError("sidecar source must be bytes")
+        name_parts = self.name.split(".")
+        parent_parts = tuple(dict.fromkeys(name_parts[:-1]))
+        raw_local_roots = self.local_import_roots
+        if not raw_local_roots:
+            # Direct construction is still useful for tests and migration
+            # helpers.  Runtime records must carry the complete alias set, but
+            # a manually created manifest can at least seal every parent named
+            # by its module spelling (or its sole legacy module name).
+            raw_local_roots = parent_parts or tuple(name_parts[:1])
+        if not isinstance(raw_local_roots, (list, tuple)):
+            raise TypeError("sidecar local import roots must be a sequence")
+        local_import_roots = tuple(raw_local_roots)
+        if (
+            not local_import_roots
+            or len(local_import_roots) > 2
+            or len(local_import_roots) != len(set(local_import_roots))
+            or any(
+                not isinstance(root, str)
+                or _SIDECAR_MODULE_SEGMENT.fullmatch(root) is None
+                for root in local_import_roots
+            )
+        ):
+            raise ValueError("sidecar local import roots are invalid")
+        if not set(parent_parts).issubset(local_import_roots):
+            raise ValueError("sidecar local import roots omit a module parent")
+        object.__setattr__(self, "local_import_roots", local_import_roots)
         label = self.source_path or f"<{self.name}>"
         try:
             tree = compile(
@@ -155,23 +198,53 @@ class SidecarManifest:
             raise ValueError(
                 f"sidecar {self.name!r} does not compile: {error}"
             ) from error
-        package_root = self.name.partition(".")[0]
+        # The runtime exposes direct and qualified aliases for the same Skill
+        # package.  Every alias root can reach mutable siblings, so checking
+        # only the spelling used for this event would miss e.g.
+        # ``from skills.victim.helper import VALUE`` after a direct
+        # ``victim.kernel`` load.
+        local_roots = frozenset(local_import_roots)
+
+        def is_local_import(imported: str) -> bool:
+            root = imported.partition(".")[0]
+            return root in local_roots
+
         for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "__file__":
+                raise ValueError(
+                    f"sidecar {self.name!r} depends on mutable package resources"
+                )
             if isinstance(node, ast.ImportFrom):
                 imported = node.module or ""
-                if (
-                    node.level
-                    or imported == package_root
-                    or imported.startswith(package_root + ".")
-                ):
+                if node.level or is_local_import(imported):
                     raise ValueError(
                         f"sidecar {self.name!r} has an unfrozen local import"
                     )
+                if any(
+                    alias.name
+                    in _UNFROZEN_BUILTIN_EXECUTORS | _UNFROZEN_ATTRIBUTE_EXECUTORS
+                    for alias in node.names
+                ):
+                    raise ValueError(
+                        f"sidecar {self.name!r} uses an unfrozen code loader"
+                    )
             elif isinstance(node, ast.Import) and any(
-                alias.name == package_root or alias.name.startswith(package_root + ".")
-                for alias in node.names
+                is_local_import(alias.name) for alias in node.names
             ):
                 raise ValueError(f"sidecar {self.name!r} has an unfrozen local import")
+            elif isinstance(node, ast.Call):
+                target = node.func
+                unsafe_executor = (
+                    isinstance(target, ast.Name)
+                    and target.id in _UNFROZEN_BUILTIN_EXECUTORS
+                ) or (
+                    isinstance(target, ast.Attribute)
+                    and target.attr in _UNFROZEN_ATTRIBUTE_EXECUTORS
+                )
+                if unsafe_executor:
+                    raise ValueError(
+                        f"sidecar {self.name!r} uses an unfrozen code loader"
+                    )
 
     @property
     def sha256(self) -> str:
@@ -186,6 +259,7 @@ class SidecarManifest:
             "exports": list(self.exports),
             "import_mode": self.import_mode,
             "source_path": self.source_path,
+            "local_import_roots": list(self.local_import_roots),
         }
 
     @classmethod
@@ -197,6 +271,9 @@ class SidecarManifest:
         raw_order = value.get("order", 0)
         if isinstance(raw_order, bool) or not isinstance(raw_order, int):
             raise ValueError("sidecar order must be an integer")
+        raw_local_roots = value.get("local_import_roots")
+        if not isinstance(raw_local_roots, (list, tuple)) or not raw_local_roots:
+            raise ValueError("sidecar record requires local import roots")
         sidecar = cls(
             name=str(value.get("name") or ""),
             source=source,
@@ -206,6 +283,7 @@ class SidecarManifest:
             source_path=(
                 str(value["source_path"]) if value.get("source_path") else None
             ),
+            local_import_roots=tuple(raw_local_roots),
         )
         if value.get("sha256") != sidecar.sha256:
             raise ValueError(f"sidecar hash mismatch: {sidecar.name}")
@@ -458,7 +536,12 @@ def sidecar_from_load_event(value: Mapping[str, Any]) -> SidecarManifest:
     if str(value.get("event") or "") != "sidecar_loaded":
         raise ValueError("invalid sidecar load event")
     module = str(value.get("module") or "").strip()
-    if not module or module != module.partition(".")[0] + ".kernel":
+    parts = module.split(".")
+    if (
+        len(parts) not in {2, 3}
+        or parts[-1] != "kernel"
+        or any(_SIDECAR_MODULE_SEGMENT.fullmatch(part) is None for part in parts)
+    ):
         raise ValueError("sidecar load event requires a *.kernel module")
     raw_order = value.get("order")
     if isinstance(raw_order, bool) or not isinstance(raw_order, int):
@@ -469,6 +552,16 @@ def sidecar_from_load_event(value: Mapping[str, Any]) -> SidecarManifest:
         or value.get("expected_sha256") != observed_sha256
     ):
         raise ValueError("sidecar load event does not match its bootstrap hash")
+    raw_local_roots = value.get("local_import_roots")
+    if not isinstance(raw_local_roots, (list, tuple)) or not raw_local_roots:
+        raise ValueError("sidecar load event requires local import roots")
+    if any(not isinstance(root, str) for root in raw_local_roots):
+        raise ValueError("sidecar load event local roots are invalid")
+    local_root_set = set(raw_local_roots)
+    if not set(parts[:-1]).issubset(local_root_set):
+        raise ValueError("sidecar load event local roots omit a module parent")
+    if len(parts) == 3 and local_root_set != set(parts[:-1]):
+        raise ValueError("qualified sidecar load event has unexpected local roots")
     return SidecarManifest.from_record(
         {
             "name": module,
@@ -478,6 +571,7 @@ def sidecar_from_load_event(value: Mapping[str, Any]) -> SidecarManifest:
             "exports": value.get("exports") or (),
             "import_mode": value.get("import_mode") or "module",
             "source_path": value.get("source_path"),
+            "local_import_roots": raw_local_roots,
         }
     )
 
@@ -547,6 +641,25 @@ def frozen_sidecar_bootstrap_code(sidecar: SidecarManifest) -> str:
             f"unsupported frozen sidecar import mode: {sidecar.import_mode!r}"
         )
     record = sidecar.record()
+    module_parts = sidecar.name.split(".")
+    alias_packages: set[str] = set()
+    if len(module_parts) >= 2 and module_parts[-1] == "kernel":
+        skill_directory = module_parts[-2]
+        for root in sidecar.local_import_roots:
+            alias_packages.add(
+                skill_directory
+                if root == skill_directory
+                else f"{root}.{skill_directory}"
+            )
+    current_parent = sidecar.name.rpartition(".")[0]
+    if current_parent:
+        alias_packages.add(current_parent)
+    ordered_alias_packages = tuple(
+        sorted(alias_packages, key=lambda name: (name.count("."), name))
+    )
+    alias_names = tuple(
+        sorted({sidecar.name, *(f"{package}.kernel" for package in alias_packages)})
+    )
     return (
         "import base64 as __o4s_b64, hashlib as __o4s_hashlib\n"
         "import importlib.machinery as __o4s_machinery\n"
@@ -558,48 +671,149 @@ def frozen_sidecar_bootstrap_code(sidecar: SidecarManifest) -> str:
         "__o4s_record['sha256']:\n"
         "    raise RuntimeError('frozen sidecar hash mismatch')\n"
         "__o4s_name = __o4s_record['name']\n"
-        "__o4s_source_path = __o4s_record.get('source_path')\n"
-        "__o4s_label = __o4s_source_path or "
-        "('<recovery-sidecar:' + __o4s_name + '>')\n"
+        "__o4s_name_parts = __o4s_name.split('.')\n"
+        "if len(__o4s_name_parts) not in (2, 3) or "
+        "__o4s_name_parts[-1] != 'kernel':\n"
+        "    raise RuntimeError('invalid frozen sidecar module name')\n"
+        "__o4s_skill_directory = __o4s_name_parts[-2]\n"
+        "__o4s_policy = globals()\n"
+        "__o4s_skill_dirs = __o4s_policy.get('_o4s_skill_dirs')\n"
+        "__o4s_skill_entries = __o4s_policy.get('_o4s_skill_entries')\n"
+        "__o4s_direct_dirs = __o4s_policy.get('_o4s_direct_skill_dirs')\n"
+        "__o4s_collections = __o4s_policy.get('_o4s_collection_members')\n"
+        "__o4s_catalog = __o4s_policy.get('_o4s_catalog_namespace')\n"
+        "__o4s_denied = __o4s_policy.get('_o4s_denied_skills')\n"
+        "__o4s_disabled = __o4s_policy.get('_o4s_disabled_skills')\n"
+        "__o4s_order_state = __o4s_policy.get('_o4s_skill_load_order')\n"
+        "if (\n"
+        "    not isinstance(__o4s_skill_dirs, set)\n"
+        "    or not isinstance(__o4s_skill_entries, dict)\n"
+        "    or not isinstance(__o4s_direct_dirs, set)\n"
+        "    or not isinstance(__o4s_collections, dict)\n"
+        "    or not isinstance(__o4s_catalog, str)\n"
+        "    or not isinstance(__o4s_denied, set)\n"
+        "    or not isinstance(__o4s_disabled, set)\n"
+        "    or not isinstance(__o4s_order_state, list)\n"
+        "    or len(__o4s_order_state) != 1\n"
+        "    or not isinstance(__o4s_order_state[0], int)\n"
+        "    or isinstance(__o4s_order_state[0], bool)\n"
+        "):\n"
+        "    raise RuntimeError('frozen sidecar alias policy is unavailable')\n"
+        "__o4s_entry = __o4s_skill_entries.get(__o4s_skill_directory)\n"
+        "if (\n"
+        "    __o4s_skill_directory not in __o4s_skill_dirs\n"
+        "    or not isinstance(__o4s_entry, dict)\n"
+        "    or (__o4s_entry.get('sidecar') or {}).get('sha256')\n"
+        "       != __o4s_record['sha256']\n"
+        "):\n"
+        "    raise RuntimeError('frozen sidecar is not bound to the bootstrap')\n"
+        "if (\n"
+        "    __o4s_skill_directory in __o4s_denied\n"
+        "    or __o4s_skill_directory in __o4s_disabled\n"
+        "):\n"
+        "    raise RuntimeError('frozen sidecar is denied by capability policy')\n"
+        "__o4s_expected_roots = {__o4s_skill_directory}\n"
+        "if __o4s_skill_directory in __o4s_direct_dirs:\n"
+        "    __o4s_expected_roots.add(__o4s_catalog)\n"
+        "for __o4s_prefix, __o4s_members in __o4s_collections.items():\n"
+        "    if __o4s_skill_directory in __o4s_members:\n"
+        "        __o4s_expected_roots.add(__o4s_prefix)\n"
+        "if set(__o4s_record['local_import_roots']) != __o4s_expected_roots:\n"
+        "    raise RuntimeError('frozen sidecar alias policy mismatch')\n"
+        "if len(__o4s_name_parts) == 3:\n"
+        "    __o4s_qualifier = __o4s_name_parts[0]\n"
+        "    if __o4s_qualifier == __o4s_catalog:\n"
+        "        __o4s_qualified = __o4s_skill_directory in __o4s_direct_dirs\n"
+        "    else:\n"
+        "        __o4s_qualified = __o4s_skill_directory in "
+        "__o4s_collections.get(__o4s_qualifier, ())\n"
+        "    if not __o4s_qualified:\n"
+        "        raise RuntimeError('frozen sidecar module alias is not trusted')\n"
+        "__o4s_label = '<recovery-sidecar:' + __o4s_name + '>'\n"
         "__o4s_code = compile(__o4s_source, __o4s_label, 'exec')\n"
         "__o4s_parent_name = __o4s_name.rpartition('.')[0]\n"
-        "__o4s_parent_parts = __o4s_parent_name.split('.') "
-        "if __o4s_parent_name else []\n"
-        "__o4s_parent = None\n"
-        "for __o4s_index in range(len(__o4s_parent_parts)):\n"
-        "    __o4s_package_name = '.'.join("
-        "__o4s_parent_parts[:__o4s_index + 1])\n"
-        "    __o4s_package = __o4s_sys.modules.get(__o4s_package_name)\n"
-        "    if __o4s_package is None:\n"
-        "        __o4s_package = __o4s_types.ModuleType(__o4s_package_name)\n"
-        "        __o4s_package.__package__ = __o4s_package_name\n"
-        "        __o4s_package.__spec__ = __o4s_machinery.ModuleSpec("
+        f"__o4s_alias_package_names = {ordered_alias_packages!r}\n"
+        f"__o4s_alias_names = {alias_names!r}\n"
+        "__o4s_alias_packages = {}\n"
+        "for __o4s_alias_package_name in __o4s_alias_package_names:\n"
+        "    __o4s_parts = __o4s_alias_package_name.split('.')\n"
+        "    __o4s_parent = None\n"
+        "    for __o4s_index in range(len(__o4s_parts)):\n"
+        "        __o4s_package_name = '.'.join(__o4s_parts[:__o4s_index + 1])\n"
+        "        __o4s_package = __o4s_sys.modules.get(__o4s_package_name)\n"
+        "        __o4s_exact_alias = __o4s_index == len(__o4s_parts) - 1\n"
+        "        __o4s_spec = getattr(__o4s_package, '__spec__', None)\n"
+        "        if (\n"
+        "            __o4s_package is not None\n"
+        "            and getattr(__o4s_spec, 'loader', None) is not None\n"
+        "        ):\n"
+        "            raise RuntimeError(\n"
+        "                'frozen sidecar alias collides with a loaded module: '"
+        "                + __o4s_package_name\n"
+        "            )\n"
+        "        if __o4s_package is None or __o4s_exact_alias:\n"
+        "            __o4s_package = __o4s_types.ModuleType(__o4s_package_name)\n"
+        "            __o4s_package.__package__ = __o4s_package_name\n"
+        "            __o4s_package.__spec__ = __o4s_machinery.ModuleSpec("
         "__o4s_package_name, loader=None, is_package=True)\n"
-        "        __o4s_sys.modules[__o4s_package_name] = __o4s_package\n"
-        "        if __o4s_parent is not None:\n"
-        "            setattr(__o4s_parent, __o4s_parent_parts[__o4s_index], "
+        "            __o4s_sys.modules[__o4s_package_name] = __o4s_package\n"
+        "            if __o4s_parent is not None:\n"
+        "                setattr(__o4s_parent, __o4s_parts[__o4s_index], "
         "__o4s_package)\n"
-        "    # Frozen modules must never resolve siblings from source_path.\n"
-        "    __o4s_package.__path__ = []\n"
-        "    __o4s_parent = __o4s_package\n"
-        "__o4s_previous = __o4s_sys.modules.get(__o4s_name)\n"
+        "        # Every exact alias is a sealed namespace. The shared root is\n"
+        "        # sealed too, while the Skill finder can still synthesize other\n"
+        "        # known packages during ordered recovery.\n"
+        "        __o4s_package.__path__ = []\n"
+        "        __o4s_parent = __o4s_package\n"
+        "    __o4s_alias_packages[__o4s_alias_package_name] = __o4s_parent\n"
+        "__o4s_missing = object()\n"
+        "__o4s_previous = {\n"
+        "    __o4s_alias: __o4s_sys.modules.get(__o4s_alias, __o4s_missing)\n"
+        "    for __o4s_alias in __o4s_alias_names\n"
+        "}\n"
         "__o4s_module = __o4s_types.ModuleType(__o4s_name)\n"
         "__o4s_module.__file__ = __o4s_label\n"
         "__o4s_module.__package__ = __o4s_parent_name\n"
         "__o4s_module.__loader__ = None\n"
         "__o4s_module.__spec__ = __o4s_machinery.ModuleSpec("
         "__o4s_name, loader=None, origin=__o4s_label)\n"
-        "__o4s_sys.modules[__o4s_name] = __o4s_module\n"
+        "for __o4s_alias in __o4s_alias_names:\n"
+        "    __o4s_sys.modules[__o4s_alias] = __o4s_module\n"
+        "    __o4s_alias_parent = __o4s_alias.rpartition('.')[0]\n"
+        "    __o4s_alias_package = __o4s_alias_packages.get(__o4s_alias_parent)\n"
+        "    if __o4s_alias_package is not None:\n"
+        "        setattr(__o4s_alias_package, 'kernel', __o4s_module)\n"
+        "__o4s_previous_recovery_active = __o4s_policy.get(\n"
+        "    '_o4s_frozen_recovery_active', False\n"
+        ")\n"
+        "__o4s_policy['_o4s_frozen_recovery_active'] = True\n"
         "try:\n"
         "    exec(__o4s_code, __o4s_module.__dict__)\n"
         "except BaseException:\n"
-        "    if __o4s_previous is None:\n"
-        "        __o4s_sys.modules.pop(__o4s_name, None)\n"
-        "    else:\n"
-        "        __o4s_sys.modules[__o4s_name] = __o4s_previous\n"
+        "    for __o4s_alias, __o4s_old in __o4s_previous.items():\n"
+        "        if __o4s_old is __o4s_missing:\n"
+        "            __o4s_sys.modules.pop(__o4s_alias, None)\n"
+        "        else:\n"
+        "            __o4s_sys.modules[__o4s_alias] = __o4s_old\n"
+        "        __o4s_alias_parent = __o4s_alias.rpartition('.')[0]\n"
+        "        __o4s_alias_package = __o4s_alias_packages.get("
+        "__o4s_alias_parent)\n"
+        "        if (\n"
+        "            __o4s_alias_package is not None\n"
+        "            and getattr(__o4s_alias_package, 'kernel', None) "
+        "is __o4s_module\n"
+        "        ):\n"
+        "            if __o4s_old is __o4s_missing:\n"
+        "                delattr(__o4s_alias_package, 'kernel')\n"
+        "            else:\n"
+        "                setattr(__o4s_alias_package, 'kernel', __o4s_old)\n"
         "    raise\n"
-        "if __o4s_parent is not None:\n"
-        "    setattr(__o4s_parent, __o4s_name.rpartition('.')[2], __o4s_module)\n"
+        "finally:\n"
+        "    __o4s_policy['_o4s_frozen_recovery_active'] = "
+        "__o4s_previous_recovery_active\n"
+        "__o4s_order_state[0] = max(\n"
+        "    __o4s_order_state[0], __o4s_record['order'] + 1\n"
+        ")\n"
         "__o4s_module.__openai4s_frozen_sidecar_sha256__ = "
         "__o4s_record['sha256']\n"
     )

@@ -116,6 +116,67 @@ def test_declared_builtin_name_collision_is_rejected_when_slug_differs(tmp_path)
     assert service.get("Canonical Skill")["editable"] is False
 
 
+def test_project_update_rejects_collection_member_directory_alias(tmp_path):
+    config, _personal = _service(tmp_path, with_builtin=False)
+    collection = config.skills_dir / "collection"
+    member = collection / "physical-directory"
+    member.mkdir(parents=True)
+    (collection / "COLLECTION.json").write_text(
+        '{"id":"collection","prompt_line":"collection: {count}"}\n',
+        "utf-8",
+    )
+    (member / "SKILL.md").write_text(
+        "---\nname: Canonical Member\ndescription: bundled\n---\nbody\n",
+        "utf-8",
+    )
+    service = SkillCustomizationService(
+        SkillLoader(cfg=config), scope="project", project_id="project-a"
+    )
+
+    result = service.create_or_update(
+        "physical-directory",
+        "project overlay",
+        "replacement",
+        existing=True,
+    )
+
+    assert result == {
+        "error": "'physical-directory' collides with a built-in skill — "
+        "pick a different name",
+        "code": "skill_name_conflict",
+    }
+    project_root = service.versions.scope_root(scope="project", project_id="project-a")
+    assert not (project_root / "physical-directory" / "SKILL.md").exists()
+
+
+def test_web_authoring_fails_before_write_for_invalid_collection_catalog(tmp_path):
+    config, _personal = _service(tmp_path, with_builtin=False)
+    for directory in ("first", "second"):
+        collection = config.skills_dir / directory
+        member = collection / f"{directory}-member"
+        member.mkdir(parents=True)
+        (collection / "COLLECTION.json").write_text(
+            '{"id":"duplicate","prompt_line":"duplicate: {count}"}\n',
+            "utf-8",
+        )
+        (member / "SKILL.md").write_text(
+            "---\n"
+            f"name: {directory} member\n"
+            f"description: {directory}\n"
+            "---\nbody\n",
+            "utf-8",
+        )
+    service = SkillCustomizationService(SkillLoader(cfg=config))
+
+    result = service.create_or_update("Never Written", "description", "body")
+
+    assert result["code"] == "skill_write_failed"
+    assert "duplicate skill collection id 'duplicate'" in result["error"]
+    assert not (
+        service.loader.user_skills_dir() / "never-written" / "SKILL.md"
+    ).exists()
+
+
 def test_customize_edits_host_draft_and_personal_skills_by_user_root(tmp_path):
     _config, service = _service(tmp_path)
     user_directory = service.loader.user_skills_dir()

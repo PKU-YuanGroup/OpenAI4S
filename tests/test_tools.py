@@ -172,9 +172,12 @@ def test_control_tool_classes_own_their_security_policy():
     ) == ("network:example.org",)
     assert "workspace directory only" in get_tool("list_dir").description
     assert "use list_skills" in get_tool("list_dir").description
-    assert "exact count and names" in get_tool("list_skills").description
-    assert "call load_skill" in get_tool("list_skills").description
-    assert "Do not use workspace file tools" in get_tool("list_skills").description
+    list_skills_description = get_tool("list_skills").description
+    assert "exact total count" in list_skills_description
+    assert "curated Skill names" in list_skills_description
+    assert "call load_skill" in list_skills_description
+    assert "next_offset" in list_skills_description
+    assert "Do not use workspace file tools" in list_skills_description
 
 
 def test_registration_rejects_shell_completion_and_metadata_only_tools():
@@ -325,6 +328,26 @@ def test_one_tool_result_respects_its_strict_output_limit():
     text = format_tool_result(tool, {"content": "x" * 100_000})
     assert "truncated" in text
     assert len(text) <= tool.output_limit
+
+
+def test_search_budget_checks_marker_discontinuities_before_dropping_body():
+    """A full document loses its pointer, so rendered size is not monotone."""
+
+    from openai4s.tools.skills import SearchSkillsTool
+
+    tool = SearchSkillsTool(output_limit=271)
+    rows = [
+        {"name": "a", "doc": "a" * 20},
+        {"name": "b", "doc": "b" * 155},
+    ]
+
+    fitted = tool.fit_to_budget(rows)
+
+    assert fitted[0]["doc"] == "a" * 20
+    assert fitted[1]["doc"].startswith("b" * 20 + "\n\n… [135 more characters.")
+    rendered = format_tool_result(tool, fitted)
+    assert len(rendered) == tool.output_limit
+    assert not rendered.endswith("… [truncated]")
 
 
 # --- prompt rendering -------------------------------------------------------

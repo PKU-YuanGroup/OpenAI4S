@@ -16,6 +16,7 @@ socket. Asserted by making both an error while the real route runs.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import urllib.request
@@ -42,13 +43,22 @@ def _write_skill(root, name: str, frontmatter: str) -> None:
 
 @pytest.fixture()
 def bundled(tmp_path):
-    """Three bundled Skills: one needing hardware, one needing something no
-    check exists for, one needing nothing."""
+    """Three curated Skills plus one pinned-collection Skill."""
     skills_dir = tmp_path / "bundled-skills"
     skills_dir.mkdir()
     _write_skill(skills_dir, "gpu-skill", "requirements: [gpu]\n")
     _write_skill(skills_dir, "odd-skill", "requirements: [quantum-annealer]\n")
     _write_skill(skills_dir, "plain-skill", "")
+    # A collection declares itself with COLLECTION.json; the loader no longer
+    # knows any directory name. Registering the marker is what makes the four
+    # members below one catalog entry instead of four peers.
+    collection = skills_dir / "bioskills"
+    collection.mkdir()
+    (collection / "COLLECTION.json").write_text(
+        json.dumps({"id": "bioskills", "prompt_line": "bioskills: {count} recipes"}),
+        encoding="utf-8",
+    )
+    _write_skill(collection, "bio-example", "")
     return Config(data_dir=tmp_path / "data", skills_dir=skills_dir)
 
 
@@ -108,6 +118,9 @@ def test_the_catalogue_route_carries_requirements_and_readiness(bundled, monkeyp
     assert plain["readiness"]["state"] == READY
     # Said by the payload itself, so no reader has to assume it.
     assert plain["readiness"]["checked_locally"] is True
+
+    assert plain["collection"] is None
+    assert rows["bio-example"]["collection"] == "bioskills"
 
 
 def test_readiness_is_not_enabledness_on_the_wire(bundled, monkeypatch):
@@ -179,7 +192,13 @@ def test_a_loader_without_readiness_is_answered_rather_than_guessed(bundled):
         cfg = bundled
 
         def catalog(self, include_disabled=False):
-            return [{"name": "gpu-skill", "requirements": ["quantum-annealer"]}]
+            return [
+                {
+                    "name": "gpu-skill",
+                    "requirements": ["quantum-annealer"],
+                    "collection": "bioskills",
+                }
+            ]
 
         def skills(self, include_disabled=False):
             return {}
@@ -189,3 +208,4 @@ def test_a_loader_without_readiness_is_answered_rather_than_guessed(bundled):
     assert row["requirements"] == ["quantum-annealer"]
     assert row["readiness"]["state"] == UNKNOWN
     assert row["readiness"]["unverifiable"] == ["quantum-annealer"]
+    assert row["collection"] == "bioskills"

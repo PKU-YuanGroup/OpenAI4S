@@ -242,10 +242,16 @@ class ModelManifest:
             self.checkpoint_license.strip().lower(),
         }
         incomplete_licenses = {"unknown", "unspecified", "review-required"}
+        # Manifest metadata is operator-supplied documentation, not the result
+        # of a host-side model-directory verifier. An archive digest therefore
+        # cannot be promoted to complete runtime provenance by writing
+        # ``runtime_integrity: verified`` into the same document.
+        archive_only = self.metadata.get("checkpoint_sha256_scope") == "source_archive"
         if (
             self.checkpoint_sha256
             and self.training_dataset.strip().lower() not in {"unknown", "unspecified"}
             and not (license_values & incomplete_licenses)
+            and not archive_only
         ):
             return "complete"
         return "incomplete"
@@ -578,6 +584,7 @@ class SyntheseusBackend:
         python_command: Iterable[str] | None = None,
         worker_path: str | Path | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         model_name = _clean_text(model, field_name="model")
         if model_name not in self.supported_models:
@@ -608,7 +615,9 @@ class SyntheseusBackend:
         self.allow_model_download = allow_model_download
         self.worker_path = str(worker)
         self.process = SubprocessRetrosynthesisBackend(
-            [*command_prefix, self.worker_path], timeout_seconds=timeout_seconds
+            [*command_prefix, self.worker_path],
+            timeout_seconds=timeout_seconds,
+            env=env,
         )
 
     def capabilities(self, *, request_id: str | None = None) -> dict[str, Any]:

@@ -14,6 +14,8 @@ the daemon's Customize → Network panel flips this.
 from __future__ import annotations
 
 import base64
+import contextlib
+import errno
 import hashlib
 import html as _html
 import ipaddress
@@ -22,15 +24,26 @@ import os
 import pathlib
 import re
 import socket
+import stat
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, BinaryIO, Iterator
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+_HARDLINK_UNSUPPORTED = frozenset(
+    {
+        errno.EPERM,
+        errno.EXDEV,
+        errno.ENOSYS,
+        getattr(errno, "ENOTSUP", errno.EPERM),
+        getattr(errno, "EOPNOTSUPP", errno.EPERM),
+    }
 )
 
 
@@ -138,6 +151,49 @@ def _read_capped(reader: Any, limit: int) -> bytes:
         chunks.append(chunk)
 
 
+def _copy_capped(reader: Any, writer: BinaryIO, limit: int) -> tuple[int, str]:
+    """Stream at most ``limit`` bytes to ``writer`` while hashing them."""
+
+    total = 0
+    digest = hashlib.sha256()
+    while True:
+        chunk = reader.read(64 * 1024)
+        if not chunk:
+            return total, digest.hexdigest()
+        total += len(chunk)
+        if total > limit:
+            raise ResponseTooLarge(
+                f"response exceeds {limit} bytes; aborted after {total}"
+            )
+        writer.write(chunk)
+        digest.update(chunk)
+
+
+def _hash_capped(reader: Any, limit: int) -> tuple[int, str]:
+    """Hash at most ``limit`` bytes without accumulating them in memory."""
+
+    total = 0
+    digest = hashlib.sha256()
+    while True:
+        chunk = reader.read(64 * 1024)
+        if not chunk:
+            return total, digest.hexdigest()
+        total += len(chunk)
+        if total > limit:
+            raise ResponseTooLarge(
+                f"response exceeds {limit} bytes; aborted after {total}"
+            )
+        digest.update(chunk)
+
+
+def _path_matches_regular_inode(path: pathlib.Path, expected: os.stat_result) -> bool:
+    try:
+        current = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(current.st_mode) and os.path.samestat(expected, current)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Surface a 3xx as an HTTPError instead of quietly following it.
 
@@ -168,6 +224,86 @@ def _no_redirect_opener() -> urllib.request.OpenerDirector:
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
 
+@contextlib.contextmanager
+def _open_http_response(
+    url: str,
+    *,
+    timeout: float = 30.0,
+    headers: dict | None = None,
+    method: str = "GET",
+    _max_redirects: int = 5,
+) -> Iterator[tuple[Any, str, str]]:
+    """Open one guarded response and keep it live for the caller to consume.
+
+    Redirects are followed manually so the SSRF and egress guards apply to every
+    hop. The response is always closed when the caller finishes or raises.
+    """
+
+    _require_network()
+    method = str(method or "GET").upper()
+    if method not in ("GET", "HEAD"):
+        raise ValueError(f"unsupported method {method!r}; expected GET or HEAD")
+    hdrs = {"User-Agent": _UA, "Accept": "*/*"}
+    if headers:
+        hdrs.update(headers)
+    try:
+        import requests  # type: ignore
+    except ImportError:
+        requests = None  # type: ignore
+
+    cur = url
+    from openai4s import egress
+
+    for _hop in range(_max_redirects + 1):
+        egress.check_url(cur)
+        _guard_url(cur)
+        if requests is not None:
+            response = requests.request(
+                method,
+                cur,
+                headers=hdrs,
+                timeout=timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+            try:
+                if response.is_redirect and response.headers.get("Location"):
+                    cur = urllib.parse.urljoin(cur, response.headers["Location"])
+                    continue
+                status_code = int(response.status_code)
+                if not 200 <= status_code < 300:
+                    response.raise_for_status()
+                    raise RuntimeError(f"HTTP request failed with status {status_code}")
+                yield (
+                    response.raw,
+                    response.url,
+                    response.headers.get("Content-Type", ""),
+                )
+                return
+            finally:
+                response.close()
+        req = urllib.request.Request(cur, headers=hdrs, method=method)
+        try:
+            # NOT `urlopen`. The stdlib opener follows redirects internally, so
+            # every hop would not pass through the guards above.
+            response = _no_redirect_opener().open(req, timeout=timeout)  # noqa: S310
+        except urllib.error.HTTPError as error:
+            location = (error.headers or {}).get("Location") if error.headers else None
+            if error.code in _REDIRECT_CODES and location:
+                error.close()
+                cur = urllib.parse.urljoin(cur, location)
+                continue
+            raise
+        with response:
+            yield (
+                response,
+                response.geturl(),
+                response.headers.get("Content-Type", ""),
+            )
+            return
+    raise RuntimeError("too many redirects")
+
+
 def _http_get(
     url: str,
     *,
@@ -188,68 +324,17 @@ def _http_get(
 
     Returns (body_bytes, final_url, content_type). For HEAD the body is empty.
     """
-    _require_network()
     method = str(method or "GET").upper()
-    if method not in ("GET", "HEAD"):
-        raise ValueError(f"unsupported method {method!r}; expected GET or HEAD")
     limit = MAX_FETCH_BYTES if max_bytes is None else int(max_bytes)
-    hdrs = {"User-Agent": _UA, "Accept": "*/*"}
-    if headers:
-        hdrs.update(headers)
-    try:
-        import requests  # type: ignore
-    except ImportError:
-        requests = None  # type: ignore
-
-    cur = url
-    from openai4s import egress
-
-    for _hop in range(_max_redirects + 1):
-        # Host-stamped outbound domain allowlist. No-op unless
-        # OPENAI4S_EGRESS=allowlist; applied per hop so a public URL that
-        # 30x-redirects to a non-allowlisted domain is still fenced. Checked
-        # BEFORE the SSRF guard so a blocked domain short-circuits with a
-        # proxy-403 soft error and zero DNS/network. SSRF still guards allowed
-        # domains (a permitted host that resolves to a private/metadata IP).
-        egress.check_url(cur)
-        _guard_url(cur)
-        if requests is not None:
-            r = requests.request(
-                method,
-                cur,
-                headers=hdrs,
-                timeout=timeout,
-                allow_redirects=False,
-                stream=True,
-            )
-            if r.is_redirect and r.headers.get("Location"):
-                cur = urllib.parse.urljoin(cur, r.headers["Location"])
-                continue
-            body = b"" if method == "HEAD" else _read_capped(r.raw, limit)
-            return body, r.url, r.headers.get("Content-Type", "")
-        req = urllib.request.Request(cur, headers=hdrs, method=method)
-        try:
-            # NOT `urlopen`. The stdlib opener follows redirects internally, so
-            # this branch -- the one a zero-dependency install always takes,
-            # since `requests` is not a core dependency -- checked only the
-            # first hop. A public, allowlisted URL that 302s to
-            # 169.254.169.254 was fetched: two URLs retrieved, one guarded.
-            # Demonstrated with a local redirect before this was changed.
-            with _no_redirect_opener().open(req, timeout=timeout) as resp:  # noqa: S310
-                return (
-                    b"" if method == "HEAD" else _read_capped(resp, limit),
-                    resp.geturl(),
-                    resp.headers.get("Content-Type", ""),
-                )
-        except urllib.error.HTTPError as e:
-            location = (e.headers or {}).get("Location") if e.headers else None
-            if e.code in _REDIRECT_CODES and location:
-                # Round the loop so `egress.check_url` and `_guard_url` run
-                # against the destination as well.
-                cur = urllib.parse.urljoin(cur, location)
-                continue
-            raise
-    raise RuntimeError("too many redirects")
+    with _open_http_response(
+        url,
+        timeout=timeout,
+        headers=headers,
+        method=method,
+        _max_redirects=_max_redirects,
+    ) as (reader, final_url, content_type):
+        body = b"" if method == "HEAD" else _read_capped(reader, limit)
+        return body, final_url, content_type
 
 
 # --------------------------------------------------------------------------- #
@@ -513,27 +598,84 @@ def web_download(
 
     The byte ceiling is the caller's, defaulting well above a real dataset and
     well below "whatever the server feels like sending", and it is enforced
-    while reading. Confinement of ``destination`` is deliberately NOT done here:
-    this module knows nothing about sessions or workspaces. The Host service
-    that exposes this resolves the path against the session workspace first,
-    because a capability that writes wherever it is told is a capability that
-    writes outside the session.
+    while streaming into a temporary sibling. Only a complete response is
+    atomically published, so a failed or oversized request cannot corrupt an
+    existing destination. Confinement of ``destination`` is deliberately NOT
+    done here: this module knows nothing about sessions or workspaces. The Host
+    service that exposes this resolves the path against the session workspace
+    first, because a capability that writes wherever it is told is a capability
+    that writes outside the session.
     """
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
-    headers = {"User-Agent": user_agent} if user_agent else None
-    body, final_url, ctype = _http_get(
-        url, timeout=timeout, headers=headers, max_bytes=max_bytes
-    )
     path = pathlib.Path(destination)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body)
+    headers = {"User-Agent": user_agent} if user_agent else None
+    limit = int(max_bytes)
+    if limit < 0:
+        raise ValueError("max_bytes must be non-negative")
+    stage = tempfile.TemporaryDirectory(
+        prefix=f".{path.name}.download-",
+        dir=path.parent,
+        ignore_cleanup_errors=True,
+    )
+    stage_path = pathlib.Path(stage.name)
+    temporary = stage_path / "response.part"
+    publish_link = stage_path / "publish.link"
+    verified_identity: os.stat_result | None = None
+    try:
+        with temporary.open("x+b") as target:
+            with _open_http_response(url, timeout=timeout, headers=headers) as (
+                reader,
+                final_url,
+                ctype,
+            ):
+                first_digest = _copy_capped(reader, target, limit)
+            target.flush()
+            verified_identity = os.fstat(target.fileno())
+            publication_source = publish_link
+            try:
+                os.link(temporary, publish_link, follow_symlinks=False)
+            except OSError as exc:
+                if exc.errno not in _HARDLINK_UNSUPPORTED:
+                    raise
+                # FAT-family and some network filesystems cannot create hard
+                # links. The private 0700 staging directory still lets them
+                # use atomic replace, with the same held-fd checks before and
+                # after publication. Writers to one destination must be
+                # serialized on this compatibility path.
+                publication_source = temporary
+            if not _path_matches_regular_inode(publication_source, verified_identity):
+                raise RuntimeError("download staging path changed before publication")
+
+            # Re-read the held inode before replacing an existing destination.
+            # A same-UID watcher can modify a named staging inode in place
+            # without changing its identity; catching that here preserves the
+            # previous destination instead of publishing bytes we did not
+            # receive from the guarded response.
+            target.seek(0)
+            if _hash_capped(target, limit) != first_digest:
+                raise RuntimeError("download bytes changed before publication")
+            if not _path_matches_regular_inode(publication_source, verified_identity):
+                raise RuntimeError("download staging path changed before publication")
+
+            os.replace(publication_source, path)
+            if not _path_matches_regular_inode(path, verified_identity):
+                raise RuntimeError("download destination changed during publication")
+            target.seek(0)
+            if _hash_capped(target, limit) != first_digest:
+                raise RuntimeError("download bytes changed during publication")
+            if not _path_matches_regular_inode(path, verified_identity):
+                raise RuntimeError("download destination changed during verification")
+            size, sha256 = first_digest
+    finally:
+        stage.cleanup()
     return {
         "url": final_url,
         "path": str(path),
-        "bytes": len(body),
+        "bytes": size,
         "content_type": ctype,
-        "sha256": hashlib.sha256(body).hexdigest(),
+        "sha256": sha256,
     }
 
 
