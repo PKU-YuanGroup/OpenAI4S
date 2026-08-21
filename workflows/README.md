@@ -1,6 +1,6 @@
 # `workflows/`
 
-The versioned science-workflow benchmark's manifests. Ten workflows, 20
+The versioned science-workflow benchmark's manifests. Eleven workflows, 31
 cases, each one a JSON file that declares what a run is supposed to do and what
 counts as having done it.
 
@@ -28,3 +28,4 @@ about the half of the system whose job is to refuse.
 | [`remote-compute/`](remote-compute/README.md) | submit -> poll -> harvest against a real shell |
 | [`science-retrieval/`](science-retrieval/README.md) | Scientific retrieval with source evidence |
 | [`telemetry-identity/`](telemetry-identity/README.md) | Revoking telemetry destroys the identity with it |
+| [`tool-bringup/`](tool-bringup/README.md) | Tool bring-up: build, weights, canary, admission, frozen record |
