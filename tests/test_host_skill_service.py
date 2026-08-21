@@ -108,6 +108,47 @@ def test_host_edit_rejects_declared_name_collision_with_bundled_skill(tmp_path):
     ).exists()
 
 
+@pytest.mark.parametrize("first_path", ["SKILL.md", "kernel.py"])
+def test_host_edit_reserves_collection_root_import_names(tmp_path, first_path):
+    service = _service(tmp_path)
+    collection = service.cfg.skills_dir / "collection_root"
+    member = collection / "member"
+    member.mkdir(parents=True)
+    (collection / "COLLECTION.json").write_text(
+        '{"id":"collection","prompt_line":"collection: {count}"}\n',
+        "utf-8",
+    )
+    (member / "SKILL.md").write_text(
+        "---\nname: member\ndescription: member\n---\nbody\n",
+        "utf-8",
+    )
+
+    with pytest.raises(PermissionError, match="collides with read-only bundled"):
+        service.edit(
+            {
+                "name": "collection_root",
+                "path": first_path,
+                "content": (
+                    "---\nname: collection_root\ndescription: collision\n---\nbody\n"
+                    if first_path == "SKILL.md"
+                    else "VALUE = 1\n"
+                ),
+            }
+        )
+
+    assert not (service.loader.user_skills_dir() / "collection_root").exists()
+
+    # Direct filesystem installation is outside the Host authoring path, but
+    # discovery must still give the importable collection root precedence.
+    shadow = service.loader.user_skills_dir() / "collection_root"
+    shadow.mkdir(parents=True)
+    (shadow / "SKILL.md").write_text(
+        "---\nname: shadow\ndescription: shadow\n---\nbody\n", "utf-8"
+    )
+    (shadow / "kernel.py").write_text("VALUE = 1\n", "utf-8")
+    assert "collection_root" not in service.loader.discover()
+
+
 def test_skill_service_refreshes_catalog_after_publish_and_delete(tmp_path):
     service = _service(tmp_path)
     service.edit(

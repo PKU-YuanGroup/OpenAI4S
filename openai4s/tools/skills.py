@@ -18,11 +18,11 @@ class ListSkillsTool(Tool):
     # contract, while this control-plane view is deliberately compact.
     host_method = "list_skills"
     description = (
-        "Return the exact count and names of every Skill available to this agent. "
-        "Curated Skills are listed by name; each bundled collection is one entry "
-        "with its id and size. To enumerate a collection, call again with "
-        "collection=<id> (and offset to page through it). "
-        "For all-Skills audits, then call load_skill with each returned name. "
+        "Return an overview with the exact total count, curated Skill names, and "
+        "one id/size summary per bundled collection. To enumerate a collection, "
+        "call again with collection=<id> and offset=0; call load_skill for each "
+        "returned name, then continue at every returned next_offset while that "
+        "field is present. "
         "Do not use workspace file tools."
     )
     parameters = {
@@ -58,7 +58,7 @@ class ListSkillsTool(Tool):
         # A bundled collection is ONE entry here, the same way it is one line
         # in the system prompt. Listing its members as peers of `alphafold2`
         # was what forced the truncation ceiling up in the first place: the
-        # catalog the rest of the system treats as ~36 curated recipes is not
+        # catalog the rest of the system treats as ~41 curated recipes is not
         # the same object as a pinned 561-recipe import.
         spec = arguments if isinstance(arguments, dict) else {}
         rows = runtime.invoke(self.host_method)
@@ -169,48 +169,129 @@ class SearchSkillsTool(Tool):
         `load_skill`, which returns the complete document.
         """
 
+        import json
+
         if not isinstance(rows, list):
             return rows
-        indexed = [
-            (index, row) for index, row in enumerate(rows) if isinstance(row, dict)
-        ]
-        if not indexed:
-            return rows
-        total = sum(len(str(row.get("doc") or "")) for _i, row in indexed)
-        if total + self.row_overhead * len(indexed) + 2_000 <= self.output_limit:
-            return rows
 
-        budget = min(
-            self.doc_budget,
-            max(0, self.output_limit - self.row_overhead * len(indexed) - 2_000),
-        )
-        floor = min(self.min_doc_chars, budget // len(indexed))
-        allowances: dict[int, int] = {}
-        remaining = budget
-        # Shortest first, so a small doc never forfeits budget it cannot use
-        # and the surplus flows to the documents that actually need it.
-        pending = sorted(indexed, key=lambda pair: len(str(pair[1].get("doc") or "")))
-        for position, (index, row) in enumerate(pending):
-            share = max(floor, remaining // (len(pending) - position))
-            allowance = min(len(str(row.get("doc") or "")), share)
-            allowances[index] = allowance
-            remaining = max(0, remaining - allowance)
+        prefix_size = len(f"[Tool: {self.name}]\n")
 
-        out = list(rows)
-        for index, row in indexed:
-            doc = str(row.get("doc") or "")
-            allowance = allowances[index]
-            if len(doc) <= allowance:
-                continue
-            name = str(row.get("name") or "")
-            out[index] = {
-                **row,
-                "doc": doc[:allowance]
-                + f"\n\n… [{len(doc) - allowance} more characters. This recipe was "
-                + f'shortened to fit the result set; call load_skill("{name}") '
-                + "for the complete document.]",
+        def rendered_size(value: Any) -> int:
+            try:
+                body = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+            except (TypeError, ValueError):
+                body = str(value)
+            return prefix_size + len(body)
+
+        if rendered_size(rows) <= self.output_limit:
+            return rows
+        if any(not isinstance(row, dict) for row in rows):
+            return {
+                "error": "search_skills returned an oversized non-standard "
+                "result; retry with a smaller limit"
             }
-        return out
+
+        indexed = list(enumerate(rows))
+
+        documents = {index: str(row.get("doc") or "") for index, row in indexed}
+
+        def load_pointer(name: str, *, omitted: int | None = None) -> str:
+            literal = json.dumps(name, ensure_ascii=False)
+            amount = f"{omitted} more characters. " if omitted is not None else ""
+            return (
+                f"… [{amount}This recipe was shortened to fit the result set; "
+                f"call load_skill({literal}) for the complete document.]"
+            )
+
+        def with_cap(cap: int, *, markers: bool = True) -> list[Any]:
+            out = list(rows)
+            for index, row in indexed:
+                doc = documents[index]
+                if len(doc) <= cap:
+                    continue
+                if not markers:
+                    replacement = ""
+                else:
+                    name = str(row.get("name") or "")
+                    replacement = (
+                        doc[:cap] + "\n\n" + load_pointer(name, omitted=len(doc) - cap)
+                    )
+                out[index] = {**row, "doc": replacement}
+            return out
+
+        def identity_rows(*, descriptions: bool) -> list[dict[str, Any]]:
+            compact: list[dict[str, Any]] = []
+            for _index, row in indexed:
+                name = str(row.get("name") or "")
+                item: dict[str, Any] = {"name": name}
+                description = str(row.get("description") or "")
+                if descriptions and description:
+                    item["description"] = description
+                item["doc"] = load_pointer(name)
+                compact.append(item)
+            return compact
+
+        # Find the largest common raw prefix whose *actual JSON rendering*
+        # fits. JSON escaping can turn one source character into two (or more),
+        # so character-count estimates cannot protect the later formatter.
+        shortest = with_cap(0)
+        if rendered_size(shortest) > self.output_limit:
+            # Marker prose is expendable; names are not. This rare fallback
+            # preserves every result row when metadata plus the pointers fit
+            # but repeating the per-row explanation does not.
+            shortest = with_cap(0, markers=False)
+        if rendered_size(shortest) > self.output_limit:
+            # Search has a maximum of 20 standard rows. If optional metadata is
+            # unexpectedly enormous, preserve the ranked identities and an
+            # injection-safe load pointer for every hit instead of returning a
+            # value the generic formatter will silently cut from the tail.
+            for compact in (
+                identity_rows(descriptions=True),
+                identity_rows(descriptions=False),
+            ):
+                if rendered_size(compact) <= self.output_limit:
+                    return compact
+            return {
+                "error": f"search_skills returned {len(rows)} hit identities "
+                "whose metadata exceeds the output limit; retry with a "
+                "smaller limit"
+            }
+        best = shortest
+        best_retained = 0
+        lengths = [len(doc) for doc in documents.values()]
+        maximum = max(lengths)
+
+        # Rendering is monotone only while the set of shortened rows stays the
+        # same. At ``cap == len(doc)`` that row becomes whole and its load
+        # pointer disappears, so the rendered result can suddenly get smaller.
+        # One binary search over ``0..maximum`` can therefore reject an early
+        # oversized midpoint and never reach a later, legal discontinuity.
+        # Search each interval between document-length breakpoints separately,
+        # then keep the legal candidate containing the most original body text.
+        starts = sorted({0, *lengths})
+        for position, start in enumerate(starts):
+            end = starts[position + 1] - 1 if position + 1 < len(starts) else maximum
+            if start > end:
+                continue
+            low = start
+            high = end
+            segment_best: tuple[int, list[Any]] | None = None
+            while low <= high:
+                cap = (low + high) // 2
+                candidate = with_cap(cap)
+                if rendered_size(candidate) <= self.output_limit:
+                    segment_best = (cap, candidate)
+                    low = cap + 1
+                else:
+                    high = cap - 1
+            if segment_best is None:
+                continue
+            cap, candidate = segment_best
+            retained = sum(min(length, cap) for length in lengths)
+            if retained > best_retained:
+                best = candidate
+                best_retained = retained
+        return best
 
 
 class LoadSkillTool(Tool):
@@ -231,7 +312,7 @@ class LoadSkillTool(Tool):
     }
     requires_approval = False
     # This tool's whole promise is "complete SKILL.md guidance". Under the
-    # inherited 20k default, 210 of the 597 bundled documents came back ending
+    # inherited 20k default, 210 bundled documents came back ending
     # in a truncation marker -- the largest is 42,452 chars -- so the agent
     # read a protocol's setup and lost its validation and caveat tail while
     # believing it had the whole recipe. 50k covers every bundled document.

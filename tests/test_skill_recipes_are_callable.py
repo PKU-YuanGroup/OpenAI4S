@@ -144,8 +144,8 @@ def _bundled_skills() -> list[Path]:
     """Every bundled recipe, curated and collection alike.
 
     The collection lives one directory lower, so a single `skills/*/SKILL.md`
-    glob silently narrowed this gate to 36 of 597 Skills — 94% of the shipped
-    catalog, and the newest 94%, went unchecked. Running all of them costs
+    glob silently narrowed this gate to 41 of 602 Skills — 93% of the shipped
+    catalog, and the newest 93%, went unchecked. Running all of them costs
     ~0.3s.
     """
 

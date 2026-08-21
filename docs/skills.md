@@ -8,11 +8,11 @@ skills/example_stats/
     kernel.py     importable sidecar module (helper functions)
 ```
 
-Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel adds `skills/` to `sys.path`, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
+Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel bootstrap finder binds each permitted Skill package to its exact discovered directory, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (597)
+## Bundled Skills (602)
 
-The catalog has two maintenance tiers: 36 curated OpenAI4S Skills and a pinned,
+The catalog has two maintenance tiers: 41 curated OpenAI4S Skills and a pinned,
 read-only import of all 561 MIT-licensed
 [GPTomics/bioSkills](../skills/bioskills/) recipes. Every imported recipe is
 individually searchable and loadable, but the system prompt represents the
@@ -25,14 +25,14 @@ member Skills one level lower. The loader discovers collections from that
 marker alone — no directory name, id, or retrieval policy lives in
 `skills_loader/loader.py` — and every surface reads the same object:
 `system_context` prints one line per collection, `list_skills` returns curated
-names plus one entry per collection (pass `collection=<id>`, paging with
-`offset`, to enumerate one), and the Web catalog renders it as a single
-collapsed row. The bundle's
+names plus one entry per collection (pass `collection=<id>` with `offset=0`,
+then follow every returned `next_offset`, to enumerate one), and the Web catalog
+renders it as a single collapsed row. The bundle's
 source commit, conversion rules, license, complete inventory, and per-file
 hashes live at its linked boundary; importing it installs no scientific
 packages and does not imply that every optional tool is ready locally.
 
-### Curated OpenAI4S Skills (36)
+### Curated OpenAI4S Skills (41)
 
 | category | Skills |
 |---|---|
@@ -40,6 +40,7 @@ packages and does not imply that every optional tool is ready locally.
 | **Sequence / omics / docking** (GPU) | `fair-esm2` · `evo2` · `borzoi` · `scgpt` · `scvi-tools` · `diffdock` |
 | **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` |
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
+| **Reaction chemistry** | `reaction-atom-mapping` · `reaction-condition-recommendation` · `reaction-forward-prediction` · `reaction-yield-estimation` · `single-step-retrosynthesis` |
 | **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` · `evidence-walkthrough` · `retrosynthesis_planning` · `mineral_spectra_analysis` · `admet_genetic` · `protein-mutation-enhancement` |
 | **ML methodology / benchmarks** | `plan-ml-experiment` · `audit-dataset` · `evaluate-model` · `bioprobench` |
 | **Platform** | `remote-compute-nvidia` · `remote-compute-ssh` · `using-model-endpoint` · `volcengine-datapro` |
@@ -55,6 +56,9 @@ treated as usable.
 
 1. Create `skills/<name>/SKILL.md` with a short YAML frontmatter (`name`, `description`, optional `origin`, `category`, `requirements: [gpu]`) followed by a body of **runnable code examples**.
 2. Optionally add a `kernel.py` with importable helper functions.
+   Skill directories are loaded as pinned namespace packages: executable
+   `__init__.py` files are intentionally not run. Put all executable sidecar
+   initialization in `kernel.py`, whose exact bytes are hashed and captured.
 3. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.

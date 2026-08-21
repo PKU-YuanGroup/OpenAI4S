@@ -27,8 +27,12 @@ loads out of a writable workspace/scratch/artifacts path are refused.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 import sys
+from collections.abc import Callable
 
 
 def _writable_roots() -> list[str]:
@@ -104,14 +108,24 @@ def _allowed_prefixes() -> list[str]:
     return prefixes
 
 
-def install(*, enabled: bool = True) -> bool:
-    """Install the dlopen audit hook. Returns True if armed.
+def install(
+    *,
+    enabled: bool = True,
+    skill_event_sink: Callable[[dict], None] | None = None,
+    skill_event_origin: Callable[[], str] | None = None,
+    skill_event_key: bytes | None = None,
+) -> bool:
+    """Install the dlopen and optional Skill-attestation audit hook.
 
     Idempotent-ish: a second call installs a second (equivalent) hook, harmless
     but wasteful, so callers guard with `sys._openai4s_audit_armed`.
     """
-    if not enabled:
+    if not enabled and skill_event_sink is None:
         return False
+    if skill_event_sink is not None and (
+        not isinstance(skill_event_key, bytes) or len(skill_event_key) < 32
+    ):
+        raise ValueError("Skill event attestation requires a 32-byte manager key")
     if getattr(sys, "_openai4s_audit_armed", False):
         return True
 
@@ -120,12 +134,54 @@ def install(*, enabled: bool = True) -> bool:
 
     blocked = tuple(_writable_roots())
     allowed = tuple(_allowed_prefixes())
+    registered_skill_loaders: set[object] = set()
+    pending_skill_loads: dict[int, tuple[object, str, bool, str]] = {}
+    code_type = type(install.__code__)
+
+    def _signed_skill_event(
+        event: dict,
+        *,
+        _dumps=json.dumps,
+        _hmac_new=hmac.new,
+        _sha256=hashlib.sha256,
+        _key=skill_event_key,
+    ) -> dict:
+        payload = dict(event)
+        encoded = _dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        payload["attestation_mac"] = _hmac_new(_key, encoded, _sha256).hexdigest()
+        return payload
 
     def _under(path: str, roots: tuple) -> bool:
         for r in roots:
             if path == r or path.startswith(r + "/"):
                 return True
         return False
+
+    def _trusted_recovery_path(
+        value: object,
+        *,
+        _realpath=os.path.realpath,
+        _allowed=allowed,
+    ) -> bool:
+        if not isinstance(value, (str, bytes)):
+            return True
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8", "surrogateescape")
+            except Exception:  # noqa: BLE001
+                return False
+        if value.startswith("<") and value.endswith(">"):
+            return True
+        try:
+            resolved = _realpath(value)
+        except Exception:  # noqa: BLE001
+            return False
+        return _under(resolved, _allowed)
 
     # Dependencies captured as keyword defaults AT DEF TIME — call-time lookups
     # in the (user-controllable) namespace cannot redirect them.
@@ -140,7 +196,130 @@ def install(*, enabled: bool = True) -> bool:
         _blocked=blocked,
         _allowed=allowed,
         _perm=PermissionError,
+        _dlopen_enabled=bool(enabled),
+        _skill_sink=skill_event_sink,
+        _skill_origin=skill_event_origin,
+        _registered_skill_loaders=registered_skill_loaders,
+        _pending_skill_loads=pending_skill_loads,
+        _code_type=code_type,
+        _getframe=sys._getframe,
+        _sha256=hashlib.sha256,
+        _urandom=os.urandom,
+        _signed_skill_event=_signed_skill_event,
+        _trusted_recovery_path=_trusted_recovery_path,
     ):  # noqa: ANN001
+        if event == "openai4s.skill_loader_register":
+            if _skill_sink is None or _skill_origin is None or len(args) != 1:
+                return
+            try:
+                trusted_origin = _skill_origin() in {"system", "recovery"}
+            except Exception:  # noqa: BLE001 - an attestation error fails closed
+                trusted_origin = False
+            code = args[0]
+            if trusted_origin and isinstance(code, _code_type):
+                _registered_skill_loaders.add(code)
+            return
+        if event == "compile" and _skill_sink is not None and args:
+            try:
+                caller = _getframe(1)
+            except (AttributeError, ValueError):
+                caller = None
+            if (
+                caller is not None
+                and caller.f_code in _registered_skill_loaders
+                and isinstance(args[0], (str, bytes))
+            ):
+                source = args[0]
+                if isinstance(source, str):
+                    source = source.encode("utf-8")
+                attestation_id = _urandom(16).hex()
+                source_sha256 = _sha256(source).hexdigest()
+                _pending_skill_loads[id(caller)] = (
+                    caller,
+                    source_sha256,
+                    False,
+                    attestation_id,
+                )
+                _skill_sink(
+                    _signed_skill_event(
+                        {
+                            "event": "sidecar_capture_started",
+                            "attestation_id": attestation_id,
+                            "sha256": source_sha256,
+                        }
+                    )
+                )
+                return
+        if event == "exec" and args:
+            try:
+                caller = _getframe(1)
+            except (AttributeError, ValueError):
+                caller = None
+            pending = (
+                _pending_skill_loads.get(id(caller)) if caller is not None else None
+            )
+            if pending is not None and pending[0] is caller:
+                _pending_skill_loads[id(caller)] = (
+                    pending[0],
+                    pending[1],
+                    True,
+                    pending[3],
+                )
+                return
+        if event == "openai4s.skill_sidecar_loaded":
+            if _skill_sink is None or len(args) != 1 or type(args[0]) is not dict:
+                return
+            try:
+                caller = _getframe(1)
+            except (AttributeError, ValueError):
+                return
+            caller_code = caller.f_code
+            if caller_code not in _registered_skill_loaders:
+                return
+            pending = _pending_skill_loads.pop(id(caller), None)
+            event_record = dict(args[0])
+            if (
+                pending is not None
+                and pending[0] is caller
+                and pending[2]
+                and event_record.get("sha256") == pending[1]
+            ):
+                event_record["attestation_id"] = pending[3]
+                _skill_sink(_signed_skill_event(event_record))
+            else:
+                _skill_sink(
+                    _signed_skill_event(
+                        {
+                            "event": "invalid_sidecar_event",
+                            "attestation_id": pending[3] if pending is not None else "",
+                        }
+                    )
+                )
+            return
+        if event == "openai4s.skill_cell_complete":
+            _pending_skill_loads.clear()
+            return
+        try:
+            frozen_recovery = (
+                _skill_origin is not None and _skill_origin() == "sidecar_recovery"
+            )
+        except Exception:  # noqa: BLE001 - an origin error fails closed below
+            frozen_recovery = True
+        if frozen_recovery:
+            source_path = None
+            if event == "open" and args:
+                source_path = args[0]
+            elif event == "compile" and len(args) >= 2:
+                source_path = args[1]
+            elif event == "exec" and args:
+                source_path = getattr(args[0], "co_filename", None)
+            if source_path is not None and not _trusted_recovery_path(source_path):
+                raise _perm(
+                    "Refusing mutable file/code access during frozen "
+                    f"sidecar recovery: {source_path}"
+                )
+        if not _dlopen_enabled:
+            return
         if event != "ctypes.dlopen":
             return
         if not args:
@@ -203,5 +382,5 @@ def install(*, enabled: bool = True) -> bool:
     sys.addaudithook(_dlopen_guard)
     sys._openai4s_audit_armed = True  # type: ignore[attr-defined]
     # Drop every Python-level handle so nothing can unload / rebind the hook.
-    del _dlopen_guard, _posix, _posixpath
+    del _dlopen_guard, _posix, _posixpath, _signed_skill_event
     return True

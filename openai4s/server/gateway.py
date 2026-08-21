@@ -1837,9 +1837,12 @@ Only if NO prebuilt env has the package, `host.env.create(name, [pkgs])` to pip-
 3. LOAD THE SKILL: when the declared native `search_skills` and `load_skill` \
 functions are available, call those exact native functions directly. Inside a \
 fenced Python Cell, use `host.search_skills(...)` and `host.load_skill(...)` \
-instead. To enumerate or audit all skills, call the exact native `list_skills` \
-function first, then call exact native `load_skill` with each returned `name`; \
-catalog metadata is never a workspace path. Only inside a fenced Python Cell use \
+instead. To enumerate or audit all skills, call exact native `list_skills` first: \
+its overview gives the exact total, curated names, and collection summaries. Load \
+the curated names; enumerate each collection with its `collection` id and \
+`offset=0`, load that page's names, and continue at every returned `next_offset` \
+while present. Catalog metadata is never a workspace path. Only inside a fenced \
+Python Cell use \
 `host.skills.list()` and then `host.skills.get(...)` / `host.skills.read(...)` as \
 needed; do not use `list_dir` or `write_file`; do not use `read_text_file` or \
 `glob_files` either. Never invent `run_python_cell` or fall back to \

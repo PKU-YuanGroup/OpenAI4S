@@ -36,7 +36,8 @@ GPTomics/MIT。命令示例也按本仓库的中转安全约定做了规范化�
 shell 的 Nextflow 安装示例改为文档已有的 bioconda 安装方式。所用规则写入
 `MANIFEST.json`。这只是写法层面的规范化，不是一次安全审计：裸 `python script.py`、
 `wget`、`pip install git+`、`install_github(...)`、`docker run` 和 `sudo apt install`
-等指令都原样保留，它们仍然受 shell、egress 与人工审批控制。
+等指令都原样保留。若执行，它们仍受 shell 审批、OS 沙箱及已配置的原始网络姿态约束；
+一条原始网络调用不会因为出现在 Skill 里就自动获得 Host egress 或 SSRF 防护。
 
 ## 发现机制与上下文成本
 
@@ -59,8 +60,12 @@ agent 在编写任何生物信息学 pipeline 前先搜索，若用户使用其�
 依赖，也不声称一个环境能直接运行所有配方。每次执行前仍要本地核对版本与 PATH；GPU、
 网络、凭据、授权软件或临床数据访问仍须遵守 OpenAI4S 原有的审批和环境配置流程。
 
-导入的脚本只是示例，发现或搜索 Skill 时绝不会自动执行。它们与 agent 新写的代码一样，
-继续受 shell、egress、secret、生物安全和人工审批控制。配方里的科学论述是方法指导，
+导入的脚本只是示例，发现或搜索 Skill 时绝不会自动执行。若 agent 选择运行，该次执行
+仍受常规的内核/shell 审批和 OS 沙箱姿态约束。大量 vendored 示例使用 `requests`、`urllib`、
+`curl` 或 `wget` 发起原始网络请求；这些请求都不经过 Host egress allowlist 或 SSRF 检查。
+`tests/test_egress_surface.py` 中的窄 Python AST 扫描只冻结了两份 stdlib `urllib` 示例，
+并不是该集合完整 raw-network surface 的清单。执行前应先审核或改写配方，并优先用
+`host.web_fetch` / `host.web_download` 访问网络。配方里的科学论述是方法指导，
 不是针对新数据集的已验证结果。
 
 ## 复现导入

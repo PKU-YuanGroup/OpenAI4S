@@ -7140,12 +7140,15 @@ async function send(text, opts) {
   // actually loaded — left as plain text the model routinely skips
   // host.load_skill and the skill never runs.
   let skillDirective = "";
-  if (!planNow) {
+  const skillCandidates = [];
+  if (!planNow) text.replace(/(^|\s)\/([A-Za-z0-9][\w:-]*)/g, (m, _p, nm) => { if (!skillCandidates.includes(nm)) skillCandidates.push(nm); return m; });
+  // The full catalog includes lazy collection members, so fetching it can be
+  // noticeable on a cold send. Ordinary prose has nothing to resolve here.
+  if (skillCandidates.length) {
     try {
       const cat = await loadSkillsCatalog();
       const names = new Set((cat || []).map(s => String(s.name).toLowerCase()));
-      const hits = [];
-      text.replace(/(^|\s)\/([A-Za-z0-9][\w:-]*)/g, (m, _p, nm) => { if (names.has(nm.toLowerCase()) && !hits.includes(nm)) hits.push(nm); return m; });
+      const hits = skillCandidates.filter(nm => names.has(nm.toLowerCase()));
       if (hits.length) skillDirective = "\n\n" + hits.map(n => t("skill.invokeDirective", n)).join("\n");
     } catch {}
   }

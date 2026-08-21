@@ -223,6 +223,17 @@ class SkillService:
             raise PermissionError(
                 f"skill {name!r} origin={existing.origin} is read-only"
             )
+        candidate_directory = (
+            existing.root.name if existing is not None else self.versions.slug(name)
+        )
+        directory_collision = self.loader.bundled_directory_collision(
+            candidate_directory
+        )
+        if directory_collision is not None:
+            raise PermissionError(
+                f"skill directory {candidate_directory!r} collides with read-only "
+                f"bundled directory {directory_collision}"
+            )
 
         if relative == "SKILL.md" and old_string is None:
             self._reject_bundled_name_collision(content, fallback=name)

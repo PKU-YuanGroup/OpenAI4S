@@ -107,6 +107,39 @@ def test_list_skills_native_tool_dispatches_to_existing_catalog(tmp_path):
     assert catalog == {"count": 1, "names": ["Trusted"], "collections": []}
 
 
+def test_list_skills_native_tool_pages_collections_with_next_offset():
+    rows = [{"name": "Trusted", "collection": None}] + [
+        {"name": f"member-{index:03d}", "collection": "bundle"} for index in range(151)
+    ]
+    runtime = SimpleNamespace(invoke=lambda method: rows)
+    tool = get_tool("list_skills")
+
+    overview = tool.execute(runtime, {})
+    first = tool.execute(runtime, {"collection": "bundle", "offset": 0})
+    final = tool.execute(
+        runtime, {"collection": "bundle", "offset": first["next_offset"]}
+    )
+
+    assert overview == {
+        "count": 152,
+        "names": ["Trusted"],
+        "collections": [{"id": "bundle", "count": 151}],
+    }
+    assert first == {
+        "collection": "bundle",
+        "count": 151,
+        "offset": 0,
+        "names": [f"member-{index:03d}" for index in range(150)],
+        "next_offset": 150,
+    }
+    assert final == {
+        "collection": "bundle",
+        "count": 151,
+        "offset": 150,
+        "names": ["member-150"],
+    }
+
+
 @pytest.mark.parametrize("arguments", ["example_stats", {"name": "example_stats"}])
 def test_load_skill_control_tool_accepts_legacy_sdk_and_native_arguments(arguments):
     calls = []

@@ -81,6 +81,22 @@ def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
 
 
 def _check_layout(app: Path) -> tuple[Path, Path, Path]:
+    if app.is_symlink():
+        raise BundleCheckError("application bundle root must not be a symlink")
+    trusted_root = app.resolve()
+    current = app
+    for part in ("Contents", "Resources", "src"):
+        current /= part
+        if current.is_symlink():
+            raise BundleCheckError(
+                "application source path must not contain symlinks: "
+                f"{current.relative_to(app).as_posix()}"
+            )
+        resolved = current.resolve()
+        if resolved != trusted_root and trusted_root not in resolved.parents:
+            raise BundleCheckError(
+                f"application source path escapes the bundle: {current}"
+            )
     contents = app / "Contents"
     launcher = contents / "MacOS" / "OpenAI4S"
     runtime = contents / "Resources" / "runtime" / "bin" / "python3"

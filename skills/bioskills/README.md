@@ -43,8 +43,10 @@ flags, and the two download-to-shell Nextflow examples use the documented
 bioconda package route. The rules applied are recorded in `MANIFEST.json`.
 This is spelling normalization, not an audit: bare `python script.py`, `wget`,
 `pip install git+`, `install_github(...)`, `docker run` and `sudo apt install`
-instructions survive untouched, and each still runs under the normal shell,
-egress and approval controls.
+instructions survive untouched. If executed, they remain subject to shell
+approval, the OS sandbox, and the configured raw-network posture; raw network
+calls do not acquire Host egress or SSRF enforcement merely by appearing in a
+Skill.
 
 ## Discovery and context cost
 
@@ -77,9 +79,15 @@ software, or clinical-data access still needs the normal OpenAI4S approvals and
 environment setup.
 
 The imported scripts are examples and are never auto-executed by discovery or
-search. They remain subject to the same shell, egress, secret, biosecurity, and
-human-approval controls as agent-authored code. Scientific claims in a recipe
-are guidance, not a validated result for a new dataset.
+search. If an agent chooses to run one, the normal kernel/shell approval and OS
+sandbox posture still apply to that execution. Many vendored examples make
+raw network calls with `requests`, `urllib`, `curl`, or `wget`; none of those
+calls pass through the Host egress allowlist or SSRF checks. The narrow Python
+AST scan in `tests/test_egress_surface.py` freezes two stdlib `urllib` examples
+only; it is not an inventory of the collection's complete raw-network surface.
+Review or adapt a recipe before execution and prefer `host.web_fetch` /
+`host.web_download` for network access. Scientific claims in a recipe are
+guidance, not a validated result for a new dataset.
 
 ## Reproducing the import
 
