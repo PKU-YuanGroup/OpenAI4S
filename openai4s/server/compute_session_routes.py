@@ -22,6 +22,8 @@ name from cluster.toml, and what the response carries is `allocation_id`.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 from openai4s.orchestration.models import (
@@ -31,7 +33,7 @@ from openai4s.orchestration.models import (
     UnsupportedRecoveryStrategy,
 )
 
-from . import contract
+from . import contract, team_policy
 
 _STATUS = contract.RouteSpec(
     "session.compute", "GET", r"/sessions/([^/]+)/compute", mutates=False
@@ -64,16 +66,17 @@ def _identity(self):
 def _may_use(self, session_id: str, store: Any) -> bool:
     """The same rule the rest of the session surface uses, called rather
     than reimplemented — a second copy of a visibility rule is a second
-    place for it to be wrong."""
-    identity = _identity(self)
-    if identity is None:  # team mode off: single user, everything is theirs
-        return True
-    try:
-        return bool(
-            store.team.session_visible_to(session_id, self._team_identity_dict())
-        )
-    except Exception:  # noqa: BLE001 — undecidable visibility fails closed
-        return False
+    place for it to be wrong.
+
+    That is what the docstring claimed while the body called
+    `session_visible_to` directly, through a *different* identity adapter
+    (`_team_identity_dict`, which drops `username`) than the one
+    `team_policy` uses. Two copies of one rule, one of them already
+    drifted. `may_use_session` is the canonical predicate — four gateway
+    call sites reach it — and it already fails closed on an undecidable
+    answer, so this is now the same code and not merely the same intent.
+    """
+    return team_policy.may_use_session(store, _identity(self), session_id)
 
 
 def _status_json(manager: Any, store: Any, session_id: str) -> dict:
@@ -162,11 +165,26 @@ def handle(
         if not _may_use(self, session_id, store):
             self._json({"error": "session not found"}, 404)
             return True
+        identity = _identity(self)
+        if not team_policy.may_control_session(store, identity, session_id):
+            self._json(
+                {
+                    "ok": False,
+                    "code": "owner_only",
+                    "error": "only the session owner or an admin may release it",
+                },
+                403,
+            )
+            return True
         if manager is None:
             self._json({"ok": False, "code": "not_configured"}, 409)
             return True
-        identity = _identity(self)
-        released = manager.release(session_id, reason=Reason.USER_CANCELLED)
+        release = getattr(runner, "release_session_compute", None)
+        released = (
+            release(session_id, reason=Reason.USER_CANCELLED)
+            if callable(release)
+            else manager.release(session_id, reason=Reason.USER_CANCELLED)
+        )
         try:
             store.team.audit(
                 actor=identity.username if identity else "local",
@@ -184,6 +202,26 @@ def handle(
         session_id = m.group(1)
         if not _may_use(self, session_id, store):
             self._json({"error": "session not found"}, 404)
+            return True
+        identity = _identity(self)
+        if identity is not None and not identity.is_admin:
+            # A cluster session is the interactive sibling of an
+            # orchestration job: the scheduler is invoked with the daemon's
+            # Unix identity and site credential, not an authenticated account
+            # belonging to this browser member. Refuse before configuration,
+            # profile lookup, or any durable write so this route cannot bypass
+            # the admin-only boundary on ``POST /orchestration/jobs``.
+            self._json(
+                {
+                    "ok": False,
+                    "code": "admin_only",
+                    "error": (
+                        "cluster session placement uses daemon-managed identity "
+                        "or credentials and is admin only"
+                    ),
+                },
+                403,
+            )
             return True
         if manager is None:
             self._json(
@@ -256,7 +294,6 @@ def handle(
             return True
         profile: ResourceProfile = site.resources
 
-        identity = _identity(self)
         # From the *session*, not from the identity. `TeamIdentity` is a
         # frozen dataclass of (user_id, username, role, kind) with no
         # `project_id` and no `__getattr__`, so the `getattr(identity,
@@ -265,16 +302,62 @@ def handle(
         # and `GET /orchestration/jobs?project_id=…` matched none of them.
         frame = store.get_frame(session_id) or {}
         project_id = frame.get("project_id") or None
+        # Remote environment placement is not yet part of the workload
+        # contract: AttemptPreparer launches the worker with the daemon's
+        # interpreter. Refuse a locally selected different interpreter instead
+        # of labelling/provenancing that remote worker as an env it never ran.
+        from openai4s.kernel import environments as envmod
+
+        selected_name = str(
+            frame.get("runtime_env") or envmod.default_env_name() or "base"
+        )
+        selected_env = envmod.get_environment(selected_name)
+        selected_python = getattr(selected_env, "interpreter", None)
+        if selected_python is not None and (
+            Path(selected_python).resolve() != Path(sys.executable).resolve()
+        ):
+            self._json(
+                {
+                    "ok": False,
+                    "code": "remote_env_unsupported",
+                    "error": (
+                        f"environment {selected_name!r} uses a different Python; "
+                        "cluster sessions currently require the base daemon "
+                        "interpreter"
+                    ),
+                },
+                409,
+            )
+            return True
         # The manager refuses it too, and that is not redundant: the route
         # is one caller of a manager the CLI and tests also reach.
-        workload = manager.request_session(
-            session_id=session_id,
-            owner_user_id=identity.user_id if identity else "local",
-            project_id=project_id,
-            profile=profile,
-            backend=getattr(runner, "cluster_backend_name", "cluster"),
-            recovery=strategy,
-        )
+        request_compute = getattr(runner, "request_session_compute", None)
+        if callable(request_compute):
+            workload = request_compute(
+                session_id,
+                owner_user_id=identity.user_id if identity else "local",
+                project_id=project_id or "default",
+                profile=profile,
+                backend=getattr(runner, "cluster_backend_name", "cluster"),
+                recovery=strategy,
+            )
+        else:
+            workload = manager.request_session(
+                session_id=session_id,
+                owner_user_id=identity.user_id if identity else "local",
+                project_id=project_id,
+                profile=profile,
+                backend=getattr(runner, "cluster_backend_name", "cluster"),
+                recovery=strategy,
+            )
+        # Freeze the response before starting a previously idle reconciler.
+        # Otherwise a fresh request nondeterministically returned either the
+        # durable workload alone or that workload plus its first allocation,
+        # depending only on whether the background thread won this race. A
+        # repeated request may still report the allocation once it exists;
+        # clients therefore see both legitimate eventual states, but a single
+        # request is no longer scheduled-thread timing dressed up as API data.
+        response = _status_json(manager, store, session_id)
         ensure = getattr(runner, "ensure_reconciler", None)
         if callable(ensure):
             ensure()
@@ -287,7 +370,7 @@ def handle(
             )
         except Exception:  # noqa: BLE001
             pass
-        self._json(_status_json(manager, store, session_id), 201)
+        self._json(response, 201)
         return True
 
     return False

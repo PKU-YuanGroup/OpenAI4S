@@ -385,9 +385,12 @@ def test_one_live_allocation_per_workload_is_enforced_by_the_database(daemon):
 # -- the cluster backend, through the same routes -----------------------------
 
 
-def test_a_cluster_job_uses_the_same_routes(tmp_path, monkeypatch):
-    """The point of the abstraction: a cluster job is the same API call with
-    a different backend name."""
+def test_a_cluster_job_is_admin_only_and_uses_the_same_routes(tmp_path, monkeypatch):
+    """Cluster credentials belong to the daemon, so members cannot spend them.
+
+    An admin still uses the backend-neutral job API; no scheduler identity is
+    exposed at the boundary.
+    """
     from tests.test_orchestration_slurm import _install_fake_scheduler
 
     state = tmp_path / "state"
@@ -442,10 +445,13 @@ printf '0' > "{s}/in_queue"; printf 'CANCELLED' > "{s}/acct_state"
     )
     node = _TeamDaemon(home)
     node.seed_user("alice", "fake-pw-a")
+    node.seed_user("root", "fake-pw-r", role="admin")
     try:
-        cookie = _login(node, "alice", "fake-pw-a")
+        member_cookie = _login(node, "alice", "fake-pw-a")
 
-        status, raw = _get(node.port, "/api/v1/orchestration/profiles", cookie=cookie)
+        status, raw = _get(
+            node.port, "/api/v1/orchestration/profiles", cookie=member_cookie
+        )
         payload = _body(raw)
         assert payload["configured"] is True
         assert payload["profiles"][0]["name"] == "gpu-batch"
@@ -454,6 +460,22 @@ printf '0' > "{s}/in_queue"; printf 'CANCELLED' > "{s}/acct_state"
             '"gpus"', ""
         )
 
+        status, raw = _post(
+            node.port,
+            "/api/v1/orchestration/jobs",
+            {
+                "command": ["echo", "hello"],
+                "profile": "gpu-batch",
+                "backend": "cluster",
+            },
+            cookie=member_cookie,
+        )
+        assert status == 403, raw[:300]
+        assert _body(raw)["code"] == "admin_only"
+        assert _body(raw)["backend"] == "cluster"
+        assert node.store.workloads.list_workloads(limit=50) == []
+
+        cookie = _login(node, "root", "fake-pw-r")
         status, raw = _post(
             node.port,
             "/api/v1/orchestration/jobs",

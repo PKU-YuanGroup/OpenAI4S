@@ -223,3 +223,133 @@ def test_cross_user_ws_cancel_is_refused(daemon):
         assert reply["reason"] == "session not found"
     finally:
         ws.close()
+
+
+@pytest.mark.stubbed_backend
+def test_project_member_may_view_but_cannot_cancel_the_owners_execution(daemon):
+    """Project visibility must not become an execution-control capability."""
+
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = str(daemon.store.list_projects()[0]["project_id"])
+    for username in ("alice", "bob"):
+        user = daemon.store.team.get_user_by_username(username)
+        daemon.store.governance.set_member(pid, str(user["id"]), "member")
+    fid = _session_for(daemon, alice)
+
+    called = []
+    daemon.runner.cancel = lambda *args, **kwargs: called.append((args, kwargs)) or {
+        "ok": True
+    }
+
+    ws = _WSClient(daemon.port, bob)
+    try:
+        ws.send({"type": "view_session", "root_frame_id": fid})
+        first = ws.recv_json()
+        assert first is not None and first["type"] != "view_denied", first
+        while ws.recv_json(timeout=0.5) is not None:
+            pass
+
+        ws.send(
+            {
+                "type": "cancel_execution",
+                "root_frame_id": fid,
+                "execution_id": "owner-active-run",
+                "owner": "agent",
+                "owner_id": "owner-agent",
+            }
+        )
+        reply = ws.recv_json()
+        assert reply is not None
+        assert reply["type"] == "execution_cancel_result"
+        assert reply["ok"] is False
+        assert reply["code"] == "owner_only"
+        assert called == [], "a visible project member reached runner.cancel"
+    finally:
+        ws.close()
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("username", ["alice", "root"])
+def test_owner_and_admin_may_cancel_an_execution_over_ws(daemon, username):
+    if username == "root":
+        daemon.seed_user("root", "fake-pw-r", role="admin")
+    alice = _login(daemon, "alice", "fake-pw-a")
+    caller = alice if username == "alice" else _login(daemon, "root", "fake-pw-r")
+    fid = _session_for(daemon, alice)
+    called = []
+
+    def cancel(*args, **kwargs):
+        called.append((args, kwargs))
+        return {"ok": True, "frame_id": fid}
+
+    daemon.runner.cancel = cancel
+    ws = _WSClient(daemon.port, caller)
+    try:
+        ws.send(
+            {
+                "type": "cancel_execution",
+                "root_frame_id": fid,
+                "execution_id": "owner-active-run",
+                "owner": "agent",
+                "owner_id": "owner-agent",
+            }
+        )
+        reply = ws.recv_json()
+        assert reply is not None and reply["ok"] is True, reply
+        assert len(called) == 1
+    finally:
+        ws.close()
+
+
+def test_a_live_stream_stops_when_the_subscription_is_revoked(daemon):
+    """Subscribing was checked once and never again.
+
+    `test_ws_subscription_stops_working_after_the_user_is_disabled` in
+    tests/test_team_isolation_hardening.py asserts that a *new* subscribe and
+    a *mutating* inbound are refused after revocation — which they were. The
+    standing subscription was not: `WSHub.broadcast` fanned out on
+    `root_frame_id in c.subs` alone, so the socket kept delivering cell code,
+    stdout and pending approval prompts to an account that had just been
+    disabled, for as long as the tab stayed open.
+
+    A successful check is deliberately not cached: the next event must see a
+    revocation immediately under the production defaults, not only after a
+    test shortens an authorization TTL.
+    """
+    a = _login(daemon, "alice", "fake-pw-a")
+    fid_a = _session_for(daemon, a)
+
+    ws = _WSClient(daemon.port, a)
+    try:
+        ws.send({"type": "view_session", "root_frame_id": fid_a})
+        first = ws.recv_json()
+        assert first is not None and first["type"] != "view_denied"
+        while ws.recv_json(timeout=0.5) is not None:
+            pass
+
+        # Still hers: the broadcast arrives.
+        daemon.runner.hub.broadcast(fid_a, {"type": "frame_update", "frame_id": fid_a})
+        seen = []
+        while True:
+            msg = ws.recv_json(timeout=1.0)
+            if msg is None:
+                break
+            seen.append(msg)
+        assert any(m.get("type") == "frame_update" for m in seen), seen
+
+        # Revoked. The socket is still open and still subscribed.
+        uid = daemon.store.team.get_user_by_username("alice")["id"]
+        daemon.store.team.set_disabled(uid, True)
+
+        daemon.runner.hub.broadcast(fid_a, {"type": "frame_update", "frame_id": fid_a})
+        after = []
+        while True:
+            msg = ws.recv_json(timeout=1.0)
+            if msg is None:
+                break
+            after.append(msg)
+        assert not [m for m in after if m.get("type") == "frame_update"], after
+
+    finally:
+        ws.close()

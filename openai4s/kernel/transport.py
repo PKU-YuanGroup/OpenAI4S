@@ -244,9 +244,15 @@ class OutboundTcpTransport:
         self._remote_pid = remote_pid
         self._alive = True
         self._lock = threading.Lock()
-        # Text wrappers over the socket, line-buffered, so the framing is
-        # byte-for-byte what the pipe path produces.
-        self._reader = sock.makefile("r", encoding="utf-8", newline="\n")
+        # The reader is *binary* and the writer text. Both produce the same
+        # framing as the pipe path; the asymmetry is about `MAX_LINE_BYTES`
+        # meaning bytes. `TextIOWrapper.readline(size)` bounds **characters**,
+        # so a text reader let a peer spend 4 bytes per character and turn a
+        # 16 MiB cap into a 64 MiB allocation -- against a constant whose own
+        # comment calls the unbounded case "a memory exhaustion primitive".
+        # `BufferedReader.readline(size)` bounds bytes, which is what was
+        # meant.
+        self._reader = sock.makefile("rb")
         self._writer = sock.makefile("w", encoding="utf-8", newline="\n", buffering=1)
 
     def write_line(self, line: str) -> None:
@@ -255,11 +261,11 @@ class OutboundTcpTransport:
             self._writer.flush()
 
     def read_line(self) -> str:
-        line = self._reader.readline(MAX_LINE_BYTES)
-        if not line:
+        raw = self._reader.readline(MAX_LINE_BYTES)
+        if not raw:
             self._alive = False
             return ""
-        if len(line) >= MAX_LINE_BYTES and not line.endswith("\n"):
+        if len(raw) >= MAX_LINE_BYTES and not raw.endswith(b"\n"):
             # A peer that never sends a newline would otherwise be an
             # unbounded allocation. Treat it as a dead connection rather
             # than as a frame: a truncated frame is not a frame.
@@ -267,9 +273,27 @@ class OutboundTcpTransport:
             raise WorkerConnectionRefused(
                 f"remote worker {self._peer} sent a line over {MAX_LINE_BYTES} bytes"
             )
-        return line
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # U+FFFD is legal inside a JSON string, so replacement decoding
+            # silently changed source code, paths and host responses while
+            # still producing a valid frame.  Protocol bytes are exact.
+            self._alive = False
+            raise WorkerConnectionRefused(
+                f"remote worker {self._peer} sent invalid UTF-8"
+            ) from exc
 
     def alive(self) -> bool:
+        """Latched, and honest about being latched.
+
+        There is no `poll()` for a process on another machine, so this can
+        only report what the last read saw. Two things make the latch usable
+        rather than misleading: `SO_KEEPALIVE` on the accepted socket (see
+        `orchestration/worker_gateway.py`), which turns a vanished node into
+        an EOF the reader will actually reach, and the lease reclaimer, which
+        ends the allocation on its own clock.
+        """
         return self._alive
 
     def interrupt(self) -> bool:
@@ -296,6 +320,14 @@ class OutboundTcpTransport:
             except Exception:  # noqa: BLE001
                 pass
         self._alive = False
+        # A makefile reader may be blocked in ``readline`` on another thread.
+        # Closing that BufferedReader first can wait forever for the read to
+        # return; shutting down the socket is what wakes it.  Only then is it
+        # safe to close the wrappers and their shared descriptor.
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         for handle in (self._reader, self._writer):
             try:
                 handle.close()

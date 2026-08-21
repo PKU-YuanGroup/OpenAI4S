@@ -102,9 +102,13 @@ class LeaseReclaimer:
 
     def stop(self, *, timeout_s: float = 5.0) -> None:
         self._stop.set()
-        thread, self._thread = self._thread, None
+        thread = self._thread
         if thread is not None:
             thread.join(timeout=timeout_s)
+        # See `Reconciler.stop`: forgetting a thread the join did not reap
+        # lets `start()` clear the stop flag under it and run two sweepers.
+        if thread is None or not thread.is_alive():
+            self._thread = None
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -134,10 +138,11 @@ class LeaseReclaimer:
             expiry = lease.expiry(now)
             if expiry is None:
                 continue
-            report.expired += 1
             reason = _REASON_FOR[expiry]
             try:
-                stopped = self._workloads.request_stop(lease.workload_id, reason=reason)
+                expired, stopped = self._leases.expire_if_unchanged(
+                    lease, now_ms=now, reason=reason
+                )
             except Exception as exc:  # noqa: BLE001
                 report.errors.append(f"{lease.workload_id}: {exc}")
                 self.last_error = f"{lease.workload_id}: {type(exc).__name__}: {exc}"
@@ -150,11 +155,11 @@ class LeaseReclaimer:
                 # happened, so the next sweep must try again rather than
                 # inherit a lease it believes was dealt with.
                 continue
-            # Released whether or not the stop landed. `request_stop`
-            # returning False means the workload is already terminal — the
-            # resource is gone and the lease has nothing left to govern, so
-            # keeping the row live would re-examine a dead session forever.
-            self._leases.release(lease.workload_id)
+            if not expired:
+                # A touch/reopen won the CAS after this sweep's snapshot. It
+                # is current user intent and this stale pass has no work.
+                continue
+            report.expired += 1
             if stopped:
                 report.stopped += 1
             self._emit(
@@ -177,7 +182,7 @@ class LeaseReclaimer:
 
 def _store_is_gone(exc: BaseException) -> bool:
     text = str(exc).lower()
-    return "closed database" in text or "cannot operate on a closed database" in text
+    return "closed database" in text
 
 
 __all__ = ["DEFAULT_SWEEP_S", "LeaseReclaimer", "SweepReport"]

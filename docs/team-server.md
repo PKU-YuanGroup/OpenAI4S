@@ -50,6 +50,16 @@ An admin reading a private session writes a `admin_read_private` row to
 the audit log. That is the whole of what admin access costs, and it is
 per view rather than per session.
 
+Read access is not namespace control. For a project-visible session, only
+its owner or an admin may Start, Stop, or Restart the Notebook kernel,
+interrupt or cancel an active execution, switch its runtime environment,
+or release its interactive compute allocation. Requesting interactive compute
+is stricter — admin only —
+because the scheduler uses the daemon's identity and site credential.
+Installing packages through either the global or frame-scoped kernel route
+is also admin only: both mutate a runtime environment shared by the instance,
+even when the frame belongs to the caller.
+
 Quotas are set per user or per project, per kind, per window:
 
 ```bash
@@ -92,19 +102,23 @@ operator's regardless of who is logged in:
 - the legacy compute-job runner (`/compute/jobs`), which executes
   `bash -c <command>` as the daemon's own uid — reads included, since a
   job's row is somebody's command line;
-- submitting a batch job to the **`local` backend**
-  (`POST /orchestration/jobs`), for the same reason: it runs the argv as
-  the daemon, outside the kernel sandbox. Members keep the *cluster*
-  backends, where the scheduler runs the job under their own account —
-  the privilege is a property of the backend, not of the route, so
-  `{"backend": "cluster"}` is a member's call and `{"backend": "local"}`
-  is not;
+- submitting a batch job to either built-in backend
+  (`POST /orchestration/jobs`). `local` runs the argv as the daemon,
+  outside the kernel sandbox; `cluster` invokes the scheduler with the
+  daemon's Unix identity and site credential. OpenAI4S has no authenticated
+  mapping from a browser member to a scheduler account, so neither backend
+  may be treated as that member's own execution identity;
+- requesting interactive cluster placement for a session
+  (`POST /sessions/{id}/compute`), which invokes the same daemon-managed
+  scheduler identity. The session owner may release an existing allocation,
+  but only an admin may request one;
 - registering remote compute, installing packages into the venv every
-  kernel shares, configuring connectors that carry the group's
-  credentials, publishing skills into the directory every member's agent
-  loads recipes from, resetting standing permission rules, and creating a
-  *global* permission rule (a member may create rules scoped to their own
-  session or a project they participate in).
+  kernel shares (through `/kernel/install` or
+  `/frames/{fid}/kernel/install`), configuring connectors that carry the
+  group's credentials, publishing skills into the directory every member's
+  agent loads recipes from, resetting standing permission rules, and
+  creating a *global* permission rule (a member may create rules scoped to
+  their own session or a project they participate in).
 
 Members keep every read the UI needs. The full list is
 `openai4s/server/team_policy.py`, and a route not on it is a member's.
@@ -231,9 +245,13 @@ supported ways to reach it from elsewhere, in order of preference:
    is exposed, authentication is your existing SSH setup, and there is no
    new component to operate.
 2. **Reverse proxy with TLS** on the lab network, with team mode on. The
-   proxy terminates TLS and forwards to loopback; the `Host` allowlist
-   stays on, so you must include the proxy's hostname in
-   `OPENAI4S_ALLOWED_HOSTS`.
+   proxy terminates TLS and forwards to loopback. Keep `OPENAI4S_HOST` at
+   `127.0.0.1`; it is the daemon's **bind address**, not an extra allowlist.
+   Configure the proxy to rewrite `Host` to the exact loopback upstream,
+   for example `127.0.0.1:8760`. A proxy that passes the client's `Host`
+   through unchanged gets `403 host not allowed` on every request. Setting
+   `OPENAI4S_HOST` to a proxy hostname can make the daemon bind beyond
+   loopback and is not a supported way to admit that hostname.
 
 **The relay is not a third way to run a lab server.** `openai4s relay` and
 `openai4s share` exist for a different purpose — a read-only, redacted

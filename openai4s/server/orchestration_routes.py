@@ -28,7 +28,7 @@ from openai4s.orchestration.models import (
     WorkloadSpec,
 )
 
-from . import contract
+from . import contract, team_policy
 
 _JOBS = contract.RouteSpec(
     "orchestration.jobs", "GET", r"/orchestration/jobs", mutates=False
@@ -79,23 +79,22 @@ def _may_see(self, workload: Any) -> bool:
     return workload.owner_user_id == identity.user_id
 
 
-#: Backends that execute as the daemon process itself rather than handing the
-#: work to a scheduler that runs it under the submitting user's own account.
+#: Backends that launch work with daemon-controlled identity or credentials.
 #:
 #: `LocalBackend` runs `Popen(argv)` as the daemon's uid, outside the kernel
 #: sandbox, with the daemon's filesystem access -- which in team mode is every
-#: tenant's sessions, the access-token file and the group LLM credential. That
-#: is the hazard `team_policy.DAEMON_OPERATION_PATHS` already names for
-#: `/compute/jobs`, and it is a property of the *backend*, not of the route:
-#: a member submitting to a scheduler is submitting as themselves, and keeps
-#: it.
+#: tenant's sessions, the access-token file and the group LLM credential.
+#: `SlurmBackend` invokes the scheduler with the daemon's Unix identity and
+#: site credential; OpenAI4S has no authenticated member-to-scheduler-account
+#: mapping, so a browser member is not thereby submitting as themselves. Both
+#: can read or spend instance resources and are operator actions in team mode.
 #:
 #: Deliberately not solved by wrapping `LocalBackend` in the kernel sandbox.
 #: The sandbox degrades visibly rather than failing closed on hosts that
 #: cannot give it namespaces, and a privilege boundary that sometimes is not
 #: there is worse than a refusal. Member-submitted local work wants its own
 #: fail-closed `local-sandboxed` backend, designed as such.
-PRIVILEGED_BACKENDS = frozenset({"local"})
+PRIVILEGED_BACKENDS = frozenset({"cluster", "local"})
 
 
 def backend_for(runner: Any, body: Any) -> str:
@@ -128,7 +127,7 @@ def _job_json(workload: Any, allocation: Any = None) -> dict:
         "execution_epoch": workload.execution_epoch,
         "owner_user_id": workload.owner_user_id,
         "project_id": workload.project_id,
-        "backend": getattr(workload, "backend", "local"),
+        "backend": workload.backend or "local",
         "created_at": getattr(workload, "created_at", None),
         "updated_at": getattr(workload, "updated_at", None),
     }
@@ -213,7 +212,7 @@ def handle(
         if target is not None:
             tail["allocation_id"] = target.id
             backends = getattr(runner, "orchestration_backends", {}) or {}
-            backend = backends.get(getattr(workload, "backend", "local"))
+            backend = backends.get(workload.backend or "local")
             log_paths = getattr(backend, "log_paths", None)
             if callable(log_paths):
                 out_path, err_path = log_paths(target.id)
@@ -333,8 +332,8 @@ def handle(
             self._json(
                 {
                     "error": (
-                        f"the {backend!r} backend runs jobs as the daemon and is "
-                        f"admin only; submit to a cluster backend instead"
+                        f"the {backend!r} backend launches work with "
+                        f"daemon-managed identity or credentials and is admin only"
                     ),
                     "code": "admin_only",
                     "backend": backend,
@@ -343,10 +342,21 @@ def handle(
             )
             return True
 
+        # The project is caller-supplied and lands in the workload row, the
+        # audit trail and the project-scoped usage reporting. The sibling
+        # write -- creating a session -- checks participation for exactly this
+        # reason; this one did not, so a member could file a job into another
+        # team's project and write into their audit log.
+        submit_project = body.get("project_id") or None
+        if submit_project and not team_policy.may_read_project(
+            store, _identity(self), str(submit_project)
+        ):
+            self._json({"error": "project not found", "code": "not_found"}, 404)
+            return True
         workload = store.workloads.create_workload(
             spec=spec,
             owner_user_id=_owner_id(self),
-            project_id=body.get("project_id") or None,
+            project_id=submit_project,
             backend=backend,
         )
         try:

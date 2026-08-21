@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from openai4s.kernel.manager import Kernel
-from openai4s.kernel.transport import OutboundTcpTransport
+from openai4s.kernel.transport import OutboundTcpTransport, WorkerConnectionRefused
 from openai4s.orchestration.bootstrap import (
     BootstrapAuthority,
     BootstrapCredential,
@@ -43,6 +43,19 @@ from openai4s.orchestration.worker_gateway import (
 )
 
 _WORKER = Path(__file__).resolve().parent.parent / "openai4s" / "kernel" / "worker.py"
+
+
+def test_remote_protocol_rejects_invalid_utf8_without_replacement():
+    local, peer = socket.socketpair()
+    transport = OutboundTcpTransport(local, peer="invalid-utf8")
+    try:
+        peer.sendall(b'{"type":"result","value":"\xff"}\n')
+        with pytest.raises(WorkerConnectionRefused, match="invalid UTF-8"):
+            transport.read_line()
+        assert transport.alive() is False
+    finally:
+        peer.close()
+        transport.close(graceful=False)
 
 
 # -- the credential -----------------------------------------------------------
@@ -583,10 +596,162 @@ def test_a_corrupt_fence_refuses_admission_rather_than_forgetting(tmp_path):
     # The replay the review reproduced.
     with pytest.raises(BootstrapError, match="could not be read"):
         revived.consume(burned)
-    # And nothing else is admitted either, since the fence cannot answer for
-    # any nonce.
+    # Issuance is a mutation too. Allowing it to rewrite the corrupt file with
+    # an empty in-memory fence would make a third daemon trust that empty file
+    # and re-admit `burned`.
+    corrupt = state.read_text(encoding="utf-8")
     with pytest.raises(BootstrapError, match="could not be read"):
-        revived.consume(revived.issue(allocation_id="alloc_2", epoch=0))
+        revived.issue(allocation_id="alloc_2", epoch=0)
+    assert state.read_text(encoding="utf-8") == corrupt
+
+    restarted = BootstrapAuthority(secret, state_path=state)
+    with pytest.raises(BootstrapError, match="could not be read"):
+        restarted.consume(burned)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"consumed": [], "epochs": {}},
+        {"consumed": {}, "epochs": []},
+        {"consumed": {"nonce": "tomorrow"}, "epochs": {}},
+        {"consumed": {}, "epochs": {"alloc_1": True}},
+        {"consumed": {}, "epochs": {}, "unexpected": True},
+    ],
+)
+def test_a_wrong_shaped_fence_fails_closed(tmp_path, payload):
+    """Valid JSON is not necessarily a valid authorization record. Missing
+    or mistyped fields must not silently become empty nonce/epoch maps."""
+    state = tmp_path / "fence.json"
+    state.write_text(json.dumps(payload), encoding="utf-8")
+    authority = BootstrapAuthority(load_or_mint_secret(tmp_path), state_path=state)
+
+    with pytest.raises(BootstrapError, match="could not be read"):
+        authority.issue(allocation_id="alloc_1", epoch=0)
+
+
+def test_a_failed_nonce_persistence_refuses_and_rolls_back(tmp_path, monkeypatch):
+    """No handshake may succeed unless its single-use burn is durable."""
+    import openai4s.orchestration.bootstrap as bootstrap
+
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=state)
+    credential = authority.issue(allocation_id="alloc_1", epoch=0)
+    real_replace = bootstrap.os.replace
+    fail = True
+
+    def replace(source, target):
+        if fail:
+            raise OSError("disk full")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(bootstrap.os, "replace", replace)
+    with pytest.raises(BootstrapError, match="could not persist"):
+        authority.consume(credential)
+
+    # The failed operation was refused, not half-published in memory. A retry
+    # after storage recovers remains legitimate and is then burned durably.
+    authority.verify(credential)
+    fail = False
+    authority.consume(credential)
+    restarted = BootstrapAuthority(secret, state_path=state)
+    with pytest.raises(BootstrapError, match="already been used"):
+        restarted.consume(credential)
+
+
+def test_a_failed_fence_directory_fsync_refuses_the_nonce(tmp_path, monkeypatch):
+    """Replacing the JSON is not durable until its directory entry is synced.
+
+    The shared helper intentionally swallows unsupported directory fsyncs, but
+    doing that for a replay fence acknowledges a nonce that a power loss can
+    un-burn. This boundary must propagate the failure.
+    """
+    import openai4s.orchestration.bootstrap as bootstrap
+
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=state)
+    credential = authority.issue(allocation_id="alloc_1", epoch=0)
+    real_fsync = bootstrap._strict_fsync_dir
+
+    def fail_fsync(directory):
+        raise OSError("directory sync failed")
+
+    monkeypatch.setattr(bootstrap, "_strict_fsync_dir", fail_fsync)
+    with pytest.raises(BootstrapError, match="could not persist"):
+        authority.consume(credential)
+
+    # Rename already happened, so memory and disk may now disagree about
+    # which fence survives a power loss. The live authority must lock closed;
+    # a restart reloads the complete candidate and conservatively keeps the
+    # nonce burned even though the handshake was refused.
+    monkeypatch.setattr(bootstrap, "_strict_fsync_dir", real_fsync)
+    with pytest.raises(BootstrapError, match="durability is uncertain"):
+        authority.consume(credential)
+    restarted = BootstrapAuthority(secret, state_path=state)
+    with pytest.raises(BootstrapError, match="already been used"):
+        restarted.consume(credential)
+
+
+def test_an_uncertain_epoch_publish_cannot_reopen_the_old_epoch(tmp_path, monkeypatch):
+    import openai4s.orchestration.bootstrap as bootstrap
+
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=state)
+    old = authority.issue(allocation_id="alloc_1", epoch=1)
+    real_fsync = bootstrap._strict_fsync_dir
+
+    def fail_fsync(_directory):
+        raise OSError("directory sync failed")
+
+    monkeypatch.setattr(bootstrap, "_strict_fsync_dir", fail_fsync)
+
+    with pytest.raises(BootstrapError, match="could not persist"):
+        authority.issue(allocation_id="alloc_1", epoch=2)
+
+    monkeypatch.setattr(bootstrap, "_strict_fsync_dir", real_fsync)
+    with pytest.raises(BootstrapError, match="durability is uncertain"):
+        authority.issue(allocation_id="alloc_1", epoch=1)
+
+    restarted = BootstrapAuthority(secret, state_path=state)
+    with pytest.raises(BootstrapError, match="STALE_EPOCH"):
+        restarted.consume(old)
+
+
+def test_a_failed_epoch_persistence_does_not_publish_the_new_fence(
+    tmp_path, monkeypatch
+):
+    import openai4s.orchestration.bootstrap as bootstrap
+
+    state = tmp_path / "fence.json"
+    secret = load_or_mint_secret(tmp_path)
+    authority = BootstrapAuthority(secret, state_path=state)
+    stale = authority.issue(allocation_id="alloc_1", epoch=0)
+    real_replace = bootstrap.os.replace
+    fail = True
+
+    def replace(source, target):
+        if fail:
+            raise OSError("read-only filesystem")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(bootstrap.os, "replace", replace)
+    with pytest.raises(BootstrapError, match="could not persist"):
+        authority.issue(allocation_id="alloc_1", epoch=1)
+
+    # Epoch 1 was not issued, so the in-memory authority remains at epoch 0.
+    authority.verify(stale)
+    fail = False
+    authority.issue(allocation_id="alloc_1", epoch=1)
+    with pytest.raises(BootstrapError, match="STALE_EPOCH"):
+        authority.consume(stale)
+
+    restarted = BootstrapAuthority(secret, state_path=state)
+    with pytest.raises(BootstrapError, match="STALE_EPOCH"):
+        restarted.consume(stale)
 
 
 def test_a_missing_fence_is_still_an_empty_fence(tmp_path):

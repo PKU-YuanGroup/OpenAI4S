@@ -29,6 +29,8 @@ loopback CLI 按决策 D2 等同管理员——能读到宿主上 access-token �
 
 管理员读一个 private 会话会往审计日志写一行 `admin_read_private`。这就是管理员权限的全部代价，而且是**每次查看**一行而不是每个会话一行。
 
+读权限不等于命名空间控制权。对于项目内可见的会话，只有会话属主或管理员可以启动、停止、重启 Notebook kernel，中断或取消 active execution，切换 runtime environment，或释放交互式算力分配。请求交互式算力更严格——仅管理员可做——因为调度器使用的是 daemon 身份与站点凭据。通过全局或 frame-scoped kernel 路由安装包也仅管理员可做：即使 frame 属于调用者，两条路由改动的都是实例共享的运行环境。
+
 配额按用户或项目、按种类、按窗口设置：
 
 ```bash
@@ -54,8 +56,9 @@ export OPENAI4S_DATA_ROOTS=/lab/datasets=ro:/lab/scratch
 
 - 写实例配置——LLM 提供方、它的端点与凭据、模型 profile、默认模型。改一下 `llm_base_url`，全员的流量就指向了写的人选的主机；
 - 旧的 compute-job 运行器（`/compute/jobs`），它以 daemon 自己的 uid 执行 `bash -c <command>`——读也不给，因为一条作业行就是某个人敲下的命令；
-- 向 **`local` backend** 提交批处理作业（`POST /orchestration/jobs`），理由相同：它以 daemon 的身份、在 kernel 沙箱之外执行该 argv。成员保留*集群* backend，因为调度器会以成员自己的账号运行作业——特权属于 backend 而非路由，所以 `{"backend": "cluster"}` 是成员可以做的，`{"backend": "local"}` 不是；
-- 注册远程算力、往所有内核共用的 venv 里装包、配置携带组凭据的连接器、往每位成员的 agent 都会加载的目录里发布 skill、重置常设权限规则，以及创建**全局**权限规则（成员可以为自己的会话、或自己参与的项目建规则）。
+- 向任一内置 backend 提交批处理作业（`POST /orchestration/jobs`）。`local` 以 daemon 身份、在 kernel 沙箱之外执行 argv；`cluster` 则用 daemon 的 Unix 身份和站点凭据调用调度器。OpenAI4S 没有经过鉴权的“浏览器成员 → 调度器账号”映射，因此两种 backend 都不能当作该成员自己的执行身份；
+- 为会话请求交互式集群放置（`POST /sessions/{id}/compute`），它调用的是同一套 daemon 管理的调度器身份。会话属主可以释放一份已有的分配，但只有管理员可以请求分配；
+- 注册远程算力、通过 `/kernel/install` 或 `/frames/{fid}/kernel/install` 往所有内核共用的 venv 里装包、配置携带组凭据的连接器、往每位成员的 agent 都会加载的目录里发布 skill、重置常设权限规则，以及创建**全局**权限规则（成员可以为自己的会话、或自己参与的项目建规则）。
 
 成员保留 UI 需要的每一项读取。完整清单在 `openai4s/server/team_policy.py`；不在其上的路由就是成员的。
 
@@ -123,7 +126,7 @@ export OPENAI4S_WORKER_ADVERTISE=head01.lab     # 告诉它们去拨哪里
 daemon 默认绑 loopback，这也是推荐做法。从别处访问，两条受支持的路，按优先级：
 
 1. **SSH 隧道。** `ssh -N -L 8760:127.0.0.1:8760 you@lab-host`。什么都不暴露，鉴权用你已有的 SSH 配置，也没有新组件要运维。
-2. **实验室网内带 TLS 的反向代理**，并打开团队模式。代理终结 TLS 后转发到 loopback；`Host` 白名单仍然生效，所以要把代理的主机名加进 `OPENAI4S_ALLOWED_HOSTS`。
+2. **实验室网内带 TLS 的反向代理**，并打开团队模式。代理终结 TLS 后转发到 loopback。保持 `OPENAI4S_HOST=127.0.0.1`：它是 daemon 的**绑定地址**，不是额外白名单。代理必须把 `Host` 改写为确切的 loopback upstream，例如 `127.0.0.1:8760`。如果原样透传客户端的 `Host`，每个请求都会拿到 `403 host not allowed`。把 `OPENAI4S_HOST` 设成代理主机名可能使 daemon 绑定到 loopback 之外，不是放行该主机名的支持方式。
 
 **relay 不是跑实验室服务器的第三条路。** `openai4s relay` 与 `openai4s share` 是另一件事——**单个**会话的只读、已脱敏快照，经由 daemon 主动拨出的隧道发送（见 [`webshare.md`](webshare.md)）。relay 看得到明文，而 share 投影刻意不是一个登录面：它不带 cookie、没有写路由、也没有活的内核。把它指向团队部署，得到的是某一个会话的投影，而不是把工作台开出去。
 

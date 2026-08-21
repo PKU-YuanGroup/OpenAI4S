@@ -90,6 +90,27 @@ _MAX_CACHED_CELLS = 128  # linecache retention, evicted by counter
 #: secret ever appears in a job's environment (INV-9).
 _CONNECT_ENV = "OPENAI4S_WORKER_CONNECT"
 _CREDENTIAL_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH"
+_CREDENTIAL_TEMPLATE_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH_TEMPLATE"
+_RANK_ENV_NAME_ENV = "OPENAI4S_WORKER_RANK_ENV"
+
+
+def _remote_credential_path() -> str:
+    template = (os.environ.get(_CREDENTIAL_TEMPLATE_ENV) or "").strip()
+    if not template:
+        return (os.environ.get(_CREDENTIAL_ENV) or "").strip()
+    rank_env = (os.environ.get(_RANK_ENV_NAME_ENV) or "").strip()
+    if not rank_env:
+        raise ValueError(
+            f"{_CREDENTIAL_TEMPLATE_ENV} is set but {_RANK_ENV_NAME_ENV} is not"
+        )
+    raw_rank = (os.environ.get(rank_env) or "").strip()
+    try:
+        rank = int(raw_rank)
+    except ValueError as exc:
+        raise ValueError(f"invalid worker rank in {rank_env}: {raw_rank!r}") from exc
+    if rank < 0 or "{rank}" not in template:
+        raise ValueError("worker credential template/rank is invalid")
+    return template.replace("{rank}", str(rank))
 
 
 def _connect_remote_protocol():
@@ -107,28 +128,36 @@ def _connect_remote_protocol():
     import json as _json
     import socket as _socket
 
-    credential_path = (os.environ.get(_CREDENTIAL_ENV) or "").strip()
-    if not credential_path:
-        print(
-            f"{_CONNECT_ENV} is set but {_CREDENTIAL_ENV} is not; refusing to "
-            f"connect without a credential",
-            file=sys.stderr,
-            flush=True,
-        )
-        raise SystemExit(70)
     try:
+        credential_path = _remote_credential_path()
+        if not credential_path:
+            raise ValueError(
+                f"{_CONNECT_ENV} is set but {_CREDENTIAL_ENV} is not; refusing "
+                "to connect without a credential"
+            )
         with open(credential_path, encoding="utf-8") as handle:
             credential = handle.read().strip()
         host, _, port = target.rpartition(":")
         sock = _socket.create_connection((host or "127.0.0.1", int(port)), timeout=60)
         sock.sendall((credential + "\n").encode("utf-8"))
+        # One byte at a time, deliberately. A chunked read consumes whatever
+        # arrived in the same segment as the handshake reply, and the previous
+        # version then threw the remainder away -- so a protocol frame the
+        # daemon wrote immediately afterwards (registration wakes a thread
+        # that builds the Kernel and executes at once, so "immediately" is the
+        # normal case) was lost before the reader wrapper existed to see it,
+        # and the daemon blocked forever on a reply to a cell the worker never
+        # received. The reply is one short line; the syscalls are cheap and
+        # happen once.
         reply = b""
-        while b"\n" not in reply:
-            chunk = sock.recv(4096)
+        while not reply.endswith(b"\n"):
+            chunk = sock.recv(1)
             if not chunk:
                 raise OSError("daemon closed during handshake")
             reply += chunk
-        answer = _json.loads(reply.split(b"\n", 1)[0].decode("utf-8"))
+            if len(reply) > 65536:
+                raise OSError("handshake reply too long")
+        answer = _json.loads(reply.rstrip(b"\n").decode("utf-8"))
         if not answer.get("ok"):
             raise OSError(f"daemon refused this worker: {answer.get('error')}")
         # The generation the Host admitted this connection under. A local

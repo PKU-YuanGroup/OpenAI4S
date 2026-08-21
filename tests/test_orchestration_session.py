@@ -18,6 +18,9 @@ The three things worth failing over:
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -44,6 +47,7 @@ from openai4s.orchestration.session import (
     ComputeSessionManager,
     SessionReadiness,
 )
+from openai4s.security.permissions import is_owner_only
 from openai4s.store import get_store
 
 PROFILE = ResourceProfile(name="gpu-interactive", cpus=4, gpus=1)
@@ -135,6 +139,30 @@ def manager(store, tmp_path):
         workspace_root=tmp_path / "workspaces",
         kernel_factory=lambda registration: _FakeKernel(),
     )
+
+
+def test_manager_precreates_private_workspace_root_before_any_workload(store, tmp_path):
+    root = tmp_path / "cluster-workspaces"
+    authority = BootstrapAuthority(load_or_mint_secret(tmp_path))
+    assert not root.exists()
+
+    # Prove the mode is explicit rather than an accident of the test runner's
+    # ordinary umask: this directory is the mount point bwrap must see before
+    # any local kernel starts, and later holds bootstrap credentials.
+    previous_umask = os.umask(0)
+    try:
+        ComputeSessionManager(
+            store=store,
+            gateway=FakeGateway(),
+            authority=authority,
+            workspace_root=root,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert root.is_dir()
+    if os.name == "posix":
+        assert is_owner_only(root)
 
 
 class _FakeKernel:
@@ -551,6 +579,42 @@ def test_a_user_executing_something_renews_the_lease(store, manager, lease_clock
     )
 
 
+def test_a_touch_after_the_sweep_snapshot_wins_the_expiry_cas(
+    store, manager, lease_clock, monkeypatch
+):
+    """Renewal and reclamation are one race, not two independent writes.
+
+    The old sweep decided from a stale ``live_leases`` object and then wrote
+    STOPPED plus released the lease even when ``touch`` had already returned
+    True. Interpose the touch at the repository CAS boundary to make that
+    ordering deterministic.
+    """
+    workload = manager.request_session(
+        session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    clock = lease_clock
+    store.leases.open_lease(workload.id, idle_ttl_s=60, max_lifetime_s=7200)
+    reclaimer = LeaseReclaimer(
+        leases=store.leases, workloads=store.workloads, clock_ms=clock
+    )
+    clock.advance_s(61)
+
+    expire = store.leases.expire_if_unchanged
+
+    def touch_then_expire(lease, *, now_ms, reason):
+        assert store.leases.touch(lease.workload_id) is True
+        return expire(lease, now_ms=now_ms, reason=reason)
+
+    monkeypatch.setattr(store.leases, "expire_if_unchanged", touch_then_expire)
+    report = reclaimer.sweep()
+
+    assert report.expired == 0 and report.stopped == 0
+    assert store.leases.get(workload.id).released_at is None
+    assert (
+        store.workloads.get_workload(workload.id).desired_state is DesiredState.RUNNING
+    )
+
+
 def test_the_maximum_lifetime_cannot_be_renewed_past(store, manager, lease_clock):
     """And it is reported as itself: 'come back later' is the wrong thing
     to tell somebody whose session cannot come back."""
@@ -568,6 +632,37 @@ def test_the_maximum_lifetime_cannot_be_renewed_past(store, manager, lease_clock
         manager.touch("s1")
         reclaimer.sweep()
 
+    reloaded = store.workloads.get_workload(workload.id)
+    assert reloaded.desired_state is DesiredState.STOPPED
+    assert reloaded.reason is Reason.SESSION_MAX_LIFETIME_EXCEEDED
+
+
+def test_a_touch_racing_the_maximum_lifetime_cannot_renew_it(
+    store, manager, lease_clock, monkeypatch
+):
+    """The maximum lifetime is a hard bound even at the CAS boundary."""
+    workload = manager.request_session(
+        session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    clock = lease_clock
+    store.leases.open_lease(workload.id, idle_ttl_s=3600, max_lifetime_s=60)
+    reclaimer = LeaseReclaimer(
+        leases=store.leases, workloads=store.workloads, clock_ms=clock
+    )
+    clock.advance_s(61)
+
+    expire = store.leases.expire_if_unchanged
+
+    def touch_then_expire(lease, *, now_ms, reason):
+        assert reason is Reason.SESSION_MAX_LIFETIME_EXCEEDED
+        assert store.leases.touch(lease.workload_id) is True
+        return expire(lease, now_ms=now_ms, reason=reason)
+
+    monkeypatch.setattr(store.leases, "expire_if_unchanged", touch_then_expire)
+    report = reclaimer.sweep()
+
+    assert report.expired == 1 and report.stopped == 1
+    assert store.leases.get(workload.id).released_at is not None
     reloaded = store.workloads.get_workload(workload.id)
     assert reloaded.desired_state is DesiredState.STOPPED
     assert reloaded.reason is Reason.SESSION_MAX_LIFETIME_EXCEEDED
@@ -633,6 +728,82 @@ def test_asking_twice_for_a_session_returns_the_same_workload(store, manager):
     assert first.id == second.id
 
 
+def test_a_terminal_binding_is_atomically_replaced_by_a_new_workload(store, manager):
+    first = manager.request_session(
+        session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    first.phase = Phase.COMPLETED
+    store.workloads.save_workload(first)
+
+    second = manager.request_session(
+        session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+
+    assert second.id != first.id
+    assert store.leases.workload_for_session("s1") == second.id
+    assert store.leases.get(second.id).released_at is None
+
+
+def test_session_workload_binding_and_lease_roll_back_together(store, manager):
+    store._conn.execute(
+        "CREATE TRIGGER reject_session_lease BEFORE INSERT ON leases "
+        "BEGIN SELECT RAISE(ABORT, 'injected lease failure'); END"
+    )
+    store._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected lease failure"):
+        manager.request_session(
+            session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+        )
+
+    assert store.workloads.list_workloads() == []
+    assert store.leases.workload_for_session("s1") is None
+
+
+def test_concurrent_session_requests_publish_only_one_workload(
+    store, manager, monkeypatch
+):
+    real_create = store.workloads.create_session_workload
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def delayed_create(**kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+            ordinal = calls
+        if ordinal == 1:
+            first_entered.set()
+            assert release_first.wait(2)
+        return real_create(**kwargs)
+
+    monkeypatch.setattr(store.workloads, "create_session_workload", delayed_create)
+    results = []
+
+    def request():
+        results.append(
+            manager.request_session(
+                session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+            )
+        )
+
+    first = threading.Thread(target=request)
+    second = threading.Thread(target=request)
+    first.start()
+    assert first_entered.wait(2)
+    second.start()
+    release_first.set()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert len({workload.id for workload in results}) == 1
+    assert len(store.workloads.list_workloads()) == 1
+    assert calls == 1
+
+
 def test_releasing_a_session_asks_for_a_stop_and_ends_the_lease(store, manager):
     workload = manager.request_session(
         session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
@@ -642,6 +813,67 @@ def test_releasing_a_session_asks_for_a_stop_and_ends_the_lease(store, manager):
     assert reloaded.desired_state is DesiredState.STOPPED
     assert store.leases.get(workload.id).released_at is not None
     assert manager.touch("s1") is False
+
+
+def test_session_cleanup_candidates_are_complete_durable_intents(store, manager):
+    active = manager.request_session(
+        session_id="active", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    stopped = manager.request_session(
+        session_id="stopped", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    released = manager.request_session(
+        session_id="released", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    missing = manager.request_session(
+        session_id="missing", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    terminal = manager.request_session(
+        session_id="terminal", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+
+    store.workloads.request_stop(stopped.id, reason=Reason.USER_CANCELLED)
+    store.leases.release(released.id)
+    with store._lock:
+        store._conn.execute("DELETE FROM leases WHERE workload_id=?", (missing.id,))
+        store._conn.commit()
+    terminal.phase = Phase.FAILED
+    terminal.reason = Reason.WORKER_LOST
+    store.workloads.save_workload(terminal)
+
+    candidates = {
+        session_id: (workload_id, reason)
+        for session_id, workload_id, reason in (
+            store.workloads.session_cleanup_candidates()
+        )
+    }
+    assert "active" not in candidates
+    assert candidates["stopped"] == (stopped.id, Reason.USER_CANCELLED)
+    assert candidates["released"][0] == released.id
+    assert candidates["missing"][0] == missing.id
+    assert candidates["terminal"] == (terminal.id, Reason.WORKER_LOST)
+    assert active.id not in {
+        workload_id for workload_id, _reason in candidates.values()
+    }
+
+
+def test_session_release_rolls_back_stop_lease_and_binding_together(store, manager):
+    workload = manager.request_session(
+        session_id="s1", owner_user_id="u1", profile=PROFILE, backend="fake"
+    )
+    store._conn.execute(
+        "CREATE TRIGGER reject_session_unbind BEFORE DELETE ON session_workloads "
+        "BEGIN SELECT RAISE(ABORT, 'injected unbind failure'); END"
+    )
+    store._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected unbind failure"):
+        manager.release("s1", reason=Reason.USER_CANCELLED)
+
+    reloaded = store.workloads.get_workload(workload.id)
+    assert reloaded.desired_state is DesiredState.RUNNING
+    assert store.leases.get(workload.id).released_at is None
+    assert store.leases.workload_for_session("s1") == workload.id
 
 
 def test_the_reason_a_session_was_reclaimed_survives_the_backend(store, manager):

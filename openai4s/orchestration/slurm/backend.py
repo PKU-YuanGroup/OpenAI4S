@@ -37,6 +37,7 @@ from openai4s.orchestration.models import (
     Reason,
     ResourceProfile,
     SubmissionToken,
+    WorkloadKind,
     WorkloadSpec,
 )
 from openai4s.orchestration.ports import (
@@ -60,6 +61,12 @@ _STATE_MAP: dict[str, tuple[Phase, Reason | None]] = {
     "PENDING": (Phase.PENDING, None),
     "CONFIGURING": (Phase.PENDING, None),
     "REQUEUED": (Phase.PENDING, None),
+    "REQUEUE_HOLD": (Phase.PENDING, None),
+    "REQUEUE_FED": (Phase.PENDING, None),
+    "RESV_DEL_HOLD": (Phase.PENDING, None),
+    "EXPEDITING": (Phase.PENDING, None),
+    "POWER_UP_NODE": (Phase.PENDING, None),
+    "SPECIAL_EXIT": (Phase.PENDING, None),
     "RESIZING": (Phase.ACTIVE, None),
     "RUNNING": (Phase.ACTIVE, None),
     "SUSPENDED": (Phase.ACTIVE, None),
@@ -67,6 +74,8 @@ _STATE_MAP: dict[str, tuple[Phase, Reason | None]] = {
     "COMPLETED": (Phase.COMPLETED, None),
     "CANCELLED": (Phase.CANCELLED, Reason.USER_CANCELLED),
     "FAILED": (Phase.FAILED, None),
+    "LAUNCH_FAILED": (Phase.FAILED, Reason.BOOTSTRAP_FAILED),
+    "RECONFIG_FAIL": (Phase.FAILED, None),
     "TIMEOUT": (Phase.FAILED, Reason.TIME_LIMIT_EXCEEDED),
     "OUT_OF_MEMORY": (Phase.FAILED, Reason.OUT_OF_MEMORY),
     "NODE_FAIL": (Phase.LOST, Reason.NODE_FAILED),
@@ -74,7 +83,6 @@ _STATE_MAP: dict[str, tuple[Phase, Reason | None]] = {
     "BOOT_FAIL": (Phase.FAILED, Reason.BOOTSTRAP_FAILED),
     "DEADLINE": (Phase.FAILED, Reason.TIME_LIMIT_EXCEEDED),
     "REVOKED": (Phase.CANCELLED, Reason.ADMIN_CANCELLED),
-    "SPECIAL_EXIT": (Phase.FAILED, None),
 }
 
 #: Queue reasons that mean "this will never schedule". Everything else is
@@ -86,9 +94,7 @@ _UNSCHEDULABLE_REASONS = frozenset(
         "PartitionNodeLimit",
         "PartitionTimeLimit",
         "QOSMaxWallDurationPerJobLimit",
-        "QOSGrpCpuLimit",
         "BadConstraints",
-        "NodeDown",
         "InvalidQOS",
         "InvalidAccount",
     }
@@ -133,15 +139,39 @@ class SlurmBackend:
         profile: ResourceProfile,
     ) -> SubmitSpec:
         site = self._cluster_profile(profile)
-        prefix = self._cluster.job_name_prefix or "openai4s"
         script_lines = ["#!/bin/sh", "set -eu"]
         if spec.workdir:
             script_lines.append(f"cd {_sh_quote(spec.workdir)}")
-        script_lines.append(" ".join(_sh_quote(part) for part in spec.command))
+        command = tuple(spec.command)
+        environment = dict(spec.environment)
+        if spec.kind is WorkloadKind.SESSION and int(profile.nodes) > 1:
+            # A batch script itself runs once, on its first node. Gang
+            # readiness needs one worker per node, and srun is the scheduler's
+            # in-allocation launcher that also supplies a distinct SLURM_PROCID
+            # to each task. The worker resolves its credential template from
+            # that variable; no credential value enters the job environment.
+            from openai4s.orchestration.session import RANK_ENV_NAME_ENV
+
+            environment[RANK_ENV_NAME_ENV] = "SLURM_PROCID"
+            command = (
+                "srun",
+                f"--nodes={int(profile.nodes)}",
+                f"--ntasks={int(profile.nodes)}",
+                "--ntasks-per-node=1",
+                f"--cpus-per-task={int(profile.cpus)}",
+                "--kill-on-bad-exit=1",
+                "--",
+                *command,
+            )
+        script_lines.append(" ".join(_sh_quote(part) for part in command))
         return SubmitSpec(
             # The workload id, not the user's text: a job name reaches the
-            # scheduler's own logs and every operator's squeue output.
-            job_name=f"{prefix}-{allocation.workload_id}",
+            # scheduler's own logs and every operator's squeue output. Keep the
+            # idempotency token in JobName too: Comment is persisted by sacct
+            # only when a site enables AccountingStoreFlags=job_comment, while
+            # JobName is an ordinary accounting field. Prefix/workload slices
+            # keep the full token within Slurm's common 128-byte name limit.
+            job_name=self._job_name_for_token(allocation.submission_token),
             comment=allocation.submission_token.value,
             script="\n".join(script_lines) + "\n",
             cpus=profile.cpus,
@@ -158,7 +188,7 @@ class SlurmBackend:
             stderr_path=(
                 f"{self._log_dir}/{allocation.id}.err" if self._log_dir else None
             ),
-            environment=dict(spec.environment),
+            environment=environment,
         )
 
     def submit(
@@ -172,9 +202,25 @@ class SlurmBackend:
         # already out there. A retry after an Unknown lands here and gets
         # Existing rather than a second job.
         try:
-            already = self._broker.find_by_comment(allocation.submission_token.value)
-        except SlurmCommandError:
-            already = None
+            already = self._broker.find_by_comment(
+                allocation.submission_token.value,
+                job_name=self._job_name_for_token(allocation.submission_token),
+            )
+        except SlurmCommandError as exc:
+            # An unanswerable lookup is `Unknown`, not "nothing carries it".
+            # Swallowing the error to None and carrying on inverted the whole
+            # invariant: `find_by_comment` raises on a timeout or an
+            # unreachable controller precisely because absence of an answer is
+            # not an answer of absence -- and the next statement submitted a
+            # second job for a token that may well already have one. The
+            # reconciler's `_reconcile_unknown` is what is allowed to decide a
+            # fresh submission is safe, and only after the backend has
+            # actually answered.
+            return Unknown(
+                token=allocation.submission_token,
+                detail=str(exc),
+                diagnostics={"command": list(exc.command), "phase": "find_by_token"},
+            )
         if already:
             return Existing(handle=self._handle(already))
 
@@ -291,11 +337,11 @@ class SlurmBackend:
         phase, reason = _STATE_MAP.get(status.state, (Phase.ACTIVE, None))
         if phase is Phase.PENDING and status.reason in _UNSCHEDULABLE_REASONS:
             phase, reason = Phase.FAILED, Reason.UNSCHEDULABLE
-        if phase is Phase.FAILED and reason is None and status.exit_code:
-            # An exit code is the detail an operator wants, but it does not
-            # change the reason: a nonzero exit is a failure of the work,
-            # which has no more specific cause than "it failed".
-            pass
+        # No branch on `status.exit_code` here: an exit code is the detail an
+        # operator wants and it is already carried in `diagnostics`, but it
+        # does not change the *reason* -- a nonzero exit is a failure of the
+        # work, which has no more specific cause than "it failed". The
+        # condition used to be spelled out and then do nothing.
         return Observation(
             phase=phase,
             reason=reason,
@@ -316,8 +362,21 @@ class SlurmBackend:
         self._broker.cancel(allocation.handle.external_id)
 
     def find_by_token(self, token: SubmissionToken) -> ExternalHandle | None:
-        found = self._broker.find_by_comment(token.value)
+        found = self._broker.find_by_comment(
+            token.value, job_name=self._job_name_for_token(token)
+        )
         return self._handle(found) if found else None
+
+    def _job_name_for_token(self, token: SubmissionToken) -> str:
+        """A durable, scheduler-indexable idempotency key.
+
+        Accounting persists JobName at ordinary sites while Comment requires
+        an optional Slurm setting.  The name is derived only from the token so
+        reconciliation can reconstruct the exact server-side filter after a
+        daemon restart without loading every historical accounting row.
+        """
+        prefix = self._cluster.job_name_prefix or "openai4s"
+        return f"{prefix[:64]}-{token.value}"
 
     def log_paths(self, allocation_id: str) -> tuple[Path | None, Path | None]:
         """Where this allocation's output went, for the log-tail route.

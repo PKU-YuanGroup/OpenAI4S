@@ -60,6 +60,49 @@ def test_duplicate_username_and_bad_role_refused(store):
         store.team.create_user(username="carol", password="")
 
 
+def test_compatibility_equivalent_usernames_are_refused(store):
+    """SQLite NOCASE is ASCII-only, while usernames name filesystem areas.
+
+    Kelvin sign normalizes to ``K`` under NFKC, so allowing both would create
+    two account rows for one portable/case-insensitive path identity.
+    """
+    store.team.create_user(username="K", password="test-password-not-real")
+    with pytest.raises(ValueError, match="already exists"):
+        store.team.create_user(username="K", password="other-fake-password")
+
+
+def test_an_upgraded_database_with_portable_username_collisions_fails_closed(
+    store,
+):
+    """Creation guards cannot repair conflicting rows from an older release."""
+    path = store.db_path
+    original = store.team.create_user(username="K", password="test-password-not-real")
+    row = store._conn.execute(
+        "SELECT password_hash, password_salt, iterations, created_at"
+        " FROM users WHERE id=?",
+        (original["id"],),
+    ).fetchone()
+    store._conn.execute(
+        "INSERT INTO users(id,username,display_name,role,password_hash,"
+        "password_salt,iterations,disabled,created_at) VALUES(?,?,?,?,?,?,?,0,?)",
+        (
+            "legacy_collision",
+            "K",
+            None,
+            "member",
+            row["password_hash"],
+            row["password_salt"],
+            row["iterations"],
+            row["created_at"] + 1,
+        ),
+    )
+    store._conn.commit()
+    store.close()
+
+    with pytest.raises(RuntimeError, match="same portable filesystem identity"):
+        get_store(path)
+
+
 def test_password_hash_never_stored_plaintext(store):
     store.team.create_user(username="alice", password="test-password-not-real")
     row = store._conn.execute(

@@ -259,14 +259,18 @@ def test_a_scoped_view_may_read_its_base_table_but_a_cell_may_not():
     Skill legitimately reads `artifact_versions.source`."""
     import sqlite3
 
-    from openai4s.store import _QueryAuthorizer
+    from openai4s.store import _SCOPED_VIEWS, _QueryAuthorizer
 
-    guard = _QueryAuthorizer()
+    # `published_views` is what the statement actually created. `query()` passes
+    # the scoped set when it published the views and an empty one when it did
+    # not; the class defaults to empty, so "nothing said a view exists" reads as
+    # refused rather than as allowed.
+    guard = _QueryAuthorizer(published_views=_SCOPED_VIEWS)
     assert (
         guard(sqlite3.SQLITE_READ, "artifact_versions", "source", "main", None)
         == sqlite3.SQLITE_DENY
     )
-    guard = _QueryAuthorizer()
+    guard = _QueryAuthorizer(published_views=_SCOPED_VIEWS)
     assert (
         guard(
             sqlite3.SQLITE_READ,
@@ -278,9 +282,22 @@ def test_a_scoped_view_may_read_its_base_table_but_a_cell_may_not():
         == sqlite3.SQLITE_OK
     )
     # And a view name the caller invented does not count.
-    guard = _QueryAuthorizer()
+    guard = _QueryAuthorizer(published_views=_SCOPED_VIEWS)
     assert (
         guard(sqlite3.SQLITE_READ, "artifact_versions", "source", "main", "my_own_view")
+        == sqlite3.SQLITE_DENY
+    )
+    # Nor does the real name when no scope published the views: a statement that
+    # created nothing has no view to have been read through.
+    guard = _QueryAuthorizer()
+    assert (
+        guard(
+            sqlite3.SQLITE_READ,
+            "artifact_versions",
+            "source",
+            "main",
+            "my_artifact_versions",
+        )
         == sqlite3.SQLITE_DENY
     )
 

@@ -832,6 +832,17 @@ def test_ws_subscribe_replay_enqueue_is_atomic_with_live_broadcast():
             self.replay_started = threading.Event()
             self.release_replay = threading.Event()
 
+        def refresh_visibility(self, root_frame_id):
+            """Re-asked outside the hub lock before every fan-out; a no-op
+            here, as it is on a daemon with no team mode."""
+
+        def may_receive(self, root_frame_id):
+            """The fan-out re-checks team visibility per delivery. A double
+            that is a subscriber has to answer the same question a real
+            connection does -- single-user is the permissive answer, which is
+            what this test is about."""
+            return True
+
         def send_json(self, event):
             self.events.append(dict(event))
             if event.get("type") == "replay_begin":
@@ -868,6 +879,161 @@ def test_ws_subscribe_replay_enqueue_is_atomic_with_live_broadcast():
     assert [
         event.get("chunk") for event in conn.events if event.get("type") == "text_chunk"
     ] == ["old", "new"]
+
+
+def test_ws_broadcast_refreshes_a_subscription_added_during_authorization():
+    """A subscriber may arrive while broadcast checks viewers outside its lock.
+
+    It receives the replay before the new event is recorded, so broadcast must
+    either refresh and deliver that event or keep it out until the event can be
+    replayed. Silently including the connection only in the final fan-out loses
+    exactly one event.
+    """
+    hub = gateway_mod.WSHub()
+    root = "root-subscribe-refresh-race"
+
+    class CheckedConnection:
+        def __init__(self, *, block_first=False):
+            self.alive = True
+            self.subs = set()
+            self.events = []
+            self.checked = set()
+            self.block_first = block_first
+            self.refresh_started = threading.Event()
+            self.release_refresh = threading.Event()
+
+        def refresh_visibility(self, root_frame_id):
+            if self.block_first:
+                self.block_first = False
+                self.refresh_started.set()
+                assert self.release_refresh.wait(2)
+            self.checked.add(root_frame_id)
+
+        def may_receive(self, root_frame_id):
+            return root_frame_id in self.checked
+
+        def send_json(self, event):
+            self.events.append(dict(event))
+
+    existing = CheckedConnection(block_first=True)
+    hub.add(existing)
+    hub.subscribe(root, existing)
+    existing.events.clear()
+
+    live = threading.Thread(
+        target=hub.broadcast,
+        args=(root, {"type": "text_chunk", "frame_id": root, "chunk": "new"}),
+    )
+    live.start()
+    assert existing.refresh_started.wait(2)
+
+    arriving = CheckedConnection()
+    hub.add(arriving)
+    hub.subscribe(root, arriving)
+    arriving.events.clear()
+
+    existing.release_refresh.set()
+    live.join(2)
+    assert not live.is_alive()
+    assert [event.get("chunk") for event in arriving.events] == ["new"]
+
+
+def test_ws_restored_visibility_replays_the_denied_sequence_gap():
+    hub = gateway_mod.WSHub()
+    root = "root-visibility-gap"
+
+    class VisibilityConnection:
+        refresh_visibility = gateway_mod.WSConnection.refresh_visibility
+        commit_visibility = gateway_mod.WSConnection.commit_visibility
+        note_delivered = gateway_mod.WSConnection.note_delivered
+
+        def __init__(self):
+            self.alive = True
+            self.subs = set()
+            self.events = []
+            self.allowed = True
+            self.visibility_check = lambda _root: self.allowed
+            self._visibility_denied = set()
+            self._last_delivered_seq = {}
+
+        def send_json(self, event):
+            self.events.append(dict(event))
+
+    conn = VisibilityConnection()
+    hub.broadcast(root, {"type": "text_reset", "frame_id": root})
+    hub.add(conn)
+    hub.subscribe(root, conn)
+    conn.events.clear()
+
+    hub.broadcast(root, {"type": "step", "marker": "before"})
+    conn.allowed = False
+    hub.broadcast(root, {"type": "step", "marker": "denied"})
+    conn.allowed = True
+    hub.broadcast(root, {"type": "step", "marker": "restored"})
+
+    markers = [event.get("marker") for event in conn.events if event.get("marker")]
+    assert markers == ["before", "denied", "restored"]
+    sequences = [event["seq"] for event in conn.events if "seq" in event]
+    assert sequences == [2, 3, 4]
+    types = [event.get("type") for event in conn.events]
+    assert types[1:5] == ["replay_begin", "step", "replay_end", "step"]
+
+
+def test_ws_idle_delta_gap_is_declared_when_visibility_returns():
+    hub = gateway_mod.WSHub()
+    root = "root-idle-visibility-gap"
+
+    class VisibilityConnection:
+        refresh_visibility = gateway_mod.WSConnection.refresh_visibility
+        commit_visibility = gateway_mod.WSConnection.commit_visibility
+        note_delivered = gateway_mod.WSConnection.note_delivered
+
+        def __init__(self):
+            self.alive = True
+            self.subs = set()
+            self.events = []
+            self.allowed = True
+            self.visibility_check = lambda _root: self.allowed
+            self._visibility_denied = set()
+            self._last_delivered_seq = {}
+
+        def send_json(self, event):
+            self.events.append(dict(event))
+
+    conn = VisibilityConnection()
+    hub.add(conn)
+    hub.subscribe(root, conn, 0, hub.epoch)
+    conn.events.clear()
+
+    conn.allowed = False
+    hub.broadcast(root, {"type": "kernel_status", "status": "busy"})
+    assert root not in hub._live  # idle deltas do not invent a running turn
+    conn.allowed = True
+    hub.broadcast(root, {"type": "kernel_status", "status": "idle"})
+
+    begin = next(e for e in conn.events if e.get("type") == "replay_begin")
+    assert begin["gap"] is True
+    delivered = [e for e in conn.events if e.get("type") == "kernel_status"]
+    assert [e["seq"] for e in delivered] == [2]
+
+
+def test_ws_replay_declares_an_unbuffered_idle_delta_at_the_tail():
+    hub = gateway_mod.WSHub()
+    root = "root-replay-tail-gap"
+    hub.broadcast(root, {"type": "text_reset", "frame_id": root})  # seq 1
+    hub.broadcast(root, {"type": "text_chunk", "chunk": "kept"})  # seq 2
+    # Approval cards replay from their durable source, so they advance the
+    # stream counter but intentionally do not enter the live-turn buffer.
+    hub.broadcast(root, {"type": "await_permission", "request_id": "p1"})  # seq 3
+
+    conn = _Recorder()
+    hub.add(conn)
+    # Exercise the envelope directly with a retained prefix and an unbuffered
+    # tail; subscribe intentionally omits completed live windows.
+    with hub._lock:
+        hub._enqueue_replay_locked(root, conn, hub._live[root]["events"], 1)
+
+    assert conn.replay_begin()["gap"] is True
 
 
 def test_ws_outbound_queue_covers_a_complete_resume_envelope():

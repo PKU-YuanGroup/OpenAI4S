@@ -134,6 +134,25 @@ def may_use_session(store: Any, identity: Any, session_id: str | None) -> bool:
         return False
 
 
+def may_control_session(store: Any, identity: Any, session_id: str | None) -> bool:
+    """May this principal perform owner-level lifecycle mutations?
+
+    Project visibility is intentionally broader than ownership.  It can make a
+    session readable/collaborative, but it must not let another project member
+    cancel the owner's scheduler allocation or destroy its kernel namespace.
+    """
+
+    if identity is None or identity.is_admin:
+        return True
+    if not session_id:
+        return False
+    try:
+        owner = store.team.session_owner(session_id)
+    except Exception:  # noqa: BLE001 — undecidable is refused
+        return False
+    return bool(owner and owner.get("user_id") == identity.user_id)
+
+
 def may_use_share(store: Any, identity: Any, share_row: Any) -> bool:
     """A share is a projection of a session, so it inherits that session's
     answer. A share whose session cannot be resolved is refused rather than
@@ -301,22 +320,66 @@ def may_change_instance_config(handler: Any) -> bool:
     return not enabled(handler) or is_admin(handler)
 
 
+# --- permission rules -------------------------------------------------------
+
+
+def may_write_permission_rule(
+    store: Any, identity: Any, scope: str, scope_id: str | None
+) -> bool:
+    """May this identity create or delete a standing permission rule here?
+
+    A standing rule is authorization for *future* actions, and a global one
+    is authorization for everybody's -- `permissions.resolve()` treats a
+    matching global `allow` as an answer for every other member's agent, and
+    a matching global `deny` as an absolute veto that deleting turns back
+    into an allow.
+
+    A function rather than two inlined copies in the REST handlers, because
+    it was two inlined copies and there are four writers. The two that were
+    guarded are `POST /permissions` and `DELETE /permissions/{id}`; the two
+    that were not are in `openai4s/permissions.py`, reached from
+    `POST /frames/{id}/decision` -- a route every member legitimately uses,
+    which passes the client's own `scope` straight through. So a member
+    approving a prompt in their own session with `{"scope": "global"}`
+    planted exactly the rule the 403 next door refuses them.
+    """
+    if identity is None or identity.is_admin:
+        return True
+    if scope == "global":
+        return False
+    if scope == "project":
+        return may_read_project(store, identity, str(scope_id or ""))
+    if scope == "conversation":
+        return may_use_session(store, identity, str(scope_id or ""))
+    # "once" is not a standing rule at all.
+    return True
+
+
 # --- files ------------------------------------------------------------------
 
 
-def may_overwrite_file(identity: Any, owner_user_id: str | None) -> bool:
+def may_overwrite_file(identity: Any, owner_username: str | None) -> bool:
     """Containment inside `data_roots` says where a file may live, not whose
     it is. Overwriting is the destructive verb, so it is the one that needs
-    an owner."""
+    an owner.
+
+    A *username*, because that is what the file area is keyed by:
+    `<root>/users/<username>/` is the whole ownership record a path carries,
+    and `FileArea.personal_area_owner` returns that segment. The parameter
+    used to be spelled `owner_user_id` and compared against
+    `identity.user_id`, which no caller could ever have satisfied -- a member
+    would have been refused their own file. It had no callers, so nothing
+    said so.
+    """
     if identity is None or identity.is_admin:
         return True
-    if not owner_user_id:
-        # No recorded owner: pre-team files and anything written outside the
-        # team surface. Refuse rather than adopt — "we do not know whose
-        # this is" must not resolve to "anyone's", which is the same
-        # fail-closed rule an unowned session already gets.
+    if not owner_username:
+        # No recorded owner: shared space, pre-team files, anything written
+        # outside the team surface. Refuse rather than adopt — "we do not
+        # know whose this is" must not resolve to "anyone's", which is the
+        # same fail-closed rule an unowned session already gets.
         return False
-    return str(owner_user_id) == str(identity.user_id)
+    return str(owner_username) == str(identity.username)
 
 
 def _as_dict(identity: Any) -> dict[str, Any]:
@@ -357,6 +420,7 @@ __all__ = [
     "may_change_instance_config",
     "may_create_session_in",
     "may_overwrite_file",
+    "may_write_permission_rule",
     "may_read_project",
     "may_use_memory_scope",
     "may_use_session",

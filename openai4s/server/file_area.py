@@ -117,15 +117,6 @@ class FileArea:
             return parts[1]
         return None
 
-    def _contained(self, candidate: Path) -> bool:
-        for root in self.roots:
-            try:
-                if candidate == root or root in candidate.parents:
-                    return True
-            except OSError:
-                continue
-        return False
-
     def resolve(self, raw: str, *, reader: str | None = None) -> Path:
         """The real path behind a client-supplied one, or a refusal.
 

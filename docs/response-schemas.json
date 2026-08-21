@@ -11911,7 +11911,10 @@
                 "type": "integer"
               },
               "ended_reason": {
-                "type": "null"
+                "type": [
+                  "null",
+                  "string"
+                ]
               },
               "env": {
                 "properties": {
@@ -31065,6 +31068,158 @@
           "error",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /sessions/([^/]+)/compute [ok]": {
+      "schema": {
+        "properties": {
+          "allocation": {
+            "properties": {
+              "allocation_id": {
+                "type": "string"
+              },
+              "epoch": {
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "allocation_id",
+              "epoch",
+              "phase",
+              "reason"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "lease": {
+            "properties": {
+              "created_at": {
+                "type": "integer"
+              },
+              "idle_ttl_s": {
+                "type": "integer"
+              },
+              "last_active_at": {
+                "type": "integer"
+              },
+              "max_lifetime_s": {
+                "type": "integer"
+              },
+              "released_at": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "created_at",
+              "idle_ttl_s",
+              "last_active_at",
+              "max_lifetime_s",
+              "released_at"
+            ],
+            "type": "object"
+          },
+          "location": {
+            "type": "string"
+          },
+          "readiness": {
+            "properties": {
+              "allocation_granted": {
+                "type": "boolean"
+              },
+              "blocked_on": {
+                "type": "string"
+              },
+              "kernel_ready": {
+                "type": "boolean"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "worker_registered": {
+                "type": "boolean"
+              },
+              "workers_expected": {
+                "type": "integer"
+              },
+              "workers_registered": {
+                "type": "integer"
+              },
+              "workspace_ready": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "allocation_granted",
+              "blocked_on",
+              "kernel_ready",
+              "ready",
+              "worker_registered",
+              "workers_expected",
+              "workers_registered",
+              "workspace_ready"
+            ],
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state_lost_epochs": {
+            "type": "array"
+          },
+          "workload": {
+            "properties": {
+              "desired_state": {
+                "type": "string"
+              },
+              "execution_epoch": {
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "null"
+              },
+              "recovery": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "desired_state",
+              "execution_epoch",
+              "id",
+              "phase",
+              "profile",
+              "reason",
+              "recovery"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "allocation",
+          "lease",
+          "location",
+          "readiness",
+          "session_id",
+          "state_lost_epochs",
+          "workload"
         ],
         "type": "object"
       }

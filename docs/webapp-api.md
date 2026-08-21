@@ -360,14 +360,14 @@ Nothing here submits synchronously. A request writes a durable row; the reconcil
 
 | Method & path | Behavior |
 | --- | --- |
-| `POST /orchestration/jobs` | Body `{command: [...], profile?, backend?, workdir?, environment?, project_id?}`. `202 {id, phase, ...}` — accepted, not started; `201` would promise a resource that has not been granted. `command` **must** be a list: a string is refused with `400 invalid_command`, because splitting a command line is where quoting bugs become injection. Unknown profile → `400 unknown_profile`; unknown backend → `400 unknown_backend` with the available ones. In team mode the `local` backend is **admin only** (`403 admin_only`, with the refused `backend` named) — see below. |
+| `POST /orchestration/jobs` | Body `{command: [...], profile?, backend?, workdir?, environment?, project_id?}`. `202 {id, phase, ...}` — accepted, not started; `201` would promise a resource that has not been granted. `command` **must** be a list: a string is refused with `400 invalid_command`, because splitting a command line is where quoting bugs become injection. Unknown profile → `400 unknown_profile`; unknown backend → `400 unknown_backend` with the available ones. In team mode both built-in backends are **admin only** (`403 admin_only`, with the refused `backend` named) — see below. |
 | `GET /orchestration/jobs` | `{jobs: [...]}`, filtered to the caller's own unless they are an admin. `project_id`, `limit` and `all=0` (hide terminal) narrow it. |
 | `GET /orchestration/jobs/{id}` | One job plus its `allocation` (the live attempt) and `allocations` (every epoch). Someone else's job is `404`, not `403` — which jobs exist is itself information about what a colleague is working on. |
 | `POST /orchestration/jobs/{id}/cancel` | Records the desire to stop and returns `{ok, reason}`; the reconciler runs the cancel barrier. `409 already_final` when the job has already ended. An admin cancelling another user's job is recorded as `ADMIN_CANCELLED` rather than `USER_CANCELLED`. |
 | `GET /orchestration/jobs/{id}/logs` | `{allocation_id, stdout, stderr}` — the tail (64 KiB) of what the job wrote. |
 | `GET /orchestration/profiles` | `{cluster, configured, profiles: [{name, cpus, memory_mb, gpus, walltime_s, nodes}]}`. The queue and service-class each profile maps to are **not** in this payload: they live in `cluster.toml` and nowhere else. |
 
-**Which backends a member may name.** Privilege here is a property of the *backend*, not of the route. A scheduler backend hands the work to the site's scheduler, which runs it under the submitting user's own account and accounting — so a member submitting to a cluster is submitting as themselves, and keeps it. The built-in `local` backend runs `Popen(argv)` as the **daemon's** uid, outside the kernel sandbox, with the daemon's filesystem access: in team mode that is every tenant's sessions, the access-token file and the group LLM credential. It is therefore admin only, by the same rule that makes `/compute/jobs` admin only.
+**Which backends a member may name.** Neither built-in backend is available to a member in team mode. `local` runs `Popen(argv)` as the **daemon's** uid, outside the kernel sandbox, with the daemon's filesystem access. `cluster` invokes the scheduler with the daemon's Unix identity and site credential; OpenAI4S has no authenticated mapping from a browser member to a scheduler account. Both therefore spend or expose instance resources and are admin only, by the same rule that makes `/compute/jobs` admin only.
 
 The check runs *after* the backend name is validated and *before* anything is written, so a misspelled backend still reads as `400 unknown_backend` rather than a permission problem, and a refused submission leaves no workload row and no audit entry behind.
 
@@ -382,8 +382,8 @@ A session's kernel is on the daemon by default. Asking for it to be on a granted
 | Method & path | Behavior |
 | --- | --- |
 | `GET /sessions/{id}/compute` | `{session_id, location}` — `location:"local"` with `workload:null` when this session runs on the daemon, which is the default and is not an error. On a cluster session: `readiness:{ready, blocked_on, allocation_granted, worker_registered, workspace_ready, kernel_ready}`, `workload:{id, profile, phase, desired_state, reason, execution_epoch}`, `allocation:{allocation_id, epoch, phase, reason}`, `lease:{idle_ttl_s, max_lifetime_s, last_active_at, created_at, released_at}`, and `state_lost_epochs` — the epochs whose kernel memory was lost to a node failure. Someone else's session is `404`, not `403`. |
-| `POST /sessions/{id}/compute` | Body `{profile}`. `201` with the same status payload. A profile the operator has not configured is `400 unknown_profile` rather than a guess: guessing is how a session lands on resources its owner never chose. A daemon with no worker listener answers `409 not_configured` and says which variable turns one on — the feature is off by default because a listener on every laptop that will never run a cluster job is an attack surface, not a convenience. |
-| `POST /sessions/{id}/compute/release` | Records the desire to stop and ends the lease; the reconciler runs the cancel barrier. `{ok, session_id}`. |
+| `POST /sessions/{id}/compute` | Body `{profile}`. `201` with the same status payload. A profile the operator has not configured is `400 unknown_profile` rather than a guess: guessing is how a session lands on resources its owner never chose. A daemon with no worker listener answers `409 not_configured` and says which variable turns one on — the feature is off by default because a listener on every laptop that will never run a cluster job is an attack surface, not a convenience. In team mode this request is **admin only**: the scheduler is invoked with daemon-managed identity or credentials, not an authenticated account belonging to the browser member. |
+| `POST /sessions/{id}/compute/release` | Records the desire to stop and ends the lease; the reconciler runs the cancel barrier. `{ok, session_id}`. In team mode only the session owner or an admin may release it; project visibility alone does not confer control of another user's allocation. |
 
 `state_lost_epochs` is what the UI turns into a banner. When a node dies the kernel's memory dies with it — variables, imports, the seed somebody set three cells ago — and the session continues on a new epoch. Saying so is mandatory (INV-11): the results afterwards look exactly like results from the session that was lost.
 
@@ -417,14 +417,14 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 | --- | --- |
 | `GET /frames/{fid}/execution-log` | `{"kernels":[id…],"entries":[cell…]}`; entries include stable `producing_cell_id`, `cell_index`, session-monotonic `state_revision`, attempt-derived `generation_id` (nullable for legacy rows or when no worker was acquired), `kernel_id`, `language`, `origin`, source/output/error, files/figures, usage, and immutable retry metadata when recorded. |
 | `POST /frames/{fid}/kernel/execute` | Body `{code,language?,execution_id?,wait?}` where language is `python` (default) or `r`; the shipped UI supplies a portable execution ID. Default/`wait:false` returns HTTP 202 `{status:"accepted",job_id,execution_id,owner,queue_position}` immediately, so a queued cell remains addressable. `wait:true` blocks for the completed FIFO-owned Cell result. Execution always appends and never edits history. |
-| `POST /frames/{fid}/kernel/restart` | → `{"ok":true,"status":"restarted","generation","generation_id","frame_id"}` + `kernel_status` WS event. |
-| `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. |
-| `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. |
-| `POST /frames/{fid}/kernel/interrupt` | Exact ticket stop. Body `{execution_id,owner:{kind,id}}` (or owner aliases) identifies one ticket: a queued ticket is cancelled without touching the active writer; an active ticket requests a signal only for its frozen lease. The result's `interrupted` flag says whether a lease was actually signalled. Missing identity returns HTTP 400; stale/wrong-owner requests return `ok:false`. The shipped Notebook Stop control selects only `user_repl` tickets. |
+| `POST /frames/{fid}/kernel/restart` | → `{"ok":true,"status":"restarted","generation","generation_id","frame_id"}` + `kernel_status` WS event. In team mode this is owner/admin only. |
+| `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. In team mode this is owner/admin only. |
+| `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. In team mode this is owner/admin only. |
+| `POST /frames/{fid}/kernel/interrupt` | Exact ticket stop. Body `{execution_id,owner:{kind,id}}` (or owner aliases) identifies one ticket: a queued ticket is cancelled without touching the active writer; an active ticket requests a signal only for its frozen lease. The result's `interrupted` flag says whether a lease was actually signalled. Missing identity returns HTTP 400; stale/wrong-owner requests return `ok:false`. The shipped Notebook Stop control selects only `user_repl` tickets. In team mode this is owner/admin only. |
 | `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"|"ended"),alive,generation,generation_id,generation_ordinal,last_activity_at,ended_reason,turn_running,cell_count,manual_stop,repl_enabled,env:{name,language,python_version,pending,kernel_id}}`. `repl_enabled` mirrors `OPENAI4S_NOTEBOOK_REPL`. |
-| `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). |
+| `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). In team mode this is admin only, including when the caller owns the session, because the installation changes a shared runtime environment. |
 | `GET /frames/{fid}/environments` | `{"environments":[…],"current","default","pending"}`. |
-| `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. |
+| `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. In team mode this is owner/admin only. |
 
 **Notebook REPL gate:** the Notebook is a **read-only execution trace** by
 default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
@@ -432,6 +432,11 @@ default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
 `OPENAI4S_NOTEBOOK_REPL` is set. `kernel/install` is intentionally not gated:
 it backs Customize → Compute rather than arbitrary Notebook execution. The
 read-only `GET /frames/{fid}/kernel` and `GET /frames/{fid}/execution-log` stay available.
+The REPL flag is not an authorization grant: project members may read a
+project-visible session, but only its owner or an admin may Stop, Restart,
+Start, interrupt an execution, or change its runtime environment. WebSocket
+execution cancellation follows the same owner/admin rule. Package installation
+remains admin only in team mode.
 `GET /frames/{fid}/kernel` reports the current state in `repl_enabled`. When
 enabled, the shipped UI provides multiline Python/R input and Shift+Enter;
 every submission appends a Cell through the same FIFO coordinator as Agent and
@@ -639,7 +644,7 @@ kept is the tail; `output` is prefixed with a notice when anything was dropped.
 | `GET /environments` | Same shape as `GET /frames/{fid}/environments`, without a session. |
 | `GET /kernel/packages` | `{"packages":[…],"preinstall":{…}}`. |
 | `GET /kernel/environment` | Full env freeze for Provenance → Environment. |
-| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). |
+| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). Admin only in team mode because it mutates the shared runtime environment. |
 
 ### Memory / network / web-search config
 

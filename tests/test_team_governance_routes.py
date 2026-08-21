@@ -164,6 +164,116 @@ def test_project_members_see_each_other_but_not_private(daemon):
     assert _get(daemon.port, f"/api/v1/frames/{fid_priv}", cookie=r)[0] == 200
 
 
+@pytest.mark.stubbed_backend
+def test_project_member_cannot_control_another_members_kernel(daemon):
+    """Project visibility is read access, not shared namespace ownership."""
+
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
+    fid = _create_session(daemon, alice)
+    daemon.cfg.notebook_repl = True
+
+    called = []
+    daemon.runner.restart_kernel = lambda *args, **kwargs: called.append("restart")
+    daemon.runner.stop_kernel = lambda *args, **kwargs: called.append("stop")
+    daemon.runner.start_kernel = lambda *args, **kwargs: called.append("start")
+    daemon.runner.set_env = lambda *args, **kwargs: called.append("env")
+    daemon.runner.interrupt_kernel = lambda *args, **kwargs: called.append("interrupt")
+
+    # Positive control: Bob is a real project member and may read the session.
+    assert _get(daemon.port, f"/api/v1/frames/{fid}", cookie=bob)[0] == 200
+    for suffix, body in (
+        ("restart", {}),
+        ("stop", {}),
+        ("start", {}),
+        ("env", {"name": "struct"}),
+        (
+            "interrupt",
+            {"execution_id": "owner-run", "owner": {"kind": "agent", "id": "x"}},
+        ),
+    ):
+        status, raw = _post(
+            daemon.port,
+            f"/api/v1/frames/{fid}/kernel/{suffix}",
+            body,
+            cookie=bob,
+        )
+        assert status == 403, (suffix, raw[:200])
+        assert _body(raw).get("code") == "owner_only"
+    assert called == [], "a refused member must not reach a lifecycle method"
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "username,password", [("alice", "fake-pw-a"), ("root", "fake-pw-r")]
+)
+def test_owner_and_admin_may_control_a_session_kernel(daemon, username, password):
+    alice = _login(daemon, "alice", "fake-pw-a")
+    caller = _login(daemon, username, password)
+    fid = _create_session(daemon, alice)
+    daemon.cfg.notebook_repl = True
+
+    daemon.runner.restart_kernel = lambda *args, **kwargs: {"ok": True}
+    daemon.runner.stop_kernel = lambda *args, **kwargs: {"ok": True}
+    daemon.runner.start_kernel = lambda *args, **kwargs: {"ok": True}
+    daemon.runner.set_env = lambda *args, **kwargs: {"ok": True}
+    daemon.runner.interrupt_kernel = lambda *args, **kwargs: {"ok": True}
+
+    for suffix, body in (
+        ("restart", {}),
+        ("stop", {}),
+        ("start", {}),
+        ("env", {"name": "struct"}),
+        (
+            "interrupt",
+            {"execution_id": "owner-run", "owner": {"kind": "agent", "id": "x"}},
+        ),
+    ):
+        status, raw = _post(
+            daemon.port,
+            f"/api/v1/frames/{fid}/kernel/{suffix}",
+            body,
+            cookie=caller,
+        )
+        assert status == 200, (username, suffix, raw[:200])
+
+
+@pytest.mark.stubbed_backend
+def test_frame_scoped_kernel_install_is_admin_only_in_team_mode(daemon):
+    alice = _login(daemon, "alice", "fake-pw-a")
+    root = _login(daemon, "root", "fake-pw-r")
+    fid = _create_session(daemon, alice)
+    called = []
+
+    def install(packages, **kwargs):
+        called.append(packages)
+        return {"ok": True, "installed": packages}
+
+    daemon.runner.install_packages = install
+
+    status, raw = _post(
+        daemon.port,
+        f"/api/v1/frames/{fid}/kernel/install",
+        {"package": "numpy"},
+        cookie=alice,
+    )
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "admin_only"
+    assert called == []
+
+    status, raw = _post(
+        daemon.port,
+        f"/api/v1/frames/{fid}/kernel/install",
+        {"package": "numpy"},
+        cookie=root,
+    )
+    assert status == 200, raw[:200]
+    assert called == [["numpy"]]
+
+
 def test_admin_read_of_private_session_is_audited_per_view(daemon):
     a = _login(daemon, "alice", "fake-pw-a")
     r = _login(daemon, "root", "fake-pw-r")

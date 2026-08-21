@@ -28,8 +28,11 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from typing import Any
+
+from openai4s.kernel.environment import name_can_carry_a_secret
 
 #: What a job name or comment may contain. Slurm accepts more, but these are
 #: values WE mint and later match on, and a comma or a newline in a
@@ -51,14 +54,30 @@ _ENV_VALUE_RE = re.compile(r"\A[^,\r\n\x00]{0,4096}\Z")
 #: variables. Checked after assembly as well, so a future field that skips
 #: the dataclass cannot reintroduce the same thing.
 _EXPORT_KEYWORDS = frozenset({"all", "none", "nil"})
-_CREDENTIAL_HINT_RE = re.compile(
-    r"(SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|CREDENTIAL|PRIVATE)", re.IGNORECASE
-)
+#: "Can this variable name carry a secret, or inject code?" -- answered by the
+#: kernel's own list rather than by a second, narrower rule. The regex that
+#: used to live here matched SECRET/TOKEN/PASSWORD/PASSWD/API_?KEY/CREDENTIAL/
+#: PRIVATE and therefore missed ACCESS_KEY, OAUTH, BEARER and COOKIE -- so
+#: `AWS_ACCESS_KEY_ID` rode `--export` into the scheduler's job record, which
+#: `scontrol show job` reads back to anyone on the cluster. It also had no
+#: equivalent of the loader-injection block (`LD_*`, `DYLD_*`, `BASH_ENV`,
+#: `PYTHONSTARTUP`, `R_PROFILE`, ...), which is the other half of what a job
+#: environment can do. One list, so a marker added for the kernel protects
+#: the scheduler path too.
+_credential_hint = name_can_carry_a_secret
 
 #: Default timeout for a scheduler command. A cluster under load answers
 #: slowly; a cluster that is gone does not answer at all, and the daemon's
 #: reconciler must not block on either.
 DEFAULT_TIMEOUT_S = 30.0
+_CONTROL_TIMEOUT = object()
+
+# A scientific step may run for the allocation's whole wall time.  The
+# scheduler owns that deadline; the 30 second timeout above is only for
+# control-plane queries.  Drain output continuously while retaining a
+# bounded prefix so a chatty task cannot exhaust the daemon's memory.
+MAX_STEP_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_STEP_STDERR_BYTES = 64 * 1024
 
 
 class SlurmCommandError(RuntimeError):
@@ -152,7 +171,7 @@ class StepSpec:
         for key, value in self.environment.items():
             if not _ENV_NAME_RE.fullmatch(key):
                 raise ValueError(f"invalid environment variable name {key!r}")
-            if _CREDENTIAL_HINT_RE.search(key):
+            if _credential_hint(key):
                 raise ValueError(
                     f"refusing to put {key!r} in a step environment "
                     f"(INV-9: pass a path to a 0600 file instead)"
@@ -199,7 +218,7 @@ class SubmitSpec:
         for key, value in self.environment.items():
             if not _ENV_NAME_RE.fullmatch(key):
                 raise ValueError(f"invalid environment variable name {key!r}")
-            if _CREDENTIAL_HINT_RE.search(key):
+            if _credential_hint(key):
                 raise ValueError(
                     f"refusing to put {key!r} in a submission environment "
                     f"(INV-9): a credential belongs in an 0600 file whose "
@@ -244,21 +263,32 @@ class SlurmBroker:
         # scheduler scripts the plan asks for are driven through PATH, and
         # this exists for the unit-level checks of argv construction.
         self._runner = runner or subprocess.run
+        self._uses_default_runner = runner is None
 
     # --- plumbing ---------------------------------------------------------
 
     def available(self) -> bool:
         """Is there a scheduler on PATH at all?"""
-        return all(shutil.which(tool) for tool in ("sbatch", "squeue", "scancel"))
+        return all(
+            shutil.which(tool)
+            for tool in ("sbatch", "squeue", "sacct", "scancel", "srun")
+        )
 
-    def _run(self, command: list[str], *, stdin: str | None = None) -> str:
+    def _run(
+        self,
+        command: list[str],
+        *,
+        stdin: str | None = None,
+        timeout_s: float | None | object = _CONTROL_TIMEOUT,
+    ) -> str:
+        timeout = self._timeout_s if timeout_s is _CONTROL_TIMEOUT else timeout_s
         try:
             completed = self._runner(
                 command,
                 input=stdin,
                 capture_output=True,
                 text=True,
-                timeout=self._timeout_s,
+                timeout=timeout,
                 shell=False,
                 check=False,
             )
@@ -272,7 +302,7 @@ class SlurmBroker:
             # The caller must distinguish this from a refusal: a submission
             # that timed out may still have landed (INV-8).
             raise SlurmCommandError(
-                f"{command[0]} timed out after {self._timeout_s}s",
+                f"{command[0]} timed out after {timeout}s",
                 command=tuple(command),
                 timed_out=True,
             ) from exc
@@ -284,6 +314,79 @@ class SlurmBroker:
                 stderr=(completed.stderr or "").strip()[:2000],
             )
         return completed.stdout or ""
+
+    @staticmethod
+    def _drain_capped(stream: Any, *, limit: int, chunks: list[bytes]) -> None:
+        """Drain a pipe completely while retaining at most ``limit`` bytes."""
+        kept = 0
+        while True:
+            block = stream.read(65536)
+            if not block:
+                return
+            if kept < limit:
+                prefix = block[: limit - kept]
+                chunks.append(prefix)
+                kept += len(prefix)
+
+    def _run_step_capped(self, command: list[str]) -> str:
+        """Run a long-lived step without the control-command timeout.
+
+        ``Popen.communicate`` and ``subprocess.run(capture_output=True)`` retain
+        the complete output.  A distributed task can print for hours, so two
+        drainers discard everything beyond the documented diagnostic caps.
+        """
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=False,
+            )
+        except FileNotFoundError as exc:
+            raise SlurmCommandError(
+                f"{command[0]} not found on PATH",
+                command=tuple(command),
+                unreachable=True,
+            ) from exc
+        assert process.stdout is not None and process.stderr is not None
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        readers = [
+            threading.Thread(
+                target=self._drain_capped,
+                kwargs={
+                    "stream": process.stdout,
+                    "limit": MAX_STEP_OUTPUT_BYTES,
+                    "chunks": stdout_chunks,
+                },
+                daemon=True,
+            ),
+            threading.Thread(
+                target=self._drain_capped,
+                kwargs={
+                    "stream": process.stderr,
+                    "limit": MAX_STEP_STDERR_BYTES,
+                    "chunks": stderr_chunks,
+                },
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+        returncode = process.wait()
+        for reader in readers:
+            reader.join()
+        stdout = b"".join(stdout_chunks).decode("utf-8", "replace")
+        stderr = b"".join(stderr_chunks).decode("utf-8", "replace")
+        if returncode != 0:
+            raise SlurmCommandError(
+                f"{command[0]} failed with exit {returncode}",
+                command=tuple(command),
+                returncode=returncode,
+                stderr=stderr.strip()[:2000],
+            )
+        return stdout
 
     # --- submission -------------------------------------------------------
 
@@ -363,13 +466,20 @@ class SlurmBroker:
             pairs = ",".join(f"{k}={v}" for k, v in sorted(spec.environment.items()))
             _assert_no_export_keyword(pairs)
             argv.append(f"--export={pairs}")
+        else:
+            argv.append("--export=NONE")
         argv.append("--")
         argv.extend(spec.command)
         return argv
 
     def run_step(self, job_id: str, spec: "StepSpec") -> str:
         """Run a step and return what it wrote. Blocking, like `srun` is."""
-        return self._run(self.build_step_argv(job_id, spec))
+        command = self.build_step_argv(job_id, spec)
+        if self._uses_default_runner:
+            return self._run_step_capped(command)
+        # Preserve the injected runner seam in unit tests, but do not apply
+        # the control-plane timeout to a scientific task.
+        return self._run(command, timeout_s=None)
 
     # --- observation ------------------------------------------------------
 
@@ -388,15 +498,28 @@ class SlurmBroker:
             f"--job={job_id}",
             "--format=" + "|".join(f"%{code}" for code in ("i", "T", "r", "k")),
         ]
+        # A non-zero exit is not evidence that the job is absent: permission,
+        # configuration and controller failures use the same channel. Propagate
+        # it so the backend can preserve the last known phase. Schedulers that
+        # represent an unknown id with an empty successful result still return
+        # None below.
         try:
             stdout = self._run(argv)
         except SlurmCommandError as exc:
-            # squeue exits non-zero for an unknown job on some builds.
-            if exc.timed_out or exc.unreachable:
-                # Absence of an answer is not an answer of absence.
-                raise
-            return None
+            # Some Slurm versions answer a completed/expired id with this
+            # specific non-zero result instead of a successful empty set. It is
+            # the one error that means "not in slurmctld" and therefore permits
+            # the caller's required sacct fallback; permission/controller/config
+            # failures remain unknown and propagate.
+            if self._is_unknown_job_error(exc):
+                return None
+            raise
         return self._parse_row(stdout, self._SQUEUE_FIELDS)
+
+    @staticmethod
+    def _is_unknown_job_error(exc: SlurmCommandError) -> bool:
+        stderr = str(exc.stderr or "").lower()
+        return "invalid job id specified" in stderr
 
     def accounting_status(self, job_id: str) -> JobStatus | None:
         """The accounting record, which outlives the queue entry."""
@@ -407,16 +530,10 @@ class SlurmBroker:
             f"--jobs={job_id}",
             "--format=" + ",".join(self._SACCT_FIELDS),
         ]
-        try:
-            stdout = self._run(argv)
-        except SlurmCommandError as exc:
-            if exc.timed_out or exc.unreachable:
-                # Absence of an answer is not an answer of absence.
-                raise
-            return None
+        stdout = self._run(argv)
         return self._parse_row(stdout, self._SACCT_FIELDS, separator="|")
 
-    def find_by_comment(self, comment: str) -> str | None:
+    def find_by_comment(self, comment: str, *, job_name: str) -> str | None:
         """The INV-8 reconciliation: does anything carry this token?
 
         Asks the queue first (a submission that just landed is there) and
@@ -427,41 +544,49 @@ class SlurmBroker:
         """
         if not _SAFE_TOKEN_RE.fullmatch(comment):
             raise ValueError(f"invalid comment {comment!r}")
+        if not _SAFE_TOKEN_RE.fullmatch(job_name):
+            raise ValueError(f"invalid job name {job_name!r}")
         argv = [
             "squeue",
             "--noheader",
             "--all",
-            "--format=%i|%k",
+            f"--name={job_name}",
+            "--format=%i|%k|%j",
         ]
-        try:
-            stdout = self._run(argv)
-        except SlurmCommandError as exc:
-            if exc.timed_out or exc.unreachable:
-                # Absence of an answer is not an answer of absence.
-                raise
-            stdout = ""
+        # This is an all-jobs query, so it cannot fail because one requested
+        # job id was absent. Any command failure means the lookup is unknown,
+        # never that the token is absent.
+        stdout = self._run(argv)
         for line in (stdout or "").splitlines():
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 2 and parts[1] == comment and parts[0]:
+            if (
+                len(parts) >= 2
+                and parts[0]
+                and (parts[1] == comment or (len(parts) >= 3 and parts[2] == job_name))
+            ):
                 return parts[0].split(".")[0]
 
         argv = [
             "sacct",
             "--noheader",
             "--parsable2",
-            "--allusers",
-            "--format=JobIDRaw,Comment",
+            f"--name={job_name}",
+            # With no filter sacct defaults to midnight today. A submission
+            # whose response was lost just before midnight then vanished from
+            # the lookup after restart and INV-8 submitted it twice. Search all
+            # records the site's accounting retention still has; this query is
+            # already scoped to the daemon's own Unix identity.
+            "--starttime=1970-01-01",
+            "--format=JobIDRaw,Comment,JobName",
         ]
-        try:
-            stdout = self._run(argv)
-        except SlurmCommandError as exc:
-            if exc.timed_out or exc.unreachable:
-                # Absence of an answer is not an answer of absence.
-                raise
-            return None
+        stdout = self._run(argv)
         for line in (stdout or "").splitlines():
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 2 and parts[1] == comment and parts[0]:
+            if (
+                len(parts) >= 2
+                and parts[0]
+                and (parts[1] == comment or (len(parts) >= 3 and parts[2] == job_name))
+            ):
                 return parts[0].split(".")[0]
         return None
 
@@ -469,13 +594,10 @@ class SlurmBroker:
         """Ask the scheduler to kill it. Idempotent by contract: cancelling
         something already gone is success, because the cancel barrier can run
         twice and a second failure there would strand a workload."""
-        try:
-            self._run(["scancel", str(job_id)])
-        except SlurmCommandError as exc:
-            if exc.timed_out or exc.unreachable:
-                # Absence of an answer is not an answer of absence.
-                raise
-            return
+        # `--quiet` makes an already-completed job a successful no-op while a
+        # generic non-zero exit still means permission/controller failure. That
+        # preserves idempotency without interpreting every error as absence.
+        self._run(["scancel", "--quiet", str(job_id)])
 
     # --- parsing ----------------------------------------------------------
 

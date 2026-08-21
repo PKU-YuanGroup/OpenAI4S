@@ -370,7 +370,9 @@ def test_environment_replacement_keeps_session_dispatcher_and_commits_active_env
     monkeypatch.setattr(gateway_mod, "Kernel", FakeKernel)
     monkeypatch.setattr(runner, "_wire_delegation", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        runner, "_run_bootstrap", lambda state, kernel=None: bootstrapped.append(kernel)
+        runner,
+        "_run_bootstrap",
+        lambda state, kernel=None, workspace=None: bootstrapped.append(kernel),
     )
 
     st.desired_env = "base"

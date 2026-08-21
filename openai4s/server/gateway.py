@@ -36,7 +36,7 @@ import traceback
 import uuid
 import zipfile
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -469,6 +469,21 @@ _TEAM_SCOPE_SHARE = re.compile(r"/shares/([^/]+)")
 #: spellings identical.
 _REPLAY_ROUTE = re.compile(r"/sessions/([^/]+)/replay")
 
+#: The auth paths a guest reaches. Sign-in and sign-out must work or a guest
+#: cannot leave, and `/auth/me` is what the page renders their identity from.
+#: `/auth/me/llm-key` is deliberately absent: it writes the credential broker,
+#: which is not a replay-only surface.
+#: API-relative, like every other value compared against `sub` here.
+_GUEST_AUTH_PATHS = frozenset(
+    {
+        "/auth/login",
+        "/auth/logout",
+        "/auth/me",
+        "/auth/status",
+        "/auth/redeem-invite",
+    }
+)
+
 #: The only paths a `?token=` may be traded for a cookie on -- an allowlist,
 #: not a subtraction. The rule used to be "anything that is not `/api/v1/` and
 #: not `/static/`", which its own docstring described as "paths that serve the
@@ -615,6 +630,13 @@ class WSConnection:
         self.wfile = wfile
         self.subs: set[str] = set()
         self.alive = True
+        #: Team mode: "may this connection still receive that session?", set
+        #: by the WS handler which owns identity re-resolution. None (the
+        #: single-user default) means every subscription stays valid, which is
+        #: the behaviour a daemon with no team mode has always had.
+        self.visibility_check: Any = None
+        self._visibility_denied: set[str] = set()
+        self._last_delivered_seq: dict[str, int] = {}
         self._q: "queue.Queue" = queue.Queue(maxsize=self._QUEUE_CAP)
         self._q_budget_lock = threading.Lock()
         self._queued_bytes = 0
@@ -664,6 +686,71 @@ class WSConnection:
 
     def close(self) -> None:
         self._drop()
+
+    def may_receive(self, root_frame_id: str) -> bool:
+        """Compatibility answer when no fresh check result was returned.
+
+        Subscribing was checked once, at `view_session`, and nothing rechecked
+        it afterwards -- so making a session private, removing a member from
+        its project, or disabling the account revoked every *future* request
+        and none of the stream already flowing. The socket kept delivering
+        cell code, stdout and pending approval prompts for as long as the tab
+        stayed open.
+
+        `refresh_visibility` now returns the answer used for one event. Keeping
+        this method lets older connection doubles describe their single-user
+        behavior, but a real team connection cannot answer positively here:
+        there is deliberately no stored positive authorization to consult.
+        """
+        if self.visibility_check is None:
+            return True
+        # A positive answer is never retained. WSHub uses the bool returned by
+        # `refresh_visibility` for exactly one fan-out; this compatibility
+        # method therefore has no positive fact it may safely return.
+        return False
+
+    def refresh_visibility(self, root_frame_id: str) -> bool:
+        """Re-ask every positive authorization. Never under the hub lock.
+
+        The check reads the database, and `broadcast` holds the hub lock over
+        its sequencing and enqueue — so doing the read there would take the
+        store lock while holding the hub lock, inverting the order every
+        producer that broadcasts *from* a store operation already uses.
+
+        Neither answer is cached.  A positive cache delays revocation; a
+        negative cache drops events after access is restored and creates a
+        sequence hole the client can otherwise mistake for a complete stream.
+        """
+        check = self.visibility_check
+        if check is None:
+            return True
+        try:
+            allowed = bool(check(root_frame_id))
+        except Exception:  # noqa: BLE001 — undecidable is refused
+            allowed = False
+        return allowed
+
+    def commit_visibility(self, root_frame_id: str, *, allowed: bool) -> int | None:
+        """Commit one checked answer in the hub's ordered fan-out section.
+
+        Authorization happens outside the hub lock to preserve lock order.  Its
+        denied/restored state must be recorded only when that same fan-out gets
+        its sequence position; otherwise two concurrent producers can commit
+        their visibility answers in the opposite order and leave an unmarked
+        hole in the stream.
+        """
+
+        if not allowed:
+            self._visibility_denied.add(root_frame_id)
+            return None
+        if root_frame_id not in self._visibility_denied:
+            return None
+        self._visibility_denied.discard(root_frame_id)
+        return int(self._last_delivered_seq.get(root_frame_id, 0))
+
+    def note_delivered(self, root_frame_id: str, sequence: int) -> None:
+        if sequence > self._last_delivered_seq.get(root_frame_id, 0):
+            self._last_delivered_seq[root_frame_id] = int(sequence)
 
     def _drain(self) -> None:
         while True:
@@ -1366,8 +1453,39 @@ class WSHub:
             # asserted: a future caller's bug should lose one event, not the
             # daemon.
             return
-        with self._lock:
-            if root_frame_id:
+        while True:
+            # Before the lock, deliberately: see
+            # `WSConnection.refresh_visibility`. Snapshot only subscribers to
+            # this frame, then verify that no new one appeared while the store
+            # checks ran. A newcomer has already received a replay ending
+            # before this event, so silently skipping it would create a
+            # one-event hole.
+            with self._lock:
+                subscribers = {
+                    c for c in tuple(self._conns) if c.alive and root_frame_id in c.subs
+                }
+            authorization: dict[Any, bool] = {}
+            for c in subscribers:
+                refreshed = c.refresh_visibility(root_frame_id)
+                # Older in-tree doubles model the single-user no-op by
+                # returning None and expose `may_receive` separately. Real
+                # connections return the answer directly so a successful
+                # authorization is never stored past this fan-out.
+                authorization[c] = (
+                    bool(c.may_receive(root_frame_id))
+                    if refreshed is None
+                    else bool(refreshed)
+                )
+
+            with self._lock:
+                current = {
+                    c for c in tuple(self._conns) if c.alive and root_frame_id in c.subs
+                }
+                if not current.issubset(subscribers):
+                    # Refresh the enlarged snapshot outside the lock. No event
+                    # has been stamped or recorded yet, so retrying is safe.
+                    continue
+
                 # Stamped under the hub lock, so the number a client sees is the
                 # same order the buffer recorded and the same order every other
                 # subscriber receives. Assigning it outside the lock would let
@@ -1379,14 +1497,42 @@ class WSHub:
                     # number: it is not part of this frame's stream, so it must
                     # not advance a cursor either.
                     return
+                # If this connection was denied one or more earlier fan-outs
+                # and is authorized again now, replay that exact gap before
+                # stamping the new live event. Otherwise the client advances
+                # its cursor past unseen events and a later reconnect can never
+                # recover them.
+                for c in current:
+                    allowed = authorization.get(c, False)
+                    commit_visibility = getattr(c, "commit_visibility", None)
+                    since = (
+                        commit_visibility(root_frame_id, allowed=allowed)
+                        if callable(commit_visibility)
+                        else None
+                    )
+                    if allowed and since is not None:
+                        buf = self._live.get(root_frame_id)
+                        events = list(buf.get("events") or []) if buf else []
+                        self._enqueue_replay_locked(
+                            root_frame_id,
+                            c,
+                            events,
+                            int(since),
+                            require_complete=True,
+                        )
                 obj["seq"] = self._next_seq_locked(root_frame_id)
                 self._record(root_frame_id, obj)
-            # ``send_json`` only performs JSON encoding + a non-blocking queue
-            # put.  Keeping enqueue under the hub lock makes its order atomic
-            # with subscribe/replay without coupling producers to socket I/O.
-            for c in tuple(self._conns):
-                if c.alive and (root_frame_id is None or root_frame_id in c.subs):
-                    c.send_json(obj)
+                # ``send_json`` only performs JSON encoding + a non-blocking
+                # queue put. Keeping enqueue under the hub lock makes its order
+                # atomic with subscribe/replay without coupling producers to
+                # socket I/O.
+                for c in current:
+                    if authorization.get(c, False):
+                        c.send_json(obj)
+                        note = getattr(c, "note_delivered", None)
+                        if callable(note):
+                            note(root_frame_id, int(obj["seq"]))
+                return
 
     def is_running(self, root_frame_id: str) -> bool:
         with self._lock:
@@ -1416,6 +1562,7 @@ class WSHub:
         since_seq: int = 0,
         *,
         forced_gap: bool = False,
+        require_complete: bool = False,
     ) -> None:
         """Replay buffered events, optionally only those after ``since_seq``.
 
@@ -1428,6 +1575,17 @@ class WSHub:
         selected = [e for e in events if int(e.get("seq") or 0) > since_seq]
         first = int(selected[0].get("seq") or 0) if selected else since_seq
         last = int(selected[-1].get("seq") or 0) if selected else since_seq
+        current = int(self._seq.get(root_frame_id, 0))
+        sequences = [int(event.get("seq") or 0) for event in selected]
+        expected = int(since_seq) + 1
+        replay_is_contiguous = bool(sequences)
+        for sequence in sequences:
+            if sequence != expected:
+                replay_is_contiguous = False
+                break
+            expected += 1
+        if sequences and sequences[-1] != current:
+            replay_is_contiguous = False
         conn.send_json(
             {
                 "type": "replay_begin",
@@ -1440,7 +1598,26 @@ class WSHub:
                 # The buffer is capped, so the oldest event it still holds may
                 # be newer than the cursor+1 the client asked for.
                 "gap": bool(
-                    forced_gap or (since_seq and selected and first > since_seq + 1)
+                    forced_gap
+                    # A resume is complete only when its buffered sequences
+                    # cover every number from cursor+1 through the hub's
+                    # current counter. Checking only the first item missed an
+                    # idle (unbuffered) delta in the middle or at the tail.
+                    or (
+                        (bool(since_seq) or require_complete)
+                        and selected
+                        and not replay_is_contiguous
+                    )
+                    # Idle status/metadata deltas deliberately do not create a
+                    # phantom live-turn buffer, but they still advance the
+                    # stream sequence.  An empty replay cannot cover such a
+                    # delta; declare the hole so the client refetches durable
+                    # state instead of accepting the next live sequence.
+                    or (
+                        (bool(since_seq) or require_complete)
+                        and not selected
+                        and current > since_seq
+                    )
                 ),
             }
         )
@@ -1449,6 +1626,9 @@ class WSHub:
         conn.send_json(
             {"type": "replay_end", "root_frame_id": root_frame_id, "to_seq": last}
         )
+        note = getattr(conn, "note_delivered", None)
+        if callable(note):
+            note(root_frame_id, last)
 
     def emitter(self, root_frame_id: str):
         def emit(event: dict) -> None:
@@ -1477,6 +1657,13 @@ class SessionState:
         self.project_id = project_id
         self.branch_id = branch_id or root_frame_id
         self.workspace = workspace
+        #: The workspace this session has when it runs on this machine. A
+        #: successfully attached cluster worker repoints `workspace` at the
+        #: workload's directory (see
+        #: `SessionRunner._sync_placement_workspace`); a local fallback must
+        #: keep using this directory, so the value is kept rather than
+        #: recomputed from a pending workload binding.
+        self.local_workspace = workspace
         #: `(profile_id, revision)` this turn was ACCEPTED under, when it came
         #: through the queue. `_pinned_llm_config` prefers it over the frame's
         #: current pin, because the frame's pin is mutable by design and an item
@@ -1570,10 +1757,24 @@ class SessionState:
         return bool(self.kernels.status("python")["manual_stop"])
 
     @contextmanager
-    def execution_barrier(self):
+    def execution_barrier(self, *, deadline: float | None = None):
         """Serialize a turn while giving an already-requested Stop priority."""
+
+        def remaining() -> float | None:
+            if deadline is None:
+                return None
+            return max(0.0, deadline - time.monotonic())
+
         while True:
-            self.turn_lock.acquire()
+            wait_s = remaining()
+            if wait_s is None:
+                acquired = self.turn_lock.acquire()
+            elif wait_s <= 0:
+                acquired = False
+            else:
+                acquired = self.turn_lock.acquire(timeout=wait_s)
+            if not acquired:
+                raise TimeoutError("timed out waiting for session execution barrier")
             # Admission and cancellation reset are one critical section. If a
             # Stop arrives after this clear, its newly-set signal survives; if
             # it arrived before, stop_requested makes this entrant yield.
@@ -1581,7 +1782,11 @@ class SessionState:
             if not self.stop_requested.is_set():
                 break
             self.turn_lock.release()
-            self.stop_finished.wait()
+            stop_wait_s = remaining()
+            if stop_wait_s is not None and stop_wait_s <= 0:
+                raise TimeoutError("timed out waiting for session Stop barrier")
+            if not self.stop_finished.wait(timeout=stop_wait_s):
+                raise TimeoutError("timed out waiting for session Stop barrier")
         try:
             yield
         finally:
@@ -2093,6 +2298,11 @@ def _submit_nudge_for(llm_cfg) -> str:
 
 
 class SessionRunner:
+    _ORCHESTRATION_CLEANUP_WORKERS = 4
+    _ORCHESTRATION_CLEANUP_ADMISSION_TIMEOUT_S = 0.1
+    _ORCHESTRATION_CLEANUP_RETRY_MIN_S = 0.05
+    _ORCHESTRATION_CLEANUP_RETRY_MAX_S = 2.0
+
     def __init__(
         self,
         cfg: Config,
@@ -2125,6 +2335,18 @@ class SessionRunner:
         self._turn_scope = threading.local()
         self._lock = threading.Lock()
         self._closed = False
+        # Reconciler/lease callbacks run on the orchestration control threads.
+        # A terminal session cleanup has to enter the session FIFO and may sit
+        # behind a long Cell, so doing it in the callback stalls reconciliation
+        # for every workload.  Keep a small daemon pool instead: tasks are
+        # deduplicated by session with an ABA-fenced workload identity, retried
+        # until that exact binding is gone, and never keep process exit alive.
+        # The workers are started lazily on the first terminal session event;
+        # installs without cluster sessions still start no extra threads.
+        self._orchestration_cleanup_condition = threading.Condition()
+        self._orchestration_cleanup_tasks: dict[str, dict[str, Any]] = {}
+        self._orchestration_cleanup_threads: list[threading.Thread] = []
+        self._orchestration_cleanup_stopping = False
         self._deleting_projects: set[str] = set()
         # One per daemon, so the startup opt-in and the on-demand route cannot
         # both be seeding the example at the same time.
@@ -2726,8 +2948,15 @@ class SessionRunner:
                             st
                         ):
                             return False
+                        from openai4s.orchestration.models import Reason
+
+                        compute_released = self._release_bound_compute_in_execution(
+                            st, reason=Reason.SESSION_IDLE_TIMEOUT
+                        )
                         stopped = st.kernels.stop("python", manual=False, reason=reason)
                         stopped += st.kernels.stop("r", manual=False, reason=reason)
+                        if compute_released:
+                            stopped += 1
                         if stopped:
                             # The provider history is the largest thing a cold
                             # session holds — measured at ~1.1 MB for a 200-turn
@@ -2794,6 +3023,11 @@ class SessionRunner:
                     st.delegation_runner = None
                 self._interrupt_background(st)
                 with st.turn_lock:
+                    from openai4s.orchestration.models import Reason
+
+                    self._release_bound_compute_in_execution(
+                        st, reason=Reason.USER_CANCELLED
+                    )
                     st.kernels.stop("python", manual=False, reason=reason)
                     st.kernels.stop("r", manual=False, reason=reason)
             finally:
@@ -2820,25 +3054,36 @@ class SessionRunner:
         usable before anybody has organised anything. A project somebody
         has claimed needs participation.
         """
-        from openai4s.server import team_policy
+        from openai4s.server import team_auth, team_policy
 
         if not getattr(self.cfg, "team_mode", False):
             return True
+        # The loopback CLI is admin-equivalent by decision D2 and has no row in
+        # `users`, so it is recognised by its own constant rather than by
+        # failing to be found. That distinction is the whole fix here: absence
+        # used to be the *service* answer AND the answer for a user id that is
+        # not an account AND the answer for a database that would not answer,
+        # and all three admitted.
+        if user_id == team_auth.SERVICE_IDENTITY.user_id:
+            return True
         try:
             user = self.store.team.get_user(user_id)
-        except Exception:  # noqa: BLE001
-            user = None
+        except Exception:  # noqa: BLE001 — undecidable is refused
+            # `team_policy`'s stated contract, applied to its own input: a
+            # lookup that failed is not a lookup that said "no restrictions".
+            return False
         if user is None:
-            return True  # service/loopback identity, or team mode not seeded
-        if str(user.get("role") or "") == "admin":
-            return True
-
-        class _Id:
-            def __init__(self, uid: str) -> None:
-                self.user_id = uid
-                self.is_admin = False
-
-        return team_policy.may_create_session_in(self.store, _Id(user_id), project_id)
+            return False
+        # A real Principal rather than a hand-rolled stand-in with the fields
+        # this one call happens to read. The stub hard-coded `is_admin = False`
+        # and the caller compensated with a role check above it, so "who is
+        # this" had two spellings that had to agree.
+        principal = execution_principal.Principal(
+            user_id=str(user.get("id") or user_id),
+            username=str(user.get("username") or ""),
+            role=str(user.get("role") or ""),
+        )
+        return team_policy.may_create_session_in(self.store, principal, project_id)
 
     def create_session(
         self,
@@ -2950,6 +3195,12 @@ class SessionRunner:
                 self.orchestration_backends["cluster"] = SlurmBackend(
                     cluster=cluster, log_dir=str(log_dir)
                 )
+                # And it becomes the default. Both built-in backends are
+                # operator-only in team mode because OpenAI4S has no mapping
+                # from a browser member to a scheduler account; an admin still
+                # gets the configured cluster by omitting the backend name.
+                # The local backend remains reachable by name.
+                self.default_backend = "cluster"
         except ClusterConfigError as exc:
             print(
                 f"[openai4s] cluster.toml ignored: {exc}", file=sys.stderr, flush=True
@@ -2983,6 +3234,9 @@ class SessionRunner:
         on_state_lost = None
         try:
             from openai4s.orchestration.bootstrap import (
+                STATE_FILENAME as bootstrap_state_filename,
+            )
+            from openai4s.orchestration.bootstrap import (
                 BootstrapAuthority,
                 load_or_mint_secret,
             )
@@ -2999,7 +3253,7 @@ class SessionRunner:
                 # the shared filesystem the job was given and stays valid for
                 # its whole TTL, so an in-memory nonce set un-burns every
                 # outstanding credential on restart.
-                state_path=self.cfg.data_dir / "worker-bootstrap-state.json",
+                state_path=self.cfg.data_dir / bootstrap_state_filename,
             )
             worker_gateway = gateway_from_environment(authority)
             if worker_gateway is not None:
@@ -3060,6 +3314,7 @@ class SessionRunner:
                 self.reconciler.start()
         except Exception:  # noqa: BLE001 — never block boot on this
             pass
+        self._restore_orchestration_cleanups()
 
     def ensure_reconciler(self) -> None:
         """Start the orchestration loop if it is not already running.
@@ -3090,8 +3345,184 @@ class SessionRunner:
         to carry them would put one user's job events on another user's
         stream.
         """
+        if kind in ("lease_expired", "workload_terminal"):
+            workload_id = str(payload.get("workload_id") or "")
+            session_id = (
+                self.store.leases.session_for_workload(workload_id)
+                if workload_id
+                else None
+            )
+            if session_id:
+                from openai4s.orchestration.models import Reason
+
+                try:
+                    reason = Reason(str(payload.get("reason") or ""))
+                except ValueError:
+                    reason = Reason.WORKER_LOST
+                # Reclamation/terminal observation owns more than the durable
+                # lease row: clear the manager runtime, stop the exact
+                # supervisor worker and restore Host/file tools to the local
+                # workspace before another Cell can reuse retired compute.
+                # Admission may wait behind a long Cell, so it must not run on
+                # the reconciler/reclaimer callback thread.
+                self._schedule_orchestration_cleanup(
+                    str(session_id), workload_id, reason
+                )
         if kind in ("reconcile_error", "workload_terminal"):
             print(f"[openai4s] orchestration {kind}: {payload}", file=sys.stderr)
+
+    def _schedule_orchestration_cleanup(
+        self, session_id: str, workload_id: str, reason: Any
+    ) -> bool:
+        """Queue one exact terminal-placement cleanup without blocking emitters."""
+
+        if not session_id or not workload_id:
+            return False
+        with self._orchestration_cleanup_condition:
+            if self._orchestration_cleanup_stopping:
+                return False
+            # A delayed W1 event must not replace a task for a currently bound
+            # W2. Keep this check inside the task mutation lock: checking first
+            # let W2 bind+schedule between the check and this critical section,
+            # after which the stale W1 event overwrote W2's task.
+            if self.store.leases.workload_for_session(session_id) != workload_id:
+                return False
+            existing = self._orchestration_cleanup_tasks.get(session_id)
+            if existing is not None:
+                # W2 may replace a running W1 task. The worker snapshots W1 and
+                # verifies this target again before removing the task, so W1
+                # completion cannot consume W2's queued cleanup.
+                existing["workload_id"] = workload_id
+                existing["reason"] = reason
+                existing["attempts"] = 0
+                existing["due_at"] = time.monotonic()
+                self._orchestration_cleanup_condition.notify_all()
+                return True
+            self._orchestration_cleanup_tasks[session_id] = {
+                "session_id": session_id,
+                "workload_id": workload_id,
+                "reason": reason,
+                "attempts": 0,
+                "due_at": time.monotonic(),
+                "running": False,
+            }
+            if not self._orchestration_cleanup_threads:
+                for index in range(self._ORCHESTRATION_CLEANUP_WORKERS):
+                    thread = threading.Thread(
+                        target=self._orchestration_cleanup_worker,
+                        name=f"openai4s-orchestration-cleanup-{index}",
+                        daemon=True,
+                    )
+                    self._orchestration_cleanup_threads.append(thread)
+                    thread.start()
+            self._orchestration_cleanup_condition.notify_all()
+        return True
+
+    def _orchestration_cleanup_worker(self) -> None:
+        """Drain cleanup tasks; failures remain queued with capped backoff."""
+
+        while True:
+            with self._orchestration_cleanup_condition:
+                task = None
+                while task is None:
+                    if self._orchestration_cleanup_stopping:
+                        return
+                    now = time.monotonic()
+                    wait_s = None
+                    for candidate in self._orchestration_cleanup_tasks.values():
+                        if candidate["running"]:
+                            continue
+                        delay = float(candidate["due_at"]) - now
+                        if delay <= 0:
+                            candidate["running"] = True
+                            task = candidate
+                            break
+                        wait_s = delay if wait_s is None else min(wait_s, delay)
+                    if task is None:
+                        self._orchestration_cleanup_condition.wait(timeout=wait_s)
+
+            session_id = str(task["session_id"])
+            workload_id = str(task["workload_id"])
+            reason = task["reason"]
+            succeeded = False
+            try:
+                # Never broad-cancel before checking the expected binding. A
+                # delayed W1 event can run after this session is rebound to W2;
+                # the ordinary lifecycle FIFO plus manager's atomic fence lets
+                # W1 become a no-op without touching W2's active Cell.
+                succeeded = bool(
+                    self.release_session_compute(
+                        session_id,
+                        reason=reason,
+                        expected_workload_id=workload_id,
+                        admission_timeout_s=(
+                            self._ORCHESTRATION_CLEANUP_ADMISSION_TIMEOUT_S
+                        ),
+                    )
+                )
+                if not succeeded:
+                    # False is success when an earlier attempt consumed the
+                    # binding or a newer workload won the ABA race. Retry only
+                    # while this exact workload is still current.
+                    succeeded = (
+                        self.store.leases.workload_for_session(session_id)
+                        != workload_id
+                    )
+            except Exception as exc:  # noqa: BLE001 — retry transient admission
+                if not self._orchestration_cleanup_stopping:
+                    task["last_error"] = f"{type(exc).__name__}: {exc}"
+
+            with self._orchestration_cleanup_condition:
+                current = self._orchestration_cleanup_tasks.get(session_id)
+                if current is not task:
+                    continue
+                if str(task["workload_id"]) != workload_id:
+                    task["running"] = False
+                    task["due_at"] = time.monotonic()
+                    self._orchestration_cleanup_condition.notify_all()
+                    continue
+                if self._orchestration_cleanup_stopping or succeeded:
+                    self._orchestration_cleanup_tasks.pop(session_id, None)
+                else:
+                    task["running"] = False
+                    task["attempts"] = int(task["attempts"]) + 1
+                    delay = min(
+                        self._ORCHESTRATION_CLEANUP_RETRY_MAX_S,
+                        self._ORCHESTRATION_CLEANUP_RETRY_MIN_S
+                        * (2 ** min(int(task["attempts"]) - 1, 8)),
+                    )
+                    task["due_at"] = time.monotonic() + delay
+                self._orchestration_cleanup_condition.notify_all()
+
+    def _restore_orchestration_cleanups(self) -> None:
+        """Resume cleanup intents whose sole event preceded daemon restart."""
+
+        if getattr(self, "compute_sessions", None) is None:
+            return
+        try:
+            candidates = self.store.workloads.session_cleanup_candidates()
+        except Exception as exc:  # noqa: BLE001 — recovery must not block boot
+            print(
+                f"[openai4s] orchestration cleanup recovery unavailable: {exc}",
+                file=sys.stderr,
+            )
+            return
+        from openai4s.orchestration.models import Reason
+
+        for session_id, workload_id, recorded_reason in candidates:
+            self._schedule_orchestration_cleanup(
+                session_id,
+                workload_id,
+                recorded_reason or Reason.WORKER_LOST,
+            )
+
+    def _stop_orchestration_cleanup(self) -> None:
+        """Refuse new cleanup work and wake daemon workers without joining."""
+
+        with self._orchestration_cleanup_condition:
+            self._orchestration_cleanup_stopping = True
+            self._orchestration_cleanup_tasks.clear()
+            self._orchestration_cleanup_condition.notify_all()
 
     def close(self) -> None:
         """Stop the sweeper, turns, background workers, and all session slots."""
@@ -3100,6 +3531,10 @@ class SessionRunner:
             if self._closed:
                 return
             self._closed = True
+        # Signal these workers before waiting for orchestration components.
+        # They are daemon threads by design: a cleanup already blocked in a
+        # third-party/kernel close must never turn daemon shutdown into a hang.
+        self._stop_orchestration_cleanup()
         reconciler = getattr(self, "reconciler", None)
         if reconciler is not None:
             reconciler.stop()
@@ -3203,6 +3638,11 @@ class SessionRunner:
         ) as execution:
             result = mutate()
             if invalidate_kernel and result.get("ok"):
+                from openai4s.orchestration.models import Reason
+
+                self._release_bound_compute_in_execution(
+                    st, reason=Reason.USER_CANCELLED
+                )
                 st.kernels.stop(
                     "python", manual=False, reason="branch_revert_requires_recovery"
                 )
@@ -3328,6 +3768,9 @@ class SessionRunner:
             if old.delegation_runner is not None:
                 old.delegation_runner.close(cancel=True)
                 old.delegation_runner = None
+            from openai4s.orchestration.models import Reason
+
+            self._release_bound_compute_in_execution(old, reason=Reason.USER_CANCELLED)
             old.kernels.stop("python", manual=False, reason="branch_activated")
             old.kernels.stop("r", manual=False, reason="branch_activated")
 
@@ -3491,6 +3934,11 @@ class SessionRunner:
             owner_id=owner_id,
             reason=f"kernel recovery: {action_id}",
         ) as execution:
+            if self.store.leases.workload_for_session(root_frame_id):
+                raise RecoveryActionError(
+                    "local kernel recovery is unavailable while a cluster "
+                    "compute session is bound; release the allocation first"
+                )
             runtime = self._recovery_runtime(st, emit)
             fresh = runtime.fresh_manifests() if action_id == "restart_fresh" else ()
             # Re-check enabled/confirmation after FIFO admission, before
@@ -3821,6 +4269,7 @@ class SessionRunner:
         language: str | None = None,
         reason: str,
         metadata: Mapping[str, Any] | None = None,
+        admission_deadline: float | None = None,
     ):
         """Submit after any already-reserved Stop, without holding a long lock.
 
@@ -3831,9 +4280,27 @@ class SessionRunner:
         item it wants cancelled has to be frozen here, at submit.
         """
 
+        def remaining() -> float | None:
+            if admission_deadline is None:
+                return None
+            return max(0.0, admission_deadline - time.monotonic())
+
         while True:
-            st.stop_finished.wait()
-            with st.admission_lock:
+            wait_s = remaining()
+            if wait_s is not None and wait_s <= 0:
+                raise TimeoutError("timed out waiting for session admission")
+            if not st.stop_finished.wait(timeout=wait_s):
+                raise TimeoutError("timed out waiting for session Stop to finish")
+            lock_wait_s = remaining()
+            if lock_wait_s is None:
+                acquired = st.admission_lock.acquire()
+            elif lock_wait_s <= 0:
+                acquired = False
+            else:
+                acquired = st.admission_lock.acquire(timeout=lock_wait_s)
+            if not acquired:
+                raise TimeoutError("timed out waiting for session admission lock")
+            try:
                 if st.stop_requested.is_set():
                     continue
                 try:
@@ -3857,6 +4324,8 @@ class SessionRunner:
                     # cannot accept anything until the user waits or cancels --
                     # which is exactly what the message already tells them.
                     raise GatewayError(429, str(error), "queue_full") from error
+            finally:
+                st.admission_lock.release()
 
     @contextmanager
     def _session_execution(
@@ -3869,6 +4338,7 @@ class SessionRunner:
         language: str | None = None,
         reason: str,
         ticket=None,
+        admission_timeout_s: float | None = None,
     ):
         """Combine FIFO ownership with the compatible turn-lock barrier.
 
@@ -3877,6 +4347,11 @@ class SessionRunner:
         cycle during the incremental migration.
         """
 
+        admission_deadline = (
+            None
+            if admission_timeout_s is None
+            else time.monotonic() + max(0.0, admission_timeout_s)
+        )
         current = self.executions.current(st.root_frame_id)
         owns_admission = current is None
         ticket = current or ticket
@@ -3888,6 +4363,7 @@ class SessionRunner:
                 execution_id=execution_id,
                 language=language,
                 reason=reason,
+                admission_deadline=admission_deadline,
             )
 
         @contextmanager
@@ -3898,7 +4374,7 @@ class SessionRunner:
             if st.root_frame_id in held:
                 yield
                 return
-            with st.execution_barrier():
+            with st.execution_barrier(deadline=admission_deadline):
                 # An exact cancel may arrive after admission but before a
                 # legacy holder releases turn_lock.  execution_barrier clears
                 # the old Event on entry, so restore the ticket-owned signal.
@@ -3911,7 +4387,16 @@ class SessionRunner:
                     held.pop()
 
         if owns_admission:
-            with self.executions.admitted(ticket, cancel_event=st.cancel):
+            remaining_admission_s = (
+                None
+                if admission_deadline is None
+                else max(0.0, admission_deadline - time.monotonic())
+            )
+            with self.executions.admitted(
+                ticket,
+                cancel_event=st.cancel,
+                timeout=remaining_admission_s,
+            ):
                 with turn_barrier():
                     yield ticket
             return
@@ -4083,6 +4568,54 @@ class SessionRunner:
         except Exception:  # noqa: BLE001 - prompt/bootstrap remains available
             return self.skills
 
+    def _placement_workspace(self, st: SessionState) -> Path | None:
+        """Where this session's cells actually run, or None for this machine.
+
+        A cluster session's worker is started by the scheduler in the
+        workload's own directory (`AttemptPreparer` derives it from
+        `runtime_dir.parent`), so that -- not `agent-workspaces/<root>` -- is
+        the cwd a relative `open()` in a cell resolves against.
+        """
+        manager = getattr(self, "compute_sessions", None)
+        session_id = getattr(st, "root_frame_id", "") or ""
+        if manager is None or not session_id:
+            return None
+        try:
+            workload_id = self.store.leases.workload_for_session(session_id)
+            if not workload_id:
+                return None
+            return Path(manager.workspace_for(workload_id))
+        except Exception:  # noqa: BLE001 — no binding, no placement
+            return None
+
+    def _sync_placement_workspace(self, st: SessionState, placed: Path | None) -> None:
+        """Point host-side state at the execution plane that was selected.
+
+        The remote kernel was built with the workload's directory as its cwd
+        while everything on this side of the socket -- the Host dispatcher's
+        file tools, artifact capture, the R kernel, the reported cwd -- stayed
+        anchored to `agent-workspaces/<root_frame_id>`. So a cluster cell
+        wrote `result.csv` and `capture` diffed a directory nothing had
+        touched: no Artifact row, no version, no lineage, and no error either.
+        The inverse failed too, `host.write_file` landing where the cell could
+        not see it.
+
+        The caller supplies the *selected* placement rather than deriving one
+        from the durable workload binding. A binding can exist for minutes
+        before its worker arrives; treating it as an execution decision starts
+        the local fallback inside ``cluster-workspaces`` and also drops the
+        sandbox deny that protects the whole credential tree. Symmetric on
+        purpose: selecting local puts the dispatcher and artifact capture back
+        on the session's local workspace.
+        """
+        target = placed if placed is not None else st.local_workspace
+        if Path(st.workspace) != Path(target):
+            st.workspace = target
+        dispatcher = st.dispatcher
+        rebind = getattr(dispatcher, "set_workspace", None) if dispatcher else None
+        if callable(rebind):
+            rebind(target)
+
     def _ensure_runtime(self, st: SessionState):
         """Build the session control plane without acquiring a language worker."""
 
@@ -4127,10 +4660,181 @@ class SessionRunner:
             return disp
 
         dispatcher = st.runtime.ensure(factory)
+        # The dispatcher is built once and survives kernel restarts, so the
+        # workspace the factory captured is only right until a placement
+        # changes. `set_workspace` is what binds host-side file operations to
+        # the kernel's actual cwd, and the CLI path already uses it for the
+        # same reason.
+        rebind = getattr(dispatcher, "set_workspace", None)
+        if callable(rebind):
+            rebind(st.workspace)
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
         self._wire_delegation(st)
         return dispatcher
+
+    def _release_bound_compute_in_execution(
+        self,
+        st: SessionState,
+        *,
+        reason,
+        expected_workload_id: str | None = None,
+    ) -> bool:
+        """Release the cluster half while the caller owns the session barrier.
+
+        Branch, idle and deletion lifecycles already hold the coordinator and
+        therefore cannot call ``release_session_compute`` (which would enqueue a
+        nested lifecycle ticket).  They still must retire the durable binding,
+        lease and manager runtime before stopping the resident supervisor.
+        """
+
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None:
+            return False
+        workload_id = self.store.leases.workload_for_session(st.root_frame_id)
+        if not workload_id or (
+            expected_workload_id is not None and workload_id != expected_workload_id
+        ):
+            return False
+        released = bool(
+            manager.release(
+                st.root_frame_id,
+                reason=reason,
+                expected_workload_id=expected_workload_id,
+            )
+        )
+        if released:
+            self._sync_placement_workspace(st, None)
+        return released
+
+    def release_session_compute(
+        self,
+        root_frame_id: str,
+        *,
+        reason,
+        expected_workload_id: str | None = None,
+        admission_timeout_s: float | None = None,
+    ) -> bool:
+        """Release a placement and atomically restore its resident local plane.
+
+        The manager owns the durable lease/runtime; ``SessionState`` owns the
+        supervisor, dispatcher and artifact workspace. Releasing only the
+        first half left tools-only turns writing into the retired cluster
+        directory until another Python Cell happened to spawn. Serialize with
+        Cell/lifecycle writers, then move every resident projection together.
+        """
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None or not root_frame_id:
+            return False
+        bound_workload_id = self.store.leases.workload_for_session(root_frame_id)
+        if not bound_workload_id or (
+            expected_workload_id is not None
+            and bound_workload_id != expected_workload_id
+        ):
+            # `/compute/release` is idempotent, but it is not a generic kernel
+            # reset.  A pure-local session (or a repeated release) must retain
+            # its Python namespace.
+            return False
+        st = self._existing_state(root_frame_id)
+        if st is None:
+            return bool(
+                manager.release(
+                    root_frame_id,
+                    reason=reason,
+                    expected_workload_id=expected_workload_id,
+                )
+            )
+        with self._session_execution(
+            st,
+            owner="lifecycle",
+            owner_id=f"compute-release-{uuid.uuid4().hex[:12]}",
+            language="python",
+            reason="release cluster session",
+            admission_timeout_s=admission_timeout_s,
+        ):
+            released = self._release_bound_compute_in_execution(
+                st,
+                reason=reason,
+                expected_workload_id=expected_workload_id,
+            )
+            if not released:
+                # An ABA replacement won while the lifecycle ticket waited.
+                # It owns the resident session now; do not stop its kernel or
+                # redirect its workspace for an event about the old workload.
+                return False
+            st.kernels.stop("python", manual=False, reason="cluster_session_released")
+            return released
+
+    def request_session_compute(
+        self,
+        root_frame_id: str,
+        *,
+        owner_user_id: str,
+        project_id: str,
+        profile,
+        backend: str,
+        recovery,
+    ):
+        """Create/bind compute under the session lifecycle coordinator."""
+
+        manager = getattr(self, "compute_sessions", None)
+        if manager is None:
+            raise RuntimeError("cluster sessions are not configured")
+        st = self._state(root_frame_id, project_id)
+        with self._session_execution(
+            st,
+            owner="lifecycle",
+            owner_id=f"compute-request-{uuid.uuid4().hex[:12]}",
+            language="python",
+            reason="request cluster session",
+        ):
+            # Repeat this decision *inside* the lifecycle barrier.  The route
+            # performs an early check for a useful 409, but set_env/host.env.use
+            # is another lifecycle writer and could otherwise win between that
+            # check and the durable workload bind. Remote workers currently use
+            # the daemon interpreter, so accepting a different selected env
+            # would publish false runtime/provenance metadata.
+            from openai4s.kernel import environments as envmod
+
+            selected_name = self._selected_env_name(st)
+            selected_env = envmod.get_environment(selected_name)
+            selected_python = getattr(selected_env, "interpreter", None)
+            if selected_python is not None and (
+                Path(selected_python).resolve() != Path(sys.executable).resolve()
+            ):
+                raise GatewayError(
+                    409,
+                    f"environment {selected_name!r} uses a different Python; "
+                    "cluster sessions currently require the base daemon interpreter",
+                    "remote_env_unsupported",
+                )
+            active_delegations = 0
+            if st.delegation_runner is not None:
+                try:
+                    stats = st.delegation_runner.delegation_stats()
+                    # ``children()`` is direct-only.  A finished child may
+                    # have launched a still-running grandchild, so placement
+                    # must ask the shared delegation tree for whole-session
+                    # activity or it creates local and cluster execution
+                    # planes at the same time.
+                    active_delegations = int(stats.get("active_session") or 0)
+                except Exception:  # noqa: BLE001 — undecidable means occupied
+                    active_delegations = 1
+            if self._background_active(st) or active_delegations:
+                raise GatewayError(
+                    409,
+                    "finish or stop local background/delegated work before "
+                    "placing this session on a cluster",
+                    "async_work_active",
+                )
+            return manager.request_session(
+                session_id=root_frame_id,
+                owner_user_id=owner_user_id,
+                project_id=project_id,
+                profile=profile,
+                backend=backend,
+                recovery=recovery,
+            )
 
     def _release_session_compute(self, root_frame_id: str) -> None:
         """Give a deleted session's cluster resource back.
@@ -4146,7 +4850,7 @@ class SessionRunner:
             return
         from openai4s.orchestration.models import Reason
 
-        manager.release(root_frame_id, reason=Reason.USER_CANCELLED)
+        self.release_session_compute(root_frame_id, reason=Reason.USER_CANCELLED)
 
     def _touch_compute_lease(self, st: "SessionState") -> None:
         """Renew this session's cluster lease, if it has one."""
@@ -4189,6 +4893,33 @@ class SessionRunner:
             return None
 
         runtime = manager.runtime(session_id)
+        durably_remote = False
+        try:
+            latest_generation = self.store.latest_kernel_generation(
+                session_id,
+                "python",
+                branch_id=st.branch_id,
+            )
+            durable_key = (
+                (latest_generation.get("environment") or {}).get("key")
+                if latest_generation
+                else None
+            )
+            durably_remote = bool(
+                isinstance(durable_key, (list, tuple))
+                and len(durable_key) >= 3
+                and durable_key[0] == "cluster"
+                and str(durable_key[1]) == str(workload_id)
+            )
+        except Exception as exc:  # noqa: BLE001 — execution plane is undecidable
+            raise RuntimeError(
+                "cannot verify the bound session's prior execution plane; "
+                "refusing a daemon-local fallback"
+            ) from exc
+        previously_remote = (
+            bool(runtime and (runtime.ever_ready or runtime.state_lost_epochs))
+            or durably_remote
+        )
         if runtime is None or runtime.registration is None:
             try:
                 attached = manager.attach_worker(
@@ -4200,16 +4931,47 @@ class SessionRunner:
                     file=sys.stderr,
                     flush=True,
                 )
-                return None
+                raise RuntimeError(
+                    "the cluster worker could not be attached; refusing to run "
+                    "this bound session on the daemon"
+                ) from exc
             if not attached:
-                return None
+                detail = (
+                    "connection was lost and the session must recover"
+                    if previously_remote
+                    else "has not registered yet"
+                )
+                raise RuntimeError(
+                    f"the cluster worker {detail}; refusing to run this bound "
+                    "session on the daemon"
+                )
             runtime = manager.runtime(session_id)
         if runtime is None or runtime.registration is None:
-            return None
+            raise RuntimeError(
+                "the cluster worker is not registered; refusing to run this "
+                "bound session on the daemon"
+            )
 
         transport = getattr(runtime.registration, "transport", None)
         if transport is None:
-            return None
+            raise RuntimeError(
+                "the cluster worker has no live transport; refusing a daemon-local "
+                "fallback"
+            )
+        alive = getattr(transport, "alive", None)
+        if callable(alive):
+            try:
+                transport_live = bool(alive())
+            except Exception:  # noqa: BLE001
+                transport_live = False
+            if not transport_live:
+                discard = getattr(manager, "discard_dead_registration", None)
+                if callable(discard):
+                    discard(session_id)
+                raise RuntimeError(
+                    "the cluster worker connection was lost; refusing to run "
+                    "this bound session on the daemon"
+                )
 
         # The generation this worker was admitted under. Minted by the Host
         # in the handshake and echoed to the worker there, so both ends agree
@@ -4230,7 +4992,6 @@ class SessionRunner:
             )
             if admitted_generation:
                 kernel.adopt_authorization_generation(admitted_generation)
-            manager.bind_kernel(session_id, kernel)
             return kernel
 
         # The epoch is in the key so a recovery — a new epoch, a new worker —
@@ -4254,8 +5015,12 @@ class SessionRunner:
             str(env.root) if getattr(env, "is_conda", False) else None,
         )
 
+        # A workload binding is only a request for another execution plane.
+        # Until `_remote_kernel_factory` returns a live attached worker this is
+        # a local spawn, and its cwd must remain outside the credential-bearing
+        # cluster workspace tree even when a previous attempt was remote.
         kernel_options = {
-            "cwd": str(st.workspace),
+            "cwd": str(st.local_workspace),
             "mode": "repl",
             "python": env.interpreter,
             "env_root": str(env.root) if env.is_conda else None,
@@ -4282,13 +5047,144 @@ class SessionRunner:
                 return Kernel(dispatcher=disp, **kernel_options)
 
         previous_lease = st.kernels.lease("python")
+        current_matches = bool(
+            previous_lease is not None
+            and previous_lease.key == env_key
+            and st.kernels.alive("python")
+        )
+        manager = (
+            getattr(self, "compute_sessions", None) if remote is not None else None
+        )
+        workload_id = str(remote_key[1]) if remote is not None else ""
+        epoch = int(remote_key[2]) if remote is not None else 0
+        expected_transport = None
+        if remote is not None and manager is not None:
+            runtime = manager.runtime(st.root_frame_id)
+            expected_transport = getattr(
+                getattr(runtime, "registration", None), "transport", None
+            )
+
+        candidate = None
+        lease = previous_lease
+        bootstrap: dict = {}
         try:
-            lease = st.kernels.ensure("python", env_key, factory)
+            if not current_matches:
+                candidate = factory()
+                if not candidate.is_alive():
+                    raise RuntimeError("python kernel factory returned a dead worker")
+            candidate_scope = (
+                st.kernels.preparing_candidate("python", candidate)
+                if candidate is not None
+                else nullcontext()
+            )
+            with candidate_scope as candidate_token:
+                if candidate is not None:
+                    placed_candidate = (
+                        Path(candidate.cwd)
+                        if remote is not None
+                        else st.local_workspace
+                    )
+                    bootstrap = (
+                        self._run_bootstrap(st, candidate, workspace=placed_candidate)
+                        or {}
+                    )
+                    if bootstrap.get("status") == "failed":
+                        raise RuntimeError(
+                            "kernel bootstrap failed: "
+                            + str(bootstrap.get("error") or "unknown bootstrap error")
+                        )
+
+                guard = nullcontext(True)
+                if remote is not None:
+                    if manager is None or expected_transport is None:
+                        raise RuntimeError("cluster session runtime disappeared")
+                    guard = manager.kernel_binding_guard(
+                        st.root_frame_id,
+                        expected_workload_id=workload_id,
+                        expected_epoch=epoch,
+                        expected_transport=expected_transport,
+                    )
+                # Cross-owner commits use one lock order everywhere:
+                # supervisor -> manager -> Store. Interrupt/activity already
+                # use supervisor -> Store; reversing the first two here made a
+                # permanent ABBA deadlock possible.
+                with st.kernels.publication_guard():
+                    with guard as binding_current:
+                        if not binding_current:
+                            raise RuntimeError(
+                                "cluster session changed epoch, expired, or was "
+                                "released during worker attach"
+                            )
+                        if candidate is not None:
+                            lease = st.kernels.publish_candidate(
+                                "python",
+                                env_key,
+                                candidate,
+                                factory=factory,
+                                generation_id=str(uuid.uuid4()),
+                                expected=previous_lease,
+                                bootstrap=bootstrap,
+                                candidate_token=candidate_token,
+                            )
+                            # Ownership transferred to the supervisor. It will
+                            # close this worker on any later failure.
+                            candidate = None
+                        assert lease is not None
+                        if remote is not None and not manager.bind_kernel(
+                            st.root_frame_id,
+                            lease.kernel,
+                            expected_workload_id=workload_id,
+                            expected_epoch=epoch,
+                            expected_transport=expected_transport,
+                        ):
+                            st.kernels.shutdown_if_current(
+                                lease,
+                                reason="remote_runtime_disappeared",
+                                terminal_state="crashed",
+                            )
+                            raise RuntimeError(
+                                "cluster session changed epoch, expired, or was "
+                                "released during worker attach"
+                            )
         except BaseException:
+            from openai4s.orchestration.models import Reason
+
+            if candidate is not None:
+                try:
+                    candidate.shutdown()
+                except Exception:  # noqa: BLE001
+                    pass
+            if remote is not None:
+                release = (
+                    getattr(manager, "release", None) if manager is not None else None
+                )
+                released = bool(
+                    release(
+                        st.root_frame_id,
+                        reason=Reason.BOOTSTRAP_FAILED,
+                        expected_workload_id=workload_id,
+                    )
+                    if callable(release)
+                    else False
+                )
+                if not released:
+                    discard = (
+                        getattr(manager, "discard_unbound_registration", None)
+                        if manager is not None
+                        else None
+                    )
+                    if callable(discard):
+                        discard(st.root_frame_id)
+                self._sync_placement_workspace(st, None)
             st.env_name = previous_env
+            st.booted = False
             raise
-        # Publish environment-dependent dispatcher hooks only after the worker
-        # replacement has committed.  This preserves build-first semantics.
+
+        placed = Path(lease.kernel.cwd) if remote is not None else None
+
+        # Publish the selected plane and environment-dependent Host hooks only
+        # after every fallible candidate stage has committed.
+        self._sync_placement_workspace(st, placed)
         disp.active_env_bin = env.bin_dir
         if remote is not None:
             # `host.exec_background` on a cluster session refuses rather than
@@ -4317,27 +5213,25 @@ class SessionRunner:
                 )
 
             disp.background_kernel_factory = _refuse_background
+
+            def _refuse_delegation(_spec: dict) -> None:
+                raise RuntimeError(
+                    "host.delegate is not available on a cluster session: "
+                    "delegated agents would run on the daemon instead of the "
+                    "allocated node. Submit a batch job or release the cluster "
+                    "resource before delegating."
+                )
+
+            disp._delegate_fn = _refuse_delegation
         else:
             disp.background_kernel_factory = lambda: Kernel(
                 dispatcher=disp,
                 **kernel_options,
             )
-        if previous_lease is None or previous_lease.kernel is not lease.kernel:
-            # Run outside the supervisor lock so cancellation can interrupt a
-            # slow sidecar.  The caller's turn_lock still prevents execution
-            # from racing this one-time bootstrap.
-            bootstrap = self._run_bootstrap(st, lease.kernel) or {}
-            if bootstrap.get("status") == "failed":
-                st.kernels.shutdown_if_current(
-                    lease,
-                    reason="bootstrap_failed",
-                    terminal_state="failed",
-                )
-                st.booted = False
-                raise RuntimeError(
-                    "kernel bootstrap failed: "
-                    + str(bootstrap.get("error") or "unknown bootstrap error")
-                )
+            # `_ensure_runtime` ran before placement selection and may have
+            # inherited the previous remote workspace. Rewire future local
+            # delegated children after the local plane is committed.
+            self._wire_delegation(st, disp)
         st.booted = True
         return lease
 
@@ -4476,12 +5370,22 @@ class SessionRunner:
         kernel under the agent's own running code)."""
 
         def sink(name: str) -> None:
+            if self.store.leases.workload_for_session(st.root_frame_id):
+                raise RuntimeError(
+                    "environment switching is unavailable while a cluster "
+                    "compute session is bound; release it and request a new "
+                    "allocation with the desired environment"
+                )
             st.pending_env = name
 
         return sink
 
     def _ensure_kernel(self, st: SessionState) -> None:
-        if st.kernels.alive("python"):
+        # A live local fallback is not the final answer while a cluster
+        # workload remains bound. Re-enter `_spawn_kernel` on each Cell so a
+        # worker that arrived since the previous attempt can be selected; the
+        # supervisor cheaply reuses the local lease when it still has not.
+        if st.kernels.alive("python") and self._placement_workspace(st) is None:
             return
         self._ensure_runtime(st)
         self._seed_messages(st)
@@ -4656,6 +5560,13 @@ class SessionRunner:
             return result
         if result.get("scope") != "running":
             return result
+        state = self._existing_state(root_frame_id)
+        if state is not None:
+            # Language preparation happens before the execution owns a
+            # published KernelLease. A bootstrap candidate is intentionally
+            # unpublished (build-first), but cancellation must still interrupt
+            # its protocol read rather than wait forever for bootstrap.
+            state.kernels.interrupt_preparing()
         owner_result = result.get("owner") or {}
         if owner_result.get("kind") == "agent":
             with self._lock:
@@ -4710,14 +5621,22 @@ class SessionRunner:
         )
         return self._after_execution_cancel(root_frame_id, result)
 
-    def _run_bootstrap(self, st: SessionState, kernel: Kernel | None = None) -> dict:
+    def _run_bootstrap(
+        self,
+        st: SessionState,
+        kernel: Kernel | None = None,
+        *,
+        workspace: Path | None = None,
+    ) -> dict:
         """Run and persist the bootstrap facts observed for one generation."""
 
         target = kernel if kernel is not None else st.kernel
         boot = _maybe_call(getattr(self._skills_for(st), "bootstrap_code", ""))
         if target is None:
             return {"status": "failed", "error": "Python kernel is unavailable"}
-        metadata = bootstrap_python_generation(target, st.workspace, boot)
+        metadata = bootstrap_python_generation(
+            target, workspace if workspace is not None else st.workspace, boot
+        )
         lifecycle_state = (
             "active" if metadata["status"] in {"active", "skipped"} else "bootstrapping"
         )
@@ -4734,6 +5653,16 @@ class SessionRunner:
         clean process, and skill bootstrap is re-run. Variables from prior cells
         are gone (that is the point of a restart); the notebook history is kept.
         """
+        if self.store.leases.workload_for_session(root_frame_id):
+            return {
+                "ok": False,
+                "state": "remote",
+                "frame_id": root_frame_id,
+                "error": (
+                    "a cluster worker cannot be restarted in place; release "
+                    "the compute session and request a fresh allocation"
+                ),
+            }
         st = self._state(root_frame_id, project_id)
         emit = self.hub.emitter(root_frame_id)
         with self._session_execution(
@@ -4795,11 +5724,39 @@ class SessionRunner:
         root_frame_id: str | None = None,
         project_id: str | None = None,
         restart: bool = True,
+        _coordinated: bool = False,
     ) -> dict:
         """pip-install package(s) into the kernel interpreter, then (optionally)
         restart the session kernel so they are importable in a clean process."""
         from openai4s.kernel import preinstall
 
+        if root_frame_id and not _coordinated:
+            st = self._state(root_frame_id, project_id or "default")
+            with self._session_execution(
+                st,
+                owner="lifecycle",
+                owner_id=f"install-{uuid.uuid4().hex[:12]}",
+                language="python",
+                reason="install kernel packages",
+            ):
+                return self.install_packages(
+                    packages,
+                    root_frame_id=root_frame_id,
+                    project_id=project_id,
+                    restart=restart,
+                    _coordinated=True,
+                )
+        if root_frame_id and self.store.leases.workload_for_session(root_frame_id):
+            return {
+                "ok": False,
+                "installed": [],
+                "restarted": False,
+                "error": (
+                    "package installation is unavailable while a cluster "
+                    "compute session is bound; installing here would mutate "
+                    "the daemon environment, not the remote worker"
+                ),
+            }
         res = preinstall.install(packages)
         res["restarted"] = False
         if res.get("ok"):
@@ -4812,8 +5769,17 @@ class SessionRunner:
             self.artifacts.invalidate_freeze_cache()
         if res.get("ok") and restart and root_frame_id:
             try:
-                self.restart_kernel(root_frame_id, project_id or "default")
-                res["restarted"] = True
+                restart_result = self.restart_kernel(
+                    root_frame_id, project_id or "default"
+                )
+                if restart_result.get("ok", True):
+                    res["restarted"] = True
+                else:
+                    res["restart_error"] = str(
+                        restart_result.get("error")
+                        or "the kernel could not be restarted"
+                    )
+                    res["restart_error_code"] = "kernel_restart_failed"
             except Exception as error:  # noqa: BLE001
                 # `POST /frames/<id>/kernel/install` returns this dict straight
                 # to the client, so `str(e)` was a public body. A restart fails
@@ -4981,6 +5947,22 @@ class SessionRunner:
         python — this never raises.
         """
         dispatcher = self._ensure_runtime(st)
+        # The same refusal `host.exec_background` makes, for the same reason.
+        # `spawn_r_kernel` starts a local child of the daemon, so on a session
+        # placed on a cluster an ```r cell ran on the head node with none of
+        # the allocated CPUs or GPUs -- silently, because it *worked*, just
+        # somewhere else and on whatever the shared filesystem happened to
+        # show it. Returned rather than raised: this method's contract is a
+        # soft-fail the model reads as an observation and can act on.
+        if self._placement_workspace(st) is not None:
+            return (
+                "R is not available on a cluster session: this session's cells "
+                "run on an allocated node, and an R kernel would start on the "
+                "daemon instead, with none of the allocated resources. Use "
+                "python for this session, submit a batch job with POST "
+                "/orchestration/jobs, or release the cluster resource to run "
+                "this session locally."
+            )
         want = getattr(dispatcher, "active_r_env", None)
         from openai4s.kernel.environments import get_environment
         from openai4s.kernel.r_kernel import spawn_r_kernel
@@ -5007,6 +5989,13 @@ class SessionRunner:
         can be started again to resume. A running turn is cancelled first."""
         st = self._sessions.get(root_frame_id)
         if st is None:
+            manager = getattr(self, "compute_sessions", None)
+            if manager is not None and self.store.leases.workload_for_session(
+                root_frame_id
+            ):
+                from openai4s.orchestration.models import Reason
+
+                manager.release(root_frame_id, reason=Reason.USER_CANCELLED)
             # Same shape as the stopped case. A caller should not have to
             # handle two response shapes from one route depending on whether
             # the session happened to be resident.
@@ -5055,6 +6044,7 @@ class SessionRunner:
                 # Freeze its leases and use ABA-safe exact interrupts rather
                 # than the old broad supervisor interrupt.
                 if not (cancel_result or {}).get("ok"):
+                    st.kernels.interrupt_preparing()
                     for language in ("python", "r"):
                         lease = st.kernels.lease(language)
                         if lease is not None:
@@ -5063,6 +6053,15 @@ class SessionRunner:
                     # Wait for the single protocol reader to leave before
                     # detaching and shutting down its exact worker slots.
                     with st.turn_lock:
+                        manager = getattr(self, "compute_sessions", None)
+                        if (
+                            manager is not None
+                            and self.store.leases.workload_for_session(root_frame_id)
+                        ):
+                            from openai4s.orchestration.models import Reason
+
+                            manager.release(root_frame_id, reason=Reason.USER_CANCELLED)
+                            self._sync_placement_workspace(st, None)
                         st.kernels.stop("python", manual=True, reason="manual_stop")
                         st.kernels.stop("r", manual=True, reason="manual_stop")
                     stopped_status = st.kernels.status("python")
@@ -5173,6 +6172,14 @@ class SessionRunner:
                     'pin one with host.env.use("' + env_name + '")).'
                 )
             }
+        if self.store.leases.workload_for_session(root_frame_id):
+            return {
+                "error": (
+                    "environment switching is unavailable while a cluster "
+                    "compute session is bound; release it and request a new "
+                    "allocation with the desired environment"
+                )
+            }
         st = self._state(root_frame_id, project_id)
         emit = self.hub.emitter(root_frame_id)
         with self._session_execution(
@@ -5181,6 +6188,14 @@ class SessionRunner:
             owner_id=f"env-{uuid.uuid4().hex[:12]}",
             reason="kernel environment change",
         ) as execution:
+            if self.store.leases.workload_for_session(root_frame_id):
+                return {
+                    "error": (
+                        "environment switching is unavailable while a cluster "
+                        "compute session is bound; release it and request a new "
+                        "allocation with the desired environment"
+                    )
+                }
             st.pending_env = None
             alive = st.kernels.alive("python")
             already = alive and st.env_name == env_name
@@ -10230,11 +11245,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # depend on no session state and must answer before any frame
             # guard can object. Deterministic in both modes — the contract
             # capture drives them with team mode off.
-            if team_routes.handle(self, method, sub, _team_auth, store):
-                return
-            # Guest gate (D3): a guest's whole API surface is auth + replay.
-            # Sits after the auth routes (logout must work) and before
-            # everything else, so no later route needs its own guest check.
+            # Guest gate (D3): a guest's whole API surface is sign-in, sign-out,
+            # who-am-I, and replay.
+            #
+            # It used to sit *after* `team_routes.handle`, on the reading that
+            # the auth routes are only login/logout/me. They are not: the same
+            # group carries `PUT`/`DELETE /auth/me/llm-key`, which write the
+            # credential broker -- so a replay-only guest could store secrets
+            # in the daemon. Naming what a guest may reach, and gating before
+            # the dispatch, keeps the claim in the comment below true.
             _identity = getattr(self, "_team_identity", None)
             if (
                 _team_auth is not None
@@ -10242,11 +11261,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 and _identity.kind == "user"
                 and _identity.role == "guest"
                 and not (method == "GET" and _REPLAY_ROUTE.fullmatch(sub))
+                and sub not in _GUEST_AUTH_PATHS
             ):
                 self._json(
                     {"error": "guests are replay-only", "code": "guest_readonly"},
                     403,
                 )
+                return
+            # Team auth routes (login/logout/me, invite redemption, and a
+            # member's own LLM key). They depend on no session state and must
+            # answer before any frame guard can object. Deterministic in both
+            # modes — the contract capture drives them with team mode off.
+            if team_routes.handle(self, method, sub, _team_auth, store):
                 return
             # Read-only session replay (M2-3): the web-share sanitized view,
             # served in place — no shares row, no snapshot, no relay. The
@@ -10569,33 +11595,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # ---- global search (⌘K command palette) ----
             if sub.split("?")[0] == "/search" and method == "GET":
                 query = (q.get("q") or [""])[0]
+                _scope = self._team_visibility_filter()
                 payload = (
-                    store.search(query)
+                    # Scoped in SQL, so `LIMIT` counts rows this caller may
+                    # actually see. Filtering afterwards emptied the page
+                    # whenever the newest matches were colleagues'.
+                    store.search(query, visible_to_user_id=_scope)
                     if query.strip()
                     else {"sessions": [], "artifacts": [], "datapro": []}
                 )
-                if self._team_visibility_filter() is not None:
+                if _scope is not None:
                     # Team mode (INV-13): the command palette must not
                     # enumerate other people's sessions or their artifacts.
                     _user = self._team_identity_dict()
-                    payload["sessions"] = [
-                        s
-                        for s in payload.get("sessions", [])
-                        if store.team.session_visible_to(str(s.get("id")), _user)
-                    ]
-                    payload["artifacts"] = [
-                        a
-                        for a in payload.get("artifacts", [])
-                        if a.get("root_frame_id")
-                        and store.team.session_visible_to(
-                            str(a["root_frame_id"]), _user
-                        )
-                    ]
-                    # The third family. Two of three were filtered and the
-                    # third -- indexed DataPro content, which is exactly the
-                    # query-matched *scientific* text -- rode through
-                    # unchanged. Same predicate, same fail-closed shape: a
-                    # hit with no root to check against is not shown.
+                    # Sessions and artifacts are already scoped by the query.
+                    # The third family -- indexed DataPro content, which is
+                    # exactly the query-matched *scientific* text -- lives in
+                    # its own repository and is still filtered here; same
+                    # fail-closed shape, a hit with no root to check against
+                    # is not shown.
                     payload["datapro"] = [
                         d
                         for d in payload.get("datapro", [])
@@ -11549,10 +12567,37 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"ok": False, "error": "session not found"}, 404)
                     return
                 root = frame.get("root_frame_id") or m.group(1)
+                # The scope arrives in the body and is written straight into
+                # the durable rule table by `permissions.resolve_result`, which
+                # has no identity to ask. Same rule as `POST /permissions`,
+                # asked here rather than duplicated: a member approving a
+                # prompt in their own session with `"scope": "global"` planted
+                # an allow that every other member's agent then honoured --
+                # exactly what the 403 on the other route refuses them.
+                _decision_scope = str(b.get("scope") or "once")
+                # The scope_id `permissions.resolve_result` will derive: the
+                # session for a conversation rule, its project for a project
+                # one. Asked about the same row the write lands on, so a member
+                # keeps the two scopes they can already reach.
+                _decision_scope_id = {
+                    "conversation": root,
+                    "project": str(frame.get("project_id") or "default"),
+                }.get(_decision_scope)
+                if not team_policy.may_write_permission_rule(
+                    store,
+                    getattr(self, "_team_identity", None),
+                    _decision_scope,
+                    _decision_scope_id,
+                ):
+                    raise GatewayError(
+                        403,
+                        f"a {_decision_scope} permission rule is admin only",
+                        "admin_only",
+                    )
                 resolution = broker().resolve_result(
                     b.get("decision_id"),
                     allow=bool(b.get("allow")),
-                    scope=b.get("scope") or "once",
+                    scope=_decision_scope,
                     pattern=b.get("pattern"),
                     message=b.get("message"),
                     store=store,
@@ -11647,21 +12692,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 _identity = getattr(self, "_team_identity", None)
                 if (
                     _team_auth is not None
-                    and _identity is not None
-                    and (not _identity.is_admin)
+                    and not team_policy.may_write_permission_rule(
+                        store, _identity, scope, scope_id
+                    )
                 ):
+                    # The predicate answers *whether*; the mapping below is
+                    # this route's answer about *what to say*, which differs
+                    # by scope on purpose (403 names the rule, 404 does not
+                    # confirm that a project or session exists).
                     if scope == "global":
                         raise GatewayError(
                             403, "global permission rules are admin only", "admin_only"
                         )
-                    if scope == "project" and not team_policy.may_read_project(
-                        store, _identity, str(scope_id or "")
-                    ):
-                        raise GatewayError(404, "project not found")
-                    if scope == "conversation" and not team_policy.may_use_session(
-                        store, _identity, str(scope_id or "")
-                    ):
-                        raise GatewayError(404, "session not found")
+                    raise GatewayError(
+                        404,
+                        (
+                            "project not found"
+                            if scope == "project"
+                            else "session not found"
+                        ),
+                    )
                 rid = store.set_permission_rule(
                     scope=scope,
                     scope_id=scope_id or "",
@@ -11700,26 +12750,26 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # deny as an absolute veto, so deleting a global deny is how
                 # a standing refusal becomes an allow for everyone.
                 _identity = getattr(self, "_team_identity", None)
-                if (
-                    rule
-                    and _team_auth is not None
-                    and _identity is not None
-                    and (not _identity.is_admin)
-                ):
+                if rule and _team_auth is not None:
                     _scope = str(rule.get("scope") or "")
                     _scope_id = str(rule.get("scope_id") or "")
-                    if _scope == "global":
+                    if not team_policy.may_write_permission_rule(
+                        store, _identity, _scope, _scope_id
+                    ):
+                        if _scope == "global":
+                            raise GatewayError(
+                                403,
+                                "global permission rules are admin only",
+                                "admin_only",
+                            )
                         raise GatewayError(
-                            403, "global permission rules are admin only", "admin_only"
+                            404,
+                            (
+                                "project not found"
+                                if _scope == "project"
+                                else "session not found"
+                            ),
                         )
-                    if _scope == "project" and not team_policy.may_read_project(
-                        store, _identity, _scope_id
-                    ):
-                        raise GatewayError(404, "project not found")
-                    if _scope == "conversation" and not team_policy.may_use_session(
-                        store, _identity, _scope_id
-                    ):
-                        raise GatewayError(404, "session not found")
                 store.delete_permission_rule(m.group(1))
                 self._json({"ok": True})
                 return
@@ -11886,6 +12936,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # record. See `_pinned_image_bytes` for why re-resolving the
                 # artifact at send time is the wrong answer.
                 bound = store.get_artifact(str(art_id)) or {}
+                # The frame is in the path and the artifact is in the *body*,
+                # so the path-matching team guard never saw the artifact --
+                # the same shape `/uploads` was already fixed for. A pin is
+                # not inert: `_pinned_image_bytes` reads the bound version off
+                # disk and inlines it into this session's next prompt, so
+                # pinning a colleague's figure had the model describe it back.
+                if bound and not team_policy.may_use_session(
+                    store,
+                    getattr(self, "_team_identity", None),
+                    str(bound.get("root_frame_id") or ""),
+                ):
+                    # Same sentence as an unknown artifact: which ids exist is
+                    # not this route's information to give out.
+                    self._json({"error": "artifact not found"}, 404)
+                    return
                 anno = store.add_annotation(
                     root_frame_id=fid,
                     artifact_id=str(art_id),
@@ -13814,6 +14879,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except OSError:
                 return
             conn = WSConnection(self.wfile)
+            # The predicate the fan-out re-asks (see `WSConnection.may_receive`).
+            # It is `_ws_session_visible`, which re-resolves the identity from
+            # the persisted handshake headers on every call -- so a revoked
+            # cookie, a demoted membership or a session flipped to private
+            # stops the *existing* stream, not just the next subscribe.
+            conn.visibility_check = lambda rid: _ws_session_visible(str(rid))
             # Team mode (M1-7): the identity is RE-RESOLVED from the persisted
             # handshake headers on every message, not captured once. A member
             # who is disabled or whose password is reset (both delete their
@@ -13953,6 +15024,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 }
                             )
                             continue
+                        if _team_auth is not None:
+                            # Visibility is deliberately broader than control:
+                            # a project member may watch a shared session, but
+                            # cannot cancel its owner's active execution. Resolve
+                            # the identity again at the mutation boundary so a
+                            # revoked long-lived socket fails closed.
+                            identity = self._team_identity_from_request()
+                            self._team_identity = identity
+                            frame = store.get_frame(str(rid)) or {}
+                            root = str(frame.get("root_frame_id") or rid)
+                            if not team_policy.may_control_session(
+                                store, identity, root
+                            ):
+                                conn.send_json(
+                                    {
+                                        "type": "execution_cancel_result",
+                                        "ok": False,
+                                        "code": "owner_only",
+                                        "reason": (
+                                            "only the session owner or an admin "
+                                            "may cancel its execution"
+                                        ),
+                                    }
+                                )
+                                continue
                         result = runner.cancel(
                             rid,
                             msg.get("execution_id"),

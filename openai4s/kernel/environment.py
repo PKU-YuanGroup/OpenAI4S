@@ -138,6 +138,18 @@ _INJECTION_NAMES = frozenset(
 )
 
 
+def name_can_carry_a_secret(name: str) -> bool:
+    """Public spelling of `_forbidden_name`, for callers outside the kernel.
+
+    The scheduler path needs the same answer -- a job's environment is
+    readable with `scontrol show job` -- and had grown its own narrower
+    regex, which is how `AWS_ACCESS_KEY_ID`, `*_OAUTH`, `*_BEARER` and
+    `*_COOKIE` reached a queue record that INV-9 exists to keep them out of.
+    One list, so adding a marker protects every child the daemon starts.
+    """
+    return _forbidden_name(name)
+
+
 def _forbidden_name(name: str) -> bool:
     """Return whether an environment name can carry a secret or inject code.
 
@@ -227,4 +239,4 @@ def build_kernel_environment(
     return env
 
 
-__all__ = ["build_kernel_environment"]
+__all__ = ["build_kernel_environment", "name_can_carry_a_secret"]

@@ -10,7 +10,11 @@ module some future caller reaches first.
 
 from __future__ import annotations
 
-__all__ = ["KernelBusyError", "KernelInterruptUnavailable"]
+__all__ = [
+    "KernelBusyError",
+    "KernelInterruptUnavailable",
+    "KernelRestartFailed",
+]
 
 
 class KernelBusyError(RuntimeError):
@@ -28,4 +32,14 @@ class KernelInterruptUnavailable(RuntimeError):
     transient errors interruption really is best-effort about -- so a bare
     RuntimeError was swallowed by all of them, and the cancel API answered
     `interrupted: true` for a cell still running on the cluster.
+    """
+
+
+class KernelRestartFailed(RuntimeError):
+    """The old local namespace was destroyed but no replacement is usable.
+
+    A remote kernel refuses restart before touching its worker and must not use
+    this type. Local restart raises it only after teardown, allowing watchdog
+    callers to say variables were cleared without claiming a replacement is
+    ready or that cluster work may still be running.
     """

@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import threading
@@ -56,6 +57,11 @@ from openai4s.security.permissions import (
 #: Filename of the per-daemon signing secret, under the data dir.
 SECRET_FILENAME = "worker-bootstrap-secret"
 
+#: Filename of the durable replay fence, beside the secret. Named here rather
+#: than spelled at the one construction site, because the sandbox has to deny
+#: reads of it too and a second spelling is how the first one gets missed.
+STATE_FILENAME = "worker-bootstrap-state.json"
+
 #: Default credential lifetime. Long enough to cover a start-up that waits
 #: on a shared filesystem and a slow interpreter; short enough that a
 #: credential found in a stale workspace is already useless.
@@ -69,6 +75,30 @@ CREDENTIAL_PATH_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH"
 
 class BootstrapError(RuntimeError):
     """A credential was absent, malformed, expired, replayed or forged."""
+
+
+def _strict_fsync_dir(directory: Path) -> None:
+    """Durably publish a security fence's directory entry.
+
+    The shared permissions helper is intentionally best-effort for files such
+    as the daemon signing secret, where losing the name invalidates old
+    credentials. A replay fence has the opposite failure mode: losing its new
+    name can *re-admit* a nonce after restart. POSIX cluster hosts must
+    therefore reject the operation when the directory cannot be synced.
+
+    Windows does not expose directory fsync through ``os.open``. Remote worker
+    admission uses a POSIX execution plane; file flush plus atomic replace
+    stays as the portable behavior when this module is imported elsewhere.
+    """
+
+    if os.name != "posix":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(directory, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def load_or_mint_secret(data_dir: Path | str) -> bytes:
@@ -245,6 +275,7 @@ class BootstrapAuthority:
             return
         try:
             data = json.loads(self._state_path.read_text("utf-8"))
+            consumed, epochs = _validated_state(data)
         except Exception as exc:  # noqa: BLE001
             self._fence_error = (
                 f"the worker bootstrap fence at {self._state_path} could not be "
@@ -257,42 +288,49 @@ class BootstrapAuthority:
             )
             return
         now = self._clock()
-        consumed = data.get("consumed")
-        if isinstance(consumed, dict):
-            # nonce -> expiry. Pruned on load, so the file cannot grow
-            # without bound across a long-lived install: a nonce past its
-            # credential's expiry is refused by the expiry check anyway.
-            self._consumed = {
-                str(nonce)
-                for nonce, expires in consumed.items()
-                if _as_float(expires) > now
-            }
-            self._consumed_expiry = {
-                str(nonce): _as_float(expires)
-                for nonce, expires in consumed.items()
-                if _as_float(expires) > now
-            }
-        epochs = data.get("epochs")
-        if isinstance(epochs, dict):
-            self._current_epoch = {
-                str(allocation): int(epoch) for allocation, epoch in epochs.items()
-            }
+        # nonce -> expiry. Pruned on load, so the file cannot grow without
+        # bound across a restart: a nonce past the credential's expiry is
+        # refused by the expiry check anyway.
+        self._consumed_expiry = {
+            nonce: expires for nonce, expires in consumed.items() if expires > now
+        }
+        self._consumed = set(self._consumed_expiry)
+        self._current_epoch = epochs
 
-    def _save_state(self) -> None:
+    def _save_state(
+        self,
+        *,
+        consumed_expiry: dict[str, float],
+        current_epoch: dict[str, int],
+    ) -> dict[str, float]:
         """Rewrite the fence, atomically and 0600.
 
-        Called with the lock held. Best-effort: a write that fails must not
-        fail the registration it was recording, because refusing a worker
-        that presented a valid credential is a worse outcome than a fence
-        that has to be rebuilt.
+        Called with the lock held, using candidate copies rather than live
+        state. A failed durable write refuses the operation and leaves the
+        in-memory fence unchanged: acknowledging a credential whose nonce was
+        not durably burned would make it reusable after a restart.
         """
-        if self._state_path is None:
-            return
-        payload = {
-            "consumed": getattr(self, "_consumed_expiry", {}),
-            "epochs": self._current_epoch,
+        # Prune here, not only in `_load_state`. The claim there -- "pruned on
+        # load, so the file cannot grow without bound across a long-lived
+        # install" -- was true only of installs that restart: load happens once,
+        # at construction, and a daemon that stays up for a month accumulated
+        # every nonce it ever burned and rewrote all of them on every worker
+        # registration. An expired nonce is refused by the expiry check anyway,
+        # so dropping it here costs nothing and bounds the file by the TTL.
+        now = self._clock()
+        live = {
+            nonce: expires
+            for nonce, expires in consumed_expiry.items()
+            if expires > now
         }
+        payload = {
+            "consumed": live,
+            "epochs": current_epoch,
+        }
+        if self._state_path is None:
+            return live
         tmp = self._state_path.with_suffix(".tmp")
+        published = False
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             with open(
@@ -301,12 +339,42 @@ class BootstrapAuthority:
                 encoding="utf-8",
             ) as handle:
                 json.dump(payload, handle)
+                handle.flush()
+                # `os.replace` is atomic about the *directory entry*, not
+                # about the bytes: without this the rename can reach disk
+                # before the data does, and a power loss leaves the new name
+                # pointing at an empty file. `_load_state` reads an
+                # unparseable fence as tampering and fails admission closed
+                # *permanently*, so the missing fsync turned an ordinary
+                # crash into "no worker may ever register again". The sibling
+                # protocol twenty lines up (`load_or_mint_secret`) has done
+                # both of these since it was written.
+                os.fsync(handle.fileno())
             os.replace(tmp, self._state_path)
-        except Exception:  # noqa: BLE001
+            published = True
+            _strict_fsync_dir(self._state_path.parent)
+        except Exception as exc:  # noqa: BLE001
             try:
                 tmp.unlink(missing_ok=True)
             except Exception:  # noqa: BLE001
                 pass
+            message = (
+                f"could not persist the worker bootstrap fence at "
+                f"{self._state_path}: {exc}"
+            )
+            if published:
+                # The candidate is now visible but its directory entry was
+                # not confirmed durable. Memory cannot safely choose the old
+                # fence (a restart may read the new one) or the candidate (a
+                # power loss may reveal the old one). Lock this authority
+                # closed until a restart reloads whichever complete state the
+                # filesystem retained.
+                self._fence_error = (
+                    message + "; fence durability is uncertain, so worker admission "
+                    "is locked until the daemon restarts"
+                )
+            raise BootstrapError(message) from exc
+        return live
 
     def issue(
         self,
@@ -324,13 +392,22 @@ class BootstrapAuthority:
             "nonce": secrets.token_urlsafe(24),
         }
         with self._lock:
+            if self._fence_error is not None:
+                raise BootstrapError(self._fence_error)
             # Issuing for an epoch fences every earlier one: recovery mints a
             # new epoch, and the worker from the old one must not be able to
             # register afterwards.
             known = self._current_epoch.get(allocation_id)
             if known is None or epoch > known:
-                self._current_epoch[allocation_id] = int(epoch)
-                self._save_state()
+                epochs = dict(self._current_epoch)
+                epochs[allocation_id] = int(epoch)
+                live = self._save_state(
+                    consumed_expiry=dict(self._consumed_expiry),
+                    current_epoch=epochs,
+                )
+                self._current_epoch = epochs
+                self._consumed_expiry = live
+                self._consumed = set(live)
         return BootstrapCredential(signature=_sign(self._secret, payload), **payload)
 
     def verify(self, credential: BootstrapCredential) -> None:
@@ -343,6 +420,8 @@ class BootstrapAuthority:
         if credential.expires_at <= self._clock():
             raise BootstrapError("credential has expired")
         with self._lock:
+            if self._fence_error is not None:
+                raise BootstrapError(self._fence_error)
             current = self._current_epoch.get(credential.allocation_id)
             if current is not None and credential.epoch < current:
                 # INV-7: an old epoch's worker is refused, by the same rule
@@ -360,6 +439,8 @@ class BootstrapAuthority:
         if self._fence_error is not None:
             raise BootstrapError(self._fence_error)
         with self._lock:
+            if self._fence_error is not None:
+                raise BootstrapError(self._fence_error)
             if credential.nonce in self._consumed:
                 raise BootstrapError("credential has already been used")
             # Signature and expiry first, so a replay of a forged credential
@@ -375,28 +456,78 @@ class BootstrapAuthority:
                     f"STALE_EPOCH: allocation {credential.allocation_id} is at "
                     f"epoch {current}, credential carries {credential.epoch}"
                 )
-            self._consumed.add(credential.nonce)
-            expiry = getattr(self, "_consumed_expiry", None)
-            if expiry is None:
-                expiry = self._consumed_expiry = {}
+            expiry = dict(self._consumed_expiry)
             expiry[credential.nonce] = float(credential.expires_at)
             # Written before the caller is told the credential was accepted:
             # a crash between "burned" and "recorded as burned" is the one
             # ordering that reopens the replay this fence exists to close.
-            self._save_state()
+            epochs = dict(self._current_epoch)
+            live = self._save_state(
+                consumed_expiry=expiry,
+                current_epoch=epochs,
+            )
+            self._current_epoch = epochs
+            self._consumed_expiry = live
+            self._consumed = set(live)
 
     def fence_epoch(self, allocation_id: str, epoch: int) -> None:
         """Declare the epoch now in force, refusing everything older."""
         with self._lock:
-            self._current_epoch[allocation_id] = int(epoch)
-            self._save_state()
+            if self._fence_error is not None:
+                raise BootstrapError(self._fence_error)
+            epochs = dict(self._current_epoch)
+            epochs[allocation_id] = int(epoch)
+            live = self._save_state(
+                consumed_expiry=dict(self._consumed_expiry),
+                current_epoch=epochs,
+            )
+            self._current_epoch = epochs
+            self._consumed_expiry = live
+            self._consumed = set(live)
 
 
-def _as_float(value: object) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except Exception:  # noqa: BLE001
-        return 0.0
+def _validated_state(data: object) -> tuple[dict[str, float], dict[str, int]]:
+    """Decode the durable fence without turning malformed state into empty.
+
+    This file is an authorization record, not a cache. Ignoring a missing or
+    mistyped field would silently un-burn nonces or un-fence epochs, so the
+    writer's exact two-field schema is also the reader's contract.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("the fence root must be an object")
+    if set(data) != {"consumed", "epochs"}:
+        raise ValueError("the fence must contain exactly 'consumed' and 'epochs'")
+    raw_consumed = data["consumed"]
+    raw_epochs = data["epochs"]
+    if not isinstance(raw_consumed, dict):
+        raise ValueError("the fence 'consumed' field must be an object")
+    if not isinstance(raw_epochs, dict):
+        raise ValueError("the fence 'epochs' field must be an object")
+
+    consumed: dict[str, float] = {}
+    for nonce, raw_expiry in raw_consumed.items():
+        if not isinstance(nonce, str) or not nonce:
+            raise ValueError("every consumed nonce must be a non-empty string")
+        if (
+            not isinstance(raw_expiry, (int, float))
+            or isinstance(raw_expiry, bool)
+            or not math.isfinite(float(raw_expiry))
+        ):
+            raise ValueError(f"the expiry for consumed nonce {nonce!r} is invalid")
+        consumed[nonce] = float(raw_expiry)
+
+    epochs: dict[str, int] = {}
+    for allocation_id, raw_epoch in raw_epochs.items():
+        if not isinstance(allocation_id, str) or not allocation_id:
+            raise ValueError("every fenced allocation id must be a non-empty string")
+        if (
+            not isinstance(raw_epoch, int)
+            or isinstance(raw_epoch, bool)
+            or raw_epoch < 0
+        ):
+            raise ValueError(f"the epoch for allocation {allocation_id!r} is invalid")
+        epochs[allocation_id] = raw_epoch
+    return consumed, epochs
 
 
 def write_credential_file(
@@ -434,6 +565,7 @@ __all__ = [
     "CREDENTIAL_PATH_ENV",
     "DEFAULT_TTL_S",
     "SECRET_FILENAME",
+    "STATE_FILENAME",
     "BootstrapAuthority",
     "BootstrapCredential",
     "BootstrapError",

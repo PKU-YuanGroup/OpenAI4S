@@ -792,3 +792,19 @@ def test_a_timeout_still_says_the_kernel_was_reset():
 
     assert "variables from earlier cells were cleared" in published
     assert "/srv/run" not in published
+
+
+def test_a_bootstrap_failure_after_reset_does_not_claim_cluster_work_continues():
+    from openai4s.execution.watchdog import KernelResetUnavailableTimeout
+    from openai4s.server.cell_run import _worker_failure_text
+    from openai4s.server.errors import public_exception
+
+    exc = KernelResetUnavailableTimeout("private bootstrap detail")
+    public, _status = public_exception(
+        exc, surface="cell:worker", error_code="cell_timeout"
+    )
+    published = _worker_failure_text(exc, public)
+
+    assert "variables from earlier cells were cleared" in published
+    assert "replacement could not be initialized" in published
+    assert "cluster" not in published and "allocation" not in published
