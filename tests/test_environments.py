@@ -360,6 +360,28 @@ def test_dispatcher_env_list_and_use(tmp_path, monkeypatch):
     assert "```r" in u_r["note"]
 
 
+def test_env_use_rescans_after_operator_creates_a_conda_environment(
+    tmp_path, monkeypatch
+):
+    roots = tmp_path / "envs"
+    roots.mkdir()
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(roots))
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "d"))
+    E.discover_environments(force=True)
+    created = _make_py_env(roots, "reactiont5", packages=("transformers",))
+
+    disp = build_dispatcher()
+    switched = {}
+    disp.on_env_switch = lambda name: switched.__setitem__("name", name)
+
+    result = disp._m_env_use({"name": "reactiont5"})
+
+    assert result["ok"] is True
+    assert result["env"]["name"] == "reactiont5"
+    assert switched == {"name": "reactiont5"}
+    assert E.get_environment("reactiont5").root == created
+
+
 # --- gateway wiring -------------------------------------------------------
 
 

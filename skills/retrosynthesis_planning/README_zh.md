@@ -56,6 +56,8 @@ audit = audit_routes(routes)
 
 [`external_backends.py`](external_backends.py) 增加了版本化、标准库优先的 subprocess 边界，用于运行可选单步模型。[`syntheseus_worker.py`](syntheseus_worker.py) 可以在独立 Python 或 conda 环境中调用 RetroChimera 或受支持的 Syntheseus wrapper，从而不把 PyTorch、CUDA、checkpoint 和模型专属依赖带入 OpenAI4S core 进程。
 
+[`model_deployment.py`](model_deployment.py) 在不增加包依赖的前提下使 RetroChimera checkpoint 部署可复现：它登记三个公开上游归档，通过受防护的 Host capability 执行可选下载，校验经审阅的字节数、MD5 和本地计算的 SHA-256，拒绝不安全的 ZIP member，通过原子 staging 目录解压，并生成 backend 使用的不含路径 manifest。
+
 默认禁止自动下载 checkpoint。模型运行可以携带不含本地路径的 manifest，记录模型版本、checkpoint 标识与 SHA-256、训练数据集和许可证信息。返回分数始终保留为原始模型输出，并附带科学免责声明；它们不会被转换成实验成功概率。
 
 安装、manifest、协议、错误处理与 Harness replay 详见 [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) 和 [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md)。
@@ -70,9 +72,14 @@ audit = audit_routes(routes)
 | [`route_review.py`](route_review.py) | 稳定路线签名、重复路线来源记录，以及基于反应、产物、前体和末端原料特征的多样性选择。 |
 | [`structural_audit.py`](structural_audit.py) | LLM 解释前的确定性路线树检查。它保持标准库优先，仅在安装 RDKit 时增加解析和元素检查。 |
 | [`external_backends.py`](external_backends.py) | 版本化外部模型请求/响应校验、不含路径的 model manifest、超时与大小限制，以及 `SyntheseusBackend` subprocess adapter。 |
+| [`model_deployment.py`](model_deployment.py) | 纯标准库 RetroChimera checkpoint 注册表、受 Host 防护的下载、归档校验、安全原子解压及不含路径的 manifest 生成。 |
 | [`syntheseus_worker.py`](syntheseus_worker.py) | 用于 RetroChimera 和受支持 Syntheseus 模型类别的隔离可选依赖 worker。它在处理请求前把文件描述符 1 重定向到 stderr（使原生模型输出无法破坏协议），剔除模型 metadata 中的文件系统路径，并只输出一个结构化 JSON 响应。 |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | 外部模型隔离安装、provenance manifest、使用方式、wire error、科学边界和离线 replay 验证的英文说明。 |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | 外部模型后端与可信度说明的中文版本。 |
+| [`MODEL_TASKS.md`](MODEL_TASKS.md) | 六个可独立评测的模型任务、入选开源模型、备选项、许可证、部署证据和科学边界的工程审计。 |
+| [`MODEL_TASKS_zh.md`](MODEL_TASKS_zh.md) | 模型任务工程审计的中文版。 |
+| [`SCENARIO.md`](SCENARIO.md) | 六个模型化科学问题的英文 Scenario 规格；每项分别给出 Science Query、目标、输入、输出、技术、实现、指标和硬性约束，并说明狭义规划的必要子集。 |
+| [`SCENARIO_zh.md`](SCENARIO_zh.md) | 按用户给定科学问题格式编写的六问题中文版，不再写成串行 pipeline。 |
 
 这一层的定向回归测试位于 [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) 和 [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py)。
 
@@ -81,3 +88,4 @@ audit = audit_routes(routes)
 | 目录 | 职责 |
 | --- | --- |
 | [`examples/`](examples/) | 确定性的 aspirin 路线与注释 fixture、由它们生成的 HTML 与报告，以及重建两者的脚本。 |
+| [`scenarios/`](scenarios/) | 六个独立科学场景的详细 Benchmark 规范，分别包含数据冻结、Ground Truth 隔离、阶段、评测、约束和失败案例。 |

@@ -1,11 +1,15 @@
 """Regression tests for retrosynthesis execution scoring and route rendering."""
 
+import hashlib
 import importlib
 import json
 import math
 import os
 import sys
 import textwrap
+import time
+import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +38,29 @@ def worker():
 def backends():
     sys.path.insert(0, str(get_config().skills_dir))
     return importlib.import_module("retrosynthesis_planning.external_backends")
+
+
+@pytest.fixture(scope="module")
+def model_deployment():
+    sys.path.insert(0, str(get_config().skills_dir))
+    return importlib.import_module("retrosynthesis_planning.model_deployment")
+
+
+def _synthetic_checkpoint(model_deployment, archive, members):
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name, content in members:
+            bundle.writestr(name, content)
+    payload = archive.read_bytes()
+    spec = model_deployment.CheckpointSpec(
+        name="synthetic",
+        dataset="synthetic fixture",
+        article_id=1,
+        file_id=2,
+        filename=archive.name,
+        byte_size=len(payload),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(),
+    )
+    return spec
 
 
 def _direct_purchase_route(*, rank=1, score=1.0, stock=True):
@@ -612,6 +639,731 @@ def test_backend_rejects_a_manifest_the_worker_altered(backends, tmp_path):
         backend.single_step("CCON", num_results=1, request_id="tamper-check")
 
     assert caught.value.code == "manifest_mismatch"
+
+
+def test_syntheseus_backend_passes_explicit_worker_environment(backends, tmp_path):
+    backend = backends.SyntheseusBackend(
+        model="RetroChimera",
+        model_dir=tmp_path / "checkpoint",
+        env={"SYNTHESEUS_CACHE_DIR": str(tmp_path / "cache"), "WANDB_MODE": "offline"},
+    )
+
+    assert backend.process.env == {
+        "SYNTHESEUS_CACHE_DIR": str(tmp_path / "cache"),
+        "WANDB_MODE": "offline",
+    }
+
+
+def test_retrochimera_checkpoint_install_is_verified_and_path_free(
+    backends, model_deployment, tmp_path
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment,
+        archive,
+        [("models.json", "{}"), ("submodel/weights.ckpt", b"weights")],
+    )
+
+    model_dir = tmp_path / "model"
+    manifest_path = model_dir / "model-manifest.json"
+    result = model_deployment.extract_checkpoint(
+        archive, model_dir, spec, manifest=manifest_path
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    normalized = backends.ModelManifest.from_mapping(manifest)
+
+    assert result["member_count"] == 2
+    assert result["checkpoint_sha256_scope"] == "source_archive"
+    assert result["manifest"] == str(manifest_path)
+    assert (model_dir / "models.json").read_text(encoding="utf-8") == "{}"
+    assert (model_dir / "submodel" / "weights.ckpt").read_bytes() == b"weights"
+    assert manifest["metadata"]["checkpoint_sha256_scope"] == "source_archive"
+    assert manifest["metadata"]["runtime_integrity"] == "unverified"
+    assert normalized.provenance_status == "incomplete"
+    assert str(tmp_path) not in json.dumps(manifest)
+
+    # Operator-authored metadata cannot promote an archive digest into a claim
+    # that the mutable runtime directory was verified.
+    manifest["metadata"]["runtime_integrity"] = "verified"
+    assert (
+        backends.ModelManifest.from_mapping(manifest).provenance_status == "incomplete"
+    )
+
+
+def test_retrochimera_checkpoint_install_rejects_zip_traversal(
+    model_deployment, tmp_path
+):
+    archive = tmp_path / "unsafe.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment, archive, [("../escaped.ckpt", b"not a checkpoint")]
+    )
+    model_dir = tmp_path / "model"
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError, match="unsafe checkpoint member"
+    ):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert not model_dir.exists()
+    assert not (tmp_path / "escaped.ckpt").exists()
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    [
+        "C:escaped.ckpt",
+        "model/weights.ckpt:alternate-stream",
+        "model/CON.ckpt",
+        "model/COM¹.log",
+        "model/invalid?.ckpt",
+        "model/trailing.",
+    ],
+)
+def test_retrochimera_checkpoint_install_rejects_windows_unsafe_members(
+    model_deployment, tmp_path, member_name
+):
+    archive = tmp_path / "windows-unsafe.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment, archive, [(member_name, b"not a checkpoint")]
+    )
+    model_dir = tmp_path / "model"
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError, match="unsafe checkpoint member"
+    ):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert not model_dir.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="replacing an open file is POSIX-only")
+def test_retrochimera_extraction_is_bound_to_the_verified_archive_snapshot(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment, archive, [("verified.ckpt", b"reviewed bytes")]
+    )
+    replacement = tmp_path / "replacement.zip"
+    with zipfile.ZipFile(replacement, "w") as bundle:
+        bundle.writestr("unverified.ckpt", b"swapped bytes")
+    original_verification = model_deployment._checkpoint_verification
+
+    def swap_path_after_verification(spec, *, size, md5, sha256):
+        result = original_verification(spec, size=size, md5=md5, sha256=sha256)
+        os.replace(replacement, archive)
+        return result
+
+    monkeypatch.setattr(
+        model_deployment, "_checkpoint_verification", swap_path_after_verification
+    )
+    model_dir = tmp_path / "model"
+
+    model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert (model_dir / "verified.ckpt").read_bytes() == b"reviewed bytes"
+    assert not (model_dir / "unverified.ckpt").exists()
+
+
+def test_retrochimera_verified_archive_snapshot_has_no_writable_path(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment, archive, [("verified.ckpt", b"reviewed bytes")]
+    )
+    malicious = tmp_path / "malicious.zip"
+    with zipfile.ZipFile(malicious, "w") as bundle:
+        bundle.writestr("unverified.ckpt", b"EVIL")
+    observed_named_snapshots = []
+    real_mkdtemp = model_deployment.tempfile.mkdtemp
+
+    def inspect_archive_snapshot(*args, **kwargs):
+        snapshots = list(tmp_path.glob(".model.archive-*"))
+        observed_named_snapshots.extend(snapshots)
+        for snapshot in snapshots:
+            snapshot.write_bytes(malicious.read_bytes())
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(model_deployment.tempfile, "mkdtemp", inspect_archive_snapshot)
+    model_dir = tmp_path / "model"
+
+    model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert observed_named_snapshots == []
+    assert (model_dir / "verified.ckpt").read_bytes() == b"reviewed bytes"
+    assert not (model_dir / "unverified.ckpt").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="open-directory replacement is POSIX-only")
+def test_retrochimera_extraction_binds_publication_to_the_staged_directory(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment,
+        archive,
+        [("verified.ckpt", b"reviewed bytes")],
+    )
+    model_dir = tmp_path / "model"
+    moved_stage = tmp_path / "verified-stage-moved-by-watcher"
+    real_replace = model_deployment.os.replace
+
+    def swap_stage_before_publish(source, target):
+        source_path = Path(source)
+        if source_path.name.startswith(".model.stage-"):
+            real_replace(source_path, moved_stage)
+            source_path.mkdir()
+            (source_path / "unverified.ckpt").write_bytes(b"EVIL")
+        return real_replace(source_path, target)
+
+    monkeypatch.setattr(model_deployment.os, "replace", swap_stage_before_publish)
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="destination changed",
+    ):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert (model_dir / "unverified.ckpt").read_bytes() == b"EVIL"
+    assert (moved_stage / "verified.ckpt").read_bytes() == b"reviewed bytes"
+
+
+def test_retrochimera_extraction_verifies_the_published_content_tree(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment,
+        archive,
+        [("verified.ckpt", b"reviewed bytes")],
+    )
+    model_dir = tmp_path / "model"
+    real_replace = model_deployment.os.replace
+
+    def mutate_stage_before_publish(source, target):
+        source_path = Path(source)
+        if source_path.name.startswith(".model.stage-"):
+            (source_path / "unverified.ckpt").write_bytes(b"EVIL")
+        return real_replace(source_path, target)
+
+    monkeypatch.setattr(model_deployment.os, "replace", mutate_stage_before_publish)
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="unexpected file",
+    ):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    # Once publication may have happened, failure leaves the directory for
+    # operator inspection instead of racing a concurrent writer with rmtree.
+    assert (model_dir / "unverified.ckpt").read_bytes() == b"EVIL"
+    assert (model_dir / "verified.ckpt").read_bytes() == b"reviewed bytes"
+
+
+def test_retrochimera_checkpoint_verification_stops_at_the_reviewed_size(
+    model_deployment, tmp_path
+):
+    archive = tmp_path / "oversized.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    with archive.open("ab") as handle:
+        handle.write(b"unreviewed trailing byte")
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="exceeds expected size",
+    ):
+        model_deployment.verify_checkpoint(archive, spec)
+    model_dir = tmp_path / "model"
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="exceeds expected size",
+    ):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert not model_dir.exists()
+    assert list(tmp_path.glob(".model.archive-*")) == []
+    assert list(tmp_path.glob(".model.stage-*")) == []
+
+
+def test_retrochimera_extraction_interrupt_cleans_private_staging(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment, archive, [("weights.ckpt", b"reviewed bytes")]
+    )
+    model_dir = tmp_path / "model"
+
+    def interrupt_copy(source, target, *, expected_size):
+        target.write(source.read(1))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(model_deployment, "_copy_checkpoint_member", interrupt_copy)
+    with pytest.raises(KeyboardInterrupt):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert not model_dir.exists()
+    assert list(tmp_path.glob(".model.archive-*")) == []
+    assert list(tmp_path.glob(".model.stage-*")) == []
+
+
+def test_retrochimera_checkpoint_download_requires_explicit_network_opt_in(
+    model_deployment, tmp_path
+):
+    spec = model_deployment.checkpoint_spec("uspto50k")
+
+    with pytest.raises(PermissionError, match="allow_network=True"):
+        model_deployment.download_checkpoint(spec, tmp_path / spec.filename)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="open-file replacement is POSIX-only")
+def test_existing_checkpoint_fast_path_is_bound_to_the_verified_inode(
+    model_deployment, tmp_path, monkeypatch
+):
+    source = tmp_path / "source.zip"
+    spec = _synthetic_checkpoint(model_deployment, source, [("models.json", "{}")])
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(source.read_bytes())
+    malicious = tmp_path / "malicious.bin"
+    malicious.write_bytes(b"E" * destination.stat().st_size)
+    original_verification = model_deployment._checkpoint_verification
+
+    def replace_after_digest(spec, *, size, md5, sha256):
+        result = original_verification(spec, size=size, md5=md5, sha256=sha256)
+        os.replace(malicious, destination)
+        return result
+
+    monkeypatch.setattr(
+        model_deployment, "_checkpoint_verification", replace_after_digest
+    )
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="path changed during verification",
+    ):
+        model_deployment.download_checkpoint(
+            spec,
+            destination,
+            allow_network=True,
+            web_download=lambda *_args, **_kwargs: pytest.fail(
+                "existing destination unexpectedly invoked the downloader"
+            ),
+        )
+
+    assert destination.read_bytes() == b"E" * source.stat().st_size
+
+
+@pytest.mark.parametrize("allow_network", ["false", 1, None])
+def test_retrochimera_checkpoint_download_rejects_non_boolean_network_opt_in(
+    model_deployment, tmp_path, allow_network
+):
+    spec = model_deployment.checkpoint_spec("uspto50k")
+
+    with pytest.raises(TypeError, match="allow_network must be a boolean"):
+        model_deployment.download_checkpoint(
+            spec,
+            tmp_path / spec.filename,
+            allow_network=allow_network,
+            web_download=lambda *_args, **_kwargs: pytest.fail(
+                "invalid opt-in invoked the downloader"
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("timeout_seconds", "error"),
+    [("60", TypeError), (True, TypeError), (0, ValueError), (math.nan, ValueError)],
+)
+def test_retrochimera_checkpoint_download_rejects_invalid_timeout(
+    model_deployment, tmp_path, timeout_seconds, error
+):
+    spec = model_deployment.checkpoint_spec("uspto50k")
+
+    with pytest.raises(error, match="timeout_seconds must be a positive"):
+        model_deployment.download_checkpoint(
+            spec,
+            tmp_path / spec.filename,
+            allow_network=True,
+            timeout_seconds=timeout_seconds,
+            web_download=lambda *_args, **_kwargs: pytest.fail(
+                "invalid timeout invoked the downloader"
+            ),
+        )
+
+
+def test_retrochimera_checkpoint_download_requires_injected_host_capability(
+    model_deployment, tmp_path
+):
+    spec = model_deployment.checkpoint_spec("uspto50k")
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="web_download=host.web_download",
+    ):
+        model_deployment.download_checkpoint(
+            spec,
+            tmp_path / spec.filename,
+            allow_network=True,
+        )
+
+
+def test_retrochimera_checkpoint_download_uses_guarded_host_capability(
+    model_deployment, tmp_path
+):
+    archive = tmp_path / "source.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    destination = tmp_path / "downloaded.zip"
+    observed = {}
+
+    def web_download(url, path, **kwargs):
+        observed.update(url=url, path=path, **kwargs)
+        with archive.open("rb") as source, open(path, "wb") as target:
+            target.write(source.read())
+        return {"path": path, "bytes": archive.stat().st_size}
+
+    result = model_deployment.download_checkpoint(
+        spec,
+        destination,
+        allow_network=True,
+        timeout_seconds=17,
+        web_download=web_download,
+    )
+
+    assert destination.read_bytes() == archive.read_bytes()
+    assert result["checkpoint"] == spec.name
+    download_path = Path(observed.pop("path"))
+    assert download_path.name == "checkpoint.archive"
+    assert download_path.parent.name.startswith(f".{destination.name}.download-")
+    assert not download_path.parent.exists()
+    assert observed == {
+        "url": spec.download_url,
+        "max_bytes": spec.byte_size,
+        "timeout": 17,
+    }
+
+
+def test_retrochimera_download_supports_a_filesystem_without_hardlinks(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "source.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    destination = tmp_path / "downloaded.zip"
+
+    def web_download(_url, path, **_kwargs):
+        Path(path).write_bytes(archive.read_bytes())
+        return {"path": path, "bytes": archive.stat().st_size}
+
+    def unsupported_link(*_args, **_kwargs):
+        raise OSError(
+            model_deployment.errno.EOPNOTSUPP,
+            "hard links are unavailable",
+        )
+
+    monkeypatch.setattr(model_deployment.os, "link", unsupported_link)
+
+    result = model_deployment.download_checkpoint(
+        spec,
+        destination,
+        allow_network=True,
+        web_download=web_download,
+    )
+
+    assert destination.read_bytes() == archive.read_bytes()
+    assert (
+        result["checkpoint_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    )
+    assert list(tmp_path.glob(".downloaded.zip.download-*")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="open-file replacement is POSIX-only")
+def test_retrochimera_download_binds_publication_to_the_verified_inode(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "source.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    malicious = tmp_path / "swapped.bin"
+    malicious.write_bytes(b"x" * archive.stat().st_size)
+    destination = tmp_path / "downloaded.zip"
+
+    def web_download(_url, path, **_kwargs):
+        Path(path).write_bytes(archive.read_bytes())
+        return {"path": path, "bytes": archive.stat().st_size}
+
+    real_link = model_deployment.os.link
+
+    def swap_before_publication(source, target, **kwargs):
+        # Reproduce a watcher replacing the random staging pathname after the
+        # verified fd was opened but immediately before the publish syscall.
+        os.replace(malicious, source)
+        return real_link(source, target, **kwargs)
+
+    monkeypatch.setattr(model_deployment.os, "link", swap_before_publication)
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="staging path changed",
+    ):
+        model_deployment.download_checkpoint(
+            spec,
+            destination,
+            allow_network=True,
+            web_download=web_download,
+        )
+
+    assert destination.read_bytes() == b"x" * archive.stat().st_size
+    assert list(tmp_path.glob(".downloaded.zip.download-*")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="open-file replacement is POSIX-only")
+def test_retrochimera_download_rechecks_the_destination_after_hashing(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "source.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment,
+        archive,
+        [("weights.ckpt", b"verified")],
+    )
+    destination = tmp_path / "downloaded.zip"
+    malicious = tmp_path / "swapped.bin"
+    malicious.write_bytes(b"E" * archive.stat().st_size)
+
+    def web_download(_url, path, **_kwargs):
+        Path(path).write_bytes(archive.read_bytes())
+        return {"path": path, "bytes": archive.stat().st_size}
+
+    real_hash_stream = model_deployment._hash_stream
+    hash_calls = 0
+
+    def swap_after_second_hash(handle, *, max_bytes=None):
+        nonlocal hash_calls
+        digest = real_hash_stream(handle, max_bytes=max_bytes)
+        hash_calls += 1
+        if hash_calls == 2:
+            # Schedule the pathname replacement at the exact boundary this
+            # regression protects: after the published inode is re-hashed but
+            # before the final path-to-inode identity check.
+            os.replace(malicious, destination)
+        return digest
+
+    monkeypatch.setattr(model_deployment, "_hash_stream", swap_after_second_hash)
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="destination changed",
+    ):
+        model_deployment.download_checkpoint(
+            spec,
+            destination,
+            allow_network=True,
+            web_download=web_download,
+        )
+
+    assert hash_calls == 2
+    assert destination.read_bytes() == b"E" * archive.stat().st_size
+    assert list(tmp_path.glob(".downloaded.zip.download-*")) == []
+
+
+def test_retrochimera_download_interrupt_after_link_preserves_public_path(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "source.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    destination = tmp_path / "downloaded.zip"
+
+    def web_download(_url, path, **_kwargs):
+        Path(path).write_bytes(archive.read_bytes())
+        return {"path": path, "bytes": archive.stat().st_size}
+
+    real_link = model_deployment.os.link
+
+    def publish_then_interrupt(source, target, **kwargs):
+        real_link(source, target, **kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(model_deployment.os, "link", publish_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        model_deployment.download_checkpoint(
+            spec,
+            destination,
+            allow_network=True,
+            web_download=web_download,
+        )
+
+    assert destination.read_bytes() == archive.read_bytes()
+    assert list(tmp_path.glob(".downloaded.zip.download-*")) == []
+
+
+def test_model_manifest_rehashes_before_replacing_existing_output(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    output = tmp_path / "model-manifest.json"
+    output.write_bytes(b"previous-good-manifest")
+    real_link = model_deployment.os.link
+
+    def mutate_after_link(source, target, **kwargs):
+        real_link(source, target, **kwargs)
+        Path(source).write_bytes(b"E" * Path(source).stat().st_size)
+
+    monkeypatch.setattr(model_deployment.os, "link", mutate_after_link)
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="manifest bytes changed before publication",
+    ):
+        model_deployment.write_model_manifest(output, spec, "a" * 64)
+
+    assert output.read_bytes() == b"previous-good-manifest"
+    assert list(tmp_path.glob(".model-manifest.json.manifest-*")) == []
+
+
+def test_model_manifest_supports_a_filesystem_without_hardlinks(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    output = tmp_path / "model-manifest.json"
+    output.write_bytes(b"previous-good-manifest")
+
+    def unsupported_link(*_args, **_kwargs):
+        raise OSError(
+            model_deployment.errno.EOPNOTSUPP,
+            "hard links are unavailable",
+        )
+
+    monkeypatch.setattr(model_deployment.os, "link", unsupported_link)
+
+    result = model_deployment.write_model_manifest(output, spec, "a" * 64)
+
+    assert result == output
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["checkpoint_sha256"] == "a" * 64
+    assert list(tmp_path.glob(".model-manifest.json.manifest-*")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="open-file replacement is POSIX-only")
+def test_model_manifest_does_not_report_success_after_publish_path_swap(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    output = tmp_path / "model-manifest.json"
+    output.write_bytes(b"previous-good-manifest")
+    malicious = tmp_path / "malicious-manifest.json"
+    malicious.write_bytes(b"EVIL")
+    real_replace = model_deployment.os.replace
+
+    def swap_publish_link(source, target):
+        if Path(source).name == "publish.link":
+            real_replace(malicious, source)
+        return real_replace(source, target)
+
+    monkeypatch.setattr(model_deployment.os, "replace", swap_publish_link)
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="manifest destination changed during publication",
+    ):
+        model_deployment.write_model_manifest(output, spec, "a" * 64)
+
+    assert output.read_bytes() == b"EVIL"
+    assert list(tmp_path.glob(".model-manifest.json.manifest-*")) == []
+
+
+def test_retrochimera_manifest_failure_never_publishes_the_model_directory(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    model_dir = tmp_path / "model"
+
+    def fail_manifest(*_args, **_kwargs):
+        raise OSError("simulated manifest failure")
+
+    monkeypatch.setattr(model_deployment, "write_model_manifest", fail_manifest)
+    with pytest.raises(OSError, match="simulated manifest failure"):
+        model_deployment.extract_checkpoint(
+            archive,
+            model_dir,
+            spec,
+            manifest=model_dir / "model-manifest.json",
+        )
+
+    assert not model_dir.exists()
+    assert list(tmp_path.glob(".model.stage-*")) == []
+
+
+def test_retrochimera_post_publish_interrupt_does_not_rmtree_the_public_path(
+    model_deployment, tmp_path, monkeypatch
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(
+        model_deployment,
+        archive,
+        [("verified.ckpt", b"reviewed bytes")],
+    )
+    model_dir = tmp_path / "model"
+    real_replace = model_deployment.os.replace
+
+    def publish_then_interrupt(source, target):
+        real_replace(source, target)
+        if Path(source).name.startswith(".model.stage-"):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(model_deployment.os, "replace", publish_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        model_deployment.extract_checkpoint(archive, model_dir, spec)
+
+    assert (model_dir / "verified.ckpt").read_bytes() == b"reviewed bytes"
+    assert list(tmp_path.glob(".model.stage-*")) == []
+
+
+def test_retrochimera_transactional_manifest_must_live_inside_model_directory(
+    model_deployment, tmp_path
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    model_dir = tmp_path / "model"
+
+    with pytest.raises(ValueError, match="inside the new model directory"):
+        model_deployment.extract_checkpoint(
+            archive,
+            model_dir,
+            spec,
+            manifest=tmp_path / "external-manifest.json",
+        )
+
+    assert not model_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    ["model-manifest.json", "models/checkpoint/model-manifest.json"],
+)
+def test_retrochimera_relative_manifest_paths_are_not_repeated(
+    model_deployment, tmp_path, monkeypatch, manifest
+):
+    archive = tmp_path / "checkpoint.zip"
+    spec = _synthetic_checkpoint(model_deployment, archive, [("models.json", "{}")])
+    monkeypatch.chdir(tmp_path)
+    model_dir = Path("models/checkpoint")
+
+    result = model_deployment.extract_checkpoint(
+        archive,
+        model_dir,
+        spec,
+        manifest=manifest,
+    )
+
+    expected = model_dir / "model-manifest.json"
+    assert result["manifest"] == str(expected)
+    assert expected.is_file()
+    assert not (model_dir / "models").exists()
 
 
 def test_worker_metadata_redacts_paths_by_value_not_by_key_name(worker):

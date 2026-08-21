@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import sys
 from pathlib import Path
 
 import pytest
@@ -59,7 +60,10 @@ def _stub_urlopen(monkeypatch, response_factory, recorder=None):
     a function the module no longer calls: they would pass on a code path that
     does not exist.
     """
-    monkeypatch.setattr(webtools, "requests", None, raising=False)
+    # Production imports this optional dependency inside the call. Patching a
+    # module attribute would not intercept that import when the test runner has
+    # requests installed, and could let this offline test contact the network.
+    monkeypatch.setitem(sys.modules, "requests", None)
     import urllib.request
 
     def _fake(request, timeout=None):  # noqa: ANN001
@@ -264,18 +268,319 @@ def test_a_download_reports_a_workspace_relative_path_and_its_digest(
     ).read_bytes() == b"PK\x03\x04payload"
 
 
+def test_a_download_streams_instead_of_collecting_the_response(monkeypatch, tmp_path):
+    """Checkpoint-sized bodies must not be joined in daemon memory first."""
+
+    body = b"checkpoint-chunk" * 10_000
+    _stub_urlopen(monkeypatch, lambda _r: _Response(body))
+    monkeypatch.setattr(
+        webtools,
+        "_read_capped",
+        lambda *_a, **_k: pytest.fail("download used the in-memory fetch collector"),
+    )
+
+    destination = tmp_path / "checkpoint.zip"
+    result = webtools.web_download(
+        "https://example.test/checkpoint.zip",
+        destination,
+        max_bytes=len(body),
+    )
+
+    assert destination.read_bytes() == body
+    assert result["bytes"] == len(body)
+    assert result["sha256"] == hashlib.sha256(body).hexdigest()
+
+
+def test_the_streaming_copier_applies_backpressure_between_reads():
+    chunks = [b"first", b"second"]
+
+    class _BackpressureReader:
+        def __init__(self):
+            self.index = 0
+            self.may_read = True
+
+        def read(self, size=-1):  # noqa: ANN001
+            assert size == 64 * 1024
+            assert self.may_read, "the next chunk was read before the last was written"
+            if self.index == len(chunks):
+                return b""
+            chunk = chunks[self.index]
+            self.index += 1
+            self.may_read = False
+            return chunk
+
+    reader = _BackpressureReader()
+
+    class _BackpressureWriter(io.BytesIO):
+        def write(self, data):  # noqa: ANN001
+            written = super().write(data)
+            reader.may_read = True
+            return written
+
+    writer = _BackpressureWriter()
+
+    size, digest = webtools._copy_capped(reader, writer, 100)
+
+    assert writer.getvalue() == b"firstsecond"
+    assert size == len(b"firstsecond")
+    assert digest == hashlib.sha256(b"firstsecond").hexdigest()
+
+
+def test_a_download_binds_publication_to_the_streamed_inode(monkeypatch, tmp_path):
+    body = b"reviewed response bytes"
+    _stub_urlopen(monkeypatch, lambda _r: _Response(body))
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+    malicious = tmp_path / "swapped.bin"
+    malicious.write_bytes(b"E" * len(body))
+    real_link = webtools.os.link
+
+    def swap_before_link(source, target, **kwargs):
+        webtools.os.replace(malicious, source)
+        return real_link(source, target, **kwargs)
+
+    monkeypatch.setattr(webtools.os, "link", swap_before_link)
+
+    with pytest.raises(RuntimeError, match="staging path changed"):
+        webtools.web_download(
+            "https://example.test/checkpoint.zip",
+            destination,
+            max_bytes=len(body),
+        )
+
+    assert destination.read_bytes() == b"previous-good-checkpoint"
+    assert list(tmp_path.glob(".checkpoint.zip.download-*")) == []
+
+
+def test_a_download_rehashes_the_staged_inode_before_replacing_destination(
+    monkeypatch, tmp_path
+):
+    body = b"reviewed response bytes"
+    _stub_urlopen(monkeypatch, lambda _r: _Response(body))
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+    real_link = webtools.os.link
+
+    def mutate_after_link(source, target, **kwargs):
+        real_link(source, target, **kwargs)
+        Path(source).write_bytes(b"E" * len(body))
+
+    monkeypatch.setattr(webtools.os, "link", mutate_after_link)
+
+    with pytest.raises(RuntimeError, match="bytes changed before publication"):
+        webtools.web_download(
+            "https://example.test/checkpoint.zip",
+            destination,
+            max_bytes=len(body),
+        )
+
+    assert destination.read_bytes() == b"previous-good-checkpoint"
+    assert list(tmp_path.glob(".checkpoint.zip.download-*")) == []
+
+
+def test_a_download_falls_back_when_the_filesystem_has_no_hardlinks(
+    monkeypatch, tmp_path
+):
+    body = b"complete response on a hardlink-free filesystem"
+    _stub_urlopen(monkeypatch, lambda _r: _Response(body))
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+
+    def unsupported_link(*_args, **_kwargs):
+        raise OSError(webtools.errno.EOPNOTSUPP, "hard links are unavailable")
+
+    monkeypatch.setattr(webtools.os, "link", unsupported_link)
+
+    result = webtools.web_download(
+        "https://example.test/checkpoint.zip",
+        destination,
+        max_bytes=len(body),
+    )
+
+    assert destination.read_bytes() == body
+    assert result["sha256"] == hashlib.sha256(body).hexdigest()
+    assert list(tmp_path.glob(".checkpoint.zip.download-*")) == []
+
+
+def test_a_post_publish_interrupt_does_not_unlink_the_public_path(
+    monkeypatch, tmp_path
+):
+    body = b"complete streamed response"
+    _stub_urlopen(monkeypatch, lambda _r: _Response(body))
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+    real_replace = webtools.os.replace
+
+    def publish_then_interrupt(source, target):
+        real_replace(source, target)
+        if Path(target) == destination:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(webtools.os, "replace", publish_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        webtools.web_download(
+            "https://example.test/checkpoint.zip",
+            destination,
+            max_bytes=len(body),
+        )
+
+    # The call cannot know whether a concurrent process replaced this path
+    # after publication. Leaving the published inode is safer than a
+    # check-then-unlink rollback that can delete the concurrent file.
+    assert destination.read_bytes() == body
+    assert list(tmp_path.glob(".checkpoint.zip.download-*")) == []
+
+
+def test_a_download_streams_through_the_optional_requests_transport(
+    monkeypatch, tmp_path
+):
+    body = b"requests-checkpoint-chunk" * 10_000
+    closed = []
+
+    class _RequestsResponse:
+        raw = _Response(body)
+        is_redirect = False
+        status_code = 200
+        headers = {"Content-Type": "application/zip"}
+        url = "https://example.test/checkpoint.zip"
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        def close(self):
+            closed.append(True)
+
+    class _Requests:
+        @staticmethod
+        def request(*_args, **kwargs):
+            assert kwargs["stream"] is True
+            assert kwargs["allow_redirects"] is False
+            return _RequestsResponse()
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests())
+    monkeypatch.setattr(
+        webtools,
+        "_read_capped",
+        lambda *_a, **_k: pytest.fail("download used the in-memory fetch collector"),
+    )
+    destination = tmp_path / "checkpoint.zip"
+
+    result = webtools.web_download(
+        "https://example.test/checkpoint.zip",
+        destination,
+        max_bytes=len(body),
+    )
+
+    assert destination.read_bytes() == body
+    assert result["sha256"] == hashlib.sha256(body).hexdigest()
+    assert closed == [True]
+
+
+def test_a_cancelled_download_preserves_the_previous_file(monkeypatch, tmp_path):
+    class _Interrupted(_Response):
+        def __init__(self):
+            super().__init__(b"")
+            self.calls = 0
+
+        def read(self, size=-1):  # noqa: ANN001
+            self.calls += 1
+            if self.calls == 1:
+                return b"partial"
+            raise KeyboardInterrupt
+
+    _stub_urlopen(monkeypatch, lambda _request: _Interrupted())
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+
+    with pytest.raises(KeyboardInterrupt):
+        webtools.web_download("https://example.test/checkpoint.zip", destination)
+
+    assert destination.read_bytes() == b"previous-good-checkpoint"
+    assert list(tmp_path.glob(".checkpoint.zip.*.part")) == []
+
+
+def test_requests_http_error_preserves_the_previous_file(monkeypatch, tmp_path):
+    closed = []
+
+    class _ErrorResponse:
+        raw = _Response(b"server error body")
+        is_redirect = False
+        status_code = 503
+        headers = {"Content-Type": "text/plain"}
+        url = "https://example.test/checkpoint.zip"
+
+        @staticmethod
+        def raise_for_status():
+            raise RuntimeError("503 Service Unavailable")
+
+        def close(self):
+            closed.append(True)
+
+    class _Requests:
+        @staticmethod
+        def request(*_args, **_kwargs):
+            return _ErrorResponse()
+
+    monkeypatch.setitem(sys.modules, "requests", _Requests())
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+
+    with pytest.raises(RuntimeError, match="503 Service Unavailable"):
+        webtools.web_download("https://example.test/checkpoint.zip", destination)
+
+    assert destination.read_bytes() == b"previous-good-checkpoint"
+    assert list(tmp_path.glob(".checkpoint.zip.*.part")) == []
+    assert closed == [True]
+
+
+def test_stdlib_http_error_preserves_the_previous_file(monkeypatch, tmp_path):
+    import urllib.error
+
+    def missing(request):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    _stub_urlopen(monkeypatch, missing)
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+
+    with pytest.raises(urllib.error.HTTPError):
+        webtools.web_download("https://example.test/checkpoint.zip", destination)
+
+    assert destination.read_bytes() == b"previous-good-checkpoint"
+    assert list(tmp_path.glob(".checkpoint.zip.*.part")) == []
+
+
+def test_an_oversized_download_preserves_the_previous_file(monkeypatch, tmp_path):
+    body = b"x" * 1001
+    _stub_urlopen(monkeypatch, lambda _r: _Response(body))
+    destination = tmp_path / "checkpoint.zip"
+    destination.write_bytes(b"previous-good-checkpoint")
+
+    with pytest.raises(webtools.ResponseTooLarge):
+        webtools.web_download(
+            "https://example.test/checkpoint.zip",
+            destination,
+            max_bytes=1000,
+        )
+
+    assert destination.read_bytes() == b"previous-good-checkpoint"
+    assert list(tmp_path.glob(".checkpoint.zip.*.part")) == []
+
+
 def test_an_oversized_download_is_a_soft_error_not_a_crash(monkeypatch, tmp_path):
     """The worker turns a single-key `{"error": ...}` into a RuntimeError the
     cell can catch. A traceback out of the dispatcher is not that contract."""
 
-    class _Big(io.RawIOBase):
+    class _Big(_Response):
+        def __init__(self):
+            super().__init__(b"")
+
         def read(self, size=-1):  # noqa: ANN001
             return b"x" * (size if size and size > 0 else 65536)
 
-    monkeypatch.setattr(webtools, "requests", None, raising=False)
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Big())
+    _stub_urlopen(monkeypatch, lambda _request: _Big())
     workspace = _workspace(tmp_path)
     result = WebDownloadTool().execute(
         workspace,

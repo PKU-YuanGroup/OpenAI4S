@@ -181,6 +181,83 @@ def test_retrosynthesis_skill_is_searchable():
     assert any(hit["name"] == "retrosynthesis_planning" for hit in hits)
 
 
+def test_model_backed_reaction_tasks_are_separate_discoverable_skills():
+    skills = SkillLoader().discover()
+    expected = {
+        "single-step-retrosynthesis": "RetroChimera",
+        "retrosynthesis_planning": "AiZynthFinder",
+        "reaction-forward-prediction": "ReactionT5v2-forward",
+        "reaction-atom-mapping": "RXNMapper",
+        "reaction-condition-recommendation": "Parrot",
+        "reaction-yield-estimation": "ReactionT5v2-yield",
+    }
+
+    for name, model in expected.items():
+        assert name in skills
+        body = skills[name].doc
+        assert model in body
+
+    assert "complete reaction" in skills["reaction-atom-mapping"].description
+    assert "fully specified" in skills["reaction-yield-estimation"].description
+    assert "Do not recurse" in skills["single-step-retrosynthesis"].doc
+
+
+def test_science_scenario_specifies_six_independent_problem_contracts():
+    scenario = (
+        get_config().skills_dir / "retrosynthesis_planning" / "SCENARIO_zh.md"
+    ).read_text(encoding="utf-8")
+
+    assert scenario.count("### Science Query") == 6
+    for heading in (
+        "## Problem 1. 单步逆合成前体生成",
+        "## Problem 2. 多步逆合成路线规划",
+        "## Problem 3. 反应原子映射与反应中心识别",
+        "## Problem 4. 正向反应产物预测与 round-trip 验证",
+        "## Problem 5. 反应条件推荐",
+        "## Problem 6. 反应收率估计",
+        "## 全 Scenario 的硬性约束",
+    ):
+        assert heading in scenario
+    assert "不是一个单模型问题" in scenario
+    assert "不应被写成一条固定 pipeline" in scenario
+
+
+def test_six_detailed_science_scenarios_are_independent_benchmark_specs():
+    scenario_dir = get_config().skills_dir / "retrosynthesis_planning" / "scenarios"
+    expected = (
+        "01_single_step_retrosynthesis.md",
+        "02_multistep_route_planning.md",
+        "03_atom_mapping.md",
+        "04_forward_prediction.md",
+        "05_condition_recommendation.md",
+        "06_yield_estimation.md",
+    )
+    required_sections = (
+        "## Scenario Overview",
+        "## 数据可获取性与 Benchmark 构建方案",
+        "## Science Query",
+        "## 阶段介绍",
+        "## Input Data 与 Ground Truth 组织",
+        "## `intermediate_results.json` 最低要求",
+        "## 建议的 Reference Repository 结构",
+        "## 评估自动化实现难度",
+        "## 评测指标",
+        "## 代码与数据的硬性约束",
+        "## Domain-Specific Failure Cases",
+        "## 参考文献与一手资源",
+    )
+
+    for filename in expected:
+        body = (scenario_dir / filename).read_text(encoding="utf-8")
+        for heading in required_sections:
+            assert heading in body, f"{filename} is missing {heading}"
+        assert "private_evaluator/" in body
+        assert "Ground Truth" in body
+
+    assert (scenario_dir / "README.md").exists()
+    assert (scenario_dir / "README_zh.md").exists()
+
+
 def test_aspirin_example_dashboard_is_documented():
     skill_root = get_config().skills_dir / "retrosynthesis_planning"
     skill_doc = (skill_root / "SKILL.md").read_text(encoding="utf-8")
