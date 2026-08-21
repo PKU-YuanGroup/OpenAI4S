@@ -9,6 +9,7 @@ import pytest
 from openai4s.config import Config, LLMConfig
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelBusyError
+from openai4s.kernel import manager as manager_mod
 from openai4s.kernel.environment import build_kernel_environment
 
 
@@ -133,6 +134,62 @@ def test_variable_inspector_limit_validation_is_local():
         with pytest.raises(TypeError, match="integer"):
             kernel.inspect_variables(limit=True)
         assert kernel.execute("print('aligned')")["stdout"].strip() == "aligned"
+
+
+class _InitializationFailureTransport:
+    """A transport peer that fails before a kernel candidate can be published."""
+
+    def __init__(self, failure: str) -> None:
+        self.failure = failure
+        self.process = None
+        self.stderr_tail = None
+        self.closed = False
+        self.killed = False
+        self._released = threading.Event()
+
+    def write_line(self, _line: str) -> None:
+        if self.failure == "write":
+            raise OSError("initialization write failed")
+
+    def read_line(self) -> str:
+        if self.failure == "read":
+            raise OSError("initialization read failed")
+        self._released.wait(timeout=5)
+        return ""
+
+    def alive(self) -> bool:
+        return not self.closed
+
+    def interrupt(self) -> bool:
+        return False
+
+    def kill(self) -> None:
+        self.killed = True
+        self._released.set()
+
+    def close(self, *, graceful: bool = True) -> None:
+        self.closed = True
+        self._released.set()
+
+
+@pytest.mark.parametrize("failure", ["write", "read"])
+def test_attestation_initialization_errors_close_the_transport(failure):
+    transport = _InitializationFailureTransport(failure)
+    with pytest.raises(RuntimeError, match="attestation initialization") as caught:
+        Kernel(transport_factory=lambda: transport)
+    assert isinstance(caught.value.__cause__, OSError)
+    assert transport.closed is True
+
+
+def test_attestation_initialization_deadline_kills_the_blocked_transport(
+    monkeypatch,
+):
+    transport = _InitializationFailureTransport("block")
+    monkeypatch.setattr(manager_mod, "_SKILL_SIDECAR_INITIALIZATION_TIMEOUT_S", 0.01)
+    with pytest.raises(RuntimeError, match="deadline"):
+        Kernel(transport_factory=lambda: transport)
+    assert transport.killed is True
+    assert transport.closed is True
 
 
 def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):

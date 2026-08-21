@@ -42,6 +42,21 @@ import threading
 import time
 import traceback
 
+# A remote source-checkout worker is launched by its absolute script path with
+# a deliberately sparse environment.  Python then puts `openai4s/kernel`, not
+# the repository root, on `sys.path`, so mandatory audit-hook and Host imports
+# fail before the first Cell.  Derive the package parent from the trusted
+# executable path itself; never rely on an inherited, attacker-selectable
+# PYTHONPATH to make the worker importable.
+_TRUSTED_PACKAGE_PARENT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+)
+if (
+    os.path.isfile(os.path.join(_TRUSTED_PACKAGE_PARENT, "openai4s", "__init__.py"))
+    and _TRUSTED_PACKAGE_PARENT not in sys.path
+):
+    sys.path.insert(0, _TRUSTED_PACKAGE_PARENT)
+
 MAX_OUTPUT = 1_000_000  # 1M-character head cap on captured cell output
 _DISCARD_BUDGET = 8  # bounded discard for desync
 _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap
@@ -505,11 +520,12 @@ def _publish_skill_sidecar_event(
     _cell_state=_ACTIVE_CELL_ID,
     _frame_count=_SKILL_LOAD_PROTOCOL_FRAMES,
 ) -> None:
-    """Publish one audit-attested import before user code can revoke it.
+    """Publish one audit-observed import as a private diagnostic.
 
     The CPython audit hook calls this sink only when the caller's code object is
-    the loader registered by a system/recovery bootstrap Cell. The sink itself
-    is never placed in the persistent user namespace.
+    the loader registered by a system/recovery bootstrap Cell. This is not an
+    attestation boundary: arbitrary Python in the same interpreter can recover
+    the sink/signing objects, so the manager and recorder fail closed on it.
     """
 
     payload = dict(event) if type(event) is dict else {}
@@ -667,12 +683,11 @@ def _install_host(ns: dict) -> None:
         # A marker, but only for a worker that was *supposed* to have a host.
         #
         # `log` frames are dropped by the manager, so this failure was silent
-        # where it matters most: a remote worker runs
-        # `python -u <path>/kernel/worker.py`, so `sys.path[0]` is the kernel
-        # directory, `import openai4s.sdk.host` raises on a source checkout,
-        # and the cell then ran with no `host` at all and nothing said so.
-        # Raising where `host` is *used* turns that into a message naming
-        # PYTHONPATH.
+        # where it matters most. A direct worker launch now derives the package
+        # root from this script's trusted path, but a partial or damaged remote
+        # installation can still lack the SDK. Raise where `host` is *used* so
+        # that failure is visible rather than silently running a diminished
+        # kernel.
         #
         # Scoped to the remote case because absence is a real contract
         # elsewhere: the Jupyter bridge deliberately exposes no `host` (it is
@@ -682,7 +697,7 @@ def _install_host(ns: dict) -> None:
         if (os.environ.get(_CONNECT_ENV) or "").strip():
             detail = (
                 f"the host SDK could not be imported in this worker ({e}). "
-                "A remote worker needs openai4s importable on its PYTHONPATH; "
+                "Install a complete OpenAI4S package beside kernel/worker.py; "
                 "see docs/team-server.md."
             )
 
@@ -1251,12 +1266,12 @@ def _inspect_namespace(limit: int) -> dict:
 
 
 def _install_audit_hook(event_key: bytes) -> bool:
-    """Arm the in-kernel dlopen guard and Skill-load attestation hook.
+    """Arm the in-kernel dlopen guard and Skill-load diagnostic hook.
 
     Runs inside THIS worker process — an audit hook only sees events raised in
     its own interpreter. ``OPENAI4S_SAFETY_AUDIT_HOOK=0`` disables the dlopen
-    policy, but not the result-integrity event channel. Best-effort: a failure
-    here must never stop the kernel from serving cells.
+    policy, but not the diagnostic event channel. Best-effort: a failure here
+    must never stop the kernel from serving cells.
     """
     dlopen_enabled = os.environ.get(
         "OPENAI4S_SAFETY_AUDIT_HOOK", "1"
@@ -1274,9 +1289,9 @@ def _install_audit_hook(event_key: bytes) -> bool:
             skill_event_origin=skill_event_origin,
             skill_event_key=event_key,
         )
-        # The audit hook owns the sole live publisher reference. In particular,
-        # ``import __main__`` from a Cell must not expose a callable that can
-        # manufacture manager protocol frames.
+        # Remove the convenient global name, while making no security claim:
+        # Python introspection can still recover the hook's live references.
+        # The Host therefore rejects these frames as recovery evidence.
         globals().pop("_publish_skill_sidecar_event", None)
         return True
     except Exception as e:  # noqa: BLE001
@@ -1309,8 +1324,9 @@ def _initialize_manager_attestation() -> bool:
         event_key = bytes.fromhex(raw_key)
     except ValueError:
         event_key = b""
-    # Drop the protocol document before any user frame exists. The only live
-    # key reference after this helper returns is inside the hidden audit hook.
+    # Drop the convenient protocol references before any user frame exists.
+    # The hook still retains the key inside the same interpreter, so this is
+    # hygiene rather than a security boundary.
     request.clear()
     raw_line = ""
     raw_key = ""

@@ -128,6 +128,7 @@ _INJECTION_NAMES = frozenset(
         "PERL5OPT",
         "PYTHONHOME",
         "PYTHONINSPECT",
+        "PYTHONPATH",
         "PYTHONSTARTUP",
         "R_ENVIRON",
         "R_ENVIRON_USER",

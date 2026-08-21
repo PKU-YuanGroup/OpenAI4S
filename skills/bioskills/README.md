@@ -82,12 +82,14 @@ The imported scripts are examples and are never auto-executed by discovery or
 search. If an agent chooses to run one, the normal kernel/shell approval and OS
 sandbox posture still apply to that execution. Many vendored examples make
 raw network calls with `requests`, `urllib`, `curl`, or `wget`; none of those
-calls pass through the Host egress allowlist or SSRF checks. The narrow Python
-AST scan in `tests/test_egress_surface.py` freezes two stdlib `urllib` examples
-only; it is not an inventory of the collection's complete raw-network surface.
-Review or adapt a recipe before execution and prefer `host.web_fetch` /
-`host.web_download` for network access. Scientific claims in a recipe are
-guidance, not a validated result for a new dataset.
+calls pass through the Host egress allowlist or SSRF checks. The conservative
+cross-language scan in `tests/test_egress_surface.py` inventories explicit
+Python/R/shell/recipe network patterns and fails when that lower bound moves;
+it is detection, not runtime enforcement, and third-party libraries or
+scientific CLIs may still hide additional egress. Review or adapt a recipe
+before execution and prefer `host.web_fetch` / `host.web_download` for network
+access. Scientific claims in a recipe are guidance, not a validated result for
+a new dataset.
 
 ## Reproducing the import
 

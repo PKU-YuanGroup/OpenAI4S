@@ -602,6 +602,11 @@ class _FakeTransport:
         if kind == "shutdown":
             self.closed = True
             return
+        if kind == "initialize":
+            self._pending.append(
+                json.dumps({"type": "initialized", "id": frame.get("id")}) + "\n"
+            )
+            return
         # The daemon's bootstrap probes the fresh kernel by printing a
         # one-shot marker followed by JSON, so a peer that answers nothing
         # fails the spawn. Echo the marker the daemon just sent -- that is
@@ -677,6 +682,9 @@ def test_a_cluster_session_gets_a_kernel_over_its_workers_transport(daemon):
         "the session's kernel is not on its worker's socket -- cells would run "
         "on the daemon while the cluster job holds a GPU"
     )
+    initialization = json.loads(transport.sent[0])
+    assert initialization["type"] == "initialize"
+    assert len(initialization["skill_attestation_key"]) == 64
     assert manager.runtime(session_id).kernel_ready is True
     assert manager.readiness(session_id).ready is True
 

@@ -158,12 +158,11 @@
       "original_proposal": "内置科研 Skill 的统一网络边界",
       "integrated": "P0-2",
       "plan_conclusion": "纳入",
-      "status": "closed",
-      "status_note": "one network boundary for the bundled research skills: three of them reached for raw urllib because host.web_fetch could not express a HEAD probe, a contactable User-Agent or a binary download, so part of the product's own traffic went around the fence built for it. The capability now expresses all three and the reachable-network surface is frozen module by module.",
+      "status": "open",
+      "status_note": "The original three first-party research skills moved to guarded Host APIs, but the newly imported pinned bioSkills collection contains raw-network Python, shell, R, and recipe-code paths that are not covered by the Host allowlist/SSRF boundary. The merge review broadened the detection gate from two urllib files to a fingerprinted inventory of common clients including requests, Bio.Entrez, curl, and wget, but detection is not enforcement. The unified-boundary proposal remains open until those recipes are runtime-confined.",
       "tests": "tests/test_host_network_capability.py,tests/test_egress_surface.py,tests/test_egress.py",
       "browser_evidence": "",
-      "external_evidence": "",
-      "evidence_digest": "635a72aa2b033cb0158f788c721db54f8410225337d76c95f23fbcd9de9cfc6f"
+      "external_evidence": ""
     },
     {
       "source": "R2",

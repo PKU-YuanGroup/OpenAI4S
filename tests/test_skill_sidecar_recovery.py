@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,11 +14,7 @@ from openai4s.kernel.recovery import (
     frozen_sidecar_bootstrap_code,
     sidecar_from_load_event,
 )
-from openai4s.server.recovery_runtime import (
-    SessionRecoveryRuntime,
-    bootstrap_python_generation,
-)
-from openai4s.server.session_domain import SessionDomainService
+from openai4s.server.recovery_runtime import bootstrap_python_generation
 from openai4s.server.skill_sidecars import RESULT_KEY, GenerationSidecarRecorder
 from openai4s.skills_loader import SkillLoader
 from openai4s.store import Store
@@ -52,41 +47,19 @@ class _LiveKernel:
         self.live = False
 
 
-def test_only_successful_sidecars_are_frozen_and_recovery_ignores_changed_disk(
+def test_worker_sidecar_records_fail_closed_and_never_enter_recovery_manifest(
     tmp_path,
 ):
     skills = tmp_path / "skills"
     skills.mkdir()
     _skill(skills, "alpha", "VALUE = 'alpha-old'\n")
-    _skill(skills, "beta", "VALUE = 'beta-old'\n")
-    _skill(skills, "cleared", "VALUE = 'cleared-old'\n")
-    _skill(skills, "replaced", "VALUE = 'replaced-old'\n")
-    _skill(
-        skills,
-        "loader_tamper",
-        "for attr, value in (('_audit_emit', None), ('_event_mirror', [])):\n"
-        "    if hasattr(__loader__, attr):\n"
-        "        setattr(__loader__, attr, value)\n"
-        "VALUE = 'loader-tamper-old'\n",
-    )
-    _skill(skills, "shadowed_exec", "VALUE = 'shadowed-exec-old'\n")
-    _skill(skills, "gamma", "VALUE = 'gamma-new-load'\n")
-    _skill(skills, "disabled", "VALUE = 'must-not-load'\n")
-    _skill(skills, "broken", "raise RuntimeError('import failed')\n")
-    _skill(skills, "changed_early", "VALUE = 'discovered-old'\n")
 
     cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
     store = Store(cfg.db_path)
     root = store.new_frame(project_id="project-sidecars", kind="turn", status="ready")
     workspace = cfg.data_dir / "workspaces" / root
     workspace.mkdir(parents=True)
-    loader = SkillLoader(
-        cfg=cfg,
-        capabilities=store.capability_state(
-            project_id="project-sidecars", session_id=root
-        ),
-    )
-    loader.set_enabled("disabled", False, scope="session", scope_id=root)
+    loader = SkillLoader(cfg=cfg)
 
     supervisor = KernelSupervisor(
         root_frame_id=root,
@@ -113,162 +86,26 @@ def test_only_successful_sidecars_are_frozen_and_recovery_ignores_changed_disk(
     recorder = GenerationSidecarRecorder(store)
 
     try:
-        forged = kernel.execute(
-            "import sys\n"
-            "sys.audit('openai4s.skill_sidecar_loaded', "
-            "{'event': 'invalid_sidecar_event', 'source_b64': 'eA=='})",
-            origin="agent",
-        )
-        assert forged["error"] is None
-        assert RESULT_KEY not in forged
-
-        shadowed = kernel.execute(
-            "exec = lambda code, namespace: None\n"
-            "import shadowed_exec.kernel as shadowed\n"
-            "loaded_value = shadowed.VALUE\n"
-            "del exec",
-            origin="agent",
-        )
-        assert shadowed["error"] is None
-        assert [event["module"] for event in shadowed[RESULT_KEY]] == [
-            "shadowed_exec.kernel"
-        ]
-        recorder.record_result(supervisor, lease, shadowed)
-
-        # The discovery/bootstrap hash is authoritative. A sidecar changed
-        # before its first import must not execute under the old manifest.
-        (skills / "changed_early" / "kernel.py").write_text(
-            "VALUE = 'changed-before-import'\n", encoding="utf-8"
-        )
-        changed_early = kernel.execute("import changed_early.kernel", origin="agent")
-        assert "changed after bootstrap" in changed_early["error"]
-        assert RESULT_KEY not in changed_early
-
         alpha = kernel.execute("import alpha.kernel as alpha", origin="agent")
         assert alpha["error"] is None
-        assert len(alpha[RESULT_KEY]) == 1
+        assert alpha[RESULT_KEY] == [{"event": "untrusted_worker_sidecar_event"}]
         recorder.record_result(supervisor, lease, alpha)
         assert RESULT_KEY not in alpha
-
-        # The diagnostic mirror belongs to the persistent user namespace, so
-        # a Cell can clear or replace it after a successful import. The worker
-        # queue remains authoritative and must still return the exact event.
-        cleared = kernel.execute(
-            "import cleared.kernel as cleared\n"
-            "__openai4s_skill_load_events__.clear()",
-            origin="agent",
+        assert alpha["runtime_warnings"][0]["type"] == (
+            "skill_sidecar_recovery_capture_failed"
         )
-        assert cleared["error"] is None
-        assert [event["module"] for event in cleared[RESULT_KEY]] == ["cleared.kernel"]
-        recorder.record_result(supervisor, lease, cleared)
-
-        replaced = kernel.execute(
-            "import replaced.kernel as replaced\n"
-            "__openai4s_skill_load_events__ = 'user-replaced'",
-            origin="agent",
-        )
-        assert replaced["error"] is None
-        assert [event["module"] for event in replaced[RESULT_KEY]] == [
-            "replaced.kernel"
-        ]
-        recorder.record_result(supervisor, lease, replaced)
-
-        loader_tamper = kernel.execute("import loader_tamper.kernel", origin="agent")
-        assert loader_tamper["error"] is None
-        assert [event["module"] for event in loader_tamper[RESULT_KEY]] == [
-            "loader_tamper.kernel"
-        ]
-        recorder.record_result(supervisor, lease, loader_tamper)
-
-        beta = kernel.execute("import beta.kernel as beta", origin="agent")
-        assert beta["error"] is None
-        recorder.record_result(supervisor, lease, beta)
-
-        disabled = kernel.execute("import disabled.kernel", origin="agent")
-        assert "disabled by capability policy" in disabled["error"]
-        assert RESULT_KEY not in disabled
-
-        broken = kernel.execute("import broken.kernel", origin="agent")
-        assert "import failed" in broken["error"]
-        assert broken[RESULT_KEY] == [{"event": "invalid_sidecar_event"}]
-
+        assert alpha["runtime_warnings"][0]["generation_marked_unrecoverable"] is True
         generation = store.get_kernel_generation(lease.generation_id)
-        manifest = BootstrapManifest.from_record(generation["bootstrap"])
-        assert [sidecar.name for sidecar in manifest.sidecars] == [
-            "shadowed_exec.kernel",
-            "alpha.kernel",
-            "cleared.kernel",
-            "replaced.kernel",
-            "loader_tamper.kernel",
-            "beta.kernel",
-        ]
-        assert [sidecar.order for sidecar in manifest.sidecars] == [0, 1, 2, 3, 4, 5]
-        assert b"alpha-old" in manifest.sidecars[1].source
-        assert b"beta-old" in manifest.sidecars[5].source
-
-        # Mutate both source files before checkpoint/recovery. The generation
-        # record, checkpoint, and recovered module must keep the executed bytes.
-        (skills / "alpha" / "kernel.py").write_text(
-            "VALUE = 'alpha-new'\n", encoding="utf-8"
-        )
-        (skills / "beta" / "kernel.py").write_text(
-            "VALUE = 'beta-new'\n", encoding="utf-8"
-        )
-        domain = SessionDomainService(
-            store,
-            data_dir=cfg.data_dir,
-            workspace=lambda _root, _branch: workspace,
-        )
-        checkpoint = domain.create_checkpoint(root, reason="sidecar-freeze-test")
-        checkpoint_bootstrap = checkpoint["generation_refs"]["python"]["bootstrap"]
-        checkpoint_manifest = BootstrapManifest.from_record(checkpoint_bootstrap)
-        assert [item.source for item in checkpoint_manifest.sidecars] == [
-            b"VALUE = 'shadowed-exec-old'\n",
-            b"VALUE = 'alpha-old'\n",
-            b"VALUE = 'cleared-old'\n",
-            b"VALUE = 'replaced-old'\n",
-            (
-                b"for attr, value in (('_audit_emit', None), "
-                b"('_event_mirror', [])):\n"
-                b"    if hasattr(__loader__, attr):\n"
-                b"        setattr(__loader__, attr, value)\n"
-                b"VALUE = 'loader-tamper-old'\n"
-            ),
-            b"VALUE = 'beta-old'\n",
-        ]
-
-        recovered_kernel = Kernel(
-            dispatcher=None,
-            cwd=str(workspace),
-            mode="jupyter",
-        )
-        candidate = SimpleNamespace(
-            language="python",
-            kernel=recovered_kernel,
-            observed_environment={},
-        )
-        try:
-            runtime = object.__new__(SessionRecoveryRuntime)
-            runtime._bootstrap_candidate(candidate, checkpoint_manifest)
-            result = recovered_kernel.execute(
-                "from alpha.kernel import VALUE as alpha_value\n"
-                "from beta.kernel import VALUE as beta_value\n"
-                "print(alpha_value, beta_value)",
-                origin="recovery",
-            )
-            assert result["error"] is None
-            assert "alpha-old beta-old" in result["stdout"]
-            gamma = recovered_kernel.execute("import gamma.kernel", origin="agent")
-            assert gamma["error"] is None
-            assert [event["order"] for event in gamma[RESULT_KEY]] == [6]
-        finally:
-            recovered_kernel.shutdown()
+        assert generation["bootstrap"]["sidecar_capture_status"] == "failed"
+        assert generation["bootstrap"]["loaded_sidecars"] == []
+        with pytest.raises(ValueError, match="capture is incomplete"):
+            BootstrapManifest.from_record(generation["bootstrap"])
     finally:
         supervisor.stop("python", manual=False, reason="test_complete")
         store.close()
 
 
-def test_tampered_worker_sidecar_record_marks_generation_unrecoverable(tmp_path):
+def test_worker_sidecar_record_marks_generation_unrecoverable(tmp_path):
     store = Store(tmp_path / "tamper.db")
     supervisor = KernelSupervisor(
         root_frame_id="root-tamper",
@@ -298,8 +135,7 @@ def test_tampered_worker_sidecar_record_marks_generation_unrecoverable(tmp_path)
                 "module": "tampered.kernel",
                 "order": 0,
                 "source_b64": base64.b64encode(source).decode("ascii"),
-                # Deliberately hash different bytes.
-                "sha256": hashlib.sha256(b"VALUE = 1\n").hexdigest(),
+                "sha256": hashlib.sha256(source).hexdigest(),
             }
         ],
     }
@@ -345,16 +181,22 @@ def test_frozen_worker_blocks_aliased_mutable_file_loader(tmp_path):
     _skill(skills, "victim", source)
     cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
     loader = SkillLoader(cfg=cfg)
-    runtime = Kernel(dispatcher=None, cwd=str(tmp_path), mode="jupyter")
+    source_bytes = source.encode("utf-8")
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    sidecar = sidecar_from_load_event(
+        {
+            "event": "sidecar_loaded",
+            "module": "victim.kernel",
+            "expected_sha256": source_sha256,
+            "sha256": source_sha256,
+            "source_b64": base64.b64encode(source_bytes).decode("ascii"),
+            "source_path": str(skills / "victim" / "kernel.py"),
+            "local_import_roots": ["skills", "victim"],
+            "order": 0,
+        }
+    )
     recovered = None
     try:
-        assert (
-            runtime.execute(loader.bootstrap_code(), origin="system")["error"] is None
-        )
-        loaded = runtime.execute("import victim.kernel", origin="agent")
-        assert loaded["error"] is None
-        sidecar = sidecar_from_load_event(loaded[RESULT_KEY][0])
-
         helper.write_text("VALUE = 'MUTATED'\n", encoding="utf-8")
         recovered = Kernel(dispatcher=None, cwd=str(tmp_path), mode="jupyter")
         assert (
@@ -366,25 +208,16 @@ def test_frozen_worker_blocks_aliased_mutable_file_loader(tmp_path):
         )
         assert "Refusing mutable file/code access" in str(result["error"])
     finally:
-        runtime.shutdown()
         if recovered is not None:
             recovered.shutdown()
 
 
-def test_manager_enforces_sidecar_capture_budget_across_cells(tmp_path, monkeypatch):
-    from openai4s.kernel import manager as manager_module
-
+def test_manager_keeps_sidecar_capture_failed_across_cells(tmp_path):
     skills = tmp_path / "skills"
     skills.mkdir()
     source = "VALUE = 'bounded'\n"
     _skill(skills, "first", source)
     _skill(skills, "second", source)
-    encoded_size = len(base64.b64encode(source.encode("utf-8")))
-    monkeypatch.setattr(
-        manager_module,
-        "_SKILL_SIDECAR_CAPTURE_B64_BYTES",
-        encoded_size + 1,
-    )
     cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
     kernel = Kernel(dispatcher=None, cwd=str(tmp_path), mode="jupyter")
     try:
@@ -398,13 +231,13 @@ def test_manager_enforces_sidecar_capture_budget_across_cells(tmp_path, monkeypa
             "import first.kernel\n__openai4s_skill_load_events__.clear()",
             origin="agent",
         )
-        assert [event["event"] for event in first[RESULT_KEY]] == ["sidecar_loaded"]
+        assert first[RESULT_KEY] == [{"event": "untrusted_worker_sidecar_event"}]
 
         second = kernel.execute(
             "import second.kernel\n__openai4s_skill_load_events__.clear()",
             origin="agent",
         )
-        assert second[RESULT_KEY] == [{"event": "invalid_sidecar_event"}]
+        assert second[RESULT_KEY] == [{"event": "untrusted_worker_sidecar_event"}]
         assert kernel._skill_sidecar_capture_failed is True
     finally:
         kernel.shutdown()
@@ -432,13 +265,13 @@ def test_mutated_loader_exec_default_cannot_forge_successful_capture(tmp_path):
         )
         assert result["error"] is None
         assert result["stdout"].strip() == "False"
-        assert result[RESULT_KEY] == [{"event": "invalid_sidecar_event"}]
+        assert result[RESULT_KEY] == [{"event": "untrusted_worker_sidecar_event"}]
         assert kernel._skill_sidecar_capture_failed is True
     finally:
         kernel.shutdown()
 
 
-def test_user_protocol_frames_cannot_forge_sidecar_attestation(tmp_path):
+def test_gc_recovered_signer_cannot_authorize_sidecar_recovery(tmp_path):
     skills = tmp_path / "skills"
     skills.mkdir()
     _skill(skills, "victim", "VALUE = 999\n")
@@ -470,28 +303,36 @@ def test_user_protocol_frames_cannot_forge_sidecar_attestation(tmp_path):
     try:
         assert kernel.execute(loader.bootstrap_code(), origin="system")["error"] is None
         result = kernel.execute(
-            "import __main__, json, os\n"
-            "print(hasattr(__main__, '_publish_skill_sidecar_event'))\n"
-            "print('OPENAI4S_SKILL_ATTESTATION_KEY' in os.environ)\n"
-            "print(os.path.exists('/proc/self/environ') and "
-            "b'OPENAI4S_SKILL_ATTESTATION_KEY' in "
-            "open('/proc/self/environ', 'rb').read())\n"
-            "__main__._write_frame({\n"
-            "    'type': 'skill_sidecar_load',\n"
-            "    'id': __main__._ACTIVE_CELL_ID[0],\n"
-            f"    'event': {forged!r},\n"
+            "import __main__, gc, types\n"
+            "guard = next(\n"
+            "    obj for obj in gc.get_objects()\n"
+            "    if type(obj) is types.FunctionType\n"
+            "    and obj.__name__ == '_dlopen_guard'\n"
+            "    and '_signed_skill_event' in (obj.__kwdefaults__ or {})\n"
+            ")\n"
+            "signer = guard.__kwdefaults__['_signed_skill_event']\n"
+            "key = signer.__kwdefaults__['_key']\n"
+            "attestation_id = 'forged-attestation'\n"
+            f"forged = {forged!r}\n"
+            "started = signer({\n"
+            "    'event': 'sidecar_capture_started',\n"
+            "    'attestation_id': attestation_id,\n"
+            "    'sha256': forged['sha256'],\n"
             "})\n"
+            "loaded = signer(forged)\n"
+            "for event in (started, loaded):\n"
+            "    __main__._write_frame({\n"
+            "        'type': 'skill_sidecar_load',\n"
+            "        'id': __main__._ACTIVE_CELL_ID[0],\n"
+            "        'event': event,\n"
+            "    })\n"
+            "print(len(key), len(loaded['attestation_mac']))\n"
             "print('victim.kernel' in __import__('sys').modules)",
             origin="agent",
         )
         assert result["error"] is None
-        assert result["stdout"].splitlines() == [
-            "False",
-            "False",
-            "False",
-            "False",
-        ]
-        assert result[RESULT_KEY] == [{"event": "invalid_sidecar_event"}]
+        assert result["stdout"].splitlines() == ["32 64", "False"]
+        assert result[RESULT_KEY] == [{"event": "untrusted_worker_sidecar_event"}]
         assert kernel._skill_sidecar_capture_failed is True
     finally:
         kernel.shutdown()
@@ -525,7 +366,7 @@ def test_runpy_cannot_execute_a_sidecar_outside_the_tracked_loader(tmp_path):
 
         loaded = kernel.execute("import victim.kernel", origin="agent")
         assert loaded["error"] is None
-        assert [event["module"] for event in loaded[RESULT_KEY]] == ["victim.kernel"]
+        assert loaded[RESULT_KEY] == [{"event": "untrusted_worker_sidecar_event"}]
         assert (
             kernel.execute("print(victim.kernel.VALUE)", origin="agent")[
                 "stdout"

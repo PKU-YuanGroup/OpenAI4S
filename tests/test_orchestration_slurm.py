@@ -611,7 +611,13 @@ def test_unsafe_job_name_or_comment_is_refused():
 def test_credential_shaped_environment_is_refused():
     """INV-9: a secret must travel as a path to an 0600 file, not as an
     environment variable the scheduler records."""
-    for key in ("OPENAI4S_LLM_API_KEY", "MY_SECRET", "db_password", "AUTH_TOKEN"):
+    for key in (
+        "OPENAI4S_LLM_API_KEY",
+        "MY_SECRET",
+        "db_password",
+        "AUTH_TOKEN",
+        "PYTHONPATH",
+    ):
         with pytest.raises(ValueError, match="INV-9|invalid environment"):
             SubmitSpec(
                 job_name="ok",
