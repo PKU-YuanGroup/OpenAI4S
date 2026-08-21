@@ -3118,10 +3118,11 @@ function scheduleWorkbenchRefresh(delay = 180) {
   clearTimeout(S._workbenchTimer);
   S._workbenchTimer = setTimeout(() => loadWorkbenchState(S.currentId, true), delay);
 }
-function scheduleBranchConversationResync(fid, delay = 120) {
+function scheduleConversationResync(fid, delay = 120) {
   clearTimeout(S._branchConversationTimer);
   S._branchConversationTimer = setTimeout(() => { if (S.currentId === fid) openConversation(fid, S.project); }, delay);
 }
+function scheduleBranchConversationResync(fid, delay = 120) { scheduleConversationResync(fid, delay); }
 function latestCellForLanguage(language) {
   return (S.cells || []).concat(S.liveCells || []).filter(cell => String(cell.language || cell.kernel_id || "python").toLowerCase().startsWith(language)).slice(-1)[0] || null;
 }
@@ -4987,7 +4988,13 @@ function onEvent(m) {
     scheduleWorkbenchRefresh(60); if (S.activeTab === "timeline") renderActionTimeline();
   } }
   else if (["sandbox", "sandbox_status", "security_status"].includes(m.type)) { if (mine(fid)) { S.securityState = sanitizeSecurity(m); if (S.activeTab === "timeline") renderActionTimeline(); } }
-  else if (m.type === "text_chunk") { if (mine(fid) && !isStaleTurnEvent(m)) feed(m.block_type || "text", m.chunk || "", m); }
+  else if (m.type === "text_chunk") { if (mine(fid) && !isStaleTurnEvent(m)) feed(
+    // A persist-first gated turn can be reopened while its Reviewer is still
+    // running. REST has already rendered the canonical candidate in that case,
+    // and replaying the same provisional bytes below it creates a second answer.
+    // Shared turn/execution identity lets the durable row own those chunks.
+    m.block_type || "text", m.chunk || "", m, storedCandidateOwnsChunk(m)
+  ); }
   else if (m.type === "step") { if (mine(fid)) addLiveStep(m); }
   else if (m.type === "step_update") { if (mine(fid)) updateLiveStep(m); }
   else if (m.type === "plan_ready") { if (mine(fid)) renderPlanCard(m.plan, m.status); }
@@ -4995,20 +5002,16 @@ function onEvent(m) {
   else if (m.type === "await_permission") { if (mine(fid)) { renderPermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "permission_resolved") { if (mine(fid)) { resolvePermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "candidate_ready" && m.gates_completion) {
-    if (mine(fid) || mine(m.root_frame_id)) setLiveReviewBadge("candidate", m.user_truth);
+    if (mine(fid) || mine(m.root_frame_id)) markCandidateReady(m);
   }
-  else if (m.type === "auto_run_terminal" && m.review_status) {
-    if (mine(fid) || mine(m.root_frame_id)) setLiveReviewBadge(m.review_status, m.user_truth);
+  else if (m.type === "auto_run_terminal") {
+    // This closes the durable audit run, not the answer delivery. Keep the
+    // Timeline fresh, but wait for candidate_resolved (or the final frame
+    // receipt) before changing the badge on user-visible prose.
+    if (mine(fid) || mine(m.root_frame_id)) scheduleWorkbenchRefresh(60);
   }
-  // The verdict has been applied to what was actually delivered. `replaced`
-  // means a repair changed the answer and the text on screen is the one it
-  // corrected, so it must go -- promoting the badge over stale text would be
-  // the same lie in a different place.
   else if (m.type === "candidate_resolved") {
-    if (mine(fid) || mine(m.root_frame_id)) {
-      if (m.replaced && m.text) replaceLiveAnswer(String(m.text));
-      if (m.review_status) setLiveReviewBadge(m.review_status, m.user_truth);
-    }
+    if (mine(fid) || mine(m.root_frame_id)) applyCandidateResolution(m, fid);
   }
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
@@ -5024,7 +5027,7 @@ function onEvent(m) {
         // workbench still refreshes, because the artifacts and cells that turn
         // produced are real.
         if (isStaleTurnEvent(m)) scheduleWorkbenchRefresh();
-        else { handleEnvironmentReadinessTerminal(m); turnDone(m.status, m); scheduleWorkbenchRefresh(); }
+        else { if (m.review_status) applyFinalReviewStatus(m, fid); handleEnvironmentReadinessTerminal(m); turnDone(m.status, m); scheduleWorkbenchRefresh(); }
       }
     }
     loadSessions();
@@ -5177,8 +5180,10 @@ function startStream() {
   S.liveCells = []; S._liveCell = null; down();
 }
 const ensure = () => { if (!S.stream) startStream(); return S.stream; };
-function feed(kind, chunk, event) {
+function feed(kind, chunk, event, storedOwnsChunk = false) {
+  if (storedOwnsChunk) return;
   const st = ensure();
+  rememberCandidateIdentity(st.wrap, event);
   const structuredCellId = event && (event.producing_cell_id || event.cell_id);
   if (kind === "tool") {
     const cellHeader = !!(event && event.cell_index != null);
@@ -5224,28 +5229,161 @@ function feed(kind, chunk, event) {
   }
   down();
 }
+function candidateIdentityText(value) {
+  return value == null ? "" : String(value).trim().slice(0, 192);
+}
+// The REST row and the WS receipt use the public top-level fields. The nested
+// fallbacks keep this additive for an older captured response without exposing
+// arbitrary message metadata to selectors.
+function candidateIdentity(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const review = raw.review_status && typeof raw.review_status === "object" ? raw.review_status : {};
+  const meta = raw.metadata && typeof raw.metadata === "object" ? raw.metadata : {};
+  return {
+    messageId: candidateIdentityText(raw.message_id || raw.candidate_message_id || raw.replacement_message_id || review.message_id || meta.message_id),
+    turnId: candidateIdentityText(raw.turn_id || raw.candidate_turn_id || review.turn_id || meta.turn_id),
+    executionId: candidateIdentityText(raw.execution_id || review.execution_id || meta.execution_id),
+  };
+}
+function rememberCandidateIdentity(node, value) {
+  const identity = candidateIdentity(value);
+  if (!node || !node.dataset) return identity;
+  const bind = (key, next) => { if (next && (!node.dataset[key] || node.dataset[key] === next)) node.dataset[key] = next; };
+  bind("messageId", identity.messageId); bind("turnId", identity.turnId); bind("executionId", identity.executionId);
+  return identity;
+}
+function candidateNodeMatches(node, identity) {
+  if (!node || !node.dataset || !identity) return false;
+  if (identity.messageId) return node.dataset.messageId === identity.messageId;
+  if (identity.turnId) return node.dataset.turnId === identity.turnId && (!identity.executionId || !node.dataset.executionId || node.dataset.executionId === identity.executionId);
+  return !!identity.executionId && node.dataset.executionId === identity.executionId;
+}
+// Once the server supplies a durable message id, only that exact row may be
+// changed. Turn/execution identity exists solely for pre-promotion stream and
+// replay de-duplication; it is never a replacement target fallback.
+function candidateMessageNode(value) {
+  const identity = candidateIdentity(value);
+  const host = $("#messages");
+  const nodes = host ? Array.from(host.querySelectorAll(".msg.assistant")) : [];
+  if (identity.messageId) {
+    return nodes.find(node => node.dataset && node.dataset.messageId === identity.messageId) || null;
+  }
+  return nodes.find(node => candidateNodeMatches(node, identity)) || null;
+}
+function reviewStatusFrom(value) {
+  const review = value && value.review_status;
+  return candidateIdentityText(review && typeof review === "object" ? review.status : review);
+}
+function reviewTruthFrom(value) {
+  const review = value && value.review_status;
+  return candidateIdentityText((value && value.user_truth) || (review && typeof review === "object" ? review.user_truth : ""));
+}
+function setMessageReviewBadge(node, status, userTruth) {
+  if (!node || !status) return false;
+  let badge = node.querySelector(":scope > .review-badge");
+  if (!badge) {
+    badge = el("div", "review-badge");
+    const actions = node.querySelector(":scope > .msg-actions");
+    if (actions) node.insertBefore(badge, actions); else node.appendChild(badge);
+  }
+  badge.className = "review-badge review-badge-" + String(status).replace(/[^a-z_]/g, "");
+  badge.textContent = userTruth || t("review.badge." + status);
+  if (node.dataset) node.dataset.reviewStatus = status;
+  S.reviewGate = { status, user_truth: badge.textContent };
+  return true;
+}
 // The live counterpart of the badge `renderStored` puts on a reopened message.
 // One node, replaced in place, so candidate -> verified never stacks two.
 function setLiveReviewBadge(status, userTruth) {
-  const st = S.stream; if (!st || !st.wrap || !status) return;
-  let badge = st.wrap.querySelector(":scope > .review-badge");
-  if (!badge) { badge = el("div", "review-badge"); st.wrap.appendChild(badge); }
-  badge.className = "review-badge review-badge-" + String(status).replace(/[^a-z_]/g, "");
-  badge.textContent = userTruth || t("review.badge." + status);
-  S.reviewGate = { status, user_truth: badge.textContent };
+  const st = S.stream; return !!(st && st.wrap && setMessageReviewBadge(st.wrap, status, userTruth));
 }
-// A repair rewrote the answer, so what is on screen is the text it corrected.
-// Drop every prose block in the live turn and render the reviewed one; the
-// activity cards stay, they are what produced it. This mirrors the server,
-// which persists exactly one row in this case.
-function replaceLiveAnswer(text) {
-  const st = S.stream; if (!st || !st.wrap) return;
-  st.wrap.querySelectorAll(":scope > .md").forEach(n => n.remove());
+function markCandidateReady(value) {
+  const target = candidateMessageNode(value);
+  if (target) {
+    rememberCandidateIdentity(target, value);
+    // A stale replay must never demote a row REST already projected as final.
+    if (!target.dataset.reviewStatus || target.dataset.reviewStatus === "candidate") setMessageReviewBadge(target, "candidate", value.user_truth);
+    return true;
+  }
+  if (S.stream && S.stream.wrap) rememberCandidateIdentity(S.stream.wrap, value);
+  return setLiveReviewBadge("candidate", value.user_truth);
+}
+function discardDuplicateLiveCandidate(stored, value) {
+  const live = S.stream && S.stream.wrap;
+  if (!stored || !live || live === stored) return;
+  const identity = candidateIdentity(value);
+  rememberCandidateIdentity(live, { turn_id: identity.turnId, execution_id: identity.executionId });
+  if (!candidateNodeMatches(live, { ...identity, messageId: "" })) return;
+  live.remove(); S.stream = null;
+}
+function storedCandidateOwnsChunk(value) {
+  if (!value || (value.block_type || "text") !== "text" || !(value.provisional || reviewStatusFrom(value) === "candidate")) return false;
+  const target = candidateMessageNode(value);
+  if (!target || (S.stream && target === S.stream.wrap) || !target.dataset || !target.dataset.messageId) return false;
+  discardDuplicateLiveCandidate(target, value);
+  if (!target.dataset.reviewStatus || target.dataset.reviewStatus === "candidate") setMessageReviewBadge(target, "candidate", value.user_truth);
+  return true;
+}
+function candidateReplacementText(value) {
+  if (value && typeof value.text === "string") return value.text;
+  return value && typeof value.final_answer === "string" ? value.final_answer : "";
+}
+function candidateReplacementCommitted(value) {
+  const identity = candidateIdentity(value), text = candidateReplacementText(value);
+  return !!(value && value.replaced === true && value.delivered === true && value.durable === true && identity.messageId && text && (value.persisted == null || value.persisted === true) && (value.promotion_committed == null || value.promotion_committed === true));
+}
+// Replace one identified answer, whether it is the current live wrapper or a
+// canonical assistant row already rendered from REST. Message actions capture
+// their text in closures, so refresh them as part of the replacement too.
+function replaceMessageAnswer(node, text) {
+  if (!node || !node.classList || !node.classList.contains("assistant") || !String(text || "").trim()) return false;
+  const hadActions = !!node.querySelector(":scope > .msg-actions");
+  node.querySelectorAll(":scope > .md").forEach(item => item.remove());
   const md = el("div", "md"); md.innerHTML = renderMd(text);
-  const badge = st.wrap.querySelector(":scope > .review-badge");
-  if (badge) st.wrap.insertBefore(md, badge); else st.wrap.appendChild(md);
-  st.md = md; st.text = text; st.full = text;
-  st._stableAt = 0; st._stableHtml = "";
+  if (S.stream && S.stream.wrap === node) {
+    const badge = node.querySelector(":scope > .review-badge");
+    if (badge) node.insertBefore(md, badge); else node.appendChild(md);
+    S.stream.md = md; S.stream.text = text; S.stream.full = text;
+    S.stream._stableAt = 0; S.stream._stableHtml = "";
+  } else if (node.firstChild) node.insertBefore(md, node.firstChild);
+  else node.appendChild(md);
+  node._messageText = text;
+  if (hadActions) { const actions = node.querySelector(":scope > .msg-actions"); if (actions) actions.remove(); addMsgActions(node, text); }
+  return true;
+}
+// Compatibility seam for callers/tests that only have the current stream.
+function replaceLiveAnswer(text) {
+  const st = S.stream; return !!(st && st.wrap && replaceMessageAnswer(st.wrap, text));
+}
+function applyCandidateResolution(value, fid) {
+  const target = candidateMessageNode(value), status = reviewStatusFrom(value), truth = reviewTruthFrom(value);
+  const replacementWanted = !!(value && value.replaced === true);
+  let replacementApplied = false;
+  if (target) { discardDuplicateLiveCandidate(target, value); rememberCandidateIdentity(target, value); }
+  if (replacementWanted && candidateReplacementCommitted(value) && target) {
+    replacementApplied = replaceMessageAnswer(target, candidateReplacementText(value));
+    if (replacementApplied && target.dataset) target.dataset.candidateResolved = "true";
+  }
+  if (replacementWanted && !replacementApplied) scheduleConversationResync(fid);
+  // Never put Verified on bytes that an advertised replacement failed to reach,
+  // or on any answer the receipt itself says was not delivered.
+  const mayApplyBadge = status && (status !== "verified" || (value.delivered === true && value.durable === true && (!replacementWanted || replacementApplied)));
+  if (mayApplyBadge && target) {
+    setMessageReviewBadge(target, status, truth);
+    if (value.delivered === true && value.durable === true && target.dataset) target.dataset.candidateResolved = "true";
+  } else if (status && !target) scheduleConversationResync(fid);
+  else if (status === "verified" && !mayApplyBadge) scheduleConversationResync(fid);
+  return { targetFound: !!target, replacementApplied, badgeApplied: !!(mayApplyBadge && target) };
+}
+function applyFinalReviewStatus(value, fid) {
+  const status = reviewStatusFrom(value); if (!status) return false;
+  if (value && value.replaced === true) return applyCandidateResolution(value, fid).badgeApplied;
+  const target = candidateMessageNode(value);
+  // A previously applied candidate_resolved receipt is sufficient. Otherwise a
+  // Verified terminal must itself say the durable answer was delivered.
+  const mayVerify = status !== "verified" || (value.delivered === true && value.durable === true) || !!(target && target.dataset && target.dataset.candidateResolved === "true");
+  if (target && mayVerify) return setMessageReviewBadge(target, status, reviewTruthFrom(value));
+  scheduleConversationResync(fid); return false;
 }
 // A turn's request ticket, guarded by a generation.
 //
@@ -6730,6 +6868,7 @@ function renderStored(m, target) {
   const text = Array.isArray(m.content) ? m.content.map(b => (b && b.text) || "").join("") : (m.content || "");
   if (!text.trim()) return null;
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
+  rememberCandidateIdentity(w, m); w._messageText = text;
   if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); renderMessageRefChips(w, m.artifact_refs); }
   else {
     const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md);
@@ -6741,11 +6880,7 @@ function renderStored(m, target) {
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
     const review = m.review_status || (m.metadata && m.metadata.review_status);
     const reviewStatus = review && (review.status || review);
-    if (reviewStatus) {
-      const badge = el("div", "review-badge review-badge-" + String(reviewStatus).replace(/[^a-z_]/g, ""));
-      badge.textContent = (review && review.user_truth) || t("review.badge." + reviewStatus);
-      w.appendChild(badge);
-    }
+    if (reviewStatus) { setMessageReviewBadge(w, reviewStatus, review && review.user_truth); if (reviewStatus !== "candidate" && w.dataset) w.dataset.candidateResolved = "true"; }
   }
   // Stamped with its own time so a page of OLDER messages can be put where it
   // belongs. Activity steps are fetched whole while messages are paged, so the

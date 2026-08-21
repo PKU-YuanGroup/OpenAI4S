@@ -684,8 +684,19 @@ class PermissionBroker:
         # and it stays exactly that -- `decide_unattended` returns a denial for
         # a recorded `user` and None when nobody recorded anything.
         guardian_decision = None
+        guardian_required = os.environ.get(
+            "OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         try:
-            from openai4s.server.guardian_enforce import decide_unattended
+            from openai4s.server.guardian_enforce import (
+                decide_unattended,
+            )
+            from openai4s.server.guardian_enforce import (
+                feature_enabled as guardian_feature_enabled,
+            )
+
+            guardian_config = _daemon_config()
+            guardian_required = guardian_feature_enabled(guardian_config)
 
             # The Guardian is asked about the DURABLE action, not the UI
             # projection: `action_digest` is what `resolve_permission_request`
@@ -698,7 +709,7 @@ class PermissionBroker:
                     **payload,
                     "canonical_arguments": canonical_arguments,
                 },
-                config=_daemon_config(),
+                config=guardian_config,
                 approvals_reviewer=self._approvals_reviewer(
                     store, root, proj or "default"
                 ),
@@ -720,8 +731,12 @@ class PermissionBroker:
                 # Only the broker knows whether anyone is actually there to ask.
                 interactive=chan is not None,
             )
-        except Exception:  # noqa: BLE001 - fall back to fail-closed deny
-            guardian_decision = None
+        except Exception:  # noqa: BLE001 - an enabled Guardian never fails open
+            guardian_decision = (
+                (False, "guardian evaluation failed closed")
+                if guardian_required
+                else None
+            )
 
         if guardian_decision is not None:
             return self._resolve_guardian_decision(

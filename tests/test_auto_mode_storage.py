@@ -361,6 +361,22 @@ def test_run_candidate_and_terminal_transitions_are_atomic_idempotent_and_immuta
     ]
     assert [event["event_cursor"] for event in events] == [1, 2, 3]
     assert all(event["payload_sha256"] == _sha(event["payload"]) for event in events)
+    assert events[-1]["payload"] == {
+        "status": "completed_with_issues",
+        "terminal_reason": "review_not_requested",
+        "stop_reason": None,
+    }
+    legacy_terminal_request = {
+        "status": "completed_with_issues",
+        "reason": "review_not_requested",
+        "stop_reason": None,
+    }
+    owner = store._conn.execute(  # noqa: SLF001 - legacy digest compatibility
+        "SELECT terminal_request_sha256 FROM auto_mode_runs WHERE run_id=?",
+        ("auto-run-1",),
+    ).fetchone()
+    assert owner["terminal_request_sha256"] == _sha(legacy_terminal_request)
+    assert events[-1]["request_sha256"] == _sha(legacy_terminal_request)
     assert store.auto_mode_event_cursor("root-1", "root-1") == 3
     store.close()
 

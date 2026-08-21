@@ -323,6 +323,7 @@ def collect_turn_evidence(
     candidate_answer: str,
     structured_completion: Any = None,
     artifact_versions_before: Mapping[str, Any] | None = None,
+    produced_artifacts: Sequence[Mapping[str, Any]] | None = None,
     cell_count_before: int = 0,
     step_count_before: int = 0,
 ) -> dict[str, Any]:
@@ -333,28 +334,46 @@ def collect_turn_evidence(
     adapters: list[dict[str, Any]] = []
     omitted = 0
     listed = store.list_artifacts({"root_frame_id": root_frame_id})
-    for artifact in listed:
-        artifact_id = str(artifact.get("artifact_id") or artifact.get("id") or "")
-        if not artifact_id:
-            continue
-        latest = artifact.get("latest_version_id")
-        if artifact_id in prior and prior[artifact_id] == latest:
-            continue
+    listed_by_id = {
+        str(item.get("artifact_id") or item.get("id") or ""): item
+        for item in listed
+        if isinstance(item, Mapping) and (item.get("artifact_id") or item.get("id"))
+    }
+    seen_versions: set[str] = set()
+
+    def include_artifact(candidate: Mapping[str, Any], version_id: str) -> None:
+        nonlocal omitted
+        if not version_id or version_id in seen_versions:
+            return
+        seen_versions.add(version_id)
         if len(artifacts) >= 64:
             omitted += 1
-            continue
-        meta = store.version_meta(str(latest)) if latest else None
-        meta = meta if isinstance(meta, Mapping) else {}
-        path = artifact.get("path") or store.resolve_artifact_path(artifact_id)
+            return
+        meta_value = store.version_meta(version_id)
+        meta = meta_value if isinstance(meta_value, Mapping) else {}
+        artifact_id = str(
+            candidate.get("artifact_id")
+            or candidate.get("id")
+            or meta.get("artifact_id")
+            or ""
+        )
+        owner = listed_by_id.get(artifact_id, candidate)
+        path = owner.get("path") or (
+            store.resolve_artifact_path(artifact_id) if artifact_id else None
+        )
         version_path = meta.get("snapshot_path") or meta.get("path") or path
         item = {
             "artifact_id": artifact_id,
-            "filename": artifact.get("filename"),
-            "content_type": artifact.get("content_type"),
-            "size_bytes": meta.get("size_bytes") or artifact.get("size_bytes"),
-            "version_id": latest,
-            "latest_version_id": latest,
-            "checksum": meta.get("checksum") or meta.get("sha256"),
+            "filename": candidate.get("filename") or owner.get("filename"),
+            "content_type": candidate.get("content_type") or owner.get("content_type"),
+            "size_bytes": meta.get("size_bytes")
+            or candidate.get("size_bytes")
+            or owner.get("size_bytes"),
+            "version_id": version_id,
+            "latest_version_id": version_id,
+            "checksum": meta.get("checksum")
+            or meta.get("sha256")
+            or candidate.get("checksum"),
             "exists": bool(version_path and Path(str(version_path)).is_file()),
         }
         artifacts.append(item)
@@ -362,11 +381,32 @@ def collect_turn_evidence(
             version_path,
             filename=str(item.get("filename") or ""),
             content_type=str(item.get("content_type") or ""),
-            version_id=str(latest or ""),
+            version_id=version_id,
             artifact_id=artifact_id,
         )
         if adapter is not None:
             adapters.append(adapter)
+
+    for artifact in listed:
+        artifact_id = str(artifact.get("artifact_id") or artifact.get("id") or "")
+        if not artifact_id:
+            continue
+        latest = artifact.get("latest_version_id")
+        if artifact_id in prior and prior[artifact_id] == latest:
+            continue
+        include_artifact(artifact, str(latest or ""))
+
+    # Trusted delivery observes captures, not only changed Artifact heads. If
+    # this turn produced checksum-identical bytes, the head id is unchanged but
+    # the exact version is still part of the answer's delivery manifest and
+    # therefore must be inside the Reviewer's frozen evidence too.
+    for candidate in produced_artifacts or ():
+        if not isinstance(candidate, Mapping):
+            continue
+        version_id = str(
+            candidate.get("version_id") or candidate.get("latest_version_id") or ""
+        )
+        include_artifact(candidate, version_id)
 
     cells_raw = store.list_cells(root_frame_id, branch_id=branch_id)
     if not isinstance(cells_raw, Sequence):

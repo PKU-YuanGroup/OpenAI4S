@@ -1169,6 +1169,7 @@ class AutoModeRepository:
         reason: str,
         stop_reason: str | None = None,
         finished_at: int | None = None,
+        message_promotion: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         run_id = _text("run_id", run_id)
         idempotency_key = _text("idempotency_key", idempotency_key, maximum=1024)
@@ -1179,6 +1180,22 @@ class AutoModeRepository:
         if stop_reason is not None:
             stop_reason = _text("stop_reason", stop_reason, maximum=1024)
         request = {"status": status, "reason": reason, "stop_reason": stop_reason}
+        promotion = dict(message_promotion or {})
+        promotion_sha256: str | None = None
+        if promotion:
+            required = {
+                "message_id",
+                "root_frame_id",
+                "branch_id",
+                "expected_content",
+                "metadata",
+            }
+            if not required.issubset(promotion):
+                raise ValueError("terminal message promotion is incomplete")
+            if not isinstance(promotion.get("metadata"), Mapping):
+                raise ValueError("terminal message metadata must be an object")
+            promotion_sha256 = _digest(promotion)
+            request["message_promotion_sha256"] = promotion_sha256
         request_sha256 = _digest(request)
         timestamp = self._time(finished_at)
         with self._lock:
@@ -1190,6 +1207,14 @@ class AutoModeRepository:
                 )
                 if replay is not None:
                     self._assert_run_replay_integrity_locked(run)
+                    if promotion:
+                        self._promote_terminal_message_locked(
+                            run,
+                            promotion,
+                            expected_status=status,
+                            published_at=int(run["finished_at"]),
+                            replay=True,
+                        )
                     self._connection.commit()
                     return self._transition(run, replay, created=False)
                 if (
@@ -1200,7 +1225,19 @@ class AutoModeRepository:
                 self._assert_mutable_run(run)
                 self._assert_no_active_phase_locked(run)
                 if status == "verified":
-                    self._assert_verified_locked(run)
+                    self._assert_verified_locked(
+                        run,
+                        message_promotion=(promotion if promotion else None),
+                    )
+                promotion_receipt: dict[str, Any] | None = None
+                if promotion:
+                    promotion_receipt = self._promote_terminal_message_locked(
+                        run,
+                        promotion,
+                        expected_status=status,
+                        published_at=timestamp,
+                        replay=False,
+                    )
                 self._connection.execute(
                     "UPDATE auto_mode_runs SET status=?,state_revision=state_revision+1,"
                     "terminal_reason=?,stop_reason=?,terminal_idempotency_key=?,"
@@ -1226,6 +1263,16 @@ class AutoModeRepository:
                         "status": status,
                         "terminal_reason": reason,
                         "stop_reason": stop_reason,
+                        **(
+                            {"message_promotion_sha256": promotion_sha256}
+                            if promotion_sha256 is not None
+                            else {}
+                        ),
+                        **(
+                            {"message_promotion_receipt": promotion_receipt}
+                            if promotion_receipt is not None
+                            else {}
+                        ),
                     },
                     created_at=timestamp,
                 )
@@ -1234,6 +1281,239 @@ class AutoModeRepository:
                 self._connection.rollback()
                 raise
         return self._transition(run, event, created=True)
+
+    def _promote_terminal_message_locked(
+        self,
+        run: sqlite3.Row,
+        promotion: Mapping[str, Any],
+        *,
+        expected_status: str,
+        published_at: int,
+        replay: bool,
+    ) -> dict[str, Any]:
+        """Bind one exact candidate row to the terminal in this transaction."""
+
+        message_id = _text("message_id", promotion.get("message_id"))
+        root_frame_id = _text("root_frame_id", promotion.get("root_frame_id"))
+        branch_id = _text("branch_id", promotion.get("branch_id"))
+        expected_content = promotion.get("expected_content")
+        content = promotion.get("content", expected_content)
+        delivery_id = promotion.get("delivery_id")
+        frame_id = promotion.get("frame_id")
+        if frame_id is not None:
+            frame_id = _text("frame_id", frame_id)
+        if not isinstance(expected_content, str) or not expected_content.strip():
+            raise ValueError("terminal message content must be non-empty")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("promoted terminal message content must be non-empty")
+        if delivery_id is not None:
+            delivery_id = _text("delivery_id", delivery_id)
+        if root_frame_id != run["root_frame_id"] or branch_id != run["branch_id"]:
+            raise AutoModeConflictError(
+                "terminal message belongs to another auto run scope"
+            )
+        row = self._connection.execute(
+            "SELECT root_frame_id,branch_id,frame_id,role,content,metadata,created_at "
+            "FROM messages WHERE message_id=?",
+            (message_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["root_frame_id"] != root_frame_id
+            or row["branch_id"] != branch_id
+            or row["frame_id"] != frame_id
+            or row["role"] != "assistant"
+        ):
+            raise AutoModeConflictError(
+                "terminal candidate message scope or content changed"
+            )
+        try:
+            current = json.loads(row["metadata"] or "{}")
+        except (TypeError, ValueError) as error:
+            raise AutoModeConflictError(
+                "terminal candidate message metadata is invalid"
+            ) from error
+        if not isinstance(current, dict):
+            raise AutoModeConflictError(
+                "terminal candidate message metadata is invalid"
+            )
+        desired = dict(promotion["metadata"])
+        protected_metadata = {
+            "completion_delivery",
+            "completion_delivery_import_pending",
+            "candidate_verdict_metadata_sha256",
+        }
+        if protected_metadata.intersection(desired):
+            raise AutoModeConflictError(
+                "terminal verdict cannot replace delivery-owned metadata"
+            )
+        expected_candidate_sha256 = hashlib.sha256(
+            expected_content.encode("utf-8")
+        ).hexdigest()
+        expected_reviewed_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if (
+            expected_status
+            not in {"verified", "completed_with_issues", "review_unavailable"}
+            or desired.get("review_status") != expected_status
+            or desired.get("gates_completion") is not True
+            or desired.get("unverified") is not (expected_status != "verified")
+            or desired.get("turn_id") != run["turn_id"]
+            or desired.get("execution_id") != run["execution_id"]
+            or desired.get("candidate_content_sha256") != expected_candidate_sha256
+            or desired.get("reviewed_content_sha256") != expected_reviewed_sha256
+        ):
+            raise AutoModeConflictError(
+                "terminal message verdict or content digest is invalid"
+            )
+        envelope = current.get("completion_delivery")
+        if envelope is not None:
+            if (
+                not isinstance(envelope, dict)
+                or delivery_id is None
+                or envelope.get("delivery_id") != delivery_id
+            ):
+                raise AutoModeConflictError(
+                    "terminal candidate delivery relation is incomplete"
+                )
+        elif delivery_id is not None:
+            raise AutoModeConflictError(
+                "terminal candidate has no completion delivery relation"
+            )
+        delivery = None
+        if delivery_id is not None:
+            delivery = self._connection.execute(
+                "SELECT message_id,root_frame_id,branch_id,frame_id,"
+                "manifest_sha256,content_sha256,status,created_at,published_at "
+                "FROM completion_deliveries WHERE delivery_id=?",
+                (delivery_id,),
+            ).fetchone()
+            expected_delivery_status = "published" if replay else "committed"
+            expected_publication = published_at if replay else None
+            if (
+                delivery is None
+                or delivery["message_id"] != message_id
+                or delivery["root_frame_id"] != root_frame_id
+                or delivery["branch_id"] != branch_id
+                or delivery["frame_id"] != frame_id
+                or envelope.get("manifest_sha256") != delivery["manifest_sha256"]
+                or envelope.get("status") != expected_delivery_status
+                or envelope.get("published_at") != expected_publication
+                or delivery["status"] != expected_delivery_status
+                or delivery["published_at"] != expected_publication
+            ):
+                raise AutoModeConflictError(
+                    "terminal candidate completion delivery changed"
+                )
+            if published_at < max(int(row["created_at"]), int(delivery["created_at"])):
+                raise AutoModeConflictError(
+                    "terminal publication predates its candidate delivery"
+                )
+        else:
+            related_delivery = self._connection.execute(
+                "SELECT delivery_id FROM completion_deliveries WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            if related_delivery is not None:
+                raise AutoModeConflictError(
+                    "terminal candidate delivery relation is missing"
+                )
+            if published_at < int(row["created_at"]):
+                raise AutoModeConflictError(
+                    "terminal promotion predates its candidate message"
+                )
+
+        def promotion_receipt(metadata: Mapping[str, Any]) -> dict[str, Any]:
+            receipt: dict[str, Any] = {
+                "schema_version": 1,
+                "message_id": message_id,
+                "frame_id": frame_id,
+                "review_status": expected_status,
+                "candidate_content_sha256": expected_candidate_sha256,
+                "content_sha256": expected_reviewed_sha256,
+                "message_metadata_sha256": _digest(dict(metadata)),
+            }
+            if delivery_id is not None:
+                assert delivery is not None
+                receipt.update(
+                    {
+                        "delivery_id": delivery_id,
+                        "manifest_sha256": delivery["manifest_sha256"],
+                        "published_at": published_at,
+                    }
+                )
+            return receipt
+
+        if replay:
+            if row["content"] != content or any(
+                current.get(key) != value for key, value in desired.items()
+            ):
+                raise AutoModeConflictError(
+                    "terminal replay does not match promoted message metadata"
+                )
+            if delivery is not None and delivery["content_sha256"] != (
+                expected_reviewed_sha256
+            ):
+                raise AutoModeConflictError(
+                    "terminal replay does not match completion delivery"
+                )
+            return promotion_receipt(current)
+        if row["content"] != expected_content:
+            raise AutoModeConflictError("terminal candidate message content changed")
+        candidate_sha256 = expected_candidate_sha256
+        if (
+            current.get("review_status") != "candidate"
+            or current.get("gates_completion") is not True
+            or current.get("unverified") is not True
+            or current.get("turn_id") != run["turn_id"]
+            or current.get("execution_id") != run["execution_id"]
+            or current.get("candidate_content_sha256") != candidate_sha256
+        ):
+            raise AutoModeConflictError("terminal candidate identity or digest changed")
+        current.update(desired)
+        if delivery is not None:
+            if delivery["content_sha256"] != candidate_sha256:
+                raise AutoModeConflictError(
+                    "terminal candidate completion delivery changed"
+                )
+            if (
+                not isinstance(envelope, dict)
+                or envelope.get("delivery_id") != delivery_id
+                or envelope.get("status") != "committed"
+            ):
+                raise AutoModeConflictError(
+                    "terminal candidate delivery relation is invalid"
+                )
+            envelope["status"] = "published"
+            envelope["published_at"] = published_at
+        cursor = self._connection.execute(
+            "UPDATE messages SET content=?,metadata=? WHERE message_id=? "
+            "AND content=? AND metadata IS ?",
+            (
+                content,
+                _canonical(current),
+                message_id,
+                expected_content,
+                row["metadata"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise AutoModeConflictError("terminal message promotion lost its CAS")
+        if delivery_id is not None:
+            cursor = self._connection.execute(
+                "UPDATE completion_deliveries SET content_sha256=?,"
+                "status='published',published_at=? WHERE delivery_id=? "
+                "AND status='committed' AND published_at IS NULL",
+                (
+                    hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    published_at,
+                    delivery_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise AutoModeConflictError(
+                    "terminal completion delivery promotion lost its CAS"
+                )
+        return promotion_receipt(current)
 
     # --------------------------------------------------------------- result audits
     def start_review(
@@ -7417,7 +7697,11 @@ class AutoModeRepository:
                 )
 
     def _assert_verified_locked(
-        self, run: sqlite3.Row, *, require_terminal: bool = False
+        self,
+        run: sqlite3.Row,
+        *,
+        require_terminal: bool = False,
+        message_promotion: Mapping[str, Any] | None = None,
     ) -> None:
         self._assert_run_event_chain_locked(run)
         self._assert_run_start_event_locked(run)
@@ -7461,6 +7745,8 @@ class AutoModeRepository:
             or str(latest_review["verdict"]).lower() != "pass"
         ):
             raise AutoModeConflictError("verified requires an independent pass review")
+        if message_promotion is not None:
+            self._assert_verified_promotion_locked(latest_review, message_promotion)
         material = self._connection.execute(
             "SELECT 1 FROM review_findings WHERE run_id=? "
             "AND candidate_id=? "
@@ -7474,6 +7760,48 @@ class AutoModeRepository:
 
         if require_terminal:
             self._assert_terminal_event_locked(run, expected_status="verified")
+
+    def _assert_verified_promotion_locked(
+        self,
+        latest_review: sqlite3.Row,
+        promotion: Mapping[str, Any],
+    ) -> None:
+        """Bind green promotion bytes to the exact latest durable pass review."""
+
+        try:
+            evidence = json.loads(latest_review["evidence_snapshot_json"])
+        except (TypeError, ValueError) as error:
+            raise AutoModeConflictError(
+                "verified review evidence snapshot is invalid"
+            ) from error
+        if (
+            not isinstance(evidence, dict)
+            or _canonical(evidence) != latest_review["evidence_snapshot_json"]
+        ):
+            raise AutoModeConflictError("verified review evidence snapshot is invalid")
+        candidate_answer = evidence.get("candidate_answer")
+        if not isinstance(candidate_answer, str) or not candidate_answer.strip():
+            raise AutoModeConflictError("verified review has no frozen candidate bytes")
+        candidate_snapshot_sha256 = _digest(
+            {
+                "candidate_answer": candidate_answer,
+                "structured_completion": evidence.get("structured_completion"),
+            }
+        )
+        if candidate_snapshot_sha256 != latest_review["candidate_snapshot_sha256"]:
+            raise AutoModeConflictError(
+                "verified review candidate snapshot hash is invalid"
+            )
+        promoted_content = promotion.get("content", promotion.get("expected_content"))
+        desired = promotion.get("metadata")
+        if (
+            promoted_content != candidate_answer
+            or not isinstance(desired, Mapping)
+            or desired.get("review_run_id") != latest_review["review_run_id"]
+        ):
+            raise AutoModeConflictError(
+                "verified promotion does not match its durable pass review"
+            )
 
     def _assert_run_event_chain_locked(self, run: sqlite3.Row) -> None:
         rows = self._connection.execute(
@@ -7575,6 +7903,28 @@ class AutoModeRepository:
             "terminal_reason": run["terminal_reason"],
             "stop_reason": run["stop_reason"],
         }
+        promotion_sha256 = event["payload"].get("message_promotion_sha256")
+        if promotion_sha256 is not None:
+            if not isinstance(promotion_sha256, str) or not re.fullmatch(
+                r"[0-9a-f]{64}", promotion_sha256
+            ):
+                raise AutoModeConflictError(
+                    "terminal message promotion digest is invalid"
+                )
+            request["message_promotion_sha256"] = promotion_sha256
+            expected_payload["message_promotion_sha256"] = promotion_sha256
+            receipt = event["payload"].get("message_promotion_receipt")
+            if not isinstance(receipt, Mapping):
+                raise AutoModeConflictError(
+                    "terminal message promotion receipt is missing"
+                )
+            receipt = dict(receipt)
+            self._assert_terminal_message_receipt_locked(run, receipt)
+            expected_payload["message_promotion_receipt"] = receipt
+        elif "message_promotion_receipt" in event["payload"]:
+            raise AutoModeConflictError(
+                "terminal message promotion receipt has no request binding"
+            )
         expected_digest = _digest(request)
         if (
             event["sequence"] != last_sequence
@@ -7587,6 +7937,134 @@ class AutoModeRepository:
         ):
             raise AutoModeConflictError(
                 "terminal event disagrees with its durable owner"
+            )
+
+    def _assert_terminal_message_receipt_locked(
+        self, run: sqlite3.Row, receipt: Mapping[str, Any]
+    ) -> None:
+        """Re-bind a terminal claim to its exact current message/delivery."""
+
+        base_fields = {
+            "schema_version",
+            "message_id",
+            "frame_id",
+            "review_status",
+            "candidate_content_sha256",
+            "content_sha256",
+            "message_metadata_sha256",
+        }
+        delivery_fields = {"delivery_id", "manifest_sha256", "published_at"}
+        has_delivery = "delivery_id" in receipt
+        if set(receipt) != base_fields | (delivery_fields if has_delivery else set()):
+            raise AutoModeConflictError(
+                "terminal message promotion receipt shape is invalid"
+            )
+        digest_fields = (
+            "candidate_content_sha256",
+            "content_sha256",
+            "message_metadata_sha256",
+        )
+        if (
+            receipt.get("schema_version") != 1
+            or not isinstance(receipt.get("message_id"), str)
+            or not receipt.get("message_id")
+            or receipt.get("review_status") != run["status"]
+            or any(
+                not isinstance(receipt.get(field), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get(field)))
+                for field in digest_fields
+            )
+        ):
+            raise AutoModeConflictError(
+                "terminal message promotion receipt identity is invalid"
+            )
+        message = self._connection.execute(
+            "SELECT root_frame_id,branch_id,frame_id,role,content,metadata,created_at "
+            "FROM messages WHERE message_id=?",
+            (receipt["message_id"],),
+        ).fetchone()
+        if (
+            message is None
+            or message["root_frame_id"] != run["root_frame_id"]
+            or message["branch_id"] != run["branch_id"]
+            or message["frame_id"] != receipt.get("frame_id")
+            or message["role"] != "assistant"
+            or hashlib.sha256(str(message["content"]).encode("utf-8")).hexdigest()
+            != receipt["content_sha256"]
+        ):
+            raise AutoModeConflictError(
+                "terminal message no longer matches its promotion receipt"
+            )
+        try:
+            metadata = json.loads(message["metadata"] or "{}")
+        except (TypeError, ValueError) as error:
+            raise AutoModeConflictError(
+                "terminal message promotion metadata is invalid"
+            ) from error
+        if (
+            not isinstance(metadata, dict)
+            or _digest(metadata) != receipt["message_metadata_sha256"]
+            or metadata.get("review_status") != run["status"]
+            or metadata.get("gates_completion") is not True
+            or metadata.get("unverified") is not (run["status"] != "verified")
+            or metadata.get("turn_id") != run["turn_id"]
+            or metadata.get("execution_id") != run["execution_id"]
+            or metadata.get("candidate_content_sha256")
+            != receipt["candidate_content_sha256"]
+            or metadata.get("reviewed_content_sha256") != receipt["content_sha256"]
+        ):
+            raise AutoModeConflictError(
+                "terminal message verdict no longer matches its receipt"
+            )
+        related = self._connection.execute(
+            "SELECT delivery_id,message_id,root_frame_id,branch_id,frame_id,"
+            "manifest_sha256,content_sha256,status,created_at,published_at "
+            "FROM completion_deliveries WHERE message_id=?",
+            (receipt["message_id"],),
+        ).fetchall()
+        if not has_delivery:
+            if related or metadata.get("completion_delivery") is not None:
+                raise AutoModeConflictError(
+                    "terminal message has an unbound completion delivery"
+                )
+            if int(run["finished_at"]) < int(message["created_at"]):
+                raise AutoModeConflictError(
+                    "terminal promotion predates its candidate message"
+                )
+            return
+        if (
+            not isinstance(receipt.get("delivery_id"), str)
+            or not receipt.get("delivery_id")
+            or not isinstance(receipt.get("manifest_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(receipt.get("manifest_sha256")))
+            or receipt.get("published_at") != run["finished_at"]
+            or len(related) != 1
+        ):
+            raise AutoModeConflictError(
+                "terminal completion delivery receipt is invalid"
+            )
+        delivery = related[0]
+        envelope = metadata.get("completion_delivery")
+        if (
+            delivery["delivery_id"] != receipt["delivery_id"]
+            or delivery["message_id"] != receipt["message_id"]
+            or delivery["root_frame_id"] != run["root_frame_id"]
+            or delivery["branch_id"] != run["branch_id"]
+            or delivery["frame_id"] != receipt.get("frame_id")
+            or delivery["manifest_sha256"] != receipt["manifest_sha256"]
+            or delivery["content_sha256"] != receipt["content_sha256"]
+            or delivery["status"] != "published"
+            or delivery["published_at"] != receipt["published_at"]
+            or int(delivery["published_at"])
+            < max(int(delivery["created_at"]), int(message["created_at"]))
+            or not isinstance(envelope, dict)
+            or envelope.get("delivery_id") != receipt["delivery_id"]
+            or envelope.get("manifest_sha256") != receipt["manifest_sha256"]
+            or envelope.get("status") != "published"
+            or envelope.get("published_at") != receipt["published_at"]
+        ):
+            raise AutoModeConflictError(
+                "terminal completion delivery no longer matches its receipt"
             )
 
     def _assert_current_candidate_event_locked(

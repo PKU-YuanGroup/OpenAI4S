@@ -2456,6 +2456,27 @@ class Store:
     def update_message_metadata(self, message_id: str, patch: dict) -> dict | None:
         return self._frames.update_message_metadata(message_id, patch)
 
+    def promote_candidate_message(
+        self,
+        *,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        metadata: Mapping[str, Any],
+    ) -> dict:
+        return self._frames.promote_candidate_message(
+            message_id=message_id,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            frame_id=frame_id,
+            expected_content=expected_content,
+            content=content,
+            metadata=metadata,
+        )
+
     def commit_completion_delivery(
         self,
         *,
@@ -2465,6 +2486,7 @@ class Store:
         frame_id: str | None,
         content: str,
         manifest: Mapping[str, Any],
+        message_metadata: Mapping[str, Any] | None = None,
         expected_manifest_sha256: str | None = None,
         created_at: int | None = None,
         snapshot_verifier: Callable[[Mapping[str, Any]], object] | None = None,
@@ -2476,9 +2498,33 @@ class Store:
             frame_id=frame_id,
             content=content,
             manifest=manifest,
+            message_metadata=message_metadata,
             expected_manifest_sha256=expected_manifest_sha256,
             created_at=created_at,
             snapshot_verifier=snapshot_verifier,
+        )
+
+    def promote_candidate_delivery(
+        self,
+        *,
+        delivery_id: str,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str | None,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        message_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.promote_candidate_delivery(
+            delivery_id=delivery_id,
+            message_id=message_id,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            frame_id=frame_id,
+            expected_content=expected_content,
+            content=content,
+            message_metadata=message_metadata,
         )
 
     def mark_completion_delivery_published(

@@ -1502,6 +1502,35 @@ def test_the_real_gate_auto_approves_only_read_only_actions(monkeypatch, tmp_pat
     store.close()
 
 
+def test_an_enabled_guardian_exception_never_falls_back_to_legacy_allow(
+    monkeypatch, tmp_path
+):
+    """A broken adjudicator is uncertainty, not unattended consent."""
+
+    store = _unattended_gate_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "allow")
+
+    def broken_guardian(*_args, **_kwargs):
+        raise RuntimeError("injected Guardian failure")
+
+    monkeypatch.setattr(
+        "openai4s.server.guardian_enforce.decide_unattended", broken_guardian
+    )
+    result = broker().gate(
+        store=store,
+        frame_id="guardian-fault-frame",
+        method="read_file",
+        target=str(tmp_path / "data.csv"),
+        side_effect_class="read_only",
+        dangerous=False,
+        view=("read_file", "read_file", {"path": str(tmp_path / "data.csv")}),
+    )
+
+    assert result["allow"] is False
+    assert result["message"] == "guardian evaluation failed closed"
+    store.close()
+
+
 def test_the_real_gate_honours_import_quarantine_over_the_environment(
     monkeypatch, tmp_path
 ):

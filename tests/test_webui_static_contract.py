@@ -2824,3 +2824,310 @@ def test_action_timeline_ledger_row_reports_state_it_cannot_fabricate() -> None:
     # "history prepend N moved the visible anchor" case.
     assert "const previousHeight = target.getBoundingClientRect().height" in history
     assert 'target.replaceChildren(); target.style.minHeight = ""' in history
+
+
+# --- persist-first candidate delivery ---------------------------------------
+
+
+def test_candidate_events_are_bound_to_durable_message_rows() -> None:
+    events = _fn("onEvent")
+    auto_terminal = re.search(
+        r'else if \(m\.type === "auto_run_terminal"\)(?P<body>.*?)\n  else if',
+        events,
+        flags=re.DOTALL,
+    )
+    assert auto_terminal, "onEvent must keep the Auto Mode terminal branch"
+    assert "scheduleWorkbenchRefresh" in auto_terminal.group("body")
+    assert "setLiveReviewBadge" not in auto_terminal.group("body")
+    assert "applyCandidateResolution(m, fid)" in events
+    assert "applyFinalReviewStatus(m, fid)" in events
+
+    stored = _fn("renderStored")
+    selector = _fn("candidateMessageNode")
+    committed = _fn("candidateReplacementCommitted")
+    replacement = _fn("replaceMessageAnswer")
+    dedupe = _fn("storedCandidateOwnsChunk")
+
+    assert "rememberCandidateIdentity(w, m)" in stored
+    assert "identity.messageId" in selector and "dataset.messageId" in selector
+    assert "value.durable === true" in committed
+    assert "value.delivered === true" in committed
+    assert "value.replaced === true" in committed
+    assert "addMsgActions(node, text)" in replacement
+    assert "candidateMessageNode(value)" in dedupe
+    assert "discardDuplicateLiveCandidate(target, value)" in dedupe
+
+
+def _drive_candidate_resolution(program: str) -> dict:
+    lifted = "\n".join(
+        _fn(name)
+        for name in (
+            "candidateIdentityText",
+            "candidateIdentity",
+            "rememberCandidateIdentity",
+            "candidateNodeMatches",
+            "candidateMessageNode",
+            "reviewStatusFrom",
+            "reviewTruthFrom",
+            "candidateReplacementText",
+            "candidateReplacementCommitted",
+            "applyCandidateResolution",
+            "applyFinalReviewStatus",
+        )
+    )
+    harness = """
+const S = { stream: null };
+const nodes = [];
+const host = { querySelectorAll: () => nodes };
+const $ = selector => selector === "#messages" ? host : null;
+const calls = { replace: [], badge: [], resync: [] };
+function node(messageId, turnId, executionId, status) {
+  return { dataset: {
+    ...(messageId ? { messageId } : {}),
+    ...(turnId ? { turnId } : {}),
+    ...(executionId ? { executionId } : {}),
+    ...(status ? { reviewStatus: status } : {}),
+  } };
+}
+function discardDuplicateLiveCandidate() {}
+function replaceMessageAnswer(target, text) {
+  calls.replace.push({ id: target.dataset.messageId || "", text });
+  target.text = text;
+  return true;
+}
+function setMessageReviewBadge(target, status, truth) {
+  calls.badge.push({ id: target.dataset.messageId || "", status, truth });
+  target.dataset.reviewStatus = status;
+  return true;
+}
+function scheduleConversationResync(fid) { calls.resync.push(fid); }
+"""
+    out = subprocess.run(
+        [NODE, "--input-type=module", "-e", harness + lifted + "\n" + program],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr[:1200]
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_candidate_replacement_requires_exact_durable_delivery() -> None:
+    state = _drive_candidate_resolution("""
+        const first = node("m-1", "turn-1", "exec-1", "candidate");
+        const exact = node("m-2", "turn-2", "exec-2", "candidate");
+        nodes.push(first, exact);
+        const result = applyCandidateResolution({
+          message_id: "m-2", turn_id: "turn-2", execution_id: "exec-2",
+          replaced: true, delivered: true, durable: true, text: "reviewed answer",
+          review_status: "verified", user_truth: "Verified"
+        }, "frame-1");
+        console.log(JSON.stringify({ result, calls, first, exact }));
+        """)
+
+    assert state["result"] == {
+        "targetFound": True,
+        "replacementApplied": True,
+        "badgeApplied": True,
+    }
+    assert state["calls"]["replace"] == [{"id": "m-2", "text": "reviewed answer"}]
+    assert state["calls"]["badge"] == [
+        {"id": "m-2", "status": "verified", "truth": "Verified"}
+    ]
+    assert state["calls"]["resync"] == []
+    assert "text" not in state["first"]
+    assert state["exact"]["dataset"]["candidateResolved"] == "true"
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_unchanged_durable_candidate_is_verified_without_rewriting_text() -> None:
+    state = _drive_candidate_resolution("""
+        const exact = node("m-1", "turn-1", "exec-1", "candidate");
+        exact.text = "reviewed unchanged answer";
+        nodes.push(exact);
+        const result = applyCandidateResolution({
+          message_id: "m-1", turn_id: "turn-1", execution_id: "exec-1",
+          replaced: false, delivered: true, durable: true,
+          review_status: "verified", user_truth: "Verified"
+        }, "frame-1");
+        console.log(JSON.stringify({ result, calls, exact }));
+        """)
+
+    assert state["result"] == {
+        "targetFound": True,
+        "replacementApplied": False,
+        "badgeApplied": True,
+    }
+    assert state["calls"]["replace"] == []
+    assert state["calls"]["badge"] == [
+        {"id": "m-1", "status": "verified", "truth": "Verified"}
+    ]
+    assert state["exact"]["text"] == "reviewed unchanged answer"
+    assert state["exact"]["dataset"]["candidateResolved"] == "true"
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_final_frame_cannot_verify_an_unresolved_candidate() -> None:
+    state = _drive_candidate_resolution("""
+        const exact = node("m-1", "turn-1", "exec-1", "candidate");
+        nodes.push(exact);
+        const refused = applyFinalReviewStatus({
+          message_id: "m-1", review_status: "verified"
+        }, "frame-1");
+        exact.dataset.candidateResolved = "true";
+        const accepted = applyFinalReviewStatus({
+          message_id: "m-1", review_status: "verified"
+        }, "frame-1");
+        console.log(JSON.stringify({ refused, accepted, calls, exact }));
+        """)
+
+    assert state["refused"] is False
+    assert state["accepted"] is True
+    assert state["calls"]["resync"] == ["frame-1"]
+    assert state["calls"]["badge"] == [{"id": "m-1", "status": "verified", "truth": ""}]
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {"delivered": False, "durable": True},
+        {"delivered": True, "durable": False},
+        {"delivered": True},
+    ],
+)
+def test_candidate_replacement_failure_keeps_provisional_text_and_refetches(
+    receipt: dict[str, bool],
+) -> None:
+    state = _drive_candidate_resolution("""
+        const exact = node("m-1", "turn-1", "exec-1", "candidate");
+        exact.text = "provisional answer";
+        nodes.push(exact);
+        const receipt = %s;
+        const result = applyCandidateResolution({
+          message_id: "m-1", turn_id: "turn-1", execution_id: "exec-1",
+          replaced: true, text: "reviewed answer", review_status: "verified",
+          ...receipt
+        }, "frame-1");
+        console.log(JSON.stringify({ result, calls, exact }));
+        """ % json.dumps(receipt))
+
+    assert state["result"]["replacementApplied"] is False
+    assert state["result"]["badgeApplied"] is False
+    assert state["calls"]["replace"] == []
+    assert state["calls"]["badge"] == []
+    assert state["calls"]["resync"], "failed promotion must request REST truth"
+    assert state["exact"]["text"] == "provisional answer"
+    assert state["exact"]["dataset"]["reviewStatus"] == "candidate"
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_missing_exact_candidate_row_never_falls_back_to_live_turn_identity() -> None:
+    state = _drive_candidate_resolution("""
+        const live = node("", "turn-1", "exec-1", "candidate");
+        live.text = "provisional answer";
+        nodes.push(live);
+        S.stream = { wrap: live };
+        const result = applyCandidateResolution({
+          message_id: "m-durable", turn_id: "turn-1", execution_id: "exec-1",
+          replaced: true, delivered: true, durable: true, text: "reviewed answer",
+          review_status: "verified"
+        }, "frame-1");
+        console.log(JSON.stringify({ result, calls, live }));
+        """)
+
+    assert state["result"]["targetFound"] is False
+    assert state["calls"]["replace"] == []
+    assert state["calls"]["badge"] == []
+    assert state["calls"]["resync"]
+    assert state["live"]["text"] == "provisional answer"
+    assert "messageId" not in state["live"]["dataset"]
+
+
+def _drive_candidate_replay(program: str) -> dict:
+    lifted = "\n".join(
+        _fn(name)
+        for name in (
+            "candidateIdentityText",
+            "candidateIdentity",
+            "rememberCandidateIdentity",
+            "candidateNodeMatches",
+            "candidateMessageNode",
+            "reviewStatusFrom",
+            "discardDuplicateLiveCandidate",
+            "storedCandidateOwnsChunk",
+        )
+    )
+    harness = """
+const S = { stream: null };
+const nodes = [];
+const host = { querySelectorAll: () => nodes };
+const $ = selector => selector === "#messages" ? host : null;
+const calls = { badges: 0, removed: 0 };
+function stored(messageId, turnId, executionId, status) {
+  return { dataset: { messageId, turnId, executionId, reviewStatus: status } };
+}
+function live(turnId, executionId) {
+  return {
+    dataset: { turnId, executionId },
+    remove() { calls.removed += 1; }
+  };
+}
+function setMessageReviewBadge(target, status) {
+  calls.badges += 1; target.dataset.reviewStatus = status; return true;
+}
+"""
+    out = subprocess.run(
+        [NODE, "--input-type=module", "-e", harness + lifted + "\n" + program],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr[:1200]
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_replayed_provisional_chunks_defer_to_the_stored_candidate() -> None:
+    state = _drive_candidate_replay("""
+        const row = stored("m-1", "turn-1", "exec-1", "candidate");
+        const duplicate = live("turn-1", "exec-1");
+        nodes.push(row, duplicate); S.stream = { wrap: duplicate };
+        const owned = storedCandidateOwnsChunk({
+          turn_id: "turn-1", execution_id: "exec-1", provisional: true,
+          block_type: "text", chunk: "provisional answer"
+        });
+        console.log(JSON.stringify({ owned, calls, stream: S.stream }));
+        """)
+
+    assert state["owned"] is True
+    assert state["calls"]["removed"] == 1
+    assert state["stream"] is None
+
+
+@pytest.mark.skipif(NODE is None, reason="no node on this machine")
+def test_replay_dedupe_does_not_claim_an_unrelated_or_final_chunk() -> None:
+    state = _drive_candidate_replay("""
+        const row = stored("m-1", "turn-1", "exec-1", "verified");
+        nodes.push(row);
+        const otherTurn = storedCandidateOwnsChunk({
+          turn_id: "turn-2", execution_id: "exec-2", provisional: true,
+          block_type: "text", chunk: "different turn"
+        });
+        const finalChunk = storedCandidateOwnsChunk({
+          turn_id: "turn-1", execution_id: "exec-1", provisional: false,
+          block_type: "text", chunk: "ordinary final text"
+        });
+        const replay = storedCandidateOwnsChunk({
+          message_id: "m-1", turn_id: "turn-1", execution_id: "exec-1",
+          provisional: true, block_type: "text", chunk: "old candidate"
+        });
+        console.log(JSON.stringify({ otherTurn, finalChunk, replay, calls, row }));
+        """)
+
+    assert state["otherTurn"] is False
+    assert state["finalChunk"] is False
+    assert state["replay"] is True
+    assert state["calls"]["badges"] == 0, "replay must not demote a final REST row"
+    assert state["row"]["dataset"]["reviewStatus"] == "verified"

@@ -1,10 +1,10 @@
-"""Stage 3 Scientific Reviewer V2 shadow orchestration.
+"""Scientific Reviewer V2 orchestration for Stage 3 shadow and Stage 4 gate.
 
-Shadow mode delivers the existing answer unchanged and records what the
-independent Reviewer would have judged. It never promotes Verified, never
-starts Repair, and never writes the formal workspace. Deterministic snapshot
-and adapter checks run before any model call so an omitted artifact cannot
-pass even if a model says it can.
+Stage 3 records a non-gating shadow judgment. Stage 4 freezes the same evidence
+but opens and closes a completion-gating durable review that can later support
+an exact post-delivery terminal. Neither path promotes a message itself.
+Deterministic snapshot and adapter checks run before any model call so an
+omitted artifact cannot pass even if a model says it can.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from openai4s.server.evidence_snapshot import (
     collect_turn_evidence,
     freeze_evidence_snapshot,
     resolve_evidence_ref,
-    snapshot_digest,
 )
 from openai4s.server.review_scratch import (
     ReviewScratchError,
@@ -65,6 +64,101 @@ def _storage_digest(value: Any) -> str:
         allow_nan=False,
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _durable_snapshot_payload(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the exact JSON object committed as durable review evidence."""
+
+    payload = {
+        key: value for key, value in dict(snapshot).items() if key != "snapshot_sha256"
+    }
+    # Match AutoModeRepository's JSON boundary.  In particular, a value with a
+    # useful ``__str__`` must be frozen before either digest is computed rather
+    # than being stringified independently by two callers.
+    return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def candidate_snapshot_digest(snapshot: Mapping[str, Any]) -> str:
+    """Digest the exact candidate bytes and structured completion reviewed."""
+
+    durable = _durable_snapshot_payload(snapshot)
+    return _storage_digest(
+        {
+            "candidate_answer": durable.get("candidate_answer"),
+            "structured_completion": durable.get("structured_completion"),
+        }
+    )
+
+
+def durable_review_matches(
+    result: Mapping[str, Any],
+    *,
+    candidate_answer: str,
+    root_frame_id: str,
+    branch_id: str,
+    turn_id: str,
+    execution_id: str,
+    gates_completion: bool = True,
+) -> bool:
+    """Validate a returned proof against the exact candidate it may certify.
+
+    A truthy ``storage_enabled`` flag is not proof.  This deliberately
+    recomputes both storage digests and checks the durable open/close event
+    identities so a proof from another candidate (including another candidate
+    in the same turn) cannot be replayed into a green badge.
+    """
+
+    proof = result.get("durable_review")
+    snapshot = result.get("snapshot")
+    if not isinstance(proof, Mapping) or not isinstance(snapshot, Mapping):
+        return False
+    identity = snapshot.get("identity")
+    if not isinstance(identity, Mapping):
+        return False
+    expected_identity = {
+        "root_frame_id": str(root_frame_id),
+        "branch_id": str(branch_id),
+        "turn_id": str(turn_id),
+        "execution_id": str(execution_id),
+    }
+    if any(
+        str(identity.get(key) or "") != value
+        for key, value in expected_identity.items()
+    ):
+        return False
+    if any(
+        str(proof.get(key) or "") != value for key, value in expected_identity.items()
+    ):
+        return False
+    if snapshot.get("candidate_answer") != candidate_answer:
+        return False
+    payload = _durable_snapshot_payload(snapshot)
+    candidate_sha = candidate_snapshot_digest(snapshot)
+    evidence_sha = _storage_digest(payload)
+    if str(snapshot.get("snapshot_sha256") or "") != evidence_sha:
+        return False
+    if (
+        proof.get("opened") is not True
+        or proof.get("closed") is not True
+        or proof.get("gates_completion") is not gates_completion
+        or str(proof.get("candidate_snapshot_sha256") or "") != candidate_sha
+        or str(proof.get("evidence_snapshot_sha256") or "") != evidence_sha
+        or str(proof.get("snapshot_sha256") or "") != evidence_sha
+        or str(proof.get("verdict") or "") != "pass"
+        or str(proof.get("status") or "") != "completed"
+        or str(result.get("verdict") or "") != "pass"
+    ):
+        return False
+    for key in (
+        "run_id",
+        "candidate_id",
+        "review_run_id",
+        "open_event_id",
+        "close_event_id",
+    ):
+        if not isinstance(proof.get(key), str) or not proof.get(key):
+            return False
+    return proof.get("open_event_id") != proof.get("close_event_id")
 
 
 class ScientificReviewService:
@@ -427,7 +521,9 @@ class ScientificReviewService:
                         category="provenance",
                         claim_ref=f"forged evidence_refs {forged}",
                         evidence_refs=["source:candidate_answer"],
-                        reproduction="Reviewer cited a ref_id that is not in the snapshot.",
+                        reproduction=(
+                            "Reviewer cited a ref_id that is not in the snapshot."
+                        ),
                     )
                 )
             if valid or cleaned.get("category") == "evidence_incomplete":
@@ -446,11 +542,14 @@ class ScientificReviewService:
         reviewer_profile: Mapping[str, Any] | None = None,
         chat_call: ChatCall | None = None,
         allow_same_model: bool = False,
+        cancel: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Evaluate one frozen snapshot. This is the shipped Stage 3 entry."""
 
         frozen = dict(snapshot)
-        if frozen.get("frozen") is not True or "snapshot_sha256" not in frozen:
+        if frozen.get("frozen") is not True or str(
+            frozen.get("snapshot_sha256") or ""
+        ) != _storage_digest(_durable_snapshot_payload(frozen)):
             frozen = freeze_evidence_snapshot(frozen)
         identity = self.freeze_reviewer_identity(
             agent_cfg=agent_cfg,
@@ -492,6 +591,21 @@ class ScientificReviewService:
         attempts = 0
         last_error: Exception | None = None
         while attempts < 2:
+            if self._cancel_requested(cancel):
+                return {
+                    "verdict": "review_unavailable",
+                    "status": "unavailable",
+                    "reason": "review_cancelled",
+                    "summary": "Reviewer inference was cancelled",
+                    "findings": findings,
+                    "snapshot": frozen,
+                    "reviewer": identity,
+                    "same_model_independent_session": not identity["independent"],
+                    "gates_completion": False,
+                    "usage": {},
+                    "attempts": attempts,
+                    "cancelled": True,
+                }
             attempts += 1
             try:
                 model_result = review_snapshot(
@@ -567,6 +681,7 @@ class ScientificReviewService:
         candidate_answer: str,
         structured_completion: Any = None,
         artifact_versions_before: Mapping[str, Any] | None = None,
+        produced_artifacts: list[Mapping[str, Any]] | None = None,
         cell_count_before: int = 0,
         step_count_before: int = 0,
         agent_cfg: Any,
@@ -574,27 +689,25 @@ class ScientificReviewService:
         emit: EventSink | None = None,
         workspace: str | None = None,
         artifact_paths: Mapping[str, str] | None = None,
+        mode_override: str | None = None,
+        gates_completion: bool = False,
+        round_index: int = 0,
+        cancel: Callable[[], bool] | None = None,
     ) -> dict[str, Any] | None:
-        """Record a shadow review after the existing answer is already delivered."""
+        """Review one turn and return the exact durable proof, when available.
 
-        if not self.feature_enabled:
+        Stage 3 uses the defaults and remains a non-gating shadow.  Stage 4
+        passes a mode frozen by the gateway plus ``gates_completion=True``;
+        that path must never re-read a newly changed session selection.
+        """
+
+        if not self.feature_enabled and not gates_completion:
             return None
-        selection = {
-            "result_review_mode": "off",
-            "preset": "off",
-            "approvals_reviewer": "user",
-        }
-        if self.auto_mode is not None:
-            try:
-                projected = self.auto_mode.get(root_frame_id)
-                selection = dict((projected or {}).get("selection") or selection)
-            except Exception:  # noqa: BLE001 - fail closed to off
-                selection = {
-                    "result_review_mode": "off",
-                    "preset": "off",
-                    "approvals_reviewer": "user",
-                }
-        mode = str(selection.get("result_review_mode") or "off")
+        mode, selection = self._selection_for_review(
+            root_frame_id,
+            mode_override=mode_override,
+            fail_closed=gates_completion,
+        )
         if mode == "off":
             return None
         snapshot = collect_turn_evidence(
@@ -607,24 +720,11 @@ class ScientificReviewService:
             candidate_answer=candidate_answer,
             structured_completion=structured_completion,
             artifact_versions_before=artifact_versions_before,
+            produced_artifacts=produced_artifacts,
             cell_count_before=cell_count_before,
             step_count_before=step_count_before,
         )
-        profile = None
-        try:
-            profiles = self.store.list_model_profiles()
-            wanted = str(getattr(reviewer_cfg, "model", "") or "")
-            profile = next(
-                (
-                    item
-                    for item in profiles
-                    if str(item.get("model") or "") == wanted
-                    or str(item.get("profile_id") or item.get("id") or "") == wanted
-                ),
-                None,
-            )
-        except Exception:  # noqa: BLE001
-            profile = None
+        profile = self._reviewer_profile(reviewer_cfg)
         # Freeze here, not inside `evaluate`, so the bytes the reviewer is
         # asked about are the same bytes the candidate row is hashed from. A
         # snapshot frozen twice is frozen once: `evaluate` leaves an already
@@ -636,6 +736,16 @@ class ScientificReviewService:
             profile=profile,
         )
         handle: dict[str, Any] | None = None
+        proof = self._empty_durable_proof(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            execution_id=execution_id,
+            mode=mode,
+            snapshot=frozen,
+            gates_completion=gates_completion,
+            round_index=round_index,
+        )
         if self.storage_enabled:
             try:
                 handle = self.open_review_run(
@@ -648,30 +758,285 @@ class ScientificReviewService:
                     selection=selection,
                     snapshot=frozen,
                     reviewer=identity,
+                    gates_completion=gates_completion,
+                    round_index=round_index,
                 )
-            except (AutoModeConflictError, ValueError, PermissionError, KeyError):
-                # Review must not fail the turn. Without a handle nothing durable
-                # backs the verdict, and `CompletionGateService` refuses to call
-                # anything Verified that storage did not confirm.
-                handle = None
-        result = self.evaluate(
-            frozen,
-            result_review_mode=mode,
-            agent_cfg=agent_cfg,
-            reviewer_cfg=reviewer_cfg,
-            reviewer_profile=profile,
-        )
+                proof = self._proof_from_handle(handle, opened=True, closed=False)
+            except Exception as error:  # noqa: BLE001 - close a lost-response open
+                # ``start_review`` is durable before the model call.  A wrapper
+                # can therefore raise after SQLite committed.  The deterministic
+                # handle lets us close that possible owner as unavailable instead
+                # of leaving the run forever in ``reviewing``.
+                handle = self._review_binding(
+                    root_frame_id=root_frame_id,
+                    branch_id=branch_id,
+                    turn_id=turn_id,
+                    execution_id=execution_id,
+                    mode=mode,
+                    snapshot=frozen,
+                    gates_completion=gates_completion,
+                    round_index=round_index,
+                )
+                result = self._unavailable_result(
+                    frozen,
+                    identity,
+                    reason="durable_review_open_failed",
+                    summary=str(error)[:300] or "Durable review could not be opened",
+                    gates_completion=gates_completion,
+                )
+                result, proof = self._close_review_safely(
+                    handle, result, gates_completion=gates_completion
+                )
+                proof["open_error"] = type(error).__name__
+                result["durable_review"] = proof
+                self._persist_review_step_safely(
+                    root_frame_id,
+                    result,
+                    emit=emit,
+                    gates_completion=gates_completion,
+                )
+                return result
+        try:
+            result = self.evaluate(
+                frozen,
+                result_review_mode=mode,
+                agent_cfg=agent_cfg,
+                reviewer_cfg=reviewer_cfg,
+                reviewer_profile=profile,
+                cancel=cancel,
+            )
+        except Exception as error:  # noqa: BLE001 - durable owner must be closed
+            result = self._unavailable_result(
+                frozen,
+                identity,
+                reason="reviewer_inference_failed",
+                summary=str(error)[:300] or "Reviewer inference failed",
+                gates_completion=gates_completion,
+            )
+        result = dict(result)
+        result["gates_completion"] = bool(gates_completion)
         if workspace or artifact_paths:
             self._optional_scratch_recheck(
                 result, workspace=workspace, artifact_paths=artifact_paths
             )
-        self._persist_shadow_step(root_frame_id, result, emit=emit)
         if handle is not None:
-            try:
-                self.close_review_run(handle, result)
-            except (AutoModeConflictError, ValueError, PermissionError, KeyError):
-                pass
+            result, proof = self._close_review_safely(
+                handle, result, gates_completion=gates_completion
+            )
+        result["durable_review"] = proof
+        # Persist the visible step only after the durable review owner is
+        # closed.  A step-store exception must never strand the review phase.
+        self._persist_review_step_safely(
+            root_frame_id,
+            result,
+            emit=emit,
+            gates_completion=gates_completion,
+        )
         return result
+
+    @staticmethod
+    def _cancel_requested(cancel: Callable[[], bool] | None) -> bool:
+        if cancel is None:
+            return False
+        try:
+            return bool(cancel())
+        except Exception:  # noqa: BLE001 - cancellation checks fail closed
+            return True
+
+    def persist_review_result(
+        self,
+        *,
+        root_frame_id: str,
+        project_id: str,
+        branch_id: str,
+        turn_id: str,
+        execution_id: str,
+        mode_override: str,
+        result: Mapping[str, Any],
+        round_index: int,
+        gates_completion: bool = True,
+        emit: EventSink | None = None,
+    ) -> dict[str, Any]:
+        """Durably bind an already-computed fresh re-review to its candidate.
+
+        ``AutoRepairService`` performs the re-review in memory.  Stage 4 calls
+        this for the final repaired snapshot; without the returned open+close
+        proof the repaired text remains deliverable but cannot become Verified.
+        No model call is made here.
+        """
+
+        del project_id  # retained for a stable orchestration signature
+        mode, selection = self._selection_for_review(
+            root_frame_id,
+            mode_override=mode_override,
+            fail_closed=gates_completion,
+        )
+        current = dict(result)
+        snapshot = current.get("snapshot")
+        if not isinstance(snapshot, Mapping):
+            snapshot = {}
+        frozen = dict(snapshot)
+        if frozen.get("frozen") is not True or str(
+            frozen.get("snapshot_sha256") or ""
+        ) != _storage_digest(_durable_snapshot_payload(frozen)):
+            frozen = freeze_evidence_snapshot(frozen)
+        current["snapshot"] = frozen
+        current["gates_completion"] = bool(gates_completion)
+        reviewer = current.get("reviewer")
+        reviewer = (
+            dict(reviewer)
+            if isinstance(reviewer, Mapping)
+            else {
+                "profile_id": "scientific-reviewer",
+                "profile_revision": 1,
+                "model_fingerprint": "unknown",
+            }
+        )
+        proof = self._empty_durable_proof(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            execution_id=execution_id,
+            mode=mode,
+            snapshot=frozen,
+            gates_completion=gates_completion,
+            round_index=round_index,
+        )
+        if not self.storage_enabled or mode == "off":
+            current["durable_review"] = proof
+            return current
+        try:
+            handle = self.open_review_run(
+                root_frame_id=root_frame_id,
+                project_id="",
+                branch_id=branch_id,
+                turn_id=turn_id,
+                execution_id=execution_id,
+                mode=mode,
+                selection=selection,
+                snapshot=frozen,
+                reviewer=reviewer,
+                gates_completion=gates_completion,
+                round_index=round_index,
+            )
+        except Exception as error:  # noqa: BLE001 - fail closed, try lost open
+            handle = self._review_binding(
+                root_frame_id=root_frame_id,
+                branch_id=branch_id,
+                turn_id=turn_id,
+                execution_id=execution_id,
+                mode=mode,
+                snapshot=frozen,
+                gates_completion=gates_completion,
+                round_index=round_index,
+            )
+            unavailable = self._unavailable_result(
+                frozen,
+                reviewer,
+                reason="durable_review_open_failed",
+                summary=str(error)[:300] or "Durable re-review could not be opened",
+                gates_completion=gates_completion,
+            )
+            _closed_result, proof = self._close_review_safely(
+                handle, unavailable, gates_completion=gates_completion
+            )
+            proof["open_error"] = type(error).__name__
+            current["durable_review"] = proof
+            return current
+        current, proof = self._close_review_safely(
+            handle, current, gates_completion=gates_completion
+        )
+        current["durable_review"] = proof
+        self._persist_review_step_safely(
+            root_frame_id,
+            current,
+            emit=emit,
+            gates_completion=gates_completion,
+        )
+        return current
+
+    def _selection_for_review(
+        self,
+        root_frame_id: str,
+        *,
+        mode_override: str | None,
+        fail_closed: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        if mode_override is not None:
+            mode = str(mode_override)
+            if mode not in {"off", "review_only", "auto_fix"}:
+                return "review_only", {
+                    "result_review_mode": "review_only",
+                    "preset": "off",
+                    "approvals_reviewer": "user",
+                }
+            return mode, {
+                "result_review_mode": mode,
+                "preset": "autonomous" if mode == "auto_fix" else "off",
+                "approvals_reviewer": "auto_review" if mode == "auto_fix" else "user",
+            }
+        selection: dict[str, Any] = {
+            "result_review_mode": "off",
+            "preset": "off",
+            "approvals_reviewer": "user",
+        }
+        if self.auto_mode is not None:
+            try:
+                projected = self.auto_mode.get(root_frame_id)
+                selected = (projected or {}).get("selection")
+                if isinstance(selected, Mapping) and "result_review_mode" in selected:
+                    selection = dict(selected)
+                elif fail_closed:
+                    selection["result_review_mode"] = "review_only"
+            except Exception:  # noqa: BLE001 - Stage 4 must stay armed
+                if fail_closed:
+                    selection["result_review_mode"] = "review_only"
+        elif fail_closed:
+            selection["result_review_mode"] = "review_only"
+        mode = str(selection.get("result_review_mode") or "off")
+        if mode not in {"off", "review_only", "auto_fix"}:
+            mode = "review_only" if fail_closed else "off"
+        selection["result_review_mode"] = mode
+        return mode, selection
+
+    def _reviewer_profile(self, reviewer_cfg: Any) -> Mapping[str, Any] | None:
+        try:
+            profiles = self.store.list_model_profiles()
+            wanted = str(getattr(reviewer_cfg, "model", "") or "")
+            return next(
+                (
+                    item
+                    for item in profiles
+                    if str(item.get("model") or "") == wanted
+                    or str(item.get("profile_id") or item.get("id") or "") == wanted
+                ),
+                None,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _unavailable_result(
+        snapshot: Mapping[str, Any],
+        reviewer: Mapping[str, Any],
+        *,
+        reason: str,
+        summary: str,
+        gates_completion: bool,
+    ) -> dict[str, Any]:
+        return {
+            "verdict": "review_unavailable",
+            "status": "unavailable",
+            "reason": reason,
+            "summary": summary,
+            "findings": [],
+            "snapshot": dict(snapshot),
+            "reviewer": dict(reviewer),
+            "same_model_independent_session": False,
+            "gates_completion": bool(gates_completion),
+            "usage": {},
+            "attempts": 1,
+        }
 
     def _optional_scratch_recheck(
         self,
@@ -702,18 +1067,44 @@ class ScientificReviewService:
             if scratch is not None:
                 cleanup_scratch(scratch)
 
-    def _persist_shadow_step(
+    def _persist_review_step_safely(
         self,
         root_frame_id: str,
         result: Mapping[str, Any],
         *,
         emit: EventSink | None,
+        gates_completion: bool,
     ) -> None:
-        step_id = f"review-shadow-{uuid.uuid4().hex[:12]}"
+        try:
+            self._persist_review_step(
+                root_frame_id,
+                result,
+                emit=emit,
+                gates_completion=gates_completion,
+            )
+        except Exception:  # noqa: BLE001 - the durable review is already closed
+            return
+
+    def _persist_review_step(
+        self,
+        root_frame_id: str,
+        result: Mapping[str, Any],
+        *,
+        emit: EventSink | None,
+        gates_completion: bool,
+    ) -> None:
+        mode = "completion_gate" if gates_completion else "shadow"
+        stage = 4 if gates_completion else 3
+        title = (
+            "Scientific Reviewer (completion gate)"
+            if gates_completion
+            else "Scientific Reviewer (shadow)"
+        )
+        step_id = f"review-{mode}-{uuid.uuid4().hex[:12]}"
         snapshot = result.get("snapshot") or {}
         output = {
-            "mode": "shadow",
-            "stage": 3,
+            "mode": mode,
+            "stage": stage,
             "verdict": result.get("verdict"),
             "summary": result.get("summary"),
             "findings": result.get("findings") or [],
@@ -722,22 +1113,23 @@ class ScientificReviewService:
             "same_model_independent_session": result.get(
                 "same_model_independent_session"
             ),
-            "gates_completion": False,
+            "gates_completion": bool(gates_completion),
             "reason": result.get("reason"),
+            "durable_review": result.get("durable_review"),
         }
         self.store.add_step(
             step_id=step_id,
             frame_id=root_frame_id,
             kind="review",
-            title="Scientific Reviewer (shadow)",
-            input={"mode": "shadow", "stage": 3},
+            title=title,
+            input={"mode": mode, "stage": stage},
             status="running",
         )
         self.store.update_step(
             step_id,
             status="done",
             output=output,
-            summary=str(result.get("summary") or result.get("verdict") or "shadow"),
+            summary=str(result.get("summary") or result.get("verdict") or mode),
         )
         if emit is None:
             return
@@ -747,7 +1139,7 @@ class ScientificReviewService:
                 "frame_id": root_frame_id,
                 "step_id": step_id,
                 "kind": "review",
-                "title": "Scientific Reviewer (shadow)",
+                "title": title,
                 "status": "done",
                 "output": output,
                 "summary": output["summary"],
@@ -766,6 +1158,8 @@ class ScientificReviewService:
         selection: Mapping[str, Any],
         snapshot: Mapping[str, Any],
         reviewer: Mapping[str, Any],
+        gates_completion: bool = False,
+        round_index: int = 0,
     ) -> dict[str, Any]:
         """Commit the candidate and open the review BEFORE the reviewer runs.
 
@@ -782,34 +1176,34 @@ class ScientificReviewService:
         Returns the handle :meth:`close_review_run` needs.
         """
 
-        payload = {
-            key: value
-            for key, value in dict(snapshot).items()
-            if key != "snapshot_sha256"
-        }
-        # Storage hashes the exact JSON object it persists.
-        payload = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
-        candidate_id = f"cand-{turn_id}"
-        candidate_sha = _storage_digest(
-            {
-                "candidate_answer": snapshot.get("candidate_answer"),
-                "structured_completion": snapshot.get("structured_completion"),
-            }
+        del project_id  # kept in the public orchestration signature
+        handle = self._review_binding(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            execution_id=execution_id,
+            mode=mode,
+            snapshot=snapshot,
+            gates_completion=gates_completion,
+            round_index=round_index,
         )
-        evidence_sha = _storage_digest(payload)
+        payload = handle["evidence_snapshot"]
+        candidate_id = str(handle["candidate_id"])
+        candidate_sha = str(handle["candidate_snapshot_sha256"])
+        evidence_sha = str(handle["evidence_snapshot_sha256"])
         versions = [
             str(item.get("version_id"))
             for item in (snapshot.get("artifacts") or [])
             if isinstance(item, Mapping) and item.get("version_id")
         ]
-        run_id = f"auto-{root_frame_id}-{turn_id}"
+        run_id = str(handle["run_id"])
         budgets = {}
         auto_cfg = getattr(self.config, "auto_mode", None)
         if auto_cfg is not None and getattr(auto_cfg, "budgets", None) is not None:
             budgets = asdict(auto_cfg.budgets)
         self.store.start_auto_mode_run(
             run_id=run_id,
-            idempotency_key=f"{turn_id}:auto-run",
+            idempotency_key=str(handle["run_idempotency_key"]),
             root_frame_id=root_frame_id,
             branch_id=branch_id,
             turn_id=turn_id,
@@ -821,24 +1215,24 @@ class ScientificReviewService:
         )
         self.store.record_auto_mode_candidate(
             run_id,
-            idempotency_key=f"{turn_id}:candidate",
+            idempotency_key=str(handle["candidate_idempotency_key"]),
             candidate_id=candidate_id,
             candidate_snapshot_sha256=candidate_sha,
             evidence_snapshot_sha256=evidence_sha,
             candidate_version_ids=versions,
         )
         reviewer_identity = dict(reviewer)
-        review_run_id = f"review-{turn_id}"
-        self.store.start_auto_mode_review(
+        review_run_id = str(handle["review_run_id"])
+        opened = self.store.start_auto_mode_review(
             run_id,
             review_run_id=review_run_id,
-            audit_id=f"audit-{turn_id}",
-            idempotency_key=f"{turn_id}:review-start",
+            audit_id=str(handle["audit_id"]),
+            idempotency_key=str(handle["review_start_idempotency_key"]),
             candidate_id=candidate_id,
             candidate_snapshot_sha256=candidate_sha,
             evidence_snapshot=payload,
             evidence_snapshot_sha256=evidence_sha,
-            round_index=0,
+            round_index=round_index,
             # The round's first attempt. How many transient reviewer retries it
             # took is only knowable once the reviewer answered, and lands on the
             # completion assessment instead -- this row exists precisely to be
@@ -852,24 +1246,148 @@ class ScientificReviewService:
                 or "unknown",
             },
         )
+        if (
+            str(opened.get("run_id") or "") != run_id
+            or str(opened.get("review_run_id") or "") != review_run_id
+            or str(opened.get("candidate_id") or "") != candidate_id
+            or str(opened.get("candidate_snapshot_sha256") or "") != candidate_sha
+            or str(opened.get("evidence_snapshot_sha256") or "") != evidence_sha
+            or str((opened.get("event") or {}).get("type") or "")
+            != "auto_audit_started"
+        ):
+            raise AutoModeConflictError("durable review open transition mismatch")
+        handle["open_transition"] = opened
+        return handle
+
+    def _review_binding(
+        self,
+        *,
+        root_frame_id: str,
+        branch_id: str,
+        turn_id: str,
+        execution_id: str,
+        mode: str,
+        snapshot: Mapping[str, Any],
+        gates_completion: bool,
+        round_index: int,
+    ) -> dict[str, Any]:
+        payload = _durable_snapshot_payload(snapshot)
+        candidate_sha = candidate_snapshot_digest(snapshot)
+        evidence_sha = _storage_digest(payload)
+        binding_sha = _storage_digest(
+            {
+                "turn_id": turn_id,
+                "candidate_snapshot_sha256": candidate_sha,
+                "evidence_snapshot_sha256": evidence_sha,
+            }
+        )
+        turn_token = hashlib.sha256(str(turn_id).encode("utf-8")).hexdigest()[:12]
+        binding_token = binding_sha[:20]
+        round_token = max(0, int(round_index))
+        candidate_id = f"cand-{turn_token}-{binding_token}"
+        review_run_id = f"review-{turn_token}-r{round_token}-{binding_token}"
         return {
-            "run_id": run_id,
+            "run_id": f"auto-{root_frame_id}-{turn_id}",
             "review_run_id": review_run_id,
+            "audit_id": f"audit-{turn_token}-r{round_token}-{binding_token}",
             "candidate_id": candidate_id,
-            "turn_id": turn_id,
+            "root_frame_id": str(root_frame_id),
+            "branch_id": str(branch_id),
+            "turn_id": str(turn_id),
+            "execution_id": str(execution_id),
+            "mode": mode,
+            "round_index": round_token,
+            "gates_completion": bool(gates_completion),
+            "candidate_snapshot_sha256": candidate_sha,
+            "evidence_snapshot_sha256": evidence_sha,
+            "snapshot_sha256": str(snapshot.get("snapshot_sha256") or ""),
+            "evidence_snapshot": payload,
+            "run_idempotency_key": f"{turn_token}:auto-run",
+            "candidate_idempotency_key": f"{turn_token}:candidate:{binding_token}",
+            "review_start_idempotency_key": (
+                f"{turn_token}:review:r{round_token}:{binding_token}:start"
+            ),
+            "review_close_idempotency_key": (
+                f"{turn_token}:review:r{round_token}:{binding_token}:complete"
+            ),
+        }
+
+    def _empty_durable_proof(
+        self,
+        *,
+        root_frame_id: str,
+        branch_id: str,
+        turn_id: str,
+        execution_id: str,
+        mode: str,
+        snapshot: Mapping[str, Any],
+        gates_completion: bool,
+        round_index: int,
+    ) -> dict[str, Any]:
+        binding = self._review_binding(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            execution_id=execution_id,
+            mode=mode,
+            snapshot=snapshot,
+            gates_completion=gates_completion,
+            round_index=round_index,
+        )
+        return self._proof_from_handle(binding, opened=False, closed=False)
+
+    @staticmethod
+    def _proof_from_handle(
+        handle: Mapping[str, Any],
+        *,
+        opened: bool,
+        closed: bool,
+        close_transition: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        opening = handle.get("open_transition")
+        opening = opening if isinstance(opening, Mapping) else {}
+        open_event = opening.get("event")
+        open_event = open_event if isinstance(open_event, Mapping) else {}
+        closing = close_transition if isinstance(close_transition, Mapping) else {}
+        close_event = closing.get("event")
+        close_event = close_event if isinstance(close_event, Mapping) else {}
+        return {
+            "schema_version": 1,
+            "run_id": handle.get("run_id"),
+            "review_run_id": handle.get("review_run_id"),
+            "candidate_id": handle.get("candidate_id"),
+            "root_frame_id": handle.get("root_frame_id"),
+            "branch_id": handle.get("branch_id"),
+            "turn_id": handle.get("turn_id"),
+            "execution_id": handle.get("execution_id"),
+            "mode": handle.get("mode"),
+            "round_index": handle.get("round_index"),
+            "gates_completion": bool(handle.get("gates_completion")),
+            "candidate_snapshot_sha256": handle.get("candidate_snapshot_sha256"),
+            "evidence_snapshot_sha256": handle.get("evidence_snapshot_sha256"),
+            "snapshot_sha256": handle.get("snapshot_sha256"),
+            "opened": bool(opened),
+            "closed": bool(closed),
+            "status": closing.get("status") if closed else None,
+            "verdict": closing.get("verdict") if closed else None,
+            "open_event_id": open_event.get("event_id") if opened else None,
+            "close_event_id": close_event.get("event_id") if closed else None,
         }
 
     def close_review_run(
         self,
         handle: Mapping[str, Any],
         result: Mapping[str, Any],
-    ) -> None:
+        *,
+        gates_completion: bool = False,
+    ) -> dict[str, Any]:
         """Record the verdict on the review opened by :meth:`open_review_run`."""
 
         review_run_id = str(handle["review_run_id"])
-        turn_id = str(handle["turn_id"])
         findings = []
         for item in result.get("findings") or []:
+            if not isinstance(item, Mapping):
+                continue
             finding_id = item.get("finding_id")
             fingerprint = item.get("fingerprint")
             if not finding_id or not fingerprint:
@@ -897,19 +1415,83 @@ class ScientificReviewService:
             )
         verdict = str(result.get("verdict") or "issues")
         status = "unavailable" if verdict == "review_unavailable" else "completed"
-        self.store.complete_auto_mode_review(
+        return self.store.complete_auto_mode_review(
             review_run_id,
-            idempotency_key=f"{turn_id}:review-complete",
+            idempotency_key=str(handle["review_close_idempotency_key"]),
             status=status,
             verdict=verdict,
             assessment={
                 "public_summary": result.get("summary"),
-                "shadow": True,
+                "shadow": not gates_completion,
+                "gates_completion": bool(gates_completion),
+                "stage": 4 if gates_completion else 3,
                 "attempts": int(result.get("attempts") or 1),
             },
             findings=findings,
             usage=result.get("usage") or {},
         )
+
+    def _close_review_safely(
+        self,
+        handle: Mapping[str, Any],
+        result: Mapping[str, Any],
+        *,
+        gates_completion: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        current = dict(result)
+        last_error: Exception | None = None
+        # The first retry covers a response lost after SQLite committed: the
+        # Store's idempotency proof turns it into a read.
+        for _attempt in range(2):
+            try:
+                closed = self.close_review_run(
+                    handle, current, gates_completion=gates_completion
+                )
+                if (
+                    str(closed.get("run_id") or "") != str(handle.get("run_id") or "")
+                    or str(closed.get("review_run_id") or "")
+                    != str(handle.get("review_run_id") or "")
+                    or str(closed.get("candidate_id") or "")
+                    != str(handle.get("candidate_id") or "")
+                    or str((closed.get("event") or {}).get("type") or "")
+                    != "auto_audit_completed"
+                ):
+                    raise AutoModeConflictError(
+                        "durable review close transition mismatch"
+                    )
+                return current, self._proof_from_handle(
+                    handle, opened=True, closed=True, close_transition=closed
+                )
+            except Exception as error:  # noqa: BLE001 - retry then close unavailable
+                last_error = error
+
+        # An invalid assessment must not keep its durable owner active.  A fixed
+        # unavailable result has no findings and is accepted by the same review
+        # completion transaction whenever the original completion rolled back.
+        snapshot = current.get("snapshot")
+        snapshot = dict(snapshot) if isinstance(snapshot, Mapping) else {}
+        reviewer = current.get("reviewer")
+        reviewer = dict(reviewer) if isinstance(reviewer, Mapping) else {}
+        unavailable = self._unavailable_result(
+            snapshot,
+            reviewer,
+            reason="durable_review_close_failed",
+            summary=(str(last_error)[:300] if last_error else "Review close failed"),
+            gates_completion=gates_completion,
+        )
+        for _attempt in range(2):
+            try:
+                closed = self.close_review_run(
+                    handle, unavailable, gates_completion=gates_completion
+                )
+                return unavailable, self._proof_from_handle(
+                    handle, opened=True, closed=True, close_transition=closed
+                )
+            except Exception as error:  # noqa: BLE001 - caller must fail closed
+                last_error = error
+        proof = self._proof_from_handle(handle, opened=False, closed=False)
+        proof["close_error"] = type(last_error).__name__ if last_error else "unknown"
+        return current, proof
 
     @staticmethod
     def _finding(

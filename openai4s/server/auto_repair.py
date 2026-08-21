@@ -207,6 +207,7 @@ class AutoRepairService:
                 result_review_mode=result_review_mode,
                 agent_cfg=agent_cfg,
                 reviewer_cfg=reviewer_cfg,
+                cancel=cancel,
             )
             previous_prints.append(_fingerprint_set(current.get("findings") or []))
         current["stop_reason"] = current.get("stop_reason") or "budget_exhausted"

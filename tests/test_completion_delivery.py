@@ -25,6 +25,7 @@ from openai4s.storage.delivery import (
     DeliveryConflictError,
     canonical_json,
 )
+from openai4s.storage.frames import FrameRepository
 from openai4s.store import get_store
 
 _MESSAGE_SCHEMA = """
@@ -141,6 +142,25 @@ def _manifest():
                 "url": "/api/v1/artifacts/versions/version-1",
             }
         ],
+    }
+
+
+def _candidate_metadata():
+    return {
+        "review_status": "candidate",
+        "user_truth": "Candidate · provisional / not verified",
+        "gates_completion": True,
+        "unverified": True,
+        "keep": {"origin": "turn"},
+    }
+
+
+def _verified_metadata():
+    return {
+        "review_status": "verified",
+        "user_truth": "Verified",
+        "gates_completion": True,
+        "unverified": False,
     }
 
 
@@ -351,6 +371,318 @@ def test_final_message_and_delivery_commit_are_atomic_and_idempotent():
         )
     assert connection.in_transaction is False
     assert connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_candidate_metadata_is_in_the_atomic_commit_and_idempotency_identity():
+    connection, repository = _repository()
+    candidate = _candidate_metadata()
+
+    first = repository.commit_final_message(
+        idempotency_key="turn-candidate:completion",
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        content="Candidate bytes.",
+        manifest=_manifest(),
+        message_metadata=candidate,
+    )
+    replay = repository.commit_final_message(
+        idempotency_key="turn-candidate:completion",
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        content="Candidate bytes.",
+        manifest=_manifest(),
+        message_metadata=candidate,
+    )
+
+    assert replay["delivery_id"] == first["delivery_id"]
+    assert first["message_metadata"] == {
+        **candidate,
+        "candidate_content_sha256": hashlib.sha256(b"Candidate bytes.").hexdigest(),
+        "completion_delivery": {
+            "delivery_id": first["delivery_id"],
+            "manifest_sha256": first["manifest_sha256"],
+            "status": "committed",
+        },
+    }
+    with pytest.raises(DeliveryConflictError, match="different content"):
+        repository.commit_final_message(
+            idempotency_key="turn-candidate:completion",
+            root_frame_id="root-1",
+            branch_id="branch-1",
+            frame_id="root-1",
+            content="Candidate bytes.",
+            manifest=_manifest(),
+            message_metadata={**candidate, "user_truth": "different candidate"},
+        )
+    with pytest.raises(ValueError, match="metadata digest changed"):
+        repository.commit_final_message(
+            idempotency_key="turn-wrong-candidate-digest:completion",
+            root_frame_id="root-1",
+            branch_id="branch-1",
+            frame_id="root-1",
+            content="Different candidate bytes.",
+            manifest=_manifest(),
+            message_metadata={**candidate, "candidate_content_sha256": "0" * 64},
+        )
+    assert connection.in_transaction is False
+    assert connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_candidate_delivery_promotion_is_exact_atomic_and_idempotent():
+    connection, repository = _repository()
+    candidate_content = "Candidate n=100."
+    promoted_content = "Repaired n=97."
+    verdict = _verified_metadata()
+    committed = repository.commit_final_message(
+        idempotency_key="turn-promote:completion",
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        content=candidate_content,
+        manifest=_manifest(),
+        message_metadata=_candidate_metadata(),
+    )
+
+    promoted = repository.promote_candidate_delivery(
+        delivery_id=committed["delivery_id"],
+        message_id=committed["message_id"],
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        expected_content=candidate_content,
+        content=promoted_content,
+        message_metadata=verdict,
+    )
+    replay = repository.promote_candidate_delivery(
+        delivery_id=committed["delivery_id"],
+        message_id=committed["message_id"],
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        expected_content=candidate_content,
+        content=promoted_content,
+        message_metadata=verdict,
+    )
+
+    expected_candidate_hash = hashlib.sha256(candidate_content.encode()).hexdigest()
+    expected_content_hash = hashlib.sha256(promoted_content.encode()).hexdigest()
+    assert replay == promoted
+    assert promoted["message_content"] == promoted_content
+    assert promoted["content_sha256"] == expected_content_hash
+    assert promoted["message_metadata"]["review_status"] == "verified"
+    assert promoted["message_metadata"]["keep"] == {"origin": "turn"}
+    assert (
+        promoted["message_metadata"]["candidate_content_sha256"]
+        == expected_candidate_hash
+    )
+    assert promoted["message_metadata"]["candidate_verdict_metadata_sha256"] == (
+        hashlib.sha256(canonical_json(verdict).encode()).hexdigest()
+    )
+    durable = connection.execute(
+        "SELECT d.content_sha256,m.content FROM completion_deliveries d "
+        "JOIN messages m ON m.message_id=d.message_id WHERE d.delivery_id=?",
+        (committed["delivery_id"],),
+    ).fetchone()
+    assert tuple(durable) == (expected_content_hash, promoted_content)
+
+    conflicting_calls = [
+        {"expected_content": "Different old bytes."},
+        {"content": "Different promoted bytes."},
+        {"message_metadata": {**verdict, "user_truth": "different verdict"}},
+        {"message_metadata": {"review_status": "verified"}},
+        {"branch_id": "other-branch"},
+        {"message_id": "other-message"},
+    ]
+    base = {
+        "delivery_id": committed["delivery_id"],
+        "message_id": committed["message_id"],
+        "root_frame_id": "root-1",
+        "branch_id": "branch-1",
+        "frame_id": "root-1",
+        "expected_content": candidate_content,
+        "content": promoted_content,
+        "message_metadata": verdict,
+    }
+    for conflict in conflicting_calls:
+        with pytest.raises(DeliveryConflictError):
+            repository.promote_candidate_delivery(**{**base, **conflict})
+        assert connection.in_transaction is False
+    assert repository.get(committed["delivery_id"]) == promoted
+
+
+def test_candidate_delivery_promotion_fault_rolls_back_message_and_digest():
+    connection, repository = _repository()
+    candidate_content = "Candidate before injected fault."
+    committed = repository.commit_final_message(
+        idempotency_key="turn-promote-fault:completion",
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        content=candidate_content,
+        manifest=_manifest(),
+        message_metadata=_candidate_metadata(),
+    )
+    connection.execute(
+        "CREATE TRIGGER fail_candidate_digest BEFORE UPDATE OF content_sha256 "
+        "ON completion_deliveries BEGIN "
+        "SELECT RAISE(ABORT, 'injected candidate digest fault'); END"
+    )
+    connection.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="candidate digest fault"):
+        repository.promote_candidate_delivery(
+            delivery_id=committed["delivery_id"],
+            message_id=committed["message_id"],
+            root_frame_id="root-1",
+            branch_id="branch-1",
+            frame_id="root-1",
+            expected_content=candidate_content,
+            content="This update must roll back.",
+            message_metadata=_verified_metadata(),
+        )
+
+    assert connection.in_transaction is False
+    after = repository.get(committed["delivery_id"])
+    assert after["message_content"] == candidate_content
+    assert after["message_metadata"] == committed["message_metadata"]
+    assert (
+        after["content_sha256"]
+        == hashlib.sha256(candidate_content.encode()).hexdigest()
+    )
+
+
+def test_unchanged_candidate_can_promote_its_verdict_and_replay():
+    _connection, repository = _repository()
+    content = "The passing review keeps these exact bytes."
+    committed = repository.commit_final_message(
+        idempotency_key="turn-unchanged-candidate:completion",
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        content=content,
+        manifest=_manifest(),
+        message_metadata=_candidate_metadata(),
+    )
+    fields = {
+        "delivery_id": committed["delivery_id"],
+        "message_id": committed["message_id"],
+        "root_frame_id": "root-1",
+        "branch_id": "branch-1",
+        "frame_id": "root-1",
+        "expected_content": content,
+        "content": content,
+        "message_metadata": _verified_metadata(),
+    }
+
+    promoted = repository.promote_candidate_delivery(**fields)
+    assert repository.promote_candidate_delivery(**fields) == promoted
+    assert promoted["message_content"] == content
+    assert promoted["message_metadata"]["review_status"] == "verified"
+    assert promoted["content_sha256"] == hashlib.sha256(content.encode()).hexdigest()
+    published = repository.mark_published(committed["delivery_id"], published_at=2000)
+    with pytest.raises(DeliveryConflictError, match="published.*immutable"):
+        repository.promote_candidate_delivery(**fields)
+    assert repository.get(committed["delivery_id"]) == published
+
+
+def test_published_candidate_delivery_can_never_be_promoted():
+    _connection, repository = _repository()
+    candidate_content = "Candidate already published."
+    committed = repository.commit_final_message(
+        idempotency_key="turn-published-candidate:completion",
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        content=candidate_content,
+        manifest=_manifest(),
+        message_metadata=_candidate_metadata(),
+    )
+    published = repository.mark_published(committed["delivery_id"], published_at=2000)
+
+    with pytest.raises(DeliveryConflictError, match="published.*immutable"):
+        repository.promote_candidate_delivery(
+            delivery_id=committed["delivery_id"],
+            message_id=committed["message_id"],
+            root_frame_id="root-1",
+            branch_id="branch-1",
+            frame_id="root-1",
+            expected_content=candidate_content,
+            content="Too late to replace.",
+            message_metadata=_verified_metadata(),
+        )
+    assert repository.get(committed["delivery_id"]) == published
+
+
+def test_delivery_promotion_refuses_a_committed_non_candidate_message():
+    _connection, repository = _repository()
+    committed = repository.commit_final_message(
+        idempotency_key="turn-ordinary:completion",
+        root_frame_id="root-1",
+        branch_id="branch-1",
+        frame_id="root-1",
+        content="Already final, never a candidate.",
+        manifest=_manifest(),
+    )
+
+    with pytest.raises(DeliveryConflictError, match="conflicts with durable"):
+        repository.promote_candidate_delivery(
+            delivery_id=committed["delivery_id"],
+            message_id=committed["message_id"],
+            root_frame_id="root-1",
+            branch_id="branch-1",
+            frame_id="root-1",
+            expected_content="Already final, never a candidate.",
+            content="Attempted replacement.",
+            message_metadata=_verified_metadata(),
+        )
+
+
+def test_non_stage1_candidate_message_cas_is_exact_and_replay_safe():
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(_MESSAGE_SCHEMA)
+    lock = threading.RLock()
+    frames = FrameRepository(connection, lock, clock_ms=lambda: 1000)
+    candidate_content = "Ordinary provisional candidate."
+    connection.execute(
+        "INSERT INTO messages(message_id,root_frame_id,branch_id,frame_id,seq,role,"
+        "content,metadata,created_at) VALUES(?,?,?,?,?,'assistant',?,?,?)",
+        (
+            "candidate-message",
+            "root-1",
+            "branch-1",
+            "root-1",
+            0,
+            candidate_content,
+            json.dumps(_candidate_metadata()),
+            800,
+        ),
+    )
+    connection.commit()
+    fields = {
+        "message_id": "candidate-message",
+        "root_frame_id": "root-1",
+        "branch_id": "branch-1",
+        "frame_id": "root-1",
+        "expected_content": candidate_content,
+        "content": "Promoted ordinary answer.",
+        "metadata": _verified_metadata(),
+    }
+
+    promoted = frames.promote_candidate_message(**fields)
+    assert frames.promote_candidate_message(**fields) == promoted
+    assert promoted["content"] == "Promoted ordinary answer."
+    assert promoted["metadata"]["review_status"] == "verified"
+    with pytest.raises(RuntimeError, match="not provisional"):
+        frames.promote_candidate_message(
+            **{**fields, "expected_content": "different old bytes"}
+        )
+    with pytest.raises(RuntimeError, match="scope changed"):
+        frames.promote_candidate_message(**{**fields, "branch_id": "other"})
+    assert connection.in_transaction is False
+    connection.close()
 
 
 def test_delivery_binds_exact_version_until_owning_message_is_deleted():
@@ -685,6 +1017,70 @@ def test_store_delivery_facade_commits_recovers_and_marks_published(tmp_path):
     assert store.committed_completion_deliveries(root_frame_id=root) == []
     with pytest.raises(ArtifactDeliveryReferenceError, match="completion message"):
         store.delete_artifact(artifact["artifact_id"])
+    store.close()
+
+
+def test_service_and_store_facades_commit_and_promote_one_candidate(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    root = store.new_frame(project_id="project-1", status="ready")
+    snapshot = tmp_path / "artifact-versions" / "candidate-version.bin"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_bytes(b"candidate-artifact")
+    checksum = hashlib.sha256(b"candidate-artifact").hexdigest()
+    artifact = store.save_artifact(
+        path=str(snapshot),
+        filename="candidate.csv",
+        content_type="text/csv",
+        size_bytes=len(b"candidate-artifact"),
+        checksum=checksum,
+        frame_id=root,
+        project_id="project-1",
+        snapshot_path=str(snapshot),
+    )
+    service = CompletionDeliveryService(store=store, data_dir=tmp_path)
+    verified = service.build_manifest(
+        root_frame_id=root,
+        project_id="project-1",
+        versions=[artifact["version_id"]],
+    )
+    candidate_content = "Candidate through service."
+    committed = service.commit_verified_manifest(
+        verified=verified,
+        idempotency_key="service-candidate:completion",
+        root_frame_id=root,
+        branch_id=root,
+        frame_id=root,
+        content=candidate_content,
+        message_metadata=_candidate_metadata(),
+    )
+    promoted_content = "Promoted through service."
+
+    promoted = service.promote_candidate_delivery(
+        delivery_id=committed["delivery_id"],
+        message_id=committed["message_id"],
+        root_frame_id=root,
+        branch_id=root,
+        frame_id=root,
+        expected_content=candidate_content,
+        content=promoted_content,
+        message_metadata={
+            **_verified_metadata(),
+            "candidate_content_sha256": hashlib.sha256(
+                candidate_content.encode()
+            ).hexdigest(),
+            "reviewed_content_sha256": hashlib.sha256(
+                promoted_content.encode()
+            ).hexdigest(),
+        },
+    )
+
+    assert store.get_completion_delivery(committed["delivery_id"]) == promoted
+    assert promoted["message_content"] == promoted_content
+    assert promoted["message_metadata"]["review_status"] == "verified"
+    assert (
+        promoted["content_sha256"]
+        == hashlib.sha256(promoted_content.encode()).hexdigest()
+    )
     store.close()
 
 

@@ -576,6 +576,7 @@ def _attach_completion_delivery(
     branch_id: str | None = None,
     status: str = "published",
     content: str = "Delivered [prediction.csv]({url}).",
+    message_metadata=None,
     created_at: int = 1234,
 ):
     source_meta = store.version_meta(str(artifact["version_id"]))
@@ -615,6 +616,7 @@ def _attach_completion_delivery(
         branch_id=branch_id or root,
         frame_id=root,
         content=content.format(url=url),
+        message_metadata=message_metadata,
         created_at=created_at,
     )
     if status == "published":
@@ -1043,6 +1045,104 @@ def test_session_package_round_trips_completion_delivery_with_local_exact_urls(
             artifact_version_url(second_version)
             in second_deliveries[0]["message_content"]
         )
+    finally:
+        store.close()
+
+
+def test_import_downgrades_review_proof_when_delivery_urls_and_scope_are_remapped(
+    tmp_path,
+):
+    store, domain, project, root, artifact, _checkpoint, _workspace = _source(tmp_path)
+    try:
+        _artifact, committed, source_url = _attach_completion_delivery(
+            tmp_path,
+            store,
+            project,
+            root,
+            artifact,
+            status="committed",
+            message_metadata={
+                "review_status": "candidate",
+                "user_truth": "Candidate · provisional / not verified",
+                "gates_completion": True,
+                "unverified": True,
+                "turn_id": "source-turn",
+                "execution_id": "source-execution",
+            },
+        )
+        source_content = str(committed["message_content"])
+        source_content_sha256 = hashlib.sha256(
+            source_content.encode("utf-8")
+        ).hexdigest()
+        promoted = store.promote_candidate_delivery(
+            delivery_id=committed["delivery_id"],
+            message_id=committed["message_id"],
+            root_frame_id=root,
+            branch_id=root,
+            frame_id=root,
+            expected_content=source_content,
+            content=source_content,
+            message_metadata={
+                "review_status": "verified",
+                "user_truth": "Verified",
+                "gates_completion": True,
+                "unverified": False,
+                "turn_id": "source-turn",
+                "execution_id": "source-execution",
+                "candidate_content_sha256": source_content_sha256,
+                "reviewed_content_sha256": source_content_sha256,
+                "review_run_id": "source-review-run",
+            },
+        )
+        source_delivery = store.mark_completion_delivery_published(
+            promoted["delivery_id"], published_at=1235
+        )
+        assert source_delivery["message_metadata"]["review_status"] == "verified"
+        assert (
+            "candidate_verdict_metadata_sha256" in source_delivery["message_metadata"]
+        )
+        assert source_delivery["message_metadata"]["review_run_id"] == (
+            "source-review-run"
+        )
+
+        imported = domain.session_import(domain.session_export(root)["data"])
+        local = store.completion_deliveries_for_session(imported["root_frame_id"])[0]
+        local_url = local["manifest"]["artifacts"][0]["url"]
+        assert local_url in local["message_content"]
+        assert source_url not in local["message_content"]
+        assert (
+            hashlib.sha256(local["message_content"].encode("utf-8")).hexdigest()
+            != source_content_sha256
+        )
+
+        metadata = local["message_metadata"]
+        assert metadata["review_status"] == "review_unavailable"
+        assert metadata["user_truth"] == "Imported · unverified"
+        assert metadata["gates_completion"] is True
+        assert metadata["unverified"] is True
+        for field in (
+            "candidate_content_sha256",
+            "reviewed_content_sha256",
+            "candidate_verdict_metadata_sha256",
+            "review_run_id",
+            "turn_id",
+            "execution_id",
+        ):
+            assert field not in metadata
+        assert metadata["completion_delivery"]["delivery_id"] == local["delivery_id"]
+        assert metadata["completion_delivery"]["status"] == "published"
+
+        second = domain.session_import(
+            domain.session_export(imported["root_frame_id"])["data"]
+        )
+        second_local = store.completion_deliveries_for_session(second["root_frame_id"])[
+            0
+        ]
+        assert second_local["message_metadata"]["review_status"] == (
+            "review_unavailable"
+        )
+        assert "reviewed_content_sha256" not in second_local["message_metadata"]
+        assert "review_run_id" not in second_local["message_metadata"]
     finally:
         store.close()
 

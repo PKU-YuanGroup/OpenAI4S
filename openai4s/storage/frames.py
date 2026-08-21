@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from openai4s.execution.dependencies import (
@@ -417,6 +419,185 @@ class FrameRepository:
             )
             self._connection.commit()
         return current
+
+    def promote_candidate_message(
+        self,
+        *,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        metadata: Mapping[str, Any],
+    ) -> dict:
+        """CAS-promote one exact provisional assistant message.
+
+        Stage 4 persists a canonical candidate before the reviewer runs.  A
+        repair may later replace its text, but it must never guess which
+        assistant row is newest.  Scope, role, candidate state, and the exact
+        previous bytes are therefore checked in the same write transaction.
+        """
+
+        if not isinstance(message_id, str) or not message_id.strip():
+            raise ValueError("message_id must be a non-empty string")
+        if not isinstance(root_frame_id, str) or not root_frame_id.strip():
+            raise ValueError("root_frame_id must be a non-empty string")
+        if not isinstance(branch_id, str) or not branch_id.strip():
+            raise ValueError("branch_id must be a non-empty string")
+        if frame_id is not None and (
+            not isinstance(frame_id, str) or not frame_id.strip()
+        ):
+            raise ValueError("frame_id must be a non-empty string")
+        if not isinstance(expected_content, str):
+            raise ValueError("candidate message expected content must be text")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("promoted candidate content must be non-empty")
+        if not isinstance(metadata, Mapping):
+            raise ValueError("candidate verdict metadata must be an object")
+        try:
+            metadata_json = json.dumps(
+                dict(metadata),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            verdict_metadata = json.loads(metadata_json)
+        except (TypeError, ValueError) as error:
+            raise ValueError("candidate verdict metadata must be JSON-safe") from error
+        if not isinstance(verdict_metadata, dict):  # pragma: no cover - round trip
+            raise ValueError("candidate verdict metadata must be an object")
+        verdict_digest_key = "candidate_verdict_metadata_sha256"
+        if (
+            "completion_delivery" in verdict_metadata
+            or verdict_digest_key in verdict_metadata
+        ):
+            raise ValueError("candidate verdict metadata contains a reserved key")
+        verdict = verdict_metadata.get("review_status")
+        if verdict not in {
+            "verified",
+            "completed_with_issues",
+            "review_unavailable",
+        }:
+            raise ValueError("candidate verdict metadata has no terminal review status")
+        candidate_sha256 = hashlib.sha256(expected_content.encode("utf-8")).hexdigest()
+        promoted_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if verdict_metadata.get("candidate_content_sha256") not in (
+            None,
+            candidate_sha256,
+        ):
+            raise ValueError("candidate verdict metadata digest changed")
+        if verdict_metadata.get("reviewed_content_sha256") not in (
+            None,
+            promoted_sha256,
+        ):
+            raise ValueError("reviewed candidate metadata digest changed")
+        verdict_metadata_sha256 = hashlib.sha256(
+            metadata_json.encode("utf-8")
+        ).hexdigest()
+
+        with self._lock:
+            if self._connection.in_transaction:
+                raise RuntimeError(
+                    "candidate promotion requires a clean SQLite transaction"
+                )
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT root_frame_id,branch_id,frame_id,role,content,metadata,"
+                    "created_at,seq FROM messages WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()
+                if (
+                    row is None
+                    or row["root_frame_id"] != root_frame_id
+                    or row["branch_id"] != branch_id
+                    or row["frame_id"] != frame_id
+                    or row["role"] != "assistant"
+                ):
+                    raise RuntimeError("candidate message scope changed")
+                try:
+                    current = json.loads(row["metadata"] or "{}")
+                except (TypeError, ValueError) as error:
+                    raise RuntimeError(
+                        "candidate message metadata is invalid"
+                    ) from error
+                if not isinstance(current, dict):
+                    raise RuntimeError("candidate message metadata is invalid")
+                if "completion_delivery" in current:
+                    raise RuntimeError(
+                        "completion delivery candidates require the delivery CAS"
+                    )
+
+                if current.get("review_status") == "candidate":
+                    if row["content"] != expected_content:
+                        raise RuntimeError("candidate message content changed")
+                    bound_candidate_sha256 = current.get("candidate_content_sha256")
+                    if bound_candidate_sha256 not in (None, candidate_sha256):
+                        raise RuntimeError("candidate message digest changed")
+                    if verdict_digest_key in current:
+                        raise RuntimeError("candidate verdict digest is invalid")
+                    promoted = dict(current)
+                    promoted.update(verdict_metadata)
+                    promoted["candidate_content_sha256"] = candidate_sha256
+                    promoted[verdict_digest_key] = verdict_metadata_sha256
+                    encoded = json.dumps(
+                        promoted,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                    cursor = self._connection.execute(
+                        "UPDATE messages SET content=?,metadata=? WHERE message_id=? "
+                        "AND root_frame_id=? AND branch_id=? AND frame_id IS ? "
+                        "AND role='assistant' AND content=? AND metadata IS ?",
+                        (
+                            content,
+                            encoded,
+                            message_id,
+                            root_frame_id,
+                            branch_id,
+                            frame_id,
+                            expected_content,
+                            row["metadata"],
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError("candidate message promotion lost its CAS")
+                    current = promoted
+                elif (
+                    row["content"] == content
+                    and current.get("candidate_content_sha256") == candidate_sha256
+                    and current.get(verdict_digest_key) == verdict_metadata_sha256
+                    and all(
+                        current.get(key) == value
+                        for key, value in verdict_metadata.items()
+                    )
+                ):
+                    # The exact retry of a promotion that already committed is
+                    # a read.  The durable candidate digest prevents another
+                    # caller laundering different expected bytes through it.
+                    pass
+                else:
+                    raise RuntimeError("candidate message is not provisional")
+                self._connection.commit()
+            except Exception:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                raise
+        return {
+            "message_id": message_id,
+            "root_frame_id": root_frame_id,
+            "branch_id": branch_id,
+            "frame_id": frame_id,
+            "seq": int(row["seq"]),
+            "role": "assistant",
+            "content": content,
+            "metadata": current,
+            "created_at": int(row["created_at"]),
+        }
 
     def list_messages(
         self,

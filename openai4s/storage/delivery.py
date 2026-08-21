@@ -28,6 +28,12 @@ from openai4s.storage.migrations import apply_ddl_script
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SQL_BATCH_SIZE = 400
+_CANDIDATE_VERDICT_DIGEST_KEY = "candidate_verdict_metadata_sha256"
+_TERMINAL_REVIEW_STATUSES = {
+    "verified",
+    "completed_with_issues",
+    "review_unavailable",
+}
 
 COMPLETION_DELIVERY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS completion_deliveries (
@@ -129,6 +135,7 @@ class CompletionDeliveryRepository:
         frame_id: str | None,
         content: str,
         manifest: Mapping[str, Any],
+        message_metadata: Mapping[str, Any] | None = None,
         expected_manifest_sha256: str | None = None,
         created_at: int | None = None,
         snapshot_verifier: Callable[[Mapping[str, Any]], object] | None = None,
@@ -148,6 +155,7 @@ class CompletionDeliveryRepository:
             raise ValueError("completion delivery content must be non-empty")
         if not isinstance(manifest, Mapping):
             raise ValueError("completion delivery manifest must be an object")
+        projected_metadata = self._canonical_message_metadata(message_metadata)
         manifest_value = dict(manifest)
         if manifest_value.get("root_frame_id") != root:
             raise ValueError("completion delivery manifest scope does not match root")
@@ -167,6 +175,11 @@ class CompletionDeliveryRepository:
         ):
             raise ValueError("completion delivery manifest hash changed")
         content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if projected_metadata.get("review_status") == "candidate":
+            bound_candidate_sha256 = projected_metadata.get("candidate_content_sha256")
+            if bound_candidate_sha256 not in (None, content_sha256):
+                raise ValueError("completion candidate metadata digest changed")
+            projected_metadata["candidate_content_sha256"] = content_sha256
         now = self._clock_ms() if created_at is None else int(created_at)
         delivery_id = self._id_factory("delivery")
         message_id = self._id_factory("m")
@@ -187,6 +200,7 @@ class CompletionDeliveryRepository:
                         frame_id=frame_id,
                         content_sha256=content_sha256,
                         manifest_sha256=manifest_sha256,
+                        message_metadata=projected_metadata,
                     )
                     self._connection.commit()
                     return existing
@@ -203,15 +217,13 @@ class CompletionDeliveryRepository:
                     (root,),
                 ).fetchone()
                 seq = int(seq_row["seq"])
-                metadata = canonical_json(
-                    {
-                        "completion_delivery": {
-                            "delivery_id": delivery_id,
-                            "manifest_sha256": manifest_sha256,
-                            "status": "committed",
-                        }
-                    }
-                )
+                stored_metadata = dict(projected_metadata)
+                stored_metadata["completion_delivery"] = {
+                    "delivery_id": delivery_id,
+                    "manifest_sha256": manifest_sha256,
+                    "status": "committed",
+                }
+                metadata = canonical_json(stored_metadata)
                 self._connection.execute(
                     "INSERT INTO messages(message_id,root_frame_id,branch_id,"
                     "frame_id,seq,role,content,metadata,created_at) "
@@ -271,6 +283,187 @@ class CompletionDeliveryRepository:
             if row is None:  # pragma: no cover - committed INSERT is authoritative
                 raise RuntimeError("completion delivery disappeared after commit")
             return row
+
+    def promote_candidate_delivery(
+        self,
+        *,
+        delivery_id: str,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str | None,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        message_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically promote one exact, unpublished Stage 1 candidate.
+
+        The delivery id, message id, full message scope, role, provisional
+        marker, and previous content bytes are all checked under one
+        ``BEGIN IMMEDIATE`` transaction.  A successful write replaces the
+        message bytes and verdict metadata together with the delivery's
+        ``content_sha256``.  Publication is an irreversible boundary: even an
+        otherwise exact retry is refused after ``mark_published``.
+
+        The candidate digest stored in message metadata makes an exact retry
+        distinguishable from a caller supplying different expected bytes after
+        the candidate marker has already been consumed.
+        """
+
+        ident = self._required_text("delivery_id", delivery_id)
+        message = self._required_text("message_id", message_id)
+        root = self._required_text("root_frame_id", root_frame_id)
+        branch = (
+            root if branch_id is None else self._required_text("branch_id", branch_id)
+        )
+        if frame_id is not None:
+            frame_id = self._required_text("frame_id", frame_id)
+        if not isinstance(expected_content, str):
+            raise ValueError("completion candidate expected content must be text")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("promoted completion content must be non-empty")
+        verdict_metadata = self._canonical_message_metadata(message_metadata)
+        if verdict_metadata.get("review_status") not in _TERMINAL_REVIEW_STATUSES:
+            raise ValueError("candidate verdict metadata has no terminal review status")
+
+        candidate_sha256 = hashlib.sha256(expected_content.encode("utf-8")).hexdigest()
+        content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if verdict_metadata.get("candidate_content_sha256") not in (
+            None,
+            candidate_sha256,
+        ):
+            raise ValueError("candidate verdict metadata digest changed")
+        if verdict_metadata.get("reviewed_content_sha256") not in (
+            None,
+            content_sha256,
+        ):
+            raise ValueError("reviewed candidate metadata digest changed")
+        verdict_metadata_sha256 = hashlib.sha256(
+            canonical_json(verdict_metadata).encode("utf-8")
+        ).hexdigest()
+
+        with self._lock:
+            self._begin()
+            try:
+                raw = self._connection.execute(
+                    self._select_sql() + " WHERE d.delivery_id=?", (ident,)
+                ).fetchone()
+                if raw is None:
+                    raise KeyError(f"no such completion delivery {ident!r}")
+                current = self._decode_and_validate_locked(raw)
+                if (
+                    current.get("message_id") != message
+                    or current.get("root_frame_id") != root
+                    or current.get("branch_id") != branch
+                    or current.get("frame_id") != frame_id
+                    or current.get("message_role") != "assistant"
+                ):
+                    raise DeliveryConflictError(
+                        "completion candidate delivery scope changed"
+                    )
+                if (
+                    current.get("status") != "committed"
+                    or current.get("published_at") is not None
+                ):
+                    raise DeliveryConflictError(
+                        "published completion delivery is immutable"
+                    )
+                metadata = current.get("message_metadata")
+                if not isinstance(metadata, dict):  # validated above; defensive
+                    raise RuntimeError(
+                        "completion delivery message metadata is invalid"
+                    )
+
+                if metadata.get("review_status") == "candidate":
+                    if (
+                        current.get("message_content") != expected_content
+                        or current.get("content_sha256") != candidate_sha256
+                    ):
+                        raise DeliveryConflictError(
+                            "completion candidate content changed"
+                        )
+                    bound_candidate_sha256 = metadata.get("candidate_content_sha256")
+                    if bound_candidate_sha256 not in (None, candidate_sha256):
+                        raise DeliveryConflictError(
+                            "completion candidate metadata digest changed"
+                        )
+                    if _CANDIDATE_VERDICT_DIGEST_KEY in metadata:
+                        raise RuntimeError(
+                            "completion candidate verdict digest is invalid"
+                        )
+                    promoted_metadata = dict(metadata)
+                    promoted_metadata.update(verdict_metadata)
+                    promoted_metadata["candidate_content_sha256"] = candidate_sha256
+                    promoted_metadata[_CANDIDATE_VERDICT_DIGEST_KEY] = (
+                        verdict_metadata_sha256
+                    )
+                    encoded_metadata = canonical_json(promoted_metadata)
+                    message_cursor = self._connection.execute(
+                        "UPDATE messages SET content=?,metadata=? WHERE message_id=? "
+                        "AND root_frame_id=? AND branch_id=? AND frame_id IS ? "
+                        "AND role='assistant' AND content=? AND metadata IS ?",
+                        (
+                            content,
+                            encoded_metadata,
+                            message,
+                            root,
+                            branch,
+                            frame_id,
+                            expected_content,
+                            raw["message_metadata"],
+                        ),
+                    )
+                    if message_cursor.rowcount != 1:
+                        raise RuntimeError(
+                            "completion candidate message promotion lost its CAS"
+                        )
+                    delivery_cursor = self._connection.execute(
+                        "UPDATE completion_deliveries SET content_sha256=? "
+                        "WHERE delivery_id=? AND message_id=? AND root_frame_id=? "
+                        "AND branch_id=? AND frame_id IS ? AND status='committed' "
+                        "AND published_at IS NULL AND content_sha256=?",
+                        (
+                            content_sha256,
+                            ident,
+                            message,
+                            root,
+                            branch,
+                            frame_id,
+                            candidate_sha256,
+                        ),
+                    )
+                    if delivery_cursor.rowcount != 1:
+                        raise RuntimeError(
+                            "completion candidate delivery promotion lost its CAS"
+                        )
+                elif (
+                    current.get("message_content") == content
+                    and current.get("content_sha256") == content_sha256
+                    and metadata.get("candidate_content_sha256") == candidate_sha256
+                    and metadata.get(_CANDIDATE_VERDICT_DIGEST_KEY)
+                    == verdict_metadata_sha256
+                    and all(
+                        metadata.get(key) == value
+                        for key, value in verdict_metadata.items()
+                    )
+                ):
+                    # Exact committed replay.  No write occurs.
+                    pass
+                else:
+                    raise DeliveryConflictError(
+                        "completion candidate promotion conflicts with durable content"
+                    )
+                self._connection.commit()
+            except Exception:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                raise
+            result = self._get_locked(ident)
+            if result is None:  # pragma: no cover - row cannot vanish under lock
+                raise RuntimeError(
+                    "completion delivery disappeared after candidate promotion"
+                )
+            return result
 
     def bind_imported_message(
         self,
@@ -824,15 +1017,42 @@ class CompletionDeliveryRepository:
         frame_id: str | None,
         content_sha256: str,
         manifest_sha256: str,
+        message_metadata: Mapping[str, Any],
     ) -> None:
+        observed_metadata = existing.get("message_metadata")
+        if isinstance(observed_metadata, Mapping):
+            observed_metadata = dict(observed_metadata)
+            observed_metadata.pop("completion_delivery", None)
         if (
             existing.get("frame_id") != frame_id
             or existing.get("content_sha256") != content_sha256
             or existing.get("manifest_sha256") != manifest_sha256
+            or observed_metadata != dict(message_metadata)
         ):
             raise DeliveryConflictError(
                 "completion delivery idempotency key was reused for different content"
             )
+
+    @staticmethod
+    def _canonical_message_metadata(
+        value: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("completion delivery message metadata must be an object")
+        raw = dict(value)
+        if "completion_delivery" in raw or _CANDIDATE_VERDICT_DIGEST_KEY in raw:
+            raise ValueError("completion delivery message metadata has a reserved key")
+        try:
+            decoded = json.loads(canonical_json(raw))
+        except ValueError as error:
+            raise ValueError(
+                "completion delivery message metadata must be JSON-safe"
+            ) from error
+        if not isinstance(decoded, dict):  # pragma: no cover - Mapping round trip
+            raise ValueError("completion delivery message metadata must be an object")
+        return decoded
 
     @staticmethod
     def _required_text(name: str, value: Any) -> str:

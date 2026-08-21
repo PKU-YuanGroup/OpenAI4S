@@ -1020,6 +1020,18 @@ def _stage1_cfg(tmp_path):
     )
 
 
+def _stage1_stage4_cfg(tmp_path):
+    return Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        roadmap_features=RoadmapFeatureFlags(
+            stage1_trusted_delivery=True,
+            stage4_review_completion_gate=True,
+        ),
+    )
+
+
 def _readiness(*, state="ready"):
     ready = state == "ready"
     unavailable = state == "unavailable"
@@ -1613,6 +1625,195 @@ def test_gateway_projects_submit_only_result_as_live_and_persisted_final_message
     assert final_text_index < terminal_index
 
 
+def test_stage4_persists_one_canonical_candidate_before_one_review(
+    monkeypatch, tmp_path
+):
+    """The runtime ordering, not a source-string approximation, is the contract."""
+
+    cfg = _cfg(tmp_path)
+    cfg.roadmap_features = RoadmapFeatureFlags(stage4_review_completion_gate=True)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    calls = {"review": 0, "finalize": 0}
+    observed = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def finish_with_two_prose_blocks(state, emit, visible):
+        for at, text in ((100, "first claim"), (200, "second claim")):
+            visible.append({"at": at, "text": text})
+            emit(
+                {
+                    "type": "text_chunk",
+                    "frame_id": frame_id,
+                    "block_type": "text",
+                    "chunk": text + "\n",
+                }
+            )
+        state.last_engine_completion = {"output": {"summary": "final claim"}}
+        state.last_model_prose = "first claim\nsecond claim"
+        return "submitted"
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "review_only"
+
+        def gate_after_turn(self, **fields):
+            calls["review"] += 1
+            rows = runner.store.list_branch_message_boundaries(
+                frame_id, branch_id=frame_id
+            )
+            observed["review_rows"] = rows
+            observed["review_fields"] = dict(fields)
+            return {
+                "terminal": "review_unavailable",
+                "user_truth": "Unavailable · not verified",
+                "unverified": True,
+                "gate": {"unverified": True},
+                "final_answer": fields["candidate_answer"],
+                "answer_replaced": False,
+            }
+
+        def finalize_after_delivery(self, **fields):
+            calls["finalize"] += 1
+            runner.store.promote_candidate_message(
+                message_id=fields["message_id"],
+                root_frame_id=frame_id,
+                branch_id=frame_id,
+                frame_id=frame_id,
+                expected_content=fields["expected_message_content"],
+                content=fields["promoted_message_content"],
+                metadata=fields["message_metadata"],
+            )
+            return {
+                **fields["result"],
+                "finalized": True,
+                "durable_terminal": False,
+            }
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", finish_with_two_prose_blocks)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    runner.completion_gate = _Gate()
+
+    try:
+        result = runner.run_message(frame_id, "default", "state the result")
+        assert result["status"] == "completed"
+        assert calls == {"review": 1, "finalize": 1}
+        review_assistants = [
+            row for row in observed["review_rows"] if row["role"] == "assistant"
+        ]
+        assert len(review_assistants) == 1
+        review_row = review_assistants[0]
+        review_metadata = json.loads(review_row["metadata"])
+        review_fields = observed["review_fields"]
+        assert review_row["message_id"]
+        assert review_row["content"] == review_fields["candidate_answer"]
+        assert review_metadata["review_status"] == "candidate"
+        assert review_metadata["turn_id"] == review_fields["turn_id"]
+        assert review_metadata["execution_id"] == review_fields["execution_id"]
+        rows = runner.store.list_branch_message_boundaries(frame_id, branch_id=frame_id)
+        assistants = [row for row in rows if row["role"] == "assistant"]
+        assert len(assistants) == 1
+        assistant_metadata = json.loads(assistants[0]["metadata"])
+        assert assistant_metadata["review_status"] == "review_unavailable"
+        resolved = [
+            event for event in hub.events if event["type"] == "candidate_resolved"
+        ]
+        assert len(resolved) == 1
+        assert resolved[0]["message_id"] == assistants[0]["message_id"]
+        assert resolved[0]["durable"] is True
+        assert resolved[0]["replaced"] is True
+        assert resolved[0]["answer_repaired"] is False
+        assert resolved[0]["text"] == assistants[0]["content"]
+        terminal_frames = [
+            event
+            for event in hub.events
+            if event["type"] == "frame_update" and event.get("status") != "processing"
+        ]
+        assert len(terminal_frames) == 1
+    finally:
+        runner.close()
+
+
+def test_stop_after_review_wins_the_gateway_terminal_proposal(monkeypatch, tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.roadmap_features = RoadmapFeatureFlags(stage4_review_completion_gate=True)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    observed = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def finish(state, emit, visible):
+        visible.append({"at": 100, "text": "candidate claim"})
+        emit(
+            {
+                "type": "text_chunk",
+                "frame_id": frame_id,
+                "block_type": "text",
+                "chunk": "candidate claim\n",
+            }
+        )
+        state.last_engine_completion = {"output": {"summary": "candidate claim"}}
+        state.last_model_prose = "candidate claim"
+        return "submitted"
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "review_only"
+
+        def gate_after_turn(self, **fields):
+            # This is the narrow window after review returns but before the
+            # gateway crosses the atomic finalizing boundary.
+            runner._state(frame_id, "default").cancel.set()
+            return {
+                "status": "verified",
+                "terminal": "verified",
+                "review_status": "verified",
+                "user_truth": "Verified",
+                "unverified": False,
+                "final_answer": fields["candidate_answer"],
+                "answer_replaced": False,
+            }
+
+        def finalize_after_delivery(self, **fields):
+            observed.update(fields)
+            return {
+                **fields["result"],
+                "finalized": True,
+                "durable_terminal": True,
+            }
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", finish)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    runner.completion_gate = _Gate()
+
+    try:
+        result = runner.run_message(frame_id, "default", "state the result")
+        assert result["status"] == "cancelled"
+        assert observed["delivered"] is False
+        assert observed["result"]["terminal"] == "cancelled"
+        assert observed["result"]["review_status"] == "cancelled"
+        rows = runner.store.list_branch_message_boundaries(frame_id, branch_id=frame_id)
+        candidate = next(row for row in rows if row["role"] == "assistant")
+        metadata = json.loads(candidate["metadata"])
+        assert metadata["review_status"] == "candidate"
+    finally:
+        runner.close()
+
+
 def _install_artifact_submission(
     monkeypatch,
     runner,
@@ -1802,6 +2003,193 @@ def test_stage1_same_head_capture_is_verified_committed_then_emitted_and_reopens
         assert reopened_delivery["message_content"] == linked[0]["content"]
     finally:
         reopened.close()
+
+
+def test_stage4_reviews_the_exact_same_head_version_in_the_stage1_manifest(
+    tmp_path, monkeypatch
+):
+    """A checksum-reused capture is delivery evidence even when the head is stable."""
+
+    from openai4s.server.evidence_snapshot import collect_turn_evidence
+
+    cfg = _stage1_stage4_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    artifact_path = state.workspace / "result.csv"
+    artifact_path.write_bytes(b"sample,score\nA,1\n")
+    first = runner._register_file(state, artifact_path, "cell-first", lambda _e: None)
+    assert first is not None
+    _install_artifact_submission(monkeypatch, runner, cell_id="cell-second")
+    observed: dict[str, object] = {}
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "review_only"
+
+        def gate_after_turn(self, **fields):
+            snapshot = collect_turn_evidence(
+                runner.store,
+                root_frame_id=fields["root_frame_id"],
+                branch_id=fields["branch_id"],
+                turn_id=fields["turn_id"],
+                execution_id=fields["execution_id"],
+                user_request=fields["user_request"],
+                candidate_answer=fields["candidate_answer"],
+                structured_completion=fields["structured_completion"],
+                artifact_versions_before=fields["artifact_versions_before"],
+                produced_artifacts=fields["produced_artifacts"],
+                cell_count_before=fields["cell_count_before"],
+                step_count_before=fields["step_count_before"],
+            )
+            observed["snapshot"] = snapshot
+            return {
+                "terminal": "completed_with_issues",
+                "user_truth": "Completed · unverified",
+                "unverified": True,
+                "final_answer": fields["candidate_answer"],
+                "answer_replaced": False,
+                "snapshot": snapshot,
+            }
+
+        def finalize_after_delivery(self, **fields):
+            observed["delivered"] = fields["delivered"]
+            return {**fields["result"], "finalized": False, "durable_terminal": False}
+
+    runner.completion_gate = _Gate()
+    try:
+        result = runner.run_message(frame_id, "default", "repeat the analysis")
+        assert result["status"] == "completed"
+        snapshot = observed["snapshot"]
+        assert isinstance(snapshot, dict)
+        reviewed_versions = {row["version_id"] for row in snapshot["artifacts"]}
+        pending = runner.store.committed_completion_deliveries(root_frame_id=frame_id)
+        assert len(pending) == 1
+        manifest_versions = {
+            row["version_id"] for row in pending[0]["manifest"]["artifacts"]
+        }
+        assert reviewed_versions == manifest_versions == {first["version_id"]}
+        assert observed["delivered"] is True
+    finally:
+        runner.close()
+
+
+def test_stage4_never_publishes_a_stage1_manifest_the_repair_did_not_review(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_stage4_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    observed: dict[str, object] = {}
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "auto_fix"
+
+        def gate_after_turn(self, **fields):
+            produced = fields["produced_artifacts"]
+            assert len(produced) == 1
+            artifact = produced[0]
+            return {
+                "terminal": "verified",
+                "user_truth": "Verified",
+                "unverified": False,
+                "final_answer": "Repaired prose that removed the trusted link.",
+                "answer_replaced": True,
+                "snapshot": {
+                    "artifacts": [
+                        {
+                            "artifact_id": artifact["artifact_id"],
+                            "version_id": "different-version",
+                            "size_bytes": artifact["size_bytes"],
+                            "checksum": artifact["checksum"],
+                        }
+                    ]
+                },
+            }
+
+        def finalize_after_delivery(self, **fields):
+            observed["delivered"] = fields["delivered"]
+            observed["result"] = fields["result"]
+            return {**fields["result"], "finalized": False, "durable_terminal": False}
+
+    runner.completion_gate = _Gate()
+    try:
+        result = runner.run_message(frame_id, "default", "repair the analysis")
+        assert result["status"] == "completed"
+        assert observed["delivered"] is False
+        assert observed["result"]["terminal"] == "review_unavailable"
+        assert observed["result"]["reason"] == "delivery_manifest_review_mismatch"
+        pending = runner.store.committed_completion_deliveries(root_frame_id=frame_id)
+        assert len(pending) == 1
+        durable = runner.store.get_completion_delivery(pending[0]["delivery_id"])
+        assert durable is not None
+        assert durable["status"] == "committed"
+        assert durable["message_metadata"]["review_status"] == "candidate"
+        resolved = [
+            event for event in hub.events if event["type"] == "candidate_resolved"
+        ]
+        assert len(resolved) == 1
+        assert resolved[0]["delivered"] is False
+        assert resolved[0]["durable"] is False
+        assert resolved[0]["replaced"] is False
+    finally:
+        runner.close()
+
+
+def test_stage1_candidate_commit_lost_response_replays_exactly_once(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    real_commit = runner.store.commit_completion_delivery
+    calls = {"n": 0}
+
+    def commit_then_lose_response(**fields):
+        calls["n"] += 1
+        result = real_commit(**fields)
+        if calls["n"] == 1:
+            raise OSError("injected lost response after commit")
+        return result
+
+    monkeypatch.setattr(
+        runner.store, "commit_completion_delivery", commit_then_lose_response
+    )
+    try:
+        result = runner.run_message(frame_id, "default", "analyze the data")
+        assert result["status"] == "completed"
+        assert calls["n"] == 2
+        deliveries = runner.store.completion_deliveries_for_session(frame_id)
+        assert len(deliveries) == 1
+        messages = [
+            row
+            for row in runner.store.list_branch_message_boundaries(
+                frame_id, branch_id=frame_id
+            )
+            if row["role"] == "assistant"
+        ]
+        assert len(messages) == 1
+        assert messages[0]["message_id"] == deliveries[0]["message_id"]
+        assert deliveries[0]["status"] == "published"
+    finally:
+        runner.close()
 
 
 def test_stage1_publish_marker_fault_leaves_one_committed_message_for_recovery(
@@ -3256,7 +3644,7 @@ def test_plan_restore_and_delete_artifact_created_shapes(tmp_path):
 def test_frame_update_status_literal_vocabulary(tmp_path):
     """Source-level lock on the frame_update status vocabulary documented in
     docs/webapp-api.md §3. Literal statuses in gateway.py emit sites are
-    exactly {processing, titled, failed, success, updated, done}; the
+    exactly {processing, titled, failed, success, updated}; the
     run_message terminal site emits a VARIABLE status ∈ {completed, failed,
     cancelled} (asserted behaviorally by the structured-submit and max-turn
     tests above). If this fails, a status was added/removed — update
@@ -3288,7 +3676,6 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
         "failed",
         "success",
         "updated",
-        "done",
     }
 
     # The one status no longer written at more than one emit site. It is built
@@ -4951,6 +5338,48 @@ def test_a_cursor_within_the_same_run_replays_only_what_was_missed():
     replayed = [e for e in conn.events if e.get("type") == "text_chunk"]
     assert replayed, "the missed tail must still arrive"
     assert all(int(e["seq"]) > cursor for e in replayed)
+
+
+def test_candidate_resolution_is_kept_in_the_live_resume_window():
+    """Reconnect must not restore old Candidate prose with a terminal badge."""
+
+    hub = gateway_mod.WSHub()
+    root = "root-candidate-resolution"
+    hub.broadcast(root, {"type": "text_reset", "frame_id": root})
+    hub.broadcast(
+        root,
+        {
+            "type": "text_chunk",
+            "frame_id": root,
+            "chunk": "old claim",
+            "provisional": True,
+        },
+    )
+    cursor = int(hub._live[root]["events"][-1]["seq"])
+    hub.broadcast(
+        root,
+        {
+            "type": "candidate_resolved",
+            "frame_id": root,
+            "message_id": "m-final",
+            "delivered": True,
+            "durable": True,
+            "replaced": True,
+            "text": "corrected claim",
+            "review_status": "verified",
+        },
+    )
+
+    conn = _Recorder()
+    hub.add(conn)
+    hub.subscribe(root, conn, cursor, hub.epoch)
+
+    replayed = [
+        event for event in conn.events if event.get("type") == "candidate_resolved"
+    ]
+    assert len(replayed) == 1
+    assert replayed[0]["message_id"] == "m-final"
+    assert replayed[0]["text"] == "corrected claim"
 
 
 def test_a_fresh_subscriber_with_no_cursor_is_not_a_gap():

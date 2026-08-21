@@ -117,6 +117,31 @@ def test_review_only_may_use_same_model_independent_session():
     assert result["gates_completion"] is False
 
 
+def test_cancel_after_failed_review_attempt_skips_the_retry():
+    cancelled = {"value": False}
+    called = {"n": 0}
+
+    def failing_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        called["n"] += 1
+        cancelled["value"] = True
+        raise OSError("first attempt failed after Stop")
+
+    service = ScientificReviewService(store=None, config=_cfg(), chat_call=failing_chat)
+    result = service.evaluate(
+        _snapshot(),
+        result_review_mode="review_only",
+        agent_cfg=_llm(model="agent"),
+        reviewer_cfg=_llm(model="reviewer"),
+        cancel=lambda: cancelled["value"],
+    )
+
+    assert called["n"] == 1
+    assert result["cancelled"] is True
+    assert result["reason"] == "review_cancelled"
+    assert result["attempts"] == 1
+
+
 def test_numeric_mismatch_is_a_high_finding_even_if_model_passes():
     service = ScientificReviewService(store=None, config=_cfg(), chat_call=_pass_chat)
     snapshot = _snapshot(candidate_answer="resid.csv has n=99 and mean=0.01")

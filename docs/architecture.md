@@ -131,12 +131,13 @@ must cite snapshot `evidence_refs`; a forged ref is itself a high finding.
 
 `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE=1` changes promotion order when result
 review is selected: candidate → frozen snapshot → review → promotion. Streamed
-prose stays provisional, and so does the composed final answer: it goes out
-marked `provisional`, while the message row, the Artifact completion manifest
-and the completion link are all withheld until a verdict exists. The durable
-record follows the same order — the candidate and the frozen evidence are
-committed before the reviewer is called — so a daemon lost mid-review leaves an
-open review run to recover, not a durable answer nothing reviewed.
+prose and the composed answer are marked `provisional`. At the turn boundary
+their exact concatenated bytes are written once as a canonical assistant row
+with `review_status=candidate`, before the Reviewer is called. For a Stage 1
+Artifact completion, the exact-version manifest and candidate row commit before
+its links are exposed, but the delivery remains unpublished. A daemon lost
+mid-review therefore reopens an explicitly unverified candidate rather than
+losing the answer or presenting it as reviewed.
 
 Promotion is a value, not just a veto: the gate returns the text that may be
 delivered, which is how a Stage 5 repair reaches the user instead of being
@@ -146,15 +147,23 @@ delivered and reviewed text, and a delivery that fails after the review all
 resolve to a non-verified terminal. A `pass` may become Verified; `issues`
 become `completed_with_issues`; timeout/parse/provider failure after the
 bounded retry is `review_unavailable`. The user still has the candidate
-artifacts. Reopen reads the durable gate stamp on the assistant message and
-`review-gate:{root}` setting, never a cached badge.
+artifacts. With Stage 2 enabled, exact message content/verdict, completion
+delivery publication, and the immutable Auto Run terminal are committed
+together in one SQLite transaction. The CAS is scoped by message, root, branch,
+frame, and original
+candidate bytes; it never guesses the newest assistant row. Reopen reads that
+durable assistant-row stamp, never a cached WebSocket badge or a root-only
+setting.
 
 #### Stage 5 auto-fix
 
 `OPENAI4S_STAGE5_AUTO_REPAIR=1` with `result_review_mode=auto_fix` starts a
 bounded Repair Run after issues. Repair uses a dedicated executor, not the
-Reviewer. A new candidate is independently re-reviewed. Unchanged finding
-fingerprints or a spent repair budget stop as `completed_with_issues`.
+Reviewer. A repaired candidate is independently re-reviewed; it can be
+Verified only when that fresh review also committed as durable proof. A repair
+whose fresh proof cannot be persisted may still replace the incorrect prose,
+but remains `completed_with_issues` and explicitly unverified. Unchanged finding
+fingerprints or a spent repair budget also stop as `completed_with_issues`.
 Identical Artifact bytes reuse the previous version. The Repair Agent cannot
 declare Verified.
 

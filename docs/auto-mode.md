@@ -11,12 +11,14 @@ consumes only `stage2_auto_run_storage`. Stage 3 consumes only
 `stage3_scientific_review_shadow` and records a shadow judgment without
 gating completion. Stage 4 consumes only `stage4_review_completion_gate` and
 does gate completion: with it on and `result_review_mode` not `off`, the
-candidate is streamed provisional and nothing final-looking about it is
-committed before the verdict, and the gate calls Stage 5 when
+candidate is streamed provisional and its exact canonical assistant row is
+committed with `review_status=candidate` before the verdict. It cannot look
+Verified until exact CAS promotion succeeds. The gate calls Stage 5 when
 `result_review_mode=auto_fix` and `stage5_auto_repair` is on: a repaired
 candidate is returned as the answer to deliver, not merely as a reason to
-withhold Verified. Later stages consume only their own flags and are
-described in their own sections.
+withhold Verified. A repaired answer without a newly persisted independent
+pass remains explicitly unverified. Later stages consume only their own flags
+and are described in their own sections.
 
 The existing `review:auto:<frame>` setting remains the old single-call,
 post-completion Reviewer. It records an ordinary review step after the final

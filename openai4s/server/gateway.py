@@ -1270,6 +1270,7 @@ class WSHub:
             "repair_started",
             "repair_completed",
             "auto_run_terminal",
+            "candidate_resolved",
         ):
             event, size = self._append_live_event(buf, obj)
             if t == "notebook_cell_start" and cell_id:
@@ -7106,6 +7107,8 @@ class SessionRunner:
         delivered_at: int,
         language: str,
         already_streamed: bool = False,
+        message_metadata: Mapping[str, Any] | None = None,
+        publish: bool = True,
     ) -> dict:
         """Publish the turn's final answer; transactional where Stage 1 applies.
 
@@ -7150,15 +7153,34 @@ class SessionRunner:
                         created_at=block.get("at"),
                     )
                     block["persisted"] = True
-                delivery = delivery_service.commit_verified_manifest(
-                    verified=verified,
-                    idempotency_key=("artifact-completion:" + str(execution_id)),
-                    root_frame_id=root_frame_id,
-                    branch_id=st.branch_id,
-                    frame_id=root_frame_id,
-                    content=final_text,
-                    created_at=delivered_at,
-                )
+                delivery = None
+                commit_error: Exception | None = None
+                # A wrapper can lose the response after SQLite committed the
+                # Candidate message and delivery envelope. The execution-bound
+                # idempotency key makes one bounded retry an exact replay; without
+                # it the live turn would fail while reopen already exposed a
+                # stranded provisional delivery.
+                for _attempt in range(2):
+                    try:
+                        delivery = delivery_service.commit_verified_manifest(
+                            verified=verified,
+                            idempotency_key=(
+                                "artifact-completion:" + str(execution_id)
+                            ),
+                            root_frame_id=root_frame_id,
+                            branch_id=st.branch_id,
+                            frame_id=root_frame_id,
+                            content=final_text,
+                            created_at=delivered_at,
+                            message_metadata=message_metadata,
+                        )
+                        break
+                    except Exception as error:  # noqa: BLE001 - bounded replay
+                        commit_error = error
+                if delivery is None:
+                    if commit_error is None:
+                        raise RuntimeError("completion delivery returned no receipt")
+                    raise commit_error
             except Exception as error:  # noqa: BLE001 - fail closed
                 # No verified row means no success link is emitted.
                 # The fixed public text carries no local path or raw
@@ -7175,14 +7197,17 @@ class SessionRunner:
                         "no completion link was published."
                     ),
                     "delivery_id": None,
+                    "message_id": None,
                 }
             delivery_id = str(delivery["delivery_id"])
+            message_id = str(delivery["message_id"])
             assistant_visible.append(
                 {
                     "at": delivered_at,
                     "text": final_text,
                     "persisted": True,
                     "delivery_id": delivery_id,
+                    "message_id": message_id,
                 }
             )
             if not already_streamed:
@@ -7193,24 +7218,27 @@ class SessionRunner:
                         "block_type": "text",
                         "chunk": final_text + "\n",
                         "delivery_id": delivery_id,
+                        "message_id": message_id,
                     }
                 )
-            try:
-                self.store.mark_completion_delivery_published(delivery_id)
-            except Exception as error:  # noqa: BLE001
-                # Message+manifest are already durable. Leaving
-                # the row committed preserves a stable recovery
-                # key for REST reopen and future explicit
-                # reconciliation; Stage 1 does not re-emit here.
-                record_diagnostic(
-                    error,
-                    surface="completion:publication_reconcile",
-                )
+            if publish:
+                try:
+                    self.store.mark_completion_delivery_published(delivery_id)
+                except Exception as error:  # noqa: BLE001
+                    # Message+manifest are already durable. Leaving
+                    # the row committed preserves a stable recovery
+                    # key for REST reopen and future explicit
+                    # reconciliation; Stage 1 does not re-emit here.
+                    record_diagnostic(
+                        error,
+                        surface="completion:publication_reconcile",
+                    )
             return {
                 "ok": True,
                 "code": None,
                 "error_text": None,
                 "delivery_id": delivery_id,
+                "message_id": message_id,
             }
         assistant_visible.append({"at": delivered_at, "text": final_text})
         if not already_streamed:
@@ -7222,7 +7250,13 @@ class SessionRunner:
                     "chunk": final_text + "\n",
                 }
             )
-        return {"ok": True, "code": None, "error_text": None, "delivery_id": None}
+        return {
+            "ok": True,
+            "code": None,
+            "error_text": None,
+            "delivery_id": None,
+            "message_id": None,
+        }
 
     def run_message(
         self,
@@ -7370,6 +7404,25 @@ class SessionRunner:
                 branch_id=st.branch_id,
                 tool_resolver=(tool_resolver if callable(tool_resolver) else None),
             )
+            turn_execution_id = str(
+                getattr(execution, "execution_id", "") or turn_request_id
+            )
+            gate_mode = "off"
+            if self.cfg.roadmap_features.stage4_review_completion_gate:
+                try:
+                    # Freeze the selection once for this turn. A concurrent
+                    # settings PATCH must not make streaming provisional under
+                    # one mode and review (or skip review) under another.
+                    gate_mode = str(
+                        self.completion_gate.active_mode(root_frame_id) or "off"
+                    )
+                except Exception as error:  # noqa: BLE001 - fail closed
+                    record_diagnostic(error, surface="completion:mode_resolution")
+                    gate_mode = "review_only"
+            gate_requested = bool(
+                self.cfg.roadmap_features.stage4_review_completion_gate
+                and gate_mode != "off"
+            )
             user_message = {"role": "user", "content": content}
             action_ledger.append_user(user_message)
             st.messages.append(user_message)
@@ -7390,6 +7443,39 @@ class SessionRunner:
             cell_count_before = self.store.cell_count(root_frame_id)
             step_count_before = self.store.step_count(root_frame_id)
             emit({"type": "text_reset", "frame_id": root_frame_id})
+            if gate_requested:
+                # The badge precedes the first assistant byte. The durable
+                # candidate_ready event follows once the complete candidate and
+                # its evidence digest exist; this stream marker merely prevents
+                # provisional prose looking final while the turn is running.
+                emit(
+                    {
+                        "type": "candidate_ready",
+                        "frame_id": root_frame_id,
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                        "gates_completion": True,
+                        "review_status": "candidate",
+                        "user_truth": "Candidate · provisional / not verified",
+                        "stream_only": True,
+                    }
+                )
+
+            def turn_emit(event: dict) -> None:
+                if (
+                    gate_requested
+                    and event.get("type") == "text_chunk"
+                    and event.get("block_type") == "text"
+                ):
+                    event = {
+                        **event,
+                        "provisional": True,
+                        "review_status": "candidate",
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                    }
+                emit(event)
+
             assistant_visible: list[dict] = []
             status = "completed"
             err_text: str | None = None
@@ -7417,7 +7503,7 @@ class SessionRunner:
                 try:
                     # Keep the historical three-argument composition seam so
                     # tests/extensions that replace ``_loop`` remain valid.
-                    loop_reason = self._loop(st, emit, assistant_visible)
+                    loop_reason = self._loop(st, turn_emit, assistant_visible)
                 finally:
                     st.active_action_ledger = None
                 action_ledger.append_terminal(
@@ -7500,13 +7586,11 @@ class SessionRunner:
             # candidate text to hold back. Resolved once, here, so the branch
             # that decides to withhold delivery and the branch that runs the
             # review can never disagree about whether this turn is gated.
-            gate_armed = bool(
-                status == "completed"
-                and self.cfg.roadmap_features.stage4_review_completion_gate
-                and self.completion_gate.gates_turn(root_frame_id)
-            )
-            # The composed final answer, withheld until the gate has run.
+            gate_armed = bool(status == "completed" and gate_requested)
+            # The completion suffix, held until its canonical Candidate row (and
+            # any Stage 1 manifest) is durable, then streamed as provisional.
             candidate_final: dict[str, Any] | None = None
+            produced_artifacts: list[dict[str, Any]] = []
             if status == "completed" and loop_reason == "submitted":
                 current_artifacts = self.store.list_artifacts(
                     {"root_frame_id": root_frame_id}
@@ -7559,32 +7643,17 @@ class SessionRunner:
                 if final_text:
                     delivered_at = int(time.time() * 1000)
                     # Stage 4 orders the turn candidate -> frozen evidence ->
-                    # review -> promotion. While the gate is armed this text is
-                    # a CANDIDATE, not the answer: stream it so the user can
-                    # read the work as it lands, but marked provisional, and
-                    # hold back every durable and final-looking form of it --
-                    # the verified Artifact manifest, the message rows, the
-                    # completion link. Publishing resumes below, once a verdict
-                    # exists. Before this, the answer was fully readable as
-                    # final and already durable for the whole reviewer
-                    # round-trip, and a `kill -9` in that window left it that
-                    # way forever with nothing that would ever revisit it.
+                    # review -> promotion. While armed, the text is readable but
+                    # explicitly provisional. The suffix waits below until one
+                    # canonical Candidate row is durable; a Stage 1 manifest is
+                    # committed (not published) before any exact-version link is
+                    # exposed. Only the atomic promotion may make it final.
                     if gate_armed:
                         candidate_final = {
                             "at": delivered_at,
                             "text": final_text,
                             "artifacts": produced_artifacts,
                         }
-                        emit(
-                            {
-                                "type": "text_chunk",
-                                "frame_id": root_frame_id,
-                                "block_type": "text",
-                                "chunk": final_text + "\n",
-                                "provisional": True,
-                                "review_status": "candidate",
-                            }
-                        )
                     else:
                         published = self._deliver_final_answer(
                             st=st,
@@ -7621,11 +7690,15 @@ class SessionRunner:
             gated = gate_armed
             gate: dict | None = None
             gate_metadata: dict[str, object] | None = None
+            candidate_answer = ""
+            candidate_row: dict[str, Any] | None = None
+            candidate_delivery_id: str | None = None
+            candidate_original_sha256 = ""
             if gate_armed:
-                # Everything this turn wants to say, including the final answer
-                # withheld above. The reviewer has to read what the user will
-                # read; reviewing only the prose blocks would leave the
-                # conclusion -- the part carrying the numbers -- unexamined.
+                # One canonical row contains exactly the bytes the reviewer
+                # reads. Per-block rows cannot represent a turn-wide verdict:
+                # they leave earlier prose Candidate while only the last row is
+                # promoted, and a repair has no exact durable replacement target.
                 candidate_answer = "\n\n".join(
                     [
                         *(str(blk.get("text") or "") for blk in assistant_visible),
@@ -7636,200 +7709,335 @@ class SessionRunner:
                         ),
                     ]
                 ).strip()
+                candidate_original_sha256 = hashlib.sha256(
+                    candidate_answer.encode("utf-8")
+                ).hexdigest()
+                provisional_metadata: dict[str, object] = {
+                    "review_status": "candidate",
+                    "user_truth": "Candidate · provisional / not verified",
+                    "gates_completion": True,
+                    "unverified": True,
+                    "turn_id": str(action_ledger.turn_id),
+                    "execution_id": turn_execution_id,
+                    "candidate_content_sha256": candidate_original_sha256,
+                }
+                if candidate_answer:
+                    if (
+                        candidate_final is not None
+                        and self.stage1_trusted_delivery
+                        and candidate_final["artifacts"]
+                    ):
+                        # Stage 1 commits the manifest and candidate row before
+                        # exposing its exact-version URLs. It remains committed
+                        # (unpublished) until review, CAS promotion, and terminal
+                        # finalisation have all succeeded.
+                        prepared = self._deliver_final_answer(
+                            st=st,
+                            emit=emit,
+                            root_frame_id=root_frame_id,
+                            project_id=project_id,
+                            execution_id=turn_execution_id,
+                            produced_artifacts=list(candidate_final["artifacts"]),
+                            assistant_visible=[],
+                            final_text=candidate_answer,
+                            delivered_at=int(candidate_final["at"]),
+                            language=response_language(user_text),
+                            already_streamed=True,
+                            message_metadata=provisional_metadata,
+                            publish=False,
+                        )
+                        if prepared["ok"]:
+                            candidate_delivery_id = str(prepared["delivery_id"])
+                            candidate_row = {
+                                "message_id": str(prepared["message_id"]),
+                                "content": candidate_answer,
+                            }
+                        else:
+                            status = "failed"
+                            failure_meta["code"] = str(prepared["code"])
+                            err_text = str(prepared["error_text"])
+                            emit(
+                                {
+                                    "type": "text_chunk",
+                                    "frame_id": root_frame_id,
+                                    "block_type": "text",
+                                    "chunk": "\n\n" + err_text + "\n",
+                                }
+                            )
+                    else:
+                        candidate_row = self.store.add_message(
+                            root_frame_id=root_frame_id,
+                            branch_id=st.branch_id,
+                            role="assistant",
+                            content=candidate_answer,
+                            frame_id=root_frame_id,
+                            created_at=(
+                                int(candidate_final["at"])
+                                if candidate_final is not None
+                                else None
+                            ),
+                            metadata=provisional_metadata,
+                        )
+                    if candidate_row is not None:
+                        for block in assistant_visible:
+                            block["persisted"] = True
+                        # Bind the provisional live wrapper to the exact row
+                        # before review.  The early stream-only marker cannot
+                        # carry this id because the row does not exist yet.
+                        emit(
+                            {
+                                "type": "candidate_ready",
+                                "frame_id": root_frame_id,
+                                "turn_id": str(action_ledger.turn_id),
+                                "execution_id": turn_execution_id,
+                                "message_id": candidate_row["message_id"],
+                                "gates_completion": True,
+                                "review_status": "candidate",
+                                "user_truth": (
+                                    "Candidate · provisional / not verified"
+                                ),
+                                "persisted": True,
+                            }
+                        )
+                        if candidate_final is not None:
+                            emit(
+                                {
+                                    "type": "text_chunk",
+                                    "frame_id": root_frame_id,
+                                    "block_type": "text",
+                                    "chunk": str(candidate_final["text"]) + "\n",
+                                    "provisional": True,
+                                    "review_status": "candidate",
+                                    "turn_id": str(action_ledger.turn_id),
+                                    "execution_id": turn_execution_id,
+                                    "message_id": candidate_row["message_id"],
+                                    **(
+                                        {"delivery_id": candidate_delivery_id}
+                                        if candidate_delivery_id
+                                        else {}
+                                    ),
+                                }
+                            )
+
+                if status == "completed":
+                    try:
+                        gate = self.completion_gate.gate_after_turn(
+                            root_frame_id=root_frame_id,
+                            project_id=project_id,
+                            branch_id=str(st.branch_id or root_frame_id),
+                            turn_id=str(action_ledger.turn_id),
+                            execution_id=turn_execution_id,
+                            user_request=user_text,
+                            candidate_answer=candidate_answer,
+                            structured_completion=(
+                                st.last_engine_completion
+                                or getattr(st.dispatcher, "last_output", None)
+                            ),
+                            artifact_versions_before=artifact_versions_before,
+                            produced_artifacts=produced_artifacts,
+                            cell_count_before=cell_count_before,
+                            step_count_before=step_count_before,
+                            agent_cfg=llm_cfg,
+                            reviewer_cfg=self._review_llm_cfg(st),
+                            emit=emit,
+                            checkpoint_id=self._branch_head_checkpoint(st),
+                            cancel=st.cancel.is_set,
+                            deliver_replacement=candidate_row is not None,
+                            mode_override=gate_mode,
+                        )
+                    except Exception as error:  # noqa: BLE001 - fail closed
+                        record_diagnostic(error, surface="completion:review_gate")
+                        gate = None
+            # --- exact promotion and terminal finalisation ------------------
+            promoted_text = candidate_answer
+            replaced = bool(gate and gate.get("answer_replaced"))
+            if replaced:
+                promoted_text = str(gate.get("final_answer") or candidate_answer)
+            delivery_review_matches = True
+            if gate is not None and candidate_delivery_id is not None:
                 try:
-                    gate = self.completion_gate.gate_after_turn(
-                        root_frame_id=root_frame_id,
-                        project_id=project_id,
-                        branch_id=str(st.branch_id or root_frame_id),
-                        turn_id=str(action_ledger.turn_id),
-                        execution_id=str(
-                            getattr(execution, "execution_id", "") or turn_request_id
-                        ),
-                        user_request=user_text,
-                        candidate_answer=candidate_answer,
-                        structured_completion=(
-                            st.last_engine_completion
-                            or getattr(st.dispatcher, "last_output", None)
-                        ),
-                        artifact_versions_before=artifact_versions_before,
-                        cell_count_before=cell_count_before,
-                        step_count_before=step_count_before,
-                        agent_cfg=llm_cfg,
-                        reviewer_cfg=self._review_llm_cfg(st),
-                        emit=emit,
-                        # `start_repair` refuses a repair without a restorable
-                        # branch checkpoint -- that is the durable form of the
-                        # plan's "Blocked · Safe rollback unavailable". Passing
-                        # None here bypassed the check entirely, so repairs
-                        # mutated state with no verified rollback point and no
-                        # repair_runs row was ever written.
-                        checkpoint_id=self._branch_head_checkpoint(st),
-                        # Without this the repair loop's cancel check is dead and
-                        # a user pressing Stop mid-repair is ignored.
-                        cancel=st.cancel.is_set,
-                        # Nothing is written yet, so the verdict goes on the row
-                        # the persist loop below is about to create. Stamping
-                        # the newest existing assistant row instead would label
-                        # the PREVIOUS turn's answer with this turn's result.
-                        stamp_message=False,
-                        # The answer has not been shown as final or stored, so a
-                        # repair that corrected it can still become the thing
-                        # the user reads. Without this the Stage 5 loop computed
-                        # a fix nobody could ever see and the gate could only
-                        # refuse to promote.
-                        deliver_replacement=candidate_final is not None,
+                    reviewed_snapshot = gate.get("snapshot")
+                    if not isinstance(reviewed_snapshot, Mapping):
+                        raise DeliveryValidationError(
+                            "final review has no frozen Artifact snapshot"
+                        )
+                    delivery_service = self.completion_delivery
+                    if delivery_service is None:
+                        raise DeliveryValidationError(
+                            "trusted completion delivery is unavailable"
+                        )
+                    delivery_service.assert_review_matches_delivery(
+                        delivery_id=candidate_delivery_id,
+                        reviewed_snapshot=reviewed_snapshot,
+                        promoted_content=promoted_text,
                     )
-                except Exception:  # noqa: BLE001 - a failed gate is unverified
-                    traceback.print_exc()
-                    gate = None
-                # A gate that could not reach a verdict -- it raised, or the
-                # reviewer was unavailable -- is `review_unavailable`, never a
-                # silent pass. `gated` stays true either way so the Stage 3
-                # shadow does not run a second review over the same turn.
-                gate_metadata = message_review_metadata(
-                    gate
-                    or {
+                except Exception as error:  # noqa: BLE001 - never publish drift
+                    record_diagnostic(
+                        error, surface="completion:review_delivery_binding"
+                    )
+                    delivery_review_matches = False
+                    gate = {
+                        **gate,
+                        "status": "review_unavailable",
                         "terminal": "review_unavailable",
+                        "review_status": "review_unavailable",
+                        "reason": "delivery_manifest_review_mismatch",
                         "user_truth": (
-                            "Unavailable · not verified (review_did_not_run)"
+                            "Unavailable · not verified "
+                            "(delivery_manifest_review_mismatch)"
                         ),
                         "unverified": True,
                     }
+            promotion_ready = False
+            promotion_succeeded = False
+            if gate is not None:
+                gate_metadata = message_review_metadata(gate)
+                gate_metadata.update(
+                    {
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                        "candidate_content_sha256": candidate_original_sha256,
+                        "reviewed_content_sha256": hashlib.sha256(
+                            promoted_text.encode("utf-8")
+                        ).hexdigest(),
+                    }
                 )
-            # --- promotion ---------------------------------------------------
-            # The candidate withheld above is published now that a verdict
-            # exists, so the bytes the user is given and the bytes the reviewer
-            # read are the same bytes -- which is the entire content of the
-            # claim `verified` makes.
-            # Set when Stage 1 delivery wrote this turn's answer row itself.
-            delivered_row = False
-            if candidate_final is not None:
-                promoted_text = str(candidate_final["text"])
-                replaced = bool(gate and gate.get("answer_replaced"))
-                if replaced:
-                    # A repair rewrote the answer, and the reviewed text spans
-                    # the whole turn. The streamed prose blocks are superseded
-                    # by it: keeping them would leave the corrected claim
-                    # sitting directly under the wrong one it corrects, with
-                    # nothing telling the reader which is which.
-                    promoted_text = str(gate.get("final_answer") or promoted_text)
-                    assistant_visible[:] = []
-                published = self._deliver_final_answer(
-                    st=st,
-                    emit=emit,
-                    root_frame_id=root_frame_id,
-                    project_id=project_id,
-                    execution_id=str(execution.execution_id),
-                    produced_artifacts=list(candidate_final["artifacts"]),
-                    assistant_visible=assistant_visible,
-                    final_text=promoted_text,
-                    delivered_at=int(candidate_final["at"]),
-                    language=response_language(user_text),
-                    # Unchanged text is already on the wire from the provisional
-                    # emit; only a replacement has bytes the user has not seen.
-                    already_streamed=not replaced,
-                )
-                delivered_row = bool(published["ok"] and published["delivery_id"])
-                if not published["ok"]:
-                    status = "failed"
-                    failure_meta["code"] = str(published["code"])
-                    err_text = str(published["error_text"])
-                    emit(
-                        {
-                            "type": "text_chunk",
-                            "frame_id": root_frame_id,
-                            "block_type": "text",
-                            "chunk": "\n\n" + err_text + "\n",
-                        }
+            if st.cancel.is_set():
+                status = "cancelled"
+            # Atomically close the exact ticket's cancellation window before
+            # the message/delivery/run transaction. A Stop that wins first is
+            # observed above (or makes this return False); a Stop that arrives
+            # afterward is refused as `finalizing`, never reported accepted
+            # while these bytes become immutable.
+            entered_finalizing = self.executions.mark_finalizing(
+                execution,
+                reason=(
+                    "persisting completion"
+                    if status == "completed"
+                    else f"persisting {status} result"
+                ),
+            )
+            if not entered_finalizing and (
+                st.cancel.is_set() or execution.cancellation.is_set()
+            ):
+                status = "cancelled"
+            if gate is not None and status == "cancelled":
+                gate = {
+                    **gate,
+                    "status": "cancelled",
+                    "terminal": "cancelled",
+                    "review_status": "cancelled",
+                    "reason": "cancelled",
+                    "stop_reason": "cancelled",
+                    "user_truth": "Cancelled · not promoted / not verified",
+                    "unverified": True,
+                }
+            promotion_ready = bool(
+                gate is not None
+                and candidate_row is not None
+                and delivery_review_matches
+                and status == "completed"
+            )
+
+            if gate is not None:
+                try:
+                    finalized = self.completion_gate.finalize_after_delivery(
+                        root_frame_id=root_frame_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        result=gate,
+                        delivered=promotion_ready,
+                        emit=emit,
+                        message_id=(
+                            str(candidate_row["message_id"])
+                            if promotion_ready and candidate_row is not None
+                            else None
+                        ),
+                        expected_message_content=(
+                            candidate_answer if promotion_ready else None
+                        ),
+                        promoted_message_content=(
+                            promoted_text if promotion_ready else None
+                        ),
+                        completion_delivery_id=(
+                            candidate_delivery_id if promotion_ready else None
+                        ),
+                        message_metadata=(gate_metadata if promotion_ready else None),
                     )
-                    # Delivery runs after the review, so it can still fail with
-                    # a Verified gate already written. Retract it: a turn that
-                    # delivered no answer has no verified answer.
-                    try:
-                        retracted = self.completion_gate.mark_delivery_failed(
-                            root_frame_id
+                except Exception as error:  # noqa: BLE001 - remain Candidate
+                    record_diagnostic(error, surface="completion:terminal_promotion")
+                    finalized = None
+                if isinstance(finalized, dict):
+                    gate = finalized
+                    gate_metadata = message_review_metadata(finalized)
+                    promotion_succeeded = bool(
+                        promotion_ready
+                        and (
+                            finalized.get("finalized")
+                            or finalized.get("durable_terminal")
                         )
-                    except Exception:  # noqa: BLE001 - the turn already failed
-                        traceback.print_exc()
-                        retracted = None
-                    if retracted is not None:
-                        gate_metadata = message_review_metadata(retracted)
+                    )
+            if candidate_row is not None and not promotion_succeeded:
+                gate_metadata = {
+                    "review_status": "candidate",
+                    "user_truth": "Candidate · provisional / not verified",
+                    "gates_completion": True,
+                    "unverified": True,
+                }
+
+            if candidate_row is not None:
+                resolved = bool(promotion_succeeded)
+                # Streaming is incremental and preserves provider whitespace;
+                # the canonical durable candidate joins turn blocks with the
+                # renderer's stable separators.  Reconcile even an unchanged
+                # verdict to these exact reviewed bytes so live and reopen can
+                # never display different content under the same badge.
+                reconcile_text = bool(resolved and promoted_text)
                 emit(
                     {
                         "type": "candidate_resolved",
                         "frame_id": root_frame_id,
-                        "review_status": (gate_metadata or {}).get("review_status"),
-                        "user_truth": (gate_metadata or {}).get("user_truth"),
-                        "replaced": replaced,
-                        "delivered": bool(published["ok"]),
-                        **({"text": promoted_text} if replaced else {}),
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                        "message_id": str(candidate_row["message_id"]),
+                        "review_status": (
+                            (gate_metadata or {}).get("review_status")
+                            if resolved
+                            else "candidate"
+                        ),
+                        "user_truth": (
+                            (gate_metadata or {}).get("user_truth")
+                            if resolved
+                            else "Candidate · provisional / not verified"
+                        ),
+                        "replaced": reconcile_text,
+                        "answer_repaired": bool(resolved and replaced),
+                        "delivered": resolved,
+                        "durable": resolved,
+                        **({"text": promoted_text} if reconcile_text else {}),
                         **(
-                            {"delivery_id": published["delivery_id"]}
-                            if published["delivery_id"]
+                            {"delivery_id": candidate_delivery_id}
+                            if candidate_delivery_id
                             else {}
                         ),
                     }
                 )
-            if gate_armed:
-                emit(
-                    {
-                        "type": "frame_update",
-                        "frame_id": root_frame_id,
-                        "status": "done" if status == "completed" else status,
-                        "review_status": (gate_metadata or {}).get("review_status"),
-                        "user_truth": (gate_metadata or {}).get("user_truth"),
-                    }
-                )
-            # Which prose rows THIS turn will write, recomputed after promotion
-            # because a repair can have emptied the list. The verdict rides on
-            # the last of them.
-            writable = [
-                blk
-                for blk in assistant_visible
-                if (blk.get("text") or "").strip() and not blk.get("persisted")
-            ]
-            if gate_metadata is not None and delivered_row and not writable:
-                # Stage 1 delivery already wrote every row itself, bound to an
-                # Artifact manifest, so there is nothing left for the persist
-                # loop to carry the verdict on. Stamping is correct here and
-                # ONLY here, which is why it is conditioned on this turn having
-                # actually written that row: on a tool-only turn -- gated, but
-                # with no answer to deliver -- `writable` is empty for the
-                # opposite reason, and the newest assistant row in the branch
-                # still belongs to the PREVIOUS turn.
-                try:
-                    self.completion_gate.stamp_delivered_answer(
-                        root_frame_id,
-                        str(st.branch_id or root_frame_id),
-                        gate_metadata,
-                    )
-                except Exception:  # noqa: BLE001 - reopen still has the setting
-                    traceback.print_exc()
             had_prose = False
-            # The answer is persisted BEFORE the review, and marked provisional
-            # in the same write. Running the gate first would have been worse,
-            # not better: the gate is the long part of the turn -- a reviewer
-            # round-trip and, under auto_fix, a whole repair loop -- so a hard
-            # exit during it would lose the entire answer the user is already
-            # reading, where the old order lost only the verdict.
-            #
-            # What the old order actually got wrong was leaving the row durable
-            # and UNMARKED, so a crash produced an answer that looked reviewed
-            # and never would be. A row that says "candidate" from the moment it
-            # exists is honest at every instant: the gate below promotes it, and
-            # if the daemon dies first the reconciler terminates the run and the
-            # row still says it was never verified.
+            # Gated prose normally skipped this compatible per-block loop: the
+            # canonical row above already owns the whole reviewed byte string.
+            # If candidate preparation failed after prose streamed, however,
+            # preserve those blocks as explicitly provisional rather than lose
+            # them or reopen them without a badge. Ungated turns retain their
+            # historical per-block interleaving with steps.
             provisional_metadata = (
                 {
                     "review_status": "candidate",
                     "user_truth": "Candidate · provisional / not verified",
                     "gates_completion": True,
                     "unverified": True,
+                    "turn_id": str(action_ledger.turn_id),
+                    "execution_id": turn_execution_id,
                 }
-                if (
-                    self.cfg.roadmap_features.stage4_review_completion_gate
-                    and status == "completed"
-                )
+                if gate_requested
                 else None
             )
             for blk in assistant_visible:
@@ -7907,6 +8115,7 @@ class SessionRunner:
                 and status == "completed"
                 and loop_reason == "submitted"
                 and not st.plan
+                and not gate_armed
             ):
                 assistant_text = "\n\n".join(
                     str(blk.get("text") or "") for blk in assistant_visible
@@ -7922,59 +8131,6 @@ class SessionRunner:
                 )
                 if st.cancel.is_set():
                     status = "cancelled"
-            gated = False
-            if (
-                self.cfg.roadmap_features.stage4_review_completion_gate
-                and status == "completed"
-            ):
-                try:
-                    gate = self.completion_gate.gate_after_turn(
-                        root_frame_id=root_frame_id,
-                        project_id=project_id,
-                        branch_id=str(st.branch_id or root_frame_id),
-                        turn_id=str(action_ledger.turn_id),
-                        execution_id=str(
-                            getattr(execution, "execution_id", "") or turn_request_id
-                        ),
-                        user_request=user_text,
-                        candidate_answer="\n\n".join(
-                            str(blk.get("text") or "") for blk in assistant_visible
-                        ).strip(),
-                        structured_completion=(
-                            st.last_engine_completion
-                            or getattr(st.dispatcher, "last_output", None)
-                        ),
-                        artifact_versions_before=artifact_versions_before,
-                        cell_count_before=cell_count_before,
-                        step_count_before=step_count_before,
-                        agent_cfg=llm_cfg,
-                        reviewer_cfg=self._review_llm_cfg(st),
-                        emit=emit,
-                        # `start_repair` refuses a repair without a restorable
-                        # branch checkpoint -- that is the durable form of the
-                        # plan's "Blocked · Safe rollback unavailable". Passing
-                        # None here bypassed the check entirely, so repairs
-                        # mutated state with no verified rollback point and no
-                        # repair_runs row was ever written.
-                        checkpoint_id=self._branch_head_checkpoint(st),
-                        # Without this the repair loop's cancel check is dead and
-                        # a user pressing Stop mid-repair is ignored.
-                        cancel=st.cancel.is_set,
-                    )
-                except Exception:  # noqa: BLE001 - never fail an already delivered turn
-                    traceback.print_exc()
-                    gate = None
-                if gate is not None:
-                    gated = True
-                    emit(
-                        {
-                            "type": "frame_update",
-                            "frame_id": root_frame_id,
-                            "status": "done",
-                            "review_status": gate.get("terminal"),
-                            "user_truth": gate.get("user_truth"),
-                        }
-                    )
             if (
                 (not gated)
                 and self.cfg.roadmap_features.stage3_scientific_review_shadow
@@ -8013,14 +8169,6 @@ class SessionRunner:
             self.store.update_frame(
                 root_frame_id, status=("done" if status == "completed" else status)
             )
-            self.executions.mark_finalizing(
-                execution,
-                reason=(
-                    "persisting completion"
-                    if status == "completed"
-                    else f"persisting {status} result"
-                ),
-            )
             if status == "failed":
                 # While the lease is still held. A turn that fails inside this
                 # method returns normally -- the handler above caught the
@@ -8048,6 +8196,14 @@ class SessionRunner:
                 # The stream is the surface the user is watching, and it is the
                 # one that said only "failed".
                 **turn_identity,
+                **(
+                    {
+                        "review_status": gate_metadata.get("review_status"),
+                        "user_truth": gate_metadata.get("user_truth"),
+                    }
+                    if gate_metadata is not None
+                    else {}
+                ),
             }
         )
         return response
@@ -12455,6 +12611,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 if _message_review_gate(mm)
                                 else {}
                             ),
+                            **_message_candidate_identity(mm),
                         }
                         for mm in msgs
                     ]
@@ -15417,6 +15574,27 @@ def _message_review_gate(message: dict) -> dict | None:
     if isinstance(truth, str) and truth:
         out["user_truth"] = truth[:240]
     return out
+
+
+def _message_candidate_identity(message: dict) -> dict:
+    """Project only the public turn identity used to reconcile WS replay."""
+
+    if _message_review_gate(message) is None:
+        return {}
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    projected: dict[str, str] = {}
+    for key in ("turn_id", "execution_id"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            projected[key] = value[:256]
+    return projected
 
 
 def _message_artifact_refs(message: dict) -> list[dict]:

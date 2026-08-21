@@ -31,6 +31,10 @@ class CompletionDeliveryStore(Protocol):
 
     def commit_completion_delivery(self, **fields: Any) -> dict[str, Any]: ...
 
+    def promote_candidate_delivery(self, **fields: Any) -> dict[str, Any]: ...
+
+    def get_completion_delivery(self, delivery_id: str) -> dict[str, Any] | None: ...
+
 
 class DeliveryValidationError(RuntimeError):
     """A version cannot safely be claimed in a completion message."""
@@ -114,6 +118,7 @@ class CompletionDeliveryService:
         branch_id: str | None,
         frame_id: str | None,
         content: str,
+        message_metadata: Mapping[str, Any] | None = None,
         created_at: int | None = None,
     ) -> dict[str, Any]:
         """Commit only while every manifest snapshot still matches its bytes.
@@ -130,10 +135,116 @@ class CompletionDeliveryService:
             frame_id=frame_id,
             content=content,
             manifest=verified.value,
+            message_metadata=message_metadata,
             expected_manifest_sha256=verified.sha256,
             created_at=created_at,
             snapshot_verifier=self.verify_snapshot,
         )
+
+    def promote_candidate_delivery(
+        self,
+        *,
+        delivery_id: str,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str | None,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        message_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Promote an exact committed candidate before socket publication."""
+
+        return self.store.promote_candidate_delivery(
+            delivery_id=delivery_id,
+            message_id=message_id,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            frame_id=frame_id,
+            expected_content=expected_content,
+            content=content,
+            message_metadata=message_metadata,
+        )
+
+    def assert_review_matches_delivery(
+        self,
+        *,
+        delivery_id: str,
+        reviewed_snapshot: Mapping[str, Any],
+        promoted_content: str,
+    ) -> None:
+        """Require Stage 5's final evidence to match the committed manifest.
+
+        Candidate delivery is intentionally committed before review. A repair
+        may change prose, but publishing that old manifest is safe only when
+        the final re-review still names the same immutable Artifact versions
+        and the promoted bytes still contain their server-authored URLs.
+        """
+
+        delivery = self.store.get_completion_delivery(str(delivery_id))
+        if not isinstance(delivery, Mapping) or delivery.get("status") != "committed":
+            raise DeliveryValidationError(
+                "candidate completion delivery is not committed"
+            )
+        manifest = delivery.get("manifest")
+        manifest = manifest if isinstance(manifest, Mapping) else {}
+        manifest_rows = manifest.get("artifacts")
+        snapshot_rows = reviewed_snapshot.get("artifacts")
+        if not isinstance(manifest_rows, list) or not isinstance(snapshot_rows, list):
+            raise DeliveryValidationError(
+                "reviewed completion Artifact set is unavailable"
+            )
+
+        def manifest_identity(row: Mapping[str, Any]) -> tuple[str, str, int, str]:
+            try:
+                size = int(row.get("size_bytes"))
+            except (TypeError, ValueError) as error:
+                raise DeliveryValidationError(
+                    "completion manifest Artifact size is invalid"
+                ) from error
+            return (
+                str(row.get("artifact_id") or ""),
+                str(row.get("version_id") or ""),
+                size,
+                str(row.get("sha256") or ""),
+            )
+
+        def review_identity(row: Mapping[str, Any]) -> tuple[str, str, int, str]:
+            try:
+                size = int(row.get("size_bytes"))
+            except (TypeError, ValueError) as error:
+                raise DeliveryValidationError(
+                    "reviewed Artifact size is invalid"
+                ) from error
+            return (
+                str(row.get("artifact_id") or ""),
+                str(row.get("version_id") or ""),
+                size,
+                str(row.get("checksum") or ""),
+            )
+
+        expected = {
+            manifest_identity(row) for row in manifest_rows if isinstance(row, Mapping)
+        }
+        reviewed = {
+            review_identity(row) for row in snapshot_rows if isinstance(row, Mapping)
+        }
+        if (
+            len(expected) != len(manifest_rows)
+            or len(reviewed) != len(snapshot_rows)
+            or expected != reviewed
+        ):
+            raise DeliveryValidationError(
+                "reviewed Artifact set differs from the completion manifest"
+            )
+        for row in manifest_rows:
+            assert isinstance(row, Mapping)
+            version_id = str(row.get("version_id") or "")
+            url = str(row.get("url") or "")
+            if url != artifact_version_url(version_id) or url not in promoted_content:
+                raise DeliveryValidationError(
+                    "promoted answer does not carry its committed Artifact URL"
+                )
 
     def _verified_entry(
         self, version_id: str, *, root_frame_id: str, project_id: str

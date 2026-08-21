@@ -15,13 +15,15 @@ to be the same bytes.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
 from openai4s.config import AutoModeBudgets, AutoModeConfig, Config, RoadmapFeatureFlags
 from openai4s.server.completion_gate import CompletionGateService
-from openai4s.server.scientific_review import ScientificReviewService
+from openai4s.server.scientific_review import (
+    ScientificReviewService,
+    durable_review_matches,
+)
 from openai4s.store import Store
 
 GATEWAY = Path("openai4s/server/gateway.py")
@@ -93,20 +95,62 @@ def _pass_chat(messages, cfg, **kwargs):
 # --- promotion ---------------------------------------------------------------
 
 
-def test_gates_turn_is_false_when_no_reviewer_can_run(tmp_path):
-    """Holding an answer back for a review that cannot happen is pure cost.
-
-    Every turn would withhold delivery and then report `review_unavailable`,
-    which is the gate's price without any of its meaning.
-    """
+def test_stage4_gate_is_independent_of_the_stage3_shadow_flag(tmp_path):
+    """Disabling Stage 3 shadow review must not silently disable Stage 4."""
 
     store = _store(tmp_path)
     gate = _services(store, _cfg(stage3=False), _pass_chat)
-    assert gate.gates_turn("root-1") is False
+    assert gate.gates_turn("root-1") is True
+    result = gate.gate_after_turn(
+        root_frame_id="root-1",
+        project_id="project-1",
+        branch_id="root-1",
+        turn_id="turn-stage4-only",
+        execution_id="exec-stage4-only",
+        user_request="state it",
+        candidate_answer="a qualitative limitation",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        mode_override="review_only",
+    )
+    assert result["terminal"] == "verified"
     assert _services(store, _cfg(), _pass_chat).gates_turn("root-1") is True
     assert (
         _services(store, _cfg(), _pass_chat, mode="off").gates_turn("root-1") is False
     )
+    store.close()
+
+
+def test_unknown_or_broken_mode_resolution_keeps_stage4_armed(tmp_path):
+    store = _store(tmp_path, "mode-resolution.db")
+    cfg = _cfg()
+    review = ScientificReviewService(store=store, config=cfg, chat_call=_pass_chat)
+
+    for auto in (
+        SimpleNamespace(get=lambda frame_id: None),
+        SimpleNamespace(get=lambda frame_id: {"selection": {}}),
+        SimpleNamespace(
+            get=lambda frame_id: {"selection": {"result_review_mode": "bogus"}}
+        ),
+    ):
+        gate = CompletionGateService(
+            store=store, config=cfg, scientific_review=review, auto_mode=auto
+        )
+        assert gate.active_mode("root-1") == "review_only"
+        assert gate.gates_turn("root-1") is True
+
+    def _broken(_frame_id):
+        raise RuntimeError("selection unavailable")
+
+    gate = CompletionGateService(
+        store=store,
+        config=cfg,
+        scientific_review=review,
+        auto_mode=SimpleNamespace(get=_broken),
+    )
+    assert gate.active_mode("root-1") == "review_only"
+    assert gate.gates_turn("root-1") is True
+    assert gate.gates_turn("root-1", mode_override="off") is False
     store.close()
 
 
@@ -137,9 +181,12 @@ def test_verified_requires_the_delivered_bytes_to_be_the_reviewed_bytes(tmp_path
     assert reviewed["final_answer"] == "a qualitative limitation"
     assert reviewed["answer_replaced"] is False
 
-    # Now make the snapshot the reviewer read disagree with the candidate the
-    # caller will deliver.
-    original = gate.scientific_review.evaluate
+    # A real turn finalizes before the next starts. Use another session Store
+    # here so this artificial second review is not rejected by the first
+    # deliberately-unfinalized AutoRun owner.
+    drift_store = _store(tmp_path, "stage4-drift.db")
+    drift_gate = _services(drift_store, _cfg(), _pass_chat, mode="review_only")
+    original = drift_gate.scientific_review.evaluate
 
     def _drifting(snapshot, **kwargs):
         result = original(snapshot, **kwargs)
@@ -149,8 +196,8 @@ def test_verified_requires_the_delivered_bytes_to_be_the_reviewed_bytes(tmp_path
         }
         return result
 
-    gate.scientific_review.evaluate = _drifting
-    drifted = gate.gate_after_turn(
+    drift_gate.scientific_review.evaluate = _drifting
+    drifted = drift_gate.gate_after_turn(
         root_frame_id="root-1",
         project_id="project-1",
         branch_id="root-1",
@@ -162,23 +209,73 @@ def test_verified_requires_the_delivered_bytes_to_be_the_reviewed_bytes(tmp_path
         reviewer_cfg=_llm("reviewer"),
     )
     assert drifted["terminal"] == "review_unavailable"
-    assert "candidate_delivery_mismatch" in drifted["user_truth"]
+    assert "durable_review_proof_missing" in drifted["user_truth"]
+    drift_store.close()
     store.close()
 
 
-def test_mark_delivery_failed_retracts_a_promotion_that_never_reached_the_user(
+def test_same_turn_different_candidate_cannot_replay_a_green_proof(tmp_path):
+    store = _store(tmp_path, "same-turn-proof.db")
+    gate = _services(store, _cfg(), _pass_chat, mode="review_only")
+    common = {
+        "root_frame_id": "root-1",
+        "project_id": "project-1",
+        "branch_id": "root-1",
+        "turn_id": "turn-same",
+        "execution_id": "exec-same",
+        "user_request": "state it",
+        "agent_cfg": _llm("agent"),
+        "reviewer_cfg": _llm("reviewer"),
+    }
+    first = gate.gate_after_turn(**common, candidate_answer="candidate alpha")
+    assert first["terminal"] == "verified"
+
+    # Even if a caller copies every proof field from the first result, changing
+    # the same turn's candidate bytes invalidates both the snapshot digest and
+    # exact-candidate comparison.
+    replay = dict(first)
+    replay["snapshot"] = {
+        **dict(first["snapshot"]),
+        "candidate_answer": "candidate beta",
+    }
+    assert not durable_review_matches(
+        replay,
+        candidate_answer="candidate beta",
+        root_frame_id="root-1",
+        branch_id="root-1",
+        turn_id="turn-same",
+        execution_id="exec-same",
+        gates_completion=True,
+    )
+
+    second = gate.gate_after_turn(**common, candidate_answer="candidate beta")
+    assert second["durable_review"]["candidate_snapshot_sha256"] != (
+        first["durable_review"]["candidate_snapshot_sha256"]
+    )
+    if second["terminal"] == "verified":
+        assert second["durable_review"]["candidate_id"] != (
+            first["durable_review"]["candidate_id"]
+        )
+        assert durable_review_matches(
+            second,
+            candidate_answer="candidate beta",
+            root_frame_id="root-1",
+            branch_id="root-1",
+            turn_id="turn-same",
+            execution_id="exec-same",
+            gates_completion=True,
+        )
+    store.close()
+
+
+def test_failed_delivery_seals_the_review_run_as_unavailable_without_promotion(
     tmp_path,
 ):
-    """Delivery runs after the review, so it can still fail while Verified stands.
-
-    An Artifact manifest that will not verify fails the turn *after* the gate
-    has written `verified`. A turn that delivered no answer has no verified
-    answer.
-    """
+    """A reviewed candidate is not terminal until its delivery is resolved."""
 
     store = _store(tmp_path)
     gate = _services(store, _cfg(), _pass_chat, mode="review_only")
-    gate.gate_after_turn(
+    reviewed = gate.gate_after_turn(
         root_frame_id="root-1",
         project_id="project-1",
         branch_id="root-1",
@@ -189,15 +286,25 @@ def test_mark_delivery_failed_retracts_a_promotion_that_never_reached_the_user(
         agent_cfg=_llm("agent"),
         reviewer_cfg=_llm("reviewer"),
     )
-    assert gate.load("root-1")["terminal"] == "verified"
+    assert reviewed["terminal"] == "verified"
+    assert reviewed["finalized"] is False
+    assert gate.load("root-1") is None
 
-    retracted = gate.mark_delivery_failed("root-1")
-    assert retracted["terminal"] == "review_unavailable"
-    assert retracted["unverified"] is True
+    failed = gate.finalize_after_delivery("root-1", "root-1", reviewed, delivered=False)
+    assert failed["terminal"] == "review_unavailable"
+    assert failed["finalized"] is True
+    assert failed["durable_terminal"] is True
     assert gate.load("root-1")["terminal"] == "review_unavailable"
+    events = store.list_auto_mode_events("root-1", branch_id="root-1")
+    assert [item["type"] for item in events].count("auto_run_terminal") == 1
 
-    # Idempotent, and it never upgrades: a second call leaves the retraction.
-    assert gate.mark_delivery_failed("root-1")["terminal"] == "review_unavailable"
+    # Exact replay reads the same immutable terminal instead of emitting one.
+    replay = gate.finalize_after_delivery("root-1", "root-1", reviewed, delivered=False)
+    assert replay["terminal"] == "review_unavailable"
+    assert [
+        item["type"]
+        for item in store.list_auto_mode_events("root-1", branch_id="root-1")
+    ].count("auto_run_terminal") == 1
     store.close()
 
 
@@ -254,18 +361,25 @@ def test_the_turn_loop_orders_candidate_review_then_promotion():
 
     source = GATEWAY.read_text("utf-8")
 
-    withhold_at = source.index('"provisional": True')
+    metadata_at = source.index("provisional_metadata: dict[str, object]")
+    delivery_at = source.index("message_metadata=provisional_metadata", metadata_at)
+    message_at = source.index("candidate_row = self.store.add_message(", metadata_at)
+    withhold_at = source.index('"provisional": True', metadata_at)
     gate_at = source.index("self.completion_gate.gate_after_turn(")
-    promote_at = source.index("if candidate_final is not None:", gate_at)
-    persist_at = source.index("for blk in assistant_visible:\n", promote_at)
+    promote_at = source.index("self.completion_gate.finalize_after_delivery(", gate_at)
+    resolved_at = source.index('"type": "candidate_resolved"', promote_at)
 
-    assert withhold_at < gate_at, "the candidate is streamed before the review"
+    assert delivery_at < gate_at, "the Stage 1 candidate must precede review"
+    assert message_at < gate_at, "the plain candidate must precede review"
+    assert withhold_at < gate_at, "the provisional marker precedes the review"
     assert gate_at < promote_at, "promotion must follow the review"
-    assert promote_at < persist_at, "the answer row is written after promotion"
+    assert promote_at < resolved_at, "only finalized promotion resolves the candidate"
 
-    # And the verdict rides on that row rather than being stamped onto whatever
-    # assistant row happens to be newest afterwards.
-    assert re.search(r"metadata=\(\s*gate_metadata", source)
+    # Exact identity travels into the atomic terminal transaction. Nothing
+    # guesses at whichever assistant row happens to be newest afterwards.
+    assert "message_id=(" in source[promote_at:resolved_at]
+    assert "expected_message_content=(" in source[promote_at:resolved_at]
+    assert "stamp_delivered_answer" not in source
     # The delivery contract has exactly one implementation, so the gated and
     # ungated orderings cannot drift apart.
     assert source.count("def _deliver_final_answer(") == 1
@@ -405,6 +519,7 @@ def test_a_repair_the_caller_cannot_deliver_still_never_reaches_verified(tmp_pat
     assert result["final_answer"] == "n=100, and there are no missing values"
     assert result["terminal"] != "verified"
     assert result["gate"]["unverified"] is True
+    assert result["reason"] == "repaired_answer_not_delivered"
     store.close()
 
 
@@ -438,14 +553,14 @@ def test_a_tool_only_turn_never_stamps_the_previous_turns_answer():
     """
 
     source = GATEWAY.read_text("utf-8")
-    stamp_at = source.index("self.completion_gate.stamp_delivered_answer(")
-    guard = source.rindex("if gate_metadata is not None", 0, stamp_at)
-    condition = source[guard : source.index(":\n", guard)]
-    assert "delivered_row" in condition, condition
-    # And `delivered_row` is only true when a delivery row was actually written.
-    assert (
-        'delivered_row = bool(published["ok"] and published["delivery_id"])' in source
-    )
+    assert "stamp_delivered_answer" not in source
+    finalize_at = source.index("self.completion_gate.finalize_after_delivery(")
+    resolved_at = source.index('"type": "candidate_resolved"', finalize_at)
+    call = source[finalize_at:resolved_at]
+    assert "message_id=(" in call
+    assert "candidate_row" in call
+    assert "if promotion_ready" in call
+    assert "expected_message_content=(" in call
 
 
 def test_the_stamped_row_and_the_persisted_row_carry_the_same_verdict(tmp_path):
@@ -482,15 +597,6 @@ def test_the_stamped_row_and_the_persisted_row_carry_the_same_verdict(tmp_path):
         assert row["unverified"] is True, row
     assert message_review_metadata({"terminal": "verified"})["unverified"] is False
 
-    store = _store(tmp_path, "stamp.db")
-    store.add_message(
-        root_frame_id="root-1", branch_id="root-1", role="assistant", content="answer"
-    )
-    gate_service = _services(store, _cfg(), _pass_chat, mode="review_only")
-    gate_service.stamp_delivered_answer("root-1", "root-1", from_gate)
-
-    from openai4s.server.gateway import _message_review_gate
-
-    stamped = _message_review_gate(store.list_messages("root-1")[-1])
-    assert stamped["status"] == "verified", stamped
-    store.close()
+    # The legacy latest-row mutator is intentionally gone: exact row identity
+    # is required by ``finalize_after_delivery`` and Store's message CAS.
+    assert not hasattr(CompletionGateService, "stamp_delivered_answer")

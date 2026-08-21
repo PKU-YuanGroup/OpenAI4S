@@ -130,6 +130,17 @@ _DELIVERY_IMPORT_PENDING_CONTENT = (
 )
 _DELIVERY_URL_TOKEN = re.compile(r"/api/v1/artifacts/versions/[^\s/?#<>\[\]{}()\"']+")
 _MAX_COMPLETION_DELIVERY_VERIFY_BYTES = 512 << 20
+_IMPORTED_REVIEW_STATUSES = frozenset(
+    {"candidate", "verified", "completed_with_issues", "review_unavailable"}
+)
+_IMPORTED_REVIEW_PROOF_FIELDS = frozenset(
+    {
+        "candidate_content_sha256",
+        "reviewed_content_sha256",
+        "candidate_verdict_metadata_sha256",
+        "review_run_id",
+    }
+)
 
 
 def _imported_plan_status(raw: Any) -> str:
@@ -472,6 +483,47 @@ def _safe_text(value: Any) -> str:
     text = _ENV_SECRET.sub(lambda match: f"{match.group(1)}={_REDACTED}", text)
     text = _JSON_SECRET.sub(lambda match: f'{match.group(1)}"{_REDACTED}"', text)
     return text
+
+
+def _downgrade_imported_review_metadata(
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Make source review proof explicitly inert after identity remapping.
+
+    Package import assigns new message, Session, branch, turn, execution, and
+    Artifact-version identities.  Delivery prose can also change when source
+    Artifact URLs are replaced with local exact-version URLs.  The source
+    Candidate/review digests therefore cannot authenticate the imported row,
+    and retaining a Verified badge would turn historical package input into a
+    local completion claim.
+    """
+
+    if metadata is None:
+        return None
+    review_status = metadata.get("review_status")
+    has_proof = (
+        review_status in _IMPORTED_REVIEW_STATUSES
+        or metadata.get("gates_completion") is True
+        or any(field in metadata for field in _IMPORTED_REVIEW_PROOF_FIELDS)
+    )
+    if not has_proof:
+        return metadata
+    downgraded = dict(metadata)
+    for field in (
+        *_IMPORTED_REVIEW_PROOF_FIELDS,
+        "turn_id",
+        "execution_id",
+    ):
+        downgraded.pop(field, None)
+    downgraded.update(
+        {
+            "review_status": "review_unavailable",
+            "user_truth": "Imported · unverified",
+            "gates_completion": True,
+            "unverified": True,
+        }
+    )
+    return downgraded
 
 
 def _sanitize(value: Any, *, depth: int = 0) -> Any:
@@ -2924,6 +2976,7 @@ class SessionPackageService:
             )
             if self._injection_flags != before:
                 metadata = {**(metadata or {}), "injection_flagged": True}
+            metadata = _downgrade_imported_review_metadata(metadata)
             source_id = str(item.get("message_id") or "")
             stored_content = content
             if source_id in delivery_message_ids:
