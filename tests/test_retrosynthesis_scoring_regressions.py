@@ -7,7 +7,6 @@ import math
 import os
 import sys
 import textwrap
-import threading
 import time
 import zipfile
 from pathlib import Path
@@ -1118,53 +1117,50 @@ def test_retrochimera_download_binds_publication_to_the_verified_inode(
 
 @pytest.mark.skipif(os.name == "nt", reason="open-file replacement is POSIX-only")
 def test_retrochimera_download_rechecks_the_destination_after_hashing(
-    model_deployment, tmp_path
+    model_deployment, tmp_path, monkeypatch
 ):
     archive = tmp_path / "source.zip"
-    payload = b"g" * (64 * 1024 * 1024)
     spec = _synthetic_checkpoint(
         model_deployment,
         archive,
-        [("weights.ckpt", payload)],
+        [("weights.ckpt", b"verified")],
     )
     destination = tmp_path / "downloaded.zip"
     malicious = tmp_path / "swapped.bin"
     malicious.write_bytes(b"E" * archive.stat().st_size)
-    swapped = threading.Event()
-
-    def watcher():
-        deadline = time.monotonic() + 10
-        while not destination.exists():
-            if time.monotonic() >= deadline:
-                return
-            time.sleep(0.0001)
-        # Let the first post-link identity check finish, then replace the path
-        # while the verified inode is being read for the second digest.
-        time.sleep(0.002)
-        os.replace(malicious, destination)
-        swapped.set()
 
     def web_download(_url, path, **_kwargs):
         Path(path).write_bytes(archive.read_bytes())
         return {"path": path, "bytes": archive.stat().st_size}
 
-    worker = threading.Thread(target=watcher, daemon=True)
-    worker.start()
-    try:
-        with pytest.raises(
-            model_deployment.CheckpointDeploymentError,
-            match="destination changed",
-        ):
-            model_deployment.download_checkpoint(
-                spec,
-                destination,
-                allow_network=True,
-                web_download=web_download,
-            )
-    finally:
-        worker.join(timeout=10)
+    real_hash_stream = model_deployment._hash_stream
+    hash_calls = 0
 
-    assert swapped.is_set()
+    def swap_after_second_hash(handle, *, max_bytes=None):
+        nonlocal hash_calls
+        digest = real_hash_stream(handle, max_bytes=max_bytes)
+        hash_calls += 1
+        if hash_calls == 2:
+            # Schedule the pathname replacement at the exact boundary this
+            # regression protects: after the published inode is re-hashed but
+            # before the final path-to-inode identity check.
+            os.replace(malicious, destination)
+        return digest
+
+    monkeypatch.setattr(model_deployment, "_hash_stream", swap_after_second_hash)
+
+    with pytest.raises(
+        model_deployment.CheckpointDeploymentError,
+        match="destination changed",
+    ):
+        model_deployment.download_checkpoint(
+            spec,
+            destination,
+            allow_network=True,
+            web_download=web_download,
+        )
+
+    assert hash_calls == 2
     assert destination.read_bytes() == b"E" * archive.stat().st_size
     assert list(tmp_path.glob(".downloaded.zip.download-*")) == []
 
