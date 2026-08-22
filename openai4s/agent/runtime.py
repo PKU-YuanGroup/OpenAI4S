@@ -8,6 +8,7 @@ dispatcher-backed control tools without importing those concrete services.
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -15,6 +16,7 @@ from typing import Any, Callable, Mapping, Sequence
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     execute_tool_call,
+    get_tool,
     parse_tool_calls,
     run_tool_calls,
     tool_validation_error,
@@ -59,6 +61,10 @@ LogFn = Callable[..., None]
 
 def _null_log(*args: object) -> None:
     del args
+
+
+def _allow_cell(_action: CodeCell) -> None:
+    return None
 
 
 @dataclass(frozen=True)
@@ -279,6 +285,8 @@ class LocalActionExecutor:
     dispatcher: Any
     pre_exec_gate: Callable[[str, list[dict]], str | None]
     execute_r: Callable[[str], dict]
+    admit_cell: Callable[[CodeCell], None] = _allow_cell
+    cell_hooks: Any = None
     log: LogFn = _null_log
     tool_catalog: Any = None
     prose_nudge: str = NO_CODE_NUDGE
@@ -294,6 +302,10 @@ class LocalActionExecutor:
         if isinstance(action, NativeToolBatch):
             return self._execute_native(action, state)
         if isinstance(action, CodeCell):
+            # Keep the lazy runtime genuinely lazy: readiness and other local
+            # admission checks run before safety, action-context binding, or a
+            # Python/R worker can be created.
+            self.admit_cell(action)
             return self._execute_code(action, reply, state)
         return self._execute_legacy_or_nudge(reply, state)
 
@@ -320,8 +332,59 @@ class LocalActionExecutor:
                     return execute_tool_call(self.dispatcher, payload)
                 return execute_tool_call(self.dispatcher, payload, self.tool_catalog)
 
+            resolver = (
+                get_tool
+                if self.tool_catalog is None
+                else getattr(self.tool_catalog, "get", None)
+            )
+            tool = resolver(call.name) if callable(resolver) else None
+            hooks = self.cell_hooks
+            before_native = getattr(hooks, "before_native", None)
+            after_native = getattr(hooks, "after_native", None)
+            after_native_receipts = getattr(hooks, "after_native_with_receipts", None)
+
+            def execute_with_capture():
+                metadata_for = getattr(
+                    self.dispatcher, "control_tool_execution_metadata", None
+                )
+                metadata = metadata_for(call.name) if callable(metadata_for) else {}
+                writing = tool is not None and bool(
+                    metadata.get("writes_files")
+                    if "writes_files" in metadata
+                    else getattr(tool, "writes_files", False)
+                )
+                if not writing:
+                    return execute()
+                token = before_native(call) if callable(before_native) else None
+                receipt_binder = getattr(
+                    self.dispatcher, "bind_artifact_receipt_scope", None
+                )
+                try:
+                    with (
+                        receipt_binder()
+                        if callable(receipt_binder)
+                        else nullcontext([])
+                    ) as artifact_receipts:
+                        result = execute()
+                except BaseException:
+                    # Preserve the writing tool's primary failure. The hook
+                    # records exact changed-file claims before raising, so an
+                    # enclosing parent capture still fails closed if durable
+                    # attribution also failed.
+                    if callable(after_native):
+                        try:
+                            after_native(call, token, None)
+                        except BaseException:
+                            pass
+                    raise
+                if callable(after_native_receipts):
+                    after_native_receipts(call, token, result, list(artifact_receipts))
+                elif callable(after_native):
+                    after_native(call, token, result)
+                return result
+
             if not callable(binder):
-                return execute()
+                return execute_with_capture()
             group_id = getattr(self.action_ledger, "current_group_id", None)
             with binder(
                 {
@@ -330,13 +393,21 @@ class LocalActionExecutor:
                     "tool_call_id": call.id,
                 }
             ):
-                return execute()
+                return execute_with_capture()
 
+        metadata_resolver = getattr(
+            self.dispatcher, "control_tool_execution_metadata", None
+        )
         if self.tool_catalog is None:
             outcome = execute_native_batch(
                 batch,
                 invoke,
-                parallel_policy=tool_parallel_policy,
+                parallel_policy=lambda call: tool_parallel_policy(
+                    call,
+                    metadata_resolver=(
+                        metadata_resolver if callable(metadata_resolver) else None
+                    ),
+                ),
             )
         else:
             outcome = execute_native_batch(
@@ -346,7 +417,11 @@ class LocalActionExecutor:
                     name, arguments, self.tool_catalog
                 ),
                 parallel_policy=lambda call: tool_parallel_policy(
-                    call, self.tool_catalog
+                    call,
+                    self.tool_catalog,
+                    metadata_resolver=(
+                        metadata_resolver if callable(metadata_resolver) else None
+                    ),
                 ),
             )
         if invoked:
@@ -360,26 +435,47 @@ class LocalActionExecutor:
         if refusal is not None:
             self.log(f"[safety] cell not executed: {refusal}")
             return self._user_observation(refusal)
-        if action.language == "r":
-            result = self.execute_r(action.code)
-        else:
-            group_id = getattr(self.action_ledger, "current_group_id", None)
-            context = (
-                {
-                    "action_group_id": group_id,
-                    "action_id": f"{group_id}:action",
-                    "tool_call_id": None,
-                }
-                if group_id
-                else None
-            )
-            binder = getattr(self.kernel, "bind_action_context", None)
-            if callable(binder):
-                with binder(context):
-                    result = self.kernel.execute(action.code, origin="agent")
-            else:
-                result = self.kernel.execute(action.code, origin="agent")
-            self._record_kernel_generation(state)
+        hooks = self.cell_hooks
+        token = hooks.before(action) if hooks is not None else None
+        result: dict | None = None
+        receipt_binder = getattr(self.dispatcher, "bind_artifact_receipt_scope", None)
+        try:
+            with (
+                receipt_binder() if callable(receipt_binder) else nullcontext([])
+            ) as artifact_receipts:
+                if action.language == "r":
+                    result = self.execute_r(action.code)
+                else:
+                    group_id = getattr(self.action_ledger, "current_group_id", None)
+                    context = (
+                        {
+                            "action_group_id": group_id,
+                            "action_id": f"{group_id}:action",
+                            "tool_call_id": None,
+                        }
+                        if group_id
+                        else None
+                    )
+                    binder = getattr(self.kernel, "bind_action_context", None)
+                    if callable(binder):
+                        with binder(context):
+                            result = self.kernel.execute(action.code, origin="agent")
+                    else:
+                        result = self.kernel.execute(action.code, origin="agent")
+                    self._record_kernel_generation(state)
+            if result is not None and artifact_receipts:
+                result["_openai4s_artifact_receipts"] = list(artifact_receipts)
+        except BaseException:
+            if hooks is not None:
+                hooks.after(action, token, None)
+            raise
+        if hooks is not None:
+            hooks.after(action, token, result)
+        assert result is not None
+        # Hooks consume the Host-owned evidence before durable/output
+        # projection. A headless CLI has no Artifact capture and discards it;
+        # the private receipt must never enter the model transcript.
+        result.pop("_openai4s_artifact_receipts", None)
         # Recorded here, after the kernel ran — a safety-gate refusal above
         # returned already and must never count as finalize-time evidence.
         # The same goes for the R runner's spawn-failure / pre-execution

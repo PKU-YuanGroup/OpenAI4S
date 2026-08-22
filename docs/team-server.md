@@ -50,11 +50,16 @@ An admin reading a private session writes a `admin_read_private` row to
 the audit log. That is the whole of what admin access costs, and it is
 per view rather than per session.
 
-Read access is not namespace control. For a project-visible session, only
-its owner or an admin may Start, Stop, or Restart the Notebook kernel,
-interrupt or cancel an active execution, switch its runtime environment,
-or release its interactive compute allocation. Requesting interactive compute
-is stricter — admin only —
+Read access is not namespace control. For a project-visible session, every
+state-changing frame operation is owner/admin-only: turns and reviews,
+permission decisions, plans, annotations and Artifacts, sharing, checkpoints,
+branch activation/Revert/recovery, deletion, and Notebook execution or
+lifecycle control. The D4 visibility toggle is deliberately stricter: only the
+owner, not an admin, decides whether their Session becomes project-readable.
+The POST-shaped Revert preview remains a read. Resource-id writes and
+body-addressed uploads inherit the same owner rule, so changing the URL shape
+cannot turn project visibility into write access. Releasing an interactive
+compute allocation is owner/admin-only. Requesting one is stricter — admin only —
 because the scheduler uses the daemon's identity and site credential.
 Installing packages through either the global or frame-scoped kernel route
 is also admin only: both mutate a runtime environment shared by the instance,

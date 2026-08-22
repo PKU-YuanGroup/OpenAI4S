@@ -41,6 +41,7 @@ import sys
 import threading
 import time
 import traceback
+from functools import partial
 
 # A remote source-checkout worker is launched by its absolute script path with
 # a deliberately sparse environment.  Python then puts `openai4s/kernel`, not
@@ -60,6 +61,13 @@ if (
 MAX_OUTPUT = 1_000_000  # 1M-character head cap on captured cell output
 _DISCARD_BUDGET = 8  # bounded discard for desync
 _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap
+#: A Cell can open an unbounded number of paths.  ``files_read`` is evidence
+#: metadata carried in the one response frame, so bound both its cardinality
+#: and each retained spelling at the producer.  Omitting later observations is
+#: conservative (it cannot invent a lineage edge); retaining an unbounded list
+#: would let ordinary user code grow the protocol frame without limit.
+_MAX_FILES_READ = 256
+_MAX_FILE_READ_PATH_CHARS = 1_024
 #: One streamed chunk. A `write()` used to become one frame of whatever size it
 #: was handed, so `print("x" * 200_000_000)` put a single ~200MB JSON line on
 #: the pipe and the host's `readline()` materialised it whole -- ~200MB
@@ -416,6 +424,32 @@ def _peak_rss_kb() -> int:
 _HOST_CALL_SEQ = 0
 _ACTIVE_CELL_ID: list[str | None] = [None]
 _ACTIVE_CELL_ORIGIN = [""]
+# The audit hook installed at worker initialization owns the observer.  A
+# Cell only opens/closes this narrow collection window around its actual
+# eval/exec.  ``tag`` is the compiled Cell filename and is also the caller-stack
+# proof that an ``open`` event belongs to synchronous user execution rather
+# than to worker housekeeping or a persistent background thread.
+_FILE_READ_STATE: dict[str, object] = {
+    "tag": None,
+    "paths": [],
+    "seen": set(),
+}
+
+
+def _begin_file_read_observation(tag: str) -> None:
+    _FILE_READ_STATE["tag"] = tag
+    _FILE_READ_STATE["paths"] = []
+    _FILE_READ_STATE["seen"] = set()
+
+
+def _finish_file_read_observation() -> list[str]:
+    paths = _FILE_READ_STATE.get("paths")
+    _FILE_READ_STATE["tag"] = None
+    _FILE_READ_STATE["paths"] = []
+    _FILE_READ_STATE["seen"] = set()
+    if type(paths) is not list:
+        return []
+    return [value for value in paths if type(value) is str]
 
 
 def _attach_cell_context(method: str, args: list) -> list:
@@ -661,7 +695,7 @@ def _drain_skill_sidecar_loads() -> list[dict]:
     return [] if protocol_frames else captured
 
 
-def _install_host(ns: dict) -> None:
+def _install_host(ns: dict, *, mode: str) -> None:
     try:
         from openai4s.sdk.host import build_host
 
@@ -669,7 +703,6 @@ def _install_host(ns: dict) -> None:
         # manager sets OPENAI4S_KERNEL_MODE ("repl" control-plane vs "python"/"R"
         # analysis). An analysis kernel is spliced without frames/query/mcp/
         # delegate — those symbols are genuinely absent (AttributeError).
-        mode = os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
         # A remote worker has no OPENAI4S_KERNEL_GENERATION -- the transport
         # branch of `Kernel._spawn` never builds a child environment -- so it
         # takes the value the Host handed back on the handshake. Passed at
@@ -880,7 +913,13 @@ def _bounded_format_exc(exc: BaseException) -> str:
     return buf.captured()
 
 
-def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
+def _run_cell(
+    code: str,
+    cell_id: str,
+    origin: str = "agent",
+    *,
+    kernel_mode: str | None = None,
+) -> dict:
     global _CELL_SEQ
     _CELL_SEQ += 1
     tag = f"<kernel:{_CELL_SEQ}>"
@@ -888,8 +927,15 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     _ACTIVE_CELL_ID[0] = cell_id
     _ACTIVE_CELL_ORIGIN[0] = origin
 
-    if "host" not in _NS:
-        _install_host(_NS)
+    # The optional Jupyter adapter is a standalone language kernel, not a
+    # second Agent/Host control plane.  Its public contract promises no Host
+    # RPC or Gateway provenance capture, so do not install either facade in
+    # that mode.  Other modes keep the long-standing lazy installation.
+    # Protocol workers receive the startup-captured value from ``main``.
+    # Direct in-process callers retain the historical environment fallback.
+    mode = kernel_mode or os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
+    if mode != "jupyter" and "host" not in _NS:
+        _install_host(_NS, mode=mode)
 
     # tell the provenance layer which cell any lineage writes belong to
     try:
@@ -913,6 +959,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     error_lineno = None
     error_call = None
     interrupted = False
+    files_read: list[str] = []
 
     # isolation guards: snapshot fragile global state before user code.
     guard = None
@@ -931,6 +978,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     t0 = time.time()
     cpu0 = _cpu_seconds()
     _arm_sigint()
+    _begin_file_read_observation(tag)
     try:
         try:
             compiled = compile(code, tag, "eval")
@@ -976,6 +1024,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         error_lineno, error_call = _error_lineno(tb, tag)
     finally:
         _in_user_code[0] = False
+        files_read = _finish_file_read_observation()
         signal.signal(signal.SIGINT, _sigint_swallow)  # disarm outside user code
         sys.stdout, sys.stderr = real_out, real_err
 
@@ -1016,6 +1065,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         "interrupted": interrupted,
         "trace": {"error_lineno": error_lineno, "error_call": error_call},
         "guards": guard_report,
+        "files_read": files_read,
         "usage": {
             "wall_s": round(wall, 4),
             "cpu_s": round(cpu, 4),
@@ -1265,6 +1315,164 @@ def _inspect_namespace(limit: int) -> dict:
     }
 
 
+def _workspace_relative_read_path(
+    raw_path: str,
+    *,
+    root: str,
+    cwd: str,
+    isabs,
+    normpath,
+    relpath,
+    separator: str,
+) -> str | None:
+    """Return one lexical workspace-relative path, for any host path module.
+
+    ``ntpath`` can exercise the Windows rules on a non-Windows test runner.
+    Deliberately do not resolve symlinks here: the worker reports the spelling
+    that was actually opened, while the Host remains the authority that
+    resolves and scopes that spelling against durable Artifact versions.
+    """
+
+    try:
+        if isabs(raw_path):
+            absolute = normpath(raw_path)
+        else:
+            absolute = normpath(cwd.rstrip(separator) + separator + raw_path)
+        relative = relpath(absolute, normpath(root))
+    except (OSError, ValueError):
+        # Different Windows drives, malformed paths, and unavailable cwd state
+        # are absence of evidence, never reasons to fail a Cell.
+        return None
+    if (
+        not relative
+        or relative == "."
+        or isabs(relative)
+        or relative == ".."
+        or relative.startswith(".." + separator)
+    ):
+        return None
+    if separator != "/":
+        relative = relative.replace(separator, "/")
+    return relative
+
+
+def _install_file_read_audit_hook() -> None:
+    """Observe synchronous, workspace-local file reads made by a Cell.
+
+    CPython's ``open`` audit event fires at the operation, unlike source
+    inspection: a dead branch emits nothing.  The event also exposes the mode
+    or OS flags, so write-only opens are excluded.  We additionally require the
+    active Cell's synthetic filename to appear in the caller stack.  That keeps
+    worker housekeeping and a persistent thread left behind by an earlier Cell
+    from being attributed to whichever Cell happens to be running now.
+
+    The hook is observational and must never turn an unreadable path or a
+    malformed third-party path object into a Cell failure.  All dependencies
+    are captured before user code exists; the state is bounded at insertion.
+    """
+
+    # Capture the platform's real path primitives before any Cell exists.
+    # Unlike importing posix/posixpath, this is valid for a Windows worker too.
+    getcwd = os.getcwd
+    path_isabs = os.path.isabs
+    path_normpath = os.path.normpath
+    path_relpath = os.path.relpath
+    path_separator = os.sep
+    fsdecode = os.fsdecode
+    root = path_normpath(getcwd())
+    read_state = _FILE_READ_STATE
+    max_files = _MAX_FILES_READ
+    max_chars = _MAX_FILE_READ_PATH_CHARS
+
+    def _observe_file_read(
+        event,
+        args,
+        *,
+        _state=read_state,
+        _root=root,
+        _relative_path=_workspace_relative_read_path,
+        _isabs=path_isabs,
+        _normpath=path_normpath,
+        _relpath=path_relpath,
+        _separator=path_separator,
+        _getcwd=getcwd,
+        _fsdecode=fsdecode,
+        _getframe=sys._getframe,
+        _o_accmode=getattr(os, "O_ACCMODE", os.O_WRONLY | os.O_RDWR),
+        _o_wronly=os.O_WRONLY,
+        _max_files=max_files,
+        _max_chars=max_chars,
+    ):  # noqa: ANN001 - CPython owns the audit-hook signature
+        if event != "open":
+            return
+        try:
+            tag = _state.get("tag")
+            if type(tag) is not str or not tag:
+                return
+            if not args:
+                return
+            raw_path = args[0]
+            if isinstance(raw_path, bytes):
+                raw_path = _fsdecode(raw_path)
+            if type(raw_path) is not str or not raw_path or "\x00" in raw_path:
+                return
+
+            mode = args[1] if len(args) > 1 else None
+            flags = args[2] if len(args) > 2 else None
+            if type(mode) is str:
+                # r/rb and every update mode read.  w/a/x without '+' are
+                # write-only and must not become input evidence.
+                if "r" not in mode and "+" not in mode:
+                    return
+            elif type(flags) is int:
+                if (flags & _o_accmode) == _o_wronly:
+                    return
+            else:
+                # An unknown mode is not evidence of a read.
+                return
+
+            # Require a synchronous call chain rooted in this Cell.  Bound the
+            # walk so a deliberately deep stack cannot make one audit event
+            # unbounded work.  Child/background threads have no such frame and
+            # are conservatively omitted rather than mis-attributed.
+            frame = _getframe(1)
+            matched = False
+            for _ in range(128):
+                if frame is None:
+                    break
+                if frame.f_code.co_filename == tag:
+                    matched = True
+                    break
+                frame = frame.f_back
+            if not matched:
+                return
+
+            relative = _relative_path(
+                raw_path,
+                root=_root,
+                cwd=_getcwd(),
+                isabs=_isabs,
+                normpath=_normpath,
+                relpath=_relpath,
+                separator=_separator,
+            )
+            if not relative or len(relative) > _max_chars:
+                return
+
+            paths = _state.get("paths")
+            seen = _state.get("seen")
+            if type(paths) is not list or type(seen) is not set:
+                return
+            if relative in seen or len(paths) >= _max_files:
+                return
+            seen.add(relative)
+            paths.append(relative)
+        except BaseException:  # noqa: BLE001 - observation never blocks an open
+            return
+
+    sys.addaudithook(_observe_file_read)
+
+
 def _install_audit_hook(event_key: bytes) -> bool:
     """Arm the in-kernel dlopen guard and Skill-load diagnostic hook.
 
@@ -1289,6 +1497,7 @@ def _install_audit_hook(event_key: bytes) -> bool:
             skill_event_origin=skill_event_origin,
             skill_event_key=event_key,
         )
+        _install_file_read_audit_hook()
         # Remove the convenient global name, while making no security claim:
         # Python introspection can still recover the hook's live references.
         # The Host therefore rejects these frames as recovery evidence.
@@ -1347,6 +1556,15 @@ def main() -> None:
     _setup_protocol_channels()
     if not _initialize_manager_attestation():
         return
+    # Kernel mode is process identity established by the manager at spawn.
+    # Capture both it and the runner object in this driver frame. This keeps
+    # ordinary cell mutations of ``os.environ`` and ``__main__`` globals from
+    # changing how a later protocol request is admitted. The manager's absent
+    # dispatcher remains the independent authority that rejects Jupyter Host
+    # RPC even if arbitrary in-process Python tampers with implementation
+    # details beyond this namespace-isolation contract.
+    kernel_mode = os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
+    run_cell = partial(_run_cell, kernel_mode=kernel_mode)
     while True:
         raw_line = _readline_protocol()
         if not raw_line:
@@ -1375,7 +1593,7 @@ def main() -> None:
         if rtype == "shutdown":
             break
         if rtype == "execute":
-            resp = _run_cell(
+            resp = run_cell(
                 req.get("code", ""),
                 req.get("id", "unknown"),
                 req.get("origin", "agent"),

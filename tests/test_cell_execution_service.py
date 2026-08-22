@@ -11,6 +11,7 @@ from openai4s.execution import CaptureResult, CellRequest
 from openai4s.kernel import KernelSupervisor
 from openai4s.server import cell_run
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
+from openai4s.server.errors import GatewayError
 
 
 class Harness:
@@ -27,6 +28,7 @@ class Harness:
         self.seen_lease = None
         self.run_cell_id = None
         self.capture_cell_id = None
+        self.capture_receipts = None
 
     def ports(self) -> CellExecutionPorts:
         return CellExecutionPorts(
@@ -79,10 +81,13 @@ class Harness:
         self.completion = {"artifact": "result.csv"}
         return dict(self.run_result)
 
-    def capture(self, session, index, cell_id, before, emit, language):
+    def capture(
+        self, session, index, cell_id, before, emit, language, artifact_receipts
+    ):
         assert self.completion is not None
         self.order.append("capture")
         self.capture_cell_id = cell_id
+        self.capture_receipts = artifact_receipts
         return self.capture_result
 
     def emit_artifact_step(self, session, title, artifacts, emit):
@@ -101,6 +106,93 @@ def _session(tmp_path):
         cell_index=0,
         kernels=KernelSupervisor(),
     )
+
+
+@pytest.mark.parametrize("origin", ["agent", "user"])
+def test_readiness_admission_precedes_cell_revision_attempt_and_runtime(
+    tmp_path, origin
+):
+    """Agent and direct Notebook cells share the same zero-side-effect refusal."""
+    harness = Harness()
+    calls = {"admit": 0, "cell_id": 0, "attempt": 0}
+
+    def refuse(_session, request):
+        calls["admit"] += 1
+        assert request.origin == origin
+        raise GatewayError(
+            409,
+            "The standard scientific environment is not ready.",
+            "environment_not_ready",
+        )
+
+    def allocate(*_args):
+        calls["attempt"] += 1
+        raise AssertionError("a refused cell allocated a durable attempt")
+
+    def cell_id():
+        calls["cell_id"] += 1
+        raise AssertionError("a refused cell allocated an id")
+
+    service = CellExecutionService(
+        replace(
+            harness.ports(),
+            admit=refuse,
+            allocate_attempt=allocate,
+        ),
+        id_factory=cell_id,
+    )
+    session = _session(tmp_path)
+    events: list[dict] = []
+
+    with pytest.raises(GatewayError) as refused:
+        service.execute(
+            session,
+            CellRequest("import missing_science_package", origin, stream=True),
+            events.append,
+        )
+
+    assert refused.value.code == 409
+    assert refused.value.error_code == "environment_not_ready"
+    assert calls == {"admit": 1, "cell_id": 0, "attempt": 0}
+    assert session.cell_index == 0
+    assert harness.order == []
+    assert harness.records == []
+    assert events == []
+
+
+def test_malformed_capture_lease_fails_before_cell_identity_or_admission(tmp_path):
+    """An unparseable lease is a refusal, never permission to run unguarded."""
+
+    harness = Harness()
+    calls = {"admit": 0, "cell_id": 0}
+
+    def admit(_session, _request):
+        calls["admit"] += 1
+
+    def cell_id():
+        calls["cell_id"] += 1
+        return "must-not-be-created"
+
+    service = CellExecutionService(
+        replace(
+            harness.ports(),
+            admit=admit,
+            capture_lease=lambda _session, _request: object(),
+        ),
+        id_factory=cell_id,
+    )
+    session = _session(tmp_path)
+
+    with pytest.raises(TypeError, match="capture_lease must return a context manager"):
+        service.execute(
+            session,
+            CellRequest("print('must not run')", "agent"),
+            lambda _event: None,
+        )
+
+    assert calls == {"admit": 0, "cell_id": 0}
+    assert session.cell_index == 0
+    assert harness.order == []
 
 
 def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
@@ -176,6 +268,79 @@ def test_submit_output_does_not_skip_capture_or_execution_log(tmp_path):
     assert harness.records[0]["state_revision"] == 1
     assert result.state_revision == 1
     assert result.generation_id is None
+
+
+def test_bind_lineage_records_host_side_reads(tmp_path):
+    harness = Harness()
+    harness.capture_result = CaptureResult(
+        files_written=["table.json"],
+        artifacts=[{"version_id": "v-out", "filename": "table.json"}],
+    )
+
+    harness.run_result["files_read"] = ["table.csv"]
+
+    def bind(session, request, before, capture, cell_id):
+        assert "table.csv" in request.code
+        assert capture.files_written == ["table.json"]
+        assert capture.files_read == ["table.csv"]
+        return ["table.csv"]
+
+    service = CellExecutionService(
+        replace(harness.ports(), bind_lineage=bind),
+        id_factory=lambda: "cell-lineage",
+    )
+    result = service.execute(
+        _session(tmp_path),
+        CellRequest('json.dump(open("table.csv"))', "user"),
+        lambda event: None,
+    )
+    assert result.capture.files_read == ["table.csv"]
+    assert harness.records[0]["files_read"] == ["table.csv"]
+
+
+def test_missing_runtime_read_observation_never_falls_back_to_source(tmp_path):
+    harness = Harness()
+    seen = []
+
+    def bind(_session, _request, _before, capture, _cell_id):
+        seen.extend(capture.files_read)
+        return list(capture.files_read)
+
+    service = CellExecutionService(
+        replace(harness.ports(), bind_lineage=bind),
+        id_factory=lambda: "cell-no-read-proof",
+    )
+    result = service.execute(
+        _session(tmp_path),
+        CellRequest('print("table.csv")\nopen("out.json", "w").write("x")', "user"),
+        lambda _event: None,
+    )
+    assert seen == []
+    assert result.capture.files_read == []
+
+
+def test_lineage_binding_failure_refuses_to_publish_a_successful_cell(tmp_path):
+    harness = Harness()
+    harness.capture_result = CaptureResult(
+        files_written=["table.json"],
+        artifacts=[{"version_id": "v-out", "filename": "table.json"}],
+    )
+
+    def fail_binding(*_args):
+        raise OSError("lineage store unavailable")
+
+    service = CellExecutionService(
+        replace(harness.ports(), bind_lineage=fail_binding),
+        id_factory=lambda: "cell-lineage-failed",
+    )
+    with pytest.raises(OSError, match="lineage store unavailable"):
+        service.execute(
+            _session(tmp_path),
+            CellRequest('open("table.csv").read()', "user"),
+            lambda _event: None,
+        )
+    assert "record" not in harness.order
+    assert harness.records == []
 
 
 def test_live_and_finished_events_use_the_exact_persistent_generation(tmp_path):

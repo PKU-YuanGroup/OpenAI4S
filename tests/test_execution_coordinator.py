@@ -34,6 +34,38 @@ def _wait_for(predicate, timeout: float = 1.0) -> None:
     raise AssertionError("condition was not reached before timeout")
 
 
+def test_agent_user_repl_and_repair_owners_are_serialized():
+    coordinator = SessionExecutionCoordinator(id_factory=_ids())
+    release = threading.Event()
+    entered = []
+    seen: list[str] = []
+
+    def worker(kind: str) -> None:
+        with coordinator.execution("session-mix", owner=kind, owner_id=kind + "-1"):
+            entered.append(kind)
+            seen.append(kind)
+            assert release.wait(2)
+
+    threads = [
+        threading.Thread(target=worker, args=(kind,))
+        for kind in ("agent", "user_repl", "repair")
+    ]
+    threads[0].start()
+    _wait_for(lambda: entered == ["agent"])
+    threads[1].start()
+    threads[2].start()
+    _wait_for(lambda: coordinator.snapshot("session-mix")["queued_count"] == 2)
+    assert entered == ["agent"]
+    queue_kinds = [
+        item["owner"]["kind"] for item in coordinator.snapshot("session-mix")["queue"]
+    ]
+    assert queue_kinds == ["user_repl", "repair"]
+    release.set()
+    for thread in threads:
+        thread.join(2)
+    assert seen == ["agent", "user_repl", "repair"]
+
+
 def test_fifo_contexts_never_run_two_writers_in_one_session():
     coordinator = SessionExecutionCoordinator(id_factory=_ids())
     release = [threading.Event() for _ in range(3)]

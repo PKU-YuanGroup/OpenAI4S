@@ -40,6 +40,17 @@ class SettingsRepository:
     def delete(self, key: str) -> None:
         self._execute("DELETE FROM settings WHERE key=?", (key,))
 
+    def delete_if_value(self, key: str, expected_value: str) -> bool:
+        """Delete one exact setting generation without an ABA race."""
+
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM settings WHERE key=? AND value=?",
+                (key, expected_value),
+            )
+            self._connection.commit()
+            return cursor.rowcount == 1
+
     def list_model_profiles(self) -> list[dict]:
         raw = self.get("model_profiles")
         if not raw:

@@ -57,6 +57,7 @@ class ContentSearchTool(Tool):
             MAX_SCAN_SECONDS,
             BoundedSelection,
             BoundedTextReader,
+            UnsafeWorkspaceCandidate,
         )
 
         pattern = arguments.get("pattern") or ""
@@ -68,7 +69,7 @@ class ContentSearchTool(Tool):
             return {"error": f"grep: bad regex: {error}"}
         include = arguments.get("include")
         base = (
-            workspace.resolve(arguments.get("path"))
+            workspace.resolve(str(arguments.get("path") or ""))
             if arguments.get("path")
             else workspace.workspace()
         )
@@ -85,6 +86,7 @@ class ContentSearchTool(Tool):
         # bounded one has to be able to say which files it chose.
         paths = base.rglob(include) if include else base.rglob("*")
         candidates = BoundedSelection(_MAX_FILES)
+        open_candidate = workspace.verified_read_opener()
         scanned = 0
         scan_truncated = False
         deadline = time.monotonic() + MAX_SCAN_SECONDS
@@ -98,29 +100,44 @@ class ContentSearchTool(Tool):
                 break
             if not path.is_file():
                 continue
-            relative = workspace.relative(path)
-            if relative is None or workspace.is_secret_path(relative):
+            try:
+                with open_candidate(path) as opened:
+                    relative = opened.relative
+            except (FileNotFoundError, OSError, UnsafeWorkspaceCandidate):
                 continue
+            except ValueError as error:
+                return {"error": f"grep: {error}"}
             candidates.offer(relative, path)
         hits: list[dict] = []
         hit_cap = False
         files_searched = 0
         files_truncated = 0
-        for relative, path in candidates.items():
-            files_searched += 1
-            # Streamed under a byte budget: `path.read_text()` measured a
-            # 192 MB peak searching a single 64 MB file, and the daemon that
-            # paid it serves every other session.
-            reader = BoundedTextReader(path)
+        for _relative, path in candidates.items():
             try:
-                for line_number, line in enumerate(reader.lines(), 1):
-                    if regex.search(line):
-                        hits.append(
-                            {"file": relative, "line": line_number, "text": line[:400]}
-                        )
-                        if len(hits) >= _MAX_HITS:
-                            hit_cap = True
-                            break
+                opened = open_candidate(path)
+            except (FileNotFoundError, OSError, UnsafeWorkspaceCandidate):
+                continue
+            except ValueError as error:
+                return {"error": f"grep: {error}"}
+            files_searched += 1
+            # Streamed under a byte budget from the same descriptor whose
+            # identity and link count were validated.  Reopening `path` here
+            # would recreate the check/use race this boundary exists to close.
+            reader = BoundedTextReader(opened.handle)
+            try:
+                with opened:
+                    for line_number, line in enumerate(reader.lines(), 1):
+                        if regex.search(line):
+                            hits.append(
+                                {
+                                    "file": opened.relative,
+                                    "line": line_number,
+                                    "text": line[:400],
+                                }
+                            )
+                            if len(hits) >= _MAX_HITS:
+                                hit_cap = True
+                                break
             except (OSError, UnicodeDecodeError):
                 continue
             if reader.budget_exhausted:

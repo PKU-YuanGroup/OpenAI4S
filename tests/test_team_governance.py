@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from openai4s.config import Config
+from openai4s.server import team_policy
 from openai4s.storage.governance import QuotaExceeded, invite_digest
 from openai4s.store import get_store
 
@@ -81,6 +82,30 @@ def test_visibility_toggle_is_owner_only(store):
     assert store.team.session_owner("f-x")["visibility"] == "private"
     with pytest.raises(ValueError):
         store.team.set_session_visibility("f-x", "secret", user_id="user_owner")
+
+
+def test_frame_mutation_policy_is_owner_only_by_default():
+    for method, path in (
+        ("PATCH", "/frames/f-1"),
+        ("POST", "/frames/f-1/message"),
+        ("POST", "/frames/f-1/decision"),
+        ("POST", "/frames/f-1/plan/approve"),
+        ("POST", "/frames/f-1/kernel/execute"),
+        ("POST", "/frames/f-1/checkpoints"),
+        ("POST", "/frames/f-1/branches/b-1/activate"),
+        ("POST", "/frames/f-1/recovery/actions/restart_fresh"),
+        ("DELETE", "/frames/f-1"),
+    ):
+        assert team_policy.is_session_control_mutation(method, path), (method, path)
+
+    for method, path in (
+        ("GET", "/frames/f-1/messages"),
+        ("POST", "/frames/f-1/revert/preview"),
+        ("POST", "/frames/f-1/branches/revert-preview"),
+        ("POST", "/frames"),
+        ("POST", "/projects/p-1"),
+    ):
+        assert not team_policy.is_session_control_mutation(method, path), (method, path)
 
 
 def test_enumeration_includes_project_visible_sessions(store):

@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_guardian_allow_once_variant",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_contract"
+  ],
+  "surface": "auto_mode_contract",
+  "task": "Reject and burn a one-shot capability when first use changes the exact action digest.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_v3",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "permission_guardian",
+    "outcome": "allow_once_variant",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-allow-variant",
+      "root_frame_id": "frame-stage0-allow-variant",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-allow-variant",
+      "execution_id": "execution-stage0-allow-variant"
+    },
+    "audit_id": "audit-stage0-allow-variant",
+    "canonical_action": {
+      "schema_version": 1,
+      "action_kind": "file_write",
+      "target": {
+        "scope": "workspace",
+        "relative_path": "results/stage0-allow-exact.txt"
+      },
+      "parameters": {
+        "mode": "replace",
+        "content_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "risk": {
+        "risk_level": "low",
+        "dangerous": false,
+        "explicit_allowlist": true,
+        "irreversible": false,
+        "external_write": false
+      }
+    },
+    "runtime_action": {
+      "schema_version": 1,
+      "action_kind": "file_write",
+      "target": {
+        "scope": "workspace",
+        "relative_path": "results/stage0-mutated-variant.txt"
+      },
+      "parameters": {
+        "mode": "replace",
+        "content_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "risk": {
+        "risk_level": "low",
+        "dangerous": false,
+        "explicit_allowlist": true,
+        "irreversible": false,
+        "external_write": false
+      }
+    },
+    "policy_resolution": "ask",
+    "guardian_identity": {
+      "guardian_id": "permission-guardian",
+      "standing_allow_policy": "never"
+    },
+    "one_shot_capability": {
+      "capability_id": "cap-stage0-allow-variant",
+      "context_generation": "generation-stage0-allow-variant-1",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "max_uses": 1
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "safety_boundary",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "auto_audit_started",
+      "auto_audit_completed",
+      "permission_resolved",
+      "permission_resolved",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "retry_bounded",
+      "golden_payloads"
+    ]
+  }
+}

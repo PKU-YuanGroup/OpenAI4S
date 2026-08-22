@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
 
@@ -52,46 +50,47 @@ class ReadTextFileTool(Tool):
         # reaches into `tools.registry` the same way, from the other side.
         from openai4s.host.files import BoundedTextReader
 
-        path = workspace.resolve(arguments.get("path", ""), must_exist=True)
         offset = max(0, int(arguments.get("offset") or 0))
         limit = max(1, int(arguments.get("limit") or 2000))
         window_end = offset + limit
+        opened = workspace.open_verified_read(arguments.get("path", ""))
         # Streamed under a byte budget instead of `read_bytes()` -> `decode()`
         # -> `splitlines()` -> slice. Measured before this: returning two lines
         # of a 256 MB output peaked at 768 MB in the daemon -- the bytes, the
         # decoded string and the line list -- for a ten-character reply.
-        reader = BoundedTextReader(path)
+        reader = BoundedTextReader(opened.handle)
         window: list[str] = []
         retained_chars = 0
         content_truncated = False
-        try:
-            for index, line in enumerate(reader.lines()):
-                # Lines past the window are still counted, never kept: that is
-                # what keeps `total_lines` meaningful inside the budget.
-                if index < offset or index >= window_end or content_truncated:
-                    continue
-                room = _MAX_CONTENT_CHARS - retained_chars
-                if len(line) <= room:
-                    window.append(line)
-                    retained_chars += len(line)
-                    continue
-                # One line larger than the whole budget must still be cut, or
-                # the bound is defeated by a single no-newline blob.
-                if room > 0:
-                    window.append(line[:room])
-                    retained_chars += room
-                content_truncated = True
-        except UnicodeDecodeError:
-            return {
-                "path": workspace.relative(path),
-                "binary": True,
-                "size_bytes": self._size_bytes(path, reader),
-                "content": "",
-            }
-        except OSError as error:
-            return {"error": f"read_file: {error}"}
+        with opened:
+            try:
+                for index, line in enumerate(reader.lines()):
+                    # Lines past the window are still counted, never kept: that is
+                    # what keeps `total_lines` meaningful inside the budget.
+                    if index < offset or index >= window_end or content_truncated:
+                        continue
+                    room = _MAX_CONTENT_CHARS - retained_chars
+                    if len(line) <= room:
+                        window.append(line)
+                        retained_chars += len(line)
+                        continue
+                    # One line larger than the whole budget must still be cut, or
+                    # the bound is defeated by a single no-newline blob.
+                    if room > 0:
+                        window.append(line[:room])
+                        retained_chars += room
+                    content_truncated = True
+            except UnicodeDecodeError:
+                return {
+                    "path": opened.relative,
+                    "binary": True,
+                    "size_bytes": opened.size_bytes,
+                    "content": "",
+                }
+            except OSError as error:
+                return {"error": f"read_file: {error}"}
         result = {
-            "path": workspace.relative(path),
+            "path": opened.relative,
             "total_lines": reader.lines_read,
             "offset": offset,
             "content": "\n".join(window),
@@ -112,23 +111,10 @@ class ReadTextFileTool(Tool):
             result["retained_chars"] = retained_chars
             result["dropped_chars"] = max(0, reader.chars_read - retained_chars)
             result["scanned_bytes"] = reader.bytes_read
-            result["size_bytes"] = self._size_bytes(path, reader)
+            result["size_bytes"] = opened.size_bytes
             if reader.long_line_split:
                 result["long_line_split"] = True
         return result
-
-    @staticmethod
-    def _size_bytes(path: Path, reader) -> int:
-        """The file's real size, falling back to what was actually read.
-
-        `read_bytes()` knew the size because it held the file; a streaming read
-        has to ask, and a reply that cannot say how much it did not read is the
-        shape this whole change exists to remove.
-        """
-        try:
-            return path.stat().st_size
-        except OSError:
-            return reader.bytes_read
 
 
 __all__ = ["ReadTextFileTool"]

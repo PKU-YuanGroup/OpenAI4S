@@ -88,6 +88,7 @@ def _key_name(value: Any) -> str:
 
 
 ToolResolver = Callable[[str], Any | None]
+ToolPolicyResolver = Callable[[str, Any], tuple[str, list[str]]]
 
 
 def _resolve_tool(name: str, resolver: ToolResolver | None = None) -> Any | None:
@@ -300,6 +301,7 @@ class RuntimeActionLedger:
     model: str | None = None
     branch_id: str | None = None
     tool_resolver: ToolResolver | None = field(default=None, repr=False)
+    tool_policy_resolver: ToolPolicyResolver | None = field(default=None, repr=False)
     current_group_id: str | None = field(default=None, init=False)
     terminal_recorded: bool = field(default=False, init=False)
     _reply: ModelReply | None = field(default=None, init=False, repr=False)
@@ -386,11 +388,23 @@ class RuntimeActionLedger:
             events: list[dict[str, Any]] = []
             for sequence, call in enumerate(action.calls):
                 canonical, raw = redact_tool_call(call, self.tool_resolver)
-                side_effect, resources = _tool_policy(
-                    call.name,
-                    canonical.get("arguments"),
-                    self.tool_resolver,
-                )
+                if self.tool_policy_resolver is None:
+                    side_effect, resources = _tool_policy(
+                        call.name,
+                        canonical.get("arguments"),
+                        self.tool_resolver,
+                    )
+                else:
+                    try:
+                        side_effect, resources = self.tool_policy_resolver(
+                            call.name, canonical.get("arguments")
+                        )
+                    except Exception:  # noqa: BLE001 - audit metadata stays total
+                        side_effect, resources = _tool_policy(
+                            call.name,
+                            canonical.get("arguments"),
+                            self.tool_resolver,
+                        )
                 events.append(
                     {
                         "sequence": sequence,

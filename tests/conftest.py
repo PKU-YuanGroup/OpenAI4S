@@ -24,8 +24,24 @@ os.environ["OPENAI4S_SKIP_DOTENV"] = "1"
 _LLM_ENV_LEAK = re.compile(
     r"^OPENAI4S_(?:LLM_[A-Z0-9_]+|[A-Z0-9_]*(?:BASE_URL|MODEL|API_KEY))$"
 )
+_ROADMAP_ENV_LEAK = (
+    "OPENAI4S_STAGE1_TRUSTED_DELIVERY",
+    "OPENAI4S_STAGE2_AUTO_RUN_STORAGE",
+    "OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW",
+    "OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE",
+    "OPENAI4S_STAGE5_AUTO_REPAIR",
+    "OPENAI4S_STAGE6_GUARDIAN_SHADOW",
+    "OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT",
+    "OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE",
+    "OPENAI4S_STAGE9_ARTIFACT_WORKBENCH",
+    "OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS",
+    "OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE",
+    "OPENAI4S_STAGE12_AUTO_MODE_GA",
+)
 for _name in [n for n in os.environ if _LLM_ENV_LEAK.match(n)]:
     del os.environ[_name]
+for _name in _ROADMAP_ENV_LEAK:
+    os.environ.pop(_name, None)
 
 # The non-LLM definition-time defaults leak the same way and are frozen at the
 # same moment: ``Config``'s field defaults read these at class definition, so
@@ -122,6 +138,13 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     # monkeypatch) must not hand it to the next test.
     monkeypatch.setenv("OPENAI4S_SKIP_DOTENV", "1")
     for name in [n for n in os.environ if _LLM_ENV_LEAK.match(n)]:
+        monkeypatch.delenv(name, raising=False)
+    # Rollout flags are also configuration inputs. A developer exercising an
+    # opt-in stage locally must not silently change the default response-shape
+    # capture or activate later-stage behavior in the offline suite. Tests
+    # that cover a stage set an explicit Config or set the variable after this
+    # fixture has established the off baseline.
+    for name in _ROADMAP_ENV_LEAK:
         monkeypatch.delenv(name, raising=False)
     # The provider-native last-resort keys (ANTHROPIC_API_KEY, OPENAI_API_KEY,
     # ...) feed the same resolver: a developer's real export would make a

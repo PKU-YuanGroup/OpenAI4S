@@ -17,6 +17,7 @@ information about what a colleague is working on (INV-13).
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -203,7 +204,7 @@ def test_an_unconfigured_profile_is_refused_rather_than_guessed(listening_daemon
 
 
 def test_cluster_session_placement_is_admin_only_before_any_write(
-    listening_daemon,
+    listening_daemon, monkeypatch
 ):
     daemon = listening_daemon
     member = _login(daemon, "alice", "fake-pw-a")
@@ -221,36 +222,66 @@ def test_cluster_session_placement_is_admin_only_before_any_write(
 
     admin = _login(daemon, "root", "fake-pw-r")
     admin_session = _session_of(daemon, "root")
-    status, raw = _put(
-        daemon.port,
-        f"/api/v1/sessions/{admin_session}/compute",
-        {"profile": "gpu-interactive"},
-        admin,
-    )
-    assert status == 201, raw[:300]
-    first = _body(raw)
-    assert first["workload"] is not None
-    assert first["allocation"] is None
+    reconciler = daemon.runner.reconciler
+    prepare_attempt = reconciler._prepare_attempt
+    attempt_entered = threading.Event()
+    release_attempt = threading.Event()
 
-    workload_id = first["workload"]["id"]
-    deadline = time.monotonic() + 2.0
-    while (
-        daemon.store.workloads.active_allocation(workload_id) is None
-        and time.monotonic() < deadline
-    ):
-        time.sleep(0.01)
-    assert daemon.store.workloads.active_allocation(workload_id) is not None
+    def prepare_after_capture(workload, allocation):
+        # The allocation row is durable before backend submission begins. Hold
+        # that real lifecycle boundary so the response recorder deterministically
+        # observes both legal shapes of the nullable reason field.
+        attempt_entered.set()
+        if not release_attempt.wait(5.0):
+            raise TimeoutError("test did not release the allocation attempt")
+        return prepare_attempt(workload, allocation)
 
-    # Repeating the idempotent request returns the same durable workload and
-    # the now-existing allocation. Exercising both eventual states in one
-    # real HTTP test keeps the frozen response schema deterministic.
-    status, raw = _put(
-        daemon.port,
-        f"/api/v1/sessions/{admin_session}/compute",
-        {"profile": "gpu-interactive"},
-        admin,
-    )
-    assert status == 201, raw[:300]
-    second = _body(raw)
-    assert second["workload"]["id"] == workload_id
-    assert second["allocation"] is not None
+    monkeypatch.setattr(reconciler, "_prepare_attempt", prepare_after_capture)
+    try:
+        status, raw = _put(
+            daemon.port,
+            f"/api/v1/sessions/{admin_session}/compute",
+            {"profile": "gpu-interactive"},
+            admin,
+        )
+        assert status == 201, raw[:300]
+        first = _body(raw)
+        assert first["workload"] is not None
+        assert first["allocation"] is None
+
+        workload_id = first["workload"]["id"]
+        assert attempt_entered.wait(2.0)
+        allocation = daemon.store.workloads.active_allocation(workload_id)
+        assert allocation is not None
+        assert allocation.reason is None
+
+        # Repeating the idempotent request returns the same durable workload
+        # and the allocation while submission is held at the real boundary.
+        status, raw = _put(
+            daemon.port,
+            f"/api/v1/sessions/{admin_session}/compute",
+            {"profile": "gpu-interactive"},
+            admin,
+        )
+        assert status == 201, raw[:300]
+        second = _body(raw)
+        assert second["workload"]["id"] == workload_id
+        assert second["allocation"]["allocation_id"] == allocation.id
+        assert second["allocation"]["reason"] is None
+
+        from openai4s.orchestration.models import Reason
+
+        allocation.reason = Reason.BACKEND_SUBMISSION_UNKNOWN
+        daemon.store.workloads.save_allocation(allocation)
+        status, raw = _put(
+            daemon.port,
+            f"/api/v1/sessions/{admin_session}/compute",
+            {"profile": "gpu-interactive"},
+            admin,
+        )
+        assert status == 201, raw[:300]
+        third = _body(raw)
+        assert third["allocation"]["allocation_id"] == allocation.id
+        assert third["allocation"]["reason"] == Reason.BACKEND_SUBMISSION_UNKNOWN.value
+    finally:
+        release_attempt.set()

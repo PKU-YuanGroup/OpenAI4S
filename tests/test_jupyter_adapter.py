@@ -325,6 +325,20 @@ def test_bridge_executes_against_the_real_hardened_python_worker(monkeypatch, tm
         first = kernel.do_execute("answer = 40", silent=False)
         second = kernel.do_execute("print(answer + 2)", silent=False)
         no_host = kernel.do_execute("print('host' in globals())", silent=False)
+        changed_mode = kernel.do_execute(
+            "import os, __main__\n"
+            "os.environ['OPENAI4S_KERNEL_MODE'] = 'repl'\n"
+            "__main__._KERNEL_MODE = 'repl'\n"
+            "_original_run_cell = __main__._run_cell\n"
+            "def _force_repl(*args, **kwargs):\n"
+            "    kwargs['kernel_mode'] = 'repl'\n"
+            "    return _original_run_cell(*args, **kwargs)\n"
+            "__main__._run_cell = _force_repl",
+            silent=False,
+        )
+        still_no_host = kernel.do_execute(
+            "print('host' in globals(), 'openai4s' in globals())", silent=False
+        )
         files = kernel.do_execute(
             "with open('standalone.txt', 'w') as f:\n"
             "    _ = f.write('ordinary file I/O')\n"
@@ -339,6 +353,8 @@ def test_bridge_executes_against_the_real_hardened_python_worker(monkeypatch, tm
         first["status"]
         == second["status"]
         == no_host["status"]
+        == changed_mode["status"]
+        == still_no_host["status"]
         == files["status"]
         == "ok"
     )
@@ -348,7 +364,7 @@ def test_bridge_executes_against_the_real_hardened_python_worker(monkeypatch, tm
         if message_type == "stream" and content.get("name") == "stdout"
     )
     assert "42" in stdout
-    assert "False" in stdout
+    assert "False False" in stdout
     assert "ordinary file I/O" in stdout
 
 

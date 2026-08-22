@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from openai4s.config import Config, LLMConfig
+from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
 from openai4s.storage import team as team_mod
@@ -73,6 +73,7 @@ class _TeamDaemon:
         *,
         team_mode: bool = True,
         data_roots: list[Path] | None = None,
+        roadmap_features: RoadmapFeatureFlags | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.port = _free_port()
@@ -82,6 +83,7 @@ class _TeamDaemon:
             max_turns=3,
             host="127.0.0.1",
             port=self.port,
+            roadmap_features=roadmap_features or RoadmapFeatureFlags(),
         )
         if team_mode:
             self.cfg.team_mode = True

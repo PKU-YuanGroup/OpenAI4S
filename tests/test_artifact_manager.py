@@ -3,23 +3,34 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from openai4s.config import Config, LLMConfig
+from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.host_dispatch import HostDispatcher
 from openai4s.kernel import Kernel
-from openai4s.server.artifacts import ArtifactManager
+from openai4s.server.artifacts import (
+    ArtifactManager,
+    ArtifactOperationError,
+    artifact_receipt_map,
+)
+from openai4s.storage.artifact_observations import (
+    CAPTURE_KIND_HEAD_CHECKSUM_REUSED,
+)
 from openai4s.store import get_store
 
 
 class ArtifactHarness:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, trusted_delivery: bool = False) -> None:
         cfg = Config(
             data_dir=tmp_path / "data",
             llm=LLMConfig(provider="deepseek", api_key="test-key"),
+            roadmap_features=RoadmapFeatureFlags(
+                stage1_trusted_delivery=trusted_delivery
+            ),
         )
         self.cfg = cfg
         self.store = get_store(cfg.db_path)
@@ -39,6 +50,7 @@ class ArtifactHarness:
                 "text/csv" if name.endswith(".csv") else "application/octet-stream"
             ),
             checksum=lambda path: hashlib.sha256(path.read_bytes()).hexdigest(),
+            trusted_delivery=trusted_delivery,
         )
         self.session = SimpleNamespace(
             root_frame_id=self.frame_id,
@@ -89,6 +101,739 @@ def test_register_freezes_version_before_emitting_event(tmp_path):
         ).read_bytes()
         == b"ALPHA"
     )
+
+
+def test_trusted_register_freezes_verified_snapshot_before_record(
+    tmp_path, monkeypatch
+):
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    path = harness.workspace / "verified.csv"
+    path.write_bytes(b"a,b\n1,2\n")
+    observed = []
+    original = harness.store.record_cell_artifact
+
+    def record_after_freeze(**fields):
+        snapshot = Path(fields["snapshot_path"])
+        raw = snapshot.read_bytes()
+        observed.append((snapshot, fields.copy(), raw))
+        assert fields["reuse_matching_head"] is True
+        assert fields["size_bytes"] == len(raw)
+        assert fields["checksum"] == hashlib.sha256(raw).hexdigest()
+        return original(**fields)
+
+    monkeypatch.setattr(harness.store, "record_cell_artifact", record_after_freeze)
+    result = harness.manager.register_file(
+        harness.session, path, "cell-trusted", lambda event: None
+    )
+
+    assert len(observed) == 1
+    snapshot, _fields, raw = observed[0]
+    assert snapshot.is_file()
+    assert raw == b"a,b\n1,2\n"
+    assert harness.store.version_meta(result["version_id"])["snapshot_path"] == str(
+        snapshot
+    )
+    assert result["version_id"]
+
+
+def test_trusted_same_bytes_reuse_head_but_record_each_cell_capture(tmp_path):
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    path = harness.workspace / "same.csv"
+    events = []
+    path.write_bytes(b"value\n42\n")
+
+    first = harness.manager.register_file(
+        harness.session, path, "cell-1", events.append
+    )
+    second = harness.manager.register_file(
+        harness.session, path, "cell-2", events.append
+    )
+
+    assert second["version_id"] == first["version_id"]
+    assert second["artifact_id"] == first["artifact_id"]
+    assert len(harness.store.list_versions(first["artifact_id"])) == 1
+    observations = harness.store.list_artifact_capture_observations(
+        version_id=first["version_id"]
+    )
+    assert [row["producing_cell_id"] for row in observations] == ["cell-1", "cell-2"]
+    assert observations[-1]["capture_kind"] == CAPTURE_KIND_HEAD_CHECKSUM_REUSED
+    # The second pre-freeze was not selected by COALESCE and is removed; only
+    # the head's actual immutable snapshot remains.
+    snapshots = list(harness.manager.versions_dir().iterdir())
+    assert snapshots == [
+        Path(harness.store.version_meta(first["version_id"])["snapshot_path"])
+    ]
+
+
+def test_parent_rewrite_after_child_capture_keeps_parent_production(tmp_path):
+    """A child claim excludes only the exact unchanged live-file identity."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    child_frame_id = harness.store.new_frame(
+        parent_id=harness.frame_id,
+        kind="delegate",
+        project_id="default",
+        status="ready",
+    )
+    path = harness.workspace / "shared.txt"
+    parent_before = harness.manager.snapshot(harness.workspace)
+    path.write_text("child bytes", encoding="utf-8")
+    child = harness.manager.register_file(
+        harness.session,
+        path,
+        "child-cell",
+        lambda _event: None,
+        producer_frame_id=child_frame_id,
+    )
+    assert child is not None
+    harness.manager.claim_delegated_artifacts([child], workspace=harness.workspace)
+
+    # The parent genuinely writes different bytes after the child returns.
+    # Its fingerprint no longer matches the one-shot exclusion claim, so this
+    # must remain a real parent version rather than being suppressed.
+    path.write_text("parent bytes are different", encoding="utf-8")
+    parent = harness.manager.capture(
+        harness.session,
+        1,
+        "parent-cell",
+        parent_before,
+        lambda _event: None,
+        language="python",
+    )
+
+    assert len(parent.artifacts) == 1
+    versions = harness.store.list_versions(child["artifact_id"])
+    assert len(versions) == 2
+    head = harness.store.version_meta(parent.artifacts[0]["version_id"])
+    assert head["frame_id"] == harness.frame_id
+    assert head["producing_cell_id"] == "parent-cell"
+
+
+def test_capture_detects_same_length_rewrite_that_restores_mtime(tmp_path):
+    """A writer-controlled timestamp cannot hide changed scientific bytes."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    path = harness.workspace / "preserved-time.txt"
+    path.write_text("AAAA", encoding="utf-8")
+    original_mtime = path.stat().st_mtime_ns
+    before = harness.manager.snapshot(harness.workspace)
+
+    path.write_text("BBBB", encoding="utf-8")
+    os.utime(path, ns=(original_mtime, original_mtime))
+    captured = harness.manager.capture(
+        harness.session,
+        1,
+        "cell-preserved-time",
+        before,
+        lambda _event: None,
+        language="python",
+    )
+
+    assert [artifact["filename"] for artifact in captured.artifacts] == [
+        "preserved-time.txt"
+    ]
+    version = harness.store.version_meta(captured.artifacts[0]["version_id"])
+    assert Path(version["snapshot_path"]).read_text(encoding="utf-8") == "BBBB"
+    assert version["producing_cell_id"] == "cell-preserved-time"
+
+
+def test_trusted_register_rejects_mid_freeze_rewrite_with_restored_mtime(
+    tmp_path, monkeypatch
+):
+    """A same-size rewrite during the descriptor stream leaves no claim."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    path = harness.workspace / "mid-freeze.bin"
+    original = b"A" * (1024 * 1024 + 4096)
+    replacement = b"B" * len(original)
+    path.write_bytes(original)
+    source_stat = path.stat()
+    source_identity = (source_stat.st_dev, source_stat.st_ino)
+    native_read = os.read
+    mutated = False
+
+    def rewrite_after_first_source_read(descriptor, size):
+        nonlocal mutated
+        chunk = native_read(descriptor, size)
+        descriptor_stat = os.fstat(descriptor)
+        if (
+            chunk
+            and not mutated
+            and (descriptor_stat.st_dev, descriptor_stat.st_ino) == source_identity
+        ):
+            mutated = True
+            with path.open("r+b", buffering=0) as stream:
+                stream.write(replacement)
+                os.fsync(stream.fileno())
+            os.utime(
+                path,
+                ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+            )
+        return chunk
+
+    monkeypatch.setattr(
+        "openai4s.server.artifacts.os.read", rewrite_after_first_source_read
+    )
+
+    with pytest.raises(ArtifactOperationError, match="snapshot freeze failed"):
+        harness.manager.register_file(
+            harness.session,
+            path,
+            "cell-mid-freeze",
+            lambda _event: None,
+        )
+
+    assert mutated is True
+    assert path.stat().st_size == len(original)
+    assert path.stat().st_mtime_ns == source_stat.st_mtime_ns
+    assert (
+        harness.store.list_artifacts(
+            {"root_frame_id": harness.frame_id, "project_id": "default"}
+        )
+        == []
+    )
+    assert harness.store.list_artifact_capture_observations() == []
+    assert (
+        harness.store._conn.execute(  # noqa: SLF001 - assert no hidden version row
+            "SELECT COUNT(*) FROM artifact_versions"
+        ).fetchone()[0]
+        == 0
+    )
+    assert list(harness.manager.versions_dir().iterdir()) == []
+
+
+def test_child_claim_survives_every_nested_ancestor_sweep(tmp_path):
+    """A grandchild must not be reassigned first to its parent, then root."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    child_frame_id = harness.store.new_frame(
+        parent_id=harness.frame_id,
+        kind="delegate",
+        project_id="default",
+        status="ready",
+    )
+    grandchild_frame_id = harness.store.new_frame(
+        parent_id=child_frame_id,
+        kind="delegate",
+        project_id="default",
+        status="ready",
+    )
+    path = harness.workspace / "nested.txt"
+    root_before = harness.manager.snapshot(harness.workspace)
+    child_before = harness.manager.snapshot(harness.workspace)
+    path.write_text("grandchild bytes", encoding="utf-8")
+    grandchild = harness.manager.register_file(
+        harness.session,
+        path,
+        "grandchild-cell",
+        lambda _event: None,
+        producer_frame_id=grandchild_frame_id,
+    )
+    assert grandchild is not None
+    harness.manager.claim_delegated_artifacts([grandchild], workspace=harness.workspace)
+
+    child_capture = harness.manager.capture(
+        harness.session,
+        1,
+        "child-cell",
+        child_before,
+        lambda _event: None,
+        language="python",
+        producer_frame_id=child_frame_id,
+    )
+    root_capture = harness.manager.capture(
+        harness.session,
+        1,
+        "root-cell",
+        root_before,
+        lambda _event: None,
+        language="python",
+    )
+
+    assert child_capture.artifacts == []
+    assert root_capture.artifacts == []
+    assert harness.manager._delegated_claims == {}
+    versions = harness.store.list_versions(grandchild["artifact_id"])
+    assert len(versions) == 1
+    metadata = harness.store.version_meta(grandchild["version_id"])
+    assert metadata["frame_id"] == grandchild_frame_id
+    observations = harness.store.list_artifact_capture_observations(
+        version_id=grandchild["version_id"]
+    )
+    assert [(row["frame_id"], row["producing_cell_id"]) for row in observations] == [
+        (grandchild_frame_id, "grandchild-cell")
+    ]
+
+
+def test_failed_child_capture_cannot_be_laundered_by_parent_sweep(
+    tmp_path, monkeypatch
+):
+    """Trusted capture failure is sticky for the exact unchanged child bytes."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    child_frame_id = harness.store.new_frame(
+        parent_id=harness.frame_id,
+        kind="delegate",
+        project_id="default",
+        status="ready",
+    )
+    hooks = harness.manager.delegated_cell_hooks(
+        harness.session, child_frame_id, lambda _event: None
+    )
+    action = SimpleNamespace(language="python")
+    token = hooks.before(action)
+    path = harness.workspace / "uncaptured-child.txt"
+    path.write_text("child bytes", encoding="utf-8")
+    original_register = harness.manager.register_file
+    monkeypatch.setattr(
+        harness.manager,
+        "register_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("injected child capture fault")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="injected child capture fault"):
+        hooks.after(action, token, {"id": "child-cell"})
+
+    monkeypatch.setattr(harness.manager, "register_file", original_register)
+    with pytest.raises(
+        ArtifactOperationError, match="delegated artifact capture failed"
+    ):
+        harness.manager.capture(
+            harness.session,
+            1,
+            "parent-cell",
+            token.before,
+            lambda _event: None,
+            language="python",
+        )
+    assert (
+        harness.store.artifact_by_filename(
+            "uncaptured-child.txt", harness.frame_id, strict=True
+        )
+        is None
+    )
+
+
+def test_receipt_set_is_fully_verified_before_any_artifact_is_published(tmp_path):
+    """A later bad receipt cannot leave a committed prefix or event behind."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    before = harness.manager.snapshot(harness.workspace)
+    first = harness.workspace / "first.txt"
+    second = harness.workspace / "second.txt"
+    first.write_bytes(b"first\n")
+    second.write_bytes(b"second\n")
+    events = []
+    receipts = artifact_receipt_map(
+        [
+            {
+                "filename": first.name,
+                "checksum": hashlib.sha256(first.read_bytes()).hexdigest(),
+                "source": {"kind": "test", "ordinal": 1},
+            },
+            {
+                "filename": second.name,
+                "checksum": "0" * 64,
+                "source": {"kind": "test", "ordinal": 2},
+            },
+        ]
+    )
+
+    with pytest.raises(
+        ArtifactOperationError, match="receipt did not match captured bytes"
+    ):
+        harness.manager.capture(
+            harness.session,
+            1,
+            "cell-receipts",
+            before,
+            events.append,
+            artifact_receipts=receipts,
+        )
+
+    assert events == []
+    assert (
+        harness.store.artifact_by_filename(first.name, harness.frame_id, strict=True)
+        is None
+    )
+    assert (
+        harness.store.artifact_by_filename(second.name, harness.frame_id, strict=True)
+        is None
+    )
+
+
+@pytest.mark.parametrize("invalid_input", ["foreign", "absent"])
+def test_receipt_lineage_set_is_scoped_before_any_artifact_is_published(
+    tmp_path, invalid_input
+):
+    """Receipt N cannot publish an earlier prefix with invalid lineage."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=False)
+    if invalid_input == "foreign":
+        foreign_frame = harness.store.new_frame(
+            kind="turn", project_id="foreign-project", status="ready"
+        )
+        foreign_path = tmp_path / "foreign-input.txt"
+        foreign_path.write_bytes(b"foreign\n")
+        foreign = harness.store.save_artifact(
+            path=str(foreign_path),
+            filename=foreign_path.name,
+            content_type="text/plain",
+            size_bytes=foreign_path.stat().st_size,
+            checksum=hashlib.sha256(foreign_path.read_bytes()).hexdigest(),
+            frame_id=foreign_frame,
+        )
+        invalid_version_id = foreign["version_id"]
+    else:
+        invalid_version_id = "v-absent"
+
+    before = harness.manager.snapshot(harness.workspace)
+    first = harness.workspace / "first.txt"
+    second = harness.workspace / "second.txt"
+    first.write_bytes(b"first\n")
+    second.write_bytes(b"second\n")
+    receipts = artifact_receipt_map(
+        [
+            {
+                "filename": first.name,
+                "checksum": hashlib.sha256(first.read_bytes()).hexdigest(),
+                "source": {
+                    "kind": "remote_compute",
+                    "input_versions": [],
+                },
+            },
+            {
+                "filename": second.name,
+                "checksum": hashlib.sha256(second.read_bytes()).hexdigest(),
+                "source": {
+                    "kind": "remote_compute",
+                    "input_versions": [invalid_version_id],
+                },
+            },
+        ]
+    )
+    events = []
+
+    with pytest.raises(
+        ArtifactOperationError, match="receipt lineage evidence is invalid"
+    ):
+        harness.manager.capture(
+            harness.session,
+            1,
+            "cell-invalid-lineage",
+            before,
+            events.append,
+            artifact_receipts=receipts,
+        )
+
+    assert events == []
+    for path in (first, second):
+        assert (
+            harness.store.artifact_by_filename(path.name, harness.frame_id, strict=True)
+            is None
+        )
+    assert list(harness.manager.versions_dir().iterdir()) == []
+
+
+def test_receipt_prefreeze_race_publishes_no_partial_artifacts(tmp_path, monkeypatch):
+    """A rewrite while the receipt set freezes fails before row/event one."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=False)
+    before = harness.manager.snapshot(harness.workspace)
+    first = harness.workspace / "first.txt"
+    second = harness.workspace / "second.txt"
+    first.write_bytes(b"first\n")
+    second.write_bytes(b"second\n")
+    receipts = artifact_receipt_map(
+        [
+            {
+                "filename": first.name,
+                "checksum": hashlib.sha256(first.read_bytes()).hexdigest(),
+                "source": {"kind": "test", "ordinal": 1},
+            },
+            {
+                "filename": second.name,
+                "checksum": hashlib.sha256(second.read_bytes()).hexdigest(),
+                "source": {"kind": "test", "ordinal": 2},
+            },
+        ]
+    )
+    original_freeze = harness.manager.freeze_capture_snapshot
+
+    def freeze_then_race(filename, source_path):
+        frozen = original_freeze(filename, source_path)
+        if filename == first.name:
+            second.write_bytes(b"kernel-thread-rewrite\n")
+        return frozen
+
+    monkeypatch.setattr(harness.manager, "freeze_capture_snapshot", freeze_then_race)
+    events = []
+    with pytest.raises(
+        ArtifactOperationError, match="receipt did not match captured bytes"
+    ):
+        harness.manager.capture(
+            harness.session,
+            1,
+            "cell-raced-receipts",
+            before,
+            events.append,
+            artifact_receipts=receipts,
+        )
+
+    assert events == []
+    assert (
+        harness.store.list_artifacts(
+            {"root_frame_id": harness.frame_id, "project_id": "default"}
+        )
+        == []
+    )
+    assert harness.store.list_artifact_capture_observations() == []
+    assert (
+        harness.store._conn.execute(  # noqa: SLF001 - no hidden partial row
+            "SELECT COUNT(*) FROM artifact_versions"
+        ).fetchone()[0]
+        == 0
+    )
+    assert list(harness.manager.versions_dir().iterdir()) == []
+
+
+def test_receipts_reuse_prefrozen_bytes_when_trusted_delivery_is_off(
+    tmp_path, monkeypatch
+):
+    """Stage 10/11 evidence stays immutable independently of Stage 1."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=False)
+    before = harness.manager.snapshot(harness.workspace)
+    first = harness.workspace / "first.txt"
+    second = harness.workspace / "second.txt"
+    first_bytes = b"first\n"
+    second_bytes = b"second\n"
+    first.write_bytes(first_bytes)
+    second.write_bytes(second_bytes)
+    receipts = artifact_receipt_map(
+        [
+            {
+                "filename": first.name,
+                "checksum": hashlib.sha256(first_bytes).hexdigest(),
+                "source": {"kind": "test", "ordinal": 1},
+            },
+            {
+                "filename": second.name,
+                "checksum": hashlib.sha256(second_bytes).hexdigest(),
+                "source": {"kind": "test", "ordinal": 2},
+            },
+        ]
+    )
+    original_register = harness.manager.register_file
+
+    def register_then_race(session, path, cell_id, emit, *args, **kwargs):
+        result = original_register(session, path, cell_id, emit, *args, **kwargs)
+        if path.name == first.name:
+            second.write_bytes(b"late-kernel-thread-rewrite\n")
+        return result
+
+    monkeypatch.setattr(harness.manager, "register_file", register_then_race)
+    events = []
+    captured = harness.manager.capture(
+        harness.session,
+        1,
+        "cell-prefrozen-receipts",
+        before,
+        events.append,
+        artifact_receipts=receipts,
+    )
+
+    assert len(captured.artifacts) == 2
+    assert len(events) == 2
+    second_artifact = next(
+        item for item in captured.artifacts if item["filename"] == second.name
+    )
+    second_meta = harness.store.version_meta(second_artifact["version_id"])
+    second_snapshot = Path(second_meta["snapshot_path"])
+    assert second_snapshot.read_bytes() == second_bytes
+    assert second_meta["checksum"] == hashlib.sha256(second_bytes).hexdigest()
+    assert second.read_bytes() == b"late-kernel-thread-rewrite\n"
+
+
+def test_duplicate_delegated_receipt_is_rejected_and_claimed_failed(tmp_path):
+    """One final file cannot consume two child Host-call receipts."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    child_frame_id = harness.store.new_frame(
+        parent_id=harness.frame_id,
+        kind="delegate",
+        project_id="default",
+        status="ready",
+    )
+    hooks = harness.manager.delegated_cell_hooks(
+        harness.session, child_frame_id, lambda _event: None
+    )
+    action = SimpleNamespace(language="python")
+    token = hooks.before(action)
+    path = harness.workspace / "duplicate-child.txt"
+    path.write_bytes(b"child\n")
+    receipt = {
+        "filename": path.name,
+        "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "source": {"kind": "test"},
+    }
+
+    with pytest.raises(ArtifactOperationError, match="claimed more than once"):
+        hooks.after(
+            action,
+            token,
+            {
+                "id": "child-cell",
+                "_openai4s_artifact_receipts": [receipt, dict(receipt)],
+            },
+        )
+
+    assert (
+        harness.store.artifact_by_filename(path.name, harness.frame_id, strict=True)
+        is None
+    )
+    with pytest.raises(
+        ArtifactOperationError, match="delegated artifact capture failed"
+    ):
+        harness.manager.capture(
+            harness.session,
+            1,
+            "parent-cell",
+            token.before,
+            lambda _event: None,
+            language="python",
+        )
+
+
+def test_delegated_claim_capacity_fails_closed_instead_of_evicting(
+    tmp_path, monkeypatch
+):
+    """Losing an old claim at the cap would make its bytes become parent's."""
+
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    monkeypatch.setattr(harness.manager, "_DELEGATED_CLAIM_MAX", 1)
+    child_frame_id = harness.store.new_frame(
+        parent_id=harness.frame_id,
+        kind="delegate",
+        project_id="default",
+        status="ready",
+    )
+    parent_before = harness.manager.snapshot(harness.workspace)
+
+    captured = []
+    for index in range(2):
+        path = harness.workspace / f"child-{index}.txt"
+        path.write_text(f"child {index}", encoding="utf-8")
+        artifact = harness.manager.register_file(
+            harness.session,
+            path,
+            f"child-cell-{index}",
+            lambda _event: None,
+            producer_frame_id=child_frame_id,
+        )
+        assert artifact is not None
+        captured.append(artifact)
+
+    harness.manager.claim_delegated_artifacts(
+        [captured[0]], workspace=harness.workspace
+    )
+    with pytest.raises(
+        ArtifactOperationError, match="delegated artifact claim capacity exceeded"
+    ):
+        harness.manager.claim_delegated_artifacts(
+            [captured[1]], workspace=harness.workspace
+        )
+
+    # Both versions are already child-owned. The critical assertion is that an
+    # enclosing sweep cannot continue after exact exclusion state overflowed.
+    with pytest.raises(
+        ArtifactOperationError, match="delegated artifact claim capacity exceeded"
+    ):
+        harness.manager.capture(
+            harness.session,
+            1,
+            "parent-cell",
+            parent_before,
+            lambda _event: None,
+            language="python",
+        )
+    for artifact in captured:
+        observations = harness.store.list_artifact_capture_observations(
+            version_id=artifact["version_id"]
+        )
+        assert len(observations) == 1
+        assert observations[0]["frame_id"] == child_frame_id
+        assert observations[0]["producing_cell_id"].startswith("child-cell-")
+
+    # Capacity loss is scoped to the affected session workspace. A single
+    # pathological session must not brick Artifact capture for the daemon.
+    other_frame = harness.store.new_frame(
+        kind="turn", project_id="default", status="ready"
+    )
+    other_workspace = harness.cfg.data_dir / "agent-workspaces" / other_frame
+    other_workspace.mkdir(parents=True)
+    other_session = SimpleNamespace(
+        root_frame_id=other_frame,
+        project_id="default",
+        workspace=other_workspace,
+    )
+    other_before = harness.manager.snapshot(other_workspace)
+    (other_workspace / "independent.txt").write_text("safe", encoding="utf-8")
+    independent = harness.manager.capture(
+        other_session,
+        1,
+        "other-cell",
+        other_before,
+        lambda _event: None,
+        language="python",
+    )
+    assert [item["filename"] for item in independent.artifacts] == ["independent.txt"]
+
+
+def test_trusted_record_fault_removes_unreferenced_prefreeze(tmp_path, monkeypatch):
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    path = harness.workspace / "fault.csv"
+    path.write_bytes(b"x\n1\n")
+    frozen_paths = []
+
+    def fail_record(**fields):
+        frozen = Path(fields["snapshot_path"])
+        assert frozen.is_file()
+        frozen_paths.append(frozen)
+        raise RuntimeError("injected record failure")
+
+    monkeypatch.setattr(harness.store, "record_cell_artifact", fail_record)
+    emitted = []
+    with pytest.raises(RuntimeError, match="injected record failure"):
+        harness.manager.register_file(
+            harness.session, path, "cell-fault", emitted.append
+        )
+
+    assert emitted == []
+    assert frozen_paths and not frozen_paths[0].exists()
+    assert list(harness.manager.versions_dir().iterdir()) == []
+
+
+def test_trusted_snapshot_verification_failure_never_records_or_leaves_bytes(
+    tmp_path, monkeypatch
+):
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    path = harness.workspace / "mismatch.csv"
+    path.write_bytes(b"x\n1\n")
+    monkeypatch.setattr(harness.manager, "checksum", lambda _path: "0" * 64)
+
+    with pytest.raises(ArtifactOperationError, match="snapshot freeze failed"):
+        harness.manager.register_file(
+            harness.session, path, "cell-mismatch", lambda event: None
+        )
+
+    assert (
+        harness.store.artifact_by_filename(path.name, harness.frame_id, strict=True)
+        is None
+    )
+    assert list(harness.manager.versions_dir().iterdir()) == []
 
 
 def test_capture_finalizes_provenance_version_without_duplicating_it(tmp_path):
@@ -268,6 +1013,49 @@ def test_explicit_save_merges_provenance_and_capture_into_one_complete_version(
     )
 
 
+def test_trusted_provenance_record_reuses_same_bytes_across_cells(tmp_path):
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    source = harness.workspace / "source.txt"
+    source.write_text("same")
+    harness.store.save_artifact(
+        path=str(source),
+        filename=source.name,
+        content_type="text/plain",
+        size_bytes=4,
+        checksum=hashlib.sha256(b"same").hexdigest(),
+        frame_id=harness.frame_id,
+        project_id="default",
+    )
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        first = kernel.execute(
+            "text = open('source.txt').read()\n"
+            "with open('derived.txt', 'w') as handle:\n"
+            "    handle.write(text)\n",
+            cell_id="cell-provenance-first",
+        )
+        second = kernel.execute(
+            "text = open('source.txt').read()\n"
+            "with open('derived.txt', 'w') as handle:\n"
+            "    handle.write(text)\n",
+            cell_id="cell-provenance-second",
+        )
+
+    assert first["error"] is None and second["error"] is None
+    artifact = harness.store.artifact_by_filename(
+        "derived.txt", harness.frame_id, strict=True
+    )
+    assert len(harness.store.list_versions(artifact["artifact_id"])) == 1
+    observations = harness.store.list_artifact_capture_observations(
+        artifact_id=artifact["artifact_id"]
+    )
+    assert [row["producing_cell_id"] for row in observations] == [
+        "cell-provenance-first",
+        "cell-provenance-second",
+    ]
+
+
 def test_repeated_explicit_saves_remain_versions_and_capture_adds_no_third(tmp_path):
     harness = ArtifactHarness(tmp_path)
     dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
@@ -310,6 +1098,40 @@ def test_repeated_explicit_saves_remain_versions_and_capture_adds_no_third(tmp_p
         ).is_file()
         for version in versions
     )
+
+
+def test_trusted_explicit_save_reuses_same_bytes_across_cells_with_observations(
+    tmp_path,
+):
+    harness = ArtifactHarness(tmp_path, trusted_delivery=True)
+    dispatcher = HostDispatcher(cfg=harness.cfg, frame_id=harness.frame_id)
+
+    with Kernel(dispatcher=dispatcher, cwd=str(harness.workspace)) as kernel:
+        first = kernel.execute(
+            "open('repeat.txt', 'w').write('same')\n"
+            "print(host.save_artifact('repeat.txt')['version_id'])\n",
+            cell_id="cell-explicit-first",
+        )
+        second = kernel.execute(
+            "open('repeat.txt', 'w').write('same')\n"
+            "print(host.save_artifact('repeat.txt')['version_id'])\n",
+            cell_id="cell-explicit-second",
+        )
+
+    assert first["error"] is None and second["error"] is None
+    assert first["stdout"].strip() == second["stdout"].strip()
+    artifact = harness.store.artifact_by_filename(
+        "repeat.txt", harness.frame_id, strict=True
+    )
+    assert len(harness.store.list_versions(artifact["artifact_id"])) == 1
+    observations = harness.store.list_artifact_capture_observations(
+        artifact_id=artifact["artifact_id"]
+    )
+    assert [row["producing_cell_id"] for row in observations] == [
+        "cell-explicit-first",
+        "cell-explicit-second",
+    ]
+    assert observations[-1]["capture_kind"] == CAPTURE_KIND_HEAD_CHECKSUM_REUSED
 
 
 def test_protect_latest_backfills_live_bytes_for_legacy_version(tmp_path):

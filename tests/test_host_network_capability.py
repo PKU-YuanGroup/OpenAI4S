@@ -268,6 +268,40 @@ def test_a_download_reports_a_workspace_relative_path_and_its_digest(
     ).read_bytes() == b"PK\x03\x04payload"
 
 
+def test_download_publishes_through_acquired_parent_after_directory_swap(
+    monkeypatch, tmp_path
+):
+    """The network wait must not reopen a now-symlinked workspace parent."""
+
+    body = b"guarded download body"
+    _stub_urlopen(monkeypatch, lambda _r: _Response(body))
+    workspace = _workspace(tmp_path)
+    live = workspace.workspace() / "downloads"
+    detached = workspace.workspace() / "downloads-detached"
+    outside = tmp_path / "outside-downloads"
+    live.mkdir()
+    outside.mkdir()
+    real_secure_parent = workspace.secure_parent
+
+    def acquire_then_swap(relative, *, create_parents=False):
+        parent = real_secure_parent(relative, create_parents=create_parents)
+        live.rename(detached)
+        live.symlink_to(outside, target_is_directory=True)
+        return parent
+
+    monkeypatch.setattr(workspace, "secure_parent", acquire_then_swap)
+
+    result = WebDownloadTool().execute(
+        workspace,
+        {"url": "https://example.test/archive.bin", "path": "downloads/out.bin"},
+    )
+
+    assert result["path"] == "downloads/out.bin"
+    assert result["sha256"] == hashlib.sha256(body).hexdigest()
+    assert (detached / "out.bin").read_bytes() == body
+    assert not (outside / "out.bin").exists()
+
+
 def test_a_download_streams_instead_of_collecting_the_response(monkeypatch, tmp_path):
     """Checkpoint-sized bodies must not be joined in daemon memory first."""
 

@@ -494,13 +494,26 @@ def test_lineage_unknown_and_save_only_shapes_use_artifact_timestamp():
         "latest_version_id": "orphan-version",
         "created_at": 40,
     }
-    store.versions["orphan-version"] = {"created_at": None}
+    store.versions["orphan-version"] = {
+        "created_at": None,
+        "frame_id": "legacy-delegate",
+    }
     store.inputs["orphan-version"] = [{"version_id": "input-only"}]
     assert service.artifact_lineage("no-cell")["interactions"] == [
         {"kind": "save", "at": "time:40"}
     ]
     assert service.artifact_lineage("no-cell")["dependency_mappings"] == {
         "inputs": ["input-only"]
+    }
+    # Lightweight compatibility stores may predate get_frame(). The optional
+    # producer DTO still preserves the frame identity without crashing or
+    # inventing its kind.
+    assert service.artifact_lineage("no-cell")["producer"] == {
+        "kind": "non_cell",
+        "frame_id": "legacy-delegate",
+        "frame_kind": "unknown",
+        "producing_cell_id": None,
+        "cell_recorded": False,
     }
 
     store.artifacts["no-meta"] = {
@@ -520,7 +533,10 @@ def test_lineage_unknown_and_save_only_shapes_use_artifact_timestamp():
         "latest_version_id": "minimal-version",
         "created_at": 60,
     }
-    store.versions["minimal-version"] = {"producing_cell_id": "minimal-producer"}
+    store.versions["minimal-version"] = {
+        "producing_cell_id": "minimal-producer",
+        "frame_id": "legacy-cell-frame",
+    }
     store.cell_details["minimal-producer"] = {
         "cell_index": 7,
         "status": "failed",
@@ -535,6 +551,34 @@ def test_lineage_unknown_and_save_only_shapes_use_artifact_timestamp():
         "source": "",
         "files_written": [],
         "files_read": [],
+    }
+    assert service.artifact_lineage("minimal-cell")["producer"] == {
+        "kind": "cell",
+        "frame_id": "legacy-cell-frame",
+        "frame_kind": "unknown",
+        "producing_cell_id": "minimal-producer",
+        "cell_recorded": True,
+    }
+
+    store.artifacts["unrecorded-cell"] = {
+        "artifact_id": "unrecorded-cell",
+        "filename": "delegated.txt",
+        "latest_version_id": "unrecorded-version",
+        "created_at": 70,
+    }
+    store.versions["unrecorded-version"] = {
+        "producing_cell_id": "delegated-cell-id",
+        "frame_id": "delegate-frame",
+        "created_at": 71,
+    }
+    unrecorded = service.artifact_lineage("unrecorded-cell")
+    assert unrecorded["interactions"] == [{"kind": "save", "at": "time:71"}]
+    assert unrecorded["producer"] == {
+        "kind": "cell",
+        "frame_id": "delegate-frame",
+        "frame_kind": "unknown",
+        "producing_cell_id": "delegated-cell-id",
+        "cell_recorded": False,
     }
 
 

@@ -89,6 +89,33 @@ EventSink = Callable[[dict], None]
 ReviewStoreProvider = Callable[[], ReviewStore]
 
 
+_LEGACY_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def legacy_auto_mode_selection(
+    store: ReviewStore,
+    root_frame_id: str,
+) -> dict[str, Any] | None:
+    """Map the old per-session Reviewer bool without widening its authority.
+
+    This is deliberately separate from :meth:`ReviewService.auto_enabled`.
+    The legacy manual/after-the-fact Reviewer still inherits the old global
+    setting byte-for-byte.  Auto Mode migration recognizes only the scoped
+    ``review:auto:<root>`` value, maps true to result ``review_only``, and
+    always leaves permission review with the user.
+    """
+
+    raw = store.get_setting(f"review:auto:{root_frame_id}")
+    if raw is None:
+        return None
+    enabled = str(raw or "").strip().lower() in _LEGACY_TRUE
+    return {
+        "preset": "off",
+        "result_review_mode": "review_only" if enabled else "off",
+        "approvals_reviewer": "user",
+    }
+
+
 @dataclass(frozen=True)
 class ReviewPorts:
     """Late-bound gateway providers used by :class:`ReviewService`."""
@@ -684,4 +711,4 @@ class ReviewService:
         return job
 
 
-__all__ = ["ReviewPorts", "ReviewService"]
+__all__ = ["ReviewPorts", "ReviewService", "legacy_auto_mode_selection"]

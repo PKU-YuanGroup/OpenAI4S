@@ -384,8 +384,14 @@ def test_a_restart_does_not_hand_one_sessions_jobs_to_another(
     session_b = ComputeManager(cfg, workspace=ws_b)
     assert job_id not in session_b._jobs, "session B recovered session A's job"
     assert session_b._live_count() == 0
-    with pytest.raises(ComputeError):
+    with pytest.raises(ComputeError) as foreign:
         session_b.result({"job_id": job_id})  # not its job to poll
+    with pytest.raises(ComputeError) as absent:
+        session_b.result({"job_id": "job-never-existed"})
+    assert foreign.value.error_kind == absent.value.error_kind == "not_found"
+    assert str(foreign.value).replace(job_id, "<job_id>") == str(absent.value).replace(
+        "job-never-existed", "<job_id>"
+    )
 
     # Session A restarting adopts its own job.
     session_a_restarted = ComputeManager(cfg, workspace=ws_a)

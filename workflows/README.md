@@ -1,8 +1,9 @@
 # `workflows/`
 
-The versioned science-workflow benchmark's manifests. Ten workflows, 20
-cases, each one a JSON file that declares what a run is supposed to do and what
-counts as having done it.
+The versioned science-workflow benchmark's manifests: ten workflows and 20
+cases, each workflow JSON declaring what a run is supposed to do and what
+counts as having done it. The root-level `next-round-acceptance.json` is a
+separate Stage 0 field/safety pack, not an eleventh science workflow.
 
 They live in the repository rather than in a fixture directory for one reason:
 a case change has to be a reviewable diff. The runner that executes them is
@@ -18,6 +19,7 @@ about the half of the system whose job is to refuse.
 
 | Workflow | What it covers |
 | --- | --- |
+| [`next-round-acceptance.json`](next-round-acceptance.json) | Strict Stage 0 pack for six field paths, seven safety actions, and denominator-explicit baseline metrics |
 | [`artifact-lineage/`](artifact-lineage/README.md) | A derived artifact carries its lineage |
 | [`environment-provenance/`](environment-provenance/README.md) | An artifact's environment provenance |
 | [`environment-transaction/`](environment-transaction/README.md) | plan -> apply -> rollback as a transaction |
@@ -28,3 +30,12 @@ about the half of the system whose job is to refuse.
 | [`remote-compute/`](remote-compute/README.md) | submit -> poll -> harvest against a real shell |
 | [`science-retrieval/`](science-retrieval/README.md) | Scientific retrieval with source evidence |
 | [`telemetry-identity/`](telemetry-identity/README.md) | Revoking telemetry destroys the identity with it |
+
+Replay the strict Stage 0 pack, with a JSON report suitable for a gate, using
+`openai4s benchmark --acceptance --json`. A matching baseline gap is printed as
+`BASELINE`, never as a current capability. The loader freezes the manifest's
+path IDs, claims, execution modes, assertion keys, expected values, and
+canonical content digest under one `pack_version`; a semantic edit without a
+reviewed version/digest is rejected rather than silently changing the baseline.
+The current `2026-08-16.2` manifest requires the Reviewer observation to prove
+that the formal workspace fingerprint remained unchanged.

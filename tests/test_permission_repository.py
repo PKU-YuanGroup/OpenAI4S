@@ -489,6 +489,7 @@ def test_permission_request_rolls_back_when_action_group_is_unknown(tmp_path):
 
 def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
     store = get_store(Config(data_dir=tmp_path).db_path)
+    exact_arguments = [{"server": "lab", "tool": "send", "payload": {"x": 1}}]
     store.create_permission_request(
         decision_id="perm-restart-once",
         root_frame_id="root-1",
@@ -497,6 +498,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
         tool="mcp_call",
         target="lab/send",
         payload={"type": "await_permission"},
+        canonical_arguments=exact_arguments,
     )
     store.resolve_permission_request(
         "perm-restart-once",
@@ -511,6 +513,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
             project_id="science",
             tool="mcp_call",
             target="lab/other",
+            canonical_arguments=exact_arguments,
         )
         is None
     )
@@ -527,6 +530,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
             project_id="science",
             tool="mcp_call",
             target="lab/send",
+            canonical_arguments=exact_arguments,
         )
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -546,6 +550,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
         tool="mcp_call",
         target="lab/expired",
         payload={},
+        canonical_arguments=[{"server": "lab", "tool": "expired"}],
     )
     store.resolve_permission_request(
         "perm-restart-expired",
@@ -560,12 +565,129 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
             project_id="science",
             tool="mcp_call",
             target="lab/expired",
+            canonical_arguments=[{"server": "lab", "tool": "expired"}],
             consumed_at=2,
         )
         is None
     )
     assert (
         store.get_permission_request("perm-restart-expired")["continuation_consumed_at"]
+        is None
+    )
+
+
+def test_restart_once_grant_hashes_the_complete_untruncated_arguments(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    common_prefix = "same-visible-prefix-" + ("x" * 20_000)
+    exact_arguments = [
+        {"server": "lab", "tool": "send", "payload": common_prefix + "A"}
+    ]
+    colliding_projection = [
+        {"server": "lab", "tool": "send", "payload": common_prefix + "B"}
+    ]
+    shared_ui_payload = {
+        "type": "await_permission",
+        "preview": common_prefix[:1024],
+        "truncated": True,
+    }
+    created = store.create_permission_request(
+        decision_id="perm-long-exact",
+        root_frame_id="root-long",
+        frame_id="root-long",
+        project_id="science",
+        tool="mcp_call",
+        target="lab/send",
+        payload=shared_ui_payload,
+        canonical_arguments=exact_arguments,
+    )
+    store.resolve_permission_request(
+        "perm-long-exact",
+        state="allowed",
+        scope="once",
+        resolution_context="after_restart",
+    )
+    store.activate_restart_permission_continuation(
+        "perm-long-exact", expires_at=9_999_999_999_999
+    )
+
+    assert (
+        store.consume_restart_permission_grant(
+            root_frame_id="root-long",
+            project_id="science",
+            tool="mcp_call",
+            target="lab/send",
+            canonical_arguments=colliding_projection,
+        )
+        is None
+    )
+    assert (
+        store.get_permission_request("perm-long-exact")["continuation_consumed_at"]
+        is None
+    )
+    consumed = store.consume_restart_permission_grant(
+        root_frame_id="root-long",
+        project_id="science",
+        tool="mcp_call",
+        target="lab/send",
+        canonical_arguments=exact_arguments,
+    )
+    assert consumed is not None
+    assert consumed["decision_id"] == created["decision_id"]
+
+
+def test_restart_once_grant_fails_closed_when_stored_action_hash_is_corrupt(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    exact_arguments = [{"path": "result.txt", "content": "exact bytes"}]
+    store.create_permission_request(
+        decision_id="perm-corrupt-envelope",
+        root_frame_id="root-corrupt",
+        frame_id="root-corrupt",
+        project_id="science",
+        tool="write_file",
+        target="result.txt",
+        side_effect_class="workspace_write",
+        resource_keys=["workspace:result.txt"],
+        payload={"type": "await_permission"},
+        canonical_arguments=exact_arguments,
+    )
+    store.resolve_permission_request(
+        "perm-corrupt-envelope",
+        state="allowed",
+        scope="once",
+        resolution_context="after_restart",
+    )
+    store.activate_restart_permission_continuation(
+        "perm-corrupt-envelope", expires_at=9_999_999_999_999
+    )
+
+    # Simulate storage corruption below the SQL immutability boundary. Normal
+    # application writes cannot perform this update because the trigger aborts.
+    store._conn.execute("DROP TRIGGER trg_permission_action_immutable")
+    store._conn.execute(
+        "UPDATE permission_requests SET canonical_arguments_sha256=? "
+        "WHERE decision_id='perm-corrupt-envelope'",
+        ("0" * 64,),
+    )
+    store._conn.commit()
+
+    with pytest.raises(ValueError, match="digest is invalid"):
+        store.permission_request_action_digest("perm-corrupt-envelope")
+    assert (
+        store.consume_restart_permission_grant(
+            root_frame_id="root-corrupt",
+            project_id="science",
+            tool="write_file",
+            target="result.txt",
+            side_effect_class="workspace_write",
+            resource_keys=["workspace:result.txt"],
+            canonical_arguments=exact_arguments,
+        )
+        is None
+    )
+    assert (
+        store.get_permission_request("perm-corrupt-envelope")[
+            "continuation_consumed_at"
+        ]
         is None
     )
 

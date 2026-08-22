@@ -101,6 +101,140 @@ def test_an_unchanged_spec_plans_to_do_nothing(store, tmp_path):
     assert plan.from_generation == store.current_id("python")
 
 
+def test_a_current_rollback_eligible_superseded_generation_can_be_a_noop(
+    store, tmp_path
+):
+    spec = _spec(tmp_path)
+    generation = _apply(store, spec).generation
+    manifest = store.root / "python" / "generations" / generation.id / "manifest.json"
+    record = json.loads(manifest.read_text("utf-8"))
+    record["state"] = eg.SUPERSEDED
+    manifest.write_text(json.dumps(record), encoding="utf-8")
+
+    plan = store.plan("python", spec, tool="fake-conda")
+
+    assert plan.action == eg.NOOP
+    assert store.apply(
+        plan,
+        spec,
+        tool="fake-conda",
+        build=_build,
+        verify=_verify,
+    ).ok
+
+
+def test_an_explicit_repair_replaces_even_when_the_spec_is_unchanged(store, tmp_path):
+    spec = _spec(tmp_path)
+    current = _apply(store, spec).generation
+
+    plan = store.plan("python", spec, tool="fake-conda", force_replace=True)
+
+    assert plan.action == eg.REPLACE and plan.changes
+    assert plan.from_generation == current.id
+    assert plan.spec_sha256 == current.spec_sha256
+    assert "explicit repair" in plan.reason
+
+
+@pytest.mark.parametrize("damage", ["dangling", "corrupt_manifest"])
+def test_an_explicit_repair_converges_from_a_broken_current_pointer(
+    store, tmp_path, damage
+):
+    """Repair replaces a broken pointer instead of losing its CAS baseline."""
+
+    spec = _spec(tmp_path)
+    env_dir = store.root / "python"
+    env_dir.mkdir(parents=True)
+    broken_id = "env-broken"
+    (env_dir / "current").write_text(broken_id + "\n", encoding="utf-8")
+    if damage == "corrupt_manifest":
+        generation = env_dir / "generations" / broken_id
+        generation.mkdir(parents=True)
+        (generation / "manifest.json").write_text("{not-json", encoding="utf-8")
+
+    plan = store.plan("python", spec, tool="fake-conda", force_replace=True)
+    assert plan.action == eg.REPLACE
+    assert plan.from_generation == broken_id
+
+    result = store.apply(
+        plan,
+        spec,
+        tool="fake-conda",
+        build=_build,
+        verify=_verify,
+    )
+
+    assert result.ok is True
+    assert result.previous == broken_id
+    assert result.generation is not None
+    assert store.current_id("python") == result.generation.id
+    assert store.current("python").state == eg.READY
+
+
+def test_repair_refuses_when_a_broken_pointer_changes_after_planning(store, tmp_path):
+    """Two different invalid pointers are still different CAS states."""
+
+    spec = _spec(tmp_path)
+    env_dir = store.root / "python"
+    env_dir.mkdir(parents=True)
+    pointer = env_dir / "current"
+    pointer.write_text("../../outside-one\n", encoding="utf-8")
+    plan = store.plan("python", spec, tool="fake-conda", force_replace=True)
+    assert plan.from_generation is None
+    pointer.write_text("../../outside-two\n", encoding="utf-8")
+
+    with pytest.raises(eg.ConcurrentApply, match="pointer changed"):
+        store.apply(
+            plan,
+            spec,
+            tool="fake-conda",
+            build=_build,
+            verify=_verify,
+        )
+
+
+@pytest.mark.parametrize("symlink_layer", ["environment", "generations"])
+def test_apply_never_follows_a_managed_layout_symlink_outside_the_store(
+    store, tmp_path, symlink_layer
+):
+    """A layout swap after plan fails before lock/build/pointer writes."""
+
+    spec = _spec(tmp_path)
+    plan = store.plan("python", spec, tool="fake-conda", force_replace=True)
+    outside = tmp_path / "outside-managed-tree"
+    outside.mkdir()
+    env_dir = store.root / "python"
+    store.root.mkdir(parents=True, exist_ok=True)
+    if symlink_layer == "environment":
+        env_dir.symlink_to(outside, target_is_directory=True)
+    else:
+        env_dir.mkdir()
+        (env_dir / "generations").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(eg.EnvironmentError_, match="managed layout.*unsafe"):
+        store.apply(
+            plan,
+            spec,
+            tool="fake-conda",
+            build=_build,
+            verify=_verify,
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_plan_refuses_an_existing_managed_layout_symlink(store, tmp_path):
+    spec = _spec(tmp_path)
+    outside = tmp_path / "outside-environment"
+    outside.mkdir()
+    store.root.mkdir(parents=True, exist_ok=True)
+    (store.root / "python").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(eg.EnvironmentError_, match="managed layout.*unsafe"):
+        store.plan("python", spec, tool="fake-conda", force_replace=True)
+
+    assert list(outside.iterdir()) == []
+
+
 def test_a_changed_spec_plans_a_replacement(store, tmp_path):
     spec = _spec(tmp_path)
     first = _apply(store, spec)
@@ -216,6 +350,84 @@ def test_a_verify_that_refuses_fails_the_apply(tmp_path):
 
     assert result.ok is False
     assert store.current_id("python") is None
+
+
+@pytest.mark.parametrize(
+    ("name", "language", "required_count"),
+    (("python", "python", 32), ("r", "r", 8)),
+)
+def test_standard_verification_requires_the_complete_shipped_package_set(
+    tmp_path, monkeypatch, name, language, required_count
+):
+    from openai4s import pkgscan
+    from openai4s.kernel.readiness import load_standard_profile_requirements
+
+    prefix = tmp_path / name
+    prefix.mkdir()
+    requirements = load_standard_profile_requirements()[name]
+    assert len(requirements) == required_count
+    installed = set(requirements)
+    calls = []
+
+    monkeypatch.setattr(
+        eg,
+        "probe_interpreter",
+        lambda candidate: (str(candidate / "bin" / name), ["recorded==1"]),
+    )
+
+    def scan(candidate, *, language):
+        calls.append((candidate, language))
+        return set(installed)
+
+    monkeypatch.setattr(pkgscan, "collect_packages", scan)
+
+    assert eg.verify_standard_environment(prefix, name) == (
+        str(prefix / "bin" / name),
+        ["recorded==1"],
+    )
+    assert calls == [(prefix, language)]
+
+    missing = requirements[-1]
+    installed.remove(missing)
+    with pytest.raises(eg.EnvironmentError_, match=missing):
+        eg.verify_standard_environment(prefix, name)
+
+
+def test_a_repair_with_missing_standard_packages_keeps_the_old_pointer(
+    store, tmp_path, monkeypatch
+):
+    from openai4s import pkgscan
+    from openai4s.kernel.readiness import load_standard_profile_requirements
+
+    spec = _spec(tmp_path)
+    current = _apply(store, spec).generation
+    requirements = set(load_standard_profile_requirements()["python"])
+    requirements.remove("numpy")
+    monkeypatch.setattr(
+        eg,
+        "probe_interpreter",
+        lambda prefix: (str(prefix / "bin" / "python"), []),
+    )
+    monkeypatch.setattr(
+        pkgscan,
+        "collect_packages",
+        lambda prefix, *, language: set(requirements),
+    )
+
+    repair = store.plan("python", spec, tool="fake-conda", force_replace=True)
+    result = store.apply(
+        repair,
+        spec,
+        tool="fake-conda",
+        build=_build,
+        verify=lambda prefix: eg.verify_standard_environment(prefix, "python"),
+    )
+
+    assert result.ok is False
+    assert "numpy" in result.detail
+    assert result.previous == current.id
+    assert store.current_id("python") == current.id
+    assert store.current("python").id == current.id
 
 
 def test_a_build_that_raises_before_running_still_reports(tmp_path):
@@ -507,6 +719,40 @@ def test_the_cli_apply_dry_run_changes_nothing(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / "data" / "environments" / "python" / "current").exists()
 
 
+def test_the_cli_repair_flag_plans_and_applies_a_fresh_generation(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("OPENAI4S_DATA_DIR", str(tmp_path / "data"))
+
+    def runner(argv, cwd):
+        prefix = Path(argv[argv.index("--prefix") + 1])
+        (prefix / "bin").mkdir(parents=True, exist_ok=True)
+        (prefix / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+        return _completed()
+
+    cli = _cli_module()
+    monkeypatch.setattr(cli, "_find_conda_tool", lambda: "fake-conda")
+    monkeypatch.setattr("openai4s.kernel.env_generations._default_runner", runner)
+    monkeypatch.setattr(
+        cli,
+        "_env_verify",
+        lambda prefix, *, name=None: (str(prefix / "bin" / "python"), []),
+    )
+
+    assert _cli(["env", "apply", "python"], capsys)[0] == 0
+    store = eg.EnvironmentStore(tmp_path / "data" / "environments")
+    first = store.current_id("python")
+
+    code, out = _cli(["env", "plan", "python", "--repair", "--json"], capsys)
+    assert code == 0
+    assert json.loads(out.out)[0]["action"] == eg.REPLACE
+
+    assert _cli(["env", "apply", "python", "--repair"], capsys)[0] == 0
+    second = store.current_id("python")
+    assert second and second != first
+    assert len(store.list("python")) == 2
+
+
 def test_the_cli_reports_a_failed_apply_without_moving_the_pointer(
     tmp_path, monkeypatch, capsys
 ):
@@ -536,7 +782,11 @@ def test_the_cli_lists_generations_and_the_current_one(tmp_path, monkeypatch, ca
 
     monkeypatch.setattr(_cli_module(), "_find_conda_tool", lambda: "fake-conda")
     monkeypatch.setattr("openai4s.kernel.env_generations._default_runner", runner)
-    monkeypatch.setattr(_cli_module(), "_env_verify", lambda prefix: (str(prefix), []))
+    monkeypatch.setattr(
+        _cli_module(),
+        "_env_verify",
+        lambda prefix, *, name=None: (str(prefix), []),
+    )
     assert _cli(["env", "apply", "python"], capsys)[0] == 0
 
     code, out = _cli(["env", "list", "python", "--json"], capsys)

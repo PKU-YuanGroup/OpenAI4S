@@ -127,11 +127,21 @@ class ScienceConnectorService:
         # A fetch may answer with the content alone, or with a mapping that
         # also describes the raw response bytes. See _retrieve.
         fetch: Callable[[str, str, float, int], str | Mapping[str, Any]] | None = None,
+        *,
+        stage10: bool = False,
     ) -> None:
         self._fetch = fetch or self._default_fetch
         # Upstream responses observed during the call in flight. Reset per
         # search so one query never inherits another's provenance.
         self._responses: list[dict[str, Any]] = []
+        self._stage10 = bool(stage10)
+
+    def _catalog(self) -> tuple[ScienceDatabase, ...]:
+        if not self._stage10:
+            return DATABASES
+        from openai4s.host.stage10_science import STAGE10_DATABASES
+
+        return DATABASES + STAGE10_DATABASES
 
     def list_databases(self, domain: str = "all") -> dict[str, Any]:
         selected = str(domain or "all").strip().lower()
@@ -142,7 +152,7 @@ class ScienceConnectorService:
             )
         databases = [
             database.public()
-            for database in DATABASES
+            for database in self._catalog()
             if selected == "all" or selected in database.domains
         ]
         return {
@@ -169,11 +179,11 @@ class ScienceConnectorService:
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         database_id = str(database or "").strip().lower()
-        metadata = _DATABASE_BY_ID.get(database_id)
+        metadata = {item.id: item for item in self._catalog()}.get(database_id)
         if metadata is None:
+            known = ", ".join(item.id for item in self._catalog())
             raise ScienceConnectorError(
-                f"unknown scientific database {database_id!r}; choose one of: "
-                + ", ".join(_DATABASE_BY_ID)
+                f"unknown scientific database {database_id!r}; choose one of: " + known
             )
         normalized_query = " ".join(str(query or "").split())
         if not normalized_query:
@@ -201,7 +211,18 @@ class ScienceConnectorService:
                 + ", ".join(unsupported_filters)
             )
 
-        adapter = getattr(self, f"_search_{database_id}")
+        adapter = getattr(self, f"_search_{database_id}", None)
+        if adapter is None and self._stage10:
+            from openai4s.host.stage10_science import SEARCHERS
+
+            searcher = SEARCHERS.get(database_id)
+            if searcher is not None:
+
+                def adapter(*args, _search=searcher):
+                    return _search(self, *args)
+
+        if adapter is None:
+            raise ScienceConnectorError(f"unknown scientific database {database_id!r}")
         self._responses = []
         retrieved_at = int(time.time() * 1000)
         try:

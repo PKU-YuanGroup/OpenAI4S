@@ -19,7 +19,7 @@ from dataclasses import replace as dataclasses_replace
 import pytest
 
 from openai4s import doctor
-from openai4s.config import Config, LLMConfig
+from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 
 
 @pytest.fixture
@@ -368,6 +368,91 @@ def test_a_fresh_install_with_only_the_base_env_recommends_setup(cfg, monkeypatc
     assert "no prebuilt environment" in check["detail"]
     assert check["remedy"], "a fresh install must be told to run setup"
     assert check["facts"]["prebuilt_environments"] == 0
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_status"),
+    [("ready", doctor.OK), ("needs_repair", doctor.FAIL)],
+)
+def test_stage1_doctor_runtime_uses_the_same_readiness_gate(
+    cfg, monkeypatch, state, expected_status
+):
+    enabled = dataclasses_replace(
+        cfg,
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    ready = state == "ready"
+    plan = ["openai4s", "env", "plan", "python", "r", "--repair"]
+    apply = ["openai4s", "env", "apply", "python", "r", "--repair"]
+    projection = {
+        "schema_version": 1,
+        "enabled": True,
+        "profile": "standard",
+        "state": state,
+        "ready": ready,
+        "reason": None if ready else "environment_incomplete",
+        "checked_locally": True,
+        "network_contacted": False,
+        "mutation_performed": False,
+        "requirements_digest": "sha256:" + "c" * 64,
+        "required_environments": ["python", "r"],
+        "missing_environments": [],
+        "missing_packages": {} if ready else {"python": ["numpy"]},
+        "environments": [],
+        "remediation": (
+            None
+            if ready
+            else {
+                "kind": "managed_generation_repair",
+                "plan_argv": plan,
+                "apply_argv": apply,
+                "commands": [
+                    {"label": "plan", "argv": plan, "command": " ".join(plan)},
+                    {"label": "apply", "argv": apply, "command": " ".join(apply)},
+                ],
+                "requires_explicit_action": True,
+            }
+        ),
+    }
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        lambda **_kwargs: projection,
+    )
+
+    check = doctor._runtime(enabled)
+
+    assert check.status == expected_status
+    assert check.facts["standard_profile_readiness"] is projection
+    if ready:
+        assert "standard profile ready" in check.detail
+    else:
+        assert "python: numpy" in check.detail
+        assert "openai4s env plan python r --repair" in check.detail
+        assert "openai4s env apply python r --repair" in check.detail
+
+
+def test_flag_off_doctor_preserves_legacy_runtime_probe(cfg, monkeypatch):
+    def forbidden_readiness(**_kwargs):
+        raise AssertionError("flag-off doctor performed the Stage 1 readiness probe")
+
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        forbidden_readiness,
+    )
+    monkeypatch.setattr(
+        "openai4s.kernel.environments.discover_environments",
+        lambda *args, **kwargs: [types.SimpleNamespace(name="base", rscript=None)],
+    )
+    monkeypatch.setattr(
+        "openai4s.kernel.r_kernel.resolve_r_interpreter",
+        lambda *args, **kwargs: None,
+    )
+
+    check = doctor._runtime(cfg)
+
+    assert check.status == doctor.WARN
+    assert "standard_profile_readiness" not in check.facts
+    assert check.facts["prebuilt_environments"] == 0
 
 
 def test_a_remote_endpoint_without_a_key_still_fails(cfg, monkeypatch):

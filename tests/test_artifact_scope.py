@@ -75,6 +75,7 @@ def test_root_capture_finalizes_child_provenance_without_changing_producer(tmp_p
         checksum="same",
         producing_cell_id="cell-child",
         frame_id=child,
+        reuse_matching_head=True,
     )
     capture = store.record_cell_artifact(
         path=str(path),
@@ -86,6 +87,7 @@ def test_root_capture_finalizes_child_provenance_without_changing_producer(tmp_p
         frame_id=root,
         root_frame_id=root,
         project_id="project-science",
+        reuse_matching_head=True,
     )
 
     assert capture["artifact_id"] == provenance["artifact_id"]
@@ -95,6 +97,11 @@ def test_root_capture_finalizes_child_provenance_without_changing_producer(tmp_p
     assert artifact["root_frame_id"] == root
     assert artifact["project_id"] == "project-science"
     assert metadata["frame_id"] == child
+    observations = store.list_artifact_capture_observations(
+        version_id=provenance["version_id"]
+    )
+    assert len(observations) == 1
+    assert observations[0]["frame_id"] == child
 
 
 def test_artifact_rejects_version_from_different_root(tmp_path):
@@ -431,9 +438,9 @@ def test_materialising_a_sibling_session_artifact_copies_identity_not_the_bytes(
     gives the target its own Artifact and version plus an edge back, so the
     question keeps an answer that does not depend on the other session.
 
-    The bytes are shared by hardlink. A version snapshot is immutable by
-    contract, so two rows may name one inode, and a materialised multi-gigabyte
-    dataset costs a directory entry rather than a second copy.
+    The bytes are copied into a private immutable snapshot.  Sharing an inode
+    would violate the exact reader's nlink invariant and let one writable alias
+    rewrite both version identities behind their recorded checksums.
     """
     cfg = _config(tmp_path)
     store = get_store(cfg.db_path)
@@ -459,7 +466,7 @@ def test_materialising_a_sibling_session_artifact_copies_identity_not_the_bytes(
     inputs = store.lineage_inputs(result["version_id"])
     assert [row["version_id"] for row in inputs] == [seeded["version_id"]]
 
-    # One inode, two names: shared, not duplicated.
+    # Each version owns one private inode; the bytes and lineage still agree.
     source_snapshot = Path(store.version_meta(seeded["version_id"])["snapshot_path"])
     target_snapshot = Path(
         result["snapshot_path"]
@@ -467,7 +474,8 @@ def test_materialising_a_sibling_session_artifact_copies_identity_not_the_bytes(
         else store.version_meta(result["version_id"])["snapshot_path"]
     )
     assert target_snapshot.read_bytes() == payload
-    assert source_snapshot.stat().st_ino == target_snapshot.stat().st_ino
+    assert source_snapshot.stat().st_ino != target_snapshot.stat().st_ino
+    assert source_snapshot.stat().st_nlink == target_snapshot.stat().st_nlink == 1
 
 
 def test_a_version_in_another_project_is_indistinguishable_from_one_that_is_absent(
@@ -525,7 +533,9 @@ def test_a_version_whose_frozen_bytes_are_gone_says_so(tmp_path):
     Path(store.version_meta(seeded["version_id"])["snapshot_path"]).unlink()
 
     service = _materialisation_service(cfg, store, target_root, tmp_path / "ws2")
-    with pytest.raises(FileNotFoundError, match="no frozen snapshot"):
+    from openai4s.artifact_restore import ArtifactRestoreRefused
+
+    with pytest.raises(ArtifactRestoreRefused, match="snapshot is unavailable"):
         service.materialise_artifact({"version_id": seeded["version_id"]})
 
 

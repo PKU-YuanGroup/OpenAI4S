@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,6 +77,21 @@ def _put(daemon, path: str, cookie: str, body: dict):
     payload = json.dumps(body).encode()
     lines = [
         f"PUT {path} HTTP/1.1",
+        f"Host: 127.0.0.1:{daemon.port}",
+        f"Cookie: {cookie}",
+        "Content-Type: application/json",
+        f"Content-Length: {len(payload)}",
+        "Connection: close",
+    ]
+    return _speak(
+        daemon.port, ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + payload
+    )
+
+
+def _patch(daemon, path: str, cookie: str, body: dict):
+    payload = json.dumps(body).encode()
+    lines = [
+        f"PATCH {path} HTTP/1.1",
         f"Host: 127.0.0.1:{daemon.port}",
         f"Cookie: {cookie}",
         "Content-Type: application/json",
@@ -182,10 +198,14 @@ def test_project_member_cannot_control_another_members_kernel(daemon):
     daemon.runner.start_kernel = lambda *args, **kwargs: called.append("start")
     daemon.runner.set_env = lambda *args, **kwargs: called.append("env")
     daemon.runner.interrupt_kernel = lambda *args, **kwargs: called.append("interrupt")
+    daemon.runner.submit_repl = lambda *args, **kwargs: (
+        called.append("execute") or SimpleNamespace(wait_result=lambda: {"ok": True})
+    )
 
     # Positive control: Bob is a real project member and may read the session.
     assert _get(daemon.port, f"/api/v1/frames/{fid}", cookie=bob)[0] == 200
     for suffix, body in (
+        ("execute", {"code": "print('must not run')", "wait": True}),
         ("restart", {}),
         ("stop", {}),
         ("start", {}),
@@ -207,6 +227,148 @@ def test_project_member_cannot_control_another_members_kernel(daemon):
 
 
 @pytest.mark.stubbed_backend
+def test_project_member_cannot_destroy_or_rewrite_another_members_session(daemon):
+    """Project read visibility grants no destructive lifecycle authority."""
+
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
+    fid = _create_session(daemon, alice)
+
+    called = []
+    daemon.runner.execute_recovery_action = lambda *args, **kwargs: (
+        called.append("recovery") or {"ok": True}
+    )
+    daemon.runner.activate_session_branch = lambda *args, **kwargs: (
+        called.append("activate") or {"ok": True}
+    )
+    daemon.runner.mutate_session_domain = lambda *args, **kwargs: (
+        called.append(str(kwargs.get("operation"))) or {"ok": True}
+    )
+    daemon.runner.delete_session = lambda *args, **kwargs: called.append("delete")
+
+    for suffix, body in (
+        ("recovery/actions/restart_fresh", {"confirm": True}),
+        ("branches/branch-victim/activate", {}),
+        ("revert/apply", {"target_checkpoint_id": "checkpoint-victim"}),
+        ("revert/undo", {"revert_checkpoint_id": "checkpoint-victim"}),
+    ):
+        status, raw = _post(
+            daemon.port,
+            f"/api/v1/frames/{fid}/{suffix}",
+            body,
+            cookie=bob,
+        )
+        assert status == 403, (suffix, raw[:200])
+        assert _body(raw).get("code") == "owner_only"
+    status, raw = _delete(daemon, f"/api/v1/frames/{fid}", bob)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+
+    assert called == [], "a refused member must not reach a destructive sink"
+
+
+@pytest.mark.stubbed_backend
+def test_project_visible_session_is_read_only_to_other_members(daemon):
+    """Every frame-scoped write defaults to owner/admin, including new routes."""
+
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
+    fid = _create_session(daemon, alice)
+
+    # Read access and the sole POST-shaped read stay available.
+    assert _get(daemon.port, f"/api/v1/frames/{fid}", cookie=bob)[0] == 200
+    daemon.runner.session_domain.revert_preview = lambda *args, **kwargs: {
+        "ok": True,
+        "read_only": True,
+    }
+    status, raw = _post(
+        daemon.port,
+        f"/api/v1/frames/{fid}/revert/preview",
+        {"target_checkpoint_id": "checkpoint-visible"},
+        cookie=bob,
+    )
+    assert status == 200, raw[:200]
+
+    post_routes = (
+        ("message", {"request": "must not run"}),
+        ("review-settings", {"auto_review": True}),
+        ("review", {}),
+        (
+            "cancel",
+            {
+                "execution_id": "victim-run",
+                "owner": {"kind": "agent", "id": "victim"},
+            },
+        ),
+        ("decision", {"decision_id": "victim", "allow": True}),
+        ("feedback", {"key": "victim", "rating": "down"}),
+        ("plan/approve", {}),
+        ("annotations", {"artifact_id": "victim", "body": "inject"}),
+        ("artifacts/promote", {"cell_id": "victim"}),
+        ("checkpoints", {"reason": "planted"}),
+        ("branches/fork", {"from_checkpoint_id": "victim"}),
+        ("shares", {}),
+        ("delegations/victim/stop", {}),
+        ("compute/tasks/victim/refresh", {}),
+    )
+    for suffix, body in post_routes:
+        status, raw = _post(
+            daemon.port,
+            f"/api/v1/frames/{fid}/{suffix}",
+            body,
+            cookie=bob,
+        )
+        assert status == 403, (suffix, raw[:200])
+        assert _body(raw).get("code") == "owner_only"
+
+    for suffix, body in (
+        ("", {"name": "planted"}),
+        ("auto-mode", {"selection": "auto_fix"}),
+    ):
+        status, raw = _patch(
+            daemon,
+            f"/api/v1/frames/{fid}{('/' + suffix) if suffix else ''}",
+            bob,
+            body,
+        )
+        assert status == 403, (suffix, raw[:200])
+        assert _body(raw).get("code") == "owner_only"
+
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/permissions",
+        {
+            "scope": "conversation",
+            "scope_id": fid,
+            "tool": "*",
+            "decision": "allow",
+        },
+        cookie=bob,
+    )
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/permissions",
+        {
+            "scope": "conversation",
+            "scope_id": fid,
+            "tool": "read_file",
+            "decision": "ask",
+        },
+        cookie=alice,
+    )
+    assert status == 200, raw[:200]
+
+
+@pytest.mark.stubbed_backend
 @pytest.mark.parametrize(
     "username,password", [("alice", "fake-pw-a"), ("root", "fake-pw-r")]
 )
@@ -221,8 +383,12 @@ def test_owner_and_admin_may_control_a_session_kernel(daemon, username, password
     daemon.runner.start_kernel = lambda *args, **kwargs: {"ok": True}
     daemon.runner.set_env = lambda *args, **kwargs: {"ok": True}
     daemon.runner.interrupt_kernel = lambda *args, **kwargs: {"ok": True}
+    daemon.runner.submit_repl = lambda *args, **kwargs: SimpleNamespace(
+        wait_result=lambda: {"ok": True}
+    )
 
     for suffix, body in (
+        ("execute", {"code": "print('allowed')", "wait": True}),
         ("restart", {}),
         ("stop", {}),
         ("start", {}),
@@ -239,6 +405,51 @@ def test_owner_and_admin_may_control_a_session_kernel(daemon, username, password
             cookie=caller,
         )
         assert status == 200, (username, suffix, raw[:200])
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "username,password", [("alice", "fake-pw-a"), ("root", "fake-pw-r")]
+)
+def test_owner_and_admin_may_mutate_a_session_lifecycle(daemon, username, password):
+    alice = _login(daemon, "alice", "fake-pw-a")
+    caller = _login(daemon, username, password)
+    fid = _create_session(daemon, alice)
+
+    called = []
+    daemon.runner.execute_recovery_action = lambda *args, **kwargs: (
+        called.append("recovery") or {"ok": True}
+    )
+    daemon.runner.activate_session_branch = lambda *args, **kwargs: (
+        called.append("activate") or {"ok": True}
+    )
+    daemon.runner.mutate_session_domain = lambda *args, **kwargs: (
+        called.append(str(kwargs.get("operation"))) or {"ok": True}
+    )
+    daemon.runner.delete_session = lambda *args, **kwargs: called.append("delete")
+
+    for suffix, body in (
+        ("recovery/actions/restart_fresh", {"confirm": True}),
+        ("branches/branch-owner/activate", {}),
+        ("revert/apply", {"target_checkpoint_id": "checkpoint-owner"}),
+        ("revert/undo", {"revert_checkpoint_id": "checkpoint-owner"}),
+    ):
+        status, raw = _post(
+            daemon.port,
+            f"/api/v1/frames/{fid}/{suffix}",
+            body,
+            cookie=caller,
+        )
+        assert status == 200, (username, suffix, raw[:200])
+    status, raw = _delete(daemon, f"/api/v1/frames/{fid}", caller)
+    assert status == 200, (username, raw[:200])
+    assert called == [
+        "recovery",
+        "activate",
+        "revert_session",
+        "undo_revert",
+        "delete",
+    ]
 
 
 @pytest.mark.stubbed_backend
@@ -322,7 +533,14 @@ def test_admin_ws_subscribe_to_private_session_is_audited(daemon):
 def test_visibility_toggle_is_owner_only_over_http(daemon):
     a = _login(daemon, "alice", "fake-pw-a")
     b = _login(daemon, "bob", "fake-pw-b")
+    r = _login(daemon, "root", "fake-pw-r")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
     fid = _create_session(daemon, a)
+    # Bob can see the project Session, but only its owner controls D4
+    # visibility. Admin is intentionally not an owner substitute here either.
+    assert _get(daemon.port, f"/api/v1/frames/{fid}", cookie=b)[0] == 200
     status, _ = _post(
         daemon.port,
         f"/api/v1/frames/{fid}/visibility",
@@ -330,6 +548,39 @@ def test_visibility_toggle_is_owner_only_over_http(daemon):
         cookie=b,
     )
     assert status == 404
+    status, _ = _post(
+        daemon.port,
+        f"/api/v1/frames/{fid}/visibility",
+        {"visibility": "private"},
+        cookie=r,
+    )
+    assert status == 404
+
+    # Authorization precedes semantic and JSON parsing. Otherwise a guessed
+    # Session answers 400 only when it exists, leaking the ownership row.
+    status, _ = _post(
+        daemon.port,
+        f"/api/v1/frames/{fid}/visibility",
+        {"visibility": "bogus"},
+        cookie=b,
+    )
+    assert status == 404
+    malformed = b"{"
+    lines = [
+        f"POST /api/v1/frames/{fid}/visibility HTTP/1.1",
+        f"Host: 127.0.0.1:{daemon.port}",
+        f"Cookie: {b}",
+        "Content-Type: application/json",
+        f"Content-Length: {len(malformed)}",
+        "Connection: close",
+    ]
+    status, raw = _speak(
+        daemon.port,
+        ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + malformed,
+    )
+    assert status == 404, raw[:200]
+    assert _body(raw).get("code") != "malformed_json"
+
     status, _ = _post(
         daemon.port,
         f"/api/v1/frames/{fid}/visibility",

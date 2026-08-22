@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -235,6 +236,13 @@ class Agent:
     # in its parent session's workspace, not in the daemon's launch directory;
     # unset falls back to os.getcwd(), which is the CLI contract.
     workspace: str | Path | None = None
+    # Optional runtime observation owned by the embedding Web session.  A
+    # delegated Agent shares that session's workspace, so its Cell writes must
+    # be captured under the child's frame before the parent's outer sweep.
+    cell_execution_hooks: object | None = field(default=None, repr=False)
+    delegated_cell_hooks_factory: Callable[[str], object] | None = field(
+        default=None, repr=False
+    )
     _recorder: object | None = field(default=None, repr=False)
     # persistent R kernel for ```r cells — spawned lazily on first use,
     # retargeted when host.env.use() picks an R-only env, shut down with the run
@@ -278,6 +286,7 @@ class Agent:
                     parent_frame_id=self.frame_id,
                     store=self.dispatcher.store,
                     workspace=self.workspace,
+                    cell_hooks_factory=self.delegated_cell_hooks_factory,
                 )
                 self._delegation_runner = runner
                 self.dispatcher._delegate_fn = runner
@@ -377,6 +386,25 @@ class Agent:
                 self._log(f"[biosecurity] ESCALATE (advisory): {screen.reason}")
         return None
 
+    def _admit_cell(self, _action: object) -> None:
+        """Fail closed on standard-profile readiness before any local runtime.
+
+        This is deliberately a Cell boundary, not a task boundary: native
+        control tools and ``finalize_response`` do not need a Python/R worker
+        and must retain the ``LazyKernel`` zero-spawn contract.
+        """
+
+        if not self.cfg.roadmap_features.stage1_trusted_delivery:
+            return
+        from openai4s.kernel.readiness import (
+            EnvironmentReadinessError,
+            standard_profile_readiness,
+        )
+
+        readiness = standard_profile_readiness(enabled=True)
+        if readiness.get("ready") is not True:
+            raise EnvironmentReadinessError(readiness)
+
     def run(self, task: str) -> dict:
         """Run one task through the shared engine and local runtime adapters."""
         assert self.dispatcher is not None
@@ -459,6 +487,8 @@ class Agent:
                         self.dispatcher,
                         self._pre_exec_gate,
                         self._execute_r,
+                        admit_cell=self._admit_cell,
+                        cell_hooks=self.cell_execution_hooks,
                         log=self._log,
                         tool_catalog=tool_catalog,
                         prose_nudge=prose_nudge,
@@ -505,6 +535,7 @@ class Agent:
             provider=getattr(self.cfg.llm, "provider", None),
             model=getattr(self.cfg.llm, "model", None),
             tool_resolver=tool_catalog.get,
+            tool_policy_resolver=getattr(self.dispatcher, "control_tool_policy", None),
         )
         ledger.append_user({"role": "user", "content": task})
         return ledger
@@ -650,3 +681,113 @@ def _extract_code(text: str) -> str | None:
 
 def run_task(task: str, *, verbose: bool = False, cfg: Config | None = None) -> dict:
     return Agent(cfg=cfg or get_config(), verbose=verbose).run(task)
+
+
+#: Environment this process sets for `openai4s run --auto`. Named rather than
+#: inlined so the CLI can report exactly what the flag turned on: a run that
+#: silently widens its own authority is the thing Auto Mode is supposed to
+#: prevent, so the flag says so in its output.
+AUTO_RUN_ENVIRONMENT = {
+    "OPENAI4S_AUTO_MODE": "autonomous",
+    "OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW": "1",
+    "OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT": "1",
+}
+
+
+def enable_auto_run_environment(
+    environ: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Turn on autonomous Auto Mode for THIS process, and report what changed.
+
+    Deliberately not a blanket grant. `approvals_reviewer=auto_review` hands
+    boundary actions to the Guardian, whose active surface is a read-only
+    allowlist bound to a verified action digest -- so an unattended run can read
+    and list, and still cannot write, shell out, or reach the network without a
+    standing policy established before the run.
+    """
+
+    target = os.environ if environ is None else environ
+    applied: dict[str, str] = {}
+    for key, value in AUTO_RUN_ENVIRONMENT.items():
+        # An operator who already set one of these keeps their value: --auto
+        # asks for autonomous, it does not overrule an explicit choice.
+        if not str(target.get(key, "")).strip():
+            target[key] = value
+            applied[key] = value
+    return applied
+
+
+def review_cli_result(
+    task: str,
+    result: Mapping[str, Any],
+    *,
+    cfg: Config,
+    chat_call: Any = None,
+) -> dict[str, Any]:
+    """Post-run Scientific Reviewer adapter for the CLI.
+
+    The Web path reviews through `CompletionGateService`, which needs durable
+    frame, branch and turn rows the one-shot CLI never creates. This reviews the
+    same evidence the engine actually produced and returns the same terminal
+    vocabulary, so `--auto` reports a real verdict rather than a placeholder.
+    """
+
+    from openai4s.server.completion_gate import terminal_for_review
+    from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
+    from openai4s.server.scientific_review import ScientificReviewService
+
+    answer = str(result.get("final_message") or "")
+    # A one-shot run has no durable frame, but it does have an identity, and
+    # leaving the block empty is not the same as saying so: the reviewer read
+    # four blank ids as missing provenance and raised a finding about the
+    # harness rather than the answer. `cli:<uuid>` is true and self-describing.
+    run_id = f"cli:{uuid.uuid4().hex[:16]}"
+    snapshot = freeze_evidence_snapshot(
+        {
+            "identity": {
+                "root_frame_id": run_id,
+                "branch_id": run_id,
+                "turn_id": run_id,
+                "execution_id": run_id,
+            },
+            "user_request": task,
+            "candidate_answer": answer,
+            "structured_completion": result.get("submitted_output"),
+            "environment": {"runtime": "cli"},
+        }
+    )
+    service = ScientificReviewService(store=None, config=cfg, chat_call=chat_call)
+    try:
+        review = service.evaluate(
+            snapshot,
+            result_review_mode="review_only",
+            agent_cfg=cfg.llm,
+            reviewer_cfg=cfg.llm,
+            # One model is all a CLI run has. `review_only` is honest about
+            # that; `auto_fix` would refuse for want of an independent
+            # reviewer, which is the correct refusal but a useless default here.
+            allow_same_model=True,
+        )
+    except Exception as error:  # noqa: BLE001 — a failed review is not a pass
+        return {
+            "terminal": "review_unavailable",
+            "user_truth": f"Unavailable · not verified ({type(error).__name__})",
+            "verdict": None,
+            "findings": [],
+            "unverified": True,
+        }
+    terminal, user_truth = terminal_for_review(review)
+    return {
+        "terminal": terminal,
+        "user_truth": user_truth,
+        "verdict": review.get("verdict"),
+        "findings": [
+            {
+                "severity": item.get("severity"),
+                "category": item.get("category"),
+                "claim_ref": item.get("claim_ref"),
+            }
+            for item in (review.get("findings") or [])
+        ],
+        "unverified": terminal != "verified",
+    }

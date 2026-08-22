@@ -46,6 +46,7 @@ visibly not a generation, cleaned up by ``recover``/``discard``.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -205,6 +206,53 @@ def probe_interpreter(prefix: Path) -> tuple[str, list[str]]:
     return interpreter, packages
 
 
+def verify_standard_environment(prefix: Path, name: str) -> tuple[str, list[str]]:
+    """Verify a standard generation's runtime and complete direct package set.
+
+    Starting the produced interpreter proves that the runtime is executable;
+    it does not prove that the environment satisfies the shipped standard
+    profile.  A solver can exit successfully with a partial prefix, and the old
+    verifier would then move ``current`` onto it.  For the two standard
+    environments, require every normalized direct dependency from the shipped
+    manifest before the transaction is allowed to commit its pointer move.
+
+    Package inventory is read from the freshly-built prefix using the same
+    stdlib-only metadata scanner as readiness.  It neither imports packages
+    from the foreign environment nor contacts a package index.
+    """
+
+    interpreter, packages = probe_interpreter(prefix)
+    if name not in ("python", "r"):
+        return interpreter, packages
+
+    from openai4s import pkgscan
+    from openai4s.kernel.readiness import load_standard_profile_requirements
+
+    try:
+        required = load_standard_profile_requirements()[name]
+    except Exception as exc:  # noqa: BLE001 - a bad shipped spec fails closed
+        raise EnvironmentError_(
+            f"the shipped standard requirements for {name!r} could not be read"
+        ) from exc
+    try:
+        installed = pkgscan.collect_packages(
+            Path(prefix), language="r" if name == "r" else "python"
+        )
+    except Exception as exc:  # noqa: BLE001 - an unreadable inventory is unknown
+        raise EnvironmentError_(
+            f"the package inventory for the new {name!r} generation "
+            f"could not be verified"
+        ) from exc
+
+    missing = [package for package in required if package not in installed]
+    if missing:
+        raise EnvironmentError_(
+            f"the new {name!r} generation is missing standard requirements: "
+            + ", ".join(missing)
+        )
+    return interpreter, packages
+
+
 def _default_runner(argv: Sequence[str], cwd: Path):
     return subprocess.run(
         [str(part) for part in argv], cwd=str(cwd), capture_output=True, timeout=3600
@@ -251,6 +299,12 @@ class Plan:
     reason: str
     from_generation: str | None = None
     commands: tuple[tuple[str, ...], ...] = ()
+    # Exact, path-free observation of the current pointer at plan time.  This
+    # is deliberately absent from ``public()``: it is a local CAS token, not
+    # operator-facing environment metadata.  The empty default preserves
+    # compatibility with an older/injected Plan while every production plan
+    # records either ``missing`` or a digest.
+    _pointer_fingerprint: str = field(default="", repr=False, compare=False)
 
     @property
     def changes(self) -> bool:
@@ -310,6 +364,44 @@ class EnvironmentStore:
     def _pointer(self, name: str) -> Path:
         return self._env_dir(name) / "current"
 
+    def layout_is_safe(self, name: str) -> bool:
+        """Whether path-based managed operations stay inside this Store.
+
+        ``current`` may itself be a symlink because an explicit repair can
+        replace that directory entry atomically without following it. The
+        directories and append/lock files we operate *through* may not be:
+        following any of those would make plan/apply report success while
+        writing a different tree outside the configured managed root.
+        """
+
+        env_dir = self._env_dir(name)
+        generations = self._generations_dir(name)
+        root = self.root.resolve()
+        if env_dir.is_symlink() or generations.is_symlink():
+            return False
+        if env_dir.exists() and not env_dir.is_dir():
+            return False
+        if generations.exists() and not generations.is_dir():
+            return False
+        for path in (env_dir / "apply.lock", env_dir / "history.jsonl"):
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                return False
+        try:
+            if env_dir.resolve().parent != root:
+                return False
+            if generations.resolve().parent != env_dir.resolve():
+                return False
+        except OSError:
+            return False
+        return True
+
+    def _assert_safe_layout(self, name: str) -> None:
+        if not self.layout_is_safe(name):
+            raise EnvironmentError_(
+                f"managed layout for environment {name!r} is unsafe; refusing "
+                "to follow a symlink or non-directory outside the environment store"
+            )
+
     @staticmethod
     def _valid_generation_id(generation_id: Any) -> str | None:
         """A bare directory name, or None.
@@ -340,6 +432,8 @@ class EnvironmentStore:
         ident = self._valid_generation_id(generation_id)
         if ident is None:
             return None
+        if not self.layout_is_safe(name):
+            return None
         root = self._generations_dir(name)
         candidate = root / ident
         if candidate.is_symlink():
@@ -353,13 +447,44 @@ class EnvironmentStore:
 
     # --- reads ------------------------------------------------------------
     def current_id(self, name: str) -> str | None:
+        pointer = self._pointer(name)
+        # ``_point_at`` always creates a regular file.  Following a symlink
+        # here would let an edited pointer borrow bytes outside this managed
+        # store and would also make a later atomic replace mutate a different
+        # trust boundary than the one planning inspected.
+        if pointer.is_symlink():
+            return None
         try:
-            text = self._pointer(name).read_text("utf-8").strip()
+            text = pointer.read_text("utf-8").strip()
         except OSError:
             return None
         # Validated on the way *out* as well as on the way in: a pointer written
         # by an older build, or edited by hand, must not become a path join.
         return self._valid_generation_id(text)
+
+    def _current_pointer_fingerprint(self, name: str) -> str:
+        """Return an exact, non-secret CAS token without following symlinks."""
+
+        pointer = self._pointer(name)
+        try:
+            stat = pointer.lstat()
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "unreadable"
+        try:
+            if pointer.is_symlink():
+                payload = b"symlink\0" + os.fsencode(os.readlink(pointer))
+            else:
+                payload = b"file\0" + pointer.read_bytes()
+        except OSError:
+            # Still distinguish two unreadable pointer objects when their
+            # inode/size/mtime changed between plan and apply.
+            payload = (
+                f"unreadable\0{stat.st_dev}\0{stat.st_ino}\0{stat.st_size}\0"
+                f"{stat.st_mtime_ns}\0{stat.st_mode}"
+            ).encode("ascii", "strict")
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
 
     def current(self, name: str) -> Generation | None:
         generation_id = self.current_id(name)
@@ -433,21 +558,54 @@ class EnvironmentStore:
         return out
 
     # --- plan -------------------------------------------------------------
-    def plan(self, name: str, spec: str | os.PathLike[str], *, tool: str) -> Plan:
+    def plan(
+        self,
+        name: str,
+        spec: str | os.PathLike[str],
+        *,
+        tool: str,
+        force_replace: bool = False,
+    ) -> Plan:
         """What would change. Reads only."""
         spec_path = Path(spec)
         try:
             digest = _sha256_file(spec_path)
         except OSError as e:
             raise EnvironmentError_(f"cannot read the spec for {name!r}: {e}") from e
-        active = self.current(name)
+        self._assert_safe_layout(name)
+        pointer_fingerprint = self._current_pointer_fingerprint(name)
+        observed_id = self.current_id(name)
+        active = self.get(name, observed_id) if observed_id else None
+        if active is not None and active.state not in (READY, SUPERSEDED):
+            active = None
         if active is None:
+            pointer_exists = pointer_fingerprint != "missing"
             return Plan(
                 name=name,
-                action=CREATE,
+                action=REPLACE if pointer_exists else CREATE,
                 spec_sha256=digest,
-                reason="no generation is current for this environment",
+                reason=(
+                    "the current pointer does not resolve to a verified ready "
+                    "generation; build a fresh generation and replace it"
+                    if pointer_exists
+                    else "no generation is current for this environment"
+                ),
+                from_generation=observed_id,
                 commands=(("<create>", tool, str(spec_path)),),
+                _pointer_fingerprint=pointer_fingerprint,
+            )
+        if active.spec_sha256 == digest and force_replace:
+            return Plan(
+                name=name,
+                action=REPLACE,
+                spec_sha256=digest,
+                reason=(
+                    f"generation {active.id} matches this spec, but an explicit "
+                    f"repair requested a fresh verified generation"
+                ),
+                from_generation=active.id,
+                commands=(("<create>", tool, str(spec_path)),),
+                _pointer_fingerprint=pointer_fingerprint,
             )
         if active.spec_sha256 == digest:
             return Plan(
@@ -459,6 +617,7 @@ class EnvironmentStore:
                     f"nothing to do"
                 ),
                 from_generation=active.id,
+                _pointer_fingerprint=pointer_fingerprint,
             )
         return Plan(
             name=name,
@@ -470,6 +629,7 @@ class EnvironmentStore:
             ),
             from_generation=active.id,
             commands=(("<create>", tool, str(spec_path)),),
+            _pointer_fingerprint=pointer_fingerprint,
         )
 
     # --- apply ------------------------------------------------------------
@@ -491,13 +651,16 @@ class EnvironmentStore:
         mamba or micromamba without this module knowing about any of them.
         """
         name = plan.name
+        self._assert_safe_layout(name)
         previous = self.current_id(name)
-
         env_dir = self._env_dir(name)
         env_dir.mkdir(parents=True, exist_ok=True)
         self._generations_dir(name).mkdir(parents=True, exist_ok=True)
 
         with _apply_lock(env_dir):
+            # Re-check after taking the per-environment lock. This is the last
+            # path-only guard before any generation/history/pointer write.
+            self._assert_safe_layout(name)
             # Compared against the generation the *plan* was made against, not
             # against a value re-read a line earlier — that would always agree
             # with itself and check nothing. Another apply landing between the
@@ -505,6 +668,15 @@ class EnvironmentStore:
             # exists, and building on it is how two applies both "succeed"
             # while one silently loses.
             observed = self.current_id(name)
+            observed_pointer_fingerprint = self._current_pointer_fingerprint(name)
+            if (
+                plan._pointer_fingerprint
+                and observed_pointer_fingerprint != plan._pointer_fingerprint
+            ):
+                raise ConcurrentApply(
+                    f"environment {name!r} current pointer changed while this "
+                    f"apply was planning; re-plan against the new pointer"
+                )
             if observed != plan.from_generation:
                 raise ConcurrentApply(
                     f"environment {name!r} moved from {plan.from_generation!r} "
@@ -533,9 +705,18 @@ class EnvironmentStore:
                         f"was made ({plan.spec_sha256[:12]} -> "
                         f"{current_sha[:12]}); re-plan"
                     )
-                return ApplyResult(
-                    name, True, self.current(name), previous, plan.reason
-                )
+                current = self.current(name)
+                if (
+                    current is None
+                    or current.state not in (READY, SUPERSEDED)
+                    or current.id != plan.from_generation
+                    or current.spec_sha256 != plan.spec_sha256
+                ):
+                    raise EnvironmentError_(
+                        f"environment {name!r} no longer resolves to the "
+                        "verified generation described by this plan; re-plan"
+                    )
+                return ApplyResult(name, True, current, previous, plan.reason)
             # The spec is re-hashed *here*, under the lock, and then copied.
             # The manifest recorded `plan.spec_sha256` while the build read the
             # live YAML through a path captured at plan time, so a file edited
@@ -900,6 +1081,8 @@ class EnvironmentStore:
         if directory is None:
             return
         marker = directory / "superseded_at"
+        if marker.is_symlink():
+            return
         try:
             marker.write_text(str(_now_ms()), encoding="utf-8")
         except OSError:  # pragma: no cover
@@ -1073,4 +1256,5 @@ __all__ = [
     "REPLACE",
     "STAGING",
     "SUPERSEDED",
+    "verify_standard_environment",
 ]

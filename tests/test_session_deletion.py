@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from openai4s.config import Config
+from openai4s.server.delivery import CompletionDeliveryService
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.storage.snapshots import WorkspaceCAS
 from openai4s.store import get_store
@@ -282,6 +283,132 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
             ).fetchone()[0]
             == 0
         )
+
+
+def test_session_delete_explicitly_cleans_delivery_observations_and_env_refs(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    deleted = store.new_frame(project_id="science", status="ready")
+    kept = store.new_frame(project_id="science", status="ready")
+    versions_dir = tmp_path / "artifact-versions"
+    versions_dir.mkdir()
+    deleted_bytes = b"same"
+    kept_bytes = b"kept"
+    deleted_path = tmp_path / "deleted.txt"
+    kept_path = tmp_path / "kept.txt"
+    deleted_snapshot = versions_dir / "deleted-snapshot.txt"
+    kept_snapshot = versions_dir / "kept-snapshot.txt"
+    deleted_path.write_bytes(deleted_bytes)
+    kept_path.write_bytes(kept_bytes)
+    deleted_snapshot.write_bytes(deleted_bytes)
+    kept_snapshot.write_bytes(kept_bytes)
+    deleted_checksum = hashlib.sha256(deleted_bytes).hexdigest()
+    kept_checksum = hashlib.sha256(kept_bytes).hexdigest()
+    shared_env = store.upsert_env_snapshot(
+        {
+            "kind": "python",
+            "generation_id": "generation-shared",
+            "packages": [],
+            "package_count": 0,
+        }
+    )
+    observed_env = store.upsert_env_snapshot(
+        {
+            "kind": "python",
+            "generation_id": "generation-deleted-observation",
+            "packages": [],
+            "package_count": 0,
+        }
+    )
+    deleted_head = store.record_cell_artifact(
+        path=str(deleted_path),
+        filename="deleted.txt",
+        content_type="text/plain",
+        size_bytes=len(deleted_bytes),
+        checksum=deleted_checksum,
+        producing_cell_id="cell-deleted-1",
+        frame_id=deleted,
+        env_snapshot_id=shared_env,
+        snapshot_path=str(deleted_snapshot),
+        reuse_matching_head=True,
+    )
+    store.record_cell_artifact(
+        path=str(deleted_path),
+        filename="deleted.txt",
+        content_type="text/plain",
+        size_bytes=len(deleted_bytes),
+        checksum=deleted_checksum,
+        producing_cell_id="cell-deleted-2",
+        frame_id=deleted,
+        env_snapshot_id=observed_env,
+        snapshot_path=str(deleted_snapshot),
+        reuse_matching_head=True,
+    )
+    kept_head = store.record_cell_artifact(
+        path=str(kept_path),
+        filename="kept.txt",
+        content_type="text/plain",
+        size_bytes=len(kept_bytes),
+        checksum=kept_checksum,
+        producing_cell_id="cell-kept",
+        frame_id=kept,
+        env_snapshot_id=shared_env,
+        snapshot_path=str(kept_snapshot),
+        reuse_matching_head=True,
+    )
+    delivery = CompletionDeliveryService(store=store, data_dir=tmp_path)
+    deleted_delivery = store.commit_completion_delivery(
+        idempotency_key="deleted-completion",
+        root_frame_id=deleted,
+        branch_id=deleted,
+        frame_id=deleted,
+        content="Delivered deleted.txt",
+        manifest=delivery.build_manifest(
+            root_frame_id=deleted,
+            project_id="science",
+            versions=[deleted_head],
+        ).value,
+    )
+    kept_delivery = store.commit_completion_delivery(
+        idempotency_key="kept-completion",
+        root_frame_id=kept,
+        branch_id=kept,
+        frame_id=kept,
+        content="Delivered kept.txt",
+        manifest=delivery.build_manifest(
+            root_frame_id=kept,
+            project_id="science",
+            versions=[kept_head],
+        ).value,
+    )
+
+    result = store.delete_frame(deleted)
+
+    assert result["deleted"] is True
+    assert result["deleted_rows"]["artifact_capture_observations"] == 2
+    assert result["deleted_rows"]["completion_delivery_artifacts"] == 1
+    assert result["deleted_rows"]["completion_deliveries"] == 1
+    assert (
+        store.list_artifact_capture_observations(
+            artifact_id=deleted_head["artifact_id"]
+        )
+        == []
+    )
+    assert (
+        len(
+            store.list_artifact_capture_observations(
+                artifact_id=kept_head["artifact_id"]
+            )
+        )
+        == 1
+    )
+    assert store.get_completion_delivery(deleted_delivery["delivery_id"]) is None
+    assert store.get_completion_delivery(kept_delivery["delivery_id"]) is not None
+    assert store.get_env_snapshot(observed_env) is None
+    assert store.get_env_snapshot(shared_env) is not None
+
+    store.delete_frame(kept)
+    assert store.get_env_snapshot(shared_env) is None
+    store.close()
 
 
 def test_workspace_cas_public_writes_share_gc_lock_and_reject_released_blob(tmp_path):

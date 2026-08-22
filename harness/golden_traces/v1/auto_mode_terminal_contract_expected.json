@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "contract": "stage0_auto_mode_terminal_v1",
+  "production_state_machine": false,
+  "cases": {
+    "auto_mode_policy_requires_explicit_setup": {
+      "lane": "non_guardian_terminal",
+      "terminal_reason": "policy_requires_explicit_setup",
+      "trace_sha256": "4adda0c55cb957c2d7c0dce7ea4db0670f3628fe959053c209804d0e6fa1400e",
+      "event_kinds": [
+        "auto_run_started",
+        "auto_run_terminal"
+      ],
+      "specific_event_kinds": [
+        "run_started",
+        "run_finished"
+      ],
+      "digests": {
+        "identity_digest": "488a5ab4c90e114a51370b253fd1ca693445205c26095bc7dc5ed5b64769211a",
+        "condition_digest": "c863d99831ee584d5f246fce47f6e6028602f93dd04a00ffdfe0892143e5ef05"
+      },
+      "event_payload_digests": [
+        "23382726df5e2d0760c9cc929b5e14f5ff9e535d5f14f56f05ce586ebccec699",
+        "3b716cef983058c12b44e74e0c194a2a5e1d0bb32a2e0d0850e298b7add76d8e"
+      ],
+      "terminal_payload": {
+        "terminal_reason": "policy_requires_explicit_setup",
+        "auto_user_state": null,
+        "safety_terminal": false,
+        "production_state_machine": false,
+        "recoverable": false,
+        "automatic_resume": false,
+        "guardian_terminal": false,
+        "user_truth": "Blocked · Policy requires explicit setup",
+        "recovery_mode": "fresh_policy_continuation",
+        "condition": {
+          "trigger_kind": "noncanonical_target",
+          "refusal_audit_durable": true,
+          "action_executed": false,
+          "guardian_invoked": false
+        },
+        "condition_digest": "c863d99831ee584d5f246fce47f6e6028602f93dd04a00ffdfe0892143e5ef05"
+      }
+    },
+    "auto_mode_budget_exhausted": {
+      "lane": "non_guardian_terminal",
+      "terminal_reason": "budget_exhausted",
+      "trace_sha256": "467af718bc999bd36e3c8f17b0cec1d3ccddb943737c78484ba42547be1ff0c4",
+      "event_kinds": [
+        "auto_run_started",
+        "auto_run_terminal"
+      ],
+      "specific_event_kinds": [
+        "run_started",
+        "run_finished"
+      ],
+      "digests": {
+        "identity_digest": "60146a34d7aa15ae13f1d2d2202b69cf542184687909d9a46d642c06d19526eb",
+        "condition_digest": "52998ad09e66c47fc805e0e3c5ba8f2e578130efd5ea799c1aa62e709bea688f"
+      },
+      "event_payload_digests": [
+        "15813a53f1aa1b4245accd578d0e7cc73d706958950645b25b3539e25260c6e3",
+        "57263cd9ba12bbc488f62596601cb4a6eca14c13d0daef58dd9b0047bfce4dd8"
+      ],
+      "terminal_payload": {
+        "terminal_reason": "budget_exhausted",
+        "auto_user_state": null,
+        "safety_terminal": false,
+        "production_state_machine": false,
+        "recoverable": false,
+        "automatic_resume": false,
+        "guardian_terminal": false,
+        "user_truth": "Paused · Budget exhausted",
+        "recovery_mode": "fresh_authorized_budget",
+        "condition": {
+          "budget_kind": "extra_cells",
+          "limit": 30,
+          "observed": 30,
+          "checked_before_admission": true,
+          "action_admitted": false,
+          "same_run_refilled": false,
+          "owner_domain": "general"
+        },
+        "condition_digest": "52998ad09e66c47fc805e0e3c5ba8f2e578130efd5ea799c1aa62e709bea688f"
+      }
+    },
+    "auto_mode_safe_rollback_unavailable": {
+      "lane": "non_guardian_terminal",
+      "terminal_reason": "safe_rollback_unavailable",
+      "trace_sha256": "c6df45a73e9ffaca624e505e905665c8e88998ea9ad09f7df3e8a8bcf8ef945e",
+      "event_kinds": [
+        "auto_run_started",
+        "auto_run_terminal"
+      ],
+      "specific_event_kinds": [
+        "run_started",
+        "run_finished"
+      ],
+      "digests": {
+        "identity_digest": "8b00ed16ae161fda17497ab76d7d823365763e8be8da11a61f259bbaa529d21a",
+        "condition_digest": "e04e7918e7845e604bf9583fdbd0dbf315797c3f3545508773c847aa338f264a"
+      },
+      "event_payload_digests": [
+        "4e2285f530ebf0bfda68d26494da6dda2d84209f2a54fe8e3f7b3c7c89eb1323",
+        "88dd96894067253abfeb6666f2fe4855f8833d759e6246fa5a6b7cb91ee8ac76"
+      ],
+      "terminal_payload": {
+        "terminal_reason": "safe_rollback_unavailable",
+        "auto_user_state": null,
+        "safety_terminal": false,
+        "production_state_machine": false,
+        "recoverable": false,
+        "automatic_resume": false,
+        "guardian_terminal": false,
+        "user_truth": "Blocked · Safe rollback unavailable",
+        "recovery_mode": "fresh_repair_from_proven_state",
+        "condition": {
+          "failure_kind": "checkpoint_commit_failed",
+          "admission_proven": false,
+          "repair_started": false,
+          "formal_workspace_mutated": false,
+          "sandbox_path_escape": false
+        },
+        "condition_digest": "e04e7918e7845e604bf9583fdbd0dbf315797c3f3545508773c847aa338f264a"
+      }
+    },
+    "auto_mode_outcome_unknown": {
+      "lane": "non_guardian_terminal",
+      "terminal_reason": "outcome_unknown",
+      "trace_sha256": "a8467be10073b11c66814f6e0666f3868f9140ec3f60fbea05369a2a1d3258e9",
+      "event_kinds": [
+        "auto_run_started",
+        "auto_run_terminal"
+      ],
+      "specific_event_kinds": [
+        "run_started",
+        "run_finished"
+      ],
+      "digests": {
+        "identity_digest": "145777de1e1a95ca95c3023fc06014350a39b8412febefa3920111adeb6d058e",
+        "condition_digest": "f5785b3146e5c8e4ae310569f2838e28458f22f242d02990d709701b050e07c2"
+      },
+      "event_payload_digests": [
+        "49051514ce423904f7af6705388ab30b0c8ab2ff00d7968faa2ad513f2b43989",
+        "8bf22d5e65d93dec251e3250cddd6c09fbbf629cdbf79f1b61a744191a2f178d"
+      ],
+      "terminal_payload": {
+        "terminal_reason": "outcome_unknown",
+        "auto_user_state": null,
+        "safety_terminal": false,
+        "production_state_machine": false,
+        "recoverable": true,
+        "automatic_resume": false,
+        "guardian_terminal": false,
+        "user_truth": "Needs review · Outcome unknown",
+        "recovery_mode": "reconcile_or_operator_review",
+        "condition": {
+          "side_effect_kind": "external_write",
+          "side_effect_dispatched": true,
+          "output_committed": null,
+          "readback_attempts": 2,
+          "readback_limit": 2,
+          "reconciliation_exhausted": true,
+          "blind_retry": false,
+          "action_retried": false
+        },
+        "condition_digest": "f5785b3146e5c8e4ae310569f2838e28458f22f242d02990d709701b050e07c2"
+      }
+    },
+    "auto_mode_loop_detected": {
+      "lane": "non_guardian_terminal",
+      "terminal_reason": "loop_detected",
+      "trace_sha256": "9b3e3da13241b88edee9463f4a155f15f84c355d0b7012fc5dc059f9cc2f7d77",
+      "event_kinds": [
+        "auto_run_started",
+        "auto_run_terminal"
+      ],
+      "specific_event_kinds": [
+        "run_started",
+        "run_finished"
+      ],
+      "digests": {
+        "identity_digest": "f61d24eca70c7be2c798a5956520ce88aaaf70f45b4f09e433a1706f9291bbb3",
+        "condition_digest": "9a9e30a3b00b44e446781ee8c9c4d137d0a50b9857044af142754a051e42ddfe"
+      },
+      "event_payload_digests": [
+        "1a69ff05f22e05a2d08703519b0df7b163b002d9206e01bcb7dd4a8ec66bdbea",
+        "9d67c6238082a9da1c0aca71ffc442552f09fba1e70c2d9cbaa20f8f37b85a22"
+      ],
+      "terminal_payload": {
+        "terminal_reason": "loop_detected",
+        "auto_user_state": null,
+        "safety_terminal": false,
+        "production_state_machine": false,
+        "recoverable": false,
+        "automatic_resume": false,
+        "guardian_terminal": false,
+        "user_truth": "Paused/Blocked · Loop detected",
+        "recovery_mode": "materially_different_continuation",
+        "condition": {
+          "loop_kind": "no_progress",
+          "fingerprint": "no-progress-general-v1",
+          "observed": 5,
+          "limit": 5,
+          "circuit_open": true,
+          "owner_domain": "general",
+          "new_action_admitted": false
+        },
+        "condition_digest": "9a9e30a3b00b44e446781ee8c9c4d137d0a50b9857044af142754a051e42ddfe"
+      }
+    }
+  }
+}

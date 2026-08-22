@@ -11,6 +11,7 @@ import pytest
 from openai4s.server.session_domain import SessionDomainService
 from openai4s.server.session_package import SessionPackageError
 from openai4s.server.share_projection import ShareProjectionBuilder
+from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store
 
 
@@ -105,9 +106,199 @@ def _builder(store, domain, workspace, tmp_path, *, extra_secret_values=None):
     )
 
 
+def _unverified_auto_projection(root: str) -> dict:
+    projection = {
+        "schema_version": 1,
+        "trust_state": "local",
+        "historical_selection": {
+            "preset": "autonomous",
+            "result_review_mode": "auto_fix",
+            "approvals_reviewer": "auto_review",
+            "source": "frame",
+        },
+        "runs": [
+            {
+                "run_id": "run-share",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-share",
+                "execution_id": "execution-share",
+                "mode": "auto_fix",
+                "status": "verified",
+                "candidate_id": "candidate-share",
+                "terminal_reason": "review_passed",
+                "created_at": 1,
+                "finished_at": 5,
+                # Deliberately lacks immutable snapshot proof. The share must
+                # not repeat the local label as Verified from prose or status.
+            }
+        ],
+        "events": [
+            {
+                "event_cursor": 1,
+                "event_id": "event-share-started",
+                "type": "auto_run_started",
+                "run_id": "run-share",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-share",
+                "execution_id": "execution-share",
+                "payload": {"mode": "auto_fix", "status": "running"},
+            },
+            {
+                "event_cursor": 2,
+                "event_id": "event-share-candidate",
+                "type": "candidate_ready",
+                "run_id": "run-share",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-share",
+                "execution_id": "execution-share",
+                "payload": {
+                    "candidate_id": "candidate-share",
+                    "status": "candidate",
+                },
+            },
+            {
+                "event_cursor": 3,
+                "event_id": "event-share-audit-started",
+                "type": "auto_audit_started",
+                "run_id": "run-share",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-share",
+                "execution_id": "execution-share",
+                "payload": {
+                    "audit_id": "audit-share",
+                    "subject_kind": "permission_review",
+                    "subject_entity_kind": "approval_action",
+                    "subject_entity_id": "decision-share",
+                    "audit_request_digest": "e" * 64,
+                    "assessment_id": "assessment-share",
+                    "decision_id": "decision-share",
+                    "action_digest": "d" * 64,
+                    "policy_version": "policy-v1",
+                    "status": "started",
+                },
+            },
+            {
+                "event_cursor": 4,
+                "event_id": "event-share-audit-completed",
+                "type": "auto_audit_completed",
+                "run_id": "run-share",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-share",
+                "execution_id": "execution-share",
+                "payload": {
+                    "audit_id": "audit-share",
+                    "subject_kind": "permission_review",
+                    "subject_entity_kind": "approval_action",
+                    "subject_entity_id": "decision-share",
+                    "audit_request_digest": "e" * 64,
+                    "assessment_digest": "f" * 64,
+                    "assessment_id": "assessment-share",
+                    "decision_id": "decision-share",
+                    "action_digest": "d" * 64,
+                    "outcome": "denied",
+                    "risk": "high",
+                    "status": "completed",
+                    "public_summary": "Denied by policy.",
+                },
+            },
+            {
+                "event_cursor": 5,
+                "event_id": "event-share",
+                "type": "auto_run_terminal",
+                "run_id": "run-share",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-share",
+                "execution_id": "execution-share",
+                "payload": {
+                    "status": "verified",
+                    "terminal_reason": "review_passed",
+                    "prompt": "hidden reviewer prompt",
+                    "rationale": "hidden reviewer rationale",
+                },
+            },
+        ],
+        "review_runs": [],
+        "findings": [],
+        "repair_runs": [],
+        "permission_assessments": [
+            {
+                "assessment_id": "assessment-share",
+                "audit_id": "audit-share",
+                "run_id": "run-share",
+                "decision_id": "decision-share",
+                "root_frame_id": root,
+                "branch_id": root,
+                "turn_id": "turn-share",
+                "execution_id": "execution-share",
+                "action_digest": "d" * 64,
+                "policy_version": "policy-v1",
+                "public_summary": "Denied by policy.",
+                "audit_request_digest": "e" * 64,
+                "assessment_digest": "f" * 64,
+                "status": "completed",
+                "outcome": "denied",
+                "risk": "high",
+                "created_at": 3,
+                "finished_at": 4,
+                "authorization": {"allow_once_token": "not-shareable"},
+                "payload": {"target": "private"},
+            }
+        ],
+    }
+    for created_at, event in enumerate(projection["events"], start=1):
+        event["created_at"] = created_at
+        event["payload_sha256"] = hashlib.sha256(
+            json.dumps(
+                event["payload"],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    return projection
+
+
 # --------------------------------------------------------------------------- #
 #  round-trip: a flattened share bundle imports cleanly (== closure proof)
 # --------------------------------------------------------------------------- #
+def test_share_rejects_unresolved_revert_workspace(tmp_path):
+    store, domain, workspace, _project, root = _base_session(tmp_path)
+    try:
+        store.set_setting(
+            revert_recovery_setting_key(root),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "state": "recovery_required",
+                    "operation_id": "so-share-revert",
+                    "branch_id": root,
+                }
+            ),
+        )
+
+        with pytest.raises(SessionPackageError, match="requires recovery"):
+            _builder(store, domain, workspace, tmp_path).build(root, root)
+    finally:
+        store.close()
+
+
+def test_share_rejects_corrupt_empty_revert_marker(tmp_path):
+    store, domain, workspace, _project, root = _base_session(tmp_path)
+    try:
+        store.set_setting(revert_recovery_setting_key(root), "")
+
+        with pytest.raises(SessionPackageError, match="requires recovery"):
+            _builder(store, domain, workspace, tmp_path).build(root, root)
+    finally:
+        store.close()
+
+
 def test_flattened_bundle_round_trips_through_import(tmp_path):
     store, domain, workspace, project, root = _base_session(tmp_path)
     cell = _add_turn(
@@ -194,6 +385,66 @@ def test_flattened_bundle_is_deterministic(tmp_path):
     b = builder.serialize_package(builder.build(root, root))
     assert a["data"] == b["data"]
     assert a["sha256"] == hashlib.sha256(a["data"]).hexdigest()
+
+
+def test_share_projects_active_branch_auto_history_once_and_downgrades_missing_proof(
+    tmp_path, monkeypatch
+):
+    store, domain, workspace, _project, root = _base_session(tmp_path)
+    store.append_action_group(
+        root_frame_id=root,
+        branch_id=root,
+        turn_id="turn-share",
+        kind="user",
+        assistant_message={"role": "user", "content": "share evidence"},
+    )
+    calls = []
+
+    def export_auto(root_frame_id, **filters):
+        calls.append((root_frame_id, filters))
+        return _unverified_auto_projection(root_frame_id)
+
+    monkeypatch.setattr(
+        store, "export_auto_mode_projection", export_auto, raising=False
+    )
+    builder = _builder(store, domain, workspace, tmp_path)
+
+    projection = builder.build(root, root)
+    bundle = builder.serialize_package(projection)
+    view = json.loads(
+        builder.serialize_view(
+            projection,
+            bundle={
+                "filename": bundle["filename"],
+                "sha256": bundle["sha256"],
+                "size_bytes": bundle["size_bytes"],
+            },
+        )
+    )
+    portable = projection.review["auto_mode"]
+
+    assert calls == [(root, {"branch_id": root})]
+    assert portable["runs"][0]["status"] == "unverified"
+    assert portable["runs"][0]["terminal_reason"] == ("portable_proof_incomplete")
+    assert portable["effective_selection"] == {
+        "preset": "off",
+        "result_review_mode": "off",
+        "approvals_reviewer": "user",
+    }
+    text = repr(portable)
+    for forbidden in (
+        "hidden reviewer prompt",
+        "hidden reviewer rationale",
+        "authorization",
+        "allow_once_token",
+        "private",
+    ):
+        assert forbidden not in text
+
+    packaged = json.loads(_unpack(bundle["data"])["review.json"])["auto_mode"]
+    assert packaged == portable
+    assert view["auto_mode"] == portable
+    assert view["projection_id"] == projection.projection_id
 
 
 # --------------------------------------------------------------------------- #
