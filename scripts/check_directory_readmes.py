@@ -16,11 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # injected into the trees themselves.
 EXCLUDED_PREFIXES = (
     PurePosixPath("openai4s/server/webui/vendor"),
-    # Pinned, mechanically imported third-party resource collection.  Its
-    # owning skills/bioskills README pair, manifest, and license document the
-    # boundary; injecting 1,122 generated README files into upstream recipes
-    # would obscure rather than improve provenance.
-    PurePosixPath("skills/bioskills"),
     PurePosixPath("tests/fixtures"),
 )
 # Pinned, mechanically imported third-party resource collections. Their root
