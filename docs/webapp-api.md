@@ -632,11 +632,11 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. Exact-version completion deliveries are included; import verifies their snapshots and remaps message, Artifact, version, manifest, and URL identities atomically. An orphaned or inconsistent delivery rejects the package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
-| `GET /artifacts/{aid}/table` | Stage 9 workbench. Full-dataset sort/filter/page over CSV/TSV/Parquet. Flag-off → `403 {"code":"workbench_disabled"}`. |
-| `GET /artifacts/{aid}/diff` | Stage 9 workbench. Unified diff between two versions (default oldest→newest). |
+| `GET /artifacts/{aid}/table` | Stage 9 workbench. Bounded full-dataset sort/filter/page over CSV/TSV/Parquet. A snapshot above 32 MiB, or a table above 250,000 data rows, 256 columns, or 2,000,000 rectangularized cells → `413 {"code":"artifact_too_large"}`. Parquet additionally preflights at most 512 row groups and 64 MiB decoded bytes before reading columns. Flag-off → `403 {"code":"workbench_disabled"}`. |
+| `GET /artifacts/{aid}/diff` | Stage 9 workbench. Unified diff between two versions (default oldest→newest), bounded to 8 MiB and 50,000 lines per version; excess → `413 {"code":"artifact_too_large"}`. |
 | `POST /artifacts/{aid}/structure` | Stage 9 workbench. Save a Ketcher mol/SMILES payload as a new version, or `{unchanged:true}` when the checksum matches the head. |
-| `GET /artifacts/{aid}/pdf-text` | Stage 9 workbench. Page-quoted PDF text for locator comments. |
-| `GET /artifacts/{aid}/html-outline` | Stage 9 workbench. Element outline (`id`/`selector`/`text`) for HTML locator comments. |
+| `GET /artifacts/{aid}/pdf-text` | Stage 9 workbench. Page-quoted PDF text for locator comments; snapshots above 32 MiB → `413 artifact_too_large`. |
+| `GET /artifacts/{aid}/html-outline` | Stage 9 workbench. Element outline (`id`/`selector`/`text`) for HTML locator comments; snapshots above 32 MiB or excessive element/depth shapes → `413 artifact_too_large`. |
 
 The Timeline UI requests the latest 500 records first. When `has_earlier` is
 true it exposes an explicit control that requests

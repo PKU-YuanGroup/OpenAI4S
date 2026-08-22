@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from openai4s.config import Config
+from openai4s.execution_principal import Principal
+from openai4s.execution_principal import scope as principal_scope
 from openai4s.host.skills import SkillService
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.sdk.host import _Host
@@ -286,6 +288,235 @@ def test_host_service_rejects_cross_project_version_scope(tmp_path):
                 "project_id": "project-b",
             }
         )
+
+
+@pytest.mark.security
+def test_team_member_approval_cannot_mutate_personal_skills(tmp_path, monkeypatch):
+    """Interactive consent is not instance-admin authorization.
+
+    Before the team guard lived in ``SkillService``, every call below reached
+    the daemon-global personal Skill store after the member approved it.  The
+    Web routes already required an admin; the in-kernel Host route did not.
+    """
+
+    monkeypatch.setenv("OPENAI4S_TEAM_MODE", "1")
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    store.create_project(name="Project A", project_id="project-a")
+    root = store.new_frame(project_id="project-a", kind="turn", status="ready")
+    dispatcher = build_dispatcher(cfg=cfg, frame_id=root)
+    for method in (
+        "skills_edit",
+        "skills_publish",
+        "skills_delete",
+        "skills_rollback",
+    ):
+        store.set_permission_rule(
+            scope="global",
+            scope_id="",
+            tool=method,
+            pattern="*",
+            decision="allow",
+        )
+
+    admin = Principal("admin-id", "admin", "admin")
+    member = Principal("member-id", "member", "member")
+    first_document = _document("Shared QC", "first")
+    second_document = _document("Shared QC", "second")
+    try:
+        with principal_scope(admin):
+            first = dispatcher(
+                "skills_edit",
+                [
+                    {
+                        "name": "Shared QC",
+                        "path": "SKILL.md",
+                        "content": first_document,
+                    }
+                ],
+            )
+            assert first["ok"] is True
+            first_version = SkillVersionService(cfg).status("Shared QC")[
+                "active_version_id"
+            ]
+            dispatcher(
+                "skills_edit",
+                [
+                    {
+                        "name": "Shared QC",
+                        "path": "SKILL.md",
+                        "content": second_document,
+                    }
+                ],
+            )
+        active_before = SkillVersionService(cfg).status("Shared QC")[
+            "active_version_id"
+        ]
+
+        def member_edit():
+            return dispatcher(
+                "skills_edit",
+                [
+                    {
+                        "name": "Shared QC",
+                        "path": "SKILL.md",
+                        "content": _document("Shared QC", "member overwrite"),
+                    }
+                ],
+            )
+
+        def member_publish():
+            return dispatcher("skills_publish", ["Shared QC"])
+
+        def member_delete():
+            return dispatcher("skills_delete", ["Shared QC"])
+
+        def member_rollback():
+            return dispatcher(
+                "skills_rollback",
+                [
+                    {
+                        "name": "Shared QC",
+                        "scope": "personal",
+                        "version_id": first_version,
+                    }
+                ],
+            )
+
+        with principal_scope(member):
+            for operation in (
+                member_edit,
+                member_publish,
+                member_delete,
+                member_rollback,
+            ):
+                with pytest.raises(PermissionError, match="administrator"):
+                    operation()
+
+        personal_root = cfg.data_dir / "user-skills" / "shared-qc"
+        assert second_document in (personal_root / "SKILL.md").read_text("utf-8")
+        assert (
+            SkillVersionService(cfg).status("Shared QC")["active_version_id"]
+            == active_before
+        )
+
+        # Team admins retain the same local authoring lifecycle.
+        with principal_scope(admin):
+            assert dispatcher("skills_publish", ["Shared QC"])["ok"] is True
+            assert (
+                dispatcher(
+                    "skills_rollback",
+                    [
+                        {
+                            "name": "Shared QC",
+                            "scope": "personal",
+                            "version_id": first_version,
+                        }
+                    ],
+                )["version_id"]
+                == first_version
+            )
+            assert dispatcher("skills_delete", ["Shared QC"])["ok"] is True
+        assert not personal_root.exists()
+    finally:
+        store.close()
+
+
+@pytest.mark.security
+def test_team_project_skill_mutation_requires_real_membership(tmp_path, monkeypatch):
+    """Owning a session is participation, but does not grant project writes."""
+
+    monkeypatch.setenv("OPENAI4S_TEAM_MODE", "1")
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    store.create_project(name="Project A", project_id="project-a")
+    root = store.new_frame(project_id="project-a", kind="turn", status="ready")
+    versions = SkillVersionService(cfg)
+    first = versions.install(
+        "Project QC",
+        {"SKILL.md": _document("Project QC", "first")},
+        scope="project",
+        project_id="project-a",
+    )
+    versions.upgrade(
+        "Project QC",
+        {"SKILL.md": _document("Project QC", "second")},
+        scope="project",
+        project_id="project-a",
+    )
+    dispatcher = build_dispatcher(cfg=cfg, frame_id=root)
+    for method in (
+        "skills_edit",
+        "skills_publish",
+        "skills_delete",
+        "skills_rollback",
+    ):
+        store.set_permission_rule(
+            scope="global",
+            scope_id="",
+            tool=method,
+            pattern="*",
+            decision="allow",
+        )
+
+    member = Principal("member-id", "member", "member")
+    admin = Principal("admin-id", "admin", "admin")
+
+    def edit():
+        return dispatcher(
+            "skills_edit",
+            [
+                {
+                    "name": "Project QC",
+                    "path": "SKILL.md",
+                    "content": _document("Project QC", "member edit"),
+                }
+            ],
+        )
+
+    def rollback():
+        return dispatcher(
+            "skills_rollback",
+            [
+                {
+                    "name": "Project QC",
+                    "scope": "project",
+                    "version_id": first["version_id"],
+                }
+            ],
+        )
+
+    try:
+        with principal_scope(member):
+            with pytest.raises(PermissionError, match="project membership"):
+                edit()
+            with pytest.raises(PermissionError, match="project membership"):
+                rollback()
+
+        store.governance.set_member("project-a", member.user_id, "member")
+        with principal_scope(member):
+            assert edit()["ok"] is True
+            # Publishing a discovered project overlay must stay in that overlay;
+            # it must not create or rewrite a daemon-global personal Skill.
+            assert dispatcher("skills_publish", ["Project QC"])["ok"] is True
+            assert rollback()["version_id"] == first["version_id"]
+        assert (
+            versions.repository.get_installation(
+                "Project QC", scope="personal", scope_id=""
+            )
+            is None
+        )
+
+        store.governance.remove_member("project-a", member.user_id)
+        with principal_scope(member):
+            with pytest.raises(PermissionError, match="project membership"):
+                dispatcher("skills_delete", ["Project QC"])
+
+        # An admin need not hold a project_members row.
+        with principal_scope(admin):
+            assert dispatcher("skills_delete", ["Project QC"])["ok"] is True
+    finally:
+        store.close()
 
 
 def test_http_personal_and_project_history_and_rollback_routes(tmp_path):

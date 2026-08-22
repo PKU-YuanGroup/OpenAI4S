@@ -126,7 +126,13 @@ export OPENAI4S_WORKER_ADVERTISE=head01.lab     # 告诉它们去拨哪里
 daemon 默认绑 loopback，这也是推荐做法。从别处访问，两条受支持的路，按优先级：
 
 1. **SSH 隧道。** `ssh -N -L 8760:127.0.0.1:8760 you@lab-host`。什么都不暴露，鉴权用你已有的 SSH 配置，也没有新组件要运维。
-2. **实验室网内带 TLS 的反向代理**，并打开团队模式。代理终结 TLS 后转发到 loopback。保持 `OPENAI4S_HOST=127.0.0.1`：它是 daemon 的**绑定地址**，不是额外白名单。代理必须把 `Host` 改写为确切的 loopback upstream，例如 `127.0.0.1:8760`。如果原样透传客户端的 `Host`，每个请求都会拿到 `403 host not allowed`。把 `OPENAI4S_HOST` 设成代理主机名可能使 daemon 绑定到 loopback 之外，不是放行该主机名的支持方式。
+2. **实验室网内带 TLS 的反向代理**，并打开团队模式。代理终结 TLS 后转发到 loopback。保持 `OPENAI4S_HOST=127.0.0.1`：它是 daemon 的**绑定地址**，不是额外白名单。代理必须把 `Host` 改写为确切的 loopback upstream，例如 `127.0.0.1:8760`。如果原样透传客户端的 `Host`，每个请求都会拿到 `403 host not allowed`。把 `OPENAI4S_HOST` 设成代理主机名可能使 daemon 绑定到 loopback 之外，不是放行该主机名的支持方式。还必须逐个写明浏览器的外部 origin（scheme、host，以及非默认端口），这样 CSRF 守卫才能把可信代理造成的不一致与其他网站区分开：
+
+   ```bash
+   export OPENAI4S_TRUSTED_PROXY_ORIGINS=https://lab.example
+   ```
+
+   多个精确 origin 用逗号分隔；末尾一个 `/` 会被规范化。不接受通配符、凭据、非根路径、query 或 fragment。不设置这个变量时仍是严格默认值：`Origin` 必须与后端的 `Host` 字面一致。
 
 **relay 不是跑实验室服务器的第三条路。** `openai4s relay` 与 `openai4s share` 是另一件事——**单个**会话的只读、已脱敏快照，经由 daemon 主动拨出的隧道发送（见 [`webshare.md`](webshare.md)）。relay 看得到明文，而 share 投影刻意不是一个登录面：它不带 cookie、没有写路由、也没有活的内核。把它指向团队部署，得到的是某一个会话的投影，而不是把工作台开出去。
 

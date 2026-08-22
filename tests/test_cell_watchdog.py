@@ -164,6 +164,39 @@ def test_cancellation_cuts_through_permission_pause_with_one_interrupt():
     assert kernel.kill_calls == 0
 
 
+def test_cancellation_hard_stop_is_not_reported_as_a_timeout():
+    """A user cancellation can need the same recovery ladder as a deadline."""
+    from openai4s.execution.watchdog import KernelCancellation
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(
+        KernelCancellation, match="cancellation|required a hard stop"
+    ) as raised:
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=10,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+            cancelled=lambda: True,
+        )
+
+    assert not isinstance(raised.value, TimeoutError)
+    assert "10s" not in str(raised.value)
+    assert kernel.interrupt_calls == kernel.kill_calls == kernel.restart_calls == 1
+
+
 def test_hard_kill_restarts_exact_lease_and_runs_bootstrap():
     supervisor, kernel, lease = _lease()
     release = threading.Event()

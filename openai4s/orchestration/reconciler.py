@@ -54,6 +54,7 @@ from openai4s.orchestration.ports import (
     Created,
     Existing,
     Rejected,
+    TerminalAllocationAcknowledger,
     Unknown,
 )
 
@@ -80,7 +81,11 @@ class WorkloadStore(Protocol):
 
     def workloads_needing_attention(self) -> list[Workload]: ...
 
+    def get_workload(self, workload_id: str) -> Workload | None: ...
+
     def active_allocation(self, workload_id: str) -> Allocation | None: ...
+
+    def get_allocation(self, allocation_id: str) -> Allocation | None: ...
 
     def create_allocation(self, workload_id: str, epoch: int) -> Allocation: ...
 
@@ -154,6 +159,12 @@ class Reconciler:
         self.ticks = 0
         self.last_error: str | None = None
         self.exited_reason: str | None = None
+        # A backend recovery registry is itself a durable GC outbox.  Sweep it
+        # synchronously as well as on ticks: after a crash there may be no
+        # non-terminal workload to start the background reconciler, but a
+        # terminal row committed just before that crash still authorizes its
+        # receipt to be reclaimed now.
+        self._acknowledge_durable_terminals()
 
     # --- the loop ---------------------------------------------------------
 
@@ -217,6 +228,7 @@ class Reconciler:
 
     def tick(self) -> TickReport:
         report = TickReport()
+        self._acknowledge_durable_terminals(report)
         for workload in self._store.workloads_needing_attention():
             report.examined += 1
             try:
@@ -232,7 +244,75 @@ class Reconciler:
                 self._emit(
                     "reconcile_error", {"workload_id": workload.id, "error": str(exc)}
                 )
+        # Terminal transitions committed during this pass become eligible only
+        # after their paired store write returns.  A second sweep gives them
+        # prompt bounded cleanup; the constructor sweep closes the crash window
+        # between that commit and this call.
+        self._acknowledge_durable_terminals(report)
         return report
+
+    def _acknowledge_durable_terminals(self, report: TickReport | None = None) -> None:
+        """Reclaim backend recovery facts only after durable terminal proof.
+
+        Candidate enumeration is optional and backend-owned.  The candidate is
+        never trusted as proof: the allocation and workload are loaded again
+        from the store, and acknowledgement requires a committed terminal
+        attempt plus either a terminal workload or a later recovery epoch.
+        """
+
+        seen_backends: set[int] = set()
+        for backend in self._backends.values():
+            backend_identity = id(backend)
+            if backend_identity in seen_backends:
+                continue
+            seen_backends.add(backend_identity)
+            if not isinstance(backend, TerminalAllocationAcknowledger):
+                continue
+            try:
+                candidates = backend.terminal_acknowledgement_candidates()
+            except Exception as exc:  # noqa: BLE001 - GC must not stop work
+                self._terminal_ack_error(backend.name, None, exc, report)
+                continue
+            for allocation_id in candidates:
+                try:
+                    allocation = self._store.get_allocation(str(allocation_id))
+                    if allocation is None or not allocation.phase.is_terminal:
+                        continue
+                    workload = self._store.get_workload(allocation.workload_id)
+                    if workload is None or not (
+                        workload.phase.is_terminal
+                        or workload.execution_epoch > allocation.epoch
+                    ):
+                        continue
+                    backend.acknowledge_terminal(allocation)
+                except Exception as exc:  # noqa: BLE001 - safe leak, retried later
+                    self._terminal_ack_error(
+                        backend.name, str(allocation_id), exc, report
+                    )
+
+    def _terminal_ack_error(
+        self,
+        backend_name: str,
+        allocation_id: str | None,
+        exc: BaseException,
+        report: TickReport | None,
+    ) -> None:
+        subject = allocation_id or "candidate enumeration"
+        detail = (
+            f"terminal acknowledgement failed for {backend_name}:{subject}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        self.last_error = detail
+        if report is not None:
+            report.errors.append(detail)
+        self._emit(
+            "terminal_ack_failed",
+            {
+                "backend": backend_name,
+                "allocation_id": allocation_id,
+                "error": str(exc),
+            },
+        )
 
     def _backend_for(self, workload: Workload) -> AllocationBackend:
         name = workload.backend or self._default_backend

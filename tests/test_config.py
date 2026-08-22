@@ -85,6 +85,40 @@ def test_team_mode_defaults_off_and_reads_env(monkeypatch):
     assert Config().team_mode is False
 
 
+def test_trusted_proxy_origins_are_exact_and_normalized(monkeypatch):
+    monkeypatch.delenv("OPENAI4S_TRUSTED_PROXY_ORIGINS", raising=False)
+    assert Config().trusted_proxy_origins == ()
+
+    monkeypatch.setenv(
+        "OPENAI4S_TRUSTED_PROXY_ORIGINS",
+        "HTTPS://Lab.Example:443/, http://127.0.0.1:8080,https://lab.example",
+    )
+    assert Config().trusted_proxy_origins == (
+        "https://lab.example",
+        "http://127.0.0.1:8080",
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    (
+        "*",
+        "https://*.example",
+        "https://user@lab.example",
+        "https://lab.example/path",
+        "https://lab.example?next=https://evil.example",
+        "https://lab.example#evil",
+        "https:\\lab.example",
+        "https://lab.example\n.evil.example",
+        "ftp://lab.example",
+    ),
+)
+def test_trusted_proxy_origins_reject_non_origins(monkeypatch, origin):
+    monkeypatch.setenv("OPENAI4S_TRUSTED_PROXY_ORIGINS", origin)
+    with pytest.raises(ValueError, match="OPENAI4S_TRUSTED_PROXY_ORIGINS"):
+        Config()
+
+
 ROADMAP_FLAGS = {
     "stage1_trusted_delivery": "OPENAI4S_STAGE1_TRUSTED_DELIVERY",
     "stage2_auto_run_storage": "OPENAI4S_STAGE2_AUTO_RUN_STORAGE",

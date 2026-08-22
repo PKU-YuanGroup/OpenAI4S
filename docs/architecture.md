@@ -196,9 +196,13 @@ ids. Agent, user REPL, repair, and review scratch remain distinct owners.
 #### Stage 9 Artifact workbench
 
 `OPENAI4S_STAGE9_ARTIFACT_WORKBENCH=1` turns Artifact viewing into a workbench:
-full-dataset CSV/Parquet sort/filter/page, text version diffs, PDF/HTML
-comments bound to a version and locator and quoted into the next turn, and
-the vendored Ketcher 3.7.0 editor saving a new version of the same Artifact.
+bounded full-dataset CSV/Parquet sort/filter/page, text version diffs, PDF/HTML
+comments bound to a version and locator and quoted into the next turn, and the
+vendored Ketcher 3.7.0 editor saving a new version of the same Artifact.
+Projections reject snapshots above 32 MiB with `413 artifact_too_large`; tables
+also cap rows, columns, cells, and Parquet decoded metadata before materializing
+the optional engine. Diffs use a lower 8 MiB-per-version/50,000-line bound
+because sequence matching retains both inputs and matching state.
 
 #### Stage 10 scientific connectors
 

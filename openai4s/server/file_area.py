@@ -270,11 +270,22 @@ class FileArea:
             raise FileAreaError(404, "path not found", "path_not_found")
         if not target.is_dir():
             raise FileAreaError(400, "not a directory", "not_a_directory")
+        root = self.root_of(target)
+        personal_namespace = bool(
+            reader is not None and root is not None and target == root / _USERS_DIR
+        )
         entries = []
         truncated = False
         try:
             with os.scandir(target) as it:
                 for entry in it:
+                    # The namespace itself is navigable, but it must not be a
+                    # directory of everyone who has personal scratch. Filter
+                    # before stat so even another member's name and metadata
+                    # are outside this response. Admin/single-user callers
+                    # have no reader and retain the complete listing.
+                    if personal_namespace and entry.name != reader:
+                        continue
                     if len(entries) >= limit:
                         truncated = True
                         break

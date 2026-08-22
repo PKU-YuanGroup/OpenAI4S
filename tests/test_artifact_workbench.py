@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import sys
+import time
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+
+import pytest
 
 from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.server import artifact_workbench as workbench_mod
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.artifact_workbench import (
+    extract_pdf_text,
     is_benzene,
     ketcher_assets_present,
     ketcher_document,
@@ -95,6 +100,29 @@ def _checksum(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _save_snapshot(
+    runner,
+    fid: str,
+    path: Path,
+    data: bytes,
+    *,
+    content_type: str = "application/octet-stream",
+) -> dict:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    artifact = runner.store.save_artifact(
+        path=str(path),
+        filename=path.name,
+        content_type=content_type,
+        size_bytes=len(data),
+        checksum=_checksum(path),
+        frame_id=fid,
+        project_id="default",
+    )
+    _freeze_version(runner, artifact, path)
+    return artifact
+
+
 def test_stage9_flag_defaults_off():
     assert official_workbench_enabled(Config()) is False
     assert official_workbench_enabled(
@@ -118,6 +146,12 @@ def test_numeric_sort_with_empty_cells_has_one_total_order():
         sort="n",
     )
     assert [row[0] for row in page["rows"]] == ["one", "two", "missing"]
+
+
+def test_table_rows_are_normalized_to_the_declared_header_width():
+    page = query_table([["only"], ["visible", "undeclared"]])
+    assert page["columns"] == ["only"]
+    assert page["rows"] == [["visible"]]
 
 
 def test_text_edit_creates_v2_and_identical_bytes_do_not(tmp_path):
@@ -300,6 +334,24 @@ def test_pdf_and_html_comments_are_quoted_into_the_next_turn(tmp_path):
     runner.close()
 
 
+def test_pdf_text_scanner_is_linear_on_malformed_tj_array():
+    # The former nested regex took exponentially longer for each extra empty
+    # string here (25 entries took seconds).  This malformed Artifact is small
+    # enough to be a cheap regression while leaving a wide CI timing margin.
+    malformed = b"%PDF-1.4\n[()" + (b" ()" * 25)
+    started = time.monotonic()
+    pages = extract_pdf_text(malformed)
+    assert time.monotonic() - started < 0.5
+    assert pages == [{"page": 1, "index": 0, "text": ""}]
+
+
+def test_pdf_text_scanner_accepts_balanced_strings_and_tj_kerning():
+    pages = extract_pdf_text(
+        b"%PDF-1.4\nBT (nested \\(value\\)) Tj [(hel) -20 (lo)] TJ ET"
+    )
+    assert pages[0]["text"] == "nested (value) hello"
+
+
 def test_ketcher_is_placeholder_off_and_real_assets_on():
     off = ketcher_document(Config()).decode("utf-8")
     assert "placeholder" in off.lower()
@@ -362,6 +414,298 @@ def test_table_and_diff_http_routes(tmp_path):
     assert "r8" in diff["diff"]
     assert "r9" in diff["diff"]
     runner.close()
+
+
+@pytest.mark.parametrize(
+    ("filename", "data", "route"),
+    [
+        ("bounded.csv", b"name,n\nrow,1\n", "table"),
+        ("bounded.pdf", b"%PDF-1.4\n(ok) Tj\n", "pdf-text"),
+        ("bounded.html", b"<html><body><p>ok</p></body></html>", "html-outline"),
+    ],
+)
+def test_workbench_read_cap_accepts_the_boundary_and_rejects_one_byte_over(
+    tmp_path, monkeypatch, filename, data, route
+):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    workspace = runner.workspace_for_branch(fid, fid)
+    artifact = _save_snapshot(runner, fid, workspace / filename, data)
+
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_ARTIFACT_BYTES", len(data))
+    code, _payload = _call(
+        handler, "GET", f"/artifacts/{artifact['artifact_id']}/{route}"
+    )
+    assert code == 200
+
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_ARTIFACT_BYTES", len(data) - 1)
+    code, payload = _call(
+        handler, "GET", f"/artifacts/{artifact['artifact_id']}/{route}"
+    )
+    assert (code, payload["code"]) == (413, "artifact_too_large")
+    runner.close()
+
+
+def test_diff_read_cap_accepts_the_boundary_and_rejects_one_byte_over(
+    tmp_path, monkeypatch
+):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    workspace = runner.workspace_for_branch(fid, fid)
+    artifact = _save_snapshot(
+        runner,
+        fid,
+        workspace / "bounded.txt",
+        b"alpha\n",
+        content_type="text/plain",
+    )
+    runner.edit_artifact(artifact["artifact_id"], "bravo\n")
+
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_DIFF_BYTES_PER_VERSION", 6)
+    code, _payload = _call(handler, "GET", f"/artifacts/{artifact['artifact_id']}/diff")
+    assert code == 200
+
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_DIFF_BYTES_PER_VERSION", 5)
+    code, payload = _call(handler, "GET", f"/artifacts/{artifact['artifact_id']}/diff")
+    assert (code, payload["code"]) == (413, "artifact_too_large")
+    runner.close()
+
+
+def test_delimited_shape_limits_include_rectangularized_sparse_rows(monkeypatch):
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_TABLE_ROWS", 2)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_TABLE_COLUMNS", 3)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_TABLE_CELLS", 9)
+
+    assert workbench_mod.parse_delimited("a,b,c\n1\n2\n") == [
+        ["a", "b", "c"],
+        ["1"],
+        ["2"],
+    ]
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.parse_delimited("a,b,c\n1\n2\n3\n")
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.parse_delimited("a,b,c,d\n")
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+
+
+def test_html_outline_rejects_deep_and_excessive_element_shapes(tmp_path, monkeypatch):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    workspace = runner.workspace_for_branch(fid, fid)
+    deep = _save_snapshot(runner, fid, workspace / "deep.html", b"<a>" * 9)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_HTML_DEPTH", 8)
+    code, payload = _call(
+        handler, "GET", f"/artifacts/{deep['artifact_id']}/html-outline"
+    )
+    assert (code, payload["code"]) == (413, "artifact_too_large")
+
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_HTML_ELEMENTS", 3)
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.html_outline("<br>" * 4)
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+    runner.close()
+
+
+def test_parquet_compressed_size_is_rejected_before_optional_engine_import(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "large.parquet"
+    path.write_bytes(b"12345")
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_ARTIFACT_BYTES", 4)
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.read_parquet_rows(path)
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+
+
+def test_parquet_metadata_limits_run_before_decode(tmp_path, monkeypatch):
+    path = tmp_path / "bounded.parquet"
+    path.write_bytes(b"parquet")
+    reported_rows = 1
+    reported_uncompressed_size = 4
+    read_calls = 0
+
+    class FakeMetadata:
+        num_columns = 1
+        num_row_groups = 1
+
+        @property
+        def num_rows(self):
+            return reported_rows
+
+        def row_group(self, _index):
+            return SimpleNamespace(
+                column=lambda _column: SimpleNamespace(
+                    total_uncompressed_size=reported_uncompressed_size
+                )
+            )
+
+    class FakeScalar:
+        def as_py(self):
+            return "ok"
+
+    class FakeColumn:
+        def __getitem__(self, index):
+            assert index == 0
+            return FakeScalar()
+
+    class FakeBatch:
+        num_rows = 1
+
+        def column(self, index):
+            assert index == 0
+            return FakeColumn()
+
+    class FakeTable:
+        column_names = ["x"]
+        num_rows = 1
+        nbytes = 4
+
+        def to_batches(self, *, max_chunksize):
+            assert max_chunksize == 1024
+            return [FakeBatch()]
+
+    class FakeParquetFile:
+        metadata = FakeMetadata()
+
+        def __init__(self, source):
+            assert source.read() == b"parquet"
+
+        def read(self):
+            nonlocal read_calls
+            read_calls += 1
+            return FakeTable()
+
+    pyarrow = ModuleType("pyarrow")
+    pyarrow.__path__ = []
+    parquet = ModuleType("pyarrow.parquet")
+    parquet.ParquetFile = FakeParquetFile
+    pyarrow.parquet = parquet
+    monkeypatch.setitem(sys.modules, "pyarrow", pyarrow)
+    monkeypatch.setitem(sys.modules, "pyarrow.parquet", parquet)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_TABLE_ROWS", 1)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_TABLE_COLUMNS", 1)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_TABLE_CELLS", 1)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_PARQUET_ROW_GROUPS", 1)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_PARQUET_DECODED_BYTES", 4)
+
+    assert workbench_mod.read_parquet_rows(path) == [["x"], ["ok"]]
+    assert read_calls == 1
+
+    reported_rows = 2
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.read_parquet_rows(path)
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+    assert read_calls == 1
+
+    reported_rows = 1
+    reported_uncompressed_size = 5
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.read_parquet_rows(path)
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+    assert read_calls == 1
+
+
+def test_parquet_rejects_decoded_and_dictionary_projection_expansion(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "dictionary.parquet"
+    path.write_bytes(b"parquet")
+    decoded_bytes = 5
+    values = ["aa", "aa"]
+    batch_calls = 0
+    scalar_reads = 0
+
+    class FakeMetadata:
+        num_columns = 1
+        num_row_groups = 1
+
+        @property
+        def num_rows(self):
+            return len(values)
+
+        def row_group(self, _index):
+            # A dictionary page plus compact indices can stay below the limit
+            # even when decoding/projecting every repeated value cannot.
+            return SimpleNamespace(
+                column=lambda _column: SimpleNamespace(total_uncompressed_size=1)
+            )
+
+    class FakeScalar:
+        def __init__(self, value):
+            self.value = value
+
+        def as_py(self):
+            nonlocal scalar_reads
+            scalar_reads += 1
+            return self.value
+
+    class FakeColumn:
+        def __getitem__(self, index):
+            return FakeScalar(values[index])
+
+    class FakeBatch:
+        @property
+        def num_rows(self):
+            return len(values)
+
+        def column(self, index):
+            assert index == 0
+            return FakeColumn()
+
+    class FakeTable:
+        column_names = ["x"]
+
+        @property
+        def num_rows(self):
+            return len(values)
+
+        @property
+        def nbytes(self):
+            return decoded_bytes
+
+        def to_batches(self, *, max_chunksize):
+            nonlocal batch_calls
+            assert max_chunksize == 1024
+            batch_calls += 1
+            return [FakeBatch()]
+
+    class FakeParquetFile:
+        metadata = FakeMetadata()
+
+        def __init__(self, source):
+            assert source.read() == b"parquet"
+
+        def read(self):
+            return FakeTable()
+
+    pyarrow = ModuleType("pyarrow")
+    pyarrow.__path__ = []
+    parquet = ModuleType("pyarrow.parquet")
+    parquet.ParquetFile = FakeParquetFile
+    pyarrow.parquet = parquet
+    monkeypatch.setitem(sys.modules, "pyarrow", pyarrow)
+    monkeypatch.setitem(sys.modules, "pyarrow.parquet", parquet)
+    monkeypatch.setattr(workbench_mod, "MAX_WORKBENCH_PARQUET_DECODED_BYTES", 4)
+
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.read_parquet_rows(path)
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+    assert batch_calls == 0
+    assert scalar_reads == 0
+
+    decoded_bytes = 1
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        workbench_mod.read_parquet_rows(path)
+    assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+    assert batch_calls == 1
+    assert scalar_reads == 2
+
+    values = ["a", "a", "a"]
+    decoded_bytes = 4
+    batch_calls = 0
+    scalar_reads = 0
+    assert workbench_mod.read_parquet_rows(path) == [["x"], ["a"], ["a"], ["a"]]
+    assert batch_calls == 1
+    assert scalar_reads == 3
 
 
 def test_diff_rejects_unknown_and_foreign_versions_identically(tmp_path):

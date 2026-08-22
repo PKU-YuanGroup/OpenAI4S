@@ -27,7 +27,11 @@ from pathlib import Path
 import pytest
 
 from openai4s.kernel.manager import Kernel
-from openai4s.kernel.transport import OutboundTcpTransport, WorkerConnectionRefused
+from openai4s.kernel.transport import (
+    MAX_LINE_BYTES,
+    OutboundTcpTransport,
+    WorkerConnectionRefused,
+)
 from openai4s.orchestration.bootstrap import (
     BootstrapAuthority,
     BootstrapCredential,
@@ -328,6 +332,41 @@ def test_a_remote_worker_executes_cells(remote_kernel):
     result = remote_kernel.execute("print('hello from the other side')")
     assert result["stdout"].strip() == "hello from the other side"
     assert not result["error"]
+
+
+def test_remote_reader_accepts_every_producer_admitted_frame():
+    """The receiver and producer must share one ceiling.
+
+    Three independently bounded response strings can serialize past the old
+    16 MiB transport limit while remaining below the worker's outbound cap.
+    A socketpair drives the real bounded reader without allocating an
+    unbounded network line.
+    """
+    from openai4s.kernel import worker as worker_mod
+
+    host, peer = socket.socketpair()
+    transport = OutboundTcpTransport(host, peer="test-peer")
+    frame = {
+        "type": "response",
+        "id": "large-valid-response",
+        "stdout": "\x00" * worker_mod.MAX_OUTPUT,
+        "stderr": "\x00" * worker_mod.MAX_OUTPUT,
+        "error": "\x00" * worker_mod.MAX_OUTPUT,
+    }
+    wire = (json.dumps(frame, ensure_ascii=False) + "\n").encode("utf-8")
+    assert len(wire) > 16 * 1024 * 1024
+    assert len(wire) <= worker_mod._MAX_FRAME_BYTES == MAX_LINE_BYTES
+
+    writer = threading.Thread(target=peer.sendall, args=(wire,), daemon=True)
+    writer.start()
+    try:
+        received = json.loads(transport.read_line())
+        assert received["id"] == frame["id"]
+        assert len(received["error"]) == worker_mod.MAX_OUTPUT
+    finally:
+        transport.close(graceful=False)
+        peer.close()
+        writer.join(timeout=5)
 
 
 def test_a_remote_worker_keeps_its_namespace_across_cells(remote_kernel):

@@ -732,6 +732,38 @@ def test_the_python310_reader_refuses_basic_string_escapes_it_cannot_decode():
         )
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[profiles.gpu]\npartition = "safe"\npartition = "expensive"\n',
+        '[profiles.gpu]\npartition = "safe"\n[profiles.gpu]\nqos = "fast"\n',
+        "[profiles.gpu]\ncpus = 1__0\n",
+        "[profiles.gpu]\ncpus = 1_\n",
+        "[profiles.gpu]\ncpus = 01\n",
+    ],
+)
+def test_the_python310_reader_rejects_tomllib_invalid_redefinitions(text):
+    """Supported Python versions must not schedule different interpretations."""
+    with pytest.raises(ClusterConfigError):
+        _parse_toml_subset(text, source="cluster.toml")
+
+
+def test_the_python310_reader_allows_declaring_an_implicit_parent_once():
+    """TOML allows a parent created by a subtable to be declared later."""
+    parsed = _parse_toml_subset(
+        '[profiles.gpu]\npartition = "gpu"\n[profiles]\n',
+        source="cluster.toml",
+    )
+    assert parsed == {"profiles": {"gpu": {"partition": "gpu"}}}
+
+
+def test_the_python310_reader_accepts_well_formed_integer_underscores():
+    parsed = _parse_toml_subset(
+        "[profiles.gpu]\nmemory_mb = 32_768\n", source="cluster.toml"
+    )
+    assert parsed["profiles"]["gpu"]["memory_mb"] == 32768
+
+
 def test_absent_config_is_not_an_error(tmp_path):
     from openai4s.orchestration.slurm import load_cluster_config
 

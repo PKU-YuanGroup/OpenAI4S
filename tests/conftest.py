@@ -68,6 +68,7 @@ for _name in (
     # wants a MODEL/BASE_URL/API_KEY suffix — `MODE` is not `MODEL`.
     "OPENAI4S_TEAM_MODE",
     "OPENAI4S_DATA_ROOTS",
+    "OPENAI4S_TRUSTED_PROXY_ORIGINS",
     # The worker listener, for the same reason: an exported value would
     # start a real socket in tests that assert the feature is off.
     "OPENAI4S_WORKER_LISTEN",

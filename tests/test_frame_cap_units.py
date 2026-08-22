@@ -71,7 +71,7 @@ def test_the_backstop_is_derived_from_the_character_cap():
     next time either moves. This is the actual fix — the larger value is only
     its consequence."""
     assert worker_mod._MAX_FRAME_BYTES == (
-        worker_mod._JSON_WORST_BYTES_PER_CHAR * 2 * worker_mod.MAX_OUTPUT + 2_000_000
+        worker_mod._JSON_WORST_BYTES_PER_CHAR * 3 * worker_mod.MAX_OUTPUT + 2_000_000
     )
 
 
@@ -79,7 +79,8 @@ def test_six_bytes_is_really_the_worst_json_can_do():
     """The whole derivation rests on this constant. If JSON could emit more per
     character, the cap would be back under a legitimate frame."""
     worst = max(
-        len(json.dumps(chr(code))) - 2  # minus the surrounding quotes
+        len(json.dumps(chr(code), ensure_ascii=False).encode("utf-8")) - 2
+        # minus the surrounding ASCII quotes
         for code in list(range(0, 128)) + [0x4E2D, 0x1F600]
     )
     assert worst <= worker_mod._JSON_WORST_BYTES_PER_CHAR

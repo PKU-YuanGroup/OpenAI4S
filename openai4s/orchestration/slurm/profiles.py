@@ -228,9 +228,11 @@ def _parse_scalar(raw: str, *, where: str) -> Any:
         return inner
     if value in ("true", "false"):
         return value == "true"
-    if re.fullmatch(r"[+-]?\d+", value):
-        return int(value)
-    if re.fullmatch(r"[+-]?\d[\d_]*", value):
+    # Decimal TOML integers may use an underscore only *between* digits, and
+    # leading zeroes are invalid except for zero itself.  Accepting ``1__0``
+    # or ``01`` here made the supported 3.10 path silently reinterpret a file
+    # that tomllib (3.11+) correctly refuses.
+    if re.fullmatch(r"[+-]?(?:0|[1-9](?:_?\d)*)", value):
         return int(value.replace("_", ""))
     raise ClusterConfigError(
         f"{where}: this reader supports strings, integers and booleans only "
@@ -306,6 +308,13 @@ def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
     """The 3.10 fallback. See the module docstring for the supported subset."""
     data: dict[str, Any] = {}
     current: dict[str, Any] = data
+    current_path: tuple[str, ...] = ()
+    # TOML permits an implicit parent table to be declared later, but an
+    # explicitly declared table cannot be declared twice.  Values likewise
+    # cannot be overwritten.  Tracking those facts is what keeps this tiny
+    # reader fail-closed instead of treating duplicate configuration as
+    # last-write-wins.
+    declared_tables: set[tuple[str, ...]] = set()
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         where = f"{source}:{lineno}"
         line = raw_line.strip()
@@ -332,6 +341,11 @@ def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
                 ) from None
             if not all(path):
                 raise ClusterConfigError(f"{where}: malformed table header {line!r}")
+            table_path = tuple(path)
+            if table_path in declared_tables:
+                raise ClusterConfigError(
+                    f"{where}: table {'.'.join(path)!r} is already defined"
+                )
             current = data
             for part in path:
                 nested = current.get(part)
@@ -341,6 +355,8 @@ def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
                 elif not isinstance(nested, dict):
                     raise ClusterConfigError(f"{where}: {part!r} is not a table")
                 current = nested
+            declared_tables.add(table_path)
+            current_path = table_path
             continue
         if "=" not in line:
             raise ClusterConfigError(f"{where}: expected `key = value`, got {line!r}")
@@ -348,6 +364,9 @@ def _parse_toml_subset(text: str, *, source: str) -> dict[str, Any]:
         key = key.strip().strip('"')
         if not key:
             raise ClusterConfigError(f"{where}: empty key")
+        if key in current:
+            qualified = ".".join((*current_path, key))
+            raise ClusterConfigError(f"{where}: key {qualified!r} is already defined")
         value_text = value_text.strip()
         value_text = _strip_trailing_comment(value_text)
         current[key] = _parse_scalar(value_text, where=where)

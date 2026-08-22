@@ -13,6 +13,7 @@ import html
 import io
 import json
 import math
+import os
 import re
 from collections.abc import Mapping, Sequence
 from html.parser import HTMLParser
@@ -28,6 +29,42 @@ _MAX_MOL_ATOMS = 2_000
 # fallback supports larger historical files, but still needs a hard work bound
 # before it enters the bond loop on untrusted HTTP content.
 _MAX_MOL_BONDS = 20_000
+_MAX_PDF_TEXT_CHARS = 20_000
+
+# Workbench projections run inside the shared daemon.  Keep exact-version
+# snapshots useful for moderate scientific results while preventing one team
+# user from asking the daemon to materialize a 512 MiB upload.  Thirty-two MiB
+# is four times the evidence adapter's general table budget; the lower diff cap
+# accounts for difflib retaining both inputs plus its matching/output state.
+MAX_WORKBENCH_ARTIFACT_BYTES = 32 * 1024 * 1024
+MAX_WORKBENCH_DIFF_BYTES_PER_VERSION = 8 * 1024 * 1024
+MAX_WORKBENCH_DIFF_LINES_PER_VERSION = 50_000
+MAX_WORKBENCH_TABLE_ROWS = 250_000
+MAX_WORKBENCH_TABLE_COLUMNS = 256
+MAX_WORKBENCH_TABLE_CELLS = 2_000_000
+MAX_WORKBENCH_PARQUET_ROW_GROUPS = 512
+MAX_WORKBENCH_PARQUET_DECODED_BYTES = 64 * 1024 * 1024
+MAX_WORKBENCH_HTML_ELEMENTS = 20_000
+MAX_WORKBENCH_HTML_DEPTH = 256
+MAX_WORKBENCH_HTML_OUTLINE_ELEMENTS = 200
+_HTML_VOID_ELEMENTS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
 
 
 class WorkbenchError(Exception):
@@ -36,6 +73,28 @@ class WorkbenchError(Exception):
         self.status = status
         self.message = message
         self.code = code
+
+
+def _artifact_too_large(message: str) -> WorkbenchError:
+    return WorkbenchError(413, message, "artifact_too_large")
+
+
+def _bounded_snapshot_bytes(path: Path, *, max_bytes: int | None = None) -> bytes:
+    """Read one immutable snapshot without ever materializing past the cap."""
+
+    limit = MAX_WORKBENCH_ARTIFACT_BYTES if max_bytes is None else max_bytes
+    with path.open("rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if size > limit:
+            raise _artifact_too_large(
+                f"artifact exceeds the {limit}-byte workbench limit"
+            )
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        # Defend the read even if a legacy snapshot is replaced or grows after
+        # fstat; a size precheck alone is not a materialization bound.
+        raise _artifact_too_large(f"artifact exceeds the {limit}-byte workbench limit")
+    return data
 
 
 def official_workbench_enabled(config: Any) -> bool:
@@ -61,7 +120,35 @@ def parse_delimited(text: str, filename: str = "") -> list[list[str]]:
     if "\t" in sample and sample.count("\t") > sample.count(","):
         dialect = csv.excel_tab
     reader = csv.reader(io.StringIO(text), dialect=dialect)
-    return [list(row) for row in reader]
+    rows: list[list[str]] = []
+    cell_count = 0
+    header_width = 0
+    try:
+        for row_index, raw_row in enumerate(reader):
+            # row 0 is the header, so the public row budget describes data
+            # rows rather than unexpectedly consuming one slot for metadata.
+            if row_index > MAX_WORKBENCH_TABLE_ROWS:
+                raise _artifact_too_large(
+                    f"table exceeds {MAX_WORKBENCH_TABLE_ROWS} data rows"
+                )
+            row = list(raw_row)
+            if len(row) > MAX_WORKBENCH_TABLE_COLUMNS:
+                raise _artifact_too_large(
+                    f"table exceeds {MAX_WORKBENCH_TABLE_COLUMNS} columns"
+                )
+            if row_index == 0:
+                header_width = len(row)
+            # query_table rectangularizes short rows to the header width.
+            # Budget that real allocation, not only the sparse source cells.
+            cell_count += len(row) if row_index == 0 else max(len(row), header_width)
+            if cell_count > MAX_WORKBENCH_TABLE_CELLS:
+                raise _artifact_too_large(
+                    f"table exceeds {MAX_WORKBENCH_TABLE_CELLS} cells"
+                )
+            rows.append(row)
+    except csv.Error as error:
+        raise WorkbenchError(400, "invalid delimited table", "invalid_table") from error
+    return rows
 
 
 def infer_column_type(values: Sequence[str]) -> str:
@@ -123,7 +210,10 @@ def query_table(
             "filters": {},
         }
     header = [str(name or f"col_{index}") for index, name in enumerate(rows[0])]
-    body = [list(row) + [""] * max(0, len(header) - len(row)) for row in rows[1:]]
+    body = [
+        (list(row) + [""] * max(0, len(header) - len(row)))[: len(header)]
+        for row in rows[1:]
+    ]
     types = [
         infer_column_type([row[index] if index < len(row) else "" for row in body])
         for index in range(len(header))
@@ -175,7 +265,69 @@ def query_table(
     }
 
 
+def _metadata_int(value: Any) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    return value
+
+
+def _parquet_shape(parquet_file: Any) -> tuple[int, int]:
+    """Prove a bounded Parquet decode from metadata before reading columns."""
+
+    metadata = getattr(parquet_file, "metadata", None)
+    rows = _metadata_int(getattr(metadata, "num_rows", None))
+    columns = _metadata_int(getattr(metadata, "num_columns", None))
+    row_groups = _metadata_int(getattr(metadata, "num_row_groups", None))
+    if rows is None or columns is None or row_groups is None:
+        raise WorkbenchError(415, "invalid parquet metadata", "invalid_parquet")
+    if rows > MAX_WORKBENCH_TABLE_ROWS:
+        raise _artifact_too_large(f"table exceeds {MAX_WORKBENCH_TABLE_ROWS} data rows")
+    if columns > MAX_WORKBENCH_TABLE_COLUMNS:
+        raise _artifact_too_large(
+            f"table exceeds {MAX_WORKBENCH_TABLE_COLUMNS} columns"
+        )
+    if rows * columns > MAX_WORKBENCH_TABLE_CELLS:
+        raise _artifact_too_large(f"table exceeds {MAX_WORKBENCH_TABLE_CELLS} cells")
+    if row_groups > MAX_WORKBENCH_PARQUET_ROW_GROUPS:
+        raise _artifact_too_large(
+            f"parquet exceeds {MAX_WORKBENCH_PARQUET_ROW_GROUPS} row groups"
+        )
+
+    total_uncompressed = 0
+    observed_columns = 0
+    try:
+        for row_group_index in range(row_groups):
+            row_group = metadata.row_group(row_group_index)
+            for column_index in range(columns):
+                column = row_group.column(column_index)
+                size = _metadata_int(getattr(column, "total_uncompressed_size", None))
+                if size is None:
+                    raise WorkbenchError(
+                        415, "invalid parquet metadata", "invalid_parquet"
+                    )
+                observed_columns += 1
+                total_uncompressed += size
+                if total_uncompressed > MAX_WORKBENCH_PARQUET_DECODED_BYTES:
+                    raise _artifact_too_large(
+                        "parquet decoded size exceeds the "
+                        f"{MAX_WORKBENCH_PARQUET_DECODED_BYTES}-byte workbench limit"
+                    )
+    except WorkbenchError:
+        raise
+    except Exception as error:  # malformed optional-engine metadata
+        raise WorkbenchError(
+            415, "invalid parquet metadata", "invalid_parquet"
+        ) from error
+    if observed_columns != row_groups * columns or (rows and total_uncompressed == 0):
+        raise WorkbenchError(415, "invalid parquet metadata", "invalid_parquet")
+    return rows, columns
+
+
 def read_parquet_rows(path: Path) -> list[list[str]]:
+    # Bound compressed bytes before importing an optional engine or asking it
+    # to inspect metadata.  BytesIO pins that exact bounded snapshot throughout
+    # the preflight and decode instead of reopening a mutable path.
+    compressed = _bounded_snapshot_bytes(path)
     try:
         import pyarrow.parquet as parquet  # type: ignore[import-not-found]
     except ImportError as error:
@@ -184,22 +336,109 @@ def read_parquet_rows(path: Path) -> list[list[str]]:
             "parquet requires pyarrow from the science extra",
             "parquet_unavailable",
         ) from error
-    table = parquet.read_table(path)
-    header = [str(name) for name in table.column_names]
-    rows = [header]
-    for index in range(table.num_rows):
-        rows.append(
-            [
-                "" if value is None else str(value)
-                for value in table.slice(index, 1).to_pylist()[0].values()
-            ]
+    try:
+        parquet_file = parquet.ParquetFile(io.BytesIO(compressed))
+        expected_rows, expected_columns = _parquet_shape(parquet_file)
+        table = parquet_file.read()
+    except WorkbenchError:
+        raise
+    except Exception as error:  # malformed optional-engine input
+        raise WorkbenchError(415, "invalid parquet", "invalid_parquet") from error
+    decoded_bytes = _metadata_int(getattr(table, "nbytes", None))
+    if decoded_bytes is None:
+        raise WorkbenchError(415, "invalid parquet size", "invalid_parquet")
+    if decoded_bytes > MAX_WORKBENCH_PARQUET_DECODED_BYTES:
+        # Dictionary/RLE metadata describes the encoded column pages, not
+        # necessarily the buffers Arrow materializes. Keep the metadata
+        # preflight above (so oversized input is refused before decode), and
+        # verify the representation the optional engine actually produced too.
+        raise _artifact_too_large(
+            "parquet decoded table exceeds the "
+            f"{MAX_WORKBENCH_PARQUET_DECODED_BYTES}-byte workbench limit"
         )
+    header = [str(name) for name in table.column_names]
+    if table.num_rows != expected_rows or len(header) != expected_columns:
+        raise WorkbenchError(415, "invalid parquet shape", "invalid_parquet")
+    projected_bytes = sum(len(value.encode("utf-8", "replace")) for value in header)
+    if projected_bytes > MAX_WORKBENCH_PARQUET_DECODED_BYTES:
+        raise _artifact_too_large(
+            "parquet projected text exceeds the "
+            f"{MAX_WORKBENCH_PARQUET_DECODED_BYTES}-byte workbench limit"
+        )
+    rows = [header]
+    projected_rows = 0
+    try:
+        for batch in table.to_batches(max_chunksize=1024):
+            batch_rows = _metadata_int(getattr(batch, "num_rows", None))
+            if batch_rows is None:
+                raise WorkbenchError(415, "invalid parquet batch", "invalid_parquet")
+            columns = [batch.column(index) for index in range(expected_columns)]
+            for row_index in range(batch_rows):
+                projected_rows += 1
+                if projected_rows > expected_rows:
+                    raise WorkbenchError(
+                        415, "invalid parquet shape", "invalid_parquet"
+                    )
+                row: list[str] = []
+                for column in columns:
+                    value = column[row_index].as_py()
+                    rendered = "" if value is None else str(value)
+                    projected_bytes += len(rendered.encode("utf-8", "replace"))
+                    if projected_bytes > MAX_WORKBENCH_PARQUET_DECODED_BYTES:
+                        # Convert one scalar at a time and check before retaining
+                        # its row. ``batch.to_pylist()`` can expand one compact
+                        # dictionary value into 1,024 large Python strings before
+                        # a cumulative check gets a chance to reject it.
+                        raise _artifact_too_large(
+                            "parquet projected text exceeds the "
+                            f"{MAX_WORKBENCH_PARQUET_DECODED_BYTES}-byte "
+                            "workbench limit"
+                        )
+                    row.append(rendered)
+                rows.append(row)
+    except WorkbenchError:
+        raise
+    except Exception as error:  # malformed optional-engine projection
+        raise WorkbenchError(415, "invalid parquet", "invalid_parquet") from error
+    if projected_rows != expected_rows:
+        raise WorkbenchError(415, "invalid parquet shape", "invalid_parquet")
     return rows
 
 
 def unified_diff(old: str, new: str, *, from_label: str, to_label: str) -> str:
     import difflib
 
+    def line_count(text: str) -> int:
+        if not text:
+            return 0
+        separators = (
+            text.count("\n")
+            + text.count("\r")
+            - text.count("\r\n")
+            + sum(text.count(char) for char in "\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+        )
+        terminators = (
+            "\n",
+            "\r",
+            "\v",
+            "\f",
+            "\x1c",
+            "\x1d",
+            "\x1e",
+            "\x85",
+            "\u2028",
+            "\u2029",
+        )
+        return separators + (0 if text.endswith(terminators) else 1)
+
+    if (
+        line_count(old) > MAX_WORKBENCH_DIFF_LINES_PER_VERSION
+        or line_count(new) > MAX_WORKBENCH_DIFF_LINES_PER_VERSION
+    ):
+        raise _artifact_too_large(
+            "diff input exceeds "
+            f"{MAX_WORKBENCH_DIFF_LINES_PER_VERSION} lines per version"
+        )
     return "".join(
         difflib.unified_diff(
             old.splitlines(keepends=True),
@@ -313,30 +552,141 @@ def is_benzene(summary: Mapping[str, Any]) -> bool:
     )
 
 
+def _pdf_literal(text: str, start: int) -> tuple[str, int] | None:
+    """Read one balanced PDF literal string in linear time.
+
+    PDF strings may contain escaped or nested parentheses.  Keeping this tiny
+    scanner here is both more accurate and safer than asking a nested regular
+    expression to backtrack over an attacker-controlled Artifact.
+    """
+
+    if start >= len(text) or text[start] != "(":
+        return None
+    out: list[str] = []
+    depth = 1
+    index = start + 1
+    escapes = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"}
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 1
+            if index >= len(text):
+                break
+            escaped = text[index]
+            if escaped == "\r":
+                index += 1
+                if index < len(text) and text[index] == "\n":
+                    index += 1
+                continue
+            if escaped == "\n":
+                index += 1
+                continue
+            if escaped in "01234567":
+                end = index + 1
+                while end < min(index + 3, len(text)) and text[end] in "01234567":
+                    end += 1
+                if len(out) < _MAX_PDF_TEXT_CHARS:
+                    out.append(chr(int(text[index:end], 8) & 0xFF))
+                index = end
+                continue
+            if len(out) < _MAX_PDF_TEXT_CHARS:
+                out.append(escapes.get(escaped, escaped))
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return "".join(out), index + 1
+        if len(out) < _MAX_PDF_TEXT_CHARS:
+            out.append(char)
+        index += 1
+    return None
+
+
+def _pdf_space_end(text: str, start: int) -> int:
+    index = start
+    while index < len(text) and text[index] in " \t\r\n\f\x00":
+        index += 1
+    return index
+
+
+def _pdf_operator_at(text: str, start: int, operator: str) -> bool:
+    end = start + len(operator)
+    if text[start:end] != operator:
+        return False
+    return end >= len(text) or text[end] in " \t\r\n\f\x00[]<>{}()/%"
+
+
 def extract_pdf_text(data: bytes) -> list[dict[str, Any]]:
     if not data.startswith(b"%PDF"):
         raise WorkbenchError(415, "not a PDF", "not_pdf")
     decoded = data.decode("latin-1", "replace")
     chunks: list[str] = []
-    for match in re.finditer(r"\((?:\\.|[^\\)])*\)\s*Tj", decoded):
-        raw = match.group(0)[1 : match.group(0).rfind(")")]
-        raw = (
-            raw.replace("\\(", "(")
-            .replace("\\)", ")")
-            .replace("\\n", "\n")
-            .replace("\\\\", "\\")
-        )
-        if raw.strip():
-            chunks.append(raw)
-    for match in re.finditer(r"\[((?:\s*\((?:\\.|[^\\)])*\)\s*)+)\]\s*TJ", decoded):
-        parts = re.findall(r"\((?:\\.|[^\\)])*\)", match.group(1))
-        text = "".join(
-            part[1:-1].replace("\\(", "(").replace("\\)", ")") for part in parts
-        )
-        if text.strip():
-            chunks.append(text)
-    joined = " ".join(chunks)
-    return [{"page": 1, "index": 0, "text": joined[:20_000]}]
+    captured = 0
+
+    def append(value: str) -> None:
+        nonlocal captured
+        if not value.strip() or captured >= _MAX_PDF_TEXT_CHARS:
+            return
+        room = _MAX_PDF_TEXT_CHARS - captured - (1 if chunks else 0)
+        if room <= 0:
+            return
+        value = value[:room]
+        chunks.append(value)
+        captured += len(value) + (1 if len(chunks) > 1 else 0)
+
+    index = 0
+    while index < len(decoded) and captured < _MAX_PDF_TEXT_CHARS:
+        if decoded[index] == "(":
+            literal = _pdf_literal(decoded, index)
+            if literal is None:
+                break
+            value, end = literal
+            operator = _pdf_space_end(decoded, end)
+            if _pdf_operator_at(decoded, operator, "Tj"):
+                append(value)
+                index = operator + 2
+            else:
+                index = end
+            continue
+        if decoded[index] == "[":
+            cursor = index + 1
+            parts: list[str] = []
+            parts_chars = 0
+            closed = False
+            while cursor < len(decoded):
+                cursor = _pdf_space_end(decoded, cursor)
+                if cursor >= len(decoded):
+                    break
+                if decoded[cursor] == "]":
+                    closed = True
+                    break
+                if decoded[cursor] == "(":
+                    literal = _pdf_literal(decoded, cursor)
+                    if literal is None:
+                        break
+                    value, cursor = literal
+                    if parts_chars < _MAX_PDF_TEXT_CHARS:
+                        value = value[: _MAX_PDF_TEXT_CHARS - parts_chars]
+                        parts.append(value)
+                        parts_chars += len(value)
+                    continue
+                # Numeric kerning values and other non-string array tokens do
+                # not contribute text, but they are legal between strings.
+                cursor += 1
+            if not closed:
+                break
+            operator = _pdf_space_end(decoded, cursor + 1)
+            if _pdf_operator_at(decoded, operator, "TJ"):
+                append("".join(parts))
+                index = operator + 2
+            else:
+                index = cursor + 1
+            continue
+        index += 1
+    return [{"page": 1, "index": 0, "text": " ".join(chunks)}]
 
 
 class _OutlineParser(HTMLParser):
@@ -345,12 +695,21 @@ class _OutlineParser(HTMLParser):
         self.outline: list[dict[str, str]] = []
         self._stack: list[str] = []
         self._skip = 0
-        self._buf = ""
+        self._element_count = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._element_count += 1
+        if self._element_count > MAX_WORKBENCH_HTML_ELEMENTS:
+            raise _artifact_too_large(
+                f"HTML exceeds {MAX_WORKBENCH_HTML_ELEMENTS} elements"
+            )
         if tag in {"script", "style"}:
             self._skip += 1
             return
+        if len(self._stack) >= MAX_WORKBENCH_HTML_DEPTH:
+            raise _artifact_too_large(
+                f"HTML exceeds a nesting depth of {MAX_WORKBENCH_HTML_DEPTH}"
+            )
         mapping = {name: value or "" for name, value in attrs}
         ident = mapping.get("id")
         selector = f"#{ident}" if ident else tag
@@ -358,19 +717,24 @@ class _OutlineParser(HTMLParser):
             path = selector
         else:
             path = ">".join([*self._stack, tag]) if self._stack else tag
-        self._stack.append(tag)
-        self._buf = ""
-        self.outline.append(
-            {
-                "tag": tag,
-                "selector": path[:240],
-                "id": ident or "",
-                "text": "",
-            }
-        )
+        if tag not in _HTML_VOID_ELEMENTS:
+            self._stack.append(tag)
+        if len(self.outline) < MAX_WORKBENCH_HTML_OUTLINE_ELEMENTS:
+            self.outline.append(
+                {
+                    "tag": tag,
+                    "selector": path[:240],
+                    "id": ident or "",
+                    "text": "",
+                }
+            )
 
     def handle_data(self, data: str) -> None:
-        if self._skip or not self.outline:
+        if (
+            self._skip
+            or not self.outline
+            or self._element_count > MAX_WORKBENCH_HTML_OUTLINE_ELEMENTS
+        ):
             return
         text = " ".join(data.split())
         if text and not self.outline[-1]["text"]:
@@ -392,7 +756,7 @@ def html_outline(text: str) -> list[dict[str, str]]:
         item
         for item in parser.outline
         if item["tag"] not in {"html", "head", "meta", "link"}
-    ][:200]
+    ][:MAX_WORKBENCH_HTML_OUTLINE_ELEMENTS]
 
 
 def normalize_locator(kind: str, locator: Any) -> dict[str, Any]:
@@ -605,10 +969,14 @@ class ArtifactWorkbenchService:
         raise WorkbenchError(404, "artifact bytes not found", "artifact_missing")
 
     def _bytes(
-        self, artifact: Mapping[str, Any], version_id: str | None = None
+        self,
+        artifact: Mapping[str, Any],
+        version_id: str | None = None,
+        *,
+        max_bytes: int | None = None,
     ) -> bytes:
         _version, snapshot = self._version_snapshot(artifact, version_id)
-        return snapshot.read_bytes()
+        return _bounded_snapshot_bytes(snapshot, max_bytes=max_bytes)
 
     def table(
         self,
@@ -626,7 +994,7 @@ class ArtifactWorkbenchService:
         if name.lower().endswith(".parquet"):
             rows = read_parquet_rows(snapshot)
         else:
-            raw = snapshot.read_bytes()
+            raw = _bounded_snapshot_bytes(snapshot)
             rows = parse_delimited(raw.decode("utf-8", "replace"), name)
         result = query_table(
             rows,
@@ -660,8 +1028,16 @@ class ArtifactWorkbenchService:
         newest = versions[0]["version_id"]
         left_id = from_version or oldest
         right_id = to_version or newest
-        left = self._bytes(artifact, left_id).decode("utf-8", "replace")
-        right = self._bytes(artifact, right_id).decode("utf-8", "replace")
+        left = self._bytes(
+            artifact,
+            left_id,
+            max_bytes=MAX_WORKBENCH_DIFF_BYTES_PER_VERSION,
+        ).decode("utf-8", "replace")
+        right = self._bytes(
+            artifact,
+            right_id,
+            max_bytes=MAX_WORKBENCH_DIFF_BYTES_PER_VERSION,
+        ).decode("utf-8", "replace")
         return {
             "artifact_id": artifact_id,
             "from_version_id": left_id,

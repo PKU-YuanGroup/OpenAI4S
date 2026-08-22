@@ -9,6 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import pytest
 
@@ -84,6 +85,7 @@ def _clear_stage10_cache():
 
 
 def _fetch(url, fmt, timeout, max_chars):
+    parsed = urlparse(url)
     if "esearch" in url and "clinvar" in url:
         body = CLINVAR_SEARCH
     elif "esummary" in url and "clinvar" in url:
@@ -92,7 +94,7 @@ def _fetch(url, fmt, timeout, max_chars):
         body = PUBMED_SEARCH
     elif "esummary" in url and "pubmed" in url:
         body = PUBMED_SUMMARY
-    elif "clinicaltrials.gov" in url:
+    elif parsed.hostname == "clinicaltrials.gov":
         body = TRIALS
     else:
         raise AssertionError(url)
@@ -115,7 +117,9 @@ def test_clinvar_search_records_accession_url_time_and_file_receipt(tmp_path):
     assert result["count"] == 1
     row = result["results"][0]
     assert row["id"] == "VCV000012345"
-    assert "ncbi.nlm.nih.gov/clinvar" in row["url"]
+    clinvar_url = urlparse(row["url"])
+    assert clinvar_url.hostname == "www.ncbi.nlm.nih.gov"
+    assert clinvar_url.path.startswith("/clinvar/")
     assert result["provenance"]["retrieved_at"]
     assert result["request_url"]
     workspace = tmp_path / "ws"
@@ -127,7 +131,7 @@ def test_clinvar_search_records_accession_url_time_and_file_receipt(tmp_path):
     assert payload["result"] == result
     source = receipt["source"]
     assert source["query"] == "VCV000012345"
-    assert "eutils.ncbi.nlm.nih.gov" in source["endpoint"]
+    assert urlparse(source["endpoint"]).hostname == "eutils.ncbi.nlm.nih.gov"
     assert source["retrieved_at"]
     assert "VCV000012345" in source["accessions"]
     assert not list(workspace.glob(".openai4s-*"))
@@ -270,7 +274,9 @@ def test_clinicaltrials_and_pubmed_normalize(tmp_path):
     assert papers["next_cursor"] is None
     trials = service.search("clinicaltrials", "BRCA", limit=1)
     assert trials["results"][0]["id"] == "NCT00001379"
-    assert "clinicaltrials.gov/study/NCT00001379" in trials["results"][0]["url"]
+    trial_url = urlparse(trials["results"][0]["url"])
+    assert trial_url.hostname == "clinicaltrials.gov"
+    assert trial_url.path == "/study/NCT00001379"
 
 
 def test_tool_catalog_hides_stage10_until_the_flag_is_on():

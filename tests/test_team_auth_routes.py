@@ -74,6 +74,7 @@ class _TeamDaemon:
         team_mode: bool = True,
         data_roots: list[Path] | None = None,
         roadmap_features: RoadmapFeatureFlags | None = None,
+        trusted_proxy_origins: tuple[str, ...] = (),
     ) -> None:
         self.data_dir = data_dir
         self.port = _free_port()
@@ -84,6 +85,7 @@ class _TeamDaemon:
             host="127.0.0.1",
             port=self.port,
             roadmap_features=roadmap_features or RoadmapFeatureFlags(),
+            trusted_proxy_origins=trusted_proxy_origins,
         )
         if team_mode:
             self.cfg.team_mode = True
@@ -174,7 +176,14 @@ def _get(
     return _speak(port, ("\r\n".join(lines) + "\r\n\r\n").encode("ascii"))
 
 
-def _post(port: int, path: str, body: dict, *, cookie: str | None = None):
+def _post(
+    port: int,
+    path: str,
+    body: dict,
+    *,
+    cookie: str | None = None,
+    origin: str | None = None,
+):
     payload = json.dumps(body).encode("utf-8")
     lines = [
         f"POST {path} HTTP/1.1",
@@ -184,6 +193,8 @@ def _post(port: int, path: str, body: dict, *, cookie: str | None = None):
     ]
     if cookie is not None:
         lines.append(f"Cookie: {cookie}")
+    if origin is not None:
+        lines.append(f"Origin: {origin}")
     lines.append("Connection: close")
     head = ("\r\n".join(lines) + "\r\n\r\n").encode("ascii")
     return _speak(port, head + payload)
@@ -212,7 +223,9 @@ def _login(daemon, username: str, password: str) -> str:
     return _set_cookie(raw)
 
 
-def _ws_upgrade(port: int, *, cookie: str | None = None) -> tuple:
+def _ws_upgrade(
+    port: int, *, cookie: str | None = None, origin: str | None = None
+) -> tuple:
     lines = [
         "GET /api/v1/ws HTTP/1.1",
         f"Host: 127.0.0.1:{port}",
@@ -223,6 +236,8 @@ def _ws_upgrade(port: int, *, cookie: str | None = None) -> tuple:
     ]
     if cookie is not None:
         lines.append(f"Cookie: {cookie}")
+    if origin is not None:
+        lines.append(f"Origin: {origin}")
     return _speak(
         port, ("\r\n".join(lines) + "\r\n\r\n").encode("ascii"), read_all=False
     )
@@ -292,6 +307,50 @@ def test_login_sets_httponly_lax_cookie(daemon):
     assert b"httponly" in header
     assert b"samesite=lax" in header
     assert b"max-age=" in header
+
+
+def test_exact_trusted_proxy_origin_allows_login_and_websocket(tmp_path):
+    node = _TeamDaemon(
+        tmp_path,
+        trusted_proxy_origins=("https://lab.example",),
+    )
+    try:
+        node.seed_user("alice", "fake-pw-alice")
+        status, raw = _post(
+            node.port,
+            "/api/v1/auth/login",
+            {"username": "alice", "password": "fake-pw-alice"},
+            origin="https://lab.example",
+        )
+        assert status == 200, raw[:300]
+        cookie = _set_cookie(raw)
+
+        status, raw = _ws_upgrade(
+            node.port,
+            cookie=cookie,
+            origin="https://lab.example",
+        )
+        assert status == 101, raw[:200]
+
+        status, raw = _post(
+            node.port,
+            "/api/v1/auth/logout",
+            {},
+            cookie=cookie,
+            origin="https://evil.example",
+        )
+        assert status == 403, raw[:300]
+        assert _body_json(raw).get("error") == "cross-origin request refused"
+
+        status, raw = _ws_upgrade(
+            node.port,
+            cookie=cookie,
+            origin="https://evil.example",
+        )
+        assert status == 403, raw[:200]
+        assert b"Sec-WebSocket-Accept" not in raw
+    finally:
+        node.close()
 
 
 def test_wrong_password_is_401_and_audited(daemon):

@@ -151,6 +151,15 @@ def handle(
         if not _may_use(self, session_id, store):
             self._json({"error": "session not found"}, 404)
             return True
+        # This group dispatches before the gateway's path scope guard, and
+        # `/sessions/...` is intentionally distinct from `/frames/...`.
+        # Preserve D4 here: a successful admin status view of somebody else's
+        # private Session leaves one audit row.  POST request/release paths do
+        # not pass through this branch and therefore are not misclassified as
+        # reads.
+        audit_private_read = getattr(self, "_team_audit_admin_private_read", None)
+        if callable(audit_private_read):
+            audit_private_read(session_id)
         if manager is None:
             self._json(
                 {"session_id": session_id, "location": "local", "workload": None}

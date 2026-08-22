@@ -258,6 +258,88 @@ def test_workbench_diff_cannot_smuggle_another_users_version(tmp_path):
         node.close()
 
 
+def test_admin_private_artifact_reads_are_audited_but_mutations_are_not(tmp_path):
+    """D4 covers Artifact projections, not only the raw-byte download route."""
+
+    node = _TeamDaemon(
+        tmp_path,
+        roadmap_features=RoadmapFeatureFlags(stage9_artifact_workbench=True),
+    )
+    node.seed_user("root", "fake-pw-r", role="admin")
+    node.seed_user("alice", "fake-pw-a")
+    node.store.create_project(name="p", description="", context="")
+    try:
+        alice = _login(node, "alice", "fake-pw-a")
+        root = _login(node, "root", "fake-pw-r")
+        frame_id = _create_session(node, alice)
+        status, raw = _post(
+            node.port,
+            f"/api/v1/frames/{frame_id}/visibility",
+            {"visibility": "private"},
+            cookie=alice,
+        )
+        assert status == 200, raw[:300]
+
+        table = _seed_artifact(
+            node, frame_id, "private-table.csv", b"name,n\nalice,7\n"
+        )
+        pdf = _seed_artifact(
+            node,
+            frame_id,
+            "private-paper.pdf",
+            b"%PDF-1.4\nBT /F1 12 Tf (private sentence) Tj ET\n%%EOF\n",
+        )
+        html = _seed_artifact(
+            node,
+            frame_id,
+            "private-page.html",
+            b"<html><body><p id='private'>secret</p></body></html>",
+        )
+        for artifact in (table, pdf, html):
+            node.runner.artifacts.write_version_snapshot(
+                artifact["version_id"],
+                artifact["filename"],
+                src_path=Path(artifact["path"]),
+            )
+
+        def audit():
+            return node.store.team.list_audit(action="admin_read_private")
+
+        reads = (
+            f"/api/v1/artifacts/{table['artifact_id']}",
+            f"/api/v1/artifacts/{table['artifact_id']}/table",
+            f"/api/v1/artifacts/{table['artifact_id']}/diff",
+            f"/api/v1/artifacts/{pdf['artifact_id']}/pdf-text",
+            f"/api/v1/artifacts/{html['artifact_id']}/html-outline",
+            f"/api/v1/artifacts/{table['artifact_id']}/renderer",
+            f"/api/v1/artifacts/{table['artifact_id']}/lineage",
+            f"/api/v1/artifacts/{table['artifact_id']}/versions",
+        )
+        for path in reads:
+            before = len(audit())
+            status, raw = _get(node.port, path, cookie=root)
+            assert status == 200, (path, raw[:300])
+            rows = audit()
+            assert len(rows) == before + 1, path
+            assert rows[0]["target"] == frame_id
+
+        # Metadata/content mutations are admin-authorized, but they are not
+        # views and therefore must not manufacture admin-private-read rows.
+        before = len(audit())
+        status, raw = _post(
+            node.port,
+            f"/api/v1/artifacts/{table['artifact_id']}/priority",
+            {"priority": 3},
+            cookie=root,
+        )
+        assert status == 200, raw[:300]
+        status, raw = _delete(node, f"/api/v1/artifacts/{html['artifact_id']}", root)
+        assert status == 200, raw[:300]
+        assert len(audit()) == before
+    finally:
+        node.close()
+
+
 def test_session_owner_reaches_their_project_without_a_membership_row(daemon):
     """Ownership of a session in a project is participation: the daemon
     creates sessions in projects an admin never explicitly enrolled anyone

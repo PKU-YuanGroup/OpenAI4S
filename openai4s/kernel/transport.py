@@ -43,15 +43,18 @@ import subprocess
 import threading
 from typing import Any, Callable, Protocol
 
+from openai4s.kernel.protocol import MAX_FRAME_BYTES
+
 #: How long to wait for a remote worker to dial in before giving up. A
 #: queued job may sit for hours, so this is not the queue wait — the caller
 #: does not construct the transport until the allocation is running.
 DEFAULT_CONNECT_TIMEOUT_S = 300.0
 
-#: Cap on one protocol line from a remote worker. The local path is bounded
-#: by the worker's own outbound cap; a socket has no such courtesy, and an
-#: unbounded readline on a network peer is a memory exhaustion primitive.
-MAX_LINE_BYTES = 16 * 1024 * 1024
+#: Cap on one protocol line from a remote worker. This is an alias kept for
+#: callers that imported the transport-era name; the source of truth is the
+#: shared producer/receiver protocol ceiling. A socket has no producer-side
+#: courtesy of its own, so the bounded read remains a memory-exhaustion guard.
+MAX_LINE_BYTES = MAX_FRAME_BYTES
 
 
 class KernelTransport(Protocol):
@@ -359,6 +362,7 @@ class OutboundTcpTransport:
 
 __all__ = [
     "DEFAULT_CONNECT_TIMEOUT_S",
+    "MAX_FRAME_BYTES",
     "MAX_LINE_BYTES",
     "KernelTransport",
     "OutboundTcpTransport",

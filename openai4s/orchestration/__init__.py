@@ -26,6 +26,7 @@ from openai4s.orchestration.ports import (
     Existing,
     Rejected,
     SubmitResult,
+    TerminalAllocationAcknowledger,
     Unknown,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "ResourceProfile",
     "SubmissionToken",
     "SubmitResult",
+    "TerminalAllocationAcknowledger",
     "Unknown",
     "Workload",
     "WorkloadKind",

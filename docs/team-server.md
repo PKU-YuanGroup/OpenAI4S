@@ -256,7 +256,19 @@ supported ways to reach it from elsewhere, in order of preference:
    for example `127.0.0.1:8760`. A proxy that passes the client's `Host`
    through unchanged gets `403 host not allowed` on every request. Setting
    `OPENAI4S_HOST` to a proxy hostname can make the daemon bind beyond
-   loopback and is not a supported way to admit that hostname.
+   loopback and is not a supported way to admit that hostname. Name every
+   external browser origin explicitly (scheme, host, and non-default port) so
+   the CSRF guard can distinguish that trusted proxy mismatch from another
+   site:
+
+   ```bash
+   export OPENAI4S_TRUSTED_PROXY_ORIGINS=https://lab.example
+   ```
+
+   Multiple exact origins are comma-separated. One trailing slash is
+   normalized; wildcards, credentials, non-root paths, queries, and fragments
+   are refused. Leaving the variable unset preserves the strict default:
+   `Origin` must name the literal backend `Host`.
 
 **The relay is not a third way to run a lab server.** `openai4s relay` and
 `openai4s share` exist for a different purpose — a read-only, redacted

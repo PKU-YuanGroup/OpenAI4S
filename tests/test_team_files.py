@@ -228,6 +228,23 @@ def test_one_member_cannot_read_anothers_personal_area(daemon):
     target = daemon.root / "users" / "alice" / "private.csv"
     assert target.exists()
 
+    # The personal namespace is navigable, but it is not an account/scratch
+    # directory. A member sees only their own entry; an admin retains the
+    # explicit all-users view.
+    from urllib.parse import quote
+
+    users_path = quote(str(daemon.root / "users"))
+    status, raw = _get(daemon.port, f"/api/v1/files?path={users_path}", cookie=bob)
+    assert status == 200
+    assert _body_json(raw)["entries"] == []
+    status, raw = _get(daemon.port, f"/api/v1/files?path={users_path}", cookie=alice)
+    assert [entry["name"] for entry in _body_json(raw)["entries"]] == ["alice"]
+
+    daemon.seed_user("root", "fake-pw-r", role="admin")
+    root = _login(daemon, "root", "fake-pw-r")
+    status, raw = _get(daemon.port, f"/api/v1/files?path={users_path}", cookie=root)
+    assert [entry["name"] for entry in _body_json(raw)["entries"]] == ["alice"]
+
     status, _ = _get(daemon.port, f"/api/v1/files/download?path={target}", cookie=bob)
     assert status == 404, "bob downloaded alice's personal file"
     status, _ = _get(daemon.port, f"/api/v1/files?path={target.parent}", cookie=bob)

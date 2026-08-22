@@ -6255,9 +6255,27 @@
             "type": "object"
           },
           "filename": {
-            "type": "null"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "interactions": {
+            "items": {
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "at",
+                "kind"
+              ],
+              "type": "object"
+            },
             "type": "array"
           }
         },
@@ -6626,7 +6644,10 @@
             "type": "array"
           },
           "sorted_by": {
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "total_rows": {
             "type": "integer"
@@ -6717,7 +6738,6 @@
                 "is_latest",
                 "ordinal",
                 "producing_cell_id",
-                "retrieval_source",
                 "size_bytes",
                 "version_id"
               ],
@@ -23538,7 +23558,62 @@
       "schema": {
         "properties": {
           "artifact": {
-            "type": "null"
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "checksum": {
+                "type": "string"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "filename": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "is_user_upload": {
+                "type": "boolean"
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "version_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "checksum",
+              "content_type",
+              "created_at",
+              "filename",
+              "id",
+              "is_user_upload",
+              "priority",
+              "project_id",
+              "root_frame_id",
+              "size_bytes",
+              "version_id"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
           },
           "ok": {
             "type": "boolean"

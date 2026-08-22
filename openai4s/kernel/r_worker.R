@@ -41,9 +41,9 @@
 # oversized response was written and the manager's readline() materialised it
 # whole. Derived from the SAME numbers rather than hand-picked, so the two
 # workers cannot drift into different contracts: worst-case JSON expansion
-# (12 bytes — an astral character costs a `\uXXXX` surrogate PAIR) times the
-# two capped streams, plus room for the rest of the frame.
-.oai4s_MAX_FRAME_BYTES <- 12L * 2L * .oai4s_MAX_OUTPUT + 2000000L
+# (6 bytes for a control-character escape) times the three independently
+# capped stdout/stderr/error fields, plus room for the rest of the frame.
+.oai4s_MAX_FRAME_BYTES <- 6L * 3L * .oai4s_MAX_OUTPUT + 2000000L
 
 .oai4s_or <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
 

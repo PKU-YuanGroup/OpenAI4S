@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from openai4s import execution_principal
 from openai4s.config import Config
 from openai4s.host import resource_allowlist
 from openai4s.skills_loader import SkillLoader, SkillVersionService
@@ -101,6 +102,45 @@ class SkillService:
         if getattr(skill, "source", "") == "project" and self.project_id:
             return "project", self.project_id
         return "personal", None
+
+    def _authorize_mutation(self, scope: str, project_id: str | None) -> None:
+        """Apply team authorization in addition to interactive approval.
+
+        The permission broker answers whether the person running this turn
+        consents to an agent mutation.  It does not make that person an
+        administrator.  In team mode the personal Skill directory is one
+        daemon-global runtime input, so only an admin may change it.  A project
+        overlay may be changed by a real member of that project, matching the
+        HTTP project-mutation boundary; merely owning a session there is not
+        enough.
+
+        ``resolve()`` is deliberately used instead of reading an optional
+        principal: an unpropagated team identity must fail closed.  Off team
+        mode it returns the explicit single-user principal, preserving the
+        existing local authoring contract.
+        """
+
+        principal = execution_principal.resolve()
+        if principal.is_admin:
+            return
+        if scope != "project":
+            raise PermissionError(
+                "personal Skill mutation requires a team administrator"
+            )
+        if not project_id or project_id != self.project_id:
+            raise PermissionError(
+                "project Skill mutation requires the active project scope"
+            )
+        try:
+            from openai4s.store import get_store
+
+            role = get_store(self.cfg.db_path).governance.member_role(
+                project_id, principal.user_id
+            )
+        except Exception:  # noqa: BLE001 - undecidable authorization is refused
+            role = None
+        if principal.role == "guest" or role is None or str(role) == "guest":
+            raise PermissionError("project Skill mutation requires project membership")
 
     def load(self, name: str | dict) -> dict:
         """Load full guidance, with the historical fuzzy-name fallback."""
@@ -223,6 +263,8 @@ class SkillService:
             raise PermissionError(
                 f"skill {name!r} origin={existing.origin} is read-only"
             )
+        scope, project_id = self._writable_scope(existing)
+        self._authorize_mutation(scope, project_id)
         candidate_directory = (
             existing.root.name if existing is not None else self.versions.slug(name)
         )
@@ -278,7 +320,6 @@ class SkillService:
                 fallback=existing.name if existing is not None else name,
             )
         files[relative] = updated_content.encode("utf-8")
-        scope, project_id = self._writable_scope(existing)
         self.versions.install(
             existing.name if existing is not None else name,
             files,
@@ -312,8 +353,18 @@ class SkillService:
             raise KeyError(f"no such skill: {name!r}")
         if skill.read_only:
             raise PermissionError(f"skill {name!r} is read-only")
-        self.versions.publish(name, slug=skill.root.name)
-        return {"ok": True, "origin": "personal"}
+        scope, project_id = self._writable_scope(skill)
+        self._authorize_mutation(scope, project_id)
+        self.versions.publish(
+            name,
+            scope=scope,
+            project_id=project_id,
+            slug=skill.root.name,
+        )
+        return {
+            "ok": True,
+            "origin": "personal" if scope == "personal" else skill.origin,
+        }
 
     def delete(self, name: str) -> dict:
         if not self._permits(str(name or "")):
@@ -325,6 +376,7 @@ class SkillService:
         if skill.read_only:
             raise PermissionError(f"skill {name!r} is read-only")
         scope, project_id = self._writable_scope(skill)
+        self._authorize_mutation(scope, project_id)
         installation = self.versions.repository.get_installation(
             skill.name,
             scope=scope,
@@ -418,6 +470,7 @@ class SkillService:
             else {"name": name, "version_id": version_id, "scope": "personal"}
         )
         skill_name, scope, project_id, _limit = self._version_request(spec)
+        self._authorize_mutation(scope, project_id)
         target_version = str(spec.get("version_id") or "").strip()
         if not target_version:
             raise ValueError("skill version_id is required")

@@ -147,6 +147,27 @@ class AllocationBackend(Protocol):
 
 
 @runtime_checkable
+class TerminalAllocationAcknowledger(Protocol):
+    """Optional backend-owned recovery-state garbage collection.
+
+    A candidate is only a hint that backend recovery/deduplication state
+    exists.  The control plane MUST load the allocation from its durable store
+    and prove that its phase is terminal plus either the parent workload is
+    terminal or a later recovery epoch was durably opened before acknowledging
+    it. This keeps an uncommitted terminal observation from deleting the only
+    fact that makes submission reconciliation safe after a crash.
+    """
+
+    def terminal_acknowledgement_candidates(self) -> tuple[str, ...]:
+        """Allocation ids whose backend recovery state may be reclaimable."""
+        ...
+
+    def acknowledge_terminal(self, allocation: Allocation) -> None:
+        """Idempotently discard recovery state for a durably terminal attempt."""
+        ...
+
+
+@runtime_checkable
 class TaskRunner(Protocol):
     """A backend that can run work inside an allocation it already granted.
 
@@ -162,11 +183,12 @@ class TaskRunner(Protocol):
 
 
 __all__ = [
-    "TaskRunner",
     "AllocationBackend",
     "Created",
     "Existing",
     "Rejected",
     "SubmitResult",
+    "TaskRunner",
+    "TerminalAllocationAcknowledger",
     "Unknown",
 ]

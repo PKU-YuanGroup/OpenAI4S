@@ -15,6 +15,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _load_dotenv() -> None:
@@ -525,6 +526,73 @@ def data_root_policies() -> list[tuple[Path, bool]]:
     return roots
 
 
+def _canonical_http_origin(raw: str) -> str:
+    """One exact browser origin, normalized for comparison with ``Origin``.
+
+    This deliberately supports no wildcard, path, credentials, query, or
+    fragment.  The value is an authority trusted by an operator, not a URL
+    pattern, and accepting a broader spelling here would silently widen the
+    gateway's CSRF boundary.
+    """
+
+    text = str(raw or "").strip()
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(
+            "OPENAI4S_TRUSTED_PROXY_ORIGINS contains an invalid origin"
+        ) from error
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    if (
+        scheme not in {"http", "https"}
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or "*" in host
+        or "\\" in text
+        or any(character.isspace() or ord(character) < 0x20 for character in text)
+    ):
+        raise ValueError(
+            "OPENAI4S_TRUSTED_PROXY_ORIGINS entries must be exact http(s) origins"
+        )
+    host = host.lower()
+    if ":" in host:
+        authority = f"[{host}]"
+    else:
+        try:
+            authority = host.encode("idna").decode("ascii")
+        except UnicodeError as error:
+            raise ValueError(
+                "OPENAI4S_TRUSTED_PROXY_ORIGINS contains an invalid hostname"
+            ) from error
+    if port is not None and not (
+        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    ):
+        authority += f":{port}"
+    return f"{scheme}://{authority}"
+
+
+def _trusted_proxy_origins() -> tuple[str, ...]:
+    """Exact external origins admitted when a TLS proxy rewrites ``Host``."""
+
+    raw = os.environ.get("OPENAI4S_TRUSTED_PROXY_ORIGINS", "").strip()
+    if not raw:
+        return ()
+    origins: list[str] = []
+    for part in raw.split(","):
+        if not part.strip():
+            continue
+        origin = _canonical_http_origin(part)
+        if origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
+
+
 @dataclass(frozen=True)
 class RoadmapFeatureFlags:
     """Stage 1--12 rollout reservations from the Auto Mode master plan.
@@ -862,6 +930,12 @@ class Config:
     # corresponding Stage 1–12 consumer remains independently gated and default-off.
     roadmap_features: RoadmapFeatureFlags = field(default_factory=RoadmapFeatureFlags)
     auto_mode: AutoModeConfig = field(default_factory=AutoModeConfig)
+    # Exact browser origins allowed to differ from the backend Host header when
+    # a trusted TLS reverse proxy rewrites Host to the loopback upstream. Empty
+    # preserves the literal Origin.netloc == Host check.
+    trusted_proxy_origins: tuple[str, ...] = field(
+        default_factory=_trusted_proxy_origins
+    )
 
     def ensure_dirs(self) -> None:
         from openai4s.security.permissions import harden_dir

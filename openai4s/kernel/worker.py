@@ -58,7 +58,16 @@ if (
 ):
     sys.path.insert(0, _TRUSTED_PACKAGE_PARENT)
 
-MAX_OUTPUT = 1_000_000  # 1M-character head cap on captured cell output
+from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+    JSON_WORST_BYTES_PER_CHAR as _JSON_WORST_BYTES_PER_CHAR,
+)
+from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+    MAX_FRAME_BYTES as _MAX_FRAME_BYTES,
+)
+from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+    MAX_OUTPUT_CHARS as MAX_OUTPUT,
+)
+
 _DISCARD_BUDGET = 8  # bounded discard for desync
 _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap
 #: A Cell can open an unbounded number of paths.  ``files_read`` is evidence
@@ -97,8 +106,6 @@ _MAX_CHUNK_CHARS = 64_000
 #:
 #: It still bounds the allocation the backstop is for: a
 #: `print("x" * 200_000_000)` is stopped just the same.
-_JSON_WORST_BYTES_PER_CHAR = 12
-_MAX_FRAME_BYTES = _JSON_WORST_BYTES_PER_CHAR * 2 * MAX_OUTPUT + 2_000_000
 #: One spelling of the marker, so the streamed tail and the captured result
 #: cannot disagree about what happened.
 _TRUNCATION_MARKER = f"\n...(truncated at {MAX_OUTPUT} characters)"

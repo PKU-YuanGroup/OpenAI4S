@@ -208,7 +208,13 @@ def _route_module_specs(name: str) -> tuple[RouteSpec, ...]:
 #: have swallowed this one?". Deliberately boring: it must not contain "/" or a
 #: regex metacharacter.
 _SAMPLE_SEGMENT = "x"
-_GROUP = re.compile(r"\((?:\?[a-zA-Z:=!<][^()]*|[^()])*\)")
+# Both alternatives in the former nested expression matched the ``?`` prefix
+# character-by-character, so a malformed declaration such as repeated ``?a``
+# without a closing parenthesis caused exponential backtracking during startup.
+# The special-prefix arm did not add any accepted text: ``[^()]`` already
+# covers every character it matched.  Keep the exact non-nested-group language
+# with the single linear alternative.
+_GROUP = re.compile(r"\([^()]*\)")
 
 
 def _sample_path(pattern: str) -> str | None:

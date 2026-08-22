@@ -592,6 +592,15 @@ class WorkloadRepository:
             diagnostics=json.loads(row["observed_json"] or "{}"),
         )
 
+    def get_allocation(self, allocation_id: str) -> Allocation | None:
+        """Load one attempt by durable id, including terminal history."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM allocations WHERE id=?", (allocation_id,)
+            ).fetchone()
+        return self._row_to_allocation(row) if row else None
+
     def active_allocation(self, workload_id: str) -> Allocation | None:
         with self._lock:
             row = self._connection.execute(

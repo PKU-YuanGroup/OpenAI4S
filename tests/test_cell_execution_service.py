@@ -790,6 +790,50 @@ def test_worker_exception_still_finishes_allocated_attempt(tmp_path):
     assert "worker exited" not in published
 
 
+def test_watchdog_hard_cancel_is_durably_classified_as_cancelled(tmp_path):
+    """Drive the service boundary that persists both Cell and attempt state."""
+    from openai4s.execution.watchdog import KernelCancellation
+
+    harness = Harness()
+    harness.fail_run = KernelCancellation("private worker detail")
+    attempts: list[tuple] = []
+    ports = replace(
+        harness.ports(),
+        allocate_attempt=lambda *args: "attempt-cancelled",
+        mark_attempt_started=lambda attempt_id: attempts.append(
+            ("started", attempt_id)
+        ),
+        finish_attempt=lambda attempt_id, state, error: attempts.append(
+            ("finished", attempt_id, state, error)
+        ),
+    )
+    service = CellExecutionService(ports, id_factory=lambda: "cell-cancelled")
+
+    with pytest.raises(KernelCancellation):
+        service.execute(
+            _session(tmp_path),
+            CellRequest("while True: pass", "agent", stream=False),
+            lambda event: None,
+            action_group_id="group-cancelled",
+        )
+
+    assert attempts[-1] == (
+        "finished",
+        "attempt-cancelled",
+        "cancelled",
+        {
+            "kind": "ExecutionCancelled",
+            "message": "the execution attempt was cancelled",
+            "code": "cell_cancelled",
+        },
+    )
+    persisted = harness.records[0]["result"]["error"]
+    assert "cancelled" in persisted
+    assert "cell_cancelled" in persisted
+    assert "time limit" not in persisted
+    assert "private worker detail" not in persisted
+
+
 def test_attempt_milestone_write_failure_still_finalizes_attempt(tmp_path):
     """A milestone write that raises (e.g. SQLite 'database is locked') must
     still finalize the attempt as record_failed; otherwise terminal_state stays
@@ -957,6 +1001,23 @@ def test_a_timeout_still_says_the_kernel_was_reset():
 
     assert "variables from earlier cells were cleared" in published
     assert "/srv/run" not in published
+
+
+def test_a_watchdog_hard_cancel_is_projected_as_cancellation_not_timeout():
+    from openai4s.execution.watchdog import KernelCancellation
+    from openai4s.server.cell_run import _worker_failure_text
+    from openai4s.server.errors import public_exception
+
+    exc = KernelCancellation("private worker detail")
+    public, _status = public_exception(
+        exc, surface="cell:worker", error_code="cell_cancelled"
+    )
+    published = _worker_failure_text(exc, public)
+
+    assert "cancelled" in published
+    assert "cell_cancelled" in published
+    assert "time limit" not in published
+    assert "private worker detail" not in published
 
 
 def test_a_bootstrap_failure_after_reset_does_not_claim_cluster_work_continues():

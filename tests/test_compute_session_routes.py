@@ -118,6 +118,49 @@ def test_somebody_elses_session_is_not_found_rather_than_forbidden(daemon):
     assert status == 404
 
 
+def test_admin_private_compute_status_is_audited_but_mutations_are_not(daemon):
+    """The pre-scope-guard status route is still a private Session view (D4)."""
+
+    admin = _login(daemon, "root", "fake-pw-r")
+    session_id = _session_of(daemon, "alice")
+    alice_id = daemon.store.team.get_user_by_username("alice")["id"]
+    assert daemon.store.team.set_session_visibility(
+        session_id, "private", user_id=alice_id
+    )
+
+    def audit():
+        return daemon.store.team.list_audit(action="admin_read_private")
+
+    before = len(audit())
+    status, raw = _get(
+        daemon.port, f"/api/v1/sessions/{session_id}/compute", cookie=admin
+    )
+    assert status == 200, raw[:300]
+    rows = audit()
+    assert len(rows) == before + 1
+    assert rows[0]["target"] == session_id
+
+    # Request/release are mutations. Their authorization must not be counted
+    # as a private read, even when this default daemon refuses them as
+    # unconfigured after the visibility decision.
+    before = len(rows)
+    status, _ = _post(
+        daemon.port,
+        f"/api/v1/sessions/{session_id}/compute",
+        {"profile": "gpu-interactive"},
+        cookie=admin,
+    )
+    assert status == 409
+    status, _ = _post(
+        daemon.port,
+        f"/api/v1/sessions/{session_id}/compute/release",
+        {},
+        cookie=admin,
+    )
+    assert status == 409
+    assert len(audit()) == before
+
+
 def test_releasing_a_session_that_never_had_a_resource(daemon):
     cookie = _login(daemon, "alice", "fake-pw-a")
     session_id = _session_of(daemon, "alice")

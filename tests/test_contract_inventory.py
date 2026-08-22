@@ -33,6 +33,7 @@ named anything but `ROUTES`, silently left the inventory.
 """
 
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -182,6 +183,23 @@ def test_route_specs_reject_a_route_an_earlier_one_already_answers():
     from openai4s.server import kernel_routes
 
     assert contract._validate_route_specs(kernel_routes.ROUTES) == kernel_routes.ROUTES
+
+
+def test_route_group_sampling_rejects_malformed_prefixes_without_backtracking():
+    """A route declaration is trusted input, but inventory startup must be bounded.
+
+    The former nested alternatives took about a second on only sixteen ``?a``
+    pairs and grew exponentially.  The simplified expression accepts the same
+    non-nested parenthesized text and rejects this unclosed declaration in
+    linear time.
+    """
+
+    started = time.perf_counter()
+    assert contract._sample_path("(" + "?a" * 16) is None
+    assert time.perf_counter() - started < 0.1
+
+    assert contract._sample_path(r"/probe/([^/]+)") == "/probe/x"
+    assert contract._sample_path(r"/probe/(?:literal)") is None
 
 
 def test_a_route_module_validates_its_table_when_it_is_imported():

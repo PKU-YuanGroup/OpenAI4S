@@ -16,7 +16,10 @@ from typing import Any, Callable, Protocol
 from openai4s.agent.actions import is_completion_only_cell
 from openai4s.execution import CaptureResult, CellExecutionResult, CellRequest
 from openai4s.execution.watchdog import (
+    KernelCancellation,
+    KernelNotResetCancellation,
     KernelNotResetTimeout,
+    KernelResetUnavailableCancellation,
     KernelResetUnavailableTimeout,
 )
 from openai4s.kernel import KernelLease, KernelSupervisor
@@ -187,6 +190,20 @@ CELL_TIMEOUT_NO_RESET_MESSAGE = (
     "could not be reset from this daemon; if the session runs on a cluster the "
     "work may still be running on its allocation"
 )
+CELL_CANCELLED_MESSAGE = (
+    "the cell was cancelled and required a hard stop; the kernel was reset, so "
+    "variables from earlier cells were cleared"
+)
+CELL_CANCELLED_RESET_UNAVAILABLE_MESSAGE = (
+    "the cell was cancelled and required a hard stop; the old kernel was reset "
+    "and variables from earlier cells were cleared, but its replacement could "
+    "not be initialized; retry to start a fresh kernel"
+)
+CELL_CANCELLED_NO_RESET_MESSAGE = (
+    "the cell was cancelled and stopped here, but its kernel could not be reset "
+    "from this daemon; if the session runs on a cluster the work may still be "
+    "running on its allocation"
+)
 
 
 def _worker_failure_text(exc: BaseException, public: dict) -> str:
@@ -201,6 +218,12 @@ def _worker_failure_text(exc: BaseException, public: dict) -> str:
 
     if isinstance(exc, GatewayError):
         base = str(public.get("error") or KERNEL_FAILURE_MESSAGE)
+    elif isinstance(exc, KernelNotResetCancellation):
+        base = CELL_CANCELLED_NO_RESET_MESSAGE
+    elif isinstance(exc, KernelResetUnavailableCancellation):
+        base = CELL_CANCELLED_RESET_UNAVAILABLE_MESSAGE
+    elif isinstance(exc, KernelCancellation):
+        base = CELL_CANCELLED_MESSAGE
     elif isinstance(exc, KernelNotResetTimeout):
         base = CELL_TIMEOUT_NO_RESET_MESSAGE
     elif isinstance(exc, KernelResetUnavailableTimeout):
@@ -374,11 +397,12 @@ class CellExecutionService:
             # so one crash published it on three surfaces and kept it.
             from openai4s.server.errors import public_exception
 
-            code = (
-                "cell_timeout"
-                if isinstance(exc, TimeoutError)
-                else "kernel_execution_failed"
-            )
+            if isinstance(exc, KernelCancellation):
+                code = "cell_cancelled"
+            elif isinstance(exc, TimeoutError):
+                code = "cell_timeout"
+            else:
+                code = "kernel_execution_failed"
             public, _status = public_exception(
                 exc, surface="cell:worker", error_code=code
             )
@@ -399,7 +423,11 @@ class CellExecutionService:
             except BaseException as record_exc:
                 self._finish_attempt(attempt_id, "record_failed", record_exc)
                 raise record_exc from exc
-            self._finish_attempt(attempt_id, "worker_died", exc)
+            self._finish_attempt(
+                attempt_id,
+                "cancelled" if isinstance(exc, KernelCancellation) else "worker_died",
+                exc,
+            )
             if show_in_notebook and request.stream:
                 self._emit_finished(
                     session,
@@ -676,6 +704,17 @@ class CellExecutionService:
             return
         payload = None
         if error not in (None, ""):
+            if isinstance(error, KernelCancellation):
+                # Cancellation is a user intent, not an execution failure. Its
+                # stable code is safe to persist and lets the Action Timeline
+                # distinguish it without rendering the watchdog exception.
+                payload = {
+                    "kind": "ExecutionCancelled",
+                    "message": "the execution attempt was cancelled",
+                    "code": "cell_cancelled",
+                }
+                self.ports.finish_attempt(attempt_id, terminal_state, payload)
+                return
             # Generic, not redacted. This row is projected into the Action
             # Timeline the UI renders (`action_timeline._attempt` sends `error`
             # straight through) *and* written into the exported Session

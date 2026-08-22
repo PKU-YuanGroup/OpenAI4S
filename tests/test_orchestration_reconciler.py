@@ -11,6 +11,7 @@ cancel barrier.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 
@@ -51,6 +52,12 @@ class _Store:
 
     def workloads_needing_attention(self):
         return [w for w in self.workloads.values() if not w.phase.is_terminal]
+
+    def get_workload(self, workload_id: str):
+        return self.workloads.get(workload_id)
+
+    def get_allocation(self, allocation_id: str):
+        return self.allocations.get(allocation_id)
 
     def active_allocation(self, workload_id: str):
         live = [
@@ -132,6 +139,22 @@ class _FakeBackend:
 
     def diagnostics(self):
         return {"backend": self.name}
+
+
+class _AcknowledgingFakeBackend(_FakeBackend):
+    """Optional receipt-GC capability with observable acknowledgements."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ack_candidates: list[str] = []
+        self.acknowledged: list[str] = []
+
+    def terminal_acknowledgement_candidates(self) -> tuple[str, ...]:
+        return tuple(self.ack_candidates)
+
+    def acknowledge_terminal(self, allocation: Allocation) -> None:
+        self.ack_candidates.remove(allocation.id)
+        self.acknowledged.append(allocation.id)
 
 
 def _workload(**kwargs) -> Workload:
@@ -463,7 +486,8 @@ def test_recovery_never_commits_the_dead_allocation_before_the_epoch_bump(tmp_pa
             return self.delegate.open_recovery_epoch(dead, recovering)
 
     repository = _FailFirstRecoveryCommit(real_store.workloads)
-    backend = _FakeBackend()
+    backend = _AcknowledgingFakeBackend()
+    backend.ack_candidates = [allocation.id]
     backend.observations = [Observation(phase=Phase.LOST, reason=Reason.NODE_FAILED)]
     rec = Reconciler(store=repository, backends={"local": backend})
 
@@ -474,6 +498,7 @@ def test_recovery_never_commits_the_dead_allocation_before_the_epoch_bump(tmp_pa
     assert persisted_allocation is not None
     assert persisted_allocation.phase is Phase.ACTIVE
     assert persisted_workload.execution_epoch == 0
+    assert backend.acknowledged == []
 
     repository.fail = False
     backend.observations = [Observation(phase=Phase.LOST, reason=Reason.NODE_FAILED)]
@@ -482,6 +507,7 @@ def test_recovery_never_commits_the_dead_allocation_before_the_epoch_bump(tmp_pa
     recovered = real_store.workloads.get_workload(workload.id)
     assert recovered.execution_epoch == 1
     assert recovered.phase is Phase.PENDING
+    assert backend.acknowledged == [allocation.id]
     real_store.close()
 
 
@@ -520,19 +546,22 @@ def test_a_batch_terminal_transition_is_one_database_commit(tmp_path):
             return self.delegate.save_allocation_and_workload(observed, parent)
 
     repository = _FailFirstPair(real_store.workloads)
-    backend = _FakeBackend()
+    backend = _AcknowledgingFakeBackend()
+    backend.ack_candidates = [allocation.id]
     backend.observations = [Observation(phase=Phase.COMPLETED)]
     rec = Reconciler(store=repository, backends={"local": backend})
 
     assert rec.tick().errors
     assert real_store.workloads.get_workload(workload.id).phase is Phase.ACTIVE
     assert real_store.workloads.active_allocation(workload.id).phase is Phase.ACTIVE
+    assert backend.acknowledged == []
 
     repository.fail = False
     backend.observations = [Observation(phase=Phase.COMPLETED)]
     assert not rec.tick().errors
     assert real_store.workloads.get_workload(workload.id).phase is Phase.COMPLETED
     assert real_store.workloads.active_allocation(workload.id) is None
+    assert backend.acknowledged == [allocation.id]
     real_store.close()
 
 
@@ -611,6 +640,16 @@ def _drive_to_terminal(rec, store, workload, *, timeout_s=10.0):
     )
 
 
+def _wait_local_terminal(backend, allocation, *, timeout_s=10.0):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        observed = backend.observe(allocation)
+        if observed.phase.is_terminal:
+            return observed
+        time.sleep(0.01)
+    raise AssertionError("local allocation never reached a terminal phase")
+
+
 def test_local_backend_runs_a_real_process_to_completion(local_backend):
     store = _Store()
     workload = store.add(_local_workload([sys.executable, "-c", "print('hi')"]))
@@ -627,6 +666,37 @@ def test_local_backend_reports_a_nonzero_exit_as_failure(local_backend):
         store=store, backends={"local": local_backend}, default_backend="local"
     )
     assert _drive_to_terminal(rec, store, workload) is Phase.FAILED
+
+
+def test_local_supervisor_preserves_a_sigkill_exit(local_backend):
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_sigkill",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(
+            sys.executable,
+            "-c",
+            "import os,signal; os.kill(os.getpid(), signal.SIGKILL)",
+        ),
+    )
+    created = local_backend.submit(
+        allocation=allocation, spec=spec, profile=spec.profile
+    )
+    assert isinstance(created, Created)
+    deadline = time.monotonic() + 10
+    while True:
+        observed = local_backend.observe(allocation)
+        if observed.phase.is_terminal:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert observed.phase is Phase.FAILED
+    assert observed.reason is Reason.OUT_OF_MEMORY
 
 
 def test_local_backend_cancels_a_running_process(local_backend):
@@ -779,6 +849,574 @@ def test_local_backend_does_not_leak_the_daemon_environment(local_backend, tmp_p
         assert out.read_text() == "ABSENT"
     finally:
         os.environ.pop("OPENAI4S_TEST_FAKE_SECRET", None)
+
+
+def test_restart_adopts_a_live_local_receipt_instead_of_resubmitting(tmp_path):
+    """A live PID is not enough; the inherited launch lock proves its identity."""
+    from openai4s.execution.process_group import group_alive
+
+    log_dir = tmp_path / "logs"
+    first = LocalBackend(log_dir=log_dir)
+    second = None
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_restart_live",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+    )
+    try:
+        created = first.submit(allocation=allocation, spec=spec, profile=spec.profile)
+        assert isinstance(created, Created)
+        original_pid = int(created.handle.external_id)
+
+        second = LocalBackend(log_dir=log_dir)
+        found = second.find_by_token(allocation.submission_token)
+        repeated = second.submit(allocation=allocation, spec=spec, profile=spec.profile)
+
+        assert found is not None and int(found.external_id) == original_pid
+        assert isinstance(repeated, Existing)
+        assert int(repeated.handle.external_id) == original_pid
+        assert group_alive(original_pid), "the adopted process disappeared"
+    finally:
+        if second is not None:
+            second.cancel(allocation, reason=Reason.USER_CANCELLED)
+            second.close()
+        first.close()
+
+
+def test_spawn_before_arm_is_stopped_before_retry_and_runs_user_code_once(
+    tmp_path, monkeypatch
+):
+    """Crash after Popen but before its receipt is armed cannot overlap a retry."""
+    log_dir = tmp_path / "logs"
+    marker = tmp_path / "ran.txt"
+    first = LocalBackend(log_dir=log_dir)
+    original_write = first._write_receipt
+
+    def crash_after_prepared(path, receipt):
+        original_write(path, receipt)
+        if receipt.get("state") == "prepared":
+            raise SystemExit("simulated daemon death before arm")
+
+    monkeypatch.setattr(first, "_write_receipt", crash_after_prepared)
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_prearm_crash",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    code = f"from pathlib import Path; Path({str(marker)!r}).open('a').write('ran\\n')"
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", code),
+    )
+
+    with pytest.raises(SystemExit, match="before arm"):
+        first.submit(allocation=allocation, spec=spec, profile=spec.profile)
+
+    restarted = LocalBackend(log_dir=log_dir)
+    try:
+        # Recovery either observed EOF or conclusively stopped the gated
+        # wrapper before removing its prepared receipt. Only now is retry safe.
+        assert restarted.find_by_token(allocation.submission_token) is None
+        created = restarted.submit(
+            allocation=allocation, spec=spec, profile=spec.profile
+        )
+        assert isinstance(created, Created)
+        deadline = time.monotonic() + 10
+        while restarted.observe(allocation).phase is Phase.ACTIVE:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert marker.read_text(encoding="utf-8").splitlines() == ["ran"]
+    finally:
+        restarted.close()
+        first.close()
+
+
+def test_crash_after_running_receipt_before_handle_adopts_the_same_process(
+    tmp_path, monkeypatch
+):
+    """The reconciler may lose the handle response after user code was armed."""
+    log_dir = tmp_path / "logs"
+    first = LocalBackend(log_dir=log_dir)
+    original_wait = first._wait_for_running_receipt
+
+    def crash_before_handle(path, process):
+        receipt = original_wait(path, process)
+        assert receipt is not None and receipt["state"] == "running"
+        raise SystemExit("simulated daemon death before handle persistence")
+
+    monkeypatch.setattr(first, "_wait_for_running_receipt", crash_before_handle)
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_postarm_crash",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+    )
+
+    with pytest.raises(SystemExit, match="handle persistence"):
+        first.submit(allocation=allocation, spec=spec, profile=spec.profile)
+
+    restarted = LocalBackend(log_dir=log_dir)
+    try:
+        found = restarted.find_by_token(allocation.submission_token)
+        assert found is not None
+        repeated = restarted.submit(
+            allocation=allocation, spec=spec, profile=spec.profile
+        )
+        assert isinstance(repeated, Existing)
+        assert repeated.handle.external_id == found.external_id
+    finally:
+        restarted.cancel(allocation, reason=Reason.USER_CANCELLED)
+        restarted.close()
+        first.close()
+
+
+def test_restart_never_trusts_a_live_numeric_group_without_launch_identity(tmp_path):
+    """Identity loss after adoption dynamically revokes signalling authority."""
+    from openai4s.execution.process_group import group_alive
+    from openai4s.orchestration.local import backend as local_backend_mod
+
+    log_dir = tmp_path / "logs"
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    descendant_ready = tmp_path / "descendant-ready"
+    first = LocalBackend(log_dir=log_dir)
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_identity_closed",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    code = (
+        "import os,time\n"
+        f"open({str(ready)!r},'w').write('ready')\n"
+        f"while not os.path.exists({str(release)!r}): time.sleep(0.01)\n"
+        "if os.fork() == 0:\n"
+        f" open({str(descendant_ready)!r},'w').write('ready')\n"
+        " time.sleep(60)\n"
+        " os._exit(0)\n"
+        "os._exit(0)\n"
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", code),
+    )
+    created = first.submit(allocation=allocation, spec=spec, profile=spec.profile)
+    assert isinstance(created, Created)
+    allocation.handle = created.handle
+    deadline = time.monotonic() + 10
+    while not ready.exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    restarted = LocalBackend(log_dir=log_dir)
+    try:
+        job = restarted._jobs[allocation.id]
+        assert job.identity_verified is True
+        release.write_text("go", encoding="utf-8")
+        deadline = time.monotonic() + 10
+        while not descendant_ready.exists() or local_backend_mod._identity_is_held(
+            job.identity_path
+        ):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert group_alive(int(created.handle.external_id))
+
+        assert restarted.observe(allocation).phase is Phase.ACTIVE
+        assert job.identity_verified is False
+        assert job.pgid is None
+        repeated = restarted.submit(
+            allocation=allocation, spec=spec, profile=spec.profile
+        )
+        assert isinstance(repeated, Existing)
+        assert repeated.handle.external_id == created.handle.external_id
+        restarted.cancel(allocation, reason=Reason.USER_CANCELLED)
+        assert job.diagnostics["cancel"]["stopped"] is False
+        assert restarted.observe(allocation).phase is Phase.ACTIVE
+    finally:
+        # Only the original Popen is still authorized to signal this group.
+        first.close()
+        restarted.close()
+
+
+def test_a_fast_terminal_job_remains_discoverable_by_token_after_restart(tmp_path):
+    """Receipt identity survives the process, not merely the other way around."""
+    log_dir = tmp_path / "logs"
+    first = LocalBackend(log_dir=log_dir)
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_fast_terminal",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "pass"),
+    )
+    created = first.submit(allocation=allocation, spec=spec, profile=spec.profile)
+    assert isinstance(created, Created)
+    allocation.handle = created.handle
+    deadline = time.monotonic() + 10
+    while not first.observe(allocation).phase.is_terminal:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    restarted = LocalBackend(log_dir=log_dir)
+    try:
+        found = restarted.find_by_token(allocation.submission_token)
+        repeated = restarted.submit(
+            allocation=allocation, spec=spec, profile=spec.profile
+        )
+        assert found is not None
+        assert found.external_id == created.handle.external_id
+        assert isinstance(repeated, Existing)
+        assert repeated.handle.external_id == created.handle.external_id
+        assert restarted.observe(allocation).phase is Phase.LOST
+        assert list((log_dir / ".local-job-receipts").glob("*.json"))
+    finally:
+        restarted.close()
+        first.close()
+
+
+def test_many_fast_terminal_receipts_are_reclaimed_after_durable_restart(tmp_path):
+    """Committed terminal rows bound receipts, sidecars, and restart `_jobs`."""
+    from openai4s.config import Config
+    from openai4s.store import get_store
+
+    store = get_store(Config(data_dir=tmp_path / "data").db_path)
+    log_dir = tmp_path / "logs"
+    first = LocalBackend(log_dir=log_dir, max_concurrent=2)
+    restarted = None
+    allocations = []
+    try:
+        for index in range(12):
+            workload = store.workloads.create_workload(
+                spec=WorkloadSpec(
+                    kind=WorkloadKind.BATCH,
+                    profile=ResourceProfile(name="cpu"),
+                    command=(sys.executable, "-c", f"print('done-{index}')"),
+                ),
+                owner_user_id="u1",
+            )
+            allocation = store.workloads.create_allocation(workload.id, 0)
+            created = first.submit(
+                allocation=allocation,
+                spec=workload.spec,
+                profile=workload.spec.profile,
+            )
+            assert isinstance(created, Created)
+            allocation.handle = created.handle
+            allocation.phase = Phase.PENDING
+            store.workloads.save_allocation_and_workload(allocation, workload)
+
+            observed = _wait_local_terminal(first, allocation)
+            allocation.phase = observed.phase
+            allocation.reason = observed.reason
+            allocation.diagnostics = dict(observed.diagnostics)
+            workload.phase = observed.phase
+            workload.reason = observed.reason
+            store.workloads.save_allocation_and_workload(allocation, workload)
+            allocations.append(allocation)
+
+        receipt_dir = log_dir / ".local-job-receipts"
+        assert first.diagnostics()["tracked"] == len(allocations)
+        assert len(list(receipt_dir.glob("*.json"))) == len(allocations)
+
+        # Simulate a daemon dying after the terminal pair commits but before
+        # the optional acknowledgement runs. Recovery first adopts all facts;
+        # the reconciler constructor then reloads the terminal pairs and GCs.
+        first.close()
+        restarted = LocalBackend(log_dir=log_dir)
+        assert restarted.diagnostics()["tracked"] == len(allocations)
+        Reconciler(
+            store=store.workloads,
+            backends={"local": restarted},
+            default_backend="local",
+        )
+
+        assert restarted.diagnostics()["tracked"] == 0
+        assert list(receipt_dir.iterdir()) == []
+        for allocation in allocations:
+            # A repeated acknowledgement is a no-op, while deterministic log
+            # lookup remains available after the process record is evicted.
+            restarted.acknowledge_terminal(allocation)
+            stdout_path, stderr_path = restarted.log_paths(allocation.id)
+            assert stdout_path is not None and stdout_path.exists()
+            assert stderr_path is not None and stderr_path.exists()
+    finally:
+        if restarted is not None:
+            restarted.close()
+        first.close()
+        store.close()
+
+
+def test_uncommitted_fast_terminal_receipt_survives_restart_until_pair_commit(
+    tmp_path,
+):
+    """A terminal observation is not permission to erase INV-8 recovery state."""
+    from openai4s.config import Config
+    from openai4s.store import get_store
+
+    store = get_store(Config(data_dir=tmp_path / "data").db_path)
+    log_dir = tmp_path / "logs"
+    first = LocalBackend(log_dir=log_dir)
+    restarted = None
+    try:
+        workload = store.workloads.create_workload(
+            spec=WorkloadSpec(
+                kind=WorkloadKind.BATCH,
+                profile=ResourceProfile(name="cpu"),
+                command=(sys.executable, "-c", "pass"),
+            ),
+            owner_user_id="u1",
+        )
+        allocation = store.workloads.create_allocation(workload.id, 0)
+        created = first.submit(
+            allocation=allocation,
+            spec=workload.spec,
+            profile=workload.spec.profile,
+        )
+        assert isinstance(created, Created)
+        allocation.handle = created.handle
+        allocation.phase = Phase.PENDING
+        store.workloads.save_allocation_and_workload(allocation, workload)
+        assert _wait_local_terminal(first, allocation).phase.is_terminal
+
+        # Crash before the terminal observation is committed: both durable
+        # rows still say PENDING, so construction must retain token lookup.
+        first.close()
+        restarted = LocalBackend(log_dir=log_dir)
+        reconciler = Reconciler(
+            store=store.workloads,
+            backends={"local": restarted},
+            default_backend="local",
+        )
+        assert restarted.find_by_token(allocation.submission_token) is not None
+        assert list((log_dir / ".local-job-receipts").glob("*.json"))
+
+        # The adopted process is now observed LOST. That paired terminal write
+        # happens before the end-of-tick acknowledgement and makes GC safe.
+        assert not reconciler.tick().errors
+        assert store.workloads.get_workload(workload.id).phase is Phase.LOST
+        assert restarted.find_by_token(allocation.submission_token) is None
+        assert list((log_dir / ".local-job-receipts").iterdir()) == []
+    finally:
+        if restarted is not None:
+            restarted.close()
+        first.close()
+        store.close()
+
+
+def test_terminal_acknowledgement_refuses_a_still_live_local_group(tmp_path):
+    """Even an inconsistent terminal database row cannot kill token safety."""
+    log_dir = tmp_path / "logs"
+    backend = LocalBackend(log_dir=log_dir)
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_inconsistent_terminal",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+        phase=Phase.COMPLETED,
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+    )
+    try:
+        assert isinstance(
+            backend.submit(allocation=allocation, spec=spec, profile=spec.profile),
+            Created,
+        )
+        with pytest.raises(RuntimeError, match="live process"):
+            backend.acknowledge_terminal(allocation)
+        assert allocation.id in backend._jobs
+        assert backend.find_by_token(allocation.submission_token) is not None
+        assert list((log_dir / ".local-job-receipts").glob("*.json"))
+    finally:
+        backend.close()
+
+
+def test_restart_finishes_a_crash_after_terminal_ack_marker(tmp_path, monkeypatch):
+    """The `.acked` rename is a durable cleanup outbox, not a new leak."""
+    log_dir = tmp_path / "logs"
+    first = LocalBackend(log_dir=log_dir)
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_ack_crash",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "pass"),
+    )
+    restarted = None
+    try:
+        created = first.submit(allocation=allocation, spec=spec, profile=spec.profile)
+        assert isinstance(created, Created)
+        allocation.handle = created.handle
+        observed = _wait_local_terminal(first, allocation)
+        allocation.phase = observed.phase
+        allocation.reason = observed.reason
+
+        receipt_path = first._receipt_path(allocation.id)
+
+        def crash_after_ack_rename(ack_path):
+            assert ack_path.exists()
+            assert not receipt_path.exists()
+            raise SystemExit("simulated crash during terminal receipt GC")
+
+        monkeypatch.setattr(first, "_complete_acknowledgement", crash_after_ack_rename)
+        with pytest.raises(SystemExit, match="receipt GC"):
+            first.acknowledge_terminal(allocation)
+        assert receipt_path.with_suffix(".acked").exists()
+
+        # Construction can trust the marker because only the post-commit
+        # acknowledgement path creates it, and completes every remaining unlink.
+        restarted = LocalBackend(log_dir=log_dir)
+        assert restarted.diagnostics()["tracked"] == 0
+        assert list((log_dir / ".local-job-receipts").iterdir()) == []
+    finally:
+        if restarted is not None:
+            restarted.close()
+        first.close()
+
+
+def test_an_armed_but_unconfirmed_launch_keeps_the_known_process(tmp_path, monkeypatch):
+    backend = LocalBackend(log_dir=tmp_path / "logs")
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_arm_reply_lost",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+    )
+    original_wait = backend._wait_for_running_receipt
+
+    def lose_confirmation(path, process):
+        assert original_wait(path, process) is not None
+        return None
+
+    monkeypatch.setattr(backend, "_wait_for_running_receipt", lose_confirmation)
+    try:
+        result = backend.submit(allocation=allocation, spec=spec, profile=spec.profile)
+        assert isinstance(result, Created)
+        found = backend.find_by_token(allocation.submission_token)
+        assert found is not None
+        assert found.external_id == result.handle.external_id
+        assert backend.observe(allocation).phase is Phase.ACTIVE
+    finally:
+        backend.close()
+
+
+def test_a_corrupt_post_arm_receipt_returns_unknown_with_its_token(
+    tmp_path, monkeypatch
+):
+    backend = LocalBackend(log_dir=tmp_path / "logs")
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_arm_receipt_corrupt",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+    )
+    original_wait = backend._wait_for_running_receipt
+
+    def corrupt_confirmation(path, process):
+        assert original_wait(path, process) is not None
+        path.write_text("{broken", encoding="utf-8")
+        return None
+
+    monkeypatch.setattr(backend, "_wait_for_running_receipt", corrupt_confirmation)
+    try:
+        result = backend.submit(allocation=allocation, spec=spec, profile=spec.profile)
+        assert isinstance(result, Unknown)
+        assert result.token == allocation.submission_token
+        assert backend.find_by_token(allocation.submission_token) is not None
+    finally:
+        backend.close()
+
+
+def test_a_corrupt_receipt_makes_token_absence_unknown(tmp_path):
+    receipt_dir = tmp_path / "logs" / ".local-job-receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "corrupt.json").write_text("{not-json", encoding="utf-8")
+    backend = LocalBackend(log_dir=tmp_path / "logs")
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_corrupt_receipt",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "pass"),
+    )
+
+    result = backend.submit(allocation=allocation, spec=spec, profile=spec.profile)
+
+    assert isinstance(result, Unknown)
+    assert result.token == allocation.submission_token
+    with pytest.raises(RuntimeError, match="token absence is unknown"):
+        backend.find_by_token(allocation.submission_token)
+
+
+def test_a_running_receipt_cannot_authorize_a_different_process_group(tmp_path):
+    """A held identity lock does not make a corrupt numeric PGID safe to signal."""
+    log_dir = tmp_path / "logs"
+    first = LocalBackend(log_dir=log_dir)
+    allocation = Allocation(
+        id=Allocation.new_id(),
+        workload_id="wl_corrupt_pgid",
+        epoch=0,
+        submission_token=SubmissionToken.mint(),
+    )
+    spec = WorkloadSpec(
+        kind=WorkloadKind.BATCH,
+        profile=ResourceProfile(name="cpu"),
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+    )
+    created = first.submit(allocation=allocation, spec=spec, profile=spec.profile)
+    assert isinstance(created, Created)
+    receipt_path = next((log_dir / ".local-job-receipts").glob("*.json"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["pgid"] = int(receipt["pid"]) + 1
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    restarted = LocalBackend(log_dir=log_dir)
+    try:
+        assert restarted.diagnostics()["receipt_error"] is not None
+        assert allocation.id not in restarted._jobs
+        with pytest.raises(RuntimeError, match="token absence is unknown"):
+            restarted.find_by_token(allocation.submission_token)
+    finally:
+        first.close()
+        restarted.close()
 
 
 def test_an_untracked_allocation_is_lost_not_completed(local_backend):

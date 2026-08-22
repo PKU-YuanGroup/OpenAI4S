@@ -55,7 +55,7 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
-from openai4s.config import Config, get_config
+from openai4s.config import Config, _canonical_http_origin, get_config
 from openai4s.execution import (
     CaptureResult,
     CellRequest,
@@ -11838,6 +11838,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     if not _bind_is_wildcard:
         _allowed_hostnames.add(cfg.host.strip().strip("[]").lower())
     _allowed_port = int(cfg.port)
+    # A TLS reverse proxy may deliberately rewrite Host to the loopback
+    # upstream while the browser correctly sends its external Origin.  Only an
+    # operator's exact origin allowlist can admit that mismatch; empty keeps the
+    # existing literal Origin.netloc == Host rule.
+    _trusted_proxy_origins = frozenset(
+        _canonical_http_origin(origin)
+        for origin in (getattr(cfg, "trusted_proxy_origins", ()) or ())
+    )
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "openai4s-gateway/1.0"
@@ -12247,6 +12255,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # reach `_serve_artifact`, so this is their only guard.
                 root = self._team_root_of_artifact_meta(artifact)
                 if identity.is_admin:
+                    # The bare GET reaches `_serve_artifact`, whose byte
+                    # chokepoint audits it (and also covers /preview plus
+                    # version-/filename-addressed reads).  Every suffixed GET
+                    # is a metadata/workbench projection that returns before
+                    # that chokepoint, so audit it here exactly once.  Write
+                    # verbs deliberately do not create private-read rows.
+                    artifact_tail = sub[len("/artifacts/") :]
+                    if method == "GET" and "/" in artifact_tail and root:
+                        self._team_audit_admin_private_read(root)
                     return
                 if root is None or not store.team.session_visible_to(
                     root, self._team_identity_dict()
@@ -12634,7 +12651,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     if origin:
                         onl = urlparse(origin).netloc
                         host = self.headers.get("Host", "")
-                        if onl and host and onl != host:
+                        try:
+                            trusted_proxy_origin = (
+                                _canonical_http_origin(origin) in _trusted_proxy_origins
+                            )
+                        except ValueError:
+                            trusted_proxy_origin = False
+                        if not (onl and host and (onl == host or trusted_proxy_origin)):
                             self.close_connection = True
                             self._json({"error": "cross-origin request refused"}, 403)
                             return
