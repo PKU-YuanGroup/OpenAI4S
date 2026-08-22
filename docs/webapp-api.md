@@ -399,6 +399,23 @@ profile says today.
 | `PUT|PATCH /model-profiles/{id}` | Partial edit; `api_key` only overwrites when non-empty; `clear_api_key:true` clears. Editing the active profile also syncs the live settings → masked profile; unknown id → 404. |
 | `DELETE /model-profiles/{id}` | Removes it (clears `active_model_profile` if it was active) → `{"ok":true}`. Deleting a nonexistent id still returns `{"ok":true}`. |
 
+### Volcengine account connector
+
+These routes wrap the official `arkcli`; OpenAI4S does not implement a second
+Volcengine OAuth client. Public responses allowlist display name, project,
+region, plan metadata, quota periods, and connector state. IAM user/account
+identifiers, tokens, authorization codes, and API Keys are never returned.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /volcengine/connection` | Returns `{installed,version,state,identity,plans,usage,access,login,cached,linked,configured,configured_plan_key,model_profile}`. Account `state` is independent from `access.state`: a successfully connected account may still report `no_plan`, `key_missing`, `key_choice_required`, `key_check_failed`, `profile_missing`, `plan_inactive`, `seat_required`, `quota_exhausted`, `platform_endpoint_required`, `endpoint_choice_required`, `endpoint_check_failed`, `platform_ready`, `plan_choice_required`, or `check_failed`. `ready` configures a Plan; `platform_ready` configures a pay-as-you-go API Key plus Endpoint. Key and Endpoint choices use in-memory opaque references rather than cloud identifiers. `linked` means the dedicated masked model profile exists, while `configured` means it is also active. Read projections are cached briefly, while the in-flight login state remains live. |
+| `POST /volcengine/refresh` | Performs one fresh identity, plan, usage, profile, API Key, and Endpoint projection. Key and Endpoint inventories are queried live, so console changes are discovered without copying credentials into OpenAI4S. A unique usable Platform Endpoint is eligible for immediate automatic configuration. Returns the same public shape as `connection`; Key material is never returned. |
+| `POST /volcengine/login` | Body `{mode:"browser"|"device"}`. Both modes use the same cross-platform two-phase `arkcli auth login --no-browser` flow and return `200 {state:"awaiting_code",login_id,method:"browser_oauth",phase:"authorization",authorize_url,expires_at}`. `browser` remains a compatibility alias; no system terminal is opened. |
+| `POST /volcengine/login/complete` | Body `{code}` completes the pending browser authorization. Ark's normal value is the complete Base64 authorization string containing `code` and `state`; for convenience, OpenAI4S also accepts the inner code and binds it to the pending authorization state. The bounded value is passed only as an Ark CLI argument and is never persisted or echoed. |
+| `POST /volcengine/login/cancel` | Cancels the pending browser authorization and returns its public state. It does not log the user out of Ark CLI. |
+| `POST /volcengine/configure` | Body `{plan_key?,api_key_choice?,endpoint_choice?}`. A single available Plan or a unique Platform Key + Endpoint pair is used automatically; ambiguous inventories require the corresponding opaque choice. The connector validates every choice against a fresh Ark inventory, resolves the raw Key only inside the backend, creates or updates one dedicated Ark model profile, brokers the Key, activates the profile, and returns `201` with masked profile/connection data only. |
+| `POST /volcengine/disconnect` | Body must be `{confirm:true}`. Removes only the dedicated OpenAI4S model profile and its brokered credential. The shared Ark CLI login remains intact for other local tools. |
+
 ### Projects, notes, folders, example session
 
 | Method & path | Behavior |

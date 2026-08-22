@@ -203,6 +203,8 @@ from openai4s.server.trusted_capture import (
     TrustedCaptureCoordinator,
 )
 from openai4s.server.variable_inspector import VariableInspectorService
+from openai4s.server.volcengine_arkcli import ArkCliError
+from openai4s.server.volcengine_connector import VolcengineConnectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
 from openai4s.storage.connectors import public_connector
@@ -11896,6 +11898,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         cfg,
         providers=provider_specs,
     )
+    volcengine_connector = VolcengineConnectorService()
 
     def _disconnect_managed_datapro_session() -> None:
         """Invalidate DataPro only for this live Store generation."""
@@ -12012,6 +12015,135 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             "key_configured": service.configured(),
             "provider": "doubao-search",
             "primary": True,
+        }
+
+    def _volcengine_connection_payload(*, force: bool = False) -> dict[str, Any]:
+        """Add OpenAI4S profile state to the Ark CLI's public projection."""
+
+        payload = (
+            volcengine_connector.refresh()
+            if force
+            else volcengine_connector.connection(force=False)
+        )
+        profile_id = str(store.get_setting("volcengine_model_profile_id") or "").strip()
+        profile = next(
+            (
+                item
+                for item in store.list_model_profiles()
+                if item.get("id") == profile_id and not item.get("deleted_at")
+            ),
+            None,
+        )
+        linked = bool(
+            profile is not None
+            and str(profile.get("provider") or "").strip().lower() == "ark"
+            and model_profiles.resolve_key(profile)
+        )
+        configured = bool(
+            linked and store.get_setting("active_model_profile") == profile_id
+        )
+        configured_plan_key = (
+            str(store.get_setting("volcengine_plan_key") or "").strip().lower()
+            if linked
+            else ""
+        )
+        return {
+            **payload,
+            "linked": linked,
+            "configured": configured,
+            "configured_plan_key": configured_plan_key,
+            "model_profile": (
+                model_profiles.public_profile(profile) if linked and profile else None
+            ),
+        }
+
+    def _raise_volcengine_error(error: ArkCliError) -> None:
+        if error.code in {
+            "invalid_authorization_code",
+            "ark_profile_invalid",
+            "plan_not_available",
+        }:
+            status = 400
+        elif error.code in {
+            "volcengine_not_connected",
+            "plan_required",
+            "plan_choice_required",
+            "ark_profile_missing",
+            "ark_profile_ambiguous",
+            "ark_key_missing",
+            "ark_key_choice_required",
+            "ark_endpoint_missing",
+            "ark_endpoint_choice_required",
+            "device_login_not_pending",
+            "project_selection_required",
+        }:
+            status = 409
+        elif error.code in {"ark_key_choice_invalid", "ark_endpoint_choice_invalid"}:
+            status = 400
+        else:
+            status = 503
+        raise GatewayError(status, error.message, error.code) from error
+
+    def _configure_volcengine(
+        plan_key: Any = None,
+        key_choice: Any = None,
+        endpoint_choice: Any = None,
+    ) -> dict[str, Any]:
+        """Import the selected Ark key directly into the existing broker path."""
+
+        previous_datapro_credential = datapro.resolve_agent_plan_key(store)
+        previous_provider = (
+            str(store.get_setting("llm_provider") or cfg.llm.provider or "")
+            .strip()
+            .lower()
+        )
+        material = volcengine_connector.provisioning_material(
+            plan_key, key_choice, endpoint_choice
+        )
+        coding = material.plan_key.startswith("coding-plan")
+        if material.plan_key == "platform":
+            base_url = f"https://ark.{material.region}.volces.com/api/v3"
+        else:
+            base_url = (
+                f"https://ark.{material.region}.volces.com/"
+                f"api/{'coding' if coding else 'plan'}/v3"
+            )
+        model = material.model
+        name = "Volcengine - " + (material.plan_name or material.plan_key)
+        profile_id = str(store.get_setting("volcengine_model_profile_id") or "").strip()
+        existing = next(
+            (
+                item
+                for item in store.list_model_profiles()
+                if item.get("id") == profile_id and not item.get("deleted_at")
+            ),
+            None,
+        )
+        profile_body = {
+            "name": name,
+            "provider": "ark",
+            "base_url": base_url,
+            "model": model,
+            "api_key": material.api_key,
+        }
+        if existing is None:
+            public_profile = model_profiles.create(profile_body)
+            profile_id = str(public_profile.get("id") or "")
+            store.set_setting("volcengine_model_profile_id", profile_id)
+        else:
+            public_profile, _effective = model_profiles.edit(profile_id, profile_body)
+        activation, effective_model = model_profiles.activate(profile_id)
+        store.set_setting("volcengine_plan_key", material.plan_key)
+        _default_model["id"] = effective_model or model
+        _disconnect_datapro_if_auth_context_changed(
+            previous_datapro_credential, previous_provider
+        )
+        return {
+            "ok": True,
+            "active_id": activation["active_id"],
+            "profile": public_profile,
+            "plan_key": material.plan_key,
+            "connection": _volcengine_connection_payload(force=False),
         }
 
     def _skill_history_payload(
@@ -13886,6 +14018,82 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if sub in ("", "/"):
                 self._json({"service": "openai4s", "ok": True})
+                return
+
+            # ---- Volcengine account connection through the official Ark CLI ----
+            if sub == "/volcengine/connection" and method == "GET":
+                self._json(_volcengine_connection_payload())
+                return
+            if sub == "/volcengine/refresh" and method == "POST":
+                self._json(_volcengine_connection_payload(force=True))
+                return
+            if sub == "/volcengine/login" and method == "POST":
+                mode = str(self._body().get("mode") or "browser").strip().lower()
+                try:
+                    if mode in {"browser", "device"}:
+                        # Both names use the same cross-platform browser OAuth
+                        # flow.  ``browser`` remains as a compatibility alias
+                        # for clients released with the terminal-based preview.
+                        self._json(volcengine_connector.start_device_login())
+                    else:
+                        raise GatewayError(
+                            400,
+                            "login mode must be browser or device",
+                            "invalid_login_mode",
+                        )
+                except ArkCliError as error:
+                    _raise_volcengine_error(error)
+                return
+            if sub == "/volcengine/login/complete" and method == "POST":
+                try:
+                    self._json(
+                        volcengine_connector.complete_device_login(
+                            self._body().get("code")
+                        )
+                    )
+                except ArkCliError as error:
+                    _raise_volcengine_error(error)
+                return
+            if sub == "/volcengine/login/cancel" and method == "POST":
+                self._json(volcengine_connector.cancel_login())
+                return
+            if sub == "/volcengine/configure" and method == "POST":
+                try:
+                    body = self._body()
+                    self._json(
+                        _configure_volcengine(
+                            body.get("plan_key"),
+                            body.get("api_key_choice"),
+                            body.get("endpoint_choice"),
+                        ),
+                        201,
+                    )
+                except ArkCliError as error:
+                    _raise_volcengine_error(error)
+                return
+            if sub == "/volcengine/disconnect" and method == "POST":
+                body = self._body()
+                if body.get("confirm") is not True:
+                    raise GatewayError(
+                        400,
+                        "disconnect requires confirmation",
+                        "confirmation_required",
+                    )
+                previous = datapro.resolve_agent_plan_key(store)
+                profile_id = str(
+                    store.get_setting("volcengine_model_profile_id") or ""
+                ).strip()
+                if profile_id:
+                    model_profiles.delete(profile_id)
+                store.set_setting("volcengine_model_profile_id", "")
+                store.set_setting("volcengine_plan_key", "")
+                _disconnect_datapro_if_credential_changed(previous)
+                self._json(
+                    {
+                        "ok": True,
+                        "connection": _volcengine_connection_payload(force=False),
+                    }
+                )
                 return
 
             # ---- models ----

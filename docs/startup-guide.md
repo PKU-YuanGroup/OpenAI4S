@@ -51,6 +51,28 @@ browser at **`http://127.0.0.1:8760/`**. Everything below happens in that UI.
 The app boots **without any API key** — a *"configure your API key"* banner
 links straight to the right screen.
 
+**Recommended Volcengine flow:** install the official connector once with
+`npm i -g @volcengine/ark-cli@latest`, then open **Settings → Models** and click
+**Continue with Volcengine**. OpenAI4S opens the official Volcengine
+authorization page in your browser. Finish authorization, copy the complete
+authorization string shown there (usually Base64 text containing `code` and
+`state`), and paste it back into OpenAI4S; do not copy only the inner `code`.
+No system terminal is required. OpenAI4S
+discovers your Agent Plan or Coding Plan, shows its current quota, and activates
+it automatically when there is only one ready choice. Multiple plans get a
+selector. A connected account with no plan, API Key, team seat, or remaining
+quota stays visibly connected and shows the exact next action. After creating a
+Key in the console, OpenAI4S checks for it automatically for two minutes; the
+manual **Recheck** action remains available. One usable Key continues setup
+automatically, while multiple Keys get a masked name/suffix selector. OpenAI4S
+never receives the account password, and the Ark API Key is
+handed directly to the local SecretBroker instead of being returned to the
+browser. If the Ark CLI later requires a one-time Project setup, the page says
+so explicitly and provides the exceptional CLI command to run. OpenAI4S reuses
+the Project selected by Ark CLI and never assumes that a `default` Project exists.
+
+For another provider, or to create a profile manually:
+
 1. Click the **Settings** gear (top of the window) and open the **Models** tab
    (中文 UI: **设置 → 模型**).
 2. Under **Add model / API**, fill in:
@@ -185,6 +207,20 @@ Artifact、日志）都写在 `~/.openai4s`。
 
 应用启动时**不带任何 API Key**——界面上会有一条 *「configure your API key」*
 横幅，直接跳到对应页面。
+
+**推荐的火山流程：**先用 `npm i -g @volcengine/ark-cli@latest` 一次性安装官方
+连接器，然后打开 **设置 → 模型**，点击 **使用火山引擎登录**。OpenAI4S 会在浏览器中打开
+火山官方授权页。完成授权后，复制页面显示的完整授权字符串（通常是一段包含 `code` 和 `state`
+的 Base64 文本），再粘贴回 OpenAI4S；不要只复制其中的 `code`。不需要打开系统终端。
+OpenAI4S 会发现 Agent Plan 或 Coding Plan、显示当前额度，并在只有一个已就绪套餐时直接启用；
+多个套餐则先让用户选择。账号即使缺少套餐、API Key、团队席位或可用额度，也会保持“已连接”，
+并显示准确的下一步。在控制台创建 Key 后，OpenAI4S 会自动检查两分钟，同时保留 **重新检查**；
+只有一把可用 Key 时直接继续，多把 Key 时显示名称与末四位供选择，全程不需要复制粘贴。
+OpenAI4S 不接收账号密码，Ark API Key 也不会返回浏览器，而是直接交给本机 SecretBroker。
+如果 Ark CLI 后续要求一次性的 Project 设置，页面会明确提示，并提供需要执行的例外 CLI 命令。
+OpenAI4S 只复用 Ark CLI 已选定的 Project，不会假设账号一定存在名为 `default` 的 Project。
+
+其他供应商，或者需要手动新建配置时：
 
 1. 点右上角的 **设置**（齿轮）图标，打开 **模型** 标签页（Settings → Models）。
 2. 在 **新增模型 / API** 里填：

@@ -116,6 +116,8 @@ gateway.py
 | [`trusted_capture.py`](trusted_capture.py) | 管理 Stage 1 会话级前台 Artifact 捕获、独立后台内核与面向用户的外部工作区变更三者之间的准入边界。同一线程的捕获和外部变更均可在各自类别内嵌套；另一所有者或任何跨类别重叠都会在工作区动作开始前失败即关闭。 |
 | [`urls.py`](urls.py) | 服务端统一拥有的持久资源 URL。trusted completion 只接受非空的精确 version id，把它百分号编码到保留的 `/api/v1/artifacts/versions/{version_id}` 命名空间；该路径不会回退为 Artifact id 或文件名，flag-off 的旧 helper 也被隔离在这里，不再散落在 completion 文案中。 |
 | [`variable_inspector.py`](variable_inspector.py) | 通过一个很窄的 manager 协议请求，读取活着且空闲的 Python/R 命名空间，返回有界、净化过的变量预览。它不会创建会话，也不会创建 worker，更不会进入 Cell 事务。 |
+| [`volcengine_arkcli.py`](volcengine_arkcli.py) | 以固定命令集调用官方 Ark CLI：子进程只继承允许名单内的环境变量，输出有大小上限，JSON 和错误会先校验、脱敏，并且不经过 shell 拼接。 |
+| [`volcengine_connector.py`](volcengine_connector.py) | 为 Web 应用投影火山身份、套餐与额度、API Key 和 Endpoint 状态，管理浏览器 OAuth 会话，并将 Ark 明文 Key 一次性交给 `ModelProfileService` 与 SecretBroker。公开响应中的云端资源只使用进程内不透明选择标识。 |
 | [`workbench_state.py`](workbench_state.py) | 根据持久状态与实时状态投影 Context 和 Security 面板。它不暴露消息内容；在真实 worker 报回自测结果之前，它也不会声称 OS 沙箱已经存在。 |
 | [`ws_frames.py`](ws_frames.py) | 由 gateway WebSocket 与分享隧道共用的、加固过的 RFC 6455 帧编解码。按角色的读取会校验掩码方向、FIN、RSV、opcode、canonical 长度、64 位最高位、控制帧大小与载荷上限；gateway 通过别名保留原有调用点。 |
 

@@ -759,6 +759,44 @@ body.layout-wide{--col:1080px}
 .skill-version-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .skill-version-head .info{min-width:0}
 
+/* --- Volcengine account and plan connection --- */
+.volc-panel{min-height:72px;padding:10px 2px 14px;border-bottom:.5px solid var(--border);transition:opacity .14s}
+.volc-panel.busy{opacity:.62;pointer-events:none}
+.volc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.volc-head .info{min-width:0}
+.volc-head .nm{font-size:14px;font-weight:650;color:var(--text-000)}
+.volc-head .ds{margin-top:3px;color:var(--text-400);font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+.volc-status{flex:none;padding:2px 7px;border:1px solid var(--border);border-radius:8px;color:var(--text-400);font-size:11px;line-height:1.35}
+.volc-status.ok{border-color:var(--success);background:var(--success-bg);color:var(--success-text)}
+.volc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:11px}
+.volc-actions button{display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.volc-actions .icon-ghost{width:28px;height:28px;padding:0}
+.volc-wait{margin-top:10px;color:var(--text-400);font-size:12px}
+.volc-login-prep{max-width:680px;margin-top:9px;color:var(--text-400);font-size:12px;line-height:1.55}
+.volc-project-hint{margin:7px 0 0 27px;color:var(--text-400);font-size:11px;line-height:1.45}
+.volc-notice{display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;margin-top:11px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-100)}
+.volc-notice>.ic-svg{margin-top:1px;color:var(--text-400)}
+.volc-notice.warn{border-color:color-mix(in srgb,var(--clay) 55%,var(--border));background:color-mix(in srgb,var(--clay) 9%,var(--bg-100))}
+.volc-notice.warn>.ic-svg{color:var(--clay-em)}
+.volc-notice.ok{border-color:var(--success);background:var(--success-bg)}
+.volc-notice.ok>.ic-svg{color:var(--success-text)}
+.volc-notice-title{color:var(--text-100);font-size:12.5px;font-weight:650;line-height:1.4}
+.volc-notice-body{margin-top:3px;color:var(--text-300);font-size:11.5px;line-height:1.55}
+.volc-code{flex:1 1 180px;min-width:140px;max-width:280px}
+.volc-plan-row{display:grid;grid-template-columns:minmax(64px,auto) minmax(0,1fr);align-items:center;gap:10px;margin-top:12px}
+.volc-plan-row .skill-lbl{margin:0}
+.volc-plan-row .cust-input{min-width:0;width:100%}
+.volc-quota-title{padding-top:14px}
+.volc-quotas{display:grid;gap:10px;margin-top:5px}
+.volc-quota{min-width:0}
+.volc-quota-labels{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--text-200);font-size:12px}
+.volc-progress{height:6px;margin-top:5px;overflow:hidden;border-radius:3px;background:var(--bg-300)}
+.volc-progress span{display:block;height:100%;max-width:100%;border-radius:inherit;background:var(--success)}
+.volc-reset{margin-top:3px;color:var(--text-400);font-size:10.5px;text-align:right}
+.volc-ready{display:inline-flex;align-items:center;min-height:28px;color:var(--success-text);font-size:12px;font-weight:600}
+.volc-key-wait{display:inline-flex;align-items:center;min-height:28px;color:var(--text-300);font-size:12px}
+@media(max-width:600px){.volc-head{align-items:center}.volc-actions{align-items:stretch;flex-direction:column}.volc-actions button:not(.icon-ghost),.volc-code{box-sizing:border-box;width:100%;max-width:none}.volc-actions .icon-ghost{align-self:flex-end}.volc-plan-row{grid-template-columns:1fr;gap:5px}.volc-project-hint{margin-left:0}}
+
 /* --- Volcengine DataPro: dedicated connector workflow --- */
 .datapro-card{display:flex;flex-direction:column;gap:12px;margin:4px 0 14px;padding:14px;border:.5px solid var(--border-card,var(--border));border-radius:12px;background:var(--bg-100,var(--panel))}
 .datapro-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
