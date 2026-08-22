@@ -20,6 +20,7 @@ from openai4s.kernel.recovery import (
     frozen_sidecar_bootstrap_code,
     merge_bootstrap_sidecar_loads,
     replay_safety_error,
+    sidecar_from_load_event,
 )
 from openai4s.storage.recovery import RecoveryJournalRepository
 
@@ -159,6 +160,10 @@ def test_bootstrap_manifest_v2_binds_worker_packages_locale_and_protocol_version
 
 
 def _sidecar_event(module: str, source: bytes, order: int) -> dict:
+    parts = module.split(".")
+    local_import_roots = list(dict.fromkeys(parts[:-1]))
+    if len(parts) == 2 and "skills" not in local_import_roots:
+        local_import_roots.append("skills")
     return {
         "event": "sidecar_loaded",
         "skill_name": module.partition(".")[0],
@@ -166,9 +171,33 @@ def _sidecar_event(module: str, source: bytes, order: int) -> dict:
         "source_b64": base64.b64encode(source).decode("ascii"),
         "sha256": hashlib.sha256(source).hexdigest(),
         "expected_sha256": hashlib.sha256(source).hexdigest(),
-        "source_path": f"/mutable/{module.partition('.')[0]}/kernel.py",
+        "source_path": f"/mutable/{parts[-2] if len(parts) >= 2 else module}/kernel.py",
+        "local_import_roots": local_import_roots,
         "order": order,
         "import_mode": "module",
+    }
+
+
+def _frozen_policy(
+    sidecar: SidecarManifest,
+    *,
+    direct: bool = False,
+    collection: str | None = None,
+) -> dict:
+    skill_directory = sidecar.name.split(".")[-2]
+    return {
+        "_o4s_skill_dirs": {skill_directory},
+        "_o4s_skill_entries": {
+            skill_directory: {"sidecar": {"sha256": sidecar.sha256}}
+        },
+        "_o4s_direct_skill_dirs": {skill_directory} if direct else set(),
+        "_o4s_collection_members": (
+            {collection: frozenset({skill_directory})} if collection else {}
+        ),
+        "_o4s_catalog_namespace": "skills",
+        "_o4s_denied_skills": set(),
+        "_o4s_disabled_skills": set(),
+        "_o4s_skill_load_order": [0],
     }
 
 
@@ -199,6 +228,110 @@ def test_runtime_sidecar_events_extend_manifest_in_exact_load_order():
     assert merge_bootstrap_sidecar_loads(complete, [first]) == complete
 
 
+def test_collection_qualified_sidecar_event_is_recoverable():
+    bootstrap = BootstrapManifest(
+        language="python",
+        interpreter="/env/bin/python",
+        runtime_version="3.12",
+        working_directory="/workspace",
+    ).record()
+    event = _sidecar_event(
+        "bioskills.collection-member.kernel", b"VALUE = 'qualified'\n", 0
+    )
+
+    merged = merge_bootstrap_sidecar_loads(bootstrap, [event])
+    sidecar = BootstrapManifest.from_record(merged).sidecars[0]
+    try:
+        exec(
+            frozen_sidecar_bootstrap_code(sidecar),
+            _frozen_policy(sidecar, collection="bioskills"),
+        )
+        module = importlib.import_module("bioskills.collection-member.kernel")
+        assert module.VALUE == "qualified"
+        assert importlib.import_module("collection-member.kernel") is module
+        assert merged["loaded_sidecars"][0]["module"] == sidecar.name
+    finally:
+        sys.modules.pop("bioskills.collection-member.kernel", None)
+        sys.modules.pop("bioskills.collection-member", None)
+        sys.modules.pop("bioskills", None)
+
+
+def test_unicode_sidecar_event_is_recoverable():
+    event = _sidecar_event("café.kernel", b"VALUE = 'unicode'\n", 0)
+
+    sidecar = sidecar_from_load_event(event)
+
+    assert sidecar.name == "café.kernel"
+
+
+@pytest.mark.parametrize("module", ["foo bar.kernel", "x:y.kernel"])
+def test_non_identifier_sidecar_event_spellings_remain_recoverable(module):
+    event = _sidecar_event(module, b"VALUE = 1\n", 0)
+
+    assert sidecar_from_load_event(event).name == module
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["kernel", "too.many.parts.kernel", "bad/name.kernel", "empty..kernel"],
+)
+def test_sidecar_event_rejects_malformed_qualified_modules(module):
+    event = _sidecar_event(module, b"VALUE = 1\n", 0)
+
+    with pytest.raises(ValueError, match=r"requires a \*\.kernel module"):
+        sidecar_from_load_event(event)
+
+
+def test_sidecar_event_requires_complete_local_alias_roots():
+    event = _sidecar_event("stats.kernel", b"VALUE = 1\n", 0)
+    event.pop("local_import_roots")
+    with pytest.raises(ValueError, match="requires local import roots"):
+        sidecar_from_load_event(event)
+
+    event = _sidecar_event("skills.stats.kernel", b"VALUE = 1\n", 0)
+    event["local_import_roots"] = ["skills"]
+    with pytest.raises(ValueError, match="omit a module parent"):
+        sidecar_from_load_event(event)
+
+
+def test_frozen_sidecar_never_replaces_an_existing_module_for_an_alias_root():
+    import json
+
+    event = _sidecar_event("victim.kernel", b"VALUE = 1\n", 0)
+    event["local_import_roots"] = ["victim", "json"]
+    sidecar = sidecar_from_load_event(event)
+    original_json = sys.modules["json"]
+    original_json_path = list(original_json.__path__)
+
+    # Even a catalog that deliberately claims a stdlib spelling cannot make
+    # recovery replace an already loaded ordinary module with a namespace.
+    policy = _frozen_policy(sidecar, collection="json")
+    try:
+        with pytest.raises(RuntimeError, match="collides with a loaded module"):
+            exec(frozen_sidecar_bootstrap_code(sidecar), policy)  # noqa: S102
+        assert sys.modules["json"] is original_json
+        assert list(original_json.__path__) == original_json_path
+    finally:
+        sys.modules.pop("victim.kernel", None)
+        sys.modules.pop("victim", None)
+
+
+@pytest.mark.parametrize("policy_key", ["_o4s_denied_skills", "_o4s_disabled_skills"])
+def test_frozen_sidecar_rechecks_current_capability_policy(policy_key):
+    sidecar = SidecarManifest(
+        name="victim.kernel",
+        source=b"VALUE = 999\n",
+        order=0,
+        local_import_roots=("victim",),
+    )
+    policy = _frozen_policy(sidecar)
+    policy[policy_key].add("victim")
+
+    with pytest.raises(RuntimeError, match="denied by capability policy"):
+        exec(frozen_sidecar_bootstrap_code(sidecar), policy)  # noqa: S102
+    assert "victim.kernel" not in sys.modules
+
+
 def test_frozen_sidecar_recovery_uses_manifest_bytes_not_changed_disk(tmp_path):
     skill = tmp_path / "frozen_skill"
     skill.mkdir()
@@ -214,10 +347,12 @@ def test_frozen_sidecar_recovery_uses_manifest_bytes_not_changed_disk(tmp_path):
     path.write_text("VALUE = 'mutable-new'\n", encoding="utf-8")
 
     try:
-        exec(frozen_sidecar_bootstrap_code(sidecar), {})
+        exec(frozen_sidecar_bootstrap_code(sidecar), _frozen_policy(sidecar))
         module = importlib.import_module("frozen_skill.kernel")
         assert module.VALUE == "frozen-old"
         assert module.__openai4s_frozen_sidecar_sha256__ == sidecar.sha256
+        assert module.__file__ == "<recovery-sidecar:frozen_skill.kernel>"
+        assert module.__spec__.origin == "<recovery-sidecar:frozen_skill.kernel>"
     finally:
         sys.modules.pop("frozen_skill.kernel", None)
         sys.modules.pop("frozen_skill", None)
@@ -238,6 +373,88 @@ def test_sidecar_manifest_rejects_unfrozen_local_imports(source):
             source=source,
             order=0,
             source_path="/mutable/local_skill/kernel.py",
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "error"),
+    [
+        (b"from pathlib import Path\nROOT = Path(__file__).parent\n", "mutable"),
+        (
+            b"import importlib.util\n"
+            b"spec = importlib.util.spec_from_file_location('x', '/tmp/x.py')\n",
+            "unfrozen code loader",
+        ),
+        (b"import runpy\nVALUE = runpy.run_path('/tmp/x.py')\n", "unfrozen"),
+        (
+            b"from runpy import run_path as load\nVALUE = load('/tmp/x.py')\n",
+            "unfrozen",
+        ),
+        (b"exec(open('/tmp/x.py').read())\n", "unfrozen code loader"),
+    ],
+    ids=("package-resource", "file-spec", "runpy", "aliased-runpy", "open-exec"),
+)
+def test_sidecar_manifest_rejects_mutable_explicit_code_loaders(source, error):
+    with pytest.raises(ValueError, match=error):
+        SidecarManifest(
+            name="local_skill.kernel",
+            source=source,
+            order=0,
+            source_path="/mutable/local_skill/kernel.py",
+        )
+
+
+def test_bundled_sidecar_recovery_compatibility_is_explicit():
+    from pathlib import Path
+
+    skills_root = Path(__file__).resolve().parent.parent / "skills"
+    rejected: dict[str, str] = {}
+    sidecars = sorted(skills_root.glob("*/kernel.py"))
+    for path in sidecars:
+        try:
+            SidecarManifest(
+                name=f"{path.parent.name}.kernel",
+                source=path.read_bytes(),
+                order=0,
+                source_path=str(path),
+            )
+        except ValueError as error:
+            rejected[path.parent.name] = str(error)
+
+    assert len(sidecars) == 16
+    # These packages intentionally read mutable package resources. Their
+    # runtime import remains supported, but recovery must be marked partial
+    # until those dependent resources are frozen alongside kernel.py.
+    assert set(rejected) == {"bioprobench", "catalyst_sar_screening"}
+
+
+@pytest.mark.parametrize(
+    ("name", "source"),
+    [
+        ("bioskills.collection-member.kernel", b"import collection-member.helper\n"),
+        ("bioskills.collection_member.kernel", b"import collection_member.helper\n"),
+        ("skills.local_skill.kernel", b"from local_skill import helper\n"),
+    ],
+)
+def test_qualified_sidecars_reject_unfrozen_local_imports(name, source):
+    # The hyphenated form is syntactically invalid and is rejected before the
+    # import-root check; the identifier forms exercise both qualified aliases.
+    error = (
+        "does not compile"
+        if b"collection-member" in source
+        else "unfrozen local import"
+    )
+    with pytest.raises(ValueError, match=error):
+        SidecarManifest(name=name, source=source, order=0)
+
+
+def test_direct_sidecar_rejects_static_catalog_alias_import():
+    with pytest.raises(ValueError, match="unfrozen local import"):
+        SidecarManifest(
+            name="local_skill.kernel",
+            source=b"from skills.local_skill.helper import VALUE\n",
+            order=0,
+            local_import_roots=("local_skill", "skills"),
         )
 
 
@@ -262,12 +479,228 @@ def test_frozen_sidecar_package_path_cannot_load_changed_sibling(tmp_path, monke
 
     try:
         with pytest.raises(ModuleNotFoundError, match="helper"):
-            exec(frozen_sidecar_bootstrap_code(sidecar), {})
+            exec(frozen_sidecar_bootstrap_code(sidecar), _frozen_policy(sidecar))
         assert "frozen_dynamic_skill.helper" not in sys.modules
     finally:
         sys.modules.pop("frozen_dynamic_skill.helper", None)
         sys.modules.pop("frozen_dynamic_skill.kernel", None)
         sys.modules.pop("frozen_dynamic_skill", None)
+
+
+def test_real_loader_event_seals_dynamic_imports_through_every_package_alias(
+    tmp_path,
+):
+    from openai4s.config import Config
+    from openai4s.skills_loader import SkillLoader
+
+    bundled = tmp_path / "skills"
+    victim = bundled / "victim"
+    victim.mkdir(parents=True)
+    (victim / "SKILL.md").write_text(
+        "---\nname: victim\ndescription: victim\n---\nbody\n", "utf-8"
+    )
+    (victim / "helper.py").write_text("VALUE = 'old'\n", "utf-8")
+    (victim / "kernel.py").write_text(
+        "import importlib\n"
+        "VALUE = importlib.import_module('skills.victim.helper').VALUE\n",
+        "utf-8",
+    )
+    loader = SkillLoader(cfg=Config(data_dir=tmp_path / "data", skills_dir=bundled))
+
+    original_meta_path = list(sys.meta_path)
+    original_sys_path = list(sys.path)
+    namespace: dict = {}
+    try:
+        exec(loader.bootstrap_code(), namespace)  # noqa: S102 - generated code
+        loaded = importlib.import_module("victim.kernel")
+        assert loaded.VALUE == "old"
+        event = namespace["__openai4s_skill_load_events__"][0]
+        assert set(event["local_import_roots"]) == {"victim", "skills"}
+        sidecar = sidecar_from_load_event(event)
+
+        (victim / "helper.py").write_text("VALUE = 'MUTATED-CURRENT-TREE'\n", "utf-8")
+        sys.meta_path[:] = original_meta_path
+        for module_name in list(sys.modules):
+            if module_name in {"victim", "skills"} or module_name.startswith(
+                ("victim.", "skills.")
+            ):
+                sys.modules.pop(module_name, None)
+
+        # Candidate recovery reinstalls the ordinary loader hook first.  The
+        # frozen bootstrap must still seal every alias package so dynamic
+        # importlib/__import__ calls cannot read a changed sibling from disk.
+        recovery_namespace: dict = {}
+        exec(loader.bootstrap_code(), recovery_namespace)  # noqa: S102
+        with pytest.raises(ModuleNotFoundError, match="helper"):
+            exec(  # noqa: S102 - generated recovery code is under test
+                frozen_sidecar_bootstrap_code(sidecar), recovery_namespace
+            )
+        assert "skills.victim.helper" not in sys.modules
+        assert "victim.helper" not in sys.modules
+    finally:
+        sys.meta_path[:] = original_meta_path
+        sys.path[:] = original_sys_path
+        for module_name in list(sys.modules):
+            if module_name in {"victim", "skills"} or module_name.startswith(
+                ("victim.", "skills.")
+            ):
+                sys.modules.pop(module_name, None)
+
+
+def test_runtime_and_recovery_share_one_module_across_sidecar_aliases(tmp_path):
+    import builtins
+
+    from openai4s.config import Config
+    from openai4s.skills_loader import SkillLoader
+
+    bundled = tmp_path / "skills"
+    victim = bundled / "victim"
+    victim.mkdir(parents=True)
+    (victim / "SKILL.md").write_text(
+        "---\nname: victim\ndescription: victim\n---\nbody\n", "utf-8"
+    )
+    counter_name = "__openai4s_sidecar_alias_test_counter__"
+    (victim / "kernel.py").write_text(
+        "import builtins\n"
+        f"builtins.{counter_name} = getattr(builtins, '{counter_name}', 0) + 1\n"
+        f"LOAD_COUNT = builtins.{counter_name}\n",
+        "utf-8",
+    )
+    loader = SkillLoader(cfg=Config(data_dir=tmp_path / "data", skills_dir=bundled))
+
+    original_meta_path = list(sys.meta_path)
+    original_sys_path = list(sys.path)
+    previous_counter = getattr(builtins, counter_name, None)
+    had_counter = hasattr(builtins, counter_name)
+    try:
+        setattr(builtins, counter_name, 0)
+        runtime_namespace: dict = {}
+        exec(loader.bootstrap_code(), runtime_namespace)  # noqa: S102
+        direct = importlib.import_module("victim.kernel")
+        qualified = importlib.import_module("skills.victim.kernel")
+        assert direct is qualified
+        assert direct.LOAD_COUNT == 1
+        assert getattr(builtins, counter_name) == 1
+        events = runtime_namespace["__openai4s_skill_load_events__"]
+        assert [event["module"] for event in events] == ["victim.kernel"]
+        sidecar = sidecar_from_load_event(events[0])
+
+        sys.meta_path[:] = original_meta_path
+        for module_name in list(sys.modules):
+            if module_name in {"victim", "skills"} or module_name.startswith(
+                ("victim.", "skills.")
+            ):
+                sys.modules.pop(module_name, None)
+        setattr(builtins, counter_name, 0)
+
+        recovery_namespace: dict = {}
+        exec(loader.bootstrap_code(), recovery_namespace)  # noqa: S102
+        exec(  # noqa: S102 - generated frozen bootstrap is under test
+            frozen_sidecar_bootstrap_code(sidecar), recovery_namespace
+        )
+        recovered_direct = importlib.import_module("victim.kernel")
+        recovered_qualified = importlib.import_module("skills.victim.kernel")
+        assert recovered_direct is recovered_qualified
+        assert recovered_direct.LOAD_COUNT == 1
+        assert getattr(builtins, counter_name) == 1
+    finally:
+        sys.meta_path[:] = original_meta_path
+        sys.path[:] = original_sys_path
+        for module_name in list(sys.modules):
+            if module_name in {"victim", "skills"} or module_name.startswith(
+                ("victim.", "skills.")
+            ):
+                sys.modules.pop(module_name, None)
+        if had_counter:
+            setattr(builtins, counter_name, previous_counter)
+        else:
+            try:
+                delattr(builtins, counter_name)
+            except AttributeError:
+                pass
+
+
+@pytest.mark.parametrize(
+    ("kernel_source", "expected_error"),
+    [
+        (
+            "from dependency.helper import VALUE\n",
+            "unfrozen Skill dependency",
+        ),
+        (
+            "import importlib\n"
+            "VALUE = importlib.import_module('dependency.helper').VALUE\n",
+            "unfrozen Skill dependency",
+        ),
+        ("from helper import VALUE\n", "unfrozen module"),
+    ],
+    ids=("static-skill", "dynamic-skill", "workspace-module"),
+)
+def test_frozen_recovery_rejects_unfrozen_cross_skill_dependencies(
+    tmp_path, kernel_source, expected_error
+):
+    from openai4s.config import Config
+    from openai4s.skills_loader import SkillLoader
+
+    bundled = tmp_path / "skills"
+    victim = bundled / "victim"
+    dependency = bundled / "dependency"
+    victim.mkdir(parents=True)
+    dependency.mkdir()
+    (victim / "SKILL.md").write_text(
+        "---\nname: victim\ndescription: victim\n---\nbody\n", "utf-8"
+    )
+    (dependency / "SKILL.md").write_text(
+        "---\nname: dependency\ndescription: dependency\n---\nbody\n", "utf-8"
+    )
+    (dependency / "helper.py").write_text("VALUE = 'ORIGINAL'\n", "utf-8")
+    workspace_helper = tmp_path / "helper.py"
+    workspace_helper.write_text("VALUE = 'ORIGINAL'\n", "utf-8")
+    (victim / "kernel.py").write_text(kernel_source, "utf-8")
+    loader = SkillLoader(cfg=Config(data_dir=tmp_path / "data", skills_dir=bundled))
+
+    original_meta_path = list(sys.meta_path)
+    original_sys_path = list(sys.path)
+    runtime_namespace: dict = {}
+    try:
+        sys.path.insert(0, str(tmp_path))
+        exec(loader.bootstrap_code(), runtime_namespace)  # noqa: S102
+        assert importlib.import_module("victim.kernel").VALUE == "ORIGINAL"
+        events = runtime_namespace["__openai4s_skill_load_events__"]
+        assert [event["module"] for event in events] == ["victim.kernel"]
+        sidecar = sidecar_from_load_event(events[0])
+
+        (dependency / "helper.py").write_text("VALUE = 'MUTATED'\n", "utf-8")
+        workspace_helper.write_text("VALUE = 'MUTATED'\n", "utf-8")
+        sys.meta_path[:] = original_meta_path
+        for module_name in list(sys.modules):
+            if module_name in {
+                "victim",
+                "dependency",
+                "skills",
+                "helper",
+            } or module_name.startswith(("victim.", "dependency.", "skills.")):
+                sys.modules.pop(module_name, None)
+
+        recovery_namespace: dict = {}
+        exec(loader.bootstrap_code(), recovery_namespace)  # noqa: S102
+        with pytest.raises(ModuleNotFoundError, match=expected_error):
+            exec(  # noqa: S102 - generated frozen bootstrap is under test
+                frozen_sidecar_bootstrap_code(sidecar), recovery_namespace
+            )
+        assert "dependency.helper" not in sys.modules
+        assert "skills.dependency.helper" not in sys.modules
+    finally:
+        sys.meta_path[:] = original_meta_path
+        sys.path[:] = original_sys_path
+        for module_name in list(sys.modules):
+            if module_name in {
+                "victim",
+                "dependency",
+                "skills",
+                "helper",
+            } or module_name.startswith(("victim.", "dependency.", "skills.")):
+                sys.modules.pop(module_name, None)
 
 
 def test_sidecar_event_tampering_and_capture_failure_fail_closed():

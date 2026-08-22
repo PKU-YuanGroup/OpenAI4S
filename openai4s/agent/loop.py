@@ -60,10 +60,13 @@ invent or guess a tool name. `exec_background` is only for a genuinely \
 long-running independent job and must never replace an ordinary foreground Cell.
 
 For Skill enumeration or an all-Skills audit, use the exact native `list_skills` \
-tool, then retrieve each returned recipe by calling the exact native \
-`load_skill` tool with its `name`. `list_dir` lists workspace files only; \
-`read_text_file` and `glob_files` are workspace operations too, and catalog \
-metadata is never a file path. Use \
+tool. Its zero-argument overview returns the exact total count, curated Skill \
+names, and collection summaries. Retrieve every curated name with `load_skill`; \
+for each collection, call `list_skills` with its `collection` id and `offset=0`, \
+load every returned name, and continue at each returned `next_offset` while that \
+field is present. `list_dir` lists workspace files only; `read_text_file` and \
+`glob_files` are workspace operations too, and catalog metadata is never a file \
+path. Use \
 `host.skills.list()` only inside a fenced Python Cell, never as a native function name.
 
 How you work (Code-as-Action):
@@ -405,7 +408,7 @@ class Agent:
                 return
             boot = self._skill_loader.bootstrap_code()
             if boot.strip():
-                kernel.execute(boot, origin="agent")
+                kernel.execute(boot, origin="system")
 
         lazy_kernel = LazyKernel(
             lambda: Kernel(dispatcher=self.dispatcher, cwd=run_cwd),

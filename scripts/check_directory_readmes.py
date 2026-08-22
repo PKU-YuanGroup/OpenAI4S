@@ -23,6 +23,14 @@ EXCLUDED_PREFIXES = (
     PurePosixPath("skills/bioskills"),
     PurePosixPath("tests/fixtures"),
 )
+# Pinned, mechanically imported third-party resource collections. Their root
+# boundary files remain maintained and checked; only generated recipe
+# descendants are excluded, so deleting the bilingual boundary pair cannot
+# make the directory disappear from this gate.
+PINNED_COLLECTION_ROOTS = (PurePosixPath("skills/bioskills"),)
+PINNED_COLLECTION_BOUNDARY_FILES = frozenset(
+    {"COLLECTION.json", "LICENSE", "MANIFEST.json", "README.md", "README_zh.md"}
+)
 EXCLUDED_PARTS = frozenset(
     {
         ".git",
@@ -48,7 +56,16 @@ DOC_NAMES = frozenset(name for pair in DOC_PAIRS for name in pair)
 def _excluded(path: PurePosixPath) -> bool:
     if any(part in EXCLUDED_PARTS for part in path.parts):
         return True
-    return any(path == prefix or prefix in path.parents for prefix in EXCLUDED_PREFIXES)
+    if any(path == prefix or prefix in path.parents for prefix in EXCLUDED_PREFIXES):
+        return True
+    for root in PINNED_COLLECTION_ROOTS:
+        if path == root:
+            return False
+        if root in path.parents:
+            return not (
+                path.parent == root and path.name in PINNED_COLLECTION_BOUNDARY_FILES
+            )
+    return False
 
 
 def _source_files() -> set[PurePosixPath]:

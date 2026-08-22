@@ -128,6 +128,20 @@ class SkillVersionService:
                 f"{collision.name!r}"
             )
 
+    def _reject_bundled_directory_collision(self, slug: str) -> None:
+        # The public version API accepts an explicit slug independently of the
+        # display name. Name-only collision checks therefore cannot stop a
+        # caller from materializing a writable package under a bundled member
+        # directory that discovery will always hide.
+        from openai4s.skills_loader.loader import SkillLoader
+
+        collision = SkillLoader(cfg=self.cfg).bundled_directory_collision(slug)
+        if collision is not None:
+            raise PermissionError(
+                f"Skill directory {slug!r} collides with read-only bundled "
+                f"directory {collision}"
+            )
+
     @staticmethod
     def _normalize_files(files: Mapping[str, bytes | str]) -> dict[str, bytes]:
         if not isinstance(files, Mapping):
@@ -329,6 +343,7 @@ class SkillVersionService:
             if supplied_slug != _slug(supplied_slug):
                 raise ValueError("unsafe Skill directory name")
             slug = supplied_slug
+        self._reject_bundled_directory_collision(slug)
         scope = str(scope or "").strip().lower()
         scope_id = str(project_id or "") if scope == "project" else ""
         base = self.scope_root(scope=scope, project_id=project_id)
@@ -478,6 +493,12 @@ class SkillVersionService:
         )
         if installation is None:
             raise KeyError(f"no installed Skill: {name!r}")
+        # A bundled catalog can gain a new declared name or directory after a
+        # personal version was recorded. Rollback re-materializes immutable
+        # historical bytes, so it must repeat both current-catalog checks just
+        # before writing instead of relying on the checks from the old install.
+        self._reject_bundled_collision(installation["name"])
+        self._reject_bundled_directory_collision(installation["slug"])
         if not self.repository.version_belongs_to(
             name,
             version_id,

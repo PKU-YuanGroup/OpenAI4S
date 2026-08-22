@@ -307,6 +307,92 @@ def test_bundled_skill_is_never_installable_publishable_or_rollback_target(tmp_p
         store.close()
 
 
+def test_public_version_install_rejects_bundled_collection_member_slug(tmp_path):
+    cfg = _config(tmp_path)
+    collection = cfg.skills_dir / "collection"
+    member = collection / "physical-directory"
+    member.mkdir(parents=True)
+    (collection / "COLLECTION.json").write_text(
+        '{"id":"collection","prompt_line":"collection: {count}"}\n', "utf-8"
+    )
+    (member / "SKILL.md").write_text(
+        _document("Canonical Member", "bundled", origin="openai4s"), "utf-8"
+    )
+    unicode_member = collection / "ｆｏｏ"
+    unicode_member.mkdir()
+    (unicode_member / "SKILL.md").write_text(
+        _document("Unrelated Unicode Member", "bundled", origin="openai4s"),
+        "utf-8",
+    )
+    store = Store(cfg.db_path)
+    versions = SkillVersionService(cfg, repository=store.skill_versions())
+    try:
+        with pytest.raises(PermissionError, match="bundled directory"):
+            versions.install(
+                "Unrelated Personal Skill",
+                {"SKILL.md": _document("Unrelated Personal Skill", "personal")},
+                slug="physical-directory",
+            )
+        assert not (
+            cfg.data_dir / "user-skills" / "physical-directory" / "SKILL.md"
+        ).exists()
+        assert SkillLoader(cfg=cfg).bundled_directory_collision("FOO") == unicode_member
+        with pytest.raises(PermissionError, match="bundled directory"):
+            versions.install(
+                "Another Personal Skill",
+                {"SKILL.md": _document("Another Personal Skill", "personal")},
+                slug="foo",
+            )
+        assert not (cfg.data_dir / "user-skills" / "foo").exists()
+    finally:
+        store.close()
+
+
+def test_rollback_rechecks_directory_reserved_by_a_new_bundled_catalog(tmp_path):
+    cfg = _config(tmp_path)
+    store = Store(cfg.db_path)
+    versions = SkillVersionService(cfg, repository=store.skill_versions())
+    try:
+        first = versions.install(
+            "Personal History",
+            {"SKILL.md": _document("Personal History", "old bytes")},
+            slug="future-member",
+        )
+        second = versions.upgrade(
+            "Personal History",
+            {"SKILL.md": _document("Personal History", "current bytes")},
+            slug="future-member",
+        )
+        active_path = cfg.data_dir / "user-skills" / "future-member" / "SKILL.md"
+
+        # Simulate an application/catalog update after the personal history was
+        # recorded. The historical display name is unrelated, but its saved
+        # slug is now a read-only collection member import identity.
+        collection = cfg.skills_dir / "new-collection"
+        member = collection / "future-member"
+        member.mkdir(parents=True)
+        (collection / "COLLECTION.json").write_text(
+            '{"id":"new-collection","prompt_line":"new: {count}"}\n',
+            "utf-8",
+        )
+        (member / "SKILL.md").write_text(
+            _document("Unrelated Bundled Member", "bundled", origin="openai4s"),
+            "utf-8",
+        )
+
+        with pytest.raises(PermissionError, match="bundled directory"):
+            versions.rollback("Personal History", first["version_id"])
+        assert active_path.read_text("utf-8") == _document(
+            "Personal History", "current bytes"
+        )
+        assert (
+            versions.history("Personal History")["installation"]["active_version_id"]
+            == second["version_id"]
+        )
+    finally:
+        store.close()
+
+
 def test_sidecar_gate_and_package_path_limits_fail_before_activation(tmp_path):
     cfg = _config(tmp_path)
     store = Store(cfg.db_path)

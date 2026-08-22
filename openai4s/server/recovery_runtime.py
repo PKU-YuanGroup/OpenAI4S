@@ -331,7 +331,10 @@ class SessionRecoveryRuntime:
                 raise RuntimeError(f"bootstrap hook {index} failed: {result['error']}")
         for sidecar in manifest.sidecars:
             source = frozen_sidecar_bootstrap_code(sidecar)
-            result = candidate.kernel.execute(source, origin="recovery")
+            # The worker audit hook uses this narrow origin to deny mutable
+            # file/code loads while the captured bytes execute. Ordinary
+            # recovery hooks and replay Cells retain their existing posture.
+            result = candidate.kernel.execute(source, origin="sidecar_recovery")
             if result.get("error"):
                 raise RuntimeError(
                     f"sidecar {sidecar.name!r} failed: {result['error']}"

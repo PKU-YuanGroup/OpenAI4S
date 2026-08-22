@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import json
 import os
 import subprocess
 import sys
@@ -17,11 +18,50 @@ import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MIN_CURATED_SKILLS = 20
+MIN_COLLECTION_SKILLS = 561
 
 
 def _require(path: Path, label: str) -> None:
     if not path.is_file():
         raise RuntimeError(f"installed wheel is missing {label}: {path}")
+
+
+def _check_skill_catalog(skills_dir: Path) -> int:
+    _require(skills_dir / "bioskills" / "COLLECTION.json", "bioSkills marker")
+    _require(skills_dir / "bioskills" / "LICENSE", "bioSkills license")
+    _require(skills_dir / "bioskills" / "MANIFEST.json", "bioSkills manifest")
+    curated = sorted(skills_dir.glob("*/SKILL.md"))
+    collection = sorted((skills_dir / "bioskills").glob("*/SKILL.md"))
+    if len(curated) < MIN_CURATED_SKILLS:
+        raise RuntimeError(
+            f"installed skill catalog is incomplete: {len(curated)} curated "
+            f"skill(s) at {skills_dir}"
+        )
+    if len(collection) < MIN_COLLECTION_SKILLS:
+        raise RuntimeError(
+            f"installed bioSkills collection is incomplete: {len(collection)} "
+            f"recipe(s) at {skills_dir / 'bioskills'}"
+        )
+    return len(curated) + len(collection)
+
+
+def _check_discoverable_catalog(cfg: object, expected_count: int) -> None:
+    """Exercise the installed loader, not just filesystem glob counts."""
+
+    from openai4s.skills_loader import SkillLoader
+
+    try:
+        discovered = SkillLoader(cfg=cfg).discover()
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            f"installed Skill catalog is not discoverable: {error}"
+        ) from error
+    if len(discovered) != expected_count:
+        raise RuntimeError(
+            f"installed Skill loader found {len(discovered)} of "
+            f"{expected_count} catalog entries"
+        )
 
 
 def main() -> int:
@@ -56,12 +96,13 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="openai4s-release-smoke-") as temp:
         cfg = Config(data_dir=Path(temp))
-        skills = sorted(cfg.skills_dir.glob("*/SKILL.md"))
-        skills.extend(sorted((cfg.skills_dir / "bioskills").glob("*/SKILL.md")))
-        if len(skills) < 20:
-            raise RuntimeError(
-                f"installed skill catalog is incomplete: {len(skills)} skill(s) at {cfg.skills_dir}"
-            )
+        # Counted separately: a single total lets the 561-recipe collection
+        # satisfy the floor on its own, so a wheel that dropped every curated
+        # Skill would still report a healthy catalog. The collection is a
+        # required runtime resource, not an optional add-on whose absence turns
+        # its own completeness check off.
+        skill_count = _check_skill_catalog(cfg.skills_dir)
+        _check_discoverable_catalog(cfg, skill_count)
 
         env_dir = package_root.parent / "envs"
         for name in ("python", "phylo", "r", "struct"):
@@ -92,6 +133,40 @@ def main() -> int:
         if completed.returncode != 0 or "serve" not in completed.stdout:
             raise RuntimeError("installed `python -m openai4s --help` smoke failed")
 
+        deployment = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-m",
+                "skills.retrosynthesis_planning.model_deployment",
+                "list",
+            ],
+            cwd=temp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=30,
+        )
+        try:
+            checkpoints = json.loads(deployment.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "installed checkpoint registry did not return JSON"
+            ) from exc
+        if not isinstance(checkpoints, list):
+            raise RuntimeError("installed checkpoint registry did not return a list")
+        variants = {item.get("name") for item in checkpoints if isinstance(item, dict)}
+        if deployment.returncode != 0 or variants != {
+            "pistachio",
+            "uspto50k",
+            "uspto-full",
+        }:
+            raise RuntimeError(
+                "installed `python -m skills.retrosynthesis_planning."
+                "model_deployment list` smoke failed"
+            )
+
     requirements = importlib.metadata.requires("openai4s") or []
     core = [
         requirement
@@ -101,7 +176,8 @@ def main() -> int:
     if core:
         raise RuntimeError(f"installed core unexpectedly requires dependencies: {core}")
     print(
-        f"installed release smoke passed: {package_root} ({len(modules)} modules, {len(skills)} skills)"
+        f"installed release smoke passed: {package_root} "
+        f"({len(modules)} modules, {skill_count} skills)"
     )
     return 0
 

@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install dev dependencies
@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install dev dependencies
@@ -106,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install locked development dependencies
@@ -132,7 +132,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -229,7 +229,7 @@ jobs:
           # instead of one that is enforced on developer machines and nowhere
           # else; deepening all three would pay for the same answer twice more.
           fetch-depth: ${{ matrix.python-version == '3.12' && 0 || 1 }}
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
       # Keep one science-only job to exercise the no-RDKit fallback. Ubuntu's
@@ -253,7 +253,26 @@ jobs:
         run: uv run pytest --collect-only -q
       - name: Run the offline suite (no secrets, no network, no hardware)
         # addopts already passes -q; a second -q would suppress the summary line.
-        run: uv run pytest
+        #
+        # `-n auto` because this one command *was* CI: 1094 of this job's 1122
+        # seconds were spent here, and the other sixteen jobs put together came
+        # to under eight minutes. Nothing else on the critical path was worth
+        # optimising while the suite ran on one core.
+        #
+        # `--dist loadfile`, not the default `load`. The default hands out
+        # individual tests, which asserts that any two tests in a module may run
+        # in different processes -- a property nothing here has ever had to
+        # hold, because nothing here has ever run in parallel. loadfile asserts
+        # only that two *files* are independent, which is the boundary the suite
+        # was actually written to: `tests/conftest.py` redirects `~/.openai4s`
+        # per test, and every test server binds ("127.0.0.1", 0) rather than a
+        # fixed port, so files do not contend. Within a file, ordering and any
+        # module-level state stay exactly as they are today.
+        #
+        # Scaling is linear at this width (1572 worker-seconds over 4 workers in
+        # 393s), so the per-file granularity is costing nothing: no single file
+        # is long enough to be the tail.
+        run: uv run pytest -n auto --maxprocesses=4 --dist loadfile
       # After the suite, not before it: the pytest gate must never sit behind
       # a command that can fail it (tests/test_ci_gate_independence.py). The
       # importorskip guards make a missing science stack a *silent* skip, and
@@ -276,7 +295,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install dev dependencies
@@ -313,7 +332,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install dev and science dependencies
@@ -331,13 +350,28 @@ jobs:
   # guessing. Its own job anyway: "the schema gate did not get to run" and "the
   # schema gate ran and passed" are different facts, and as a step behind pytest
   # they looked identical on the summary page.
+  #
+  # This job is a *second* run of the whole suite. Each worker publishes its
+  # share during `pytest_sessionfinish`, before xdist can report that worker as
+  # successful, and records xdist's run id plus expected worker count. Four
+  # workers writing the same destination directly would leave whichever
+  # finished last -- a fraction of the evidence in a document that still
+  # looked complete, which is precisely the wrong-rather-than-absent
+  # provenance the artifact's own note warns about.
+  #
+  # It is split now anyway. Each worker leaves its un-elided shapes beside the
+  # destination and `scripts/capture_response_schemas.py` merges them once
+  # pytest has exited -- after every writer process is gone -- through the same
+  # `merge` call `Recorder.observe` makes. Assembly rejects missing or mixed-run
+  # shares before writing the capture. Equality and completeness are asserted
+  # in tests/test_response_capture_assembly.py, not assumed.
   response-schemas:
     name: Frozen response shapes
     timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install dev, science, and chemistry dependencies
@@ -361,7 +395,7 @@ jobs:
         engine: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -431,7 +465,7 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install the zero-dependency runtime
@@ -464,7 +498,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Build the bundle
@@ -489,7 +523,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
       - name: Install the zero-dependency runtime

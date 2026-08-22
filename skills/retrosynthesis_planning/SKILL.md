@@ -1,14 +1,23 @@
 ---
 name: retrosynthesis_planning
-description: industrial retrosynthesis planning pipeline for target SMILES; run AiZynthFinder, normalize route JSON, query route molecules, rank routes, render figure-style route dashboards, and write analyst reports with retrosynthetic rationale.
+description: Search multi-step retrosynthesis routes from a target to stock with AiZynthFinder, then audit and rank route trees. Use for recursive planning, not mapping, forward prediction, conditions, or yield.
 origin: openai4s
 category: chemistry
 ---
 # Skill: retrosynthesis planning
 
-Use this skill when a task asks for retrosynthetic analysis, synthesis route
-planning, purchasable precursor search, route-tree visualization, molecule
-lookup, or a medicinal chemistry synthesis feasibility summary.
+This Skill owns one scientific problem: multi-step search from a target molecule
+to a declared purchasable or in-house stock. It also provides engineering review
+functions for the returned route trees. It does not redefine single-step
+prediction, forward outcome prediction, atom mapping, condition recommendation,
+or yield estimation as phases of one model.
+
+Use `single-step-retrosynthesis` to inspect a single disconnection directly,
+`reaction-forward-prediction` for round-trip product recovery,
+`reaction-atom-mapping` for changed bonds on a complete reaction,
+`reaction-condition-recommendation` for condition hypotheses, and
+`reaction-yield-estimation` for a bounded yield-screening signal. The audited
+task/model selection is in `MODEL_TASKS.md`.
 
 The recommended backend is AiZynthFinder running in a separate environment. This
 skill keeps OpenAI4S core dependency-free: the helper module is pure stdlib and
@@ -20,13 +29,20 @@ environments before generating visual reports:
 uv sync --extra science --extra chemistry
 ```
 
+For optional RetroChimera single-step proposals, use `model_deployment.py` to
+verify and safely extract a reviewed public checkpoint, then call it through
+`SyntheseusBackend`; never place model weights in the Skill directory. When a
+checkpoint must be fetched from a Python cell, use its `download_checkpoint`
+helper, which routes bytes through `host.web_download`; do not add a raw
+`urllib`, `requests`, or socket download to the Skill.
+
 RDKit is not required to plan, rank, or review routes. If the chemistry extra is
 unavailable on the current platform, omit it; the dashboard falls back to
 transparent local SVG placeholders while the rest of the skill remains usable.
 
 ## Capability summary
 
-This skill implements a complete retrosynthesis review pipeline:
+This skill implements multi-step search plus route-review support:
 
 1. build a reproducible `aizynthcli` command for a target SMILES
 2. load AiZynthFinder JSON exports

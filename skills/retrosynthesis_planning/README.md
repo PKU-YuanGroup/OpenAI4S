@@ -56,6 +56,8 @@ audit = audit_routes(routes)
 
 [`external_backends.py`](external_backends.py) adds a versioned, stdlib-only subprocess boundary for optional single-step models. [`syntheseus_worker.py`](syntheseus_worker.py) can run RetroChimera or supported Syntheseus wrappers inside a separate Python or conda environment, keeping PyTorch, CUDA, checkpoints and model-specific dependencies out of the OpenAI4S core process.
 
+[`model_deployment.py`](model_deployment.py) makes RetroChimera checkpoint setup reproducible without adding a package dependency: it records the three public upstream archives, routes optional downloads through the guarded Host capability, validates the reviewed byte count and MD5 plus a locally computed SHA-256, rejects unsafe ZIP members, extracts through an atomic staging directory, and writes the path-free manifest consumed by the backend.
+
 Automatic checkpoint downloading is disabled by default. A model run can carry a path-free manifest containing model version, checkpoint identifier and SHA-256, training dataset and license information. Returned model scores remain raw model outputs and are always accompanied by a scientific disclaimer; they are not converted into experimental success probabilities.
 
 See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) for installation, manifest, protocol, failure handling and Harness replay details.
@@ -70,9 +72,14 @@ See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_
 | [`route_review.py`](route_review.py) | Stable route signatures, duplicate provenance and diversity-aware route selection based on reaction, product, precursor and terminal-material features. |
 | [`structural_audit.py`](structural_audit.py) | Deterministic route-tree checks before LLM interpretation. It remains stdlib-only and adds RDKit parse/element checks only when RDKit is installed. |
 | [`external_backends.py`](external_backends.py) | Versioned external-model request/response validation, path-free model manifests, timeout and size enforcement, and the `SyntheseusBackend` subprocess adapter. |
+| [`model_deployment.py`](model_deployment.py) | Pure-stdlib RetroChimera checkpoint registry, guarded Host download, archive verification, safe atomic extraction and path-free manifest generation. |
 | [`syntheseus_worker.py`](syntheseus_worker.py) | The isolated optional-dependency worker for RetroChimera and supported Syntheseus model classes. It moves descriptor 1 onto stderr before handling a request — so native model output cannot corrupt the protocol — strips filesystem paths out of model metadata, and emits one structured JSON response. |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | English guide to isolated model installation, provenance manifests, usage, wire errors, scientific limits and offline replay verification. |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | Chinese version of the external-model backend and trust guide. |
+| [`MODEL_TASKS.md`](MODEL_TASKS.md) | Engineering audit of six independently testable model tasks, their selected open models, alternatives, licenses, deployment evidence, and scientific limits. |
+| [`MODEL_TASKS_zh.md`](MODEL_TASKS_zh.md) | Chinese version of the model-backed task audit. |
+| [`SCENARIO.md`](SCENARIO.md) | Six model-backed scientific problems written as separate Science Queries, each with its own goal, input, output, technique, implementation, metrics, and hard constraints; also states which subset constitutes narrow planning. |
+| [`SCENARIO_zh.md`](SCENARIO_zh.md) | Chinese version of the six-problem Scenario specification, matching the requested scientific-problem format rather than a serial pipeline. |
 
 Focused regressions for this layer live in [`../../tests/test_retrosynthesis_scoring_regressions.py`](../../tests/test_retrosynthesis_scoring_regressions.py) and [`../../tests/test_harness_contract.py`](../../tests/test_harness_contract.py).
 
@@ -81,3 +88,4 @@ Focused regressions for this layer live in [`../../tests/test_retrosynthesis_sco
 | Directory | Responsibility |
 | --- | --- |
 | [`examples/`](examples/) | The deterministic aspirin-shaped route and annotation fixtures, the HTML and report generated from them, and the script that rebuilds both. |
+| [`scenarios/`](scenarios/) | Detailed benchmark specifications for six independent scientific scenarios, including frozen data, private ground truth, stages, metrics, constraints, and failure cases. |
