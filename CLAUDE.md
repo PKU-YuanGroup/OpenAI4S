@@ -33,7 +33,7 @@ CLI subcommands (`openai4s <cmd>`): `serve` · `status` · `stop` · `url` · `r
 
 ```bash
 uv run python scripts/check_directory_readmes.py            # bilingual per-directory README coverage
-uv run python -m harness.cli run --tier pr --offline        # deterministic scenario contracts
+uv run python3 -m harness.cli run --tier pr --offline       # deterministic scenario contracts
 uv run python scripts/capture_response_schemas.py --check   # frozen response shapes still match reality
 uv run python scripts/capture_response_contract.py --check  # every routable route still has a contract
 python scripts/source_secret_scan.py                        # no credential-shaped literal in release sources
@@ -106,7 +106,7 @@ Read `docs/architecture.md` first. The system is two nested loops:
 Tests are the floor, not the ceiling — much of what matters here is runtime behavior a unit test won't exercise.
 
 - `uv run pytest` for the offline suite; scope kernel/engine work with `tests/test_kernel.py` / `tests/test_agent.py` and run them explicitly after protocol changes — but always finish with the **whole** suite. Per-module runs miss cross-test collisions (a global `Popen` patch in one file breaks the next file that spawns a real subprocess), and `pre-commit run --files X` can pass while `--all-files` fails.
-- **Match the gate to what you touched:** a gateway route or serializer → `capture_response_schemas.py --check` *and* `capture_response_contract.py --check`; agent core or `host_dispatch.py` → `uv run mypy`; scenario/fault/trace code → `python -m harness.cli run --tier pr --offline`; a new directory → `check_directory_readmes.py`; packaging or resource files → `uv build` + `scripts/verify_release_artifacts.py dist`.
+- **Match the gate to what you touched:** a gateway route or serializer → `capture_response_schemas.py --check` *and* `capture_response_contract.py --check`; agent core or `host_dispatch.py` → `uv run mypy`; scenario/fault/trace code → `python3 -m harness.cli run --tier pr --offline`; a new directory → `check_directory_readmes.py`; packaging or resource files → `uv build` + `scripts/verify_release_artifacts.py dist`.
 - For anything touching the kernel, host RPC, gateway streaming, or the web UI, **drive it end-to-end in a real browser** against a running `./start.sh` (the UI streams turns over WebSocket; behavior like figure capture, provenance, and live-Notebook kernel sharing only surfaces at runtime). A one-shot `uv run openai4s run "…" -v` is the fastest Code-as-Action smoke test without the UI.
 - **Green on macOS is not green in CI.** CI is Linux: `sh` execs where macOS forks, there is no Seatbelt but there is bubblewrap, and platform branches you never take locally are the ones that run there. Force the Linux branch locally when you change sandbox, subprocess, or platform-detection code.
 
