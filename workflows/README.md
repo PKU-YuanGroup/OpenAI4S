@@ -1,6 +1,6 @@
 # `workflows/`
 
-The versioned science-workflow benchmark's manifests: eleven workflows and 31
+The versioned science-workflow benchmark's manifests: eleven workflows and 34
 cases, each workflow JSON declaring what a run is supposed to do and what
 counts as having done it. The root-level `next-round-acceptance.json` is a
 separate Stage 0 field/safety pack, not a twelfth science workflow.

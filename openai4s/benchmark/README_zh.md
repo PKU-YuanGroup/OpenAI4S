@@ -1,7 +1,7 @@
 # `openai4s/benchmark/`
 
 带版本的科学工作流基准 runner，清单放在
-[`workflows/`](../../workflows/README_zh.md)：十一个 workflow、三十一个真的会
+[`workflows/`](../../workflows/README_zh.md)：十一个 workflow、三十四个真的会
 执行的用例，另有一份独立、严格的 Stage 0 现场/安全验收包。
 
 提出这套基准的方案对「什么会让它一文不值」讲得很明确——一个没人执行的 fixture 目录，或者因为被测对象是 mock 所以能过的用例。所以这里每一步都驱动真实子系统：真实的 Store、真实的 kernel manager、真实的 host dispatcher、真实的 compute manager、真实的 connector service、真实的环境事务。被注入的只有离线跑不了的那些——LLM（测试套件本来就 mock 了它）、网络（connector 抓取喂的是录制下来的 body）、包管理器（单元测试里的环境构建不可能去下载一个 solver）——而且每一样都是注入**进**生产代码，而不是把生产代码替换掉。一个自己造答案的 step，衡量的是这个 step 自己。
@@ -10,7 +10,7 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `__init__.py` | 对外表面：原有 workflow API，以及 `AcceptancePack`、`load_acceptance_pack` 和 `run_acceptance_pack`。调用方不应 import 树里的其他实现。 |
+| `__init__.py` | 对外表面：workflow API、严格验收包 API，以及工具 bring-up API（`BringupError`、`seal_record`、`verify_bringup`）。调用方应从这里 import 这些契约，而不是直连实现模块。 |
 | `acceptance.py` | 加载并重放严格、带版本的下一轮验收包：恰好六条现场路径和七类安全动作；每项输出 expected/observed/pass/evidence/duration，并聚合明确写出分母的指标。 |
 | `model.py` | workflow 与 case **是什么**，以及从哪里读。清单用 JSON 而非 YAML，理由与内核一致——决定一次发布好不好的东西，不能要求先装一个第三方库才能读；而且它带版本，因为用例能被悄悄改动的基准，跨时间什么也衡量不了。 |
 | `runner.py` | 跑一个用例，并判定发生的事情是不是它所声明的。有意思的是这个判定而不是执行：声明的结果与观察到的结果对比，任一方向不一致都算失败。 |

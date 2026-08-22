@@ -1,6 +1,6 @@
 # `workflows/`
 
-带版本的科学工作流基准清单：十一个 workflow、共 31 个用例，每份 workflow
+带版本的科学工作流基准清单：十一个 workflow、共 34 个用例，每份 workflow
 JSON 都声明「这次运行应该做什么、做到什么才算做到」。根目录的
 `next-round-acceptance.json` 是独立的 Stage 0 现场/安全验收包，不是第十二个
 科学 workflow。

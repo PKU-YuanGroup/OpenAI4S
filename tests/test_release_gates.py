@@ -10,6 +10,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -727,6 +728,32 @@ def test_installed_release_smoke_exercises_real_skill_discovery(tmp_path):
 
     with pytest.raises(RuntimeError, match="not discoverable"):
         smoke._check_discoverable_catalog(cfg, 2)
+
+
+def test_installed_release_smoke_requires_eleven_workflows():
+    smoke = _load_script("release_import_smoke")
+    workflows = [SimpleNamespace(id="tool-bringup")]
+    workflows.extend(
+        SimpleNamespace(id=f"workflow-{index}")
+        for index in range(smoke.MIN_BENCHMARK_WORKFLOWS - 2)
+    )
+
+    with pytest.raises(RuntimeError, match="at least 11 required"):
+        smoke._check_workflow_catalog(workflows)
+
+
+def test_installed_release_smoke_requires_tool_bringup_workflow():
+    smoke = _load_script("release_import_smoke")
+    workflows = [
+        SimpleNamespace(id=f"workflow-{index}")
+        for index in range(smoke.MIN_BENCHMARK_WORKFLOWS)
+    ]
+
+    with pytest.raises(RuntimeError, match="tool-bringup"):
+        smoke._check_workflow_catalog(workflows)
+
+    workflows[-1] = SimpleNamespace(id="tool-bringup")
+    smoke._check_workflow_catalog(workflows)
 
 
 def _write_versions(root: Path, project: str, package: str) -> None:

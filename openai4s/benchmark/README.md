@@ -1,7 +1,7 @@
 # `openai4s/benchmark/`
 
 The runner for the versioned science-workflow benchmark whose manifests live in
-[`workflows/`](../../workflows/README.md): eleven workflows and thirty-one
+[`workflows/`](../../workflows/README.md): eleven workflows and thirty-four
 cases that actually execute, plus a separate strict Stage 0 field/safety
 acceptance pack.
 
@@ -24,7 +24,7 @@ half of the system whose job is to refuse. `provenance`, `recovered` and
 
 | File | Purpose |
 | --- | --- |
-| `__init__.py` | The public surface: the workflow APIs plus `AcceptancePack`, `load_acceptance_pack`, and `run_acceptance_pack`. Nothing else in the tree should be imported by a caller. |
+| `__init__.py` | The public surface: the workflow APIs, strict acceptance-pack APIs, and tool bring-up APIs (`BringupError`, `seal_record`, and `verify_bringup`). Callers should import these contracts here rather than from their implementation modules. |
 | `acceptance.py` | Loads and replays the strict, versioned next-round acceptance pack: exactly six field paths and seven safety actions, with expected/observed/pass/evidence/duration records and denominator-explicit aggregate metrics. |
 | `model.py` | What a workflow and a case *are*, and where they are read from. A manifest is JSON rather than YAML for the same reason the core is — no third-party import may be required to read the thing that decides whether a release is good — and it carries a version, because a benchmark whose cases can change silently measures nothing across time. |
 | `runner.py` | Runs a case and decides whether what happened is what it declared. The decision is the interesting part, not the execution: the declared outcome is compared against the observed one, and a mismatch in either direction is a failure. |
