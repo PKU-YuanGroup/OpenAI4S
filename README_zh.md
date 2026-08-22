@@ -107,7 +107,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 | **数据与检索** | 七个规范化公共数据库连接器（UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · Tavily 与免密钥搜索作为备用 · 托管的 DataPro 专业数据集检索 |
 | **工作台** | 实时流式 · Action Timeline · 默认只读的 Notebook · 分支 fork/激活/revert · 带明确 Partial/Failed 状态的验证式恢复 · 锁定到所指版本的 `@file` 引用 · 2D 化学/基因组/序列/MSA/LaTeX 渲染器 · Markdown 与 `.ipynb` 导出 |
 | **共享与可移植** | 经由你自己运行的 relay 的只读会话共享 · 隔离的可移植 Session 包 · 可选的、接到同一批内核上的 Jupyter KernelSpec 桥 |
-| **运维、安全与发布** | `/api/v1` 与启动凭据 · Seatbelt/bubblewrap 沙箱适配器，降级与 fail-closed 状态显式呈现 · 无人值守时默认拒绝的持久审批 · 脱敏诊断 · 可撤销遥测 · 环境即事务 · 跑在真实 Store、内核与 dispatcher 上的 10 workflow/20 case 基准 · 公开前先验证产物的分阶段发布流水线 |
+| **运维、安全与发布** | `/api/v1` 与启动凭据 · Seatbelt/bubblewrap 沙箱适配器，降级与 fail-closed 状态显式呈现 · 无人值守时默认拒绝的持久审批 · 脱敏诊断 · 可撤销遥测 · 环境即事务 · 跑在真实 Store、内核与 dispatcher 上的 11 workflow/34 case 基准 · 公开前先验证产物的分阶段发布流水线 |
 
 ---
 
@@ -230,7 +230,7 @@ docker compose exec openai4s openai4s url   # 带令牌、可直接打开的 URL
   Partial，而且只有带可证明检查点映射的记录才提供 Fork，更早的历史会返回 409。
 - [x] 经由你自己运行的出站 relay 实现只读会话共享：守护进程从不监听公网端口，残留密钥
   会让发布 fail closed。
-- [x] 端到端科研工作流的**可执行**基准 —— 10 workflow / 20 case 跑在真实的 Store、内核
+- [x] 端到端科研工作流的**可执行**基准 —— 11 workflow / 34 case 跑在真实的 Store、内核
   管理器、host dispatcher 与计算管理器上；声明为 `failure` / `permission_denied` /
   `recovered` / `provenance` 的用例，一旦运行*成功*即判定失败。对外发布可横向比较的
   公开成绩仍在后面。

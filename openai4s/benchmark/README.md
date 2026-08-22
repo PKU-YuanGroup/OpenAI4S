@@ -1,8 +1,9 @@
 # `openai4s/benchmark/`
 
 The runner for the versioned science-workflow benchmark whose manifests live in
-[`workflows/`](../../workflows/README.md): ten workflows and twenty cases that
-actually execute, plus a separate strict Stage 0 field/safety acceptance pack.
+[`workflows/`](../../workflows/README.md): eleven workflows and thirty-four
+cases that actually execute, plus a separate strict Stage 0 field/safety
+acceptance pack.
 
 The proposal that asked for them was specific about what would make them
 worthless — a directory of fixtures nobody runs, or cases that pass because the
@@ -23,11 +24,12 @@ half of the system whose job is to refuse. `provenance`, `recovered` and
 
 | File | Purpose |
 | --- | --- |
-| `__init__.py` | The public surface: the workflow APIs plus `AcceptancePack`, `load_acceptance_pack`, and `run_acceptance_pack`. Nothing else in the tree should be imported by a caller. |
+| `__init__.py` | The public surface: the workflow APIs, strict acceptance-pack APIs, and tool bring-up APIs (`BringupError`, `seal_record`, and `verify_bringup`). Callers should import these contracts here rather than from their implementation modules. |
 | `acceptance.py` | Loads and replays the strict, versioned next-round acceptance pack: exactly six field paths and seven safety actions, with expected/observed/pass/evidence/duration records and denominator-explicit aggregate metrics. |
 | `model.py` | What a workflow and a case *are*, and where they are read from. A manifest is JSON rather than YAML for the same reason the core is — no third-party import may be required to read the thing that decides whether a release is good — and it carries a version, because a benchmark whose cases can change silently measures nothing across time. |
 | `runner.py` | Runs a case and decides whether what happened is what it declared. The decision is the interesting part, not the execution: the declared outcome is compared against the observed one, and a mismatch in either direction is a failure. |
 | `steps.py` | The step implementations, one function per step name, keyed in `STEPS`. Each takes the shared `Context` and the case's inputs and returns a dict merged into the result; raising is how a step reports that the workflow could not proceed, and the runner decides whether that matches the declaration. `SkipCase` is for a host that genuinely cannot run a step (no `Rscript`, no shell), which is a skip rather than a silent pass. |
+| `bringup.py` | The tool bring-up contract's verifier: stdlib-only checks of the frozen `bringup.json` record — the self-vouching seal, weights digests and sizes, the on-disk generation manifest, canary parse and downstream consumption proofs, admission, runtime and cost — plus the evaluator-held `expected_weights` reference seam and the `seal_record` producer half. |
 
 ## Why the manifests are not in here
 

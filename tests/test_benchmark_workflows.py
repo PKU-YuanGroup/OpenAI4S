@@ -1,14 +1,14 @@
 """The benchmark, run — not merely present.
 
-The proposal is explicit about what would make ten workflows and twenty cases
-worthless: a directory of fixtures nobody executes, or cases that pass because
-the thing they exercise is a mock. So this file runs every case against the
-real subsystems and asserts the outcome each case declared.
+The proposal is explicit about what would make eleven workflows and thirty-four
+cases worthless: a directory of fixtures nobody executes, or cases that pass
+because the thing they exercise is a mock. So this file runs every case
+against the real subsystems and asserts the outcome each case declared.
 
 The declared outcome is the point. A case that says `failure` and completes
 cleanly has failed exactly as much as one that says `success` and raises — a
 benchmark scoring "no exception" measures only the half of the system nobody
-doubted. Five of the twenty cases exist to watch something refuse.
+doubted. The suite deliberately includes cases that watch something refuse.
 """
 
 from __future__ import annotations
@@ -26,6 +26,19 @@ from openai4s.benchmark.steps import STEPS
 
 WORKFLOWS = load_workflows()
 CASES = [(w, c) for w in WORKFLOWS for c in w.cases]
+CASE_PARAMS = [
+    (
+        pytest.param(
+            workflow,
+            case,
+            id=case.id,
+            marks=pytest.mark.stubbed_backend,
+        )
+        if workflow.id == "tool-bringup"
+        else pytest.param(workflow, case, id=case.id)
+    )
+    for workflow, case in CASES
+]
 
 
 # --------------------------------------------------------------------------
@@ -33,10 +46,10 @@ CASES = [(w, c) for w in WORKFLOWS for c in w.cases]
 # --------------------------------------------------------------------------
 
 
-def test_ten_workflows_are_frozen():
+def test_eleven_workflows_are_frozen():
     """The number is the commitment. Dropping one to make a run green is the
     failure mode this asserts against."""
-    assert len(WORKFLOWS) == 10, [w.id for w in WORKFLOWS]
+    assert len(WORKFLOWS) == 11, [w.id for w in WORKFLOWS]
 
 
 def test_every_workflow_carries_at_least_two_cases():
@@ -44,8 +57,13 @@ def test_every_workflow_carries_at_least_two_cases():
     assert not thin, f"a single case cannot represent a workflow: {thin}"
 
 
-def test_at_least_twenty_versioned_cases():
-    assert len(CASES) >= 20
+def test_thirty_four_versioned_cases_are_frozen():
+    assert len(CASES) == 34
+
+
+def test_tool_bringup_carries_fourteen_cases():
+    tool_bringup = next(w for w in WORKFLOWS if w.id == "tool-bringup")
+    assert len(tool_bringup.cases) == 14
 
 
 def test_every_case_id_is_unique():
@@ -87,9 +105,7 @@ def test_the_suite_measures_more_than_the_happy_path():
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "workflow,case", CASES, ids=[case.id for _workflow, case in CASES]
-)
+@pytest.mark.parametrize("workflow,case", CASE_PARAMS)
 def test_case(workflow, case):
     result = run_case(workflow, case)
     if result.skipped:

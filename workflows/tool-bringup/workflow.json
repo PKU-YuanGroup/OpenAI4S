@@ -1,0 +1,310 @@
+{
+  "id": "tool-bringup",
+  "version": "1.0.0",
+  "title": "工具 bring-up：构建、权重、canary、准入、冻结记录",
+  "summary": "设计与预测工具在战役开始时未预装：运行必须从公开源构建工具环境、下载并校验权重、编写运行 adapter、在真实靶标上跑 canary、证明输出可解析且下游序列设计 adapter 能消费，并把 environment generation identity、adapter 与权重校验和、累计运行时与成本冻结进 bringup.json。只有通过校验并获准入的记录才允许继续。",
+  "steps": [
+    "tool_bringup",
+    "verify_bringup"
+  ],
+  "permissions": [
+    "environment:apply",
+    "network:weights",
+    "workspace:read",
+    "workspace:write"
+  ],
+  "artifacts": [
+    "bringup/bringup.json",
+    "bringup/adapter.py",
+    "weights/model.weights",
+    "bringup/canary_output.json",
+    "bringup/downstream_result.json"
+  ],
+  "failure_conditions": [
+    "bringup 记录缺失或被改写却仍被采信",
+    "环境构建失败或安装内容与声明 spec 不一致却仍被准入",
+    "权重文件与记录摘要或评估方参考摘要不符",
+    "canary 输出缺失、不可解析或字段不全",
+    "下游 adapter 未消费或消费结果未通过校验",
+    "单次或恢复后的累计成本超出首次冻结的预算仍被准入"
+  ],
+  "cases": [
+    {
+      "id": "tool-bringup/pass",
+      "title": "完整 bring-up 被验证并准入",
+      "outcome": "provenance",
+      "inputs": {
+        "verify_bringup": {
+          "expected_weights": {
+            "weights/model.weights": "e2b48ba6e8371b7a2f6c615e6ce74d370ae58b4dec285ff0fd968c51ee15c802"
+          }
+        }
+      },
+      "expect": {
+        "admitted__truthy": true,
+        "attempt_statuses": [
+          "passed"
+        ],
+        "recovered": false,
+        "problems": 0,
+        "checks__truthy": true,
+        "weights_sha256": "e2b48ba6e8371b7a2f6c615e6ce74d370ae58b4dec285ff0fd968c51ee15c802",
+        "record_sha256__len": 64,
+        "canary_parse": "ok",
+        "admission": "verified",
+        "downstream": "passed",
+        "parse__truthy": true,
+        "weights_verified": 1
+      }
+    },
+    {
+      "id": "tool-bringup/recovered",
+      "title": "首次 canary 失败，记录失败后重跑并准入",
+      "outcome": "recovered",
+      "steps": [
+        "tool_bringup",
+        "tool_bringup_retry",
+        "verify_bringup"
+      ],
+      "inputs": {
+        "tool_bringup": {
+          "fail_canary": true
+        },
+        "verify_bringup": {
+          "expected_weights": {
+            "weights/model.weights": "e2b48ba6e8371b7a2f6c615e6ce74d370ae58b4dec285ff0fd968c51ee15c802"
+          }
+        }
+      },
+      "expect": {
+        "admitted__truthy": true,
+        "attempts": 2,
+        "attempt_statuses": [
+          "failed",
+          "passed"
+        ],
+        "recovered": true,
+        "canary_parse": "ok"
+      }
+    },
+    {
+      "id": "tool-bringup/recovery-budget-exceeded",
+      "title": "首次 canary 失败后的重跑不能重置 campaign 预算",
+      "outcome": "failure",
+      "steps": [
+        "tool_bringup",
+        "tool_bringup_retry",
+        "verify_bringup"
+      ],
+      "inputs": {
+        "tool_bringup": {
+          "fail_canary": true,
+          "cost_gpu_h": 0.5,
+          "budget_hours": 0.75
+        },
+        "tool_bringup_retry": {
+          "cost_gpu_h": 0.5,
+          "budget_hours": 100.0
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "budget",
+        "attempt_statuses": [
+          "failed",
+          "failed"
+        ],
+        "cost_gpu_h": 1.0,
+        "budget_hours": 0.75
+      }
+    },
+    {
+      "id": "tool-bringup/missing-record",
+      "title": "记录缺失时硬失败",
+      "outcome": "failure",
+      "steps": [
+        "verify_bringup"
+      ],
+      "inputs": {},
+      "expect": {
+        "error_type": "BringupError",
+        "error__contains": "no bringup record"
+      }
+    },
+    {
+      "id": "tool-bringup/fail-build",
+      "title": "环境构建失败时冻结拒绝记录而不是继续运行 canary",
+      "outcome": "failure",
+      "inputs": {
+        "tool_bringup": {
+          "fail_build": true
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "building",
+        "attempt_statuses": [
+          "failed"
+        ]
+      }
+    },
+    {
+      "id": "tool-bringup/spec-mismatch",
+      "title": "构建产物与声明 spec 不一致时拒绝准入",
+      "outcome": "failure",
+      "inputs": {
+        "tool_bringup": {
+          "spec": "other-design-tool==2.0.0\n"
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "spec",
+        "attempt_statuses": [
+          "failed"
+        ]
+      }
+    },
+    {
+      "id": "tool-bringup/canary-no-output",
+      "title": "canary 退出 0 但没有任何输出",
+      "outcome": "failure",
+      "inputs": {
+        "tool_bringup": {
+          "canary_no_output": true
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "no output"
+      }
+    },
+    {
+      "id": "tool-bringup/unparseable-canary",
+      "title": "canary 输出不可解析",
+      "outcome": "failure",
+      "inputs": {
+        "tool_bringup": {
+          "canary_unparseable": true
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "parse"
+      }
+    },
+    {
+      "id": "tool-bringup/downstream-refused",
+      "title": "下游序列设计 adapter 拒绝消费",
+      "outcome": "failure",
+      "inputs": {
+        "tool_bringup": {
+          "refuse_downstream": true
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "downstream"
+      }
+    },
+    {
+      "id": "tool-bringup/tampered-weights",
+      "title": "记录后翻转权重字节",
+      "outcome": "failure",
+      "steps": [
+        "tool_bringup",
+        "tamper_bringup",
+        "verify_bringup"
+      ],
+      "inputs": {
+        "tamper_bringup": {
+          "target": "weights",
+          "action": "flip"
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "content hash mismatch"
+      }
+    },
+    {
+      "id": "tool-bringup/canary-output-deleted",
+      "title": "记录声称的 canary 输出文件缺失",
+      "outcome": "failure",
+      "steps": [
+        "tool_bringup",
+        "tamper_bringup",
+        "verify_bringup"
+      ],
+      "inputs": {
+        "tamper_bringup": {
+          "target": "canary",
+          "action": "delete"
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "absent"
+      }
+    },
+    {
+      "id": "tool-bringup/forged-record",
+      "title": "权重与记录整体重写并重封印——只有参考摘要能发现",
+      "outcome": "failure",
+      "steps": [
+        "tool_bringup",
+        "tamper_bringup",
+        "verify_bringup"
+      ],
+      "inputs": {
+        "tamper_bringup": {
+          "target": "weights",
+          "action": "forge"
+        },
+        "verify_bringup": {
+          "expected_weights": {
+            "weights/model.weights": "e2b48ba6e8371b7a2f6c615e6ce74d370ae58b4dec285ff0fd968c51ee15c802"
+          }
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "expected reference"
+      }
+    },
+    {
+      "id": "tool-bringup/wrong-weights",
+      "title": "诚实下载的权重与评估方参考摘要不符",
+      "outcome": "failure",
+      "inputs": {
+        "tool_bringup": {
+          "weights_seed": "v2"
+        },
+        "verify_bringup": {
+          "expected_weights": {
+            "weights/model.weights": "e2b48ba6e8371b7a2f6c615e6ce74d370ae58b4dec285ff0fd968c51ee15c802"
+          }
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "expected reference"
+      }
+    },
+    {
+      "id": "tool-bringup/budget-exceeded",
+      "title": "成本超出声明预算则拒绝准入",
+      "outcome": "failure",
+      "inputs": {
+        "tool_bringup": {
+          "cost_gpu_h": 2.0,
+          "budget_hours": 1.0
+        }
+      },
+      "expect": {
+        "error_type": "RuntimeError",
+        "error__contains": "budget"
+      }
+    }
+  ]
+}
