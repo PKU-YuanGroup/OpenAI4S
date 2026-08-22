@@ -33377,6 +33377,9 @@
     "POST /sessions/([^/]+)/compute [error]": {
       "schema": {
         "properties": {
+          "backend": {
+            "type": "string"
+          },
           "code": {
             "type": "string"
           },

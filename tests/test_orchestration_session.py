@@ -37,20 +37,49 @@ from openai4s.orchestration.models import (
     Reason,
     ResourceProfile,
     WorkloadKind,
+    WorkloadSpec,
 )
-from openai4s.orchestration.ports import Created
+from openai4s.orchestration.ports import Created, has_session_credential_isolation
 from openai4s.orchestration.reclaimer import LeaseReclaimer
 from openai4s.orchestration.reconciler import Reconciler
 from openai4s.orchestration.session import (
     CONNECT_ENV,
     AttemptPreparer,
     ComputeSessionManager,
+    RemoteSessionIsolationRequired,
     SessionReadiness,
 )
 from openai4s.security.permissions import is_owner_only
 from openai4s.store import get_store
 
 PROFILE = ResourceProfile(name="gpu-interactive", cpus=4, gpus=1)
+
+
+def _isolates_fake_backend(backend: str) -> bool:
+    """The in-process fake is this suite's explicit isolated control."""
+
+    return backend == "fake"
+
+
+def test_session_isolation_capability_is_optional_and_fails_closed():
+    class _Isolated:
+        def isolates_session_credentials(self):
+            return True
+
+    class _Raising:
+        def isolates_session_credentials(self):
+            raise RuntimeError("backend probe failed")
+
+    class _HostileLookup:
+        @property
+        def isolates_session_credentials(self):
+            raise RuntimeError("attribute lookup failed")
+
+    assert has_session_credential_isolation(_Isolated()) is True
+    assert has_session_credential_isolation(object()) is False
+    assert has_session_credential_isolation(None) is False
+    assert has_session_credential_isolation(_Raising()) is False
+    assert has_session_credential_isolation(_HostileLookup()) is False
 
 
 # -- doubles ------------------------------------------------------------------
@@ -138,6 +167,7 @@ def manager(store, tmp_path):
         authority=BootstrapAuthority(load_or_mint_secret(tmp_path)),
         workspace_root=tmp_path / "workspaces",
         kernel_factory=lambda registration: _FakeKernel(),
+        session_credentials_isolated=_isolates_fake_backend,
     )
 
 
@@ -263,6 +293,107 @@ def test_a_worker_from_the_previous_epoch_does_not_satisfy_this_one(store, manag
 # -- INV-9: the credential is per attempt and never persisted -----------------
 
 
+def test_manager_refuses_unisolated_session_before_durable_or_filesystem_state(
+    store, tmp_path
+):
+    root = tmp_path / "unisolated-workspaces"
+    manager = ComputeSessionManager(
+        store=store,
+        gateway=FakeGateway(),
+        authority=BootstrapAuthority(load_or_mint_secret(tmp_path)),
+        workspace_root=root,
+        session_credentials_isolated=lambda _backend: False,
+    )
+
+    with pytest.raises(RemoteSessionIsolationRequired, match="same-identity sibling"):
+        manager.request_session(
+            session_id="victim",
+            owner_user_id="u1",
+            profile=PROFILE,
+            backend="shared-uid",
+        )
+
+    # The manager creates only its non-session-specific root at construction.
+    # A rejected request must not leave a workspace, workload, lease, binding,
+    # allocation, or bootstrap credential for an attacker to discover.
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+    assert store.workloads.list_workloads() == []
+    assert store.leases.workload_for_session("victim") is None
+    assert list(tmp_path.rglob("bootstrap-*.json")) == []
+
+
+def test_attempt_preparer_refuses_old_unisolated_workload_before_credential_write(
+    store, manager, tmp_path
+):
+    workload = store.workloads.create_workload(
+        spec=WorkloadSpec(kind=WorkloadKind.SESSION, profile=PROFILE),
+        owner_user_id="u1",
+        backend="shared-uid",
+    )
+    allocation = store.workloads.create_allocation(workload.id, 0)
+    consulted = []
+
+    preparer = AttemptPreparer(
+        authority=manager._authority,
+        listen_address=lambda: consulted.append("listener") or ("127.0.0.1", 8799),
+        runtime_dir=lambda _workload: consulted.append("runtime")
+        or (tmp_path / "credential-dir"),
+        session_credentials_isolated=lambda _backend: False,
+    )
+
+    with pytest.raises(RemoteSessionIsolationRequired, match="shared-uid"):
+        preparer(workload, allocation)
+
+    assert consulted == []
+    assert not (tmp_path / "credential-dir").exists()
+    assert list(tmp_path.rglob("bootstrap-*.json")) == []
+
+
+def test_old_unisolated_worker_is_never_awaited_adopted_or_given_a_kernel(
+    store, tmp_path
+):
+    """An unspent credential from an older build may authenticate, but stops here."""
+
+    class _TrackingGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.waits = 0
+
+        def await_workers(self, allocation_id, epoch, *, expected, timeout_s):
+            self.waits += 1
+            return super().await_workers(
+                allocation_id, epoch, expected=expected, timeout_s=timeout_s
+            )
+
+    gateway = _TrackingGateway()
+    kernels = []
+    legacy = ComputeSessionManager(
+        store=store,
+        gateway=gateway,
+        authority=BootstrapAuthority(load_or_mint_secret(tmp_path)),
+        workspace_root=tmp_path / "legacy-workspaces",
+        kernel_factory=lambda registration: kernels.append(registration),
+        session_credentials_isolated=lambda _backend: False,
+    )
+    workload = store.workloads.create_workload(
+        spec=WorkloadSpec(kind=WorkloadKind.SESSION, profile=PROFILE),
+        owner_user_id="u1",
+        backend="shared-uid",
+    )
+    store.leases.bind_session("victim", workload.id)
+    allocation = store.workloads.create_allocation(workload.id, 0)
+    allocation.phase = Phase.ACTIVE
+    store.workloads.save_allocation(allocation)
+    gateway.arrive(allocation.id, 0, registration="stolen-credential-peer")
+
+    assert legacy.attach_worker("victim", timeout_s=0) is False
+    assert gateway.waits == 0
+    assert gateway.arrivals[(allocation.id, 0)] == ["stolen-credential-peer"]
+    assert kernels == []
+    assert legacy.runtime("victim") is None
+
+
 def test_the_submitted_spec_carries_a_path_and_the_stored_one_carries_nothing(
     store, manager, tmp_path
 ):
@@ -275,6 +406,7 @@ def test_the_submitted_spec_carries_a_path_and_the_stored_one_carries_nothing(
         listen_address=lambda: ("0.0.0.0", 8799),
         runtime_dir=manager.runtime_dir,
         advertise_host="daemon.example",
+        session_credentials_isolated=_isolates_fake_backend,
     )
     reconciler = Reconciler(
         store=store.workloads,
@@ -314,6 +446,7 @@ def test_each_attempt_gets_its_own_credential(store, manager):
         authority=manager._authority,
         listen_address=lambda: ("127.0.0.1", 8799),
         runtime_dir=manager.runtime_dir,
+        session_credentials_isolated=_isolates_fake_backend,
     )
     reconciler = Reconciler(
         store=store.workloads,
@@ -344,8 +477,6 @@ def test_each_attempt_gets_its_own_credential(store, manager):
 def test_a_batch_workload_is_submitted_exactly_as_written(store, manager):
     """The per-attempt seam must not touch the workload kind that has no
     bootstrap — otherwise M3a's contract quietly changed."""
-    from openai4s.orchestration.models import WorkloadSpec
-
     spec = WorkloadSpec(
         kind=WorkloadKind.BATCH, profile=PROFILE, command=("echo", "hi")
     )
@@ -387,6 +518,7 @@ def test_a_lost_session_recovers_into_a_new_epoch_without_rewriting_history(
             authority=manager._authority,
             listen_address=lambda: ("127.0.0.1", 8799),
             runtime_dir=manager.runtime_dir,
+            session_credentials_isolated=_isolates_fake_backend,
         ),
         on_state_lost=lambda w, a: lost.append((w.id, a.id)),
         on_event=lambda kind, payload: events.append((kind, payload)),
@@ -456,6 +588,7 @@ def test_recovery_is_bounded(store, manager):
             authority=manager._authority,
             listen_address=lambda: ("127.0.0.1", 8799),
             runtime_dir=manager.runtime_dir,
+            session_credentials_isolated=_isolates_fake_backend,
         ),
     )
     for _ in range(12):
@@ -487,6 +620,7 @@ def test_a_session_being_cancelled_is_not_recovered(store, manager):
             authority=manager._authority,
             listen_address=lambda: ("127.0.0.1", 8799),
             runtime_dir=manager.runtime_dir,
+            session_credentials_isolated=_isolates_fake_backend,
         ),
     )
     reconciler.tick()
@@ -894,6 +1028,7 @@ def test_the_reason_a_session_was_reclaimed_survives_the_backend(store, manager)
             authority=manager._authority,
             listen_address=lambda: ("127.0.0.1", 8799),
             runtime_dir=manager.runtime_dir,
+            session_credentials_isolated=_isolates_fake_backend,
         ),
     )
     reconciler.tick()

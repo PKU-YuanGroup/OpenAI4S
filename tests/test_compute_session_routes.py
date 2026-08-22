@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -246,8 +245,8 @@ def test_an_unconfigured_profile_is_refused_rather_than_guessed(listening_daemon
     assert _body(raw)["code"] == "unknown_profile"
 
 
-def test_cluster_session_placement_is_admin_only_before_any_write(
-    listening_daemon, monkeypatch
+def test_cluster_session_placement_requires_admin_and_verified_isolation(
+    listening_daemon, tmp_path
 ):
     daemon = listening_daemon
     member = _login(daemon, "alice", "fake-pw-a")
@@ -263,17 +262,52 @@ def test_cluster_session_placement_is_admin_only_before_any_write(
     assert _body(raw)["code"] == "admin_only"
     assert daemon.store.leases.workload_for_session(member_session) is None
 
+    # Admin authorization is necessary, but not sufficient.  The built-in
+    # Slurm backend intentionally does not claim that same-uid allocations are
+    # separated by an OS security boundary, so the request fails before any
+    # workspace, durable workload, lease, allocation, or credential is made.
     admin = _login(daemon, "root", "fake-pw-r")
     admin_session = _session_of(daemon, "root")
+    status, raw = _put(
+        daemon.port,
+        f"/api/v1/sessions/{admin_session}/compute",
+        {"profile": "gpu-interactive"},
+        admin,
+    )
+    assert status == 409, raw[:300]
+    payload = _body(raw)
+    assert payload["code"] == "remote_isolation_required"
+    assert payload["backend"] == "cluster"
+    assert "per-allocation" in payload["error"]
+    assert daemon.store.leases.workload_for_session(admin_session) is None
+    workspace_root = tmp_path / "cluster-workspaces"
+    assert not workspace_root.exists() or not any(workspace_root.iterdir())
+
+
+def test_an_isolated_extension_retains_the_success_response_contract(
+    listening_daemon, monkeypatch
+):
+    """A real extension may opt in; fail-closed admission must not erase 201."""
+
+    daemon = listening_daemon
+    backend = daemon.runner.orchestration_backends["cluster"]
+    monkeypatch.setattr(
+        backend,
+        "isolates_session_credentials",
+        lambda: True,
+        raising=False,
+    )
+    admin = _login(daemon, "root", "fake-pw-r")
+    session_id = _session_of(daemon, "root")
     reconciler = daemon.runner.reconciler
     prepare_attempt = reconciler._prepare_attempt
     attempt_entered = threading.Event()
     release_attempt = threading.Event()
 
     def prepare_after_capture(workload, allocation):
-        # The allocation row is durable before backend submission begins. Hold
-        # that real lifecycle boundary so the response recorder deterministically
-        # observes both legal shapes of the nullable reason field.
+        # Hold the real durable-allocation boundary so the response recorder
+        # deterministically sees both supported nullable-reason shapes without
+        # invoking the external scheduler.
         attempt_entered.set()
         if not release_attempt.wait(5.0):
             raise TimeoutError("test did not release the allocation attempt")
@@ -283,7 +317,7 @@ def test_cluster_session_placement_is_admin_only_before_any_write(
     try:
         status, raw = _put(
             daemon.port,
-            f"/api/v1/sessions/{admin_session}/compute",
+            f"/api/v1/sessions/{session_id}/compute",
             {"profile": "gpu-interactive"},
             admin,
         )
@@ -298,11 +332,9 @@ def test_cluster_session_placement_is_admin_only_before_any_write(
         assert allocation is not None
         assert allocation.reason is None
 
-        # Repeating the idempotent request returns the same durable workload
-        # and the allocation while submission is held at the real boundary.
         status, raw = _put(
             daemon.port,
-            f"/api/v1/sessions/{admin_session}/compute",
+            f"/api/v1/sessions/{session_id}/compute",
             {"profile": "gpu-interactive"},
             admin,
         )
@@ -318,7 +350,7 @@ def test_cluster_session_placement_is_admin_only_before_any_write(
         daemon.store.workloads.save_allocation(allocation)
         status, raw = _put(
             daemon.port,
-            f"/api/v1/sessions/{admin_session}/compute",
+            f"/api/v1/sessions/{session_id}/compute",
             {"profile": "gpu-interactive"},
             admin,
         )

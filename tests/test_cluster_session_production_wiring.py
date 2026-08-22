@@ -47,6 +47,15 @@ def daemon(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI4S_WORKER_LISTEN", f"127.0.0.1:{_free_port()}")
     monkeypatch.setenv("OPENAI4S_RECONCILE_INTERVAL", "0.1")
     node = _TeamDaemon(tmp_path)
+    # The local backend is a deliberate stand-in for a per-allocation-isolated
+    # cluster in this wiring suite. Production Local/Slurm backends do not make
+    # this claim and therefore fail closed for interactive sessions.
+    monkeypatch.setattr(
+        node.runner.orchestration_backends["local"],
+        "isolates_session_credentials",
+        lambda: True,
+        raising=False,
+    )
     node.seed_user("alice", "fake-pw-a")
     try:
         yield node

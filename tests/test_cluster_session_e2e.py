@@ -187,6 +187,7 @@ def harness(tmp_path, launching_cluster):
         gateway=gateway,
         authority=authority,
         workspace_root=tmp_path / "workspaces",
+        session_credentials_isolated=lambda backend: backend == "slurm",
     )
     backend = SlurmBackend(broker=SlurmBroker(), cluster=ClusterConfig())
     reconciler = Reconciler(
@@ -198,6 +199,7 @@ def harness(tmp_path, launching_cluster):
             listen_address=lambda: gateway.address,
             runtime_dir=manager.runtime_dir,
             advertise_host="127.0.0.1",
+            session_credentials_isolated=lambda backend: backend == "slurm",
         ),
     )
     node = _Harness(tmp_path, gateway, store, manager, reconciler)

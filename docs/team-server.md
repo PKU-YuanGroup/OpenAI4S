@@ -61,6 +61,9 @@ body-addressed uploads inherit the same owner rule, so changing the URL shape
 cannot turn project visibility into write access. Releasing an interactive
 compute allocation is owner/admin-only. Requesting one is stricter — admin only —
 because the scheduler uses the daemon's identity and site credential.
+That authorization check is necessary but not sufficient: interactive
+placement is also refused unless the selected backend proves a
+per-allocation OS isolation boundary, as described below.
 Installing packages through either the global or frame-scoped kernel route
 is also admin only: both mutate a runtime environment shared by the instance,
 even when the frame belongs to the caller.
@@ -116,7 +119,11 @@ operator's regardless of who is logged in:
 - requesting interactive cluster placement for a session
   (`POST /sessions/{id}/compute`), which invokes the same daemon-managed
   scheduler identity. The session owner may release an existing allocation,
-  but only an admin may request one;
+  but only an admin may request one. The built-in `LocalBackend` and Slurm
+  backend do not claim the additional per-allocation isolation required for
+  interactive placement, so an admin request currently fails closed with
+  `409 remote_isolation_required` before any session-keyed workspace,
+  workload, lease, allocation, or credential is written;
 - registering remote compute, installing packages into the venv every
   kernel shares (through `/kernel/install` or
   `/frames/{fid}/kernel/install`), configuring connectors that carry the
@@ -130,9 +137,25 @@ Members keep every read the UI needs. The full list is
 
 ## 3. Cluster sessions (optional)
 
-Two things have to be true before a session can run on a scheduler: the
-site has to be described, and the daemon has to accept workers dialling
-back.
+Three things have to be true before a session can run on a scheduler: the
+site has to be described, the daemon has to accept workers dialling back,
+and the backend has to provide verified per-allocation OS isolation. The
+built-in `LocalBackend` and Slurm backend do **not** claim that isolation, so
+they continue to support `BATCH` workloads but refuse interactive `SESSION`
+placement. `POST /sessions/{id}/compute` returns
+`409 remote_isolation_required` before it creates a session-keyed workspace,
+workload, lease, allocation, or bootstrap credential.
+
+That refusal protects a boundary file modes cannot provide. On a resource
+plane where sibling allocations run as the same Unix uid, a model-authored
+Cell in one allocation can read another allocation's `0600` bootstrap
+credential, register first, and become that session's worker. A `0700`
+directory and `0600` file exclude other Unix identities; they do not isolate
+untrusted workloads sharing one identity. An extension may enable interactive
+placement only when it guarantees that one allocation cannot read or modify
+another allocation's workspace or unused credential—for example through a
+verified per-allocation OS identity, container, or mount namespace. See the
+[backend extension guide](backend-extension-guide.md#enable-interactive-remote-sessions).
 
 **Describe the site** in `<data_dir>/cluster.toml`. Profiles are the only
 vocabulary users ever see — the queue and service class each maps to stay
@@ -182,7 +205,9 @@ oracle for somebody guessing.
 The credential travels as a `0600` file and the scheduler is told only
 its path (INV-9). A job's environment is readable by anyone who can ask
 the scheduler about the job, so the submission environment refuses
-credential-shaped variable names outright.
+credential-shaped variable names outright. The mode protects the credential
+from other Unix users; it is not a substitute for the per-allocation boundary
+above when sibling jobs share a uid.
 
 **The channel itself is plaintext, so put this port on a trusted
 network.** The credential authenticates the *worker* to the daemon, once.

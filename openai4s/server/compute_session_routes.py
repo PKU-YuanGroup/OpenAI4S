@@ -340,25 +340,39 @@ def handle(
             return True
         # The manager refuses it too, and that is not redundant: the route
         # is one caller of a manager the CLI and tests also reach.
-        request_compute = getattr(runner, "request_session_compute", None)
-        if callable(request_compute):
-            workload = request_compute(
-                session_id,
-                owner_user_id=identity.user_id if identity else "local",
-                project_id=project_id or "default",
-                profile=profile,
-                backend=getattr(runner, "cluster_backend_name", "cluster"),
-                recovery=strategy,
+        from openai4s.orchestration.session import RemoteSessionIsolationRequired
+
+        try:
+            request_compute = getattr(runner, "request_session_compute", None)
+            if callable(request_compute):
+                workload = request_compute(
+                    session_id,
+                    owner_user_id=identity.user_id if identity else "local",
+                    project_id=project_id or "default",
+                    profile=profile,
+                    backend=getattr(runner, "cluster_backend_name", "cluster"),
+                    recovery=strategy,
+                )
+            else:
+                workload = manager.request_session(
+                    session_id=session_id,
+                    owner_user_id=identity.user_id if identity else "local",
+                    project_id=project_id,
+                    profile=profile,
+                    backend=getattr(runner, "cluster_backend_name", "cluster"),
+                    recovery=strategy,
+                )
+        except RemoteSessionIsolationRequired as exc:
+            self._json(
+                {
+                    "ok": False,
+                    "code": "remote_isolation_required",
+                    "error": str(exc),
+                    "backend": exc.backend,
+                },
+                409,
             )
-        else:
-            workload = manager.request_session(
-                session_id=session_id,
-                owner_user_id=identity.user_id if identity else "local",
-                project_id=project_id,
-                profile=profile,
-                backend=getattr(runner, "cluster_backend_name", "cluster"),
-                recovery=strategy,
-            )
+            return True
         # Freeze the response before starting a previously idle reconciler.
         # Otherwise a fresh request nondeterministically returned either the
         # durable workload alone or that workload plus its first allocation,

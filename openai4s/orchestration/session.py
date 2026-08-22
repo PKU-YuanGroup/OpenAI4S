@@ -26,6 +26,13 @@ table would inherit it; deriving it per attempt is also what makes a
 recovery a genuinely new attempt (INV-7) rather than a replay of the old
 one's identity.
 
+**The file mode is not the isolation boundary.** Interactive placement is
+accepted only when the selected backend promises a verified per-allocation OS
+identity or mount boundary.  A 0600 credential is readable by every process
+with its owning uid, so a same-identity sibling could otherwise register first
+and receive the victim's Cell and Host-RPC traffic.  This check happens both
+before durable session creation and before an attempt credential is minted.
+
 Nothing here names a scheduler (INV-2): a "worker launch" is a command and
 an environment, and which resource plane runs it is the backend's business.
 """
@@ -86,6 +93,31 @@ DEFAULT_MAX_LIFETIME_S = 48 * 3600
 #: Re-exported, not redefined: the recovery limit is the reconciler's
 #: policy, and two constants with one name drift the moment one is tuned.
 DEFAULT_MAX_RECOVERIES = _DEFAULT_MAX_RECOVERIES
+
+
+class RemoteSessionIsolationRequired(RuntimeError):
+    """The selected backend cannot protect one session from its siblings."""
+
+    def __init__(self, backend: str) -> None:
+        name = backend or "<default>"
+        super().__init__(
+            f"backend {name!r} does not provide verified per-allocation "
+            "filesystem/process isolation; interactive remote sessions are "
+            "refused because a same-identity sibling could steal the worker "
+            "bootstrap credential"
+        )
+        self.backend = name
+
+
+def _session_credentials_are_isolated(
+    check: Callable[[str], bool], backend: str
+) -> bool:
+    """Evaluate a trusted backend capability without turning errors into allow."""
+
+    try:
+        return check(backend) is True
+    except Exception:  # noqa: BLE001 — an undecidable boundary fails closed
+        return False
 
 
 @dataclass(frozen=True)
@@ -218,6 +250,7 @@ class AttemptPreparer:
         python: str | None = None,
         credential_ttl_s: int = CREDENTIAL_TTL_S,
         advertise_host: str | None = None,
+        session_credentials_isolated: Callable[[str], bool] | None = None,
     ) -> None:
         self._authority = authority
         self._listen_address = listen_address
@@ -225,12 +258,25 @@ class AttemptPreparer:
         self._python = python
         self._ttl_s = credential_ttl_s
         self._advertise_host = advertise_host
+        self._session_credentials_isolated = session_credentials_isolated or (
+            lambda _backend: False
+        )
 
     def __call__(self, workload: Workload, allocation: Allocation) -> WorkloadSpec:
         if workload.spec.kind is not WorkloadKind.SESSION:
             # A BATCH workload runs the user's command; there is nothing to
             # bootstrap and nothing to hand it.
             return workload.spec
+        backend = str(workload.backend or "")
+        if not _session_credentials_are_isolated(
+            self._session_credentials_isolated, backend
+        ):
+            # This is deliberately before the listener lookup, runtime-dir
+            # creation and credential mint.  A durable workload from an older
+            # version, or an in-process caller that bypassed request_session(),
+            # must not reopen the same-uid credential-theft path during
+            # reconciliation.
+            raise RemoteSessionIsolationRequired(backend)
         address = self._listen_address()
         if address is None:
             raise RuntimeError(
@@ -367,6 +413,7 @@ class ComputeSessionManager:
         idle_ttl_s: int = DEFAULT_IDLE_TTL_S,
         max_lifetime_s: int = DEFAULT_MAX_LIFETIME_S,
         on_event: Callable[[str, dict], None] | None = None,
+        session_credentials_isolated: Callable[[str], bool] | None = None,
     ) -> None:
         self._store = store
         self._gateway = gateway
@@ -382,6 +429,9 @@ class ComputeSessionManager:
         self._idle_ttl_s = idle_ttl_s
         self._max_lifetime_s = max_lifetime_s
         self._on_event = on_event or (lambda kind, payload: None)
+        self._session_credentials_isolated = session_credentials_isolated or (
+            lambda _backend: False
+        )
         self._runtimes: dict[str, SessionRuntime] = {}
         # One session request spans several repository calls and an in-memory
         # runtime publication.  ThreadingHTTPServer may execute two POSTs for
@@ -442,6 +492,14 @@ class ComputeSessionManager:
             raise UnsupportedRecoveryStrategy(recovery) from None
         if not strategy.supported:
             raise UnsupportedRecoveryStrategy(strategy)
+
+        if not _session_credentials_are_isolated(
+            self._session_credentials_isolated, str(backend or "")
+        ):
+            # Refuse before creating a session-keyed workspace, workload, lease,
+            # allocation or credential.  0700/0600 protect against other Unix
+            # users, not another untrusted Cell running under the same uid.
+            raise RemoteSessionIsolationRequired(str(backend or ""))
 
         with self._lock:
             existing = self._store.leases.workload_for_session(session_id)
@@ -549,6 +607,13 @@ class ComputeSessionManager:
         workload = self._store.workloads.get_workload(workload_id)
         allocation = self._store.workloads.active_allocation(workload_id)
         if workload is None or allocation is None:
+            return False
+        if not _session_credentials_are_isolated(
+            self._session_credentials_isolated, str(workload.backend or "")
+        ):
+            # Covers durable workloads and unspent credential files left by an
+            # older build.  The gateway may authenticate such a peer, but it is
+            # never adopted as a Kernel or given victim Cell/Host-RPC traffic.
             return False
         expected = max(1, int(workload.spec.profile.nodes))
         arrivals = self._gateway.await_workers(
@@ -903,6 +968,7 @@ __all__ = [
     "DEFAULT_MAX_RECOVERIES",
     "AttemptPreparer",
     "ComputeSessionManager",
+    "RemoteSessionIsolationRequired",
     "SessionReadiness",
     "SessionRuntime",
     "worker_launch_command",

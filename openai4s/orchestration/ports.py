@@ -21,6 +21,14 @@ INV-8 gets violated:
 `observe` returns this layer's vocabulary, never the scheduler's — a backend
 that hands back raw states has only moved the translation problem into code
 that INV-2 says must not know about schedulers.
+
+Interactive remote sessions have one additional, optional capability.  Their
+bootstrap credential exists before a queued worker starts, so a resource plane
+that runs every workload as the same Unix identity must not claim that 0600
+alone isolates it: a sibling Cell can read the file, register first, and become
+the victim's kernel.  ``SessionIsolationProvider`` is the fail-closed contract
+for a backend that really supplies a per-allocation security principal or mount
+namespace.  Batch work does not use this capability or a worker credential.
 """
 
 from __future__ import annotations
@@ -168,6 +176,36 @@ class TerminalAllocationAcknowledger(Protocol):
 
 
 @runtime_checkable
+class SessionIsolationProvider(Protocol):
+    """Optional proof boundary for interactive remote-session placement.
+
+    Returning true promises that code running in one allocation cannot read or
+    modify another allocation's workspace or pre-use bootstrap credential.  A
+    shared Unix uid plus 0700/0600 modes does not satisfy that promise.  A
+    backend should implement this only when it establishes a per-allocation OS
+    identity, container, or mount namespace and verifies that boundary before
+    reporting a successful submission.  The true result is a backend-lifetime
+    promise covering every interactive allocation it accepts, not a transient
+    configuration observation or a profile-specific best effort.
+    """
+
+    def isolates_session_credentials(self) -> bool:
+        """Whether sibling allocations are separated by a verified OS boundary."""
+        ...
+
+
+def has_session_credential_isolation(backend: object | None) -> bool:
+    """Read the optional capability fail closed, including provider errors."""
+
+    try:
+        if backend is None or not isinstance(backend, SessionIsolationProvider):
+            return False
+        return backend.isolates_session_credentials() is True
+    except Exception:  # pragma: no cover - defensive boundary around extensions
+        return False
+
+
+@runtime_checkable
 class TaskRunner(Protocol):
     """A backend that can run work inside an allocation it already granted.
 
@@ -187,8 +225,10 @@ __all__ = [
     "Created",
     "Existing",
     "Rejected",
+    "SessionIsolationProvider",
     "SubmitResult",
     "TaskRunner",
     "TerminalAllocationAcknowledger",
     "Unknown",
+    "has_session_credential_isolation",
 ]

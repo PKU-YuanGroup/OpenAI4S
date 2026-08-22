@@ -3449,6 +3449,9 @@ class SessionRunner:
                 BootstrapAuthority,
                 load_or_mint_secret,
             )
+            from openai4s.orchestration.ports import (
+                has_session_credential_isolation,
+            )
             from openai4s.orchestration.reclaimer import LeaseReclaimer
             from openai4s.orchestration.session import (
                 AttemptPreparer,
@@ -3468,12 +3471,20 @@ class SessionRunner:
             if worker_gateway is not None:
                 worker_gateway.start()
                 self.worker_gateway = worker_gateway
+
+                def session_credentials_isolated(
+                    backend_name: str,
+                    _backends=self.orchestration_backends,
+                ) -> bool:
+                    return has_session_credential_isolation(_backends.get(backend_name))
+
                 manager = ComputeSessionManager(
                     store=self.store,
                     gateway=worker_gateway,
                     authority=authority,
                     workspace_root=self.cfg.data_dir / "cluster-workspaces",
                     on_event=self._on_orchestration_event,
+                    session_credentials_isolated=session_credentials_isolated,
                 )
                 self.compute_sessions = manager
                 prepare_attempt = AttemptPreparer(
@@ -3481,6 +3492,7 @@ class SessionRunner:
                     listen_address=lambda: worker_gateway.address,
                     runtime_dir=manager.runtime_dir,
                     advertise_host=os.environ.get("OPENAI4S_WORKER_ADVERTISE") or None,
+                    session_credentials_isolated=session_credentials_isolated,
                 )
 
                 # The reconciler decides a session was lost; the manager is

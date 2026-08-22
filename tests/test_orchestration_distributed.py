@@ -270,6 +270,7 @@ def test_a_live_bound_session_registration_survives_orphan_housekeeping(
             gateway=node,
             authority=authority,
             workspace_root=tmp_path / "ws",
+            session_credentials_isolated=lambda backend: backend == "fake",
         )
         workload = manager.request_session(
             session_id="s1",
@@ -401,6 +402,7 @@ def test_a_multi_node_session_is_not_ready_on_one_rank(tmp_path):
             authority=authority,
             workspace_root=tmp_path / "ws",
             kernel_factory=lambda registration: object(),
+            session_credentials_isolated=lambda backend: backend == "fake",
         )
         workload = manager.request_session(
             session_id="s1",
@@ -464,6 +466,7 @@ def test_a_reaped_partial_rank_cannot_satisfy_later_gang_readiness(tmp_path):
             authority=authority,
             workspace_root=tmp_path / "ws",
             kernel_factory=lambda registration: built.append(registration),
+            session_credentials_isolated=lambda backend: backend == "fake",
         )
         workload = manager.request_session(
             session_id="s1",
