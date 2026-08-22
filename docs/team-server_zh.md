@@ -29,7 +29,7 @@ loopback CLI 按决策 D2 等同管理员——能读到宿主上 access-token �
 
 管理员读一个 private 会话会往审计日志写一行 `admin_read_private`。这就是管理员权限的全部代价，而且是**每次查看**一行而不是每个会话一行。
 
-读权限不等于命名空间控制权。对于项目内可见的会话，只有会话属主或管理员可以启动、停止、重启 Notebook kernel，中断或取消 active execution，切换 runtime environment，或释放交互式算力分配。请求交互式算力更严格——仅管理员可做——因为调度器使用的是 daemon 身份与站点凭据。通过全局或 frame-scoped kernel 路由安装包也仅管理员可做：即使 frame 属于调用者，两条路由改动的都是实例共享的运行环境。
+读权限不等于命名空间控制权。对于项目内可见的会话，所有改变 frame 状态的操作都仅限会话属主或管理员：turn 与 review、权限决定、plan、annotation 与 Artifact、分享、checkpoint、分支激活/Revert/恢复、删除，以及 Notebook 执行和生命周期控制。D4 可见性切换特意更严格：只有属主（不包括管理员）能决定是否让自己的 Session 在项目内可读。以 POST 表达的 Revert preview 仍是读取。按资源 id 写入以及在 body 中指定 frame 的上传也继承同一属主规则，因此改变 URL 形状不能把项目可见性变成写权限。释放交互式算力分配同样仅限属主或管理员；请求交互式算力更严格——仅管理员可做——因为调度器使用的是 daemon 身份与站点凭据。通过全局或 frame-scoped kernel 路由安装包也仅管理员可做：即使 frame 属于调用者，两条路由改动的都是实例共享的运行环境。
 
 配额按用户或项目、按种类、按窗口设置：
 

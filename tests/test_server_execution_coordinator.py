@@ -86,6 +86,25 @@ def test_web_projection_orders_queued_running_finalizing_completed():
     assert states[2]["owner"] == {"kind": "agent", "id": "job-a"}
 
 
+def test_finalizing_is_an_atomic_cancellation_boundary():
+    coordinator = WebExecutionCoordinator(lambda *_args: None)
+    cancel = threading.Event()
+    ticket = coordinator.submit("frame-a", owner="agent", owner_id="job-a")
+
+    with coordinator.admitted(ticket, cancel_event=cancel):
+        assert coordinator.mark_finalizing(ticket, reason="committing result")
+        result = coordinator.cancel(
+            "frame-a",
+            execution_id=ticket.execution_id,
+            owner=ticket.owner,
+            reason="too late",
+        )
+        assert result["ok"] is False
+        assert result["scope"] == "finalizing"
+        assert cancel.is_set() is False
+        assert ticket.cancellation.is_set() is False
+
+
 def test_exact_cancel_interrupts_only_matching_ticket_lease():
     coordinator = WebExecutionCoordinator(lambda *_args: None)
     active_cancel = threading.Event()

@@ -93,6 +93,56 @@ class SessionActivationRepository:
             ).fetchone()
         return str(row["current_branch_id"]) if row else root_frame_id
 
+    def export_guard(
+        self,
+        root_frame_id: str,
+        *,
+        recovery_setting_key: str,
+    ) -> dict[str, Any]:
+        """Read the export/revert consistency boundary in one SQL snapshot.
+
+        A package exporter needs more than three individually consistent
+        lookups: it needs the recovery-marker row, active branch, and that
+        branch's head to describe the *same instant*.  One SELECT provides that
+        guarantee even when another Store instance has its own Python lock.
+        """
+
+        root_frame_id = self._text("root_frame_id", root_frame_id)
+        recovery_setting_key = self._text("recovery_setting_key", recovery_setting_key)
+        with self._lock:
+            row = self._connection.execute(
+                "WITH active(current_branch_id) AS ("
+                "SELECT COALESCE((SELECT current_branch_id FROM "
+                "session_branch_selection WHERE root_frame_id=?), ?)) "
+                "SELECT active.current_branch_id AS active_branch_id,"
+                "b.head_checkpoint_id AS head_checkpoint_id,"
+                "CASE WHEN b.branch_id IS NULL THEN 0 ELSE 1 END "
+                "AS branch_present,"
+                "EXISTS(SELECT 1 FROM settings WHERE key=?) "
+                "AS recovery_marker_present "
+                "FROM active LEFT JOIN session_branches AS b "
+                "ON b.branch_id=active.current_branch_id "
+                "AND b.root_frame_id=?",
+                (
+                    root_frame_id,
+                    root_frame_id,
+                    recovery_setting_key,
+                    root_frame_id,
+                ),
+            ).fetchone()
+        if row is None:  # A constant-row CTE must always return one row.
+            raise RuntimeError("session export guard could not be read")
+        return {
+            "active_branch_id": str(row["active_branch_id"]),
+            "head_checkpoint_id": (
+                str(row["head_checkpoint_id"])
+                if row["head_checkpoint_id"] is not None
+                else None
+            ),
+            "branch_present": bool(row["branch_present"]),
+            "recovery_marker_present": bool(row["recovery_marker_present"]),
+        }
+
     def activate_checkpoint(
         self,
         *,

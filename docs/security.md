@@ -43,15 +43,43 @@ kernel OS sandbox or authorize arbitrary worker networking.
 
 Additional enforcement: an opencode-style **permission broker** gates
 risk-bearing tools, a **secret-file guard** blocks `.env` / `*.key` / `id_rsa`
-from file tools, and file-tool paths are workspace-confined. `host.bash` binds
+from file tools. Within the explicitly trusted workspace root, the guard also
+blocks every relative path that descends through `.ssh` / `.aws` / `.gnupg` /
+`.docker` / `.kube` / `.azure` / `.config/gcloud` / `.config/gh`, whatever the
+file is called. The root itself is the trust boundary: deliberately choosing a
+workspace already inside one of those directories does not reapply its parent
+segments and make the whole workspace unusable. The guard checks the path
+obtained by resolving the caller's string, so an already-present symlink alias
+cannot hide a secret path beneath that root. On POSIX, actual file operations
+then pin the workspace and each parent with descriptor-relative (`dir_fd`,
+openat-style) traversal, use `O_NOFOLLOW` for each acquired entry, and validate
+and consume reads through the same file descriptor; writes and downloads
+publish through that pinned parent. Regular files opened for consumption with
+multiple hard links are refused rather than guessed safe. Native Windows lacks
+these required capabilities, so the affected operations fail closed instead of
+falling back to a pathname `os.replace` or check-then-open sequence. This closes
+concurrent userspace namespace-substitution windows; it is not a claim to
+withstand a compromised host kernel or arbitrary changes to kernel filesystem
+semantics.
+The alias check completes a bounded, no-follow inventory of the workspace
+before using a candidate; an unreadable, timed-out, or entry-truncated
+inventory is refused rather than treated as proof that no credential alias
+exists.
+When Stage 7 `auto_review` is enabled, the wider credential name tier is
+evaluated before even a permissive default file rule. A match is
+promoted to an audited `ask`: an attached channel shows it to a human, while a
+headless run is refused by deterministic credential policy before Guardian can
+authorize it. Recursive content search follows the same split because its
+eventual file set is discovered only after approval. File-tool paths are
+workspace-confined. `host.bash` binds
 its canonical working directory to the workspace or an explicitly trusted
 extra root, but it does not parse every command argument as a path jail:
 outside reads can remain possible, and outside writes are not an OS guarantee
 when the sandbox is off or degraded. Approval requests are durable SQLite
 records. They survive broker/daemon recreation and are resolvable by ID; the
-absence of a browser subscriber never silently allows a request. Headless
-execution defaults to deny unless the operator explicitly sets
-`OPENAI4S_UNATTENDED_APPROVAL=allow`.
+absence of a browser subscriber never silently allows a request. Outside an
+explicitly enabled Stage 7 `auto_review`, headless execution defaults to deny
+unless the operator explicitly sets `OPENAI4S_UNATTENDED_APPROVAL=allow`.
 
 A durable card is not a replay token. While the daemon is still running, a
 decision wakes the exact blocked call. After a daemon restart that thread is

@@ -156,6 +156,39 @@
         "type": "object"
       }
     },
+    "DELETE /artifacts/([^/]+)/diff [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /artifacts/([^/]+)/edit [error]": {
       "schema": {
         "properties": {
@@ -222,7 +255,73 @@
         "type": "object"
       }
     },
+    "DELETE /artifacts/([^/]+)/html-outline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /artifacts/([^/]+)/lineage [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /artifacts/([^/]+)/pdf-text [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -354,6 +453,72 @@
         "type": "object"
       }
     },
+    "DELETE /artifacts/([^/]+)/structure [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /artifacts/([^/]+)/table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /artifacts/([^/]+)/versions [error]": {
       "schema": {
         "properties": {
@@ -388,6 +553,39 @@
       }
     },
     "DELETE /artifacts/([^/]+)/versions/([^/]+)/restore [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /artifacts/versions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -1760,6 +1958,72 @@
       }
     },
     "DELETE /frames/([^/]+)/artifacts\\.zip [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/auto-mode [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -3207,7 +3471,7 @@
         "type": "object"
       }
     },
-    "DELETE /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "DELETE /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -4082,6 +4346,9 @@
           },
           "deleted_rows": {
             "properties": {
+              "auto_mode_selections": {
+                "type": "integer"
+              },
               "capability_events": {
                 "type": "integer"
               },
@@ -4120,6 +4387,7 @@
               }
             },
             "required": [
+              "auto_mode_selections",
               "capability_events",
               "capability_manifests",
               "capability_states",
@@ -5721,6 +5989,60 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/diff [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/diff [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "diff": {
+            "type": "string"
+          },
+          "from_version_id": {
+            "type": "string"
+          },
+          "to_version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "changed",
+          "diff",
+          "from_version_id",
+          "to_version_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/edit [error]": {
       "schema": {
         "properties": {
@@ -5846,6 +6168,75 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/html-outline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/html-outline [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "elements": {
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "selector": {
+                  "type": "string"
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "selector",
+                "tag",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "elements",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/lineage [ok]": {
       "schema": {
         "properties": {
@@ -5875,6 +6266,71 @@
           "dependency_mappings",
           "filename",
           "interactions"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/pdf-text [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/pdf-text [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "properties": {
+                "index": {
+                  "type": "integer"
+                },
+                "page": {
+                  "type": "integer"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "page",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "pages",
+          "version_id"
         ],
         "type": "object"
       }
@@ -6075,6 +6531,127 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/structure [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/table [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "column_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "descending": {
+            "type": "boolean"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "filters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "sorted_by": {
+            "type": "string"
+          },
+          "total_rows": {
+            "type": "integer"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "column_types",
+          "columns",
+          "descending",
+          "filename",
+          "filters",
+          "limit",
+          "offset",
+          "rows",
+          "sorted_by",
+          "total_rows",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/versions [ok]": {
       "schema": {
         "properties": {
@@ -6156,6 +6733,31 @@
       }
     },
     "GET /artifacts/([^/]+)/versions/([^/]+)/restore [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/versions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -7208,10 +7810,201 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "standard_profile_readiness": {
+            "properties": {
+              "checked_locally": {
+                "type": "boolean"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "environments": {
+                "items": {
+                  "properties": {
+                    "installed_required_package_count": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "issue": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "missing_packages": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "present": {
+                      "type": "boolean"
+                    },
+                    "required_package_count": {
+                      "type": "integer"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "installed_required_package_count",
+                    "issue",
+                    "missing_packages",
+                    "name",
+                    "present",
+                    "required_package_count",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "missing_environments": {
+                "type": "array"
+              },
+              "missing_packages": {
+                "properties": {
+                  "python": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "r": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "mutation_performed": {
+                "type": "boolean"
+              },
+              "network_contacted": {
+                "type": "boolean"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "remediation": {
+                "properties": {
+                  "apply_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "commands": {
+                    "items": {
+                      "properties": {
+                        "argv": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "argv",
+                        "command",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "plan_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "requires_explicit_action": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "apply_argv",
+                  "commands",
+                  "kind",
+                  "plan_argv",
+                  "requires_explicit_action"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "required_environments": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "requirements_digest": {
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "schema_version": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "checked_locally",
+              "enabled",
+              "environments",
+              "missing_environments",
+              "missing_packages",
+              "mutation_performed",
+              "network_contacted",
+              "profile",
+              "ready",
+              "reason",
+              "remediation",
+              "required_environments",
+              "requirements_digest",
+              "schema_version",
+              "state"
+            ],
+            "type": "object"
           }
         },
         "required": [
-          "environments"
+          "environments",
+          "standard_profile_readiness"
         ],
         "type": "object"
       }
@@ -7920,6 +8713,9 @@
                   },
                   "type": "array"
                 },
+                "auto_event_cursor": {
+                  "type": "integer"
+                },
                 "branch_id": {
                   "type": "string"
                 },
@@ -8275,6 +9071,7 @@
               "required": [
                 "action_cursor",
                 "artifact_versions",
+                "auto_event_cursor",
                 "branch_id",
                 "capability_state",
                 "cell_cursor",
@@ -8698,6 +9495,424 @@
         "type": "object"
       }
     },
+    "GET /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/auto-audits [ok]": {
+      "schema": {
+        "properties": {
+          "audits": {
+            "items": {
+              "properties": {
+                "assessment_digest": {
+                  "type": "string"
+                },
+                "audit_id": {
+                  "type": "string"
+                },
+                "audit_request_digest": {
+                  "type": "string"
+                },
+                "branch_id": {
+                  "type": "string"
+                },
+                "completed_at": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "event_ordinal": {
+                  "type": "integer"
+                },
+                "execution_id": {
+                  "type": "string"
+                },
+                "public_summary": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "subject_entity_id": {
+                  "type": "string"
+                },
+                "subject_entity_kind": {
+                  "type": "string"
+                },
+                "subject_kind": {
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": "string"
+                },
+                "verdict": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "assessment_digest",
+                "audit_id",
+                "audit_request_digest",
+                "branch_id",
+                "completed_at",
+                "created_at",
+                "event_ordinal",
+                "execution_id",
+                "public_summary",
+                "root_frame_id",
+                "run_id",
+                "status",
+                "subject_entity_id",
+                "subject_entity_kind",
+                "subject_kind",
+                "turn_id",
+                "verdict"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_before": {
+            "type": "null"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "subject_kind": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "audits",
+          "branch_id",
+          "has_more",
+          "next_before",
+          "root_frame_id",
+          "schema_version",
+          "subject_kind"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/auto-mode [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "budgets": {
+            "properties": {
+              "extra_token_multiplier": {
+                "type": "number"
+              },
+              "guardian_consecutive_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_timeout_s": {
+                "type": "integer"
+              },
+              "guardian_window_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_window_size": {
+                "type": "integer"
+              },
+              "max_extra_cells": {
+                "type": "integer"
+              },
+              "max_repair_rounds": {
+                "type": "integer"
+              },
+              "max_review_rounds": {
+                "type": "integer"
+              },
+              "no_progress_turn_limit": {
+                "type": "integer"
+              },
+              "repair_turns_per_round": {
+                "type": "integer"
+              },
+              "repeated_finding_limit": {
+                "type": "integer"
+              },
+              "same_action_no_delta_limit": {
+                "type": "integer"
+              },
+              "wall_time_s": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "extra_token_multiplier",
+              "guardian_consecutive_denial_limit",
+              "guardian_timeout_s",
+              "guardian_window_denial_limit",
+              "guardian_window_size",
+              "max_extra_cells",
+              "max_repair_rounds",
+              "max_review_rounds",
+              "no_progress_turn_limit",
+              "repair_turns_per_round",
+              "repeated_finding_limit",
+              "same_action_no_delta_limit",
+              "wall_time_s"
+            ],
+            "type": "object"
+          },
+          "deployment": {
+            "properties": {
+              "explicit": {
+                "type": "boolean"
+              },
+              "explicit_fields": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "explicit",
+              "explicit_fields"
+            ],
+            "type": "object"
+          },
+          "disabled_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "feature_enabled": {
+            "type": "boolean"
+          },
+          "last_event_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "last_event_ordinal": {
+            "type": "integer"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "run": {
+            "properties": {
+              "branch_id": {
+                "type": "string"
+              },
+              "budgets": {
+                "properties": {
+                  "max_repair_rounds": {
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "candidate_id": {
+                "type": "string"
+              },
+              "candidate_snapshot_sha256": {
+                "type": "string"
+              },
+              "candidate_version_ids": {
+                "type": "array"
+              },
+              "evidence_snapshot_sha256": {
+                "type": "string"
+              },
+              "execution_id": {
+                "type": "string"
+              },
+              "finished_at": {
+                "type": "integer"
+              },
+              "last_event_id": {
+                "type": "string"
+              },
+              "last_event_ordinal": {
+                "type": "integer"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "recovery_required": {
+                "type": "boolean"
+              },
+              "root_frame_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "terminal_at": {
+                "type": "integer"
+              },
+              "terminal_reason": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "branch_id",
+              "budgets",
+              "candidate_id",
+              "candidate_snapshot_sha256",
+              "candidate_version_ids",
+              "evidence_snapshot_sha256",
+              "execution_id",
+              "last_event_id",
+              "last_event_ordinal",
+              "mode",
+              "recovery_required",
+              "root_frame_id",
+              "run_id",
+              "started_at",
+              "status",
+              "turn_id",
+              "updated_at"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "selection": {
+            "properties": {
+              "approvals_reviewer": {
+                "type": "string"
+              },
+              "explicit": {
+                "type": "boolean"
+              },
+              "preset": {
+                "type": "string"
+              },
+              "result_review_mode": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "approvals_reviewer",
+              "explicit",
+              "preset",
+              "result_review_mode",
+              "revision",
+              "source",
+              "source_revision"
+            ],
+            "type": "object"
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "budgets",
+          "deployment",
+          "disabled_reason",
+          "feature_enabled",
+          "last_event_id",
+          "last_event_ordinal",
+          "root_frame_id",
+          "run",
+          "schema_version",
+          "selection",
+          "writable"
+        ],
+        "type": "object"
+      }
+    },
     "GET /frames/([^/]+)/branches [error]": {
       "schema": {
         "properties": {
@@ -8758,6 +9973,9 @@
                           "type": "string"
                         },
                         "type": "array"
+                      },
+                      "auto_event_cursor": {
+                        "type": "integer"
                       },
                       "branch_id": {
                         "type": "string"
@@ -9156,6 +10374,7 @@
                     "required": [
                       "action_cursor",
                       "artifact_versions",
+                      "auto_event_cursor",
                       "branch_id",
                       "capability_state",
                       "cell_cursor",
@@ -10682,6 +11901,9 @@
           "alive": {
             "type": "boolean"
           },
+          "artifact_workbench": {
+            "type": "boolean"
+          },
           "branch_id": {
             "type": "string"
           },
@@ -10766,6 +11988,7 @@
         },
         "required": [
           "alive",
+          "artifact_workbench",
           "branch_id",
           "cell_count",
           "ended_reason",
@@ -11489,6 +12712,9 @@
           "current": {
             "type": "null"
           },
+          "explicit_recovery_required": {
+            "type": "boolean"
+          },
           "generations": {
             "properties": {
               "python": {
@@ -11504,6 +12730,9 @@
             ],
             "type": "object"
           },
+          "revert_recovery": {
+            "type": "null"
+          },
           "root_frame_id": {
             "type": "string"
           },
@@ -11515,7 +12744,9 @@
           "attempts",
           "branch_id",
           "current",
+          "explicit_recovery_required",
           "generations",
+          "revert_recovery",
           "root_frame_id",
           "state"
         ],
@@ -11904,6 +13135,9 @@
               "alive": {
                 "type": "boolean"
               },
+              "artifact_workbench": {
+                "type": "boolean"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -11982,6 +13216,7 @@
             },
             "required": [
               "alive",
+              "artifact_workbench",
               "branch_id",
               "cell_count",
               "ended_reason",
@@ -12088,7 +13323,7 @@
         "type": "object"
       }
     },
-    "GET /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "GET /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -12887,7 +14122,10 @@
                 "type": "string"
               },
               "reason": {
-                "type": "null"
+                "type": [
+                  "null",
+                  "string"
+                ]
               }
             },
             "required": [
@@ -13977,10 +15215,7 @@
                   "type": "string"
                 },
                 "collection": {
-                  "type": [
-                    "null",
-                    "string"
-                  ]
+                  "type": "null"
                 },
                 "description": {
                   "type": "string"
@@ -15996,6 +17231,12 @@
               "id": {
                 "type": "string"
               },
+              "kind": {
+                "type": "string"
+              },
+              "locator": {
+                "type": "null"
+              },
               "number": {
                 "type": "integer"
               },
@@ -16025,6 +17266,8 @@
               "body",
               "created_at",
               "id",
+              "kind",
+              "locator",
               "number",
               "root_frame_id",
               "status",
@@ -16076,6 +17319,39 @@
       }
     },
     "PATCH /artifacts/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /artifacts/([^/]+)/diff [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -16166,7 +17442,73 @@
         "type": "object"
       }
     },
+    "PATCH /artifacts/([^/]+)/html-outline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /artifacts/([^/]+)/lineage [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /artifacts/([^/]+)/pdf-text [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -16274,6 +17616,72 @@
         "type": "object"
       }
     },
+    "PATCH /artifacts/([^/]+)/structure [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /artifacts/([^/]+)/table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /artifacts/([^/]+)/versions [error]": {
       "schema": {
         "properties": {
@@ -16308,6 +17716,39 @@
       }
     },
     "PATCH /artifacts/([^/]+)/versions/([^/]+)/restore [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /artifacts/versions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -17699,6 +19140,221 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/auto-mode [ok]": {
+      "schema": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "budgets": {
+            "properties": {
+              "extra_token_multiplier": {
+                "type": "number"
+              },
+              "guardian_consecutive_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_timeout_s": {
+                "type": "integer"
+              },
+              "guardian_window_denial_limit": {
+                "type": "integer"
+              },
+              "guardian_window_size": {
+                "type": "integer"
+              },
+              "max_extra_cells": {
+                "type": "integer"
+              },
+              "max_repair_rounds": {
+                "type": "integer"
+              },
+              "max_review_rounds": {
+                "type": "integer"
+              },
+              "no_progress_turn_limit": {
+                "type": "integer"
+              },
+              "repair_turns_per_round": {
+                "type": "integer"
+              },
+              "repeated_finding_limit": {
+                "type": "integer"
+              },
+              "same_action_no_delta_limit": {
+                "type": "integer"
+              },
+              "wall_time_s": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "extra_token_multiplier",
+              "guardian_consecutive_denial_limit",
+              "guardian_timeout_s",
+              "guardian_window_denial_limit",
+              "guardian_window_size",
+              "max_extra_cells",
+              "max_repair_rounds",
+              "max_review_rounds",
+              "no_progress_turn_limit",
+              "repair_turns_per_round",
+              "repeated_finding_limit",
+              "same_action_no_delta_limit",
+              "wall_time_s"
+            ],
+            "type": "object"
+          },
+          "deployment": {
+            "properties": {
+              "explicit": {
+                "type": "boolean"
+              },
+              "explicit_fields": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "explicit",
+              "explicit_fields"
+            ],
+            "type": "object"
+          },
+          "disabled_reason": {
+            "type": "null"
+          },
+          "feature_enabled": {
+            "type": "boolean"
+          },
+          "last_event_id": {
+            "type": "null"
+          },
+          "last_event_ordinal": {
+            "type": "integer"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "run": {
+            "type": "null"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "selection": {
+            "properties": {
+              "approvals_reviewer": {
+                "type": "string"
+              },
+              "explicit": {
+                "type": "boolean"
+              },
+              "preset": {
+                "type": "string"
+              },
+              "result_review_mode": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "source": {
+                "type": "string"
+              },
+              "source_revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "approvals_reviewer",
+              "explicit",
+              "preset",
+              "result_review_mode",
+              "revision",
+              "source",
+              "source_revision"
+            ],
+            "type": "object"
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch_id",
+          "budgets",
+          "deployment",
+          "disabled_reason",
+          "feature_enabled",
+          "last_event_id",
+          "last_event_ordinal",
+          "root_frame_id",
+          "run",
+          "schema_version",
+          "selection",
+          "writable"
         ],
         "type": "object"
       }
@@ -19115,7 +20771,7 @@
         "type": "object"
       }
     },
-    "PATCH /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "PATCH /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -21539,6 +23195,12 @@
               "id": {
                 "type": "string"
               },
+              "kind": {
+                "type": "string"
+              },
+              "locator": {
+                "type": "null"
+              },
               "number": {
                 "type": "integer"
               },
@@ -21568,6 +23230,8 @@
               "body",
               "created_at",
               "id",
+              "kind",
+              "locator",
               "number",
               "root_frame_id",
               "status",
@@ -21651,6 +23315,39 @@
         "type": "object"
       }
     },
+    "POST /artifacts/([^/]+)/diff [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /artifacts/([^/]+)/edit [error]": {
       "schema": {
         "properties": {
@@ -21688,6 +23385,9 @@
           "size_bytes": {
             "type": "integer"
           },
+          "unchanged": {
+            "type": "boolean"
+          },
           "version_id": {
             "type": "string"
           }
@@ -21696,6 +23396,7 @@
           "artifact_id",
           "ok",
           "size_bytes",
+          "unchanged",
           "version_id"
         ],
         "type": "object"
@@ -21734,7 +23435,73 @@
         "type": "object"
       }
     },
+    "POST /artifacts/([^/]+)/html-outline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /artifacts/([^/]+)/lineage [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/pdf-text [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -21831,6 +23598,151 @@
       }
     },
     "POST /artifacts/([^/]+)/renderer [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/structure [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/structure [ok]": {
+      "schema": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "structure": {
+            "properties": {
+              "atoms": {
+                "items": {
+                  "properties": {
+                    "element": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "element"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "bond_count": {
+                "type": "integer"
+              },
+              "bonds": {
+                "items": {
+                  "properties": {
+                    "a": {
+                      "type": "integer"
+                    },
+                    "b": {
+                      "type": "integer"
+                    },
+                    "order": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "a",
+                    "b",
+                    "order"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "carbon_count": {
+                "type": "integer"
+              },
+              "format": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "atoms",
+              "bond_count",
+              "bonds",
+              "carbon_count",
+              "format",
+              "title"
+            ],
+            "type": "object"
+          },
+          "unchanged": {
+            "type": "boolean"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "ok",
+          "structure",
+          "unchanged",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/table [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -21998,6 +23910,39 @@
           "restored_from_version_id",
           "snapshot_verified",
           "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -23293,6 +25238,9 @@
             },
             "type": "array"
           },
+          "auto_event_cursor": {
+            "type": "integer"
+          },
           "branch_id": {
             "type": "string"
           },
@@ -23363,6 +25311,9 @@
               "artifact_versions": {
                 "type": "array"
               },
+              "auto_event_cursor": {
+                "type": "integer"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -23424,6 +25375,9 @@
                           "action_cursor": {
                             "type": "integer"
                           },
+                          "auto_event_cursor": {
+                            "type": "integer"
+                          },
                           "cell_cursor": {
                             "type": "integer"
                           },
@@ -23433,6 +25387,7 @@
                         },
                         "required": [
                           "action_cursor",
+                          "auto_event_cursor",
                           "cell_cursor",
                           "message_cursor"
                         ],
@@ -23594,6 +25549,7 @@
             "required": [
               "action_cursor",
               "artifact_versions",
+              "auto_event_cursor",
               "branch_id",
               "capability_state",
               "cell_cursor",
@@ -23634,6 +25590,9 @@
               "python"
             ],
             "type": "object"
+          },
+          "explicit_recovery_required": {
+            "type": "boolean"
           },
           "generation_refs": {
             "properties": {
@@ -24027,6 +25986,25 @@
                     ],
                     "type": "object"
                   },
+                  "auto_mode_events": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
+                    ],
+                    "type": "object"
+                  },
                   "branch_id": {
                     "type": "string"
                   },
@@ -24202,6 +26180,7 @@
                   "actions",
                   "applied_workspace",
                   "artifacts",
+                  "auto_mode_events",
                   "branch_id",
                   "can_apply",
                   "capabilities",
@@ -24529,6 +26508,9 @@
           "reason": {
             "type": "string"
           },
+          "recovery_barrier_key": {
+            "type": "string"
+          },
           "recovery_recipe": {
             "properties": {
               "artifact_hashes": {
@@ -24742,6 +26724,9 @@
                 },
                 "type": "array"
               },
+              "auto_event_cursor": {
+                "type": "integer"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -24860,6 +26845,9 @@
                           "action_cursor": {
                             "type": "integer"
                           },
+                          "auto_event_cursor": {
+                            "type": "integer"
+                          },
                           "cell_cursor": {
                             "type": "integer"
                           },
@@ -24869,6 +26857,7 @@
                         },
                         "required": [
                           "action_cursor",
+                          "auto_event_cursor",
                           "cell_cursor",
                           "message_cursor"
                         ],
@@ -25073,6 +27062,7 @@
             "required": [
               "action_cursor",
               "artifact_versions",
+              "auto_event_cursor",
               "branch_id",
               "capability_state",
               "cell_cursor",
@@ -25093,6 +27083,9 @@
               "workspace_tree_id"
             ],
             "type": "object"
+          },
+          "explicit_recovery_required": {
+            "type": "boolean"
           },
           "ok": {
             "type": "boolean"
@@ -25199,6 +27192,25 @@
                     "required": [
                       "added",
                       "removed"
+                    ],
+                    "type": "object"
+                  },
+                  "auto_mode_events": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
                     ],
                     "type": "object"
                   },
@@ -25356,6 +27368,7 @@
                   "actions",
                   "applied_workspace",
                   "artifacts",
+                  "auto_mode_events",
                   "branch_id",
                   "can_apply",
                   "capabilities",
@@ -25577,6 +27590,9 @@
             ],
             "type": "object"
           },
+          "recovery_barrier_key": {
+            "type": "string"
+          },
           "requires_kernel_recovery": {
             "type": "boolean"
           },
@@ -25586,9 +27602,11 @@
         },
         "required": [
           "checkpoint",
+          "explicit_recovery_required",
           "ok",
           "operation",
           "projection",
+          "recovery_barrier_key",
           "requires_kernel_recovery",
           "undo_checkpoint_id"
         ],
@@ -25656,6 +27674,25 @@
                 "required": [
                   "added",
                   "removed"
+                ],
+                "type": "object"
+              },
+              "auto_mode_events": {
+                "properties": {
+                  "delta": {
+                    "type": "integer"
+                  },
+                  "from": {
+                    "type": "integer"
+                  },
+                  "to": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "delta",
+                  "from",
+                  "to"
                 ],
                 "type": "object"
               },
@@ -25809,6 +27846,7 @@
             "required": [
               "actions",
               "artifacts",
+              "auto_mode_events",
               "branch_id",
               "can_apply",
               "capabilities",
@@ -25936,6 +27974,35 @@
               "id": {
                 "type": "string"
               },
+              "kind": {
+                "type": "string"
+              },
+              "locator": {
+                "properties": {
+                  "end": {
+                    "type": "integer"
+                  },
+                  "page": {
+                    "type": "integer"
+                  },
+                  "quote": {
+                    "type": "string"
+                  },
+                  "start": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "end",
+                  "page",
+                  "quote",
+                  "start"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
               "number": {
                 "type": "integer"
               },
@@ -25965,6 +28032,8 @@
               "body",
               "created_at",
               "id",
+              "kind",
+              "locator",
               "number",
               "root_frame_id",
               "status",
@@ -26082,6 +28151,72 @@
       }
     },
     "POST /frames/([^/]+)/artifacts\\.zip [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/auto-mode [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -26992,6 +29127,19 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/kernel/env [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/kernel/execute [error]": {
       "schema": {
         "properties": {
@@ -27160,6 +29308,19 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/kernel/restart [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/kernel/start [error]": {
       "schema": {
         "properties": {
@@ -27185,6 +29346,23 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/kernel/start [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "state"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/kernel/stop [error]": {
       "schema": {
         "properties": {
@@ -27206,6 +29384,19 @@
           "error",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/kernel/stop [ok]": {
+      "schema": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
         ],
         "type": "object"
       }
@@ -27581,102 +29772,6 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/recovery/actions/(restore|retry|restart_fresh) [ok]": {
-      "schema": {
-        "properties": {
-          "action": {
-            "type": "string"
-          },
-          "branch_id": {
-            "type": "string"
-          },
-          "checkpoint_id": {
-            "type": "string"
-          },
-          "execution_id": {
-            "type": "string"
-          },
-          "ok": {
-            "type": "boolean"
-          },
-          "owner": {
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "kind"
-            ],
-            "type": "object"
-          },
-          "recovery_id": {
-            "type": "string"
-          },
-          "results": {
-            "items": {
-              "properties": {
-                "candidate_generation_id": {
-                  "type": "string"
-                },
-                "issues": {
-                  "type": "array"
-                },
-                "manifest_id": {
-                  "type": "string"
-                },
-                "replayed_steps": {
-                  "type": "array"
-                },
-                "skipped_steps": {
-                  "type": "array"
-                },
-                "source_generation_id": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "candidate_generation_id",
-                "issues",
-                "manifest_id",
-                "replayed_steps",
-                "skipped_steps",
-                "source_generation_id",
-                "status"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "root_frame_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "branch_id",
-          "checkpoint_id",
-          "execution_id",
-          "ok",
-          "owner",
-          "recovery_id",
-          "results",
-          "root_frame_id",
-          "status"
-        ],
-        "type": "object"
-      }
-    },
     "POST /frames/([^/]+)/revert/operations [error]": {
       "schema": {
         "properties": {
@@ -27740,6 +29835,9 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "auto_event_cursor": {
+                "type": "integer"
               },
               "branch_id": {
                 "type": "string"
@@ -27859,6 +29957,9 @@
                           "action_cursor": {
                             "type": "integer"
                           },
+                          "auto_event_cursor": {
+                            "type": "integer"
+                          },
                           "cell_cursor": {
                             "type": "integer"
                           },
@@ -27868,6 +29969,7 @@
                         },
                         "required": [
                           "action_cursor",
+                          "auto_event_cursor",
                           "cell_cursor",
                           "message_cursor"
                         ],
@@ -28072,6 +30174,7 @@
             "required": [
               "action_cursor",
               "artifact_versions",
+              "auto_event_cursor",
               "branch_id",
               "capability_state",
               "cell_cursor",
@@ -28092,6 +30195,9 @@
               "workspace_tree_id"
             ],
             "type": "object"
+          },
+          "explicit_recovery_required": {
+            "type": "boolean"
           },
           "ok": {
             "type": "boolean"
@@ -28231,6 +30337,25 @@
                     "required": [
                       "added",
                       "removed"
+                    ],
+                    "type": "object"
+                  },
+                  "auto_mode_events": {
+                    "properties": {
+                      "delta": {
+                        "type": "integer"
+                      },
+                      "from": {
+                        "type": "integer"
+                      },
+                      "to": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "delta",
+                      "from",
+                      "to"
                     ],
                     "type": "object"
                   },
@@ -28542,6 +30667,7 @@
                   "actions",
                   "applied_workspace",
                   "artifacts",
+                  "auto_mode_events",
                   "branch_id",
                   "can_apply",
                   "capabilities",
@@ -28763,6 +30889,9 @@
             ],
             "type": "object"
           },
+          "recovery_barrier_key": {
+            "type": "string"
+          },
           "requires_kernel_recovery": {
             "type": "boolean"
           },
@@ -28772,9 +30901,11 @@
         },
         "required": [
           "checkpoint",
+          "explicit_recovery_required",
           "ok",
           "operation",
           "projection",
+          "recovery_barrier_key",
           "requires_kernel_recovery",
           "undo_checkpoint_id"
         ],
@@ -29124,6 +31255,25 @@
                 ],
                 "type": "object"
               },
+              "auto_mode_events": {
+                "properties": {
+                  "delta": {
+                    "type": "integer"
+                  },
+                  "from": {
+                    "type": "integer"
+                  },
+                  "to": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "delta",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
               "branch_id": {
                 "type": "string"
               },
@@ -29301,6 +31451,7 @@
             "required": [
               "actions",
               "artifacts",
+              "auto_mode_events",
               "branch_id",
               "can_apply",
               "capabilities",
@@ -29322,7 +31473,7 @@
         "type": "object"
       }
     },
-    "POST /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "POST /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "action": {
@@ -29431,6 +31582,102 @@
           }
         },
         "required": [
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [ok]": {
+      "schema": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "checkpoint_id": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "owner": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "recovery_id": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "properties": {
+                "candidate_generation_id": {
+                  "type": "string"
+                },
+                "issues": {
+                  "type": "array"
+                },
+                "manifest_id": {
+                  "type": "string"
+                },
+                "replayed_steps": {
+                  "type": "array"
+                },
+                "skipped_steps": {
+                  "type": "array"
+                },
+                "source_generation_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "candidate_generation_id",
+                "issues",
+                "manifest_id",
+                "replayed_steps",
+                "skipped_steps",
+                "source_generation_id",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "branch_id",
+          "checkpoint_id",
+          "execution_id",
+          "ok",
+          "owner",
+          "recovery_id",
+          "results",
+          "root_frame_id",
           "status"
         ],
         "type": "object"
@@ -31101,7 +33348,10 @@
                 "type": "string"
               },
               "reason": {
-                "type": "null"
+                "type": [
+                  "null",
+                  "string"
+                ]
               }
             },
             "required": [
@@ -32670,6 +34920,39 @@
         "type": "object"
       }
     },
+    "PUT /artifacts/([^/]+)/diff [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /artifacts/([^/]+)/edit [error]": {
       "schema": {
         "properties": {
@@ -32728,7 +35011,73 @@
         "type": "object"
       }
     },
+    "PUT /artifacts/([^/]+)/html-outline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /artifacts/([^/]+)/lineage [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /artifacts/([^/]+)/pdf-text [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -32836,6 +35185,72 @@
         "type": "object"
       }
     },
+    "PUT /artifacts/([^/]+)/structure [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /artifacts/([^/]+)/table [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /artifacts/([^/]+)/versions [error]": {
       "schema": {
         "properties": {
@@ -32870,6 +35285,39 @@
       }
     },
     "PUT /artifacts/([^/]+)/versions/([^/]+)/restore [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /artifacts/versions/([^/]+) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -34330,6 +36778,72 @@
         "type": "object"
       }
     },
+    "PUT /frames/([^/]+)/auto-audits [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/auto-mode [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /frames/([^/]+)/branches [error]": {
       "schema": {
         "properties": {
@@ -35717,7 +38231,7 @@
         "type": "object"
       }
     },
-    "PUT /frames/[^/]+/recovery/actions/restart_fresh [error]": {
+    "PUT /frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh) [error]": {
       "schema": {
         "properties": {
           "code": {

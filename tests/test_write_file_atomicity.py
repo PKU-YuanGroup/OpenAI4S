@@ -17,12 +17,11 @@ describes a disk that stopped rather than a function that was mocked out.
 
 from __future__ import annotations
 
-import builtins
-from pathlib import Path
-from types import SimpleNamespace
+import os
 
 import pytest
 
+from openai4s.host.files import WorkspaceFileService
 from openai4s.tools.write_file import WriteFileTool
 
 
@@ -30,21 +29,23 @@ from openai4s.tools.write_file import WriteFileTool
 def workspace(tmp_path):
     root = tmp_path / "ws"
     root.mkdir()
-    return SimpleNamespace(
-        resolve=lambda name: root / name,
-        relative=lambda path: str(Path(path).relative_to(root)),
-        root=root,
+    service = WorkspaceFileService(
+        data_dir=tmp_path / "data",
+        frame_id=lambda: "atomic-write-test",
+        workspace=lambda: root,
     )
+    service.root = root
+    return service
 
 
 def test_a_failed_overwrite_leaves_the_previous_contents(workspace, monkeypatch):
     """The defect: truncate-then-write loses the old file on any failure."""
     target = workspace.root / "protocol.md"
     target.write_text("the protocol that must survive\n", encoding="utf-8")
-    real_open = builtins.open
+    real_fdopen = os.fdopen
 
     def failing(*args, **kwargs):
-        handle = real_open(*args, **kwargs)
+        handle = real_fdopen(*args, **kwargs)
         if "w" in str(kwargs.get("mode", "")) or (
             len(args) > 1 and "w" in str(args[1])
         ):
@@ -52,7 +53,7 @@ def test_a_failed_overwrite_leaves_the_previous_contents(workspace, monkeypatch)
             raise OSError(28, "No space left on device")
         return handle
 
-    monkeypatch.setattr(builtins, "open", failing)
+    monkeypatch.setattr("openai4s.tools.write_file.os.fdopen", failing)
 
     with pytest.raises(OSError):
         WriteFileTool().execute(
@@ -67,19 +68,17 @@ def test_a_failed_write_leaves_no_stage_behind(workspace, monkeypatch):
     """A staged file that outlives its failure is a slow leak in the workspace."""
     target = workspace.root / "notes.txt"
     target.write_text("before\n", encoding="utf-8")
-    real_replace = __import__("os").replace
 
-    def refuse(src, dst):
+    def refuse(_self, _staged):
         raise OSError(5, "Input/output error")
 
-    monkeypatch.setattr("openai4s.tools.write_file.os.replace", refuse)
+    monkeypatch.setattr("openai4s.host.files.SecureWorkspaceParent.publish", refuse)
 
     with pytest.raises(OSError):
         WriteFileTool().execute(workspace, {"path": "notes.txt", "content": "after\n"})
 
-    monkeypatch.setattr("openai4s.tools.write_file.os.replace", real_replace)
     assert target.read_text(encoding="utf-8") == "before\n"
-    assert not list(workspace.root.glob(".notes.txt.*")), "a stage was left behind"
+    assert not list(workspace.root.glob(".openai4s-*.write")), "a stage was left behind"
 
 
 def test_a_successful_write_still_replaces_the_content(workspace):
@@ -90,7 +89,7 @@ def test_a_successful_write_still_replaces_the_content(workspace):
     assert result["path"] == "out.csv"
     assert result["bytes"] == len("a,b\n1,2\n".encode("utf-8"))
     assert (workspace.root / "out.csv").read_text(encoding="utf-8") == "a,b\n1,2\n"
-    assert not list(workspace.root.glob(".out.csv.*"))
+    assert not list(workspace.root.glob(".openai4s-*.write"))
 
 
 def test_an_overwrite_keeps_the_targets_permissions(workspace):

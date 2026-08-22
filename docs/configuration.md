@@ -71,6 +71,35 @@ Heavier toolchains live in ready-to-use Conda specs instead, so native dependenc
 - **`phylo`** — MAFFT / IQ-TREE / FastTree / trimAl / BioPython / ete3.
 - **`r`** — R 4.5 / tidyverse / data.table / ggplot2 / R Markdown / knitr / jsonlite / Pandoc.
 
+When `OPENAI4S_STAGE1_TRUSTED_DELIVERY=1`, startup also reports the
+`standard` profile's exact local readiness. The check compares the 32 direct
+Python and 8 direct R dependencies in the shipped manifests with package
+metadata from the discovered `python` and `r` environments. It starts no
+interpreter, imports no science package, contacts no network, and changes
+nothing. A missing/incomplete environment blocks the first routed Code Cell
+before a pending environment switch, safety classification, identity/attempt,
+or worker exists; an unreadable inventory fails closed as unavailable. Native
+control tools and sole structured finalization remain available because they
+need no kernel. Approved/resumed scientific plans are checked before their
+status transition, while plan drafting remains available. `openai4s run`
+applies the same typed check at its first Code Cell; `serve` and `doctor` report
+it without installing anything.
+
+The persistent workbench banner and Customize → Compute card show the complete
+missing-environment/package list. Remediation remains an explicit, managed
+transaction:
+
+```bash
+openai4s env plan python r --repair
+openai4s env apply python r --repair
+```
+
+`plan` is read-only. `apply` builds fresh generations and runs the actual
+Python/R interpreter plus the complete direct-package verification before it
+atomically moves either environment's `current` pointer. A build or
+verification failure leaves the previous pointer unchanged. The UI only copies
+these commands; it never runs them automatically.
+
 ## Ports & data
 
 `OPENAI4S_HOST` (`127.0.0.1`) · `OPENAI4S_PORT` (`8760`) · `OPENAI4S_DATA_DIR` (`~/.openai4s`, holds the SQLite db, artifacts, logs, pidfile). See [Security](security.md) for remote / SSH-tunnel access.
@@ -101,6 +130,104 @@ sentence nobody re-reads; see [Security](security.md) for what the daemon
 exposes to an unauthenticated caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
+
+## Auto Mode rollout flags
+
+Every rollout flag defaults off. Stage 1 implements trusted delivery, Stage 2
+implements the durable Auto Run/configuration/projection foundation, and
+Stage 3 implements Scientific Reviewer V2 shadow recording, and Stage 4
+implements the review-only completion gate, and Stage 5 implements bounded
+auto-fix / re-review, Stage 6 records Permission Guardian shadow assessments,
+and Stages 7–12 provide their listed independently gated behavior. No later
+flag implicitly enables an earlier one or grants standing authority.
+
+| Config field under `Config.roadmap_features` | Environment variable | Behavior |
+| --- | --- | --- |
+| `stage1_trusted_delivery` | `OPENAI4S_STAGE1_TRUSTED_DELIVERY` | Implemented opt-in: exact immutable Artifact delivery, same-head capture observations, and standard-profile readiness admission. |
+| `stage2_auto_run_storage` | `OPENAI4S_STAGE2_AUTO_RUN_STORAGE` | Implemented opt-in: durable Auto Run/review/finding/repair/permission-assessment records, canonical post-commit events, CAS selection PATCH, and REST/reopen projection. No Reviewer/Repair/Guardian execution. |
+| `stage3_scientific_review_shadow` | `OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW` | Implemented opt-in: immutable Evidence Snapshot, independent V2 Reviewer, read-only scratch/adapters, and shadow recording that does not gate completion. |
+| `stage4_review_completion_gate` | `OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE` | Implemented opt-in: candidate stays provisional until review; pass promotes Verified, issues become completed_with_issues, failures become review_unavailable. Does not start Repair. |
+| `stage5_auto_repair` | `OPENAI4S_STAGE5_AUTO_REPAIR` | Implemented opt-in: bounded Repair Agent plus independent re-review. Reviewer stays read-only; Repair cannot self-certify; identical bytes reuse the prior version. |
+| `stage6_guardian_shadow` | `OPENAI4S_STAGE6_GUARDIAN_SHADOW` | Implemented opt-in: exact-action Guardian shadow assessment. It does not execute, cannot create standing allow, and fails closed on hash mismatch. |
+| `stage7_guardian_enforcement` | `OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT` | Implemented opt-in: unattended `ask` may `allow_once` only for non-dangerous exact actions. The credential review fence promotes a matching default file `allow` to an audited `ask`; an attached human may decide it, while the headless deterministic policy refuses it before Guardian. Standing allow remains forbidden. |
+| `stage8_live_notebook_lineage` | `OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE` | Implemented opt-in: official live Notebook on the shared kernel generation, host-side Python/R read→version mapping, and automatic write lineage. |
+| `stage9_artifact_workbench` | `OPENAI4S_STAGE9_ARTIFACT_WORKBENCH` | Implemented opt-in: interactive CSV/Parquet tables, version diffs, PDF/HTML locators in the next turn, and real vendored Ketcher 3.7.0. |
+| `stage10_scientific_connectors` | `OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS` | Implemented opt-in: ClinVar, PubMed, and ClinicalTrials.gov with pagination, cache, honest errors, and versioned Artifact provenance. |
+| `stage11_durable_remote_compute` | `OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE` | Implemented opt-in: the lazily constructed manager rehydrates/reconciles on first remote-compute access without resubmitting, and harvest Artifacts record remote env, input versions, job receipt, and checksums. |
+| `stage12_auto_mode_ga` | `OPENAI4S_STAGE12_AUTO_MODE_GA` | Implemented opt-in: GA kill-switch declaration. It does not turn earlier stages on. |
+
+With `OPENAI4S_STAGE1_TRUSTED_DELIVERY=1`, a final completion links only to
+`/api/v1/artifacts/versions/{version_id}` generated by the server URL helper. Artifact
+bytes are frozen and verified before their version is claimed; the final
+assistant message and delivery manifest commit together before the
+link-bearing event is emitted. Repeating the current head's SHA-256 creates a
+new scoped capture observation for the producing Cell and lineage, not a fake
+version. If snapshot, checksum, relation, or delivery persistence validation
+fails, the turn publishes no success link. The delivery event carries a stable
+`delivery_id`; REST reopen recovers its already committed message if the socket
+event is lost. The delivery ledger does not drive automatic replay; the
+ordinary bounded WS sequence buffer may replay it while the turn remains live,
+and terminal/restart recovery uses REST. The flag does not enable result
+review, repair, Guardian, live Notebook, or any later-stage surface.
+
+With the flag unset or false, the pre-Stage-1 completion and Cell-execution
+behavior is preserved. `GET /api/v1/environments/status` still includes a
+`standard_profile_readiness` object, but it is the explicit
+`enabled:false`/`reason:"feature_disabled"` projection and performs no
+discovery.
+
+The product selections live under `Config.auto_mode`:
+
+| Environment variable | Allowed values | Default |
+| --- | --- | --- |
+| `OPENAI4S_AUTO_MODE` | `0/1`, `false/true`, `no/yes`, `off/on`, `autonomous` | off |
+| `OPENAI4S_RESULT_REVIEW_MODE` | `off`, `review_only`, `auto_fix` | `off` |
+| `OPENAI4S_APPROVALS_REVIEWER` | `user`, `auto_review` | `user` |
+
+These are closed vocabularies. An unknown or explicitly blank value (including
+a misspelled boolean such as `flase`) rejects configuration rather than
+becoming truthy. `on`/`autonomous` is one non-contradictory preset: it always
+normalizes the effective sub-modes to `auto_fix` + `auto_review`. Explicit
+sub-modes apply only while the preset is off.
+
+The preset's frozen ceilings live under `Config.auto_mode.budgets`; an
+environment override may tighten but never exceed them. The rolling circuit
+window is fixed at 50 so changing its denominator cannot weaken the rate rule:
+
+| Config field | Environment variable | Ceiling |
+| --- | --- | ---: |
+| `max_review_rounds` | `OPENAI4S_AUTO_MAX_REVIEW_ROUNDS` | 2 attempts per candidate |
+| `max_repair_rounds` | `OPENAI4S_AUTO_MAX_REPAIR_ROUNDS` | 2 |
+| `repair_turns_per_round` | `OPENAI4S_AUTO_REPAIR_TURNS_PER_ROUND` | 12 |
+| `max_extra_cells` | `OPENAI4S_AUTO_MAX_EXTRA_CELLS` | 30 |
+| `wall_time_s` | `OPENAI4S_AUTO_WALL_TIME_S` | 900 |
+| `extra_token_multiplier` | `OPENAI4S_AUTO_EXTRA_TOKEN_MULTIPLIER` | 1.5 |
+| `repeated_finding_limit` | `OPENAI4S_AUTO_REPEATED_FINDING_LIMIT` | 2 |
+| `same_action_no_delta_limit` | `OPENAI4S_AUTO_SAME_ACTION_NO_DELTA_LIMIT` | 3 |
+| `no_progress_turn_limit` | `OPENAI4S_AUTO_NO_PROGRESS_TURN_LIMIT` | 5 |
+| `guardian_timeout_s` | `OPENAI4S_AUTO_GUARDIAN_TIMEOUT_S` | 90 |
+| `guardian_consecutive_denial_limit` | `OPENAI4S_AUTO_GUARDIAN_CONSECUTIVE_DENIAL_LIMIT` | 3 |
+| `guardian_window_size` | `OPENAI4S_AUTO_GUARDIAN_WINDOW_SIZE` | fixed 50 |
+| `guardian_window_denial_limit` | `OPENAI4S_AUTO_GUARDIAN_WINDOW_DENIAL_LIMIT` | 10 |
+
+Stage 2 durable selection precedence is import quarantine
+(forces off/user) → explicit frame → explicit project → explicitly configured
+deployment → legacy `review:auto:{root}` → built-in defaults. Legacy true maps
+only to `review_only`; it can never enable repair or permission automation. An
+unset deployment value is distinct from an explicit off for migration. Hard
+sandbox, egress, biosecurity, secret/credential, cost, and deterministic
+permission policy remains outside and above this precedence order. None is
+attributed to Guardian. Its durable reason separately projects policy setup,
+budget exhaustion, safe rollback unavailable, unknown external outcome, loop
+detection, or a hard/integrity safety boundary; the subsystem name alone never
+chooses the terminal label.
+
+Auto Mode is a bounded preset, not full access. With only Stage 2 enabled it is
+configuration and durable history only; selecting `autonomous` does not itself
+start Reviewer, Repair, or Guardian execution. Those consumers remain behind
+their own later-stage flags. The authoritative
+budget, state, recovery, and projection meanings are in the
+[Auto Mode product contract](auto-mode.md).
 
 ## Optional Jupyter adapter
 

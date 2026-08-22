@@ -14,6 +14,8 @@ and the internal plans in this directory are not published by that site.
 | --- | --- |
 | `architecture.md` | Current dual-loop architecture and Host API overview; compatibility entry for contributors. |
 | `ark-agent-plan-9.9.png` | Volcengine Ark Agent Plan pricing screenshot displayed by the repository's root README. |
+| `auto-mode.md` | The frozen Stage 0 Auto Mode product contract plus the current Stages 1–12 implementation contract: normalized preset and precedence, finite budget ceilings, provisional/terminal truth, durable evidence, recovery, projection rules, and the independent default-off rollout boundaries. |
+| `auto-mode-stage12-evidence.md` | Stage 12 evidence table mapping Stages 0–12 to the integrated implementation, focused verification, rollback conditions, and reproducible full gates. |
 | `backend-extension-guide.md` | Current extension seams: where a new tool, Host service, storage repository, provider, Skill, or Web session service is meant to plug in. |
 | `backend-refactor-architecture.md` | Historical backend-refactor design record. It says what was agreed, so it is not proof of current end-to-end behavior. |
 | `compute.md` | Remote compute, the BYOC providers, and `host.fold`: how they behave and where their limits are. |
@@ -25,7 +27,7 @@ and the internal plans in this directory are not published by that site.
 | `plan-corecoder-refactor.md` | Internal historical refactor plan; excluded from public website content. |
 | `refactor-plan.md` | Historical migration plan retained for decision context. |
 | `release-validation.md` | The gates a release passes: the local gate, the evidence bundle, the enforced contracts, the macOS app image, the Linux app bundle, the Windows package, trusted publication, the draft-first pipeline, and the external gates that deliberately stay outside CI. It also states the macOS signing state as one named value computed from evidence rather than from configuration, and says outright that `verified` is unreachable in this version, so no reader has to infer a limitation from an absence. |
-| `science-connectors.md` | The seven public scientific databases behind `science_search`: per-source endpoint, disciplines, and the normalized record each returns. |
+| `science-connectors.md` | The seven default public scientific databases behind `science_search`, plus the three Stage 10 flag-gated sources: per-source endpoint, disciplines, and the normalized record each returns. |
 | `security.md` | Threat model, trust boundaries, enforcement layers, and known coverage gaps. |
 | `skills.md` | Bundled/user Skill format, loading, sidecars, and lifecycle. |
 | `startup-guide.md` | Bilingual macOS `.dmg` walkthrough: install, Gatekeeper, model setup, and one-key Doubao Search authorization in the UI, with Tavily/keyless backups. |

@@ -169,6 +169,24 @@ class Tool:
         )
         return f"{type(self).__name__}({values})"
 
+    def writes_files_for(self, runtime: Any) -> bool:
+        """Runtime-aware capture declaration; static tools ignore runtime."""
+
+        del runtime
+        return bool(self.writes_files)
+
+    def read_only_for(self, runtime: Any) -> bool:
+        """Runtime-aware scheduling declaration; static tools ignore runtime."""
+
+        del runtime
+        return bool(self.read_only)
+
+    def side_effect_class_for(self, runtime: Any) -> str:
+        """Runtime-aware audit declaration; static tools ignore runtime."""
+
+        del runtime
+        return str(self.side_effect_class)
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Tool):
             return False

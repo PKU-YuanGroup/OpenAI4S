@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -39,6 +40,7 @@ class SessionDeletionService:
         drop_resume_window: Callable[[str], Any],
         revoke_shares: Callable[[str], Any] | None = None,
         release_compute: Callable[[str], Any] | None = None,
+        cleanup_frameless_uploads: bool = False,
     ) -> None:
         self.store = store
         self.data_dir = Path(data_dir).expanduser().resolve()
@@ -59,6 +61,11 @@ class SessionDeletionService:
         # `drop_runtime`, because folding it in there is this repo's
         # recurring "one guard, one of several call sites" defect.
         self._release_compute = release_compute or (lambda _root_frame_id: None)
+        # The Gateway enables this only together with its always-on global
+        # frameless-mutation/deletion barrier. Direct compositions that cannot
+        # prove that admission boundary retain the safe "leave for sweeper"
+        # default instead of unlinking a shared uploads basename concurrently.
+        self.cleanup_frameless_uploads = bool(cleanup_frameless_uploads)
 
     def delete_session(
         self, root_frame_id: str, *, reason: str = "frame_deleted"
@@ -98,7 +105,10 @@ class SessionDeletionService:
                 self._drop_runtime(root_frame_id, reason)
                 self._release_compute_safe(root_frame_id)
                 self._revoke_shares_safe(root_frame_id)
-        cleanup = self._cleanup(result)
+        cleanup = self._cleanup(
+            result,
+            include_uploads=self.cleanup_frameless_uploads,
+        )
         dynamic = self.dynamic_scopes.delete_project_scope(project_id)
         for root_frame_id in deleted_roots:
             self._drop_resume_window(root_frame_id)
@@ -129,17 +139,26 @@ class SessionDeletionService:
         except Exception:  # noqa: BLE001 - deletion must proceed regardless
             pass
 
-    def _cleanup(self, result: Mapping[str, Any]) -> dict[str, Any]:
+    def _cleanup(
+        self,
+        result: Mapping[str, Any],
+        *,
+        include_uploads: bool = False,
+    ) -> dict[str, Any]:
         roots = tuple(
             dict.fromkeys(
                 str(value) for value in result.get("root_frame_ids", ()) if value
             )
         )
-        # Only immutable, version-id-prefixed snapshots are unlinked one by
-        # one. Live workspace files are reclaimed by the confined tree removal
-        # below; shared ``uploads`` paths are deliberately left for a later
-        # reference-aware sweeper because their basenames can be reused.
-        trusted_roots = (self.data_dir / "artifact-versions",)
+        # Immutable snapshots are unlinked one by one. Stage 1 also reclaims
+        # direct frameless uploads while its global mutation barrier is held.
+        # Live session files are reclaimed by the confined tree removal below.
+        # ``uploads`` basenames can be reused across project scopes, so deletion
+        # relies on the retained path/inode identities below and only removes a
+        # direct child after no surviving version references it.
+        trusted_roots = [self.data_dir / "artifact-versions"]
+        if include_uploads:
+            trusted_roots.append(self.data_dir / "uploads")
         freed_files = 0
         skipped_files = 0
         retained_paths, retained_files = self._retained_path_identities(
@@ -195,36 +214,86 @@ class SessionDeletionService:
         if not isinstance(raw_path, str) or not raw_path:
             return False
         candidate = Path(os.path.abspath(Path(raw_path).expanduser()))
-        if not candidate.is_absolute():
+        if not candidate.is_absolute() or candidate.name in {"", ".", ".."}:
             return False
-        try:
-            # Version snapshots are flat files. Requiring the exact managed
-            # parent avoids symlinked intermediate directories and prevents a
-            # DB path from selecting another session's workspace subtree.
-            managed_roots = tuple(root.resolve() for root in trusted_roots)
-            allowed = candidate.parent.resolve() in managed_roots
-            if candidate.is_symlink():
-                return False
-            resolved = candidate.resolve(strict=False)
-        except OSError:
+        for raw_root in trusted_roots:
+            lexical_root = Path(os.path.abspath(Path(raw_root).expanduser()))
+            # Authorization is lexical and direct-child-only. Resolving a
+            # symlinked trusted root would bless its external target, which is
+            # the opposite of confinement.
+            if candidate.parent != lexical_root:
+                continue
+            try:
+                root_before = os.lstat(lexical_root)
+            except OSError:
+                continue
+            if not stat.S_ISDIR(root_before.st_mode) or stat.S_ISLNK(
+                root_before.st_mode
+            ):
+                continue
+
+            supports_dir_fd = (
+                os.stat in os.supports_dir_fd
+                and os.unlink in os.supports_dir_fd
+                and os.stat in os.supports_follow_symlinks
+                and bool(getattr(os, "O_NOFOLLOW", 0))
+            )
+            if supports_dir_fd:
+                descriptor: int | None = None
+                try:
+                    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                    flags |= getattr(os, "O_NOFOLLOW", 0)
+                    descriptor = os.open(lexical_root, flags)
+                    opened_root = os.fstat(descriptor)
+                    if not stat.S_ISDIR(opened_root.st_mode) or (
+                        int(opened_root.st_dev),
+                        int(opened_root.st_ino),
+                    ) != (int(root_before.st_dev), int(root_before.st_ino)):
+                        return False
+                    entry = os.stat(
+                        candidate.name,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                    if not stat.S_ISREG(entry.st_mode):
+                        return False
+                    identity = (int(entry.st_dev), int(entry.st_ino))
+                    try:
+                        resolved_key = os.path.normcase(
+                            str(candidate.resolve(strict=False))
+                        )
+                    except OSError:
+                        return False
+                    if resolved_key in retained_paths or identity in retained_files:
+                        return False
+                    # Re-read the directory entry immediately before unlink.
+                    # A regular->symlink swap is refused rather than deleting
+                    # even the link; a regular replacement is likewise not the
+                    # file whose identity the repository declared stale.
+                    latest = os.stat(
+                        candidate.name,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        not stat.S_ISREG(latest.st_mode)
+                        or (int(latest.st_dev), int(latest.st_ino)) != identity
+                    ):
+                        return False
+                    os.unlink(candidate.name, dir_fd=descriptor)
+                    return True
+                except (FileNotFoundError, NotADirectoryError, OSError):
+                    return False
+                finally:
+                    if descriptor is not None:
+                        os.close(descriptor)
+
+            # Without dir-fd + no-follow there is no atomic way to keep a
+            # checked parent bound through unlink. Leaving stale bytes for a
+            # later supported-platform sweep is safer than a path-based delete
+            # whose root can be swapped after its final check.
             return False
-        identity = SessionDeletionService._file_identity(resolved)
-        if os.path.normcase(str(resolved)) in retained_paths or (
-            identity is not None and identity in retained_files
-        ):
-            return False
-        if not allowed or candidate.is_dir():
-            return False
-        try:
-            # Unlink the checked directory entry, never a resolved symlink
-            # target. A last-moment regular->symlink swap therefore removes
-            # only the link itself.
-            candidate.unlink()
-            return True
-        except FileNotFoundError:
-            return False
-        except OSError:
-            return False
+        return False
 
     @staticmethod
     def _retained_path_identities(

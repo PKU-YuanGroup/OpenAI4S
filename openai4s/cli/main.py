@@ -744,9 +744,41 @@ def cmd_url(args) -> int:
 
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
+    from openai4s.agent.loop import enable_auto_run_environment, review_cli_result
+    from openai4s.kernel.readiness import EnvironmentReadinessError
 
+    auto_applied: dict[str, str] = {}
+    if getattr(args, "auto", False):
+        # Before get_config(), which reads these at construction.
+        auto_applied = enable_auto_run_environment()
     cfg = get_config()
-    result = Agent(cfg=cfg, verbose=args.verbose).run(args.task)
+    try:
+        result = Agent(cfg=cfg, verbose=args.verbose).run(args.task)
+    except EnvironmentReadinessError as error:
+        # A standard-profile refusal is raised only at the first Code Cell.
+        # Keeping this adapter typed lets native tools and structured
+        # finalization run with zero kernel while retaining the existing CLI
+        # JSON/text failure contract for a scientific execution attempt.
+        payload = {
+            "error": str(error),
+            "code": error.error_code,
+            "standard_profile_readiness": error.readiness,
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"error: {payload['error']}", file=sys.stderr)
+        return 2
+    if getattr(args, "auto", False):
+        # A machine-readable terminal is the point of --auto: CI needs to tell
+        # "ran and was verified" from "ran and nobody checked".
+        review = review_cli_result(args.task, result, cfg=cfg)
+        result = dict(result)
+        result["auto_mode"] = {
+            "preset": "autonomous",
+            "enabled_environment": auto_applied,
+            **review,
+        }
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -758,6 +790,14 @@ def cmd_run(args) -> int:
             )
         if result.get("final_message"):
             print("final:", result["final_message"])
+        auto = result.get("auto_mode")
+        if auto:
+            print(f"=== review: {auto['terminal']} — {auto['user_truth']} ===")
+            for item in auto.get("findings") or []:
+                print(
+                    f"  - {item.get('severity')} {item.get('category')}: "
+                    f"{str(item.get('claim_ref'))[:80]}"
+                )
     return 0
 
 
@@ -1099,17 +1139,24 @@ def _env_spec(name: str) -> Path:
     return _envs_dir() / f"{name}.yml"
 
 
-def _env_verify(prefix: Path) -> tuple[str, list[str]]:
-    """Prove the generation runs before anything points at it.
+def _env_verify(prefix: Path, *, name: str | None = None) -> tuple[str, list[str]]:
+    """Prove the generation runs and satisfies standard before it is current.
 
     A build that exits 0 having produced nothing usable is the false success
     this step exists to catch, and it is the same rule the compute manager
     applies to a job that exits 0 having written no outputs. The check used to
     stop at "a file exists at that path"; it now *starts the interpreter*, in
-    both languages, because a file is not an environment.
+    both languages, because a file is not an environment.  The standard Python
+    and R generations additionally require every direct package in their
+    shipped manifests; a runnable but partial prefix is not ready.
     """
-    from openai4s.kernel.env_generations import probe_interpreter
+    from openai4s.kernel.env_generations import (
+        probe_interpreter,
+        verify_standard_environment,
+    )
 
+    if name in ("python", "r"):
+        return verify_standard_environment(prefix, name)
     return probe_interpreter(prefix)
 
 
@@ -1117,7 +1164,15 @@ def cmd_env_plan(args) -> int:
     cfg = get_config()
     tool = _find_conda_tool() or "conda"
     store = _env_store(cfg)
-    plans = [store.plan(name, _env_spec(name), tool=tool) for name in args.names]
+    plans = [
+        store.plan(
+            name,
+            _env_spec(name),
+            tool=tool,
+            force_replace=bool(getattr(args, "repair", False)),
+        )
+        for name in args.names
+    ]
     if args.json:
         print(json.dumps([p.public() for p in plans], indent=2, sort_keys=True))
     else:
@@ -1138,7 +1193,12 @@ def cmd_env_apply(args) -> int:
     failed = 0
     for name in args.names:
         spec = _env_spec(name)
-        plan = store.plan(name, spec, tool=tool)
+        plan = store.plan(
+            name,
+            spec,
+            tool=tool,
+            force_replace=bool(getattr(args, "repair", False)),
+        )
         if args.dry_run:
             if plan.changes:
                 print(f"  [{name}] would {plan.action}: {plan.reason}")
@@ -1166,7 +1226,13 @@ def cmd_env_apply(args) -> int:
             ]
 
         try:
-            result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
+            result = store.apply(
+                plan,
+                spec,
+                tool=tool,
+                build=build,
+                verify=lambda prefix, _name=name: _env_verify(prefix, name=_name),
+            )
         except EnvironmentError_ as e:
             failed += 1
             print(f"  [{name}] FAILED: {e}", file=sys.stderr)
@@ -1242,7 +1308,40 @@ def cmd_env_recover(args) -> int:
 
 def cmd_benchmark(args) -> int:
     """Run the versioned workflow benchmark against the real subsystems."""
-    from openai4s.benchmark import load_workflows, run_all
+    from openai4s.benchmark import load_workflows, run_acceptance_pack, run_all
+
+    if getattr(args, "acceptance", False):
+        report = run_acceptance_pack()
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            for item in report["field_paths"]:
+                if not item["pass"]:
+                    mark = "FAIL"
+                elif item["claim"] == "capability":
+                    mark = "CAPABILITY"
+                else:
+                    mark = "BASELINE"
+                status = item["observed"].get("status", "unknown")
+                print(f"  [{mark:10}] {item['id']} — {status}")
+            for item in report["safety_actions"]:
+                mark = "ok" if item["pass"] else "FAIL"
+                decision = item["observed"].get("effective_decision", "unknown")
+                print(f"  [{mark:10}] safety:{item['id']} — {decision}")
+            summary = report["summary"]
+            print(
+                "\n"
+                f"{summary['capability_passes']} current capability path(s), "
+                f"{summary['baseline_observations_reproduced']} baseline gap/behavior "
+                "observation(s) reproduced, "
+                f"{summary['field_path_failures']} field failure(s), "
+                f"{summary['safety_action_failures']} safety failure(s)"
+            )
+            print(
+                "A BASELINE match reproduces current behavior; it does not claim "
+                "that an incomplete capability works."
+            )
+        return 0 if report["pass"] else 1
 
     if args.list:
         for workflow in load_workflows():
@@ -1782,6 +1881,16 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    pr.add_argument(
+        "--auto",
+        action="store_true",
+        help=(
+            "autonomous Auto Mode: boundary actions go to the Guardian instead "
+            "of failing closed, and the result is reviewed before the run "
+            "reports a terminal. NOT full access -- the Guardian's active "
+            "surface is a read-only allowlist bound to a verified action digest"
+        ),
+    )
     pr.set_defaults(fn=cmd_run)
 
     pi = sub.add_parser("init", help="guided first-run model configuration")
@@ -1836,7 +1945,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="run the versioned workflow benchmark against the real subsystems",
     )
     pb.add_argument("--json", action="store_true", help="machine-readable report")
-    pb.add_argument("--list", action="store_true", help="list workflows and cases")
+    benchmark_mode = pb.add_mutually_exclusive_group()
+    benchmark_mode.add_argument(
+        "--list", action="store_true", help="list workflows and cases"
+    )
+    benchmark_mode.add_argument(
+        "--acceptance",
+        action="store_true",
+        help="replay the Stage 0 field-and-safety baseline pack",
+    )
     pb.set_defaults(fn=cmd_benchmark)
 
     pe = sub.add_parser(
@@ -1846,12 +1963,22 @@ def build_parser() -> argparse.ArgumentParser:
     esub = pe.add_subparsers(dest="env_action", required=True)
     ep = esub.add_parser("plan", help="what would change; touches nothing")
     ep.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ep.add_argument(
+        "--repair",
+        action="store_true",
+        help="plan a fresh verified generation even when the spec is unchanged",
+    )
     ep.add_argument("--json", action="store_true")
     ep.set_defaults(fn=cmd_env_plan)
     ea = esub.add_parser(
         "apply", help="build a new generation and switch to it if it verifies"
     )
     ea.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ea.add_argument(
+        "--repair",
+        action="store_true",
+        help="build a fresh verified generation even when the spec is unchanged",
+    )
     ea.add_argument("--dry-run", action="store_true")
     ea.set_defaults(fn=cmd_env_apply)
     el = esub.add_parser("list", help="generations, and which one is current")

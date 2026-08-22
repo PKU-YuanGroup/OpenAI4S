@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 from pathlib import Path
 
 import pytest
 
 from openai4s.config import Config, LLMConfig
+from openai4s.server import artifacts as artifacts_mod
 from openai4s.server.artifacts import ArtifactManager, ArtifactOperationError
 from openai4s.store import get_store
 
@@ -41,6 +43,7 @@ class MutationHarness:
 
     def artifact(self, filename: str, data: bytes, content_type: str) -> dict:
         path = self.workspace / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return self.store.save_artifact(
             path=str(path),
@@ -78,6 +81,7 @@ def test_edit_versions_live_text_and_preserves_exact_event_shape(tmp_path):
         "artifact_id": artifact_id,
         "version_id": result["version_id"],
         "size_bytes": len(b"version two"),
+        "unchanged": False,
     }
     assert (harness.workspace / "notes.txt").read_text() == "version two"
     assert (
@@ -127,10 +131,10 @@ def test_edit_rejects_missing_binary_and_write_failure(tmp_path, monkeypatch):
 
     canary = "/Users/canary/Documents/embargoed.csv"
 
-    def fail_write(self, data, encoding=None, errors=None, newline=None):
+    def fail_write(_pinned, _data):
         raise OSError(28, "No space left on device", canary)
 
-    monkeypatch.setattr(Path, "write_text", fail_write)
+    monkeypatch.setattr(artifacts_mod._PinnedUploadFile, "write", fail_write)
     # The `strerror` no longer travels. A real `OSError` from this write carries
     # the absolute path it failed on -- under the data directory, so the
     # account's username -- and a 500 body is a public surface. The original
@@ -144,6 +148,204 @@ def test_edit_rejects_missing_binary_and_write_failure(tmp_path, monkeypatch):
         harness.manager.edit(text["artifact_id"], "new")
     assert canary not in str(caught.value)
     assert canary not in repr(caught.value.__dict__)
+
+
+def test_nested_edit_keeps_the_exact_artifact_path(tmp_path):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("results/notes.txt", b"old\n", "text/plain")
+
+    unchanged = harness.manager.edit(first["artifact_id"], "old\n")
+    assert unchanged["unchanged"] is True
+    assert unchanged["version_id"] == first["version_id"]
+    assert (
+        Path(
+            harness.store.version_meta(first["version_id"])["snapshot_path"]
+        ).read_bytes()
+        == b"old\n"
+    )
+    edited = harness.manager.edit(first["artifact_id"], "new\n")
+
+    target = harness.workspace / "results" / "notes.txt"
+    assert target.read_bytes() == b"new\n"
+    stored = harness.store.get_artifact(first["artifact_id"])
+    assert stored["filename"] == "results/notes.txt"
+    assert stored["latest_version_id"] == edited["version_id"]
+    versions = harness.store.list_versions(first["artifact_id"])
+    assert len(versions) == 2
+    assert {
+        Path(
+            harness.store.version_meta(version["version_id"])["snapshot_path"]
+        ).read_bytes()
+        for version in versions
+    } == {b"old\n", b"new\n"}
+
+
+def test_nested_edit_parent_swap_cannot_redirect_the_daemon(tmp_path, monkeypatch):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("results/notes.txt", b"old\n", "text/plain")
+    harness.manager.write_version_snapshot(
+        first["version_id"], first["filename"], data=b"old\n"
+    )
+    before = copy.deepcopy(harness.store.get_artifact(first["artifact_id"]))
+    before_versions = copy.deepcopy(harness.store.list_versions(first["artifact_id"]))
+    parent = harness.workspace / "results"
+    parked = harness.workspace / "parked-results"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_target = outside / "notes.txt"
+    outside_target.write_bytes(b"OUTSIDE_CANARY\n")
+    real_write = artifacts_mod._PinnedUploadFile.write
+    swapped = False
+
+    def swap_parent_then_write(pinned, data):
+        nonlocal swapped
+        if not swapped:
+            parent.rename(parked)
+            try:
+                parent.symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                parked.rename(parent)
+                pytest.skip("directory symlinks are unavailable")
+            swapped = True
+        return real_write(pinned, data)
+
+    monkeypatch.setattr(
+        artifacts_mod._PinnedUploadFile, "write", swap_parent_then_write
+    )
+    raised_operation(
+        lambda: harness.manager.edit(first["artifact_id"], "new\n"),
+        500,
+        "write failed",
+    )
+
+    assert swapped is True
+    assert outside_target.read_bytes() == b"OUTSIDE_CANARY\n"
+    assert (parked / "notes.txt").read_bytes() == b"old\n"
+    assert harness.store.get_artifact(first["artifact_id"]) == before
+    assert harness.store.list_versions(first["artifact_id"]) == before_versions
+    assert not list(parked.glob("*.part"))
+    assert not list(harness.manager.versions_dir().glob(".pending-*"))
+    assert not list(harness.manager.versions_dir().glob(".upload-*.json"))
+
+
+def test_nested_edit_rejects_a_swapped_workspace_root(tmp_path):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("results/notes.txt", b"old\n", "text/plain")
+    harness.manager.write_version_snapshot(
+        first["version_id"], first["filename"], data=b"old\n"
+    )
+    before = copy.deepcopy(harness.store.get_artifact(first["artifact_id"]))
+    parked = harness.workspace.with_name("parked-workspace")
+    outside = tmp_path / "outside-workspace"
+    outside_target = outside / "results" / "notes.txt"
+    outside_target.parent.mkdir(parents=True)
+    outside_target.write_bytes(b"OUTSIDE_CANARY\n")
+    harness.workspace.rename(parked)
+    try:
+        harness.workspace.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        parked.rename(harness.workspace)
+        pytest.skip("directory symlinks are unavailable")
+
+    raised_operation(
+        lambda: harness.manager.edit(first["artifact_id"], "new\n"),
+        500,
+        "write failed",
+    )
+
+    assert outside_target.read_bytes() == b"OUTSIDE_CANARY\n"
+    assert (parked / "results" / "notes.txt").read_bytes() == b"old\n"
+    assert harness.store.get_artifact(first["artifact_id"]) == before
+    assert len(harness.store.list_versions(first["artifact_id"])) == 1
+    assert not list(harness.manager.versions_dir().glob(".pending-*"))
+    assert not list(harness.manager.versions_dir().glob(".upload-*.json"))
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+@pytest.mark.parametrize(
+    "replacement", ["old\n", "new\n"], ids=["unchanged", "changed"]
+)
+def test_nested_edit_rejects_final_component_aliases(tmp_path, alias_kind, replacement):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("results/notes.txt", b"old\n", "text/plain")
+    harness.manager.write_version_snapshot(
+        first["version_id"], first["filename"], data=b"old\n"
+    )
+    before = copy.deepcopy(harness.store.get_artifact(first["artifact_id"]))
+    before_versions = copy.deepcopy(harness.store.list_versions(first["artifact_id"]))
+    target = harness.workspace / "results" / "notes.txt"
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"OUTSIDE_CANARY\n")
+    target.unlink()
+    try:
+        if alias_kind == "symlink":
+            target.symlink_to(outside)
+        else:
+            artifacts_mod.os.link(outside, target)
+    except (OSError, NotImplementedError):
+        pytest.skip(f"{alias_kind} creation is unavailable")
+
+    raised_operation(
+        lambda: harness.manager.edit(first["artifact_id"], replacement),
+        500,
+        "write failed",
+    )
+
+    assert outside.read_bytes() == b"OUTSIDE_CANARY\n"
+    assert harness.store.get_artifact(first["artifact_id"]) == before
+    assert harness.store.list_versions(first["artifact_id"]) == before_versions
+    assert not list(target.parent.glob("*.part"))
+    assert not list(harness.manager.versions_dir().glob(".pending-*"))
+    assert not list(harness.manager.versions_dir().glob(".upload-*.json"))
+
+
+def test_nested_edit_publish_failure_restores_every_prior_truth(tmp_path, monkeypatch):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("results/notes.txt", b"old\n", "text/plain")
+    harness.manager.write_version_snapshot(
+        first["version_id"], first["filename"], data=b"old\n"
+    )
+    before = copy.deepcopy(harness.store.get_artifact(first["artifact_id"]))
+    before_versions = copy.deepcopy(harness.store.list_versions(first["artifact_id"]))
+    real_replace = artifacts_mod._PinnedUploadDirectory.replace
+
+    def fail_live_publish(directory, source, destination):
+        if source.name.endswith(".part") and destination.name == "notes.txt":
+            raise OSError("injected exact-Artifact publish failure")
+        return real_replace(directory, source, destination)
+
+    monkeypatch.setattr(
+        artifacts_mod._PinnedUploadDirectory, "replace", fail_live_publish
+    )
+    raised_operation(
+        lambda: harness.manager.edit(first["artifact_id"], "new\n"),
+        500,
+        "write failed",
+    )
+
+    target = harness.workspace / "results" / "notes.txt"
+    assert target.read_bytes() == b"old\n"
+    assert harness.store.get_artifact(first["artifact_id"]) == before
+    assert harness.store.list_versions(first["artifact_id"]) == before_versions
+    assert not list(target.parent.glob("*.part"))
+    assert not list(target.parent.glob(".*.backup"))
+    assert not list(harness.manager.versions_dir().glob(".pending-*"))
+    assert not list(harness.manager.versions_dir().glob(".upload-*.json"))
+
+
+def test_nested_edit_fails_closed_without_dirfd_capabilities(tmp_path, monkeypatch):
+    harness = MutationHarness(tmp_path)
+    first = harness.artifact("results/notes.txt", b"old\n", "text/plain")
+    monkeypatch.setattr(artifacts_mod.os, "supports_dir_fd", set())
+
+    raised_operation(
+        lambda: harness.manager.edit(first["artifact_id"], "new\n"),
+        500,
+        "write failed",
+    )
+
+    assert (harness.workspace / "results" / "notes.txt").read_bytes() == b"old\n"
+    assert len(harness.store.list_versions(first["artifact_id"])) == 1
 
 
 def test_log_extension_preserves_legacy_text_editability(tmp_path):
@@ -209,12 +411,13 @@ def test_artifact_mutations_fail_closed_on_workspace_escape_metadata(tmp_path):
     )
     assert harness.store.get_artifact(record["artifact_id"])["filename"] == "safe.txt"
 
+    # Exact edits derive their live authority from the current version row,
+    # not mutable presentation metadata.  Corrupting the latter therefore
+    # cannot redirect the writer outside the workspace.
     harness.store.rename_artifact(record["artifact_id"], "../../outside.txt")
-    raised_operation(
-        lambda: harness.manager.edit(record["artifact_id"], "compromised"),
-        400,
-        "artifact live path escapes its workspace",
-    )
+    edited = harness.manager.edit(record["artifact_id"], "compromised")
+    assert edited["unchanged"] is False
+    assert (harness.workspace / "safe.txt").read_text("utf-8") == "compromised"
     assert outside.read_text("utf-8") == "sentinel"
 
 

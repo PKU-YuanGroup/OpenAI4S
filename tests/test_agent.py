@@ -10,7 +10,8 @@ import openai4s.agent.delegation as deleg_mod
 import openai4s.agent.loop as loop_mod
 from openai4s.agent import Agent
 from openai4s.agent.delegation import DelegationError, DelegationRunner
-from openai4s.config import get_config
+from openai4s.config import Config, RoadmapFeatureFlags, get_config
+from openai4s.kernel.readiness import EnvironmentReadinessError
 
 
 class ScriptedLLM:
@@ -161,6 +162,134 @@ def test_cli_non_scientific_finalize_uses_live_catalog_and_engine_result(monkeyp
         group["kind"]
         for group in agent.dispatcher.store.list_action_groups(agent.frame_id)
     ] == ["user", "finalize", "terminal"]
+
+
+@pytest.mark.parametrize("run_tool_first", [False, True])
+def test_stage1_missing_profile_keeps_cli_control_plane_kernel_lazy(
+    tmp_path, monkeypatch, run_tool_first
+):
+    """Readiness is a Code Cell gate, never a task or control-plane gate."""
+
+    replies = []
+    if run_tool_first:
+        replies.append(("list_dir", {"path": "."}))
+    replies.append(
+        (
+            "finalize_response",
+            {
+                "summary": "The control-only request was completed.",
+                "completion_bullets": ["Completed without a science runtime"],
+            },
+        )
+    )
+
+    def control_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        name, arguments = replies.pop(0)
+        call = {
+            "id": f"call-{name}",
+            "wire_id": f"wire-{name}",
+            "name": name,
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        return {
+            "content": "",
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            },
+        }
+
+    def forbidden_readiness(**_kwargs):
+        raise AssertionError("a control-only turn probed scientific readiness")
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError("a control-only turn spawned a kernel")
+
+    monkeypatch.setattr(loop_mod, "chat", control_chat)
+    monkeypatch.setattr(loop_mod, "Kernel", forbidden_kernel)
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        forbidden_readiness,
+    )
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=get_config().llm,
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    agent = Agent(
+        cfg=cfg,
+        workspace=tmp_path / "workspace",
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=2,
+    )
+
+    result = agent.run("complete through the control plane")
+
+    assert result["stop_reason"] == "submitted"
+    assert result["final_message"] == "The control-only request was completed."
+    assert agent.dispatcher.store.cell_count(agent.frame_id) == 0
+    assert replies == []
+
+
+@pytest.mark.parametrize(("language", "fence"), [("python", "python"), ("r", "r")])
+def test_stage1_cli_cell_readiness_refuses_before_safety_or_worker(
+    tmp_path, monkeypatch, language, fence
+):
+    readiness = {
+        "state": "needs_repair",
+        "ready": False,
+        "missing_environments": [],
+        "missing_packages": {"python": ["numpy"], "r": ["r-base"]},
+        "remediation": None,
+    }
+    scripted = ScriptedLLM([f"```{fence}\nprint(42)\n```"])
+    monkeypatch.setattr(loop_mod, "chat", scripted)
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        lambda **_kwargs: readiness,
+    )
+
+    def forbidden_kernel(*_args, **_kwargs):
+        raise AssertionError(f"a refused {language} Cell spawned a worker")
+
+    monkeypatch.setattr(loop_mod, "Kernel", forbidden_kernel)
+    import openai4s.kernel.r_kernel as r_kernel_mod
+
+    monkeypatch.setattr(r_kernel_mod, "spawn_r_kernel", forbidden_kernel)
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=get_config().llm,
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    agent = Agent(
+        cfg=cfg,
+        workspace=tmp_path / "workspace",
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=1,
+    )
+    monkeypatch.setattr(
+        agent,
+        "_pre_exec_gate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("readiness refusal happened after the safety gate")
+        ),
+    )
+
+    with pytest.raises(EnvironmentReadinessError) as refused:
+        agent.run("run a scientific Cell")
+
+    assert refused.value.readiness == readiness
+    assert agent.dispatcher.store.cell_count(agent.frame_id) == 0
+    assert agent._foreground_kernel is None
 
 
 def test_submit_output_soft_fail_does_not_complete(monkeypatch):

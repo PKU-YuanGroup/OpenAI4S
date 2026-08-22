@@ -44,6 +44,11 @@ class _Binding:
     #: lease and promotes the next turn *before* this one has written its
     #: durable status, its prose and its terminal event.
     failure_reason: str | None = None
+    #: Once true, the caller crossed its last cancellation check and is
+    #: committing an irreversible durable result. Exact Stop requests after
+    #: this boundary are refused instead of being reported as accepted while
+    #: the result is simultaneously published.
+    finalizing: bool = False
 
 
 #: What a ticket records when its worker never started. Fixed text, so no
@@ -171,12 +176,20 @@ class WebExecutionCoordinator:
         self, ticket: ExecutionTicket | None = None, *, reason: str | None = None
     ) -> bool:
         ticket = ticket or self.current()
-        if (
-            ticket is None
-            or ticket.state is not TicketState.RUNNING
-            or ticket.cancellation.is_set()
-        ):
-            return False
+        with self._lock:
+            binding = (
+                self._bindings.get(ticket.execution_id) if ticket is not None else None
+            )
+            if (
+                ticket is None
+                or ticket.state is not TicketState.RUNNING
+                or ticket.cancellation.is_set()
+                or binding is None
+                or binding.ticket is not ticket
+                or binding.cancel_event.is_set()
+            ):
+                return False
+            binding.finalizing = True
         event = {
             "type": "execution_state",
             "frame_id": ticket.session_id,
@@ -339,15 +352,21 @@ class WebExecutionCoordinator:
             return self._cancel_result(
                 False, session_id, execution_id, identity, ticket.status
             )
-        changed = self._coordinator.request_interrupt(
-            session_id=session_id,
-            execution_id=execution_id,
-            owner=identity,
-            reason=reason,
-        )
-        interrupted = False
-        if changed:
-            interrupted = self._signal_binding(execution_id)
+        with self._lock:
+            binding = self._bindings.get(execution_id)
+            if binding is not None and binding.finalizing:
+                return self._cancel_result(
+                    False, session_id, execution_id, identity, "finalizing"
+                )
+            changed = self._coordinator.request_interrupt(
+                session_id=session_id,
+                execution_id=execution_id,
+                owner=identity,
+                reason=reason,
+            )
+            interrupted = False
+            if changed:
+                interrupted = self._signal_binding(execution_id)
         result = self._cancel_result(
             changed,
             session_id,
@@ -391,13 +410,19 @@ class WebExecutionCoordinator:
             return self._cancel_result(
                 False, session_id, execution_id, identity, ticket.status
             )
-        changed = self._coordinator.request_interrupt(
-            session_id=session_id,
-            execution_id=execution_id,
-            owner=identity,
-            reason=reason,
-        )
-        interrupted = self._signal_binding(execution_id) if changed else False
+        with self._lock:
+            binding = self._bindings.get(execution_id)
+            if binding is not None and binding.finalizing:
+                return self._cancel_result(
+                    False, session_id, execution_id, identity, "finalizing"
+                )
+            changed = self._coordinator.request_interrupt(
+                session_id=session_id,
+                execution_id=execution_id,
+                owner=identity,
+                reason=reason,
+            )
+            interrupted = self._signal_binding(execution_id) if changed else False
         result = self._cancel_result(
             changed,
             session_id,

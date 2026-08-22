@@ -83,6 +83,8 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.server import (
     artifact_refs,
+    artifact_workbench_routes,
+    auto_mode_routes,
     compute_session_routes,
     compute_tasks,
     contract,
@@ -100,13 +102,30 @@ from openai4s.server.action_timeline import ActionTimelineService
 from openai4s.server.agent_run import EventCancellation
 from openai4s.server.agent_run import ProseStreamer as _ProseStreamer
 from openai4s.server.agent_run import WebActionExecutor, WebEventSink
+from openai4s.server.artifact_workbench import (
+    ArtifactWorkbenchService,
+    format_located_annotations,
+    ketcher_document,
+    official_workbench_enabled,
+)
 from openai4s.server.artifacts import (
     ArtifactManager,
     ArtifactOperationError,
     PromotionTarget,
+    WorkspaceSnapshot,
+    artifact_receipt_map,
 )
+from openai4s.server.auto_mode import AutoModeService, resolve_effective_selection
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
+from openai4s.server.completion_gate import (
+    CompletionGateService,
+    message_review_metadata,
+)
 from openai4s.server.completions import completion_message, response_language
+from openai4s.server.delivery import (
+    CompletionDeliveryService,
+    DeliveryValidationError,
+)
 from openai4s.server.errors import (
     ERROR_CODES,
     INTERNAL_ERROR_MESSAGE,
@@ -128,6 +147,10 @@ from openai4s.server.model_profiles import ModelProfileError, ModelProfileServic
 from openai4s.server.model_profiles import clean_api_key as _clean_api_key
 from openai4s.server.model_profiles import migrate_provider_alias
 from openai4s.server.model_profiles import resolve_profile_key as _resolve_profile_key
+from openai4s.server.notebook_lineage import (
+    bind_cell_lineage,
+    official_notebook_enabled,
+)
 
 # Keep the former gateway helper names as compatibility aliases; plan behavior
 # itself now lives together in PlanService.
@@ -146,6 +169,7 @@ from openai4s.server.recovery_runtime import (
     python_runtime_spec,
 )
 from openai4s.server.reviews import ReviewPorts, ReviewService
+from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import security_headers
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
@@ -165,6 +189,10 @@ from openai4s.server.share_service import ShareConflict, ShareService
 from openai4s.server.skill_sidecars import GenerationSidecarRecorder
 from openai4s.server.skills import SKILL_FAILURE_STATUS, SkillCustomizationService
 from openai4s.server.titles import SessionTitleService
+from openai4s.server.trusted_capture import (
+    TRUSTED_CAPTURE_BUSY,
+    TrustedCaptureCoordinator,
+)
 from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
@@ -173,6 +201,7 @@ from openai4s.storage.governance import QuotaExceeded
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as MEMORY_GLOBAL_SCOPE
 from openai4s.storage.memories import MemoryLimitError
+from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store, get_store
 from openai4s.tools import control_tool_specs, get_tool
 
@@ -1073,7 +1102,21 @@ class WSHub:
     #: status, permission cards, metadata deltas -- is frame state that no
     #: execution owns, and withholding those would break surfaces that have
     #: nothing to do with turn ordering.
-    _TURN_SCOPED_TYPES = frozenset({"text_reset", "text_chunk", "frame_update"})
+    _TURN_SCOPED_TYPES = frozenset(
+        {
+            "text_reset",
+            "text_chunk",
+            "frame_update",
+            "auto_run_started",
+            "candidate_ready",
+            "auto_audit_started",
+            "auto_audit_completed",
+            "repair_started",
+            "repair_completed",
+            "auto_run_terminal",
+            "candidate_resolved",
+        }
+    )
 
     def _refuses_event_locked(self, rid: str, obj: dict) -> bool:
         """Should this event be withheld from the buffer AND from live sockets?
@@ -1308,6 +1351,14 @@ class WSHub:
             "execution_state",
             "execution_queue",
             "execution_owner",
+            "auto_run_started",
+            "candidate_ready",
+            "auto_audit_started",
+            "auto_audit_completed",
+            "repair_started",
+            "repair_completed",
+            "auto_run_terminal",
+            "candidate_resolved",
         ):
             event, size = self._append_live_event(buf, obj)
             if t == "notebook_cell_start" and cell_id:
@@ -1652,6 +1703,7 @@ class SessionState:
         kernel_generations=None,
         owner_instance_id: str | None = None,
         clock_ms=None,
+        trusted_capture_enabled: bool = False,
     ):
         self.root_frame_id = root_frame_id
         self.project_id = project_id
@@ -1664,6 +1716,9 @@ class SessionState:
         #: keep using this directory, so the value is kept rather than
         #: recomputed from a pending workload binding.
         self.local_workspace = workspace
+        self.trusted_capture = TrustedCaptureCoordinator(
+            enabled=trusted_capture_enabled
+        )
         #: `(profile_id, revision)` this turn was ACCEPTED under, when it came
         #: through the queue. `_pinned_llm_config` prefers it over the frame's
         #: current pin, because the frame's pin is mutable by design and an item
@@ -1701,6 +1756,12 @@ class SessionState:
         # message/REPL ticket being submitted.
         self.admission_lock = threading.Lock()
         self.cancel = threading.Event()
+        # Stage 7 binds Guardian's denial circuit to the exact durable Auto Run
+        # that owns this turn.  The permission broker callback can arrive from
+        # inside a Host RPC, so these stay on the session rather than in a local
+        # closure that a dispatcher created on an earlier turn cannot see.
+        self.active_auto_mode_run_id: str | None = None
+        self.guardian_blocked_reason: str | None = None
         # Per-session model override (from the composer dropdown) + plan flag.
         self.model: str | None = None
         self.plan: bool = False
@@ -2316,6 +2377,9 @@ class SessionRunner:
     ) -> None:
         self.cfg = cfg
         self.hub = hub
+        self.stage1_trusted_delivery = bool(
+            cfg.roadmap_features.stage1_trusted_delivery
+        )
         self._clock = clock or time.time
         self._owner_instance_id = PROCESS_INSTANCE_ID
         self.store = get_store(cfg.db_path)
@@ -2337,6 +2401,7 @@ class SessionRunner:
         #: its note without being handed the ticket.
         self._turn_scope = threading.local()
         self._lock = threading.Lock()
+        self._project_mutation_condition = threading.Condition(self._lock)
         self._closed = False
         # Reconciler/lease callbacks run on the orchestration control threads.
         # A terminal session cleanup has to enter the session FIFO and may sit
@@ -2351,6 +2416,17 @@ class SessionRunner:
         self._orchestration_cleanup_threads: list[threading.Thread] = []
         self._orchestration_cleanup_stopping = False
         self._deleting_projects: set[str] = set()
+        # Root-stable deletion tombstones. drop_session intentionally removes
+        # SessionState before the durable aggregate is deleted; without this
+        # barrier a concurrent upload can recreate a fresh state in that gap
+        # and write into a session that is disappearing.
+        self._deleting_sessions: set[str] = set()
+        # All frameless Artifacts share data_dir/uploads and therefore share a
+        # basename namespace even when their database scopes name different
+        # projects. Mutations may coexist, but project deletion is one global
+        # writer across the DB-delete + filesystem-cleanup lifetime.
+        self._frameless_artifact_mutations = 0
+        self._frameless_deletion_active = False
         # One per daemon, so the startup opt-in and the on-demand route cannot
         # both be seeding the example at the same time.
         self.example_seed = _ExampleSeedState()
@@ -2395,6 +2471,50 @@ class SessionRunner:
         )
         self._review_ops = self.reviews.operations
         self._review_calls = self.reviews.provider_calls
+        self.auto_mode = AutoModeService(
+            store=self.store,
+            config=cfg,
+            # The repository has already committed by the time the service
+            # calls this sink.  A socket failure is therefore only lost live
+            # delivery; REST/reopen remains the durable source of truth.
+            emit=lambda root_frame_id, event: self.hub.broadcast(root_frame_id, event),
+        )
+        # Teach the permission broker how to read a conversation's durable
+        # `approvals_reviewer`. Without this the broker can only see the process
+        # environment, so a session that import-quarantine or the legacy
+        # migration pinned to "user" would still be auto-approved on a daemon
+        # started with OPENAI4S_UNATTENDED_APPROVAL=auto_review. The broker owns
+        # the port; this is the Web adapter for it.
+        from openai4s.permissions import broker
+
+        def _approvals_reviewer_for(store, root_frame_id, project_id):
+            selection = resolve_effective_selection(
+                store, cfg, root_frame_id, project_id
+            )
+            # "" means nobody recorded a choice, and the broker then lets the
+            # operator's environment decide -- which is what keeps the existing
+            # OPENAI4S_UNATTENDED_APPROVAL escape hatch working for an ordinary
+            # session. A built-in default is exactly that absence, so it must
+            # not be reported as a decision; quarantine, a frame or project
+            # override, an explicit deployment setting and the legacy migration
+            # all are decisions, and are reported as themselves.
+            if not selection.get("explicit"):
+                return ""
+            return str(selection.get("approvals_reviewer") or "")
+
+        broker().set_approvals_reviewer_resolver(_approvals_reviewer_for)
+        self.scientific_review = ScientificReviewService(
+            store=self.store,
+            config=cfg,
+            auto_mode=self.auto_mode,
+            owner_instance_id=self._owner_instance_id,
+        )
+        self.completion_gate = CompletionGateService(
+            store=self.store,
+            config=cfg,
+            scientific_review=self.scientific_review,
+            auto_mode=self.auto_mode,
+        )
         self._ws_root = cfg.data_dir / "agent-workspaces"
         self._ws_root.mkdir(parents=True, exist_ok=True)
         self.artifacts = ArtifactManager(
@@ -2408,12 +2528,28 @@ class SessionRunner:
             ),
             guess_content_type=_guess_ctype,
             checksum=_sha256,
+            trusted_delivery=self.stage1_trusted_delivery,
+        )
+        self.workbench_artifacts = ArtifactWorkbenchService(
+            store=self.store,
+            artifacts=self.artifacts,
+            broadcast=getattr(
+                self.hub,
+                "broadcast",
+                lambda root_frame_id, event: self.hub.emitter(root_frame_id)(event),
+            ),
+        )
+        self.completion_delivery = (
+            CompletionDeliveryService(store=self.store, data_dir=cfg.data_dir)
+            if self.stage1_trusted_delivery
+            else None
         )
         self.session_domain = SessionDomainService(
             self.store,
             data_dir=self.cfg.data_dir,
             workspace=self.workspace_for_branch,
             event_sink=lambda event: self.hub.emitter(event["root_frame_id"])(event),
+            before_revert_unlock=self._prepare_revert_unlock,
         )
         # Web share: an outbound read-only snapshot tunnel. The tunnel client is
         # created lazily and only when sharing is both enabled and configured, so
@@ -2461,6 +2597,7 @@ class SessionRunner:
             ),
             revoke_shares=self.shares.revoke_for_session,
             release_compute=self._release_session_compute,
+            cleanup_frameless_uploads=True,
         )
         self.sidecar_manifests = GenerationSidecarRecorder(self.store)
         self.workbench = SessionWorkbenchStateService(
@@ -2523,6 +2660,8 @@ class SessionRunner:
                 capture=self._capture_artifacts,
                 emit_artifact_step=self._emit_artifact_step,
                 record_cell=self._record_cell_with_cursor_checkpoint,
+                admit=lambda _st, _request: (self.require_standard_profile_readiness()),
+                capture_lease=lambda st, _request: st.trusted_capture.capture(),
                 allocate_attempt=self._allocate_cell_attempt,
                 bind_attempt_generation=self._bind_cell_attempt_generation,
                 mark_attempt_started=lambda attempt_id: (
@@ -2541,6 +2680,7 @@ class SessionRunner:
                         error=error,
                     )
                 ),
+                bind_lineage=self._bind_notebook_lineage,
             )
         )
         self.recovery = SessionRecoveryService(
@@ -2734,6 +2874,8 @@ class SessionRunner:
         emit = self.hub.emitter(root_frame_id)
         before = self.artifacts.snapshot(workspace)
         self.artifacts.protect_latest(st)
+        outcome: dict[str, Any] | None = None
+        harvest_evidence_error: Exception | None = None
         try:
             outcome = manager.result({"job_id": job_id})
         except Exception as error:  # noqa: BLE001
@@ -2760,6 +2902,24 @@ class SessionRunner:
             # In `finally`, not after: a harvest that extracted some outputs and
             # then failed has still written real bytes into the workspace, and
             # leaving those unregistered is the same gap on a narrower path.
+            artifact_receipts: list[dict[str, Any]] = []
+            if (
+                outcome is not None
+                and self.cfg.roadmap_features.stage11_durable_remote_compute
+            ):
+                try:
+                    from openai4s.compute.stage11 import harvest_artifact_receipts
+
+                    artifact_receipts = harvest_artifact_receipts(
+                        outcome, workspace=workspace
+                    )
+                except Exception as error:  # noqa: BLE001 - reject false lineage
+                    harvest_evidence_error = error
+                    record_diagnostic(
+                        error,
+                        surface="compute:refresh_provenance",
+                        request_id=correlation_id(),
+                    )
             try:
                 self.artifacts.capture(
                     st,
@@ -2768,28 +2928,44 @@ class SessionRunner:
                     before,
                     emit,
                     language="native",
-                    # The one path whose files genuinely came from another
-                    # machine, and the only capture call that was not draining.
-                    # Two consequences, both of them the failure this subsystem
-                    # exists to prevent. A harvested artifact was stamped with
-                    # the *local* environment and carried no record of the host
-                    # that produced it. And because the drain never ran here,
-                    # the remote entry stayed buffered and was attached to
-                    # whatever cell wrote a file next -- the fold in cell 3
-                    # becoming the provenance of a figure from cell 7, which
-                    # the comment in `capture` describes as already fixed.
+                    # The legacy remote-environment drain remains per capture;
+                    # exact harvest identity comes only from the scoped receipts
+                    # below, never from a later post-event row update.
                     drain_remote_provenance=self._remote_provenance_drain(st),
+                    artifact_receipts=artifact_receipt_map(artifact_receipts),
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
                 # Capture must not convert a successful harvest into an error;
                 # the files remain on disk and the next capture will see them.
-                pass
+                record_diagnostic(
+                    error,
+                    surface="compute:refresh_capture",
+                    request_id=correlation_id(),
+                )
+                if artifact_receipts:
+                    # A verified Stage 11 receipt is a promise that this
+                    # refresh durably bound those exact bytes. Returning success
+                    # after that binding failed would be the old fail-open gap.
+                    harvest_evidence_error = error
+        if harvest_evidence_error is not None:
+            # The bytes have still been registered above, but a successful
+            # Stage 11 response must not claim a harvest whose manifest cannot
+            # be bound to those exact files. Keep the Artifact un-attributed
+            # and fail this refresh visibly instead of inventing lineage.
+            raise GatewayError(
+                502,
+                "remote compute harvest provenance was invalid",
+                "harvest_provenance_invalid",
+            ) from harvest_evidence_error
         # Project the durable record rather than the call's return value, so
         # the refreshed row and the listing beside it are the same shape from
         # the same source. `hasattr`-guarding this would have hidden the fact
         # that the method was named something else -- a guard that always takes
         # the fallback looks like tolerance and is really a silent miss.
-        record = self.store.get_compute_job(job_id) or {"job_id": job_id, **outcome}
+        record = self.store.get_compute_job(job_id) or {
+            "job_id": job_id,
+            **(outcome or {}),
+        }
         task = compute_tasks.public_task(record)
         # Named, because this is the one response in the pair that DID reach a
         # provider. The listing says `polled: False` for the same reason.
@@ -3047,7 +3223,19 @@ class SessionRunner:
         return True
 
     def delete_session(self, root_frame_id: str) -> dict[str, Any]:
-        return self.deletions.delete_session(root_frame_id)
+        with self._lock:
+            frame = self.store.get_frame(root_frame_id)
+            project_id = str((frame or {}).get("project_id") or "")
+            if root_frame_id in self._deleting_sessions or (
+                project_id and project_id in self._deleting_projects
+            ):
+                raise GatewayError(409, "session deletion is already in progress")
+            self._deleting_sessions.add(root_frame_id)
+        try:
+            return self.deletions.delete_session(root_frame_id)
+        finally:
+            with self._lock:
+                self._deleting_sessions.discard(root_frame_id)
 
     def _may_create_session_in(self, project_id: str, user_id: str) -> bool:
         """Whether this user may put a session in this project.
@@ -3161,15 +3349,33 @@ class SessionRunner:
             return fid
 
     def delete_project(self, project_id: str) -> dict[str, Any]:
+        roots: tuple[str, ...] = ()
         with self._lock:
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is already in progress")
+            if self._frameless_deletion_active:
+                raise GatewayError(409, "another project deletion is in progress")
+            roots = tuple(self.store.project_session_ids(project_id))
+            if any(root in self._deleting_sessions for root in roots):
+                raise GatewayError(409, "session deletion is already in progress")
             self._deleting_projects.add(project_id)
+            self._deleting_sessions.update(roots)
+            self._frameless_deletion_active = True
         try:
+            # Frameless/project-scoped Artifacts have no SessionState turn
+            # lock. Their project lease is claimed under the same lock as the
+            # tombstone above; wait only after admission is closed, so a
+            # mutation that already won may finish and no new one can enter.
+            with self._project_mutation_condition:
+                while self._frameless_artifact_mutations:
+                    self._project_mutation_condition.wait()
             return self.deletions.delete_project(project_id)
         finally:
             with self._lock:
+                self._deleting_sessions.difference_update(roots)
                 self._deleting_projects.discard(project_id)
+                self._frameless_deletion_active = False
+                self._project_mutation_condition.notify_all()
 
     def _init_orchestration(self) -> None:
         """Build the backends this daemon can reach, and start the loop.
@@ -3614,8 +3820,292 @@ class SessionRunner:
     def _protect_latest_version_snapshots(self, st: SessionState) -> None:
         self.artifacts.protect_latest(st)
 
+    @contextmanager
+    def _external_project_artifact_mutation(self, project_id: str):
+        """Share the global uploads lease among frameless mutations."""
+
+        with self._project_mutation_condition:
+            if project_id in self._deleting_projects or self._frameless_deletion_active:
+                raise GatewayError(409, "project deletion is in progress")
+            self._frameless_artifact_mutations += 1
+        try:
+            yield
+        finally:
+            with self._project_mutation_condition:
+                self._frameless_artifact_mutations = max(
+                    0, self._frameless_artifact_mutations - 1
+                )
+                self._project_mutation_condition.notify_all()
+
+    @contextmanager
+    def _external_artifact_mutation(
+        self,
+        *,
+        frame_id: str | None = None,
+        project_id: str | None = None,
+        artifact_id: str | None = None,
+    ):
+        """Bind an HTTP-originated Artifact mutation to its session gate.
+
+        ArtifactManager remains usable for frameless project uploads and for
+        lower-level recovery tests.  A mutation that resolves to a live Web
+        session, however, must use the exact SessionState coordinator used by
+        Cells, native writers, delegation, and background kernels.  Resolve
+        the canonical root dynamically so a child frame cannot accidentally
+        acquire a different gate for the same physical workspace.
+        """
+
+        root_frame_id = frame_id
+        fallback_project = project_id or "default"
+        if artifact_id is not None:
+            artifact = self.store.get_artifact(artifact_id)
+            if artifact is None:
+                # Let the owning Artifact operation preserve its established
+                # not-found response; there is no workspace to coordinate.
+                yield
+                return
+            root_frame_id = artifact.get("root_frame_id")
+            fallback_project = artifact.get("project_id") or fallback_project
+        if not root_frame_id:
+            # Frameless uploads live under data_dir/uploads, outside every
+            # session workspace and therefore outside the capture coordinator.
+            # They still share project-owned rows/files with project deletion.
+            with self._external_project_artifact_mutation(str(fallback_project)):
+                yield
+            return
+        scope = self.store.resolve_frame_scope(
+            str(root_frame_id),
+            fallback_project=str(fallback_project),
+        )
+        canonical_root = str(scope.get("root_frame_id") or root_frame_id)
+        canonical_project = str(scope.get("project_id") or fallback_project)
+        if (
+            self.store.get_frame(canonical_root) is None
+            and self._existing_state(canonical_root) is None
+        ):
+            raise GatewayError(404, "session not found")
+        # Branch activation deliberately replaces SessionState before its
+        # recovery/event tail has finished.  During that publication window
+        # the new state's lock is free even though the lifecycle writer still
+        # owns the session.  The execution identity is root-stable across that
+        # swap and closes the ABA gap; turn_lock below remains the compatible
+        # guard for legacy holders that predate coordinator admission.
+        if self._execution_active(canonical_root):
+            raise GatewayError(
+                409,
+                "session workspace is busy with another execution",
+                TRUSTED_CAPTURE_BUSY,
+            )
+        state = self._state(canonical_root, canonical_project)
+        # User mutations are refusals, not queued work: waiting here would let
+        # an upload accepted during one turn silently land in the next turn's
+        # completion Artifact delta.  This also closes pure tool/finalization
+        # turns and branch lifecycle operations, whose complete lifetime holds
+        # turn_lock even when no capture snapshot is open.
+        # Close the state/deletion ABA window atomically.  Deletion may pop a
+        # SessionState and clear its tombstone after `_state()` returns; an
+        # unguarded caller could then acquire that detached state's free lock
+        # and write after the durable aggregate was gone.  The acquire is
+        # deliberately nonblocking while `_lock` is held: activation takes
+        # old.turn_lock before publishing under `_lock`, so waiting here would
+        # invert those locks.  Either this mutation claims the live state now,
+        # or it refuses without a side effect.
+        with self._lock:
+            state_is_live = self._sessions.get(canonical_root) is state
+            deletion_active = (
+                canonical_root in self._deleting_sessions
+                or canonical_project in self._deleting_projects
+            )
+            turn_claimed = bool(
+                state_is_live
+                and not deletion_active
+                and state.turn_lock.acquire(blocking=False)
+            )
+        if not turn_claimed:
+            raise GatewayError(
+                409,
+                "session workspace is busy with another execution",
+                TRUSTED_CAPTURE_BUSY,
+            )
+        try:
+            # Keep the global lock order aligned with Cell execution:
+            # turn_lock -> trusted-capture coordinator. Neither path may ever
+            # take these two in the reverse order.
+            with state.trusted_capture.external_mutation():
+                yield
+        finally:
+            state.turn_lock.release()
+
+    def upload_artifact(self, payload: dict, *, broadcast=None) -> dict:
+        with self._external_artifact_mutation(
+            frame_id=payload.get("frame_id"),
+            project_id=payload.get("project_id"),
+        ):
+            return self.artifacts.upload(payload, broadcast=broadcast)
+
+    def save_datapro_search_result(
+        self,
+        *,
+        query: str,
+        result: dict,
+        frame_id: str | None,
+        secrets: tuple[str, ...],
+        source_result: dict,
+    ) -> tuple[dict | None, dict | None]:
+        """Index, save, link, or compensate one DataPro result atomically.
+
+        The SQLite index and Artifact upload use separate repositories, so the
+        compensation remains explicit.  One external-mutation lifetime spans
+        the whole sequence: a background launch cannot enter after upload but
+        before link failure cleanup and turn a recoverable failure into a
+        visible ghost Artifact.
+        """
+
+        receipt: dict | None = None
+        artifact: dict | None = None
+        pending_events: list[tuple[str, dict]] = []
+
+        def collect_event(root_frame_id: str, event: dict) -> None:
+            pending_events.append((root_frame_id, event))
+
+        with self._external_artifact_mutation(frame_id=frame_id):
+            try:
+                receipt = datapro.index_successful_search(
+                    self.store,
+                    query=query,
+                    result=result,
+                    frame_id=frame_id,
+                    secrets=secrets,
+                    source_result=source_result,
+                )
+                saved_result = (
+                    {**result, "index": receipt} if receipt is not None else result
+                )
+                if datapro.is_successful_search(saved_result):
+                    payload = datapro.result_artifact_payload(
+                        query=query,
+                        result=saved_result,
+                        frame_id=frame_id,
+                    )
+                    if self.stage1_trusted_delivery:
+                        # The upload is provisional until its index batch is
+                        # linked. Preserve the manager's exact event payload,
+                        # but do not project it before the compound outcome is
+                        # known.
+                        artifact = self.artifacts.upload(
+                            payload,
+                            broadcast=collect_event,
+                        )
+                    else:
+                        # Rollout compatibility: before Stage 1 the upload
+                        # event is immediate, including when a later link
+                        # fails and compensation emits its refresh event.
+                        artifact = self.artifacts.upload(payload)
+                if (
+                    isinstance(receipt, dict)
+                    and receipt.get("batch_id")
+                    and artifact
+                    and artifact.get("id")
+                ):
+                    self.store.link_datapro_index_artifact(
+                        receipt["batch_id"], artifact["id"]
+                    )
+            except BaseException:
+                artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
+                if artifact_id:
+                    try:
+                        if self.stage1_trusted_delivery:
+                            self.artifacts.delete(
+                                artifact_id,
+                                broadcast=lambda _root, _event: None,
+                            )
+                        else:
+                            self.artifacts.delete(artifact_id)
+                    except BaseException:  # preserve the original failure
+                        pass
+                if isinstance(receipt, dict) and receipt.get("batch_id"):
+                    try:
+                        self.store.delete_datapro_index_batch(receipt["batch_id"])
+                    except BaseException:  # preserve the original failure
+                        pass
+                raise
+            # Publish the ArtifactManager-authored event exactly once and only
+            # after index, upload, and any required link all succeeded. Event
+            # delivery remains a projection: a socket failure cannot roll back
+            # the already coherent durable result.
+            if self.stage1_trusted_delivery:
+                for root_frame_id, event in pending_events:
+                    try:
+                        self.artifacts.broadcast(root_frame_id, event)
+                    except Exception as error:  # noqa: BLE001
+                        record_diagnostic(
+                            error, surface="datapro:artifact:notification"
+                        )
+        return receipt, artifact
+
+    def edit_artifact(
+        self,
+        artifact_id: str,
+        content: str,
+        *,
+        broadcast=None,
+    ) -> dict:
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            return self.artifacts.edit(
+                artifact_id,
+                content,
+                broadcast=broadcast,
+            )
+
+    def save_artifact_structure(
+        self,
+        artifact_id: str,
+        *,
+        content: str,
+        fmt: str = "mol",
+    ) -> dict:
+        """Serialize a Stage 9 editor write with every session writer."""
+
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            return self.workbench_artifacts.save_structure(
+                artifact_id,
+                content=content,
+                fmt=fmt,
+            )
+
+    def rename_artifact(
+        self,
+        artifact_id: str,
+        filename: str | None,
+        *,
+        broadcast=None,
+    ) -> dict:
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            return self.artifacts.rename(
+                artifact_id,
+                filename,
+                broadcast=broadcast,
+            )
+
+    def delete_artifact(self, artifact_id: str, *, broadcast=None) -> dict:
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            return self.artifacts.delete(artifact_id, broadcast=broadcast)
+
+    def promote_cell_artifact(
+        self,
+        target: PromotionTarget,
+        cell: dict,
+        emit,
+    ) -> dict | None:
+        with self._external_artifact_mutation(
+            frame_id=target.root_frame_id,
+            project_id=target.project_id,
+        ):
+            return self.artifacts.promote_cell(target, cell, emit)
+
     def restore_version(self, artifact_id: str, version_id: str) -> dict:
-        result = self.artifacts.restore(artifact_id, version_id)
+        with self._external_artifact_mutation(artifact_id=artifact_id):
+            result = self.artifacts.restore(artifact_id, version_id)
         if result.get("ok") and result.get("artifact"):
             result = dict(result)
             result["artifact"] = _artifact_json(result["artifact"])
@@ -3633,74 +4123,115 @@ class SessionRunner:
         """Serialize one checkpoint/branch mutation with scientific writers."""
 
         st = self._state(root_frame_id, project_id)
-        with self._session_execution(
-            st,
-            owner="lifecycle",
-            owner_id=f"{operation}-{uuid.uuid4().hex[:12]}",
-            reason=operation.replace("_", " "),
-        ) as execution:
-            result = mutate()
-            if invalidate_kernel and result.get("ok"):
-                from openai4s.orchestration.models import Reason
-
-                self._release_bound_compute_in_execution(
-                    st, reason=Reason.USER_CANCELLED
-                )
-                st.kernels.stop(
-                    "python", manual=False, reason="branch_revert_requires_recovery"
-                )
-                st.kernels.stop(
-                    "r", manual=False, reason="branch_revert_requires_recovery"
-                )
-                # Revert/Undo publishes the same checkpoint-backed Artifact,
-                # environment, capability, and permission projection as branch
-                # activation.  Discard in-memory provider/control-plane caches
-                # so the next turn is rebuilt from that durable head instead of
-                # retaining messages or policy from the abandoned interval.
-                if st.delegation_runner is not None:
-                    st.delegation_runner.close(cancel=True)
-                    st.delegation_runner = None
-                st.runtime = SessionRuntime()
-                st.messages = []
-                st.env_name = None
-                st.pending_env = None
-                checkpoint = result.get("checkpoint") or {}
-                pins = (
-                    checkpoint.get("environment_pins")
-                    if isinstance(checkpoint, Mapping)
-                    else {}
-                )
-                pins = pins if isinstance(pins, Mapping) else {}
-                st.desired_env = str(pins["python"]) if pins.get("python") else None
-                st.r_env_name = str(pins["r"]) if pins.get("r") else None
-                self._seed_messages(st)
-                emit = self.hub.emitter(root_frame_id)
-                emit(
-                    {
-                        "type": "kernel_status",
-                        "frame_id": root_frame_id,
-                        "status": "ended",
-                        "state": "ended",
-                        "ended_reason": "branch_revert_requires_recovery",
-                        "requires_kernel_recovery": True,
-                    }
-                )
-                emit(
-                    {
-                        "type": "branch_projection_restored",
-                        "frame_id": root_frame_id,
-                        "branch_id": st.branch_id,
-                        "checkpoint_id": (
-                            checkpoint.get("checkpoint_id")
-                            if isinstance(checkpoint, Mapping)
-                            else None
-                        ),
-                    }
-                )
+        with (
+            self._session_execution(
+                st,
+                owner="lifecycle",
+                owner_id=f"{operation}-{uuid.uuid4().hex[:12]}",
+                reason=operation.replace("_", " "),
+            ) as execution,
+            st.trusted_capture.external_mutation(),
+        ):
+            barrier_key = revert_recovery_setting_key(root_frame_id)
+            try:
+                result = mutate()
+            except Exception:
+                if (
+                    invalidate_kernel
+                    and self.store.get_setting(barrier_key) is not None
+                ):
+                    checkpoint: Mapping[str, Any] = {}
+                    try:
+                        branch = self.store.get_session_branch(st.branch_id) or {}
+                        head = branch.get("head_checkpoint_id")
+                        if head:
+                            checkpoint = (
+                                self.store.get_session_checkpoint(str(head)) or {}
+                            )
+                    except Exception:  # noqa: BLE001 - barrier remains authoritative
+                        checkpoint = {}
+                    self._invalidate_reverted_session(st, checkpoint)
+                raise
             self.executions.mark_finalizing(
                 execution, reason=f"persisting {operation.replace('_', ' ')}"
             )
             return result
+
+    def export_session_package(
+        self,
+        root_frame_id: str,
+        project_id: str,
+    ) -> dict[str, Any]:
+        """Serialize an HTTP package read with all session workspace writers."""
+
+        st = self._state(root_frame_id, project_id, allow_quarantined=True)
+        with self._session_execution(
+            st,
+            owner="lifecycle",
+            owner_id=f"session-export-{uuid.uuid4().hex[:12]}",
+            reason="session package export",
+        ):
+            return self.session_domain.session_export(root_frame_id)
+
+    def _prepare_revert_unlock(
+        self,
+        root_frame_id: str,
+        branch_id: str,
+        checkpoint: Mapping[str, Any],
+    ) -> None:
+        """Invalidate a live runtime while the durable revert barrier is held."""
+
+        with self._lock:
+            st = self._sessions.get(root_frame_id)
+        if st is None:
+            return
+        if st.branch_id != branch_id:
+            raise RuntimeError("live branch changed before revert unlock")
+        self._invalidate_reverted_session(st, checkpoint)
+
+    def _invalidate_reverted_session(
+        self, st: SessionState, checkpoint: Mapping[str, Any]
+    ) -> None:
+        """End stale runtimes before a committed revert barrier is cleared."""
+
+        from openai4s.orchestration.models import Reason
+
+        self._release_bound_compute_in_execution(st, reason=Reason.USER_CANCELLED)
+        st.kernels.stop(
+            "python", manual=False, reason="branch_revert_requires_recovery"
+        )
+        st.kernels.stop("r", manual=False, reason="branch_revert_requires_recovery")
+        if st.delegation_runner is not None:
+            st.delegation_runner.close(cancel=True)
+            st.delegation_runner = None
+        st.runtime = SessionRuntime()
+        st.messages = []
+        st.env_name = None
+        st.pending_env = None
+        pins = checkpoint.get("environment_pins")
+        pins = pins if isinstance(pins, Mapping) else {}
+        st.desired_env = str(pins["python"]) if pins.get("python") else None
+        st.r_env_name = str(pins["r"]) if pins.get("r") else None
+        self._seed_messages(st)
+        emit = self.hub.emitter(st.root_frame_id)
+        emit(
+            {
+                "type": "kernel_status",
+                "frame_id": st.root_frame_id,
+                "status": "ended",
+                "state": "ended",
+                "ended_reason": "branch_revert_requires_recovery",
+                "requires_kernel_recovery": True,
+            }
+        )
+        emit(
+            {
+                "type": "branch_projection_restored",
+                "frame_id": st.root_frame_id,
+                "branch_id": st.branch_id,
+                "checkpoint_id": checkpoint.get("checkpoint_id"),
+            }
+        )
 
     def activate_session_branch(
         self,
@@ -3734,12 +4265,15 @@ class SessionRunner:
 
         emit = self.hub.emitter(root_frame_id)
         owner_id = f"activate-{uuid.uuid4().hex[:12]}"
-        with self._session_execution(
-            old,
-            owner="lifecycle",
-            owner_id=owner_id,
-            reason=f"activate branch {branch_id}",
-        ) as execution:
+        with (
+            self._session_execution(
+                old,
+                owner="lifecycle",
+                owner_id=owner_id,
+                reason=f"activate branch {branch_id}",
+            ) as execution,
+            old.trusted_capture.external_mutation(),
+        ):
             prepared = self.session_domain.prepare_activation(
                 root_frame_id,
                 branch_id=branch_id,
@@ -3753,6 +4287,7 @@ class SessionRunner:
                 kernel_generations=self.store,
                 owner_instance_id=self._owner_instance_id,
                 clock_ms=lambda: int(self._clock() * 1000),
+                trusted_capture_enabled=self.stage1_trusted_delivery,
             )
             candidate.model = old.model
             candidate.plan = old.plan
@@ -3931,12 +4466,15 @@ class SessionRunner:
             )
         owner_id = f"{action_id}-{uuid.uuid4().hex[:12]}"
         emit = self.hub.emitter(root_frame_id)
-        with self._session_execution(
-            st,
-            owner="recovery",
-            owner_id=owner_id,
-            reason=f"kernel recovery: {action_id}",
-        ) as execution:
+        with (
+            self._session_execution(
+                st,
+                owner="recovery",
+                owner_id=owner_id,
+                reason=f"kernel recovery: {action_id}",
+            ) as execution,
+            st.trusted_capture.external_mutation(),
+        ):
             if self.store.leases.workload_for_session(root_frame_id):
                 raise RecoveryActionError(
                     "local kernel recovery is unavailable while a cluster "
@@ -3959,6 +4497,17 @@ class SessionRunner:
                     execution, reason="publishing recovery state"
                 )
                 emit(runtime.kernel_status_event(result, plan.recovery_id))
+            if (
+                action_id in {"restore", "retry"}
+                and str(result.get("status") or "").lower() == "active"
+                and self.store.get_setting(revert_recovery_setting_key(root_frame_id))
+                is not None
+            ):
+                result["revert_recovery_cleared"] = (
+                    self.session_domain.branching.release_revert_barrier_after_recovery(
+                        root_frame_id
+                    )
+                )
             if (
                 quarantine
                 and action_id == "restart_fresh"
@@ -4194,7 +4743,7 @@ class SessionRunner:
 
     def import_quarantine(self, root_frame_id: str) -> dict[str, Any] | None:
         raw = self.store.get_setting(session_import_quarantine_key(root_frame_id))
-        if not raw:
+        if raw is None:
             return None
         try:
             value = json.loads(raw)
@@ -4212,6 +4761,52 @@ class SessionRunner:
                 423,
                 "imported Session is quarantined and view-only; use the "
                 "confirmed restart_fresh recovery action before " + operation,
+            )
+        barrier_key = revert_recovery_setting_key(root_frame_id)
+        if self.store.get_setting(barrier_key) is not None:
+            # Reconciliation is itself a workspace/head writer. Never run it
+            # from a pre-ticket guard while a revert (or any other exact owner)
+            # is active, or the guard could clear that owner's preparing marker
+            # and admit a concurrent mutation.
+            snapshot = self.executions.snapshot(root_frame_id)
+            if not (
+                snapshot.get("owner")
+                or snapshot.get("queued_count")
+                or snapshot.get("queue")
+            ):
+                scope = self.store.resolve_frame_scope(
+                    root_frame_id, fallback_project="default"
+                )
+                st = self._state(
+                    root_frame_id,
+                    scope["project_id"],
+                    allow_quarantined=True,
+                )
+                with self._session_execution(
+                    st,
+                    owner="recovery",
+                    owner_id=f"reconcile-revert-{uuid.uuid4().hex[:12]}",
+                    reason="reconciling interrupted workspace revert",
+                ):
+                    # A revert may have entered after the snapshot above and
+                    # completed while this ticket waited. Its exact owner is
+                    # then responsible for the marker; an absent row is the
+                    # only safe fast path and must not become a false 423.
+                    if self.store.get_setting(barrier_key) is None:
+                        return
+                    try:
+                        reconciled = self.session_domain.reconcile_revert(root_frame_id)
+                    except Exception:  # noqa: BLE001 - marker remains authoritative
+                        reconciled = {"resolved": False}
+                    if (
+                        reconciled.get("resolved")
+                        and self.store.get_setting(barrier_key) is None
+                    ):
+                        return
+            raise GatewayError(
+                423,
+                "Session workspace revert requires recovery and is view-only "
+                "before " + operation,
             )
 
     def _state(
@@ -4231,6 +4826,8 @@ class SessionRunner:
             self.require_session_writable(root_frame_id, "starting a live runtime")
         project_id = scope["project_id"]
         with self._lock:
+            if root_frame_id in self._deleting_sessions:
+                raise GatewayError(409, "session deletion is in progress")
             if project_id in self._deleting_projects:
                 raise GatewayError(409, "project deletion is in progress")
             st = self._sessions.get(root_frame_id)
@@ -4253,6 +4850,7 @@ class SessionRunner:
                     kernel_generations=self.store,
                     owner_instance_id=self._owner_instance_id,
                     clock_ms=lambda: int(self._clock() * 1000),
+                    trusted_capture_enabled=self.stage1_trusted_delivery,
                 )
                 # A direct REPL Cell allocates its attempt before lazy language
                 # preparation calls ``_seed_messages``.  Seed the durable
@@ -4656,6 +5254,9 @@ class SessionRunner:
                     self.hub.emitter(rid),
                     cancel_event=st.cancel,
                     watching=lambda r=rid: self.hub.has_subscriber(r),
+                    guardian_terminal=lambda message, state=st: (
+                        self._block_guardian_run(state, message)
+                    ),
                     store=self.store,
                 )
             except Exception:  # noqa: BLE001
@@ -4671,10 +5272,148 @@ class SessionRunner:
         rebind = getattr(dispatcher, "set_workspace", None)
         if callable(rebind):
             rebind(st.workspace)
+        bind_restorer = getattr(dispatcher, "set_artifact_restorer", None)
+        if callable(bind_restorer):
+            bind_restorer(
+                self.artifacts.restore,
+                mutation_lease=lambda execution_bound: (
+                    st.trusted_capture.foreground_mutation(
+                        execution_bound=execution_bound
+                    )
+                ),
+                materialise=self.artifacts.materialise_version,
+                writer=self.artifacts.writer_transaction,
+            )
+        # BackgroundExecutor reads this hook dynamically, including when it
+        # was created by a tool-only turn before any language kernel existed.
+        # The lease spans the whole background job and is the atomic peer of
+        # every trusted foreground capture boundary.
+        dispatcher.background_execution_lease = st.trusted_capture.background
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
         self._wire_delegation(st)
         return dispatcher
+
+    def _block_guardian_run(self, st: SessionState, message: str) -> None:
+        """Commit an open Guardian circuit, then stop this exact turn.
+
+        Permission denial is already fail-closed before this callback runs.
+        The callback supplies the missing product terminal: it closes the run
+        durably before cancellation can let the outer loop attempt another
+        action. A lost SQLite response is replayed once with the same key; a
+        persistent storage failure still cancels the turn and is retried at its
+        final boundary rather than turning the denied action into an allow.
+        """
+
+        public_reason = str(message or "guardian denial circuit opened")[:1000]
+        st.guardian_blocked_reason = public_reason
+        run_id = str(st.active_auto_mode_run_id or "")
+        if run_id:
+            transition = None
+            terminal_error: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    transition = self.store.terminate_auto_mode_run(
+                        run_id,
+                        idempotency_key=f"guardian-terminal:{run_id}",
+                        status="blocked_by_guardian",
+                        reason="blocked_by_guardian",
+                        stop_reason="loop_detected",
+                    )
+                    break
+                except Exception as error:  # noqa: BLE001 - bounded exact replay
+                    terminal_error = error
+            if transition is not None:
+                self.auto_mode.publish_committed(transition)
+            elif terminal_error is not None:
+                record_diagnostic(
+                    terminal_error,
+                    surface="guardian:auto_run_terminal",
+                )
+        st.cancel.set()
+
+    def _finalize_turn_auto_run(
+        self,
+        st: SessionState,
+        *,
+        turn_id: str,
+        execution_id: str,
+        status: str,
+        gate_requested: bool,
+    ) -> None:
+        """Close a prestarted/shadow Auto Run that no gate already closed."""
+
+        try:
+            projection = self.store.project_auto_mode_run(
+                st.root_frame_id, str(st.branch_id or st.root_frame_id)
+            )
+            run = projection.get("run") if isinstance(projection, Mapping) else None
+            if not isinstance(run, Mapping):
+                return
+            if (
+                str(run.get("turn_id") or "") != str(turn_id)
+                or str(run.get("execution_id") or "") != str(execution_id)
+                or run.get("finished_at") is not None
+            ):
+                return
+            run_id = str(run.get("run_id") or "")
+            if not run_id:
+                return
+            if st.guardian_blocked_reason:
+                terminal = "blocked_by_guardian"
+                reason = "blocked_by_guardian"
+                stop_reason = "loop_detected"
+                key = f"guardian-terminal:{run_id}"
+            elif status == "cancelled":
+                terminal = "cancelled"
+                reason = "cancelled"
+                stop_reason = "cancelled"
+                key = f"{turn_id}:turn-terminal"
+            elif status == "failed":
+                terminal = "failed"
+                reason = "turn_failed"
+                stop_reason = "turn_failed"
+                key = f"{turn_id}:turn-terminal"
+            elif gate_requested:
+                # A normal completion gate terminal has already set finished_at
+                # and returned above. Reaching this live run means the gate could
+                # not produce durable review truth; never leave it running or
+                # infer a pass from the delivered/provisional prose.
+                terminal = "review_unavailable"
+                reason = "review_gate_unavailable"
+                stop_reason = None
+                key = f"{turn_id}:turn-terminal"
+            else:
+                # Approval-only and Stage 3 shadow runs are useful audit owners,
+                # but they do not verify the answer that was already delivered.
+                terminal = "completed_with_issues"
+                reason = "result_review_disabled"
+                stop_reason = None
+                key = f"{turn_id}:turn-terminal"
+            transition = None
+            terminal_error: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    transition = self.store.terminate_auto_mode_run(
+                        run_id,
+                        idempotency_key=key,
+                        status=terminal,
+                        reason=reason,
+                        stop_reason=stop_reason,
+                    )
+                    break
+                except Exception as error:  # noqa: BLE001 - bounded exact replay
+                    terminal_error = error
+            if transition is None:
+                if terminal_error is not None:
+                    record_diagnostic(
+                        terminal_error,
+                        surface="auto_mode:turn_terminal",
+                    )
+                return
+            self.auto_mode.publish_committed(transition)
+        finally:
+            st.active_auto_mode_run_id = None
 
     def _release_bound_compute_in_execution(
         self,
@@ -5273,9 +6012,48 @@ class SessionRunner:
         try:
             import dataclasses as _dc
 
-            from openai4s.agent.delegation import DelegationRunner
+            from openai4s.agent.delegation import DelegationError, DelegationRunner
 
             child_cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
+
+            def build_child_cell_hooks(producer_frame_id):
+                return self.artifacts.delegated_cell_hooks(
+                    st,
+                    producer_frame_id,
+                    self.hub.emitter(st.root_frame_id),
+                )
+
+            cell_hooks_factory = (
+                build_child_cell_hooks if self.stage1_trusted_delivery else None
+            )
+
+            def trusted_capture_admission():
+                if self._background_active(st):
+                    return (
+                        "trusted Artifact capture cannot delegate while a "
+                        "background execution is running"
+                    )
+                return None
+
+            capture_admission = (
+                trusted_capture_admission if self.stage1_trusted_delivery else None
+            )
+
+            @contextmanager
+            def trusted_capture_lease():
+                lease = st.trusted_capture.capture()
+                try:
+                    lease.__enter__()
+                except GatewayError as error:
+                    raise DelegationError(error.message) from error
+                try:
+                    yield
+                finally:
+                    lease.__exit__(None, None, None)
+
+            capture_lease = (
+                trusted_capture_lease if self.stage1_trusted_delivery else None
+            )
             runner = st.delegation_runner
             if runner is None:
                 runner = DelegationRunner(
@@ -5289,6 +6067,9 @@ class SessionRunner:
                     # kernels and relative writes pollute the checkout and
                     # stay invisible to this session's artifact capture.
                     workspace=st.workspace,
+                    cell_hooks_factory=cell_hooks_factory,
+                    trusted_capture_admission=capture_admission,
+                    trusted_capture_lease=capture_lease,
                 )
                 st.delegation_runner = runner
             else:
@@ -5299,6 +6080,9 @@ class SessionRunner:
                 # Branch fork/activate can retarget the live workspace; future
                 # children must follow it, not the one at runner creation.
                 runner.workspace = st.workspace
+                runner.cell_hooks_factory = cell_hooks_factory
+                runner.set_trusted_capture_admission(capture_admission)
+                runner.set_trusted_capture_lease(capture_lease)
             disp._delegate_fn = runner
             disp.steer_fns = {
                 "children": runner.children,
@@ -5884,7 +6668,8 @@ class SessionRunner:
             "cell_count": (st.cell_index if st else 0),
             "manual_stop": bool(supervisor_status and supervisor_status["manual_stop"]),
             "env": self._env_summary(st),
-            "repl_enabled": bool(self.cfg.notebook_repl),
+            "repl_enabled": official_notebook_enabled(self.cfg),
+            "artifact_workbench": official_workbench_enabled(self.cfg),
             "view_only": bool(quarantine),
             "trust_state": "quarantined" if quarantine else "trusted",
             "quarantine_reason": (
@@ -6287,6 +7072,36 @@ class SessionRunner:
             }
         )
 
+    def standard_profile_readiness(self) -> dict[str, object]:
+        """Project Stage 1's local-only standard environment preflight."""
+
+        from openai4s.kernel.readiness import standard_profile_readiness
+
+        return standard_profile_readiness(enabled=self.stage1_trusted_delivery)
+
+    @staticmethod
+    def _readiness_failure_message(readiness: dict[str, object]) -> str:
+        from openai4s.kernel.readiness import readiness_failure_message
+
+        return readiness_failure_message(readiness)
+
+    def require_standard_profile_readiness(self) -> dict[str, object]:
+        """Fail before admission when Stage 1 knows science cannot run."""
+
+        readiness = self.standard_profile_readiness()
+        if not self.stage1_trusted_delivery or readiness.get("ready") is True:
+            return readiness
+        unavailable = readiness.get("state") == "unavailable"
+        raise GatewayError(
+            503 if unavailable else 409,
+            self._readiness_failure_message(readiness),
+            (
+                "environment_readiness_unavailable"
+                if unavailable
+                else "environment_not_ready"
+            ),
+        )
+
     def submit_message(
         self,
         root_frame_id: str,
@@ -6303,12 +7118,10 @@ class SessionRunner:
         The HTTP handler may still wait for completion for legacy frontend
         compatibility, but the work is no longer tied to the client socket.
 
-        Everything that can refuse this turn runs *here*, synchronously, before
-        a ticket exists. Both checks below used to happen later -- one inside
-        the worker thread, one nowhere at all -- and "later" is the wrong place
-        for a refusal twice over: the client has already been told 202
-        accepted, and a queued follow-up would not discover the problem until
-        it reached the head of a queue the user had since walked away from.
+        Message-size and model-binding checks run *here*, synchronously, before
+        a ticket exists. Scientific-environment admission is intentionally not
+        a message check: a pure native-tool or structured-finalization turn
+        needs no kernel. It runs at the Code Cell boundary instead.
         """
         st = self._state(root_frame_id, project_id)
 
@@ -6641,7 +7454,7 @@ class SessionRunner:
         return self.reviews.submit(root_frame_id, project_id)
 
     # -- capture figures + written files after a cell -> artifacts ---------
-    def _snapshot(self, ws: Path) -> dict[str, int]:
+    def _snapshot(self, ws: Path) -> WorkspaceSnapshot:
         return self.artifacts.snapshot(ws)
 
     def _register_file(
@@ -6660,12 +7473,36 @@ class SessionRunner:
             env_snapshot_id=env_snapshot_id,
         )
 
+    def _bind_notebook_lineage(
+        self,
+        st: SessionState,
+        request: CellRequest,
+        before: WorkspaceSnapshot,
+        capture: CaptureResult,
+        cell_id: str,
+    ) -> list[str]:
+        """Map host-side reads to versions when Stage 8 is enabled."""
+
+        if not self.cfg.roadmap_features.stage8_live_notebook_lineage:
+            return []
+        del request, before
+        return bind_cell_lineage(
+            self.store,
+            workspace=st.workspace,
+            artifacts=capture.artifacts,
+            root_frame_id=st.root_frame_id,
+            project_id=st.project_id,
+            producing_cell_id=cell_id,
+            observed_reads=capture.files_read,
+            frame_id=st.root_frame_id,
+        )
+
     def _capture(
         self,
         st: SessionState,
         cell_index: int,
         cell_id: str,
-        before: dict[str, int],
+        before: WorkspaceSnapshot,
         emit,
         language: str = "python",
     ) -> tuple[list, list, list]:
@@ -6684,9 +7521,10 @@ class SessionRunner:
         st: SessionState,
         cell_index: int,
         cell_id: str,
-        before: dict[str, int],
+        before: WorkspaceSnapshot,
         emit,
         language: str,
+        artifact_receipts: list[dict[str, Any]] | None = None,
     ) -> CaptureResult:
         kernel = st.kernel
         run_system_cell = (
@@ -6703,6 +7541,7 @@ class SessionRunner:
             language=language,
             run_system_cell=run_system_cell,
             drain_remote_provenance=self._remote_provenance_drain(st),
+            artifact_receipts=artifact_receipt_map(artifact_receipts or []),
         )
 
     def _invoke_control_with_artifacts(self, st, call, emit, invoke):
@@ -6736,41 +7575,151 @@ class SessionRunner:
         self.recovery.touch(st)
         name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
         tool = get_tool(name)
-        if tool is None or not tool.writes_files:
+        metadata_for = getattr(st.dispatcher, "control_tool_execution_metadata", None)
+        metadata = metadata_for(str(name)) if callable(metadata_for) else {}
+        writes_files = bool(
+            metadata.get("writes_files")
+            if "writes_files" in metadata
+            else getattr(tool, "writes_files", False)
+        )
+        if tool is None or not writes_files:
             try:
                 return invoke()
             finally:
                 self.recovery.touch(st)
 
+        # The lease is acquired before the native side effect and held until
+        # its final workspace capture.  An already-running background job
+        # therefore refuses before ``invoke`` can write, and a new background
+        # launch cannot enter the snapshot/action/capture interval.
+        with st.trusted_capture.capture():
+            return self._invoke_writing_control_with_artifacts_bound(
+                st, emit, invoke, tool_name=str(name)
+            )
+
+    def _invoke_writing_control_with_artifacts_bound(
+        self, st, emit, invoke, *, tool_name: str
+    ):
+        """Run one declared writing action inside its capture lease."""
+
         before = self.artifacts.snapshot(st.workspace)
         self.artifacts.protect_latest(st)
-        try:
-            return invoke()
-        finally:
-            try:
-                captured = self.artifacts.capture(
+
+        captured_holder: list = []
+        commit_failure: list[BaseException] = []
+
+        def capture_written_files(
+            receipts: tuple[Mapping[str, Any], ...] = (),
+        ) -> CaptureResult:
+            artifact_receipts = artifact_receipt_map(receipts)
+            captured = self.artifacts.capture(
+                st,
+                st.cell_index,
+                None,
+                before,
+                emit,
+                language="native",
+                drain_remote_provenance=self._remote_provenance_drain(st),
+                artifact_receipts=artifact_receipts,
+            )
+            captured_holder.append(captured)
+            if captured.artifacts:
+                self._emit_artifact_step(
                     st,
-                    st.cell_index,
-                    None,
-                    before,
+                    "Saving "
+                    + (
+                        captured.artifacts[0]["filename"]
+                        if len(captured.artifacts) == 1
+                        else f"{len(captured.artifacts)} artifacts"
+                    ),
+                    captured.artifacts,
                     emit,
-                    language="native",
-                    drain_remote_provenance=self._remote_provenance_drain(st),
                 )
-                if captured.artifacts:
-                    self._emit_artifact_step(
-                        st,
-                        "Saving "
-                        + (
-                            captured.artifacts[0]["filename"]
-                            if len(captured.artifacts) == 1
-                            else f"{len(captured.artifacts)} artifacts"
+            return captured
+
+        def commit_artifacts(
+            receipts: tuple[dict[str, Any], ...],
+        ) -> list[dict[str, Any]]:
+            try:
+                captured = capture_written_files(receipts)
+                committed: list[dict[str, Any]] = []
+                for receipt in receipts:
+                    match = next(
+                        (
+                            artifact
+                            for artifact in captured.artifacts
+                            if artifact.get("filename") == receipt.get("filename")
+                            and artifact.get("checksum") == receipt.get("checksum")
                         ),
-                        captured.artifacts,
-                        emit,
+                        None,
                     )
-            except Exception:  # noqa: BLE001 — capture cannot mask tool outcome
+                    if not match or not isinstance(receipt.get("source"), Mapping):
+                        raise RuntimeError(
+                            "Artifact capture could not bind the written result"
+                        )
+                    committed.append(
+                        {
+                            "artifact_id": match.get("artifact_id"),
+                            "version_id": match.get("version_id"),
+                            "filename": match.get("filename"),
+                        }
+                    )
+                return committed
+            except BaseException as error:
+                commit_failure.append(error)
+                raise
+
+        try:
+            binder = getattr(st.dispatcher, "bind_native_artifact_committer", None)
+            with (
+                binder(commit_artifacts)
+                if tool_name in {"science_search", "compute_result"}
+                and callable(binder)
+                else nullcontext()
+            ):
+                result = invoke()
+            if commit_failure:
+                failure = RuntimeError(
+                    "trusted Artifact capture failed after the tool ran"
+                )
+                failure.output_committed = True  # type: ignore[attr-defined]
+                raise failure from commit_failure[0]
+        except BaseException as tool_error:
+            # A declared writing tool may have changed the workspace before it
+            # failed.  Capture whatever is recoverable, but never replace the
+            # primary tool exception with a secondary capture fault.  Either
+            # way the action is a retry veto: replay could duplicate the write.
+            try:
+                if not captured_holder and not commit_failure:
+                    capture_written_files()
+            except Exception as capture_error:  # noqa: BLE001
+                record_diagnostic(
+                    capture_error,
+                    surface="artifacts:native_capture_after_tool_failure",
+                )
+            try:
+                setattr(tool_error, "output_committed", True)
+            except Exception:  # pragma: no cover - exotic immutable exception
+                pass
+            raise
+        else:
+            try:
+                if not captured_holder:
+                    capture_written_files()
+            except Exception as capture_error:  # noqa: BLE001
+                if self.stage1_trusted_delivery:
+                    # The tool already ran.  Returning its success would make
+                    # uncaptured bytes disappear from the durable delivery
+                    # delta; retrying it could duplicate a side effect.  Raise
+                    # a fixed, non-secret failure with the shared retry veto.
+                    failure = RuntimeError(
+                        "trusted Artifact capture failed after a writing tool ran"
+                    )
+                    failure.output_committed = True  # type: ignore[attr-defined]
+                    raise failure from capture_error
                 traceback.print_exc()
+            return result
+        finally:
             self.recovery.touch(st)
 
     def _capture_env_snapshot(self, st=None) -> str | None:
@@ -7093,6 +8042,21 @@ class SessionRunner:
     def _review_llm_cfg(self, st: SessionState):
         return self.reviews.llm_config(st)
 
+    def _branch_head_checkpoint(self, st: SessionState) -> str | None:
+        """The restorable checkpoint auto-repair must roll back to, if any.
+
+        Returning None is a real answer, not a failure: `start_repair` treats a
+        branch with no restorable head as "safe rollback unavailable" and
+        refuses the repair, which is the correct outcome.
+        """
+
+        try:
+            branch = self.store.get_session_branch(str(st.branch_id or "")) or {}
+            head = branch.get("head_checkpoint_id")
+            return str(head) if head else None
+        except Exception:  # noqa: BLE001 — an unreadable branch has no checkpoint
+            return None
+
     @staticmethod
     def _review_artifact_excerpt(artifact: dict) -> str | None:
         return ReviewService.artifact_excerpt(artifact)
@@ -7408,6 +8372,171 @@ class SessionRunner:
             "model_profile_revision": int(binding.get("model_profile_revision") or 0),
         }
 
+    def _deliver_final_answer(
+        self,
+        *,
+        st: Any,
+        emit: Callable[[dict], None],
+        root_frame_id: str,
+        project_id: str,
+        execution_id: str,
+        produced_artifacts: list,
+        assistant_visible: list,
+        final_text: str,
+        delivered_at: int,
+        language: str,
+        already_streamed: bool = False,
+        message_metadata: Mapping[str, Any] | None = None,
+        publish: bool = True,
+    ) -> dict:
+        """Publish the turn's final answer; transactional where Stage 1 applies.
+
+        Lifted out of the turn body so the Stage 4 gate can run *between*
+        composing the candidate and publishing it, with one copy of the
+        delivery contract rather than one per ordering.
+
+        ``already_streamed`` says the same bytes already went out on the wire
+        marked provisional, so they must not be sent a second time; the caller
+        emits ``candidate_resolved`` to settle that block instead.
+
+        Failure is returned, not raised and not applied: only the caller knows
+        what else this turn did, so it owns turning ``ok=False`` into a failed
+        turn.
+        """
+
+        if self.stage1_trusted_delivery and produced_artifacts:
+            try:
+                delivery_service = self.completion_delivery
+                if delivery_service is None:
+                    raise RuntimeError("trusted completion delivery is unavailable")
+                verified = delivery_service.build_manifest(
+                    root_frame_id=root_frame_id,
+                    project_id=project_id,
+                    versions=produced_artifacts,
+                )
+                # Preserve the pre-existing live/reopen ordering:
+                # model prose comes first, then the transactional
+                # Artifact-bearing final message.
+                for block in assistant_visible:
+                    if (
+                        block.get("persisted")
+                        or not str(block.get("text") or "").strip()
+                    ):
+                        continue
+                    self.store.add_message(
+                        root_frame_id=root_frame_id,
+                        branch_id=st.branch_id,
+                        role="assistant",
+                        content=block["text"],
+                        frame_id=root_frame_id,
+                        created_at=block.get("at"),
+                    )
+                    block["persisted"] = True
+                delivery = None
+                commit_error: Exception | None = None
+                # A wrapper can lose the response after SQLite committed the
+                # Candidate message and delivery envelope. The execution-bound
+                # idempotency key makes one bounded retry an exact replay; without
+                # it the live turn would fail while reopen already exposed a
+                # stranded provisional delivery.
+                for _attempt in range(2):
+                    try:
+                        delivery = delivery_service.commit_verified_manifest(
+                            verified=verified,
+                            idempotency_key=(
+                                "artifact-completion:" + str(execution_id)
+                            ),
+                            root_frame_id=root_frame_id,
+                            branch_id=st.branch_id,
+                            frame_id=root_frame_id,
+                            content=final_text,
+                            created_at=delivered_at,
+                            message_metadata=message_metadata,
+                        )
+                        break
+                    except Exception as error:  # noqa: BLE001 - bounded replay
+                        commit_error = error
+                if delivery is None:
+                    if commit_error is None:
+                        raise RuntimeError("completion delivery returned no receipt")
+                    raise commit_error
+            except Exception as error:  # noqa: BLE001 - fail closed
+                # No verified row means no success link is emitted.
+                # The fixed public text carries no local path or raw
+                # storage exception; the diagnostic keeps those for
+                # the operator.
+                record_diagnostic(error, surface="completion:trusted_delivery")
+                return {
+                    "ok": False,
+                    "code": "artifact_delivery_unverified",
+                    "error_text": (
+                        "产物交付未能通过完整性校验；未发布完成链接。"
+                        if language == "zh"
+                        else "Artifact delivery could not be verified; "
+                        "no completion link was published."
+                    ),
+                    "delivery_id": None,
+                    "message_id": None,
+                }
+            delivery_id = str(delivery["delivery_id"])
+            message_id = str(delivery["message_id"])
+            assistant_visible.append(
+                {
+                    "at": delivered_at,
+                    "text": final_text,
+                    "persisted": True,
+                    "delivery_id": delivery_id,
+                    "message_id": message_id,
+                }
+            )
+            if not already_streamed:
+                emit(
+                    {
+                        "type": "text_chunk",
+                        "frame_id": root_frame_id,
+                        "block_type": "text",
+                        "chunk": final_text + "\n",
+                        "delivery_id": delivery_id,
+                        "message_id": message_id,
+                    }
+                )
+            if publish:
+                try:
+                    self.store.mark_completion_delivery_published(delivery_id)
+                except Exception as error:  # noqa: BLE001
+                    # Message+manifest are already durable. Leaving
+                    # the row committed preserves a stable recovery
+                    # key for REST reopen and future explicit
+                    # reconciliation; Stage 1 does not re-emit here.
+                    record_diagnostic(
+                        error,
+                        surface="completion:publication_reconcile",
+                    )
+            return {
+                "ok": True,
+                "code": None,
+                "error_text": None,
+                "delivery_id": delivery_id,
+                "message_id": message_id,
+            }
+        assistant_visible.append({"at": delivered_at, "text": final_text})
+        if not already_streamed:
+            emit(
+                {
+                    "type": "text_chunk",
+                    "frame_id": root_frame_id,
+                    "block_type": "text",
+                    "chunk": final_text + "\n",
+                }
+            )
+        return {
+            "ok": True,
+            "code": None,
+            "error_text": None,
+            "delivery_id": None,
+            "message_id": None,
+        }
+
     def run_message(
         self,
         root_frame_id: str,
@@ -7455,6 +8584,8 @@ class SessionRunner:
             owner_id=f"direct-{uuid.uuid4().hex[:12]}",
             reason="user message",
         ) as execution:
+            st.active_auto_mode_run_id = None
+            st.guardian_blocked_reason = None
             self._bind_execution_to_turn(getattr(execution, "execution_id", ""))
             self.recovery.touch(st)
             # Tool-only and plan turns need the control plane and provider
@@ -7553,6 +8684,28 @@ class SessionRunner:
                 model=getattr(llm_cfg, "model", None),
                 branch_id=st.branch_id,
                 tool_resolver=(tool_resolver if callable(tool_resolver) else None),
+                tool_policy_resolver=getattr(
+                    st.dispatcher, "control_tool_policy", None
+                ),
+            )
+            turn_execution_id = str(
+                getattr(execution, "execution_id", "") or turn_request_id
+            )
+            gate_mode = "off"
+            if self.cfg.roadmap_features.stage4_review_completion_gate:
+                try:
+                    # Freeze the selection once for this turn. A concurrent
+                    # settings PATCH must not make streaming provisional under
+                    # one mode and review (or skip review) under another.
+                    gate_mode = str(
+                        self.completion_gate.active_mode(root_frame_id) or "off"
+                    )
+                except Exception as error:  # noqa: BLE001 - fail closed
+                    record_diagnostic(error, surface="completion:mode_resolution")
+                    gate_mode = "review_only"
+            gate_requested = bool(
+                self.cfg.roadmap_features.stage4_review_completion_gate
+                and gate_mode != "off"
             )
             user_message = {"role": "user", "content": content}
             action_ledger.append_user(user_message)
@@ -7563,9 +8716,50 @@ class SessionRunner:
                 for a in self.store.list_artifacts({"root_frame_id": root_frame_id})
                 if (a.get("artifact_id") or a.get("id"))
             }
+            capture_observation_cursor = (
+                self.store.artifact_capture_observation_cursor(
+                    root_frame_id=root_frame_id,
+                    project_id=project_id,
+                )
+                if self.stage1_trusted_delivery
+                else 0
+            )
             cell_count_before = self.store.cell_count(root_frame_id)
             step_count_before = self.store.step_count(root_frame_id)
             emit({"type": "text_reset", "frame_id": root_frame_id})
+            if gate_requested:
+                # The badge precedes the first assistant byte. The durable
+                # candidate_ready event follows once the complete candidate and
+                # its evidence digest exist; this stream marker merely prevents
+                # provisional prose looking final while the turn is running.
+                emit(
+                    {
+                        "type": "candidate_ready",
+                        "frame_id": root_frame_id,
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                        "gates_completion": True,
+                        "review_status": "candidate",
+                        "user_truth": "Candidate · provisional / not verified",
+                        "stream_only": True,
+                    }
+                )
+
+            def turn_emit(event: dict) -> None:
+                if (
+                    gate_requested
+                    and event.get("type") == "text_chunk"
+                    and event.get("block_type") == "text"
+                ):
+                    event = {
+                        **event,
+                        "provisional": True,
+                        "review_status": "candidate",
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                    }
+                emit(event)
+
             assistant_visible: list[dict] = []
             status = "completed"
             err_text: str | None = None
@@ -7591,9 +8785,31 @@ class SessionRunner:
                 st.last_engine_completion = None
                 st.active_action_ledger = action_ledger
                 try:
+                    started_auto_run = self.scientific_review.begin_turn_run(
+                        root_frame_id=root_frame_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        turn_id=str(action_ledger.turn_id),
+                        execution_id=turn_execution_id,
+                        # Stage 4 freezes its completion-gate mode above.  When
+                        # that gate is disabled, ``gate_mode`` is only the
+                        # local sentinel ``off``; passing it here would erase a
+                        # real Stage 2/3 session selection and make the later
+                        # shadow-review replay disagree with this durable run's
+                        # idempotency digest.  Let the prestart freeze the
+                        # effective Auto Mode selection in that configuration.
+                        mode_override=(
+                            gate_mode
+                            if self.cfg.roadmap_features.stage4_review_completion_gate
+                            else None
+                        ),
+                    )
+                    if isinstance(started_auto_run, Mapping):
+                        st.active_auto_mode_run_id = (
+                            str(started_auto_run.get("run_id") or "") or None
+                        )
                     # Keep the historical three-argument composition seam so
                     # tests/extensions that replace ``_loop`` remain valid.
-                    loop_reason = self._loop(st, emit, assistant_visible)
+                    loop_reason = self._loop(st, turn_emit, assistant_visible)
                 finally:
                     st.active_action_ledger = None
                 action_ledger.append_terminal(
@@ -7669,8 +8885,20 @@ class SessionRunner:
                     }
                 )
                 traceback.print_exc()
-            if st.cancel.is_set():
+            if st.guardian_blocked_reason:
+                status = "blocked_by_guardian"
+            elif st.cancel.is_set():
                 status = "cancelled"
+            # Armed for the whole turn, not just the branch that composes an
+            # answer: a tool-only turn is reviewed too, it simply has no
+            # candidate text to hold back. Resolved once, here, so the branch
+            # that decides to withhold delivery and the branch that runs the
+            # review can never disagree about whether this turn is gated.
+            gate_armed = bool(status == "completed" and gate_requested)
+            # The completion suffix, held until its canonical Candidate row (and
+            # any Stage 1 manifest) is durable, then streamed as provisional.
+            candidate_final: dict[str, Any] | None = None
+            produced_artifacts: list[dict[str, Any]] = []
             if status == "completed" and loop_reason == "submitted":
                 current_artifacts = self.store.list_artifacts(
                     {"root_frame_id": root_frame_id}
@@ -7683,6 +8911,31 @@ class SessionRunner:
                     )
                     != artifact.get("latest_version_id")
                 ]
+                if self.stage1_trusted_delivery:
+                    # Same-head captures do not move latest_version_id. Their
+                    # durable observation cursor is the delivery delta; native
+                    # control tools that create a fresh head remain covered by
+                    # the compatible head comparison above.
+                    observations = self.store.artifact_capture_observations_since(
+                        capture_observation_cursor,
+                        root_frame_id=root_frame_id,
+                        project_id=project_id,
+                    )
+                    candidates = [*produced_artifacts, *observations]
+                    produced_artifacts = []
+                    seen_version_ids: set[str] = set()
+                    for candidate in candidates:
+                        version_id = str(
+                            candidate.get("version_id")
+                            or candidate.get("latest_version_id")
+                            or ""
+                        )
+                        if not version_id or version_id in seen_version_ids:
+                            continue
+                        seen_version_ids.add(version_id)
+                        produced_artifacts.append(
+                            {**candidate, "version_id": version_id}
+                        )
                 prior_text = "\n\n".join(
                     str(block.get("text") or "") for block in assistant_visible
                 ).strip()
@@ -7693,19 +8946,47 @@ class SessionRunner:
                     previous_text=prior_text,
                     language=response_language(user_text),
                     require_fallback=not bool(st.last_model_prose.strip()),
+                    trusted_delivery=self.stage1_trusted_delivery,
                 )
                 if final_text:
-                    assistant_visible.append(
-                        {"at": int(time.time() * 1000), "text": final_text}
-                    )
-                    emit(
-                        {
-                            "type": "text_chunk",
-                            "frame_id": root_frame_id,
-                            "block_type": "text",
-                            "chunk": final_text + "\n",
+                    delivered_at = int(time.time() * 1000)
+                    # Stage 4 orders the turn candidate -> frozen evidence ->
+                    # review -> promotion. While armed, the text is readable but
+                    # explicitly provisional. The suffix waits below until one
+                    # canonical Candidate row is durable; a Stage 1 manifest is
+                    # committed (not published) before any exact-version link is
+                    # exposed. Only the atomic promotion may make it final.
+                    if gate_armed:
+                        candidate_final = {
+                            "at": delivered_at,
+                            "text": final_text,
+                            "artifacts": produced_artifacts,
                         }
-                    )
+                    else:
+                        published = self._deliver_final_answer(
+                            st=st,
+                            emit=emit,
+                            root_frame_id=root_frame_id,
+                            project_id=project_id,
+                            execution_id=str(execution.execution_id),
+                            produced_artifacts=produced_artifacts,
+                            assistant_visible=assistant_visible,
+                            final_text=final_text,
+                            delivered_at=delivered_at,
+                            language=response_language(user_text),
+                        )
+                        if not published["ok"]:
+                            status = "failed"
+                            failure_meta["code"] = str(published["code"])
+                            err_text = str(published["error_text"])
+                            emit(
+                                {
+                                    "type": "text_chunk",
+                                    "frame_id": root_frame_id,
+                                    "block_type": "text",
+                                    "chunk": "\n\n" + err_text + "\n",
+                                }
+                            )
             # Persist each visible prose block with the time it was produced (see
             # _loop) rather than collapsing the whole turn's text into one message
             # stamped at turn-end. The latter sorted every step card into a single
@@ -7714,11 +8995,368 @@ class SessionRunner:
             # matching the live stream. Written here at the turn boundary (not
             # mid-loop) so an in-flight resume still rebuilds text from the WS
             # replay alone, with nothing double-rendered.
+            gated = gate_armed
+            gate: dict | None = None
+            gate_metadata: dict[str, object] | None = None
+            candidate_answer = ""
+            candidate_row: dict[str, Any] | None = None
+            candidate_delivery_id: str | None = None
+            candidate_original_sha256 = ""
+            if gate_armed:
+                # One canonical row contains exactly the bytes the reviewer
+                # reads. Per-block rows cannot represent a turn-wide verdict:
+                # they leave earlier prose Candidate while only the last row is
+                # promoted, and a repair has no exact durable replacement target.
+                candidate_answer = "\n\n".join(
+                    [
+                        *(str(blk.get("text") or "") for blk in assistant_visible),
+                        *(
+                            [str(candidate_final["text"])]
+                            if candidate_final is not None
+                            else []
+                        ),
+                    ]
+                ).strip()
+                candidate_original_sha256 = hashlib.sha256(
+                    candidate_answer.encode("utf-8")
+                ).hexdigest()
+                provisional_metadata: dict[str, object] = {
+                    "review_status": "candidate",
+                    "user_truth": "Candidate · provisional / not verified",
+                    "gates_completion": True,
+                    "unverified": True,
+                    "turn_id": str(action_ledger.turn_id),
+                    "execution_id": turn_execution_id,
+                    "candidate_content_sha256": candidate_original_sha256,
+                }
+                if candidate_answer:
+                    if (
+                        candidate_final is not None
+                        and self.stage1_trusted_delivery
+                        and candidate_final["artifacts"]
+                    ):
+                        # Stage 1 commits the manifest and candidate row before
+                        # exposing its exact-version URLs. It remains committed
+                        # (unpublished) until review, CAS promotion, and terminal
+                        # finalisation have all succeeded.
+                        prepared = self._deliver_final_answer(
+                            st=st,
+                            emit=emit,
+                            root_frame_id=root_frame_id,
+                            project_id=project_id,
+                            execution_id=turn_execution_id,
+                            produced_artifacts=list(candidate_final["artifacts"]),
+                            assistant_visible=[],
+                            final_text=candidate_answer,
+                            delivered_at=int(candidate_final["at"]),
+                            language=response_language(user_text),
+                            already_streamed=True,
+                            message_metadata=provisional_metadata,
+                            publish=False,
+                        )
+                        if prepared["ok"]:
+                            candidate_delivery_id = str(prepared["delivery_id"])
+                            candidate_row = {
+                                "message_id": str(prepared["message_id"]),
+                                "content": candidate_answer,
+                            }
+                        else:
+                            status = "failed"
+                            failure_meta["code"] = str(prepared["code"])
+                            err_text = str(prepared["error_text"])
+                            emit(
+                                {
+                                    "type": "text_chunk",
+                                    "frame_id": root_frame_id,
+                                    "block_type": "text",
+                                    "chunk": "\n\n" + err_text + "\n",
+                                }
+                            )
+                    else:
+                        candidate_row = self.store.add_message(
+                            root_frame_id=root_frame_id,
+                            branch_id=st.branch_id,
+                            role="assistant",
+                            content=candidate_answer,
+                            frame_id=root_frame_id,
+                            created_at=(
+                                int(candidate_final["at"])
+                                if candidate_final is not None
+                                else None
+                            ),
+                            metadata=provisional_metadata,
+                        )
+                    if candidate_row is not None:
+                        for block in assistant_visible:
+                            block["persisted"] = True
+                        # Bind the provisional live wrapper to the exact row
+                        # before review.  The early stream-only marker cannot
+                        # carry this id because the row does not exist yet.
+                        emit(
+                            {
+                                "type": "candidate_ready",
+                                "frame_id": root_frame_id,
+                                "turn_id": str(action_ledger.turn_id),
+                                "execution_id": turn_execution_id,
+                                "message_id": candidate_row["message_id"],
+                                "gates_completion": True,
+                                "review_status": "candidate",
+                                "user_truth": (
+                                    "Candidate · provisional / not verified"
+                                ),
+                                "persisted": True,
+                            }
+                        )
+                        if candidate_final is not None:
+                            emit(
+                                {
+                                    "type": "text_chunk",
+                                    "frame_id": root_frame_id,
+                                    "block_type": "text",
+                                    "chunk": str(candidate_final["text"]) + "\n",
+                                    "provisional": True,
+                                    "review_status": "candidate",
+                                    "turn_id": str(action_ledger.turn_id),
+                                    "execution_id": turn_execution_id,
+                                    "message_id": candidate_row["message_id"],
+                                    **(
+                                        {"delivery_id": candidate_delivery_id}
+                                        if candidate_delivery_id
+                                        else {}
+                                    ),
+                                }
+                            )
+
+                if status == "completed":
+                    try:
+                        gate = self.completion_gate.gate_after_turn(
+                            root_frame_id=root_frame_id,
+                            project_id=project_id,
+                            branch_id=str(st.branch_id or root_frame_id),
+                            turn_id=str(action_ledger.turn_id),
+                            execution_id=turn_execution_id,
+                            user_request=user_text,
+                            candidate_answer=candidate_answer,
+                            structured_completion=(
+                                st.last_engine_completion
+                                or getattr(st.dispatcher, "last_output", None)
+                            ),
+                            artifact_versions_before=artifact_versions_before,
+                            produced_artifacts=produced_artifacts,
+                            cell_count_before=cell_count_before,
+                            step_count_before=step_count_before,
+                            agent_cfg=llm_cfg,
+                            reviewer_cfg=self._review_llm_cfg(st),
+                            emit=emit,
+                            checkpoint_id=self._branch_head_checkpoint(st),
+                            cancel=st.cancel.is_set,
+                            deliver_replacement=candidate_row is not None,
+                            mode_override=gate_mode,
+                        )
+                    except Exception as error:  # noqa: BLE001 - fail closed
+                        record_diagnostic(error, surface="completion:review_gate")
+                        gate = None
+            # --- exact promotion and terminal finalisation ------------------
+            promoted_text = candidate_answer
+            replaced = bool(gate and gate.get("answer_replaced"))
+            if replaced:
+                promoted_text = str(gate.get("final_answer") or candidate_answer)
+            delivery_review_matches = True
+            if gate is not None and candidate_delivery_id is not None:
+                try:
+                    reviewed_snapshot = gate.get("snapshot")
+                    if not isinstance(reviewed_snapshot, Mapping):
+                        raise DeliveryValidationError(
+                            "final review has no frozen Artifact snapshot"
+                        )
+                    delivery_service = self.completion_delivery
+                    if delivery_service is None:
+                        raise DeliveryValidationError(
+                            "trusted completion delivery is unavailable"
+                        )
+                    delivery_service.assert_review_matches_delivery(
+                        delivery_id=candidate_delivery_id,
+                        reviewed_snapshot=reviewed_snapshot,
+                        promoted_content=promoted_text,
+                    )
+                except Exception as error:  # noqa: BLE001 - never publish drift
+                    record_diagnostic(
+                        error, surface="completion:review_delivery_binding"
+                    )
+                    delivery_review_matches = False
+                    gate = {
+                        **gate,
+                        "status": "review_unavailable",
+                        "terminal": "review_unavailable",
+                        "review_status": "review_unavailable",
+                        "reason": "delivery_manifest_review_mismatch",
+                        "user_truth": (
+                            "Unavailable · not verified "
+                            "(delivery_manifest_review_mismatch)"
+                        ),
+                        "unverified": True,
+                    }
+            promotion_ready = False
+            promotion_succeeded = False
+            if gate is not None:
+                gate_metadata = message_review_metadata(gate)
+                gate_metadata.update(
+                    {
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                        "candidate_content_sha256": candidate_original_sha256,
+                        "reviewed_content_sha256": hashlib.sha256(
+                            promoted_text.encode("utf-8")
+                        ).hexdigest(),
+                    }
+                )
+            if st.guardian_blocked_reason:
+                status = "blocked_by_guardian"
+            elif st.cancel.is_set():
+                status = "cancelled"
+            # Atomically close the exact ticket's cancellation window before
+            # the message/delivery/run transaction. A Stop that wins first is
+            # observed above (or makes this return False); a Stop that arrives
+            # afterward is refused as `finalizing`, never reported accepted
+            # while these bytes become immutable.
+            entered_finalizing = self.executions.mark_finalizing(
+                execution,
+                reason=(
+                    "persisting completion"
+                    if status == "completed"
+                    else f"persisting {status} result"
+                ),
+            )
+            if not entered_finalizing:
+                if st.guardian_blocked_reason:
+                    status = "blocked_by_guardian"
+                elif st.cancel.is_set() or execution.cancellation.is_set():
+                    status = "cancelled"
+            if gate is not None and status == "cancelled":
+                gate = {
+                    **gate,
+                    "status": "cancelled",
+                    "terminal": "cancelled",
+                    "review_status": "cancelled",
+                    "reason": "cancelled",
+                    "stop_reason": "cancelled",
+                    "user_truth": "Cancelled · not promoted / not verified",
+                    "unverified": True,
+                }
+            promotion_ready = bool(
+                gate is not None
+                and candidate_row is not None
+                and delivery_review_matches
+                and status == "completed"
+            )
+
+            if gate is not None:
+                try:
+                    finalized = self.completion_gate.finalize_after_delivery(
+                        root_frame_id=root_frame_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        result=gate,
+                        delivered=promotion_ready,
+                        emit=emit,
+                        message_id=(
+                            str(candidate_row["message_id"])
+                            if promotion_ready and candidate_row is not None
+                            else None
+                        ),
+                        expected_message_content=(
+                            candidate_answer if promotion_ready else None
+                        ),
+                        promoted_message_content=(
+                            promoted_text if promotion_ready else None
+                        ),
+                        completion_delivery_id=(
+                            candidate_delivery_id if promotion_ready else None
+                        ),
+                        message_metadata=(gate_metadata if promotion_ready else None),
+                    )
+                except Exception as error:  # noqa: BLE001 - remain Candidate
+                    record_diagnostic(error, surface="completion:terminal_promotion")
+                    finalized = None
+                if isinstance(finalized, dict):
+                    gate = finalized
+                    gate_metadata = message_review_metadata(finalized)
+                    promotion_succeeded = bool(
+                        promotion_ready
+                        and (
+                            finalized.get("finalized")
+                            or finalized.get("durable_terminal")
+                        )
+                    )
+            if candidate_row is not None and not promotion_succeeded:
+                gate_metadata = {
+                    "review_status": "candidate",
+                    "user_truth": "Candidate · provisional / not verified",
+                    "gates_completion": True,
+                    "unverified": True,
+                }
+
+            if candidate_row is not None:
+                resolved = bool(promotion_succeeded)
+                # Streaming is incremental and preserves provider whitespace;
+                # the canonical durable candidate joins turn blocks with the
+                # renderer's stable separators.  Reconcile even an unchanged
+                # verdict to these exact reviewed bytes so live and reopen can
+                # never display different content under the same badge.
+                reconcile_text = bool(resolved and promoted_text)
+                emit(
+                    {
+                        "type": "candidate_resolved",
+                        "frame_id": root_frame_id,
+                        "turn_id": str(action_ledger.turn_id),
+                        "execution_id": turn_execution_id,
+                        "message_id": str(candidate_row["message_id"]),
+                        "review_status": (
+                            (gate_metadata or {}).get("review_status")
+                            if resolved
+                            else "candidate"
+                        ),
+                        "user_truth": (
+                            (gate_metadata or {}).get("user_truth")
+                            if resolved
+                            else "Candidate · provisional / not verified"
+                        ),
+                        "replaced": reconcile_text,
+                        "answer_repaired": bool(resolved and replaced),
+                        "delivered": resolved,
+                        "durable": resolved,
+                        **({"text": promoted_text} if reconcile_text else {}),
+                        **(
+                            {"delivery_id": candidate_delivery_id}
+                            if candidate_delivery_id
+                            else {}
+                        ),
+                    }
+                )
             had_prose = False
+            # Gated prose normally skipped this compatible per-block loop: the
+            # canonical row above already owns the whole reviewed byte string.
+            # If candidate preparation failed after prose streamed, however,
+            # preserve those blocks as explicitly provisional rather than lose
+            # them or reopen them without a badge. Ungated turns retain their
+            # historical per-block interleaving with steps.
+            provisional_metadata = (
+                {
+                    "review_status": "candidate",
+                    "user_truth": "Candidate · provisional / not verified",
+                    "gates_completion": True,
+                    "unverified": True,
+                    "turn_id": str(action_ledger.turn_id),
+                    "execution_id": turn_execution_id,
+                }
+                if gate_requested
+                else None
+            )
             for blk in assistant_visible:
                 if not (blk.get("text") or "").strip():
                     continue
                 had_prose = True
+                if blk.get("persisted"):
+                    continue
                 self.store.add_message(
                     root_frame_id=root_frame_id,
                     branch_id=st.branch_id,
@@ -7726,6 +9364,7 @@ class SessionRunner:
                     content=blk["text"],
                     frame_id=root_frame_id,
                     created_at=blk.get("at"),
+                    metadata=provisional_metadata,
                 )
             # A friendly error, a cancel note, or an empty-turn placeholder is not
             # one of the prose blocks — persist it as a trailing assistant message
@@ -7749,6 +9388,11 @@ class SessionRunner:
             tail = ""
             if status == "failed" and err_text:
                 tail = err_text
+            elif status == "blocked_by_guardian" and not had_prose:
+                tail = (
+                    "Blocked · Guardian. The denied action was not executed; "
+                    "a fresh continuation is required."
+                )
             elif status == "cancelled" and not had_prose:
                 tail = "_已取消。_"
             elif status == "completed" and loop_reason != "submitted" and not had_prose:
@@ -7787,6 +9431,7 @@ class SessionRunner:
                 and status == "completed"
                 and loop_reason == "submitted"
                 and not st.plan
+                and not gate_armed
             ):
                 assistant_text = "\n\n".join(
                     str(blk.get("text") or "") for blk in assistant_visible
@@ -7800,26 +9445,77 @@ class SessionRunner:
                     cell_count_before=cell_count_before,
                     step_count_before=step_count_before,
                 )
-                if st.cancel.is_set():
+                if st.guardian_blocked_reason:
+                    status = "blocked_by_guardian"
+                elif st.cancel.is_set():
                     status = "cancelled"
+            if (
+                (not gated)
+                and self.cfg.roadmap_features.stage3_scientific_review_shadow
+                and status == "completed"
+            ):
+                # Shadow records a judgment after the existing answer is
+                # already delivered. Plan turns are included: Stage 3 removes
+                # the historical skip, but never gates completion.
+                shadow_text = "\n\n".join(
+                    str(blk.get("text") or "") for blk in assistant_visible
+                ).strip()
+                try:
+                    self.scientific_review.shadow_after_turn(
+                        root_frame_id=root_frame_id,
+                        project_id=project_id,
+                        branch_id=str(st.branch_id or root_frame_id),
+                        turn_id=str(action_ledger.turn_id),
+                        execution_id=str(
+                            getattr(execution, "execution_id", "") or turn_request_id
+                        ),
+                        user_request=user_text,
+                        candidate_answer=shadow_text,
+                        structured_completion=(
+                            st.last_engine_completion
+                            or getattr(st.dispatcher, "last_output", None)
+                        ),
+                        artifact_versions_before=artifact_versions_before,
+                        cell_count_before=cell_count_before,
+                        step_count_before=step_count_before,
+                        agent_cfg=llm_cfg,
+                        reviewer_cfg=self._review_llm_cfg(st),
+                        emit=emit,
+                    )
+                except Exception:  # noqa: BLE001 - shadow must not fail the turn
+                    traceback.print_exc()
+            self._finalize_turn_auto_run(
+                st,
+                turn_id=str(action_ledger.turn_id),
+                execution_id=turn_execution_id,
+                status=status,
+                gate_requested=gate_requested,
+            )
             self.store.update_frame(
                 root_frame_id, status=("done" if status == "completed" else status)
             )
-            self.executions.mark_finalizing(
-                execution,
-                reason=(
-                    "persisting completion"
-                    if status == "completed"
-                    else f"persisting {status} result"
-                ),
-            )
-            if status == "failed":
+            if status in {"failed", "blocked_by_guardian"}:
                 # While the lease is still held. A turn that fails inside this
                 # method returns normally -- the handler above caught the
                 # exception and reported it -- so without this the coordinator
                 # saw a clean exit and logged `completed` for a turn every
                 # other surface calls failed.
-                self.executions.mark_failed(execution, reason="the turn failed")
+                self.executions.mark_failed(
+                    execution,
+                    reason=(
+                        "Guardian blocked the turn"
+                        if status == "blocked_by_guardian"
+                        else "the turn failed"
+                    ),
+                )
+            if status == "blocked_by_guardian":
+                # The Event stopped Engine admission inside this turn. Clear
+                # only that compatibility signal now that durable projection is
+                # complete so the execution lease records a failure/blocked
+                # outcome instead of misclassifying Guardian as a user cancel.
+                # An exact user Stop also cancels the ticket itself and therefore
+                # still wins in the coordinator.
+                st.cancel.clear()
             self.recovery.touch(st)
             response = {
                 "status": status,
@@ -7840,6 +9536,14 @@ class SessionRunner:
                 # The stream is the surface the user is watching, and it is the
                 # one that said only "failed".
                 **turn_identity,
+                **(
+                    {
+                        "review_status": gate_metadata.get("review_status"),
+                        "user_truth": gate_metadata.get("user_truth"),
+                    }
+                    if gate_metadata is not None
+                    else {}
+                ),
             }
         )
         return response
@@ -8010,16 +9714,27 @@ class SessionRunner:
             if path.read_bytes() != payload:
                 raise RuntimeError("context Artifact digest collision")
         checksum = hashlib.sha256(payload).hexdigest()
-        record = self.store.save_artifact(
-            path=str(path),
-            filename=filename,
-            content_type="application/json",
-            size_bytes=len(payload),
-            checksum=checksum,
-            frame_id=st.root_frame_id,
-            root_frame_id=st.root_frame_id,
-            project_id=st.project_id,
-        )
+        frozen_context = None
+        if self.stage1_trusted_delivery:
+            frozen_context = self.artifacts.freeze_capture_snapshot(filename, path)
+        try:
+            record = self.store.save_artifact(
+                path=str(path),
+                filename=filename,
+                content_type="application/json",
+                size_bytes=len(payload),
+                checksum=checksum,
+                frame_id=st.root_frame_id,
+                root_frame_id=st.root_frame_id,
+                project_id=st.project_id,
+                snapshot_path=(
+                    str(frozen_context.path) if frozen_context is not None else None
+                ),
+            )
+        except Exception:
+            if frozen_context is not None:
+                frozen_context.path.unlink(missing_ok=True)
+            raise
         self.hub.broadcast(
             st.root_frame_id,
             {
@@ -8177,6 +9892,7 @@ class SessionRunner:
                 events=events,
                 prose_nudge=_submit_nudge_for(llm_cfg),
                 explore_nudge=_EXPLORE_NUDGE,
+                admit_cell=lambda _action: (self.require_standard_profile_readiness()),
                 native_wrapper=lambda call, invoke: (
                     self._invoke_control_with_artifacts(st, call, emit, invoke)
                 ),
@@ -8297,20 +10013,28 @@ class SessionRunner:
 
         def run_cell(kernel):
             binder = getattr(kernel, "bind_action_context", None)
-            if callable(binder):
-                with binder(action_context):
-                    return kernel.execute(
+            receipt_binder = getattr(st.dispatcher, "bind_artifact_receipt_scope", None)
+            with (
+                receipt_binder() if callable(receipt_binder) else nullcontext([])
+            ) as artifact_receipts:
+                if callable(binder):
+                    with binder(action_context):
+                        result = kernel.execute(
+                            code,
+                            origin=origin,
+                            on_chunk=on_chunk,
+                            cell_id=cell_id,
+                        )
+                else:
+                    result = kernel.execute(
                         code,
                         origin=origin,
                         on_chunk=on_chunk,
                         cell_id=cell_id,
                     )
-            return kernel.execute(
-                code,
-                origin=origin,
-                on_chunk=on_chunk,
-                cell_id=cell_id,
-            )
+            if artifact_receipts:
+                result["_openai4s_artifact_receipts"] = list(artifact_receipts)
+            return result
 
         try:
             result = execute_with_watchdog(
@@ -8538,6 +10262,7 @@ class SessionRunner:
             "generation_id": executed.generation_id,
             "figures": executed.capture.figures,
             "files_written": executed.capture.files_written,
+            "files_read": executed.capture.files_read,
             "saved": executed.capture.artifacts,
             # Whether a kernel really ran the cell (False for safety-refused /
             # runtime-unavailable soft errors, whose result dict is identical
@@ -8631,6 +10356,11 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> dict:
+        # Executable plans are the scientific workflow surface: unlike an
+        # ordinary turn, their contract requires Cells, deliverables and a
+        # structured submission. Refuse before a draft can be stranded in the
+        # executing state.
+        self.require_standard_profile_readiness()
         return self.plans.run_execution(
             root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
         )
@@ -8652,6 +10382,7 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> "MessageJob":
+        self.require_standard_profile_readiness()
         return self._spawn_job(
             root_frame_id,
             lambda: self.run_plan_execution(
@@ -8689,6 +10420,7 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> dict:
+        self.require_standard_profile_readiness()
         return self.plans.resume_execution(
             root_frame_id, project_id, model, claimed_plan_id=claimed_plan_id
         )
@@ -8701,6 +10433,7 @@ class SessionRunner:
         *,
         claimed_plan_id: str | None = None,
     ) -> "MessageJob":
+        self.require_standard_profile_readiness()
         return self._spawn_job(
             root_frame_id,
             lambda: self.run_plan_resume(
@@ -9281,7 +11014,7 @@ class SessionRunner:
                     "error": r.get("error"),
                     "figures": info["figures"],
                     "files_written": info["files_written"],
-                    "files_read": [],
+                    "files_read": info.get("files_read") or [],
                 },
             }
 
@@ -9765,6 +11498,7 @@ def _environment_snapshot() -> dict:
 #: retries them all the same way is wrong about three.
 _DECISION_REFUSAL_STATUS = {
     "decision_id_required": 400,
+    "invalid_allow": 400,
     # Not 403. A decision for another frame and one that never existed answer
     # identically, or the refusal is an existence oracle.
     "decision_not_found": 404,
@@ -9772,6 +11506,13 @@ _DECISION_REFUSAL_STATUS = {
     "decision_already_resolved": 409,
     "decision_immutable": 409,
     "decision_expired": 410,
+    "decision_integrity_failure": 409,
+    # 202, not an error: the decision was accepted and its durable commit is
+    # still in flight. The request thread bounds its own wait rather than
+    # parking forever on the tool thread, so this is "ask again", not "failed"
+    # -- answering 4xx/5xx here would invite a client to re-submit a decision
+    # that is about to commit.
+    "decision_resolving": 202,
     # The approval is recorded. `output_committed` on the body is what stops the
     # UI offering a retry that would submit it twice.
     "decision_continuation_failed": 500,
@@ -9970,11 +11711,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         if callable(guard):
             guard(root_frame_id, operation)
             return
-        if store.get_setting(session_import_quarantine_key(root_frame_id)):
+        if store.get_setting(session_import_quarantine_key(root_frame_id)) is not None:
             raise GatewayError(
                 423,
                 "imported Session is quarantined and view-only; use the "
                 "confirmed restart_fresh recovery action before " + operation,
+            )
+        if store.get_setting(revert_recovery_setting_key(root_frame_id)) is not None:
+            raise GatewayError(
+                423,
+                "Session workspace revert requires recovery and is view-only "
+                "before " + operation,
             )
 
     from openai4s.jobs import JobManager
@@ -10189,6 +11936,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return None
             return identity.user_id
 
+        def _team_require_session_control(self, root_frame_id: str) -> None:
+            """Keep project read visibility from becoming write authority."""
+
+            identity = getattr(self, "_team_identity", None)
+            if _team_auth is None or identity is None:
+                return
+            if not team_policy.may_control_session(store, identity, root_frame_id):
+                raise GatewayError(
+                    403,
+                    "only the session owner or an admin may modify it",
+                    "owner_only",
+                )
+
         def _team_identity_dict(self) -> dict | None:
             identity = getattr(self, "_team_identity", None)
             if identity is None:
@@ -10351,7 +12111,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except Exception:  # noqa: BLE001 — undecidable is refused
                 raise GatewayError(404, "unknown share") from None
             if row is None:
-                return  # a share that does not exist answers as it always did
+                # Keep a guessed id indistinguishable from a real share whose
+                # Session the caller cannot see.  The revoke service is
+                # deliberately idempotent and otherwise answers 200 for a
+                # missing row, which turns this guard into an existence oracle.
+                raise GatewayError(404, "unknown share")
             root = str(row.get("root_frame_id") or "")
             if identity.is_admin:
                 if root:
@@ -10359,6 +12123,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if not team_policy.may_use_share(store, identity, row):
                 raise GatewayError(404, "unknown share")
+            if method in _MUTATING_METHODS:
+                self._team_require_session_control(root)
 
         def _team_guard_instance_config(self, method: str, sub: str) -> None:
             """Refuse a member's reach into instance-global surfaces (M4).
@@ -10430,24 +12196,24 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             identity = getattr(self, "_team_identity", None)
             if _team_auth is None or identity is None:
                 return
-            if identity.is_admin:
-                if method == "GET":
-                    m = _TEAM_SCOPE_FRAME.fullmatch(sub)
-                    if m:
-                        frame = store.get_frame(m.group(1))
-                        if frame is not None:
-                            self._team_audit_admin_private_read(
-                                str(frame.get("root_frame_id") or m.group(1))
-                            )
-                return
-            user = self._team_identity_dict()
             m = _TEAM_SCOPE_FRAME.fullmatch(sub)
             if m:
                 frame = store.get_frame(m.group(1))
-                if frame is not None:
-                    root = frame.get("root_frame_id") or m.group(1)
-                    if not store.team.session_visible_to(root, user):
-                        raise GatewayError(404, "session not found")
+                if frame is None:
+                    # Several compatible handlers intentionally no-op on a
+                    # missing frame.  In team mode that 200 differed from the
+                    # 404 for an existing but invisible frame and disclosed
+                    # whether a guessed id existed.
+                    raise GatewayError(404, "session not found")
+                root = frame.get("root_frame_id") or m.group(1)
+                if identity.is_admin:
+                    if method == "GET":
+                        self._team_audit_admin_private_read(str(root))
+                    return
+                if not store.team.session_visible_to(root, self._team_identity_dict()):
+                    raise GatewayError(404, "session not found")
+                if team_policy.is_session_control_mutation(method, sub):
+                    self._team_require_session_control(str(root))
                 return
             m = _TEAM_SCOPE_ARTIFACT.fullmatch(sub)
             if m:
@@ -10455,18 +12221,39 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     artifact = store.get_artifact(unquote(m.group(1)))
                 except Exception:  # noqa: BLE001 - unknown ids fall through
                     artifact = None
-                if artifact is not None:
-                    # Resolved through the same helper the byte guard uses,
-                    # and failing closed the same way. Reading `root_frame_id`
-                    # raw and testing `if root and ...` meant a NULL root --
-                    # which `POST /uploads` with no `frame_id` produces, and
-                    # the column permits -- short-circuited the `and` and ran
-                    # no check at all. The metadata and destructive verbs
-                    # (/edit, /rename, DELETE, /versions, /lineage) never
-                    # reach `_serve_artifact`, so this is their only guard.
-                    root = self._team_root_of_artifact_meta(artifact)
-                    if root is None or not store.team.session_visible_to(root, user):
-                        raise GatewayError(404, "artifact not found")
+                if artifact is None:
+                    # The byte route also accepts an unambiguous filename and
+                    # the reserved ``versions/<id>`` namespace.  Those GETs
+                    # must reach `_serve_artifact`, whose authoritative byte
+                    # guard resolves their metadata and returns the same 404.
+                    artifact_tail = sub[len("/artifacts/") :]
+                    direct_byte_get = method in ("GET", "HEAD") and (
+                        "/" not in artifact_tail
+                        or (
+                            artifact_tail.startswith("versions/")
+                            and "/" not in artifact_tail[len("versions/") :]
+                        )
+                    )
+                    if direct_byte_get:
+                        return
+                    raise GatewayError(404, "artifact not found")
+                # Resolved through the same helper the byte guard uses,
+                # and failing closed the same way. Reading `root_frame_id`
+                # raw and testing `if root and ...` meant a NULL root --
+                # which `POST /uploads` with no `frame_id` produces, and
+                # the column permits -- short-circuited the `and` and ran
+                # no check at all. The metadata and destructive verbs
+                # (/edit, /rename, DELETE, /versions, /lineage) never
+                # reach `_serve_artifact`, so this is their only guard.
+                root = self._team_root_of_artifact_meta(artifact)
+                if identity.is_admin:
+                    return
+                if root is None or not store.team.session_visible_to(
+                    root, self._team_identity_dict()
+                ):
+                    raise GatewayError(404, "artifact not found")
+                if method in _MUTATING_METHODS:
+                    self._team_require_session_control(root)
 
         def _team_guard_owned_resource(self, method: str, sub: str) -> None:
             """Refuse an id-addressed resource whose owner this caller may not
@@ -10486,7 +12273,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             this shape is a row here rather than a new guard.
             """
             identity = getattr(self, "_team_identity", None)
-            if _team_auth is None or identity is None or identity.is_admin:
+            if _team_auth is None or identity is None:
                 return
             path = sub.split("?")[0]
             m = re.fullmatch(r"/annotations/([^/]+)", path)
@@ -10498,10 +12285,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 except Exception:  # noqa: BLE001
                     row = None
                 if row is None:
-                    return  # unknown id: the handler's own 404 says so
+                    # DELETE is idempotent below and would otherwise answer
+                    # 200 for a guessed id while an invisible real id gets 404.
+                    raise GatewayError(404, "annotation not found")
+                if identity.is_admin:
+                    return
                 root = str(row.get("root_frame_id") or "")
                 if not team_policy.may_use_session(store, identity, root):
                     raise GatewayError(404, "annotation not found")
+                self._team_require_session_control(root)
+                return
+            if identity.is_admin:
                 return
             for pattern, resolve in (
                 (r"/notes/([^/]+)", store.project_of_note),
@@ -11028,13 +12822,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     return
                 if method == "GET" and path.startswith("/preview/"):
-                    self._serve_artifact(
-                        unquote(path[len("/preview/") :]), force_html=True
-                    )
+                    self._serve_artifact(path[len("/preview/") :], force_html=True)
                     return
                 if method == "GET" and path == "/ketcher":
                     self._send(
-                        200, _KETCHER_HTML.encode("utf-8"), "text/html; charset=utf-8"
+                        200,
+                        ketcher_document(cfg, parse_qs(parsed.query)),
+                        "text/html; charset=utf-8",
                     )
                     return
                 # unknown non-API GET -> SPA shell (deep-linking)
@@ -11162,9 +12956,49 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- artifact bytes --------------------------------------------
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
-            path = store.resolve_artifact_path(ident)
+            # Canonical trusted-delivery URLs live below the reserved
+            # ``versions/`` sub-path.  They must resolve one exact version or
+            # 404; the compatible Artifact-id/filename fallbacks below are
+            # deliberately unreachable from this branch.
+            exact_version = ident.startswith("versions/")
+            encoded_ident = ident[len("versions/") :] if exact_version else ident
+            # Decode exactly once.  ``/preview/`` used to decode before calling
+            # here as well, so a literal ``%2F`` in an imported identifier was
+            # turned into ``/`` and selected the wrong object (or a 404).
+            decoded_ident = unquote(encoded_ident)
+            if exact_version and (
+                not decoded_ident
+                or "/" in encoded_ident
+                or decoded_ident in {".", ".."}
+            ):
+                self._json({"error": "artifact not found"}, 404)
+                return
+            if exact_version and getattr(runner, "stage1_trusted_delivery", False):
+                meta = store.version_meta(decoded_ident)
+                delivery_service = getattr(runner, "completion_delivery", None)
+                if not isinstance(meta, dict) or delivery_service is None:
+                    self._json({"error": "artifact not found"}, 404)
+                    return
+                self._team_guard_served_artifact(meta)
+                try:
+                    body = delivery_service.read_verified_snapshot(meta)
+                except DeliveryValidationError as error:
+                    record_diagnostic(error, surface="artifact:exact_version_read")
+                    self._json({"error": "artifact not found"}, 404)
+                    return
+                ctype = meta.get("content_type") or _guess_ctype(
+                    str(meta.get("filename") or decoded_ident)
+                )
+                if force_html:
+                    ctype = "text/html; charset=utf-8"
+                self._send(200, body, ctype)
+                return
+            path = store.resolve_artifact_path(decoded_ident)
             meta = None
             if path is None:
+                if exact_version:
+                    self._json({"error": "artifact not found"}, 404)
+                    return
                 # Only when the name is unambiguous. This used to take the most
                 # recently created artifact with that filename *anywhere*, so
                 # `/artifacts/report.pdf` served whichever project last made a
@@ -11172,13 +13006,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # with a straight face. The UI never sends a filename here (it
                 # always sends `a.id`), so nothing first-party relied on the
                 # guess.
-                meta = store.artifact_by_unique_filename(unquote(ident))
+                meta = store.artifact_by_unique_filename(decoded_ident)
                 if meta:
                     path = meta.get("path")
             else:
                 # ident may be an artifact_id OR a version_id — fall back to the
                 # version row so a historical version serves its OWN content_type
-                meta = store.get_artifact(ident) or store.version_meta(ident)
+                meta = (
+                    store.version_meta(decoded_ident)
+                    if exact_version
+                    else store.get_artifact(decoded_ident)
+                    or store.version_meta(decoded_ident)
+                )
+                if exact_version and not meta:
+                    self._json({"error": "artifact not found"}, 404)
+                    return
             if not path or not Path(path).is_file():
                 self._json({"error": "artifact not found"}, 404)
                 return
@@ -11315,6 +13157,18 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     return
                 identity = getattr(self, "_team_identity", None)
+                owner = store.team.session_owner(m.group(1))
+                if (
+                    identity is None
+                    or owner is None
+                    or str(owner.get("user_id") or "") != identity.user_id
+                ):
+                    # Visibility is the intentional D4 exception to the
+                    # owner/admin mutation rule: only the owner decides whether
+                    # their Session becomes project-readable.  Authorize before
+                    # parsing JSON so malformed input cannot distinguish a real
+                    # Session owned by somebody else from an unknown id.
+                    raise GatewayError(404, "session not found")
                 visibility = str(self._body().get("visibility") or "")
                 if visibility not in ("project", "private"):
                     self._json(
@@ -11479,8 +13333,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 delete_session = method == "DELETE" and sub == (
                     f"/frames/{frame_mutation.group(1)}"
                 )
-                confirmed_fresh_restart = bool(
-                    re.fullmatch(r"/frames/[^/]+/recovery/actions/restart_fresh", sub)
+                recovery_action = bool(
+                    re.fullmatch(
+                        r"/frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh)",
+                        sub,
+                    )
                     and method == "POST"
                 )
                 read_only_preview = bool(
@@ -11497,13 +13354,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 if not (
                     delete_session
-                    or confirmed_fresh_restart
+                    or recovery_action
                     or read_only_preview
                     or share_publish
                 ):
                     _require_session_writable(
                         frame_mutation.group(1), "mutating the Session"
                     )
+            if auto_mode_routes.handle(self, method, sub, q, runner):
+                return
+            if artifact_workbench_routes.handle(self, method, sub, q, runner):
+                return
             # ---- identity / meta (no-auth local mode) ----
             if sub == "/me":
                 self._json(
@@ -12155,6 +14016,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                                 if _message_failure(mm)
                                 else {}
                             ),
+                            **(
+                                {"review_status": _message_review_gate(mm)}
+                                if _message_review_gate(mm)
+                                else {}
+                            ),
+                            **_message_candidate_identity(mm),
                         }
                         for mm in msgs
                     ]
@@ -12565,6 +14432,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 b = self._body()
                 from openai4s.permissions import broker
 
+                if not isinstance(b.get("allow"), bool):
+                    self._json(
+                        {
+                            "ok": False,
+                            "error": "allow must be a JSON boolean",
+                            "code": "invalid_allow",
+                        },
+                        400,
+                    )
+                    return
                 frame = store.get_frame(m.group(1))
                 if frame is None:
                     self._json({"ok": False, "error": "session not found"}, 404)
@@ -12599,7 +14476,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                 resolution = broker().resolve_result(
                     b.get("decision_id"),
-                    allow=bool(b.get("allow")),
+                    allow=b["allow"],
                     scope=_decision_scope,
                     pattern=b.get("pattern"),
                     message=b.get("message"),
@@ -12681,10 +14558,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "project": fr.get("project_id") or "default",
                         "global": "",
                     }.get(scope, "")
-                if scope == "conversation" and scope_id:
-                    _require_session_writable(
-                        str(scope_id), "changing Session permissions"
-                    )
                 # A standing rule is authorization for *future* actions, and
                 # a global one is authorization for everybody's. In team
                 # mode a member may write rules for what they can reach --
@@ -12693,6 +14566,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # unqualified POST from a member would otherwise plant an
                 # "allow" that every other user's agent then honours.
                 _identity = getattr(self, "_team_identity", None)
+                if (
+                    _team_auth is not None
+                    and scope == "conversation"
+                    and scope_id
+                    and not team_policy.may_use_session(store, _identity, str(scope_id))
+                ):
+                    raise GatewayError(404, "session not found")
+                if scope == "conversation" and scope_id:
+                    self._team_require_session_control(str(scope_id))
                 if (
                     _team_auth is not None
                     and not team_policy.may_write_permission_rule(
@@ -12714,6 +14596,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             if scope == "project"
                             else "session not found"
                         ),
+                    )
+                # Import/revert state is itself protected Session metadata.
+                # Only report its writable barrier after visibility and control
+                # authorization have succeeded; otherwise a guessed private id
+                # becomes a 423 existence oracle.
+                if scope == "conversation" and scope_id:
+                    _require_session_writable(
+                        str(scope_id), "changing Session permissions"
                     )
                 rid = store.set_permission_rule(
                     scope=scope,
@@ -12738,11 +14628,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             m = re.fullmatch(r"/permissions/([^/]+)", sub)
             if m and method == "DELETE":
                 rule = store.get_permission_rule(m.group(1))
-                if rule and rule.get("scope") == "conversation":
-                    _require_session_writable(
-                        str(rule.get("scope_id") or ""),
-                        "deleting Session permissions",
-                    )
                 # The same scope rule POST applies, on the verb that destroys
                 # rather than creates. Guarding only the create left the
                 # asymmetry open: a member cannot write a global rule, but
@@ -12753,9 +14638,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # deny as an absolute veto, so deleting a global deny is how
                 # a standing refusal becomes an allow for everyone.
                 _identity = getattr(self, "_team_identity", None)
+                if rule is None and _team_auth is not None:
+                    raise GatewayError(404, "permission rule not found")
                 if rule and _team_auth is not None:
                     _scope = str(rule.get("scope") or "")
                     _scope_id = str(rule.get("scope_id") or "")
+                    if _scope == "conversation":
+                        if not team_policy.may_use_session(store, _identity, _scope_id):
+                            raise GatewayError(404, "permission rule not found")
+                        self._team_require_session_control(_scope_id)
                     if not team_policy.may_write_permission_rule(
                         store, _identity, _scope, _scope_id
                     ):
@@ -12767,12 +14658,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             )
                         raise GatewayError(
                             404,
-                            (
-                                "project not found"
-                                if _scope == "project"
-                                else "session not found"
-                            ),
+                            "permission rule not found",
                         )
+                if rule and rule.get("scope") == "conversation":
+                    _require_session_writable(
+                        str(rule.get("scope_id") or ""),
+                        "deleting Session permissions",
+                    )
                 store.delete_permission_rule(m.group(1))
                 self._json({"ok": True})
                 return
@@ -12801,6 +14693,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 f = store.get_frame(fid) or {}
                 pid = f.get("project_id") or "default"
                 model = b.get("model")
+                if action in {"approve", "resume"}:
+                    # The readiness refusal must precede the draft/paused CAS;
+                    # otherwise a known-missing runtime strands the plan in
+                    # `executing` before its first Cell can even start.
+                    runner.require_standard_profile_readiness()
                 if action == "approve":
                     # Claimed here, synchronously, for the same reason `resume`
                     # below is: this route answers 202 and then runs the plan on
@@ -12954,6 +14851,31 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # not this route's information to give out.
                     self._json({"error": "artifact not found"}, 404)
                     return
+                kind = "image"
+                locator = None
+                if official_workbench_enabled(cfg):
+                    from openai4s.server.artifact_workbench import (
+                        WorkbenchError,
+                        normalize_locator,
+                    )
+
+                    try:
+                        kind = str(b.get("kind") or "image").lower()
+                        locator_obj = normalize_locator(kind, b.get("locator") or b)
+                    except WorkbenchError as error:
+                        self._json(
+                            {"error": error.message, "code": error.code}, error.status
+                        )
+                        return
+                    locator = json.dumps(
+                        locator_obj, ensure_ascii=False, sort_keys=True
+                    )
+                    if kind == "image":
+                        b = {
+                            **b,
+                            "rel_x": locator_obj.get("rel_x", b.get("rel_x", 0)),
+                            "rel_y": locator_obj.get("rel_y", b.get("rel_y", 0)),
+                        }
                 anno = store.add_annotation(
                     root_frame_id=fid,
                     artifact_id=str(art_id),
@@ -12963,6 +14885,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     body=body_text,
                     version_id=bound.get("latest_version_id"),
                     checksum=bound.get("checksum"),
+                    kind=kind,
+                    locator=locator,
                 )
                 self._json({"annotation": _annotation_json(anno)}, 201)
                 return
@@ -13081,7 +15005,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 if cell is None:
                     raise GatewayError(404, "unknown cell")
-                metadata = runner.artifacts.promote_cell(
+                metadata = runner.promote_cell_artifact(
                     PromotionTarget(
                         root_frame_id=fid,
                         project_id=str(frame.get("project_id") or ""),
@@ -13436,7 +15360,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/session/export", sub)
             if m and method == "GET":
-                exported = runner.session_domain.session_export(m.group(1))
+                fid = m.group(1)
+                frame = store.get_frame(fid) or {}
+                exported = runner.export_session_package(
+                    fid,
+                    str(frame.get("project_id") or "default"),
+                )
                 self._send(
                     200,
                     exported["data"],
@@ -13461,6 +15390,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # ---- artifacts ----
             if sub == "/renderers" and method == "GET":
                 self._json({"renderers": runner.session_domain.renderer_catalog()})
+                return
+            m = re.fullmatch(r"/artifacts/versions/([^/]+)", sub)
+            if m and method == "GET":
+                # A distinct route identity is intentional: trusted completion
+                # links promise exact-version lookup with no Artifact-id or
+                # filename fallback.  Keep the byte mechanics in the shared
+                # helper, but let the response-contract inventory freeze this
+                # stronger namespace independently from the legacy catch-all.
+                self._serve_artifact(f"versions/{m.group(1)}")
                 return
             m = re.fullmatch(r"/artifacts/([^/]+)/renderer", sub)
             if m and method == "GET":
@@ -13991,8 +15929,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     safe_query = datapro.redact_secret(query, secret)
                     if current_secret and current_secret != secret:
                         safe_query = datapro.redact_secret(safe_query, current_secret)
-                    receipt = datapro.index_successful_search(
-                        store,
+                    receipt, artifact = runner.save_datapro_search_result(
                         query=safe_query,
                         result=result,
                         frame_id=frame_id,
@@ -14001,50 +15938,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                     if receipt is not None:
                         result = {**result, "index": receipt}
-                    # Only a strict code-0 response is worth saving.  The upload
-                    # used to be unconditional while the index was gated, so a
-                    # transport-level success carrying e.g. code 4011 still wrote
-                    # a `datapro-search-*.json` into the workspace and broadcast
-                    # `artifact_created` -- the UI then rendered "已保存" beside
-                    # the error text, and every retry left another dead file.
-                    if datapro.is_successful_search(result):
-                        artifact = runner.artifacts.upload(
-                            datapro.result_artifact_payload(
-                                query=safe_query,
-                                result=result,
-                                frame_id=frame_id,
-                            )
-                        )
-                    # `receipt` can now be an explicit incomplete receipt with no
-                    # batch_id (the index hit a capacity ceiling), so link only
-                    # a batch that actually exists.
-                    if (
-                        isinstance(receipt, dict)
-                        and receipt.get("batch_id")
-                        and artifact
-                        and artifact.get("id")
-                    ):
-                        store.link_datapro_index_artifact(
-                            receipt["batch_id"], artifact["id"]
-                        )
                 except Exception as error:  # noqa: BLE001
-                    # The product route promises that an available result is
-                    # both indexed and saved. Compensate either half if upload
-                    # or linking fails, so a 502 cannot leave a palette-visible
-                    # ghost batch (or an orphaned result Artifact).
-                    artifact_id = (
-                        artifact.get("id") if isinstance(artifact, dict) else None
-                    )
-                    if artifact_id:
-                        try:
-                            runner.artifacts.delete(artifact_id)
-                        except Exception:  # noqa: BLE001 - preserve root failure
-                            pass
-                    if isinstance(receipt, dict) and receipt.get("batch_id"):
-                        try:
-                            store.delete_datapro_index_batch(receipt["batch_id"])
-                        except Exception:  # noqa: BLE001 - preserve root failure
-                            pass
                     safe, status = public_exception(
                         error,
                         surface="datapro:search",
@@ -14759,7 +16653,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         "packages": report,
                         "preinstall": pstat,
                     }
-                ]
+                ],
+                "standard_profile_readiness": (runner.standard_profile_readiness()),
             }
 
         def _exec_log(self, root_frame_id: str) -> dict:
@@ -14778,7 +16673,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(artifact["root_frame_id"]), "editing an Artifact"
                     )
-                return runner.artifacts.edit(
+                return runner.edit_artifact(
                     artifact_id,
                     content,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
@@ -14803,7 +16698,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(artifact["root_frame_id"]), "renaming an Artifact"
                     )
-                return runner.artifacts.rename(
+                return runner.rename_artifact(
                     artifact_id,
                     filename,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
@@ -14837,11 +16732,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         # 404, like every other cross-session refusal here:
                         # which sessions exist is itself protected.
                         raise GatewayError(404, "session not found")
+                    self._team_require_session_control(root)
                     _require_session_writable(
                         root,
                         "uploading a Session Artifact",
                     )
-                return runner.artifacts.upload(
+                return runner.upload_artifact(
                     b,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
                         root_frame_id, event
@@ -14857,7 +16753,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     _require_session_writable(
                         str(artifact["root_frame_id"]), "deleting an Artifact"
                     )
-                return runner.artifacts.delete(
+                return runner.delete_artifact(
                     artifact_id,
                     broadcast=lambda root_frame_id, event: hub.broadcast(
                         root_frame_id, event
@@ -15158,6 +17054,53 @@ def _message_failure(message: dict) -> dict | None:
     return out or None
 
 
+def _message_review_gate(message: dict) -> dict | None:
+    """Project the Stage 4 completion-gate stamp from message metadata."""
+
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    status = raw.get("review_status")
+    if status not in {
+        "candidate",
+        "verified",
+        "completed_with_issues",
+        "review_unavailable",
+    }:
+        return None
+    out: dict = {"status": status, "unverified": status != "verified"}
+    truth = raw.get("user_truth")
+    if isinstance(truth, str) and truth:
+        out["user_truth"] = truth[:240]
+    return out
+
+
+def _message_candidate_identity(message: dict) -> dict:
+    """Project only the public turn identity used to reconcile WS replay."""
+
+    if _message_review_gate(message) is None:
+        return {}
+    raw = message.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    projected: dict[str, str] = {}
+    for key in ("turn_id", "execution_id"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            projected[key] = value[:256]
+    return projected
+
+
 def _message_artifact_refs(message: dict) -> list[dict]:
     """The structured references stored on one message, projected safely.
 
@@ -15250,6 +17193,12 @@ def _annotation_json(a: dict | None) -> dict | None:
         # The version this pin was taken against, so a client can tell a pin on
         # the figure now on screen from one taken before the agent re-plotted.
         "version_id": a.get("version_id"),
+        "kind": a.get("kind") or "image",
+        "locator": (
+            json.loads(a["locator"])
+            if isinstance(a.get("locator"), str) and a.get("locator")
+            else a.get("locator")
+        ),
         "created_at": _iso(a.get("created_at")),
         "updated_at": _iso(a.get("updated_at") or a.get("created_at")),
     }
@@ -15375,6 +17324,16 @@ def _format_annotations_block(annos: list) -> str:
     annos = [a for a in (annos or []) if a]
     if not annos:
         return ""
+    located = [
+        item for item in annos if str(item.get("kind") or "image") in {"pdf", "html"}
+    ]
+    images = [item for item in annos if item not in located]
+    parts: list[str] = []
+    if located:
+        parts.append(format_located_annotations(located))
+    if not images:
+        return "\n\n".join(parts)
+    annos = images
 
     def _zone(x: float, y: float) -> str:
         col = "左" if x < 0.34 else ("中" if x < 0.67 else "右")
@@ -15410,13 +17369,8 @@ def _format_annotations_block(annos: list) -> str:
                 f"    [{a.get('number')}] (x={x * 100:.0f}%, y={y * 100:.0f}%，"
                 f"{_zone(x, y)}区)：{a.get('body', '').strip()}"
             )
-    return "\n".join(lines)
-
-
-_KETCHER_HTML = """<!doctype html><html><head><meta charset="utf-8">
-<title>Ketcher</title></head><body style="font:14px system-ui;padding:2rem;color:#444">
-<p>Chemical structure editor placeholder. Bundle Ketcher assets here to enable
-in-browser structure drawing.</p></body></html>"""
+    parts.append("\n".join(lines))
+    return "\n\n".join(parts)
 
 
 # --------------------------------------------------------------------------- #
@@ -15464,20 +17418,46 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     # nobody was watching. The UI surfaces the plan (Customize → Compute) and
     # `openai4s setup` applies it.
     try:
-        from openai4s.kernel import preinstall
+        if cfg.roadmap_features.stage1_trusted_delivery:
+            from openai4s.kernel.readiness import standard_profile_readiness
 
-        plan = preinstall.core_plan()
-        if plan["missing"]:
+            readiness = standard_profile_readiness(enabled=True)
+            if readiness.get("ready") is True:
+                print(
+                    "[openai4s] standard scientific profile is ready "
+                    "(local package metadata verified; no network or mutation).",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[openai4s] " + SessionRunner._readiness_failure_message(readiness),
+                    file=sys.stderr,
+                )
+        else:
+            from openai4s.kernel import preinstall
+
+            plan = preinstall.core_plan()
+            if plan["missing"]:
+                print(
+                    f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
+                    f"installed: {', '.join(plan['missing'][:6])}"
+                    f"{' …' if len(plan['missing']) > 6 else ''}\n"
+                    f"[openai4s] startup does not install packages. Run "
+                    f"`openai4s setup`, or install from Customize → Compute.",
+                    file=sys.stderr,
+                )
+    except Exception as error:  # noqa: BLE001 - diagnostics must never block startup
+        # Readiness failures are a task-admission boundary, not a liveness
+        # boundary. Keep the daemon available so the UI can display/repair it.
+        if cfg.roadmap_features.stage1_trusted_delivery:
+            record_diagnostic(error, surface="startup:standard_readiness")
             print(
-                f"[openai4s] {len(plan['missing'])} scientific package(s) are not "
-                f"installed: {', '.join(plan['missing'][:6])}"
-                f"{' …' if len(plan['missing']) > 6 else ''}\n"
-                f"[openai4s] startup does not install packages. Run "
-                f"`openai4s setup`, or install from Customize → Compute.",
+                "[openai4s] standard scientific environment readiness is "
+                "unavailable; Code Cell admission will fail closed.",
                 file=sys.stderr,
             )
-    except Exception:  # noqa: BLE001 - diagnostics must never block startup
-        traceback.print_exc()
+        else:
+            traceback.print_exc()
     hub = WSHub()
     runner = SessionRunner(cfg, hub)
     # Seed the security-first permission defaults once (idempotent).

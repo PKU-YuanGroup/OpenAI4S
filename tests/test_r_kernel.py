@@ -11,6 +11,7 @@ integration tests at the bottom run only when an Rscript is resolvable.
 
 import os
 import stat
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -244,6 +245,48 @@ def test_spawn_without_any_r_raises(monkeypatch):
 # --- real R integration (skipped when no R is installed) ----------------------
 
 _REAL_R = resolve_r_interpreter()
+
+
+@pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")
+def test_real_r_file_reads_are_executed_observations_without_global_masks(tmp_path):
+    """The R observer sees calls that ran, never paths merely in source.
+
+    This exercises the observer without the fd-3/fd-4 transport because some
+    macOS R builds refuse to reopen a pipe through ``/dev/fd``.  The ordinary
+    real-worker tests below cover that transport independently.
+    """
+
+    source_literal = str(_R_WORKER).replace("\\", "\\\\").replace('"', '\\"')
+    tmp_literal = str(tmp_path).replace("\\", "\\\\").replace('"', '\\"')
+    script = f"""
+source_lines <- readLines("{source_literal}", warn = FALSE)
+cut <- grep("# --- one cell", source_lines, fixed = TRUE)[1] - 1L
+setwd("{tmp_literal}")
+eval(parse(text = source_lines[seq_len(cut)]), envir = .GlobalEnv)
+.oai4s_lineage$install()
+dir.create("nested")
+writeLines(c("value", "7"), "nested/live.csv")
+writeLines(c("value", "99"), "dead.csv")
+.oai4s_lineage$begin()
+if (FALSE) read.csv("dead.csv")
+table_value <- utils::read.csv(file.path("nested", "live.csv"))
+write.csv(table_value, "write-only.csv", row.names = FALSE)
+observed <- .oai4s_lineage$finish()
+cat(paste(observed, collapse = "|"), "\\n", sep = "")
+cat(table_value$value[[1]], "\\n", sep = "")
+cat(exists("read.csv", envir = .GlobalEnv, inherits = FALSE), "\\n", sep = "")
+"""
+    completed = subprocess.run(
+        [_REAL_R, "--vanilla", "-e", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == ["nested/live.csv", "7", "FALSE"]
+    assert (tmp_path / "write-only.csv").is_file()
 
 
 @pytest.mark.skipif(_REAL_R is None, reason="no Rscript resolvable on this machine")

@@ -12,6 +12,8 @@
 | --- | --- |
 | `architecture.md` | 当前的双循环架构与 Host API 概览，也是贡献者使用的兼容入口。 |
 | `ark-agent-plan-9.9.png` | 源码仓库根 README 展示的火山方舟 Agent 套餐价格截图。 |
+| `auto-mode.md` | 冻结的 Stage 0 Auto Mode 产品契约与当前 Stage 1–12 实现契约：无矛盾预设与优先级、有限预算上限、候选/终态真值、持久证据、恢复、投影规则，以及各阶段互相独立且默认关闭的渐进开启边界。 |
+| `auto-mode-stage12-evidence.md` | Stage 12 证据表：Stage 0–12 对应的集成实现、定向验证、回滚条件与可复现的完整门禁。 |
 | `backend-extension-guide.md` | 当前的扩展接缝：新增一个 Tool、Host 服务、存储仓储、provider、Skill 或 Web 会话服务时，各自该接在哪里。 |
 | `backend-refactor-architecture.md` | backend refactor 的历史设计记录。它记的是当时定下的方案，不能用来证明当前已经端到端实现。 |
 | `compute.md` | 远程计算、BYOC provider 与 `host.fold` 的行为和限制。 |
@@ -23,7 +25,7 @@
 | `plan-corecoder-refactor.md` | 内部的历史重构计划；不进入公开网站的内容。 |
 | `refactor-plan.md` | 为保留决策上下文而留存的历史迁移计划。 |
 | `release-validation.md` | 发布要过的几道关卡：本地关卡、证据包、被强制的契约、macOS app image、Linux app bundle、Windows 包、可信发布、draft-first 流水线，以及有意留在 CI 之外的外部关卡。它还把 macOS 的签名状态收敛成一个具名取值，由证据而不是由配置算出，并且直说本版本里 `verified` 不可达——不需要任何读者从「没有声明」里去推断一条限制。 |
-| `science-connectors.md` | `science_search` 背后的七个公开科学数据库：各自的接口、学科范围，以及归一化后返回的记录字段。 |
+| `science-connectors.md` | `science_search` 背后默认的七个公开科学数据库，以及三个由 Stage 10 开关管控的数据源：各自的接口、学科范围，以及归一化后返回的记录字段。 |
 | `security.md` | 威胁模型、信任边界、各层防护与已知的覆盖缺口。 |
 | `skills.md` | 内置与用户 Skill 的格式、加载方式、sidecar 与生命周期。 |
 | `startup-guide.md` | 双语 macOS `.dmg` 上手全流程：安装、Gatekeeper、配置模型，以及在 UI 里用一个 Agent Plan Key 授权豆包搜索；Tavily/免密钥搜索保留为备用。 |

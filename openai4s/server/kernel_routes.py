@@ -15,8 +15,9 @@ by parsing the handler source.
 
 Nothing else here was rewritten, and three things that look like oversights are
 not: the `store.get_frame(fid) or {}` fallback on the ten permissive routes, the
-duplicate `store.get_frame` in `kernel/variables`, and the six `notebook_repl`
-gates with `install` deliberately left ungated.
+duplicate `store.get_frame` in `kernel/variables`, and the six live-Notebook
+gates (`official_notebook_enabled`, covering the Stage 8 flag and the older
+`notebook_repl` override) with `install` deliberately left ungated.
 
 TWO POSITION DEPENDENCIES, written down because a 2,100-line if-chain is
 exactly where this kind of thing hides:
@@ -42,6 +43,8 @@ from __future__ import annotations
 import os
 import re
 from typing import Any
+
+from openai4s.server.notebook_lineage import official_notebook_enabled
 
 from . import contract, errors, team_policy
 
@@ -200,7 +203,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _EXECUTE.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -209,6 +212,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             )
             return True
         fid = m.group(1)
+        _require_session_control(self, store, fid)
         f = store.get_frame(fid) or {}
         pid = f.get("project_id") or "default"
         body = self._body()
@@ -263,7 +267,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _RESTART.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -279,7 +283,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _STOP.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -294,7 +298,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _INTERRUPT.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -328,7 +332,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _START.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -409,7 +413,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _ENV.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"

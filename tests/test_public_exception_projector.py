@@ -545,12 +545,18 @@ def test_a_restore_that_fails_in_the_filesystem_does_not_quote_the_path(runner):
     def explode(self, *args, **kwargs):
         raise OSError(13, "Permission denied", ABS_PATH)
 
-    original = ArtifactRestoreService.restore
-    ArtifactRestoreService.restore = explode
+    saved = runner.artifacts.upload(
+        {"filename": "restore-canary.txt", "content_text": "safe bytes"}
+    )
+    artifact_id = saved["artifact_id"]
+    version_id = runner.store.get_artifact(artifact_id)["latest_version_id"]
+    runner.artifacts.edit(artifact_id, "new current bytes")
+    original = ArtifactRestoreService.verified_snapshot_bytes
+    ArtifactRestoreService.verified_snapshot_bytes = explode
     try:
-        body = runner.artifacts.restore("art-1", "ver-1")
+        body = runner.artifacts.restore(artifact_id, version_id)
     finally:
-        ArtifactRestoreService.restore = original
+        ArtifactRestoreService.verified_snapshot_bytes = original
 
     # An unknown artifact refuses before it ever reaches the service, so the
     # canary case needs a real row; either way no path may appear.
@@ -569,12 +575,18 @@ def test_a_restore_refusal_this_project_wrote_still_reaches_the_user(runner):
     def refuse(self, *args, **kwargs):
         raise ArtifactRestoreRefused("artifact snapshot checksum verification failed")
 
-    original = ArtifactRestoreService.restore
-    ArtifactRestoreService.restore = refuse
+    saved = runner.artifacts.upload(
+        {"filename": "restore-refusal.txt", "content_text": "safe bytes"}
+    )
+    artifact_id = saved["artifact_id"]
+    version_id = runner.store.get_artifact(artifact_id)["latest_version_id"]
+    runner.artifacts.edit(artifact_id, "new current bytes")
+    original = ArtifactRestoreService.verified_snapshot_bytes
+    ArtifactRestoreService.verified_snapshot_bytes = refuse
     try:
-        body = runner.artifacts.restore("art-1", "ver-1")
+        body = runner.artifacts.restore(artifact_id, version_id)
     finally:
-        ArtifactRestoreService.restore = original
+        ArtifactRestoreService.verified_snapshot_bytes = original
 
     if body.get("code") == "restore_refused":
         assert "checksum verification failed" in body["error"]

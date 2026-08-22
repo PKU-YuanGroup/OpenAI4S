@@ -31,6 +31,7 @@ once already.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 #: Memory scopes that are not a project: the whole-instance tiers. A member
@@ -41,6 +42,26 @@ from openai4s.storage.memories import ALL_PROJECTS as _ALL_PROJECTS
 from openai4s.storage.memories import GLOBAL_SCOPE as _GLOBAL_SCOPE
 
 GLOBAL_MEMORY_SCOPES = frozenset({_ALL_PROJECTS, _GLOBAL_SCOPE})
+
+# Project visibility is read access.  Most frame-scoped POSTs are real writes
+# (turn execution, approvals, plans, annotations, branches, recovery, and
+# kernel control), so new routes must fail closed by default.  Revert preview
+# is the sole POST-shaped read: it computes a diff and persists nothing.
+_FRAME_SCOPED_PATH = re.compile(r"/frames/[^/]+(?:/.*)?")
+_READ_ONLY_FRAME_POST = re.compile(
+    r"/frames/[^/]+/(?:revert/preview|branches/revert-preview)"
+)
+
+
+def is_session_control_mutation(method: str, path: str) -> bool:
+    """Whether a frame-scoped request needs owner/admin authority."""
+
+    verb = method.upper()
+    if verb not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return False
+    if not _FRAME_SCOPED_PATH.fullmatch(path):
+        return False
+    return not (verb == "POST" and _READ_ONLY_FRAME_POST.fullmatch(path))
 
 
 def _identity(handler: Any) -> Any:
@@ -138,7 +159,7 @@ def may_control_session(store: Any, identity: Any, session_id: str | None) -> bo
     """May this principal perform owner-level lifecycle mutations?
 
     Project visibility is intentionally broader than ownership.  It can make a
-    session readable/collaborative, but it must not let another project member
+    session readable, but it must not let another project member
     cancel the owner's scheduler allocation or destroy its kernel namespace.
     """
 
@@ -350,7 +371,7 @@ def may_write_permission_rule(
     if scope == "project":
         return may_read_project(store, identity, str(scope_id or ""))
     if scope == "conversation":
-        return may_use_session(store, identity, str(scope_id or ""))
+        return may_control_session(store, identity, str(scope_id or ""))
     # "once" is not a standing rule at all.
     return True
 
@@ -416,8 +437,10 @@ __all__ = [
     "is_daemon_operation",
     "is_instance_config",
     "is_instance_mutation",
+    "is_session_control_mutation",
     "may_administer_project",
     "may_change_instance_config",
+    "may_control_session",
     "may_create_session_in",
     "may_overwrite_file",
     "may_write_permission_rule",

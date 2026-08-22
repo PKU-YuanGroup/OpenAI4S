@@ -32,9 +32,20 @@ class ExecutionViewStore(Protocol):
 
     def get_artifact(self, artifact_id: str) -> dict | None: ...
 
+    def get_frame(self, frame_id: str) -> dict | None: ...
+
     def version_meta(self, version_id: str) -> dict | None: ...
 
-    def lineage_inputs(self, version_id: str) -> list[dict]: ...
+    def lineage_inputs(
+        self, version_id: str, *, producing_cell_id: str | None = None
+    ) -> list[dict]: ...
+
+    def list_artifact_capture_observations(
+        self,
+        *,
+        artifact_id: str | None = None,
+        version_id: str | None = None,
+    ) -> list[dict]: ...
 
     def cell_detail(self, producing_cell_id: str) -> dict | None: ...
 
@@ -183,6 +194,9 @@ class ExecutionViewService:
         cell = None
         version = None
         edge_inputs: list[str] = []
+        producer_edge_inputs: list[str] = []
+        capture_observations: list[dict] = []
+        producer: dict | None = None
         if version_id:
             version = self.store.version_meta(version_id)
             for item in self.store.lineage_inputs(version_id):
@@ -194,6 +208,103 @@ class ExecutionViewService:
             producing_cell_id = (version or {}).get("producing_cell_id")
             if producing_cell_id:
                 cell = self.store.cell_detail(producing_cell_id)
+                try:
+                    producer_rows = self.store.lineage_inputs(
+                        version_id,
+                        producing_cell_id=str(producing_cell_id),
+                    )
+                except TypeError:
+                    # Lightweight compatibility stores predate producer-scoped
+                    # reads.  They have no capture observations either, so the
+                    # old version-level answer remains the only truthful one.
+                    producer_rows = self.store.lineage_inputs(version_id)
+                for item in producer_rows:
+                    label = (
+                        item.get("filename")
+                        or item.get("path")
+                        or item.get("version_id")
+                    )
+                    if label:
+                        producer_edge_inputs.append(str(label))
+
+            producer_frame_id = (version or {}).get("frame_id")
+            if producer_frame_id:
+                frame_reader = getattr(self.store, "get_frame", None)
+                producer_frame = (
+                    frame_reader(str(producer_frame_id))
+                    if callable(frame_reader)
+                    else None
+                ) or {}
+                producer = {
+                    # An Artifact's upload flag describes its origin, not the
+                    # exact latest version. Without an action identity on this
+                    # version, "non_cell" is the strongest truthful claim.
+                    "kind": "cell" if producing_cell_id else "non_cell",
+                    "frame_id": producer_frame_id,
+                    "frame_kind": producer_frame.get("kind") or "unknown",
+                    "producing_cell_id": producing_cell_id,
+                    "cell_recorded": cell is not None,
+                }
+
+            observation_reader = getattr(
+                self.store,
+                "list_artifact_capture_observations",
+                None,
+            )
+            if callable(observation_reader):
+                for observation in observation_reader(
+                    artifact_id=artifact_id,
+                    version_id=version_id,
+                ):
+                    observation_cell_id = observation.get("producing_cell_id")
+                    observation_cell = (
+                        self.store.cell_detail(str(observation_cell_id))
+                        if observation_cell_id
+                        else None
+                    )
+                    observation_frame_id = observation.get("frame_id")
+                    frame_reader = getattr(self.store, "get_frame", None)
+                    observation_frame = (
+                        frame_reader(str(observation_frame_id))
+                        if observation_frame_id and callable(frame_reader)
+                        else None
+                    ) or {}
+                    observation_inputs: list[str] = []
+                    for input_version_id in observation.get("input_version_ids") or []:
+                        input_meta = (
+                            self.store.version_meta(str(input_version_id)) or {}
+                        )
+                        label = input_meta.get("filename") or input_version_id
+                        if label and str(label) not in observation_inputs:
+                            observation_inputs.append(str(label))
+                    capture_observations.append(
+                        {
+                            "observation_id": observation.get("observation_id"),
+                            "version_id": observation.get("version_id"),
+                            "capture_kind": observation.get("capture_kind"),
+                            "producing_cell_id": observation_cell_id,
+                            "frame_id": observation_frame_id,
+                            "frame_kind": observation_frame.get("kind") or "unknown",
+                            "cell_recorded": observation_cell is not None,
+                            "cell_index": (
+                                observation_cell.get("cell_index")
+                                if observation_cell
+                                else None
+                            ),
+                            "kernel_id": (
+                                observation_cell.get("kernel_id")
+                                if observation_cell
+                                else None
+                            ),
+                            "language": (
+                                observation_cell.get("language")
+                                if observation_cell
+                                else None
+                            ),
+                            "inputs": observation_inputs,
+                            "at": self.format_timestamp(observation.get("created_at")),
+                        }
+                    )
 
         files_written: list[str] = []
         legacy_reads: list[str] = []
@@ -203,14 +314,18 @@ class ExecutionViewService:
 
         known_reads: list[str] = []
         seen_reads: set[str] = set()
-        for filename in [*legacy_reads, *edge_inputs]:
+        for filename in [*legacy_reads, *producer_edge_inputs]:
             if filename and filename not in seen_reads:
                 seen_reads.add(filename)
                 known_reads.append(filename)
 
         outputs = set(files_written)
         outputs.add(artifact["filename"])
-        inputs = [filename for filename in known_reads if filename not in outputs]
+        all_known_reads: list[str] = []
+        for filename in [*legacy_reads, *edge_inputs]:
+            if filename and filename not in all_known_reads:
+                all_known_reads.append(filename)
+        inputs = [filename for filename in all_known_reads if filename not in outputs]
         if cell:
             interactions.append(
                 {
@@ -232,12 +347,17 @@ class ExecutionViewService:
                 ),
             }
         )
-        return {
+        result = {
             "artifact_id": artifact_id,
             "filename": artifact.get("filename"),
             "interactions": interactions,
             "dependency_mappings": {"inputs": inputs},
         }
+        if capture_observations:
+            result["capture_observations"] = capture_observations
+        if producer:
+            result["producer"] = producer
+        return result
 
 
 __all__ = ["ExecutionViewService"]

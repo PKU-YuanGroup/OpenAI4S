@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from openai4s.config import Config
+from openai4s.config import Config, RoadmapFeatureFlags
+from openai4s.server.session_package import session_import_quarantine_key
 from openai4s.store import get_store
 from tests.test_team_auth_routes import (  # noqa: F401  (fixture reuse)
     _fast_pbkdf2,
@@ -222,6 +223,39 @@ def test_creating_a_project_makes_the_creator_a_participant(daemon):
     # ...but not for anyone else
     b = _login(daemon, "bob", "fake-pw-b")
     assert _get(daemon.port, f"/api/v1/projects/{new_pid}", cookie=b)[0] == 404
+
+
+def test_workbench_diff_cannot_smuggle_another_users_version(tmp_path):
+    """The URL Artifact passes the team guard; query versions must be scoped too."""
+
+    node = _TeamDaemon(
+        tmp_path,
+        roadmap_features=RoadmapFeatureFlags(stage9_artifact_workbench=True),
+    )
+    node.seed_user("alice", "fake-pw-a")
+    node.seed_user("bob", "fake-pw-b")
+    node.store.create_project(name="p", description="", context="")
+    try:
+        alice = _login(node, "alice", "fake-pw-a")
+        bob = _login(node, "bob", "fake-pw-b")
+        alice_frame = _create_session(node, alice)
+        bob_frame = _create_session(node, bob)
+        alice_artifact = _seed_artifact(
+            node, alice_frame, "alice.txt", b"alice-public\n"
+        )
+        bob_artifact = _seed_artifact(
+            node, bob_frame, "bob.txt", b"BOB_PRIVATE_RESULT\n"
+        )
+        path = (
+            f"/api/v1/artifacts/{alice_artifact['artifact_id']}/diff"
+            f"?from={bob_artifact['version_id']}&to={alice_artifact['version_id']}"
+        )
+        status, raw = _get(node.port, path, cookie=alice)
+        assert status == 404, raw[:300]
+        assert b"BOB_PRIVATE_RESULT" not in raw
+        assert _body(raw)["code"] == "artifact_version_not_found"
+    finally:
+        node.close()
 
 
 def test_session_owner_reaches_their_project_without_a_membership_row(daemon):
@@ -674,6 +708,251 @@ def test_an_upload_cannot_target_another_users_session(daemon):
     assert status == 404, raw[:300]
     after = len(daemon.store.list_artifacts({"root_frame_id": victim}))
     assert after == before, "a refused upload must not create an artifact"
+
+
+def test_project_read_visibility_does_not_allow_session_resource_writes(daemon):
+    """A collaborator may read a project session, not rewrite its resources."""
+
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
+    victim = _create_session(daemon, alice)
+    artifact = _seed_artifact(daemon, victim, "shared-read.txt", b"readable")
+    annotation = daemon.store.add_annotation(
+        root_frame_id=victim,
+        artifact_id=artifact["artifact_id"],
+        artifact_name=artifact["filename"],
+        rel_x=0.5,
+        rel_y=0.5,
+        body="owner note",
+    )
+
+    # Positive control: project visibility really does grant reads.
+    assert _get(daemon.port, f"/api/v1/frames/{victim}", cookie=bob)[0] == 200
+    assert (
+        _get(
+            daemon.port,
+            f"/api/v1/artifacts/{artifact['artifact_id']}",
+            cookie=bob,
+        )[0]
+        == 200
+    )
+
+    for path, body in (
+        (
+            f"/api/v1/artifacts/{artifact['artifact_id']}/edit",
+            {"content": "planted"},
+        ),
+        (
+            f"/api/v1/artifacts/{artifact['artifact_id']}/rename",
+            {"filename": "planted.txt"},
+        ),
+        (
+            f"/api/v1/artifacts/{artifact['artifact_id']}/versions/"
+            f"{artifact['version_id']}/restore",
+            {},
+        ),
+        (
+            f"/api/v1/annotations/{annotation['annotation_id']}",
+            {"body": "prompt injection"},
+        ),
+    ):
+        status, raw = _post(daemon.port, path, body, cookie=bob)
+        assert status == 403, (path, raw[:200])
+        assert _body(raw).get("code") == "owner_only"
+
+    status, raw = _delete(daemon, f"/api/v1/artifacts/{artifact['artifact_id']}", bob)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+    status, raw = _delete(
+        daemon, f"/api/v1/annotations/{annotation['annotation_id']}", bob
+    )
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+
+    before = len(daemon.store.list_artifacts({"root_frame_id": victim}))
+    status, raw = _post(
+        daemon.port,
+        "/api/v1/uploads",
+        {
+            "frame_id": victim,
+            "filename": "project-member-planted.txt",
+            "content_base64": "aGVsbG8=",
+        },
+        cookie=bob,
+    )
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+    assert len(daemon.store.list_artifacts({"root_frame_id": victim})) == before
+
+
+def test_project_member_cannot_revoke_another_owners_share(daemon):
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
+    victim = _create_session(daemon, alice)
+    share_id = "shr_project_visible"
+    daemon.store.begin_share_publish(
+        share_id=share_id,
+        root_frame_id=victim,
+        title="visible but owner-controlled",
+        pending_snapshot_id="snap_project_visible",
+    )
+    daemon.store.mark_share_ready(
+        share_id,
+        snapshot_id="snap_project_visible",
+        bundle_sha256="b" * 64,
+        bundle_size=1,
+        projection_id="proj_project_visible",
+    )
+
+    status, raw = _get(daemon.port, "/api/v1/shares", cookie=bob)
+    assert status == 200
+    assert share_id in [s.get("share_id") for s in _body(raw).get("shares") or []]
+    status, raw = _delete(daemon, f"/api/v1/shares/{share_id}", bob)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+    assert daemon.store.get_share(share_id) is not None
+
+
+def test_unknown_and_hidden_session_resources_are_indistinguishable(daemon):
+    """Missing-row no-ops must not disclose whether a guessed id is real."""
+
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
+    victim = _create_session(daemon, alice)
+    artifact = _seed_artifact(daemon, victim, "private-matrix.txt", b"private")
+    annotation = daemon.store.add_annotation(
+        root_frame_id=victim,
+        artifact_id=artifact["artifact_id"],
+        artifact_name=artifact["filename"],
+        rel_x=0.5,
+        rel_y=0.5,
+        body="private annotation",
+    )
+    share_id = "shr_private_matrix"
+    daemon.store.begin_share_publish(
+        share_id=share_id,
+        root_frame_id=victim,
+        title="private share",
+        pending_snapshot_id="snap_private_matrix",
+    )
+    daemon.store.mark_share_ready(
+        share_id,
+        snapshot_id="snap_private_matrix",
+        bundle_sha256="b" * 64,
+        bundle_size=1,
+        projection_id="proj_private_matrix",
+    )
+    rule_id = daemon.store.set_permission_rule(
+        scope="conversation",
+        scope_id=victim,
+        tool="read_file",
+        pattern="*",
+        decision="ask",
+    )
+    daemon.store.team.set_session_visibility(
+        victim, "private", user_id=_uid(daemon, "alice")
+    )
+
+    resources = (
+        ("frame", "/frames/missing-frame", f"/frames/{victim}"),
+        (
+            "artifact",
+            "/artifacts/missing-artifact",
+            f"/artifacts/{artifact['artifact_id']}",
+        ),
+        (
+            "annotation",
+            "/annotations/missing-annotation",
+            f"/annotations/{annotation['annotation_id']}",
+        ),
+        ("share", "/shares/missing-share", f"/shares/{share_id}"),
+        (
+            "permission",
+            "/permissions/missing-permission",
+            f"/permissions/{rule_id}",
+        ),
+    )
+
+    def signature(raw: bytes) -> tuple:
+        body = _body(raw)
+        return body.get("error"), body.get("code"), body.get("status")
+
+    for label, missing, hidden in resources:
+        missing_status, missing_raw = _get(daemon.port, "/api/v1" + missing, cookie=bob)
+        hidden_status, hidden_raw = _get(daemon.port, "/api/v1" + hidden, cookie=bob)
+        assert (missing_status, hidden_status) == (404, 404), label
+        assert signature(missing_raw) == signature(hidden_raw), label
+
+        missing_status, missing_raw = _delete(daemon, "/api/v1" + missing, bob)
+        hidden_status, hidden_raw = _delete(daemon, "/api/v1" + hidden, bob)
+        assert (missing_status, hidden_status) == (404, 404), label
+        assert signature(missing_raw) == signature(hidden_raw), label
+
+    # Every hidden DELETE was refused before its idempotent mutation sink.
+    assert daemon.store.get_frame(victim) is not None
+    assert daemon.store.get_artifact(artifact["artifact_id"]) is not None
+    assert daemon.store.get_annotation(annotation["annotation_id"]) is not None
+    assert daemon.store.get_share(share_id) is not None
+    assert daemon.store.get_permission_rule(rule_id) is not None
+
+
+def test_permission_writable_barrier_is_reported_only_after_team_authorization(daemon):
+    alice = _login(daemon, "alice", "fake-pw-a")
+    bob = _login(daemon, "bob", "fake-pw-b")
+    pid = _pid(daemon)
+    for name in ("alice", "bob"):
+        daemon.store.governance.set_member(pid, _uid(daemon, name), "member")
+    victim = _create_session(daemon, alice)
+    rule_id = daemon.store.set_permission_rule(
+        scope="conversation",
+        scope_id=victim,
+        tool="read_file",
+        pattern="*",
+        decision="ask",
+    )
+    daemon.store.set_setting(session_import_quarantine_key(victim), "1")
+    permission = {
+        "scope": "conversation",
+        "scope_id": victim,
+        "tool": "read_file",
+        "decision": "ask",
+    }
+
+    # Project visibility proves the Session exists, but not control authority.
+    status, raw = _post(daemon.port, "/api/v1/permissions", permission, cookie=bob)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+    status, raw = _delete(daemon, f"/api/v1/permissions/{rule_id}", bob)
+    assert status == 403, raw[:200]
+    assert _body(raw).get("code") == "owner_only"
+
+    # Once private, even the existence and quarantine state are hidden.
+    daemon.store.team.set_session_visibility(
+        victim, "private", user_id=_uid(daemon, "alice")
+    )
+    status, raw = _post(daemon.port, "/api/v1/permissions", permission, cookie=bob)
+    assert status == 404, raw[:200]
+    assert _body(raw).get("code") != "locked"
+    status, raw = _delete(daemon, f"/api/v1/permissions/{rule_id}", bob)
+    assert status == 404, raw[:200]
+    assert _body(raw).get("code") != "locked"
+
+    # The legitimate owner still reaches the quarantine gate after auth.
+    status, raw = _post(daemon.port, "/api/v1/permissions", permission, cookie=alice)
+    assert status == 423, raw[:200]
+    assert _body(raw).get("code") == "locked"
+    status, raw = _delete(daemon, f"/api/v1/permissions/{rule_id}", alice)
+    assert status == 423, raw[:200]
+    assert _body(raw).get("code") == "locked"
 
 
 def test_the_owner_can_still_upload_to_their_own_session(daemon):

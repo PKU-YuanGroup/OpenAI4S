@@ -224,7 +224,12 @@ def test_a_share_publish_failure_makes_the_xdist_run_fail(tmp_path):
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=30,
+        # This process starts its own xdist controller and worker while the
+        # parent suite is already running four workers.  Startup alone can
+        # exceed 30 seconds on a loaded CI host even though the child test has
+        # completed, so keep the bound generous enough to test publication
+        # failure rather than scheduler latency.
+        timeout=90,
     )
 
     assert proc.returncode != 0, proc.stdout

@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS session_checkpoints (
     action_cursor         INTEGER,
     message_cursor        INTEGER,
     cell_cursor           INTEGER,
+    auto_event_cursor     INTEGER NOT NULL DEFAULT 0,
     workspace_tree_id     TEXT,
     artifact_versions     TEXT NOT NULL,
     environment_pins      TEXT NOT NULL,
@@ -88,6 +89,15 @@ _DEFAULT_EXCLUDED_DIRS = frozenset(
     {".git", ".openai4s", ".venv", "__pycache__", "node_modules"}
 )
 _SECRET_SUFFIXES = frozenset({".key", ".pem", ".p12", ".pfx"})
+
+
+def revert_recovery_setting_key(root_frame_id: str) -> str:
+    """Durable session-wide write barrier for an unresolved workspace revert."""
+
+    if not isinstance(root_frame_id, str) or not root_frame_id:
+        raise ValueError("root_frame_id must be a non-empty string")
+    digest = hashlib.sha256(root_frame_id.encode("utf-8")).hexdigest()
+    return f"session:revert-recovery:{digest}"
 
 
 class TreeEntry(TypedDict):
@@ -421,6 +431,20 @@ class WorkspaceCAS:
         with self._lock:
             return self._get_tree_locked(tree_id)
 
+    def verify_tree(self, tree_id: str) -> bool:
+        """Return whether a tree and every referenced blob are recoverable."""
+
+        try:
+            with self._lock:
+                tree = self._get_tree_locked(tree_id)
+                for entry in tree.get("entries") or []:
+                    data = self._get_blob_locked(str(entry.get("blob") or ""))
+                    if len(data) != int(entry.get("size") or 0):
+                        return False
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+        return True
+
     def _get_tree_locked(self, tree_id: str) -> WorkspaceTree:
         path = self._tree_path(tree_id)
         try:
@@ -653,15 +677,23 @@ class SessionSnapshotRepository:
         *,
         clock_ms: Callable[[], int],
         checkpoint_state: Any | None = None,
+        revert_commit_hook: Callable[..., None] | None = None,
     ) -> None:
         self._connection = connection
         self._lock = lock
         self._clock_ms = clock_ms
         self._checkpoint_state = checkpoint_state
+        self._revert_commit_hook = revert_commit_hook
         with self._lock:
             self._connection.executescript(SNAPSHOT_SCHEMA)
             self._migrate_cursor_checkpoints()
             self._connection.commit()
+
+    def set_revert_commit_hook(self, hook: Callable[..., None] | None) -> None:
+        """Install a same-transaction hook for successful revert checkpoints."""
+
+        with self._lock:
+            self._revert_commit_hook = hook
 
     def _migrate_cursor_checkpoints(self) -> None:
         """Add exact Cell/message cursor bindings to existing databases.
@@ -682,6 +714,10 @@ class SessionSnapshotRepository:
             ("source_kind", "TEXT"),
             ("source_id", "TEXT"),
             ("internal", "INTEGER NOT NULL DEFAULT 0"),
+            # Auto Mode did not exist before this column. Existing checkpoint
+            # rows therefore have an exact empty prefix, not an unknown
+            # "latest" cursor; zero is the only safe backfill.
+            ("auto_event_cursor", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in columns:
                 self._connection.execute(
@@ -728,6 +764,7 @@ class SessionSnapshotRepository:
         action_cursor: int | None = None,
         message_cursor: int | None = None,
         cell_cursor: int | None = None,
+        auto_event_cursor: int | None = 0,
         artifact_versions: Any = None,
         environment_pins: Any = None,
         generation_refs: Any = None,
@@ -787,10 +824,10 @@ class SessionSnapshotRepository:
                     "INSERT INTO session_checkpoints("
                     "checkpoint_id,root_frame_id,branch_id,parent_checkpoint_id,"
                     "source_kind,source_id,internal,reason,action_cursor,message_cursor,"
-                    "cell_cursor,workspace_tree_id,"
+                    "cell_cursor,auto_event_cursor,workspace_tree_id,"
                     "artifact_versions,environment_pins,generation_refs,capability_state,"
                     "permission_state,recovery_recipe,metadata,created_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         checkpoint_id,
                         root_frame_id,
@@ -803,6 +840,11 @@ class SessionSnapshotRepository:
                         self._cursor(action_cursor),
                         self._cursor(message_cursor),
                         self._cursor(cell_cursor),
+                        (
+                            0
+                            if auto_event_cursor is None
+                            else self._cursor(auto_event_cursor)
+                        ),
                         workspace_tree_id,
                         self._json(artifact_versions or []),
                         self._json(environment_pins or {}),
@@ -834,6 +876,22 @@ class SessionSnapshotRepository:
                             ),
                             commit=False,
                         )
+                safe_metadata = metadata if isinstance(metadata, Mapping) else {}
+                reverted_to = safe_metadata.get("reverted_to")
+                if self._revert_commit_hook is not None and isinstance(
+                    reverted_to, str
+                ):
+                    # This runs after the checkpoint INSERT and before the branch
+                    # head CAS/commit. Recovery-sensitive domains can therefore
+                    # invalidate stale work in the exact same SQLite transaction
+                    # that publishes the revert continuation.
+                    self._revert_commit_hook(
+                        root_frame_id=root_frame_id,
+                        branch_id=branch_id,
+                        target_checkpoint_id=reverted_to,
+                        revert_checkpoint_id=checkpoint_id,
+                        reverted_at=now,
+                    )
                 self._connection.execute(
                     "UPDATE session_branches SET head_checkpoint_id=?,updated_at=? "
                     "WHERE branch_id=? AND head_checkpoint_id IS ?",
@@ -1147,4 +1205,5 @@ __all__ = [
     "TreeEntry",
     "WorkspaceCAS",
     "WorkspaceTree",
+    "revert_recovery_setting_key",
 ]

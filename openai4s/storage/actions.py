@@ -212,10 +212,14 @@ class ActionLedgerRepository:
         lock: Any,
         *,
         clock_ms: Callable[[], int],
+        admit_action_group: Callable[[str, str], None] | None = None,
+        admit_action_scope: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self._connection = connection
         self._lock = lock
         self._clock_ms = clock_ms
+        self._admit_action_group = admit_action_group
+        self._admit_action_scope = admit_action_scope
         self._install_schema()
 
     def _install_schema(self) -> None:
@@ -284,11 +288,20 @@ class ActionLedgerRepository:
         cost_usd = _optional_cost_usd(cost_usd)
         now = self._clock_ms() if created_at is None else created_at
         with self._lock:
-            if ordinal is None:
-                ordinal = self._next_group_ordinal_locked(root_frame_id, branch_id)
-            else:
-                ordinal = _ordinal("ordinal", ordinal)
             try:
+                # Admission and insertion are one SQLite write transaction.
+                # Store's Python lock is instance-local; without the database
+                # lock, a second Store could publish a recovery barrier after
+                # this check and before the INSERT.
+                self._connection.execute("BEGIN IMMEDIATE")
+                if self._admit_action_scope is not None:
+                    self._admit_action_scope(
+                        root_frame_id, branch_id, "action_group:append"
+                    )
+                if ordinal is None:
+                    ordinal = self._next_group_ordinal_locked(root_frame_id, branch_id)
+                else:
+                    ordinal = _ordinal("ordinal", ordinal)
                 self._insert_group_locked(
                     group_id=group_id,
                     root_frame_id=root_frame_id,
@@ -334,12 +347,16 @@ class ActionLedgerRepository:
         event_id = _required_text("event_id", event_id or f"ae-{uuid.uuid4().hex[:16]}")
         now = self._clock_ms() if created_at is None else created_at
         with self._lock:
-            self._require_group_locked(group_id)
-            if sequence is None:
-                sequence = self._next_event_sequence_locked(group_id)
-            else:
-                sequence = _ordinal("sequence", sequence)
             try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._require_group_locked(group_id)
+                self._assert_action_group_admitted_locked(
+                    group_id, f"event:{event_type}"
+                )
+                if sequence is None:
+                    sequence = self._next_event_sequence_locked(group_id)
+                else:
+                    sequence = _ordinal("sequence", sequence)
                 self._insert_event_locked(
                     event_id=event_id,
                     group_id=group_id,
@@ -381,6 +398,8 @@ class ActionLedgerRepository:
         cost_usd: float | None = None,
         group_id: str | None = None,
         created_at: int | None = None,
+        kind: str = "native_tools",
+        admission_operation: str = "tool_action_group:append",
     ) -> ActionGroupDTO:
         """Append one provider tool declaration and all events atomically.
 
@@ -393,6 +412,8 @@ class ActionLedgerRepository:
         root_frame_id = _required_text("root_frame_id", root_frame_id)
         branch_id = _required_text("branch_id", branch_id or root_frame_id)
         turn_id = _required_text("turn_id", turn_id)
+        kind = _required_text("kind", kind)
+        admission_operation = _required_text("admission_operation", admission_operation)
         group_id = _required_text("group_id", group_id or f"ag-{uuid.uuid4().hex[:16]}")
         usage = _optional_usage(usage)
         cost_usd = _optional_cost_usd(cost_usd)
@@ -411,18 +432,23 @@ class ActionLedgerRepository:
             normalized_events.append(event)
 
         with self._lock:
-            if ordinal is None:
-                ordinal = self._next_group_ordinal_locked(root_frame_id, branch_id)
-            else:
-                ordinal = _ordinal("ordinal", ordinal)
             try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                if self._admit_action_scope is not None:
+                    self._admit_action_scope(
+                        root_frame_id, branch_id, admission_operation
+                    )
+                if ordinal is None:
+                    ordinal = self._next_group_ordinal_locked(root_frame_id, branch_id)
+                else:
+                    ordinal = _ordinal("ordinal", ordinal)
                 self._insert_group_locked(
                     group_id=group_id,
                     root_frame_id=root_frame_id,
                     branch_id=branch_id,
                     turn_id=turn_id,
                     ordinal=ordinal,
-                    kind="native_tools",
+                    kind=kind,
                     provider=provider,
                     model=model,
                     wire_state=wire_state,
@@ -584,17 +610,19 @@ class ActionLedgerRepository:
             if state_revision == 0:
                 raise ValueError("state_revision must be positive")
         with self._lock:
-            self._require_group_locked(group_id)
-            if attempt_ordinal is None:
-                row = self._connection.execute(
-                    "SELECT COALESCE(MAX(attempt_ordinal),-1)+1 AS n "
-                    "FROM execution_attempts WHERE producing_cell_id=?",
-                    (producing_cell_id,),
-                ).fetchone()
-                attempt_ordinal = int(row["n"])
-            else:
-                attempt_ordinal = _ordinal("attempt_ordinal", attempt_ordinal)
             try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._require_group_locked(group_id)
+                self._assert_action_group_admitted_locked(group_id, "attempt:allocate")
+                if attempt_ordinal is None:
+                    row = self._connection.execute(
+                        "SELECT COALESCE(MAX(attempt_ordinal),-1)+1 AS n "
+                        "FROM execution_attempts WHERE producing_cell_id=?",
+                        (producing_cell_id,),
+                    ).fetchone()
+                    attempt_ordinal = int(row["n"])
+                else:
+                    attempt_ordinal = _ordinal("attempt_ordinal", attempt_ordinal)
                 self._connection.execute(
                     "INSERT INTO execution_attempts("
                     "attempt_id,group_id,producing_cell_id,attempt_ordinal,"
@@ -636,15 +664,31 @@ class ActionLedgerRepository:
             }
         )
         with self._lock:
-            cursor = self._connection.execute(
-                "UPDATE execution_attempts SET finished_at=?,"
-                "terminal_state='abandoned',error=? WHERE finished_at IS NULL "
-                "AND terminal_state IS NULL AND (owner_instance_id IS NULL "
-                "OR owner_instance_id<>?)",
-                (now, error, owner_instance_id),
-            )
-            self._connection.commit()
-            return int(cursor.rowcount)
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                repair_guard = self._connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='repair_execution_groups'"
+                ).fetchone()
+                sealed_clause = (
+                    " AND NOT EXISTS(SELECT 1 FROM repair_execution_groups AS r "
+                    "WHERE r.action_group_id=execution_attempts.group_id "
+                    "AND r.sealed_at IS NOT NULL)"
+                    if repair_guard is not None
+                    else ""
+                )
+                cursor = self._connection.execute(
+                    "UPDATE execution_attempts SET finished_at=?,"
+                    "terminal_state='abandoned',error=? WHERE finished_at IS NULL "
+                    "AND terminal_state IS NULL AND (owner_instance_id IS NULL "
+                    "OR owner_instance_id<>?)" + sealed_clause,
+                    (now, error, owner_instance_id),
+                )
+                self._connection.commit()
+                return int(cursor.rowcount)
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def mark_attempt_started(
         self, attempt_id: str, *, started_at: int | None = None
@@ -669,21 +713,29 @@ class ActionLedgerRepository:
         attempt_id = _required_text("attempt_id", attempt_id)
         generation_id = _required_text("generation_id", generation_id)
         with self._lock:
-            row = self._attempt_row_locked(attempt_id)
-            current = row["generation_id"]
-            if current is not None and current != generation_id:
-                raise AttemptStateError(
-                    f"attempt {attempt_id!r} is already bound to generation "
-                    f"{current!r}"
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._attempt_row_locked(attempt_id)
+                self._assert_action_group_admitted_locked(
+                    str(row["group_id"]), "attempt:bind_generation"
                 )
-            if current is None:
-                self._connection.execute(
-                    "UPDATE execution_attempts SET generation_id=? "
-                    "WHERE attempt_id=? AND generation_id IS NULL",
-                    (generation_id, attempt_id),
-                )
+                current = row["generation_id"]
+                if current is not None and current != generation_id:
+                    raise AttemptStateError(
+                        f"attempt {attempt_id!r} is already bound to generation "
+                        f"{current!r}"
+                    )
+                if current is None:
+                    self._connection.execute(
+                        "UPDATE execution_attempts SET generation_id=? "
+                        "WHERE attempt_id=? AND generation_id IS NULL",
+                        (generation_id, attempt_id),
+                    )
                 self._connection.commit()
                 row = self._attempt_row_locked(attempt_id)
+            except Exception:
+                self._connection.rollback()
+                raise
         return self._normalize_attempt(row)
 
     def mark_attempt_response(
@@ -720,32 +772,36 @@ class ActionLedgerRepository:
             raise ValueError("terminal_state must describe a terminal outcome")
         now = self._clock_ms() if finished_at is None else finished_at
         with self._lock:
-            row = self._attempt_row_locked(attempt_id)
-            if row["terminal_state"] is not None or row["finished_at"] is not None:
-                raise AttemptStateError(
-                    f"execution attempt {attempt_id!r} is already finished"
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._attempt_row_locked(attempt_id)
+                if row["terminal_state"] is not None or row["finished_at"] is not None:
+                    raise AttemptStateError(
+                        f"execution attempt {attempt_id!r} is already finished"
+                    )
+                self._validate_timestamp(row, "finished_at", now)
+                if (
+                    terminal_state in {"completed", "succeeded", "ok"}
+                    and row["capture_at"] is None
+                ):
+                    raise AttemptStateError(
+                        "a successful execution attempt must finish artifact capture first"
+                    )
+                cursor = self._connection.execute(
+                    "UPDATE execution_attempts SET finished_at=?,terminal_state=?,"
+                    "error=? WHERE attempt_id=? AND finished_at IS NULL "
+                    "AND terminal_state IS NULL",
+                    (now, terminal_state, _json_dump(error), attempt_id),
                 )
-            self._validate_timestamp(row, "finished_at", now)
-            if (
-                terminal_state in {"completed", "succeeded", "ok"}
-                and row["capture_at"] is None
-            ):
-                raise AttemptStateError(
-                    "a successful execution attempt must finish artifact capture first"
-                )
-            cursor = self._connection.execute(
-                "UPDATE execution_attempts SET finished_at=?,terminal_state=?,"
-                "error=? WHERE attempt_id=? AND finished_at IS NULL "
-                "AND terminal_state IS NULL",
-                (now, terminal_state, _json_dump(error), attempt_id),
-            )
-            if cursor.rowcount != 1:
+                if cursor.rowcount != 1:
+                    raise AttemptStateError(
+                        f"execution attempt {attempt_id!r} cannot be finished twice"
+                    )
+                self._connection.commit()
+                row = self._attempt_row_locked(attempt_id)
+            except Exception:
                 self._connection.rollback()
-                raise AttemptStateError(
-                    f"execution attempt {attempt_id!r} cannot be finished twice"
-                )
-            self._connection.commit()
-            row = self._attempt_row_locked(attempt_id)
+                raise
         return self._normalize_attempt(row)
 
     def get_attempt(self, attempt_id: str) -> ExecutionAttemptDTO | None:
@@ -811,31 +867,48 @@ class ActionLedgerRepository:
         attempt_id = _required_text("attempt_id", attempt_id)
         now = self._clock_ms() if at is None else at
         with self._lock:
-            row = self._attempt_row_locked(attempt_id)
-            if row["terminal_state"] is not None:
-                raise AttemptStateError(
-                    f"execution attempt {attempt_id!r} is already finished"
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._attempt_row_locked(attempt_id)
+                if column == "started_at":
+                    self._assert_action_group_admitted_locked(
+                        str(row["group_id"]), "attempt:start"
+                    )
+                if row["terminal_state"] is not None:
+                    raise AttemptStateError(
+                        f"execution attempt {attempt_id!r} is already finished"
+                    )
+                if row[column] is not None:
+                    # Retry-safe without allowing the original timestamp to change.
+                    self._connection.commit()
+                    return self._normalize_attempt(row)
+                if prerequisite is not None and row[prerequisite] is None:
+                    raise AttemptStateError(
+                        f"cannot set {column} before {prerequisite}"
+                    )
+                self._validate_timestamp(row, column, now)
+                cursor = self._connection.execute(
+                    f"UPDATE execution_attempts SET {column}=? "
+                    f"WHERE attempt_id=? AND {column} IS NULL "
+                    "AND terminal_state IS NULL",
+                    (now, attempt_id),
                 )
-            if row[column] is not None:
-                # Retry-safe without allowing the original timestamp to change.
-                return self._normalize_attempt(row)
-            if prerequisite is not None and row[prerequisite] is None:
-                raise AttemptStateError(f"cannot set {column} before {prerequisite}")
-            self._validate_timestamp(row, column, now)
-            cursor = self._connection.execute(
-                f"UPDATE execution_attempts SET {column}=? "
-                f"WHERE attempt_id=? AND {column} IS NULL "
-                "AND terminal_state IS NULL",
-                (now, attempt_id),
-            )
-            if cursor.rowcount != 1:
+                if cursor.rowcount != 1:
+                    raise AttemptStateError(
+                        f"execution attempt {attempt_id!r} milestone raced"
+                    )
+                self._connection.commit()
+                row = self._attempt_row_locked(attempt_id)
+            except Exception:
                 self._connection.rollback()
-                raise AttemptStateError(
-                    f"execution attempt {attempt_id!r} milestone raced"
-                )
-            self._connection.commit()
-            row = self._attempt_row_locked(attempt_id)
+                raise
         return self._normalize_attempt(row)
+
+    def _assert_action_group_admitted_locked(
+        self, group_id: str, operation: str
+    ) -> None:
+        if self._admit_action_group is not None:
+            self._admit_action_group(group_id, operation)
 
     @staticmethod
     def _validate_timestamp(row: Any, column: str, value: int) -> None:

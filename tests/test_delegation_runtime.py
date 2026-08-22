@@ -135,6 +135,145 @@ def test_nested_runners_share_one_tree_budget_and_stats(monkeypatch):
         runner({"request": "one child too many"})
 
 
+@pytest.mark.parametrize(
+    "delegation_spec",
+    [
+        {"request": "asynchronous child", "wait": False},
+        {"request": ["fanout-a", "fanout-b"], "wait": True},
+    ],
+)
+def test_trusted_capture_rejects_parallel_delegation_before_reservation(
+    delegation_spec,
+):
+    """Shared-workspace snapshots cannot prove concurrent child authorship."""
+
+    runner = DelegationRunner(
+        get_config(),
+        cell_hooks_factory=lambda _frame_id: object(),
+    )
+    try:
+        with pytest.raises(DelegationError, match="trusted Artifact capture"):
+            runner(delegation_spec)
+        assert runner.children() == []
+        assert runner.delegation_stats()["spawned_session"] == 0
+    finally:
+        runner.close()
+
+
+def test_trusted_capture_keeps_single_synchronous_delegation(monkeypatch):
+    monkeypatch.setattr(loop_mod.Agent, "run", lambda self, task: _submitted(task))
+    runner = DelegationRunner(
+        get_config(),
+        cell_hooks_factory=lambda _frame_id: object(),
+    )
+    try:
+        result = runner({"request": "serial child", "wait": True})
+    finally:
+        runner.close()
+
+    assert result["stop_reason"] == "submitted"
+    assert result["output"] == "serial child"
+
+
+def test_trusted_capture_rejects_a_second_thread_before_reservation(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def held_run(self, task):
+        entered.set()
+        assert release.wait(_RENDEZVOUS_TIMEOUT)
+        return _submitted(task)
+
+    monkeypatch.setattr(loop_mod.Agent, "run", held_run)
+    runner = DelegationRunner(
+        get_config(),
+        cell_hooks_factory=lambda _frame_id: object(),
+    )
+    result: list[dict] = []
+    first = threading.Thread(
+        target=lambda: result.append(
+            runner({"request": "first serial child", "wait": True})
+        )
+    )
+    first.start()
+    assert entered.wait(_RENDEZVOUS_TIMEOUT)
+    try:
+        with pytest.raises(DelegationError, match="owns trusted Artifact capture"):
+            runner({"request": "concurrent serial child", "wait": True})
+        assert runner.delegation_stats()["spawned_session"] == 1
+    finally:
+        release.set()
+        first.join(_RENDEZVOUS_TIMEOUT)
+        runner.close()
+
+    assert not first.is_alive()
+    assert result[0]["output"] == "first serial child"
+
+
+def test_trusted_capture_gate_is_reentrant_for_synchronous_descendants(monkeypatch):
+    observed_depths = []
+
+    def nested_run(self, task):
+        observed_depths.append(self.delegate_depth)
+        if self.delegate_depth == 1:
+            grandchild = self.dispatcher._delegate_fn(
+                {"request": "grandchild", "wait": True}
+            )
+            assert grandchild["output"] == "grandchild"
+        return _submitted(task)
+
+    monkeypatch.setattr(loop_mod.Agent, "run", nested_run)
+    runner = DelegationRunner(
+        get_config(),
+        cell_hooks_factory=lambda _frame_id: object(),
+    )
+    try:
+        result = runner({"request": "parent", "wait": True})
+    finally:
+        runner.close()
+
+    assert result["output"] == "parent"
+    assert observed_depths == [1, 2]
+    assert runner.delegation_stats()["spawned_session"] == 2
+
+
+def test_trusted_capture_child_cannot_start_a_background_kernel(monkeypatch):
+    observed = {}
+
+    def inspect_policy(self, task):
+        del task
+        observed["catalog_tool"] = self.dispatcher.tool_catalog().get("exec_background")
+        observed["result"] = self.dispatcher(
+            "exec_background",
+            [{"code": "open('late.txt', 'w').write('late')"}],
+        )
+        observed["executor"] = self.dispatcher._bg_executor
+        return _submitted()
+
+    monkeypatch.setattr(loop_mod.Agent, "run", inspect_policy)
+    runner = DelegationRunner(
+        get_config(),
+        cell_hooks_factory=lambda _frame_id: object(),
+    )
+    try:
+        runner(
+            {
+                "request": "try background work",
+                "permissions": {"background": "allow"},
+            }
+        )
+        child = runner.children()[0]
+    finally:
+        runner.close()
+
+    assert observed["catalog_tool"] is None
+    assert observed["result"] == {
+        "error": "Permission denied by delegated child policy: exec_background"
+    }
+    assert observed["executor"] is None
+    assert child["overrides"]["permissions"]["background"] == "deny"
+
+
 def test_shared_budget_reservation_is_atomic_across_concurrent_runners(monkeypatch):
     monkeypatch.setattr(loop_mod.Agent, "run", lambda self, task: _submitted())
     budget = DelegationBudget("root-session", limit=8)

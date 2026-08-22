@@ -13,6 +13,11 @@ doubted. Five of the twenty cases exist to watch something refuse.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+from dataclasses import replace
+
 import pytest
 
 from openai4s.benchmark import load_workflows, run_case
@@ -216,3 +221,635 @@ def test_the_cli_treats_zero_workflows_as_a_failure(monkeypatch, capsys, tmp_pat
     rc = cli.cmd_benchmark(types.SimpleNamespace(list=False, json=False))
     assert rc == 1
     assert "no benchmark workflows" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# Stage 0: the versioned next-round acceptance pack
+# --------------------------------------------------------------------------
+
+
+def test_next_round_acceptance_manifest_has_exact_field_and_safety_coverage():
+    from openai4s.benchmark.acceptance import (
+        DEFAULT_ACCEPTANCE_MANIFEST,
+        FIELD_PATH_IDS,
+        METRIC_IDS,
+        SAFETY_ACTION_IDS,
+        load_acceptance_pack,
+    )
+
+    pack = load_acceptance_pack()
+    assert pack.pack_version == "2026-08-16.2"
+    assert tuple(item.id for item in pack.field_paths) == FIELD_PATH_IDS
+    assert tuple(item.id for item in pack.safety_actions) == SAFETY_ACTION_IDS
+    assert tuple(item.id for item in pack.metrics) == METRIC_IDS
+    assert len(pack.field_paths) == 6
+    assert len(pack.safety_actions) == 7
+    raw = json.loads(DEFAULT_ACCEPTANCE_MANIFEST.read_text("utf-8"))
+    canonical = json.dumps(
+        raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    assert pack.manifest_digest == "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+    claims = {item.id: item.claim for item in pack.field_paths}
+    assert claims["ketcher"] == "baseline_observation"
+    assert claims["clinvar"] == "baseline_observation"
+    reviewer = next(
+        item for item in pack.field_paths if item.id == "reviewer_correction"
+    )
+    assert reviewer.expected.public()["value"]["workspace_unchanged"] is True
+    for action in pack.safety_actions:
+        if action.id in {"safe_read", "restricted_write"}:
+            assert action.execution == "confined_local"
+        else:
+            assert action.execution == "preflight_only"
+
+
+def test_next_round_acceptance_manifest_rejects_unknown_nested_fields(tmp_path):
+    from openai4s.benchmark.acceptance import (
+        DEFAULT_ACCEPTANCE_MANIFEST,
+        AcceptanceManifestError,
+        load_acceptance_pack,
+    )
+
+    record = json.loads(DEFAULT_ACCEPTANCE_MANIFEST.read_text("utf-8"))
+    record["field_paths"][0]["expected"]["value"]["sloep"] = 2.0
+    path = tmp_path / "acceptance.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(AcceptanceManifestError, match="unknown observation fields"):
+        load_acceptance_pack(path)
+
+
+def test_next_round_acceptance_manifest_rejects_missing_or_extra_actions(tmp_path):
+    from openai4s.benchmark.acceptance import (
+        DEFAULT_ACCEPTANCE_MANIFEST,
+        AcceptanceManifestError,
+        load_acceptance_pack,
+    )
+
+    record = json.loads(DEFAULT_ACCEPTANCE_MANIFEST.read_text("utf-8"))
+    record["safety_actions"].pop()
+    path = tmp_path / "acceptance.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(AcceptanceManifestError, match="expected exactly"):
+        load_acceptance_pack(path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda record: record["field_paths"][0].__setitem__(
+                "claim", "baseline_observation"
+            ),
+            "frozen contract requires 'capability'",
+        ),
+        (
+            lambda record: record["field_paths"][0]["expected"]["value"].pop("slope"),
+            "frozen assertion fields",
+        ),
+        (
+            lambda record: record["field_paths"][1]["expected"]["value"].pop(
+                "workspace_unchanged"
+            ),
+            "frozen assertion fields",
+        ),
+    ],
+)
+def test_next_round_acceptance_manifest_refuses_contract_weakening(
+    tmp_path, mutate, message
+):
+    from openai4s.benchmark.acceptance import (
+        DEFAULT_ACCEPTANCE_MANIFEST,
+        AcceptanceManifestError,
+        load_acceptance_pack,
+    )
+
+    record = json.loads(DEFAULT_ACCEPTANCE_MANIFEST.read_text("utf-8"))
+    mutate(record)
+    path = tmp_path / "acceptance.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(AcceptanceManifestError, match=message):
+        load_acceptance_pack(path)
+
+
+def test_next_round_acceptance_manifest_binds_content_to_version(tmp_path):
+    from openai4s.benchmark.acceptance import (
+        DEFAULT_ACCEPTANCE_MANIFEST,
+        AcceptanceManifestError,
+        load_acceptance_pack,
+    )
+
+    record = json.loads(DEFAULT_ACCEPTANCE_MANIFEST.read_text("utf-8"))
+    record["title"] += " weakened without a version bump"
+    path = tmp_path / "acceptance.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(
+        AcceptanceManifestError, match="manifest content does not match"
+    ):
+        load_acceptance_pack(path)
+
+    record = json.loads(DEFAULT_ACCEPTANCE_MANIFEST.read_text("utf-8"))
+    record["pack_version"] = "unreviewed-version"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(AcceptanceManifestError, match="no frozen manifest digest"):
+        load_acceptance_pack(path)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda pack: replace(pack, field_paths=()),
+        lambda pack: replace(pack, safety_actions=pack.safety_actions[:-1]),
+        lambda pack: replace(pack, manifest_digest="sha256:" + "0" * 64),
+        lambda pack: replace(
+            pack,
+            field_paths=(
+                replace(
+                    pack.field_paths[0],
+                    expected=replace(pack.field_paths[0].expected, value={}),
+                ),
+                *pack.field_paths[1:],
+            ),
+        ),
+    ],
+)
+def test_acceptance_runner_refuses_caller_weakened_pack(tmp_path, mutate):
+    from openai4s.benchmark.acceptance import (
+        AcceptanceManifestError,
+        load_acceptance_pack,
+        run_acceptance_pack,
+    )
+
+    weakened = mutate(load_acceptance_pack())
+    with pytest.raises(AcceptanceManifestError, match="exact frozen canonical pack"):
+        run_acceptance_pack(weakened, root=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_acceptance_ketcher_loopback_probe_repeats_without_stream_leak(
+    tmp_path, capsys
+):
+    from types import SimpleNamespace
+
+    from openai4s.benchmark import acceptance
+
+    for iteration in range(5):
+        run_root = tmp_path / f"ketcher-{iteration}"
+        run_root.mkdir()
+        observed, evidence = acceptance._probe_ketcher(
+            SimpleNamespace(run_root=run_root)
+        )
+        assert observed["http_status"] == 200
+        assert observed["route"] == "/ketcher"
+        assert "credential banner was captured and verified" in evidence[0].detail
+        assert "read-only env-injection backend" in evidence[0].detail
+        assert not (run_root / "ketcher-route-data" / "access-token").exists()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "?token=" not in captured.err
+    assert not re.search(
+        r"token(?:=|:\s*)[A-Za-z0-9_-]{20,}", captured.err, re.IGNORECASE
+    )
+
+
+@pytest.mark.stubbed_backend
+def test_next_round_acceptance_pack_replays_all_paths_and_reports_evidence(
+    tmp_path, monkeypatch
+):
+    from openai4s import review as review_mod
+    from openai4s.benchmark import run_acceptance_pack
+
+    # The acceptance fake must be supplied to exactly its own Reviewer call;
+    # replacing or reaching the process-global provider would race a live run.
+    monkeypatch.setattr(
+        review_mod,
+        "chat",
+        lambda *_args, **_kwargs: pytest.fail(
+            "acceptance must not replace or call the global Reviewer provider"
+        ),
+    )
+
+    report = run_acceptance_pack(root=tmp_path)
+    assert report["pass"] is True, [
+        (item["id"], item["observed"])
+        for item in [*report["field_paths"], *report["safety_actions"]]
+        if not item["pass"]
+    ]
+    assert len(report["field_paths"]) == 6
+    assert len(report["safety_actions"]) == 7
+    assert report["recorded_at_ms"] > 0
+    assert report["manifest_digest"].startswith("sha256:")
+    for result in [*report["field_paths"], *report["safety_actions"]]:
+        assert set(("expected", "observed", "pass", "evidence", "duration_ms")) <= set(
+            result
+        )
+        assert result["evidence"]
+        assert result["duration_ms"] >= 0
+
+    fields = {item["id"]: item for item in report["field_paths"]}
+    assert fields["ketcher"]["observed"]["status"] == "placeholder"
+    assert fields["ketcher"]["observed"]["http_status"] == 200
+    assert fields["ketcher"]["observed"]["route"] == "/ketcher"
+    assert "GET /ketcher" in fields["ketcher"]["evidence"][0]["source"]
+    assert fields["ketcher"]["capability_pass"] is False
+    assert fields["clinvar"]["observed"]["status"] == "not_implemented"
+    assert fields["clinvar"]["capability_pass"] is False
+    assert fields["reviewer_correction"]["observed"]["repair_triggered"] is False
+    assert fields["reviewer_correction"]["observed"]["workspace_unchanged"] is True
+    assert (
+        fields["reviewer_correction"]["expected"]["value"]["workspace_unchanged"]
+        is True
+    )
+    assert report["summary"]["capability_passes"] == 1
+
+    latency = report["metrics"]["latency_ms"]
+    assert latency["samples"] == 6
+    assert latency["p50"] is not None and latency["p95"] is not None
+    tokens = report["metrics"]["tokens"]
+    assert tokens["offline_contract"]["samples"] == 1
+    assert tokens["offline_contract"]["total_tokens"] == 56
+    assert tokens["live_observed"]["samples"] == 0
+    assert tokens["live_observed"]["total_tokens"] is None
+    review_hits = report["metrics"]["review_hit_rate"]
+    assert review_hits["offline_contract"]["denominator"] == 1
+    assert review_hits["offline_contract"]["value"] == 1.0
+    assert review_hits["live_observed"]["denominator"] == 0
+    assert review_hits["live_observed"]["value"] is None
+    environment = report["environment"]
+    assert environment["isolation"]["reviewer_inference"] == (
+        "offline_call_scoped_injection"
+    )
+    assert environment["configured_security"]["unattended_approval"] == "deny"
+    assert environment["kernel_sandboxes"]
+    for metric_id in ("cell_failure_rate", "duplicate_version_rate"):
+        metric = report["metrics"][metric_id]
+        assert "denominator" in metric
+        assert metric["denominator_definition"]
+        assert metric["zero_sample_behavior"]
+    assert review_hits["denominator_definition"]
+    assert review_hits["zero_sample_behavior"]
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "terminal",
+    [
+        {"error": "forced failure"},
+        {"interrupted": True},
+    ],
+)
+def test_acceptance_cell_attempt_counts_error_and_interrupted_terminals(terminal):
+    from types import SimpleNamespace
+
+    from openai4s.benchmark import acceptance
+
+    class Kernel:
+        def execute(self, _code):
+            return terminal
+
+    metrics = acceptance.AcceptanceMetrics()
+    runtime = SimpleNamespace(metrics=metrics)
+    assert acceptance._execute_cell(runtime, Kernel(), "pass") == terminal
+    assert metrics.cell_attempts == 1
+    assert metrics.cell_failures == 1
+
+
+@pytest.mark.stubbed_backend
+def test_acceptance_cell_attempt_counts_a_raised_execute():
+    from types import SimpleNamespace
+
+    from openai4s.benchmark import acceptance
+
+    class Kernel:
+        def execute(self, _code):
+            raise RuntimeError("forced execute failure")
+
+    metrics = acceptance.AcceptanceMetrics()
+    runtime = SimpleNamespace(metrics=metrics)
+    with pytest.raises(RuntimeError, match="forced execute failure"):
+        acceptance._execute_cell(runtime, Kernel(), "pass")
+    assert metrics.cell_attempts == 1
+    assert metrics.cell_failures == 1
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize("terminal", ["raise", "error", "interrupted"])
+def test_acceptance_reviewer_failure_stays_in_offline_denominator(
+    tmp_path, monkeypatch, terminal
+):
+    from openai4s import review as review_mod
+    from openai4s.benchmark import acceptance
+    from openai4s.config import Config, LLMConfig
+
+    workspace = tmp_path / terminal
+    workspace.mkdir()
+    runtime = acceptance._Runtime(
+        run_root=tmp_path,
+        workspace=workspace,
+        config=Config(
+            data_dir=tmp_path / f"data-{terminal}",
+            llm=LLMConfig(provider="deepseek", api_key="offline"),
+        ),
+    )
+
+    if terminal == "raise":
+
+        def fail_review(*_args, **_kwargs):
+            raise RuntimeError("forced Reviewer failure")
+
+        monkeypatch.setattr(review_mod, "review_evidence", fail_review)
+        expected = "forced Reviewer failure"
+    else:
+        monkeypatch.setattr(
+            review_mod,
+            "review_evidence",
+            lambda *_args, **_kwargs: {terminal: True},
+        )
+        expected = "error terminal result"
+
+    with pytest.raises(RuntimeError, match=expected):
+        acceptance._probe_reviewer_correction(runtime)
+    assert runtime.metrics.offline_review_cases == 1
+    assert runtime.metrics.offline_review_failures == 1
+    assert runtime.metrics.offline_review_hits == 0
+
+
+@pytest.mark.stubbed_backend
+def test_acceptance_reviewer_workspace_write_is_observed_and_fails_contract(
+    tmp_path,
+):
+    from openai4s.benchmark import acceptance
+    from openai4s.config import Config, LLMConfig
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = acceptance._Runtime(
+        run_root=tmp_path,
+        workspace=workspace,
+        config=Config(
+            data_dir=tmp_path / "data",
+            llm=LLMConfig(provider="deepseek", api_key="offline"),
+        ),
+    )
+    written = workspace / "reviewer-illegal-write.txt"
+
+    def writing_reviewer(_messages, _cfg, **_kwargs):
+        # Stage 0 observes and fails this boundary violation.  It does not
+        # pretend the future read-only Reviewer sandbox already prevented it.
+        written.write_text("Reviewer changed the formal workspace\n", encoding="utf-8")
+        return {
+            "content": json.dumps(
+                {
+                    "verdict": "issues",
+                    "summary": "The planted coefficient is inconsistent.",
+                    "issues": [
+                        {
+                            "severity": "high",
+                            "title": "Regression coefficient mismatch",
+                            "detail": "The answer reports 3 while the evidence reports 2.",
+                            "evidence": "regression.json: slope=2",
+                            "artifact_id": "acceptance-regression",
+                        }
+                    ],
+                }
+            ),
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    reviewer_spec = next(
+        item
+        for item in acceptance.load_acceptance_pack().field_paths
+        if item.id == "reviewer_correction"
+    )
+    try:
+        result = acceptance._run_probe(
+            runtime,
+            probe_id=reviewer_spec.id,
+            expected=reviewer_spec.expected,
+            probe=lambda active: acceptance._probe_reviewer_correction(
+                active, chat_call=writing_reviewer
+            ),
+            extra={"claim": reviewer_spec.claim},
+        )
+    finally:
+        runtime.close()
+
+    assert written.read_text("utf-8") == "Reviewer changed the formal workspace\n"
+    assert result["observed"]["verdict"] == "issues"
+    assert result["observed"]["workspace_unchanged"] is False
+    assert result["expected"]["value"]["workspace_unchanged"] is True
+    assert result["pass"] is False
+
+
+@pytest.mark.stubbed_backend
+def test_acceptance_duplicate_capture_failure_counts_started_opportunity(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from openai4s.benchmark import acceptance
+    from openai4s.kernel import manager as manager_mod
+
+    class Kernel:
+        def __init__(self, *, cwd):
+            self.cwd = Path(cwd)
+            self.calls = 0
+
+        @property
+        def sandbox_status(self):
+            return {
+                "mode": "auto",
+                "state": "test",
+                "backend": "stub",
+                "enforced": False,
+                "self_test_passed": None,
+                "network_policy": "test",
+                "warning": None,
+            }
+
+        def execute(self, _code):
+            self.calls += 1
+            if self.calls == 1:
+                (self.cwd / "regression.json").write_text(
+                    '{"intercept":1.0,"slope":2.0}', encoding="utf-8"
+                )
+            return {"stdout": "ok"}
+
+        def shutdown(self):
+            return None
+
+    class Runtime:
+        def __init__(self):
+            self.workspace = tmp_path
+            self.metrics = acceptance.AcceptanceMetrics()
+            self.capture_calls = 0
+
+        def record_kernel_posture(self, _language, _status):
+            return None
+
+        def log_cell(self, _code, _result, language):
+            return f"cell-{language}-{self.capture_calls}"
+
+        def capture(self, path, _cell):
+            self.capture_calls += 1
+            if self.capture_calls == 2:
+                raise RuntimeError("forced duplicate capture failure")
+            return {
+                "version_id": "v-first",
+                "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+
+    monkeypatch.setattr(manager_mod, "Kernel", Kernel)
+    runtime = Runtime()
+    with pytest.raises(RuntimeError, match="forced duplicate capture failure"):
+        acceptance._probe_deterministic_regression(runtime)
+    assert runtime.metrics.cell_attempts == 2
+    assert runtime.metrics.cell_failures == 0
+    assert runtime.metrics.duplicate_opportunities == 1
+    assert runtime.metrics.duplicate_failures == 1
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(("fail_on", "attempts"), [(1, 1), (2, 2)])
+def test_acceptance_failed_cell_never_fabricates_duplicate_opportunity(
+    tmp_path, monkeypatch, fail_on, attempts
+):
+    from pathlib import Path
+
+    from openai4s.benchmark import acceptance
+    from openai4s.kernel import manager as manager_mod
+
+    class Kernel:
+        def __init__(self, *, cwd):
+            self.cwd = Path(cwd)
+            self.calls = 0
+
+        @property
+        def sandbox_status(self):
+            return {}
+
+        def execute(self, _code):
+            self.calls += 1
+            if self.calls == fail_on:
+                return {"error": "forced cell failure"}
+            (self.cwd / "regression.json").write_text(
+                '{"intercept":1.0,"slope":2.0}', encoding="utf-8"
+            )
+            return {"stdout": "ok"}
+
+        def shutdown(self):
+            return None
+
+    class Runtime:
+        def __init__(self):
+            self.workspace = tmp_path
+            self.metrics = acceptance.AcceptanceMetrics()
+
+        def record_kernel_posture(self, _language, _status):
+            return None
+
+        def log_cell(self, _code, _result, language):
+            return f"cell-{language}"
+
+        def capture(self, path, _cell):
+            return {
+                "version_id": "v-first",
+                "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+
+    monkeypatch.setattr(manager_mod, "Kernel", Kernel)
+    runtime = Runtime()
+    with pytest.raises(RuntimeError, match="forced cell failure"):
+        acceptance._probe_deterministic_regression(runtime)
+    assert runtime.metrics.cell_attempts == attempts
+    assert runtime.metrics.cell_failures == 1
+    assert runtime.metrics.duplicate_opportunities == 0
+    assert runtime.metrics.duplicate_failures == 0
+
+
+@pytest.mark.stubbed_backend
+def test_next_round_safety_probes_never_execute_external_actions(tmp_path):
+    from openai4s.benchmark import run_acceptance_pack
+
+    report = run_acceptance_pack(root=tmp_path)
+    safety = {item["id"]: item for item in report["safety_actions"]}
+    for action_id in (
+        "external_write",
+        "network_get",
+        "sensitive_payload_egress",
+        "narrow_delete",
+        "broad_delete",
+    ):
+        observed = safety[action_id]["observed"]
+        assert observed["executed"] is False
+        assert observed["outside_effect"] is False
+    assert safety["network_get"]["observed"]["transport"] == "not_invoked"
+    assert safety["broad_delete"]["observed"]["effective_decision"] == "deny"
+
+
+@pytest.mark.stubbed_backend
+def test_acceptance_global_network_deny_overrides_allow_and_fails_baseline(
+    tmp_path, monkeypatch
+):
+    from openai4s.benchmark import run_acceptance_pack
+
+    monkeypatch.setenv("OPENAI4S_ALLOW_NETWORK", "0")
+    report = run_acceptance_pack(root=tmp_path)
+    network = next(
+        item for item in report["safety_actions"] if item["id"] == "network_get"
+    )
+
+    assert report["pass"] is False
+    assert report["environment"]["configured_security"]["network_allowed"] is False
+    assert network["expected"]["value"]["effective_decision"] == "allow"
+    assert network["observed"]["policy_decision"] == "allow"
+    assert network["observed"]["global_network_allowed"] is False
+    assert network["observed"]["effective_decision"] == "deny"
+    assert network["observed"]["executed"] is False
+    assert network["observed"]["transport"] == "not_invoked"
+    assert network["pass"] is False
+    assert report["summary"]["safety_action_failures"] == 1
+
+
+def test_acceptance_metric_zero_samples_are_explicit():
+    from openai4s.benchmark import acceptance
+
+    metrics = acceptance._aggregate_metrics(
+        acceptance.load_acceptance_pack().metrics,
+        acceptance.AcceptanceMetrics(),
+        [],
+    )
+    assert metrics["latency_ms"]["p50"] is None
+    assert metrics["latency_ms"]["p95"] is None
+    assert metrics["cell_failure_rate"]["value"] is None
+    assert metrics["duplicate_version_rate"]["value"] is None
+    assert metrics["tokens"]["live_observed"]["total_tokens"] is None
+    assert metrics["review_hit_rate"]["live_observed"]["value"] is None
+    for metric in metrics.values():
+        assert metric["zero_sample_behavior"]
+
+
+@pytest.mark.stubbed_backend
+def test_acceptance_pack_has_one_machine_readable_cli_entrypoint(capsys):
+    import importlib
+
+    cli = importlib.import_module("openai4s.cli.main")
+    rc = cli.main(["benchmark", "--acceptance", "--json"])
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+
+    assert rc == 0
+    assert "?token=" not in captured.err
+    assert "X-OpenAI4S-Token" not in captured.err
+    assert not re.search(
+        r"token(?:=|:\s*)[A-Za-z0-9_-]{20,}", captured.err, re.IGNORECASE
+    )
+    assert report["schema_version"] == 1
+    assert report["manifest_digest"] == (
+        "sha256:d6b1b5c991e4092475b24c5e89ec8fa220ca166fa4b6f6582abb07e34279f533"
+    )
+    assert report["pass"] is True
+    assert len(report["field_paths"]) == 6
+    assert len(report["safety_actions"]) == 7
+    assert report["summary"]["capability_passes"] == 1

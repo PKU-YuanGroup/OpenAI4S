@@ -8,15 +8,23 @@ and routing envelope and delegates the domain behaviour here.
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import os
 import re
 import shutil
+import stat
+import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, ContextManager, Protocol
 
 from openai4s import execution_principal
-from openai4s.artifact_restore import ArtifactRestoreService, trusted_snapshot_roots
+from openai4s.artifact_restore import (
+    ArtifactRestoreDenied,
+    ArtifactRestoreRefused,
+    ArtifactRestoreService,
+    trusted_snapshot_roots,
+)
 
 
 class HostDataStore(Protocol):
@@ -43,6 +51,22 @@ class HostDataStore(Protocol):
     def version_meta(self, version_id: str) -> dict | None: ...
 
     def set_version_snapshot(self, version_id: str, snapshot_path: str) -> None: ...
+
+    def materialise_artifact_version(
+        self,
+        *,
+        source_version_id: str,
+        artifact_id: str,
+        version_id: str,
+        filename: str,
+        path: str,
+        snapshot_path: str,
+        frame_id: str | None,
+        root_frame_id: str,
+        project_id: str,
+        producing_cell_id: str | None = None,
+        publish: Callable[[str, str], str] | None = None,
+    ) -> dict: ...
 
     def set_priority(self, artifact_id: str, priority: int) -> dict | None: ...
 
@@ -76,7 +100,16 @@ class HostDataStore(Protocol):
 
     def producing_cell_for_version(self, version_id: str) -> dict | None: ...
 
-    def lineage_inputs(self, version_id: str) -> list[dict]: ...
+    def lineage_inputs(
+        self, version_id: str, *, producing_cell_id: str | None = None
+    ) -> list[dict]: ...
+
+    def list_artifact_capture_observations(
+        self,
+        *,
+        artifact_id: str | None = None,
+        version_id: str | None = None,
+    ) -> list[dict]: ...
 
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]: ...
 
@@ -89,6 +122,9 @@ StoreProvider = Callable[[], HostDataStore]
 ConfigProvider = Callable[[], Any]
 FrameIdProvider = Callable[[], str | None]
 PathResolver = Callable[..., Path]
+ArtifactRestorer = Callable[[str, str], dict]
+ArtifactMaterialiser = Callable[..., dict]
+ArtifactWriter = Callable[[], ContextManager[None]]
 
 #: Bounds for a lineage walk when the caller names none. They are generous
 #: enough that a real provenance chain fits, and they exist because the
@@ -99,6 +135,7 @@ _DEFAULT_LINEAGE_NODES = 500
 _MAX_LINEAGE_EDGES = 5000
 
 FRAME_STATUSES = frozenset({"processing", "done", "failed", "awaiting_user_response"})
+
 
 _VALID_MARKER_ID = re.compile(
     r"^(v-)?[0-9a-fA-F]{8,}$|"
@@ -141,11 +178,19 @@ class HostDataService:
         config: Any | ConfigProvider,
         frame_id: str | None | FrameIdProvider,
         resolve_path: PathResolver,
+        restore_artifact: ArtifactRestorer | None = None,
+        materialise_artifact: ArtifactMaterialiser | None = None,
+        artifact_writer: ArtifactWriter | None = None,
     ) -> None:
         self._store_source = store
         self._config_source = config
         self._frame_id_source = frame_id
         self._resolve_path = resolve_path
+        self._restore_artifact = restore_artifact
+        self._materialise_artifact = materialise_artifact
+        self._artifact_writer = artifact_writer
+        self._restore_manager: tuple[int, str, Any] | None = None
+        self._restore_lock = threading.RLock()
 
     def _store(self) -> HostDataStore:
         source = self._store_source
@@ -158,6 +203,90 @@ class HostDataService:
     def _frame_id(self) -> str | None:
         source = self._frame_id_source
         return source() if callable(source) else source
+
+    def _trusted_delivery_enabled(self) -> bool:
+        flags = getattr(self._config(), "roadmap_features", None)
+        return bool(getattr(flags, "stage1_trusted_delivery", False))
+
+    @staticmethod
+    def _freeze_snapshot(source: Path, destination: Path) -> tuple[str, int]:
+        """Atomically copy stable regular-file bytes into trusted storage.
+
+        ``host.save_artifact`` and the in-kernel provenance hook both execute
+        before the end-of-Cell workspace sweep.  In trusted mode their first
+        durable row must already name the same bytes its checksum describes;
+        a digest-then-``copy2`` pair has a mutation window between those two
+        reads.  This single descriptor stream is fsynced and verified before
+        its atomic rename makes the snapshot visible.
+        """
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+        source_descriptor: int | None = None
+        target_descriptor: int | None = None
+        try:
+            source_descriptor = os.open(
+                source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            before = os.fstat(source_descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("artifact source is not a regular file")
+            target_descriptor = os.open(
+                pending,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            digest = hashlib.sha256()
+            size_bytes = 0
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(target_descriptor, view)
+                    if written <= 0:  # pragma: no cover - OS write contract
+                        raise OSError("artifact snapshot write made no progress")
+                    view = view[written:]
+                size_bytes += len(chunk)
+                digest.update(chunk)
+            os.fsync(target_descriptor)
+            after = os.fstat(source_descriptor)
+            if (
+                before.st_dev != after.st_dev
+                or before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or before.st_ctime_ns != after.st_ctime_ns
+                or size_bytes != after.st_size
+            ):
+                raise OSError("artifact source changed during snapshot freeze")
+            os.close(target_descriptor)
+            target_descriptor = None
+            os.replace(pending, destination)
+            directory_descriptor = os.open(
+                destination.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+            checksum = digest.hexdigest()
+            if destination.stat().st_size != size_bytes or HostDataService._digest_file(
+                destination
+            ) != (checksum, size_bytes):
+                raise OSError("artifact snapshot verification failed")
+            return checksum, size_bytes
+        except Exception:
+            pending.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
+        finally:
+            if target_descriptor is not None:
+                os.close(target_descriptor)
+            if source_descriptor is not None:
+                os.close(source_descriptor)
 
     def query(self, spec: dict) -> Any:
         store = self._store()
@@ -352,27 +481,91 @@ class HostDataService:
         """Restore verified historical bytes as a new immutable version."""
         artifact_id = str(spec.get("artifact_id") or "")
         source_version_id = str(spec.get("version_id") or "")
-        artifact = self._scoped_artifact(artifact_id)
+        self._scoped_artifact(artifact_id)
+        with self._restore_lock:
+            restore = self._restore_artifact or self._default_artifact_restorer()
+            result = restore(artifact_id, source_version_id)
+        if not isinstance(result, dict):
+            raise RuntimeError("artifact restore returned an invalid result")
+        error = result.get("error")
+        if error:
+            if result.get("code") in {"restore_denied", "restore_refused"}:
+                message = str(error)
+                prefix = "restore failed: "
+                if message.startswith(prefix):
+                    message = message[len(prefix) :]
+                if result.get("code") == "restore_denied":
+                    raise ArtifactRestoreDenied(message)
+                raise ArtifactRestoreRefused(message)
+            raise RuntimeError("artifact restore failed")
+        return result
+
+    def restore_artifact_exact(self, artifact_id: str, version_id: str) -> dict:
+        """Invoke the shared secure writer without repeating Host policy."""
+
+        with self._restore_lock:
+            return self._default_artifact_restorer()(artifact_id, version_id)
+
+    def set_artifact_restorer(
+        self,
+        restore: ArtifactRestorer | None,
+        *,
+        materialise: ArtifactMaterialiser | None = None,
+        writer: ArtifactWriter | None = None,
+    ) -> None:
+        """Bind the session's one exact writer to Host Artifact mutations."""
+
+        with self._restore_lock:
+            self._restore_artifact = restore
+            self._materialise_artifact = materialise
+            self._artifact_writer = writer
+
+    def _default_artifact_manager(self):
+        """Build the shared-lock secure writer for direct/CLI composition."""
+
+        from openai4s.server.artifacts import ArtifactManager
+
         store = self._store()
         config = self._config()
-        trusted = (
-            trusted_snapshot_roots(config.data_dir)
-            if getattr(config, "data_dir", None) is not None
-            else (Path(config.artifacts_dir),)
-        )
-        service = ArtifactRestoreService(
-            store=store,
-            primary_snapshot_dir=Path(config.artifacts_dir),
-            trusted_snapshot_dirs=trusted,
-            resolve_live_path=lambda current_artifact, current: self._resolve_path(
-                str(current.get("path") or current_artifact.get("filename"))
-            ),
-        )
-        return service.restore(
-            artifact=artifact,
-            source_version_id=source_version_id,
-            frame_id=self._frame_id(),
-        )
+        workspace = self._resolve_path(".").expanduser().resolve()
+        identity = (id(store), str(workspace))
+        cached = self._restore_manager
+        if cached is None or cached[:2] != identity:
+            manager = getattr(store, "_artifact_manager_backend", None)
+            if manager is None:
+                manager = ArtifactManager(
+                    data_dir=Path(config.data_dir),
+                    store=store,
+                    workspace_for=lambda _frame_id, root=workspace: root,
+                    broadcast=lambda _frame_id, _event: None,
+                    guess_content_type=lambda name: (
+                        mimetypes.guess_type(name)[0] or "application/octet-stream"
+                    ),
+                    checksum=lambda path: hashlib.sha256(path.read_bytes()).hexdigest(),
+                    trusted_delivery=bool(
+                        getattr(
+                            getattr(config, "roadmap_features", None),
+                            "stage1_trusted_delivery",
+                            False,
+                        )
+                    ),
+                    recover_uploads=True,
+                    allow_external_workspace_root=True,
+                )
+            # A fresh direct/delegated service may reuse the Store's canonical
+            # manager after a prior cleanup failure retained a committed
+            # journal. Recovery is idempotent and shares the writer RLock, so
+            # it waits for any live Web transaction instead of misclassifying
+            # that transaction as a crash.
+            manager.recover_upload_journals()
+            cached = (identity[0], identity[1], manager)
+            self._restore_manager = cached
+        return cached[2]
+
+    def _default_artifact_restorer(self) -> ArtifactRestorer:
+        """Build the same secure writer for direct/CLI service composition."""
+
+        return self._default_artifact_manager().restore
 
     def artifact_path(self, version_id: str) -> str:
         self._scoped_version(version_id)
@@ -381,7 +574,39 @@ class HostDataService:
             raise KeyError(f"no artifact for id={version_id!r}")
         return path
 
+    def artifact_snapshot_path(self, version_id: str) -> str:
+        """Return exact frozen bytes for one version in the caller's session.
+
+        Remote-compute inputs must never stage the mutable live path.  A
+        version row without an immutable snapshot is therefore unavailable,
+        even if its live filename still happens to exist.
+        """
+
+        self._scoped_version(version_id)
+        metadata = self._store().version_meta(version_id) or {}
+        snapshot = str(metadata.get("snapshot_path") or "")
+        if not snapshot or not Path(snapshot).is_file():
+            raise FileNotFoundError(
+                f"artifact version {version_id!r} has no frozen snapshot"
+            )
+        return snapshot
+
     def materialise_artifact(self, spec: dict) -> dict:
+        """Materialise under the process-wide exact Artifact writer lock."""
+
+        with self._restore_lock:
+            writer = self._artifact_writer
+            materialise = self._materialise_artifact
+        if writer is None or materialise is None:
+            manager = self._default_artifact_manager()
+            writer = manager.writer_transaction
+            materialise = manager.materialise_version
+        with writer():
+            return self._materialise_artifact_locked(spec, materialise=materialise)
+
+    def _materialise_artifact_locked(
+        self, spec: dict, *, materialise: ArtifactMaterialiser
+    ) -> dict:
         """Bring another session's artifact version into this one.
 
         D3: no path reads another session's file in place. A cross-session read
@@ -397,11 +622,10 @@ class HostDataService:
         object is there, which is most of what an enumerator wants and the same
         reasoning `_scoped_version` already applies to every version-keyed read.
 
-        The bytes are hardlinked, not copied. A version snapshot is immutable by
-        contract -- `write_version_snapshot` returns early rather than rewriting
-        one -- so two rows may share an inode safely, and a materialised
-        multi-gigabyte dataset costs a directory entry. The copy fallback is for
-        a data dir spanning devices, where a hardlink cannot exist.
+        The bytes are copied into a private immutable snapshot.  Exact restore
+        and edit require ``nlink == 1`` so a second writable name cannot mutate
+        trusted history behind its checksum; materialisation must preserve that
+        invariant rather than sharing the source snapshot inode.
         """
         source_version_id = str(spec.get("version_id") or "").strip()
         if not source_version_id:
@@ -437,15 +661,19 @@ class HostDataService:
         if not self._session_visible(store, str(parent.get("root_frame_id") or "")):
             raise unknown
 
-        snapshot = metadata.get("snapshot_path") or ""
-        if not snapshot or not Path(str(snapshot)).is_file():
-            # The row exists but its immutable bytes do not, so there is
-            # nothing honest to hand over. Reported as its own failure rather
-            # than as "not found": the version is real and the caller may want
-            # to know the difference.
-            raise FileNotFoundError(
-                f"artifact version {source_version_id!r} has no frozen snapshot"
-            )
+        config = self._config()
+        data_root = Path(config.data_dir).expanduser().resolve()
+        versions_dir = data_root / "artifact-versions"
+        # Read through the shared held-FD verifier before creating either the
+        # borrowed version or its live file.  A pathname ``is_file`` followed
+        # by ``copyfile`` accepted a same-length name swap and then inherited
+        # the source row's checksum for different bytes.
+        _snapshot, source_data = ArtifactRestoreService(
+            store=store,
+            primary_snapshot_dir=versions_dir,
+            trusted_snapshot_dirs=trusted_snapshot_roots(config.data_dir),
+            resolve_live_path=lambda _artifact, _version: Path(),
+        ).verified_snapshot_bytes(metadata)
 
         # Every refusal ahead of every mutation. Two of these used to live only
         # inside the transaction, which ran *after* the live file had already been
@@ -455,7 +683,6 @@ class HostDataService:
             raise ValueError("artifact version already belongs to this session")
 
         filename = str(spec.get("filename") or metadata.get("filename") or "artifact")
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "artifact"
         live = self._resolve_path(filename, must_exist=False)
         if live.exists() or live.is_symlink():
             # This used to be `live.unlink()`: a silent, unlogged deletion of
@@ -468,68 +695,19 @@ class HostDataService:
                 f"materialising would overwrite it. Pass filename= to choose "
                 f"another name."
             )
-
-        version_id = f"v-{uuid.uuid4().hex[:12]}"
-        config = self._config()
-        versions_dir = Path(config.data_dir) / "artifact-versions"
-        versions_dir.mkdir(parents=True, exist_ok=True)
-        destination = versions_dir / f"{version_id}__{safe}"
-        # Snapshot to snapshot: a hardlink is safe here and is the optimisation
-        # worth having -- both names are immutable by contract, so a materialised
-        # multi-gigabyte dataset costs a directory entry.
-        try:
-            os.link(str(snapshot), str(destination))
-        except OSError:
-            shutil.copyfile(str(snapshot), str(destination))
-
-        # The live file is a real COPY, never a link. Hardlinking it made the
-        # borrowing session's *writable* working file share an inode with two
-        # immutable snapshots, so one ordinary truncating write through the live
-        # name rewrote the source session's frozen bytes -- and
-        # `write_version_snapshot` returns early when the file exists, so nothing
-        # would ever re-freeze them. The source row's checksum then described
-        # bytes that no longer existed. The old docstring's "immutable by
-        # contract" is true of the snapshot names and false of the live one.
-        #
-        # Staged, then moved: `os.replace` onto a name proven absent above is
-        # atomic, so a cell never observes a half-written deliverable.
-        live.parent.mkdir(parents=True, exist_ok=True)
-        staged = live.with_name(f"{live.name}.{version_id}.part")
-        try:
-            shutil.copyfile(str(destination), str(staged))
-            os.replace(str(staged), str(live))
-        except Exception:
-            staged.unlink(missing_ok=True)
-            destination.unlink(missing_ok=True)
-            raise
-
-        try:
-            return store.materialise_artifact_version(
-                source_version_id=source_version_id,
-                artifact_id=f"a-{uuid.uuid4().hex[:12]}",
-                version_id=version_id,
-                filename=filename,
-                path=str(live),
-                snapshot_path=str(destination),
-                frame_id=frame_id,
-                root_frame_id=root_frame_id,
-                project_id=project_id,
-                # Read the same way `save_artifact` reads it. Without it the row
-                # lands with `producing_cell_id` NULL, and the end-of-cell
-                # capture matches candidates on exactly that column.
-                producing_cell_id=spec.get("execution_cell_id")
-                or spec.get("producing_cell_id"),
-            )
-        except Exception:
-            # The transaction rolled back, so both files describe a version that
-            # does not exist. Removing them is safe precisely because the live
-            # name was proven absent before anything was written: there is no
-            # pre-existing file here to lose, which is what made the old
-            # one-sided rollback (snapshot only) destructive.
-            staged.unlink(missing_ok=True)
-            live.unlink(missing_ok=True)
-            destination.unlink(missing_ok=True)
-            raise
+        # The canonical manager owns staging, the durable intent journal,
+        # SQLite publication, held-FD verification and startup recovery. This
+        # call re-enters the writer RLock acquired by the public method above.
+        return materialise(
+            source_version_id=source_version_id,
+            filename=filename,
+            frame_id=frame_id,
+            workspace_frame_id=root_frame_id,
+            project_id=project_id,
+            raw=source_data,
+            producing_cell_id=spec.get("execution_cell_id")
+            or spec.get("producing_cell_id"),
+        )
 
     def _scoped_lineage_inputs(self, raw: Any) -> list[str]:
         """Validate declared lineage inputs before anything is written.
@@ -577,13 +755,17 @@ class HostDataService:
         # all. Two passes beat one pass that has to hold the file: `copy2`
         # takes the kernel's copy fast path, so the second read costs I/O, not
         # memory.
-        checksum, size_bytes = self._digest_file(source)
         version_stub = uuid.uuid4().hex[:12]
         safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "artifact")
         config = self._config()
-        config.artifacts_dir.mkdir(parents=True, exist_ok=True)
         destination = config.artifacts_dir / f"v-{version_stub}__{safe_filename}"
-        shutil.copy2(source, destination)
+        trusted_delivery = self._trusted_delivery_enabled()
+        if trusted_delivery:
+            checksum, size_bytes = self._freeze_snapshot(source, destination)
+        else:
+            checksum, size_bytes = self._digest_file(source)
+            config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
         store = self._store()
         try:
             execution_cell_id = spec.get("execution_cell_id") or spec.get(
@@ -601,6 +783,7 @@ class HostDataService:
                 input_version_ids=input_version_ids,
                 source=spec.get("source"),
                 reuse_policy="provisional",
+                **({"reuse_matching_head": True} if trusted_delivery else {}),
             )
         except Exception:
             destination.unlink(missing_ok=True)
@@ -753,17 +936,47 @@ class HostDataService:
         store = self._store()
         metadata = self._scoped_version(version_id)
         cell = store.producing_cell_for_version(version_id) or {}
-        return {
+        producing_cell_id = metadata.get("producing_cell_id")
+        try:
+            inputs = store.lineage_inputs(
+                version_id,
+                producing_cell_id=(
+                    str(producing_cell_id) if producing_cell_id else None
+                ),
+            )
+        except TypeError:
+            inputs = store.lineage_inputs(version_id)
+        result = {
             "version_id": version_id,
             "artifact_id": metadata.get("artifact_id"),
             "filename": metadata.get("filename"),
             "checksum": metadata.get("checksum"),
             "frame_id": metadata.get("frame_id"),
-            "producing_cell_id": metadata.get("producing_cell_id"),
+            "producing_cell_id": producing_cell_id,
             "code": cell.get("code"),
-            "inputs": store.lineage_inputs(version_id),
+            "inputs": inputs,
             "extraction_pending": False,
         }
+        observation_reader = getattr(
+            store,
+            "list_artifact_capture_observations",
+            None,
+        )
+        if callable(observation_reader):
+            observations = observation_reader(version_id=version_id)
+            if observations:
+                result["capture_observations"] = [
+                    {
+                        "observation_id": row.get("observation_id"),
+                        "capture_kind": row.get("capture_kind"),
+                        "producing_cell_id": row.get("producing_cell_id"),
+                        "frame_id": row.get("frame_id"),
+                        "input_version_ids": list(row.get("input_version_ids") or []),
+                        "created_at": row.get("created_at"),
+                    }
+                    for row in observations
+                ]
+        return result
 
     def lineage_graph(self, spec: dict) -> dict:
         """Walk the lineage graph from one version, always bounded.
@@ -848,7 +1061,8 @@ class HostDataService:
     #: How much of a file is read at a time when checksumming it.
     _DIGEST_CHUNK = 1024 * 1024
 
-    def _digest_file(self, path: Path) -> tuple[str, int]:
+    @staticmethod
+    def _digest_file(path: Path) -> tuple[str, int]:
         """Return ``(sha256, size)`` for a file, one chunk at a time.
 
         Shared by `save_artifact` and `provenance_record` so the two cannot
@@ -861,7 +1075,7 @@ class HostDataService:
         size_bytes = 0
         with open(path, "rb") as handle:
             while True:
-                chunk = handle.read(self._DIGEST_CHUNK)
+                chunk = handle.read(HostDataService._DIGEST_CHUNK)
                 if not chunk:
                     break
                 size_bytes += len(chunk)
@@ -909,8 +1123,22 @@ class HostDataService:
         # a process that also serves every other session; `save_artifact` was
         # still doing exactly that, which is why the loop now lives in one
         # place instead of two.
+        trusted_delivery = self._trusted_delivery_enabled()
+        snapshot: Path | None = None
         try:
-            checksum, size_bytes = self._digest_file(output)
+            if trusted_delivery:
+                config = self._config()
+                safe_filename = re.sub(
+                    r"[^A-Za-z0-9._-]+",
+                    "_",
+                    str(spec.get("filename") or output.name or "artifact"),
+                )
+                snapshot = (
+                    config.artifacts_dir / f"v-{uuid.uuid4().hex[:12]}__{safe_filename}"
+                )
+                checksum, size_bytes = self._freeze_snapshot(output, snapshot)
+            else:
+                checksum, size_bytes = self._digest_file(output)
         except FileNotFoundError:
             # Reported the same way whether the resolver enforced existence or
             # the open did. A caller with a pass-through resolver would
@@ -919,17 +1147,35 @@ class HostDataService:
             return {"error": f"prov_record: no such output file: {path}"}
         except OSError as error:
             return {"error": f"prov_record: {path}: {error}"}
-
-        return self._store().record_cell_artifact(
-            path=str(output),
-            filename=spec.get("filename") or output.name,
-            content_type=spec.get("content_type"),
-            size_bytes=size_bytes,
-            checksum=checksum,
-            producing_cell_id=spec.get("producing_cell_id"),
-            frame_id=self._frame_id(),
-            input_version_ids=input_version_ids,
-        )
+        store = self._store()
+        try:
+            record = store.record_cell_artifact(
+                path=str(output),
+                filename=spec.get("filename") or output.name,
+                content_type=spec.get("content_type"),
+                size_bytes=size_bytes,
+                checksum=checksum,
+                producing_cell_id=spec.get("producing_cell_id"),
+                frame_id=self._frame_id(),
+                input_version_ids=input_version_ids,
+                **(
+                    {
+                        "snapshot_path": str(snapshot),
+                        "reuse_matching_head": True,
+                    }
+                    if snapshot is not None
+                    else {}
+                ),
+            )
+        except Exception:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
+            raise
+        if snapshot is not None:
+            metadata = store.version_meta(record["version_id"]) or {}
+            if metadata.get("snapshot_path") != str(snapshot):
+                snapshot.unlink(missing_ok=True)
+        return record
 
 
 __all__ = ["FRAME_STATUSES", "HostDataService", "rank_artifacts"]

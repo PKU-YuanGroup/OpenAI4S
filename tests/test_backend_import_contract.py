@@ -90,7 +90,12 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "scan_command",
         }
     ),
-    "openai4s.agent.loop": frozenset({"Agent", "run_task"}),
+    # `--auto`'s two composition entry points. Public surface of the CLI
+    # composition module, not internals reached across a boundary, so they
+    # belong here rather than in the private-debt allowlist below.
+    "openai4s.agent.loop": frozenset(
+        {"Agent", "run_task", "enable_auto_run_environment", "review_cli_result"}
+    ),
     "openai4s.server.gateway": frozenset(
         {"build_app_server", "run_server", "serve_app"}
     ),

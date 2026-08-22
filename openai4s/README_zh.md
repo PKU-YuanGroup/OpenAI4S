@@ -25,6 +25,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`endpoint_identity.py`](./endpoint_identity.py) | LLM endpoint 的唯一写法，以及剥离其中 secret 的唯一位置。`base_url` 原本按用户输入原样存储、由 `GET /model-profiles` 发布、并冻结进不可变 revision——所以带 userinfo 或 query token 的 URL 会把凭据同时留在这三处，这是 7.2「secret 不进 snapshot」被 endpoint 字段而非 key 字段绕过。在存储处就归一，意味着后续任何界面都不必记得去脱敏。 |
 | [`execution_principal.py`](./execution_principal.py) | 一段工作*以谁的身份*在跑，随执行一起用 `ContextVar` 携带，方式与 correlation id 相同。团队模式在 HTTP 边界回答了「这个请求是谁」然后就把答案丢了，于是 `host.frames` 读到了所有租户的行。三条性质让它成为一道边界而不是一个便利：缺失即拒绝（团队模式下 `resolve()` 抛错）、`None` 永远不是管理员（单用户 daemon 与 loopback CLI 各带显式 principal）、并且它不存放在任何被复用的对象上——一个 `HostDispatcher` 服务该会话的每一个 turn，把身份挂在它上面就成了这一个 turn 去回答另一个 turn 的授权问题。 |
 | [`egress.py`](./egress.py) | Host 持有的出站域名允许名单。Web 与 shell 的策略边界会查它，但它要显式打开才生效：除非 `OPENAI4S_EGRESS` 被设成生效值（`allowlist`、`on`、`1`、`enforce` 等），模式就是 `off`，出站调用不做任何允许名单检查，一律放行。真正打开时，它是 OS 沙箱的补充，不是替代。 |
+| [`execution_principal.py`](./execution_principal.py) | 通过 `ContextVar` 把明确的单用户、服务或团队身份随执行一起传递。团队模式下缺失 principal 会成为权限失败，而不是退回不受限访问，因此 Host 数据读取不能静默跨越租户边界。 |
 | [`host_dispatch.py`](./host_dispatch.py) | 内核 `host_call` RPC 的兼容与组合 facade。一次调用要先过权限、审批、审计、回放、筛查和步骤事件策略，才会落到具体的 Host 服务上。 |
 | [`http_deadline.py`](./http_deadline.py) | 鉴权 HTTP exchange 共用的纯标准库绝对截止机制。定制 HTTP(S) connection 只把当前 live socket 交给短时 watchdog，使 TCP connect、proxy CONNECT、TLS、响应状态/Header 与 body 读取共用一份墙钟预算；每条退出路径都会取消并 join timer。系统 DNS 解析仍是明确记录的标准库不可取消边界。 |
 | [`jobs.py`](./jobs.py) | 在本进程内运行后台计算任务，限制同时活跃的任务数，并按字节、在二进制读取上限制输出缓冲——按字符设上限、又读的是文本管道，那道上限只在 `readline` 已经把任务在下一个换行符之前打印的全部内容分配出来*之后*才做裁剪。终态由唯一一处判定，且判定之后不再被覆盖；停止一个任务走的是与内核 shell 执行器同一套进程组逻辑，因为真正要紧的场景恰恰是 shell 退出了、它拉起的活儿没退。注册表在内存里，但每个任务还会在数据目录下留下一份原子写入的回执：以前重启一次，一个跑了四小时的任务就直接从 Jobs 面板上消失，所以现在未完成的任务会以终态 `abandoned` 被重新收编——不复活，也刻意既不叫 `failed`（那是在指责命令本身）也不叫 `cancelled`（那是在声称有人想停它）。 |
@@ -38,6 +39,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`prompts.py`](./prompts.py) | 核心自己要发的那批小型单用途 prompt：压缩、审查 gate、溯源、Skill 检索、抽取、编辑和安全。 |
 | [`replay.py`](./replay.py) | 把成功的 `host.*` 结果记进离线回放 tape（溯源、凭据读取这类内部管道调用刻意不入 tape）；导出的 notebook 回放这盘 tape 时，它负责发现调用顺序的漂移。 |
 | [`review.py`](./review.py) | 对已完成回合的证据做一次有界、无工具的审查，并把 JSON verdict 标准化。审查者动不了工作区。 |
+| [`scientific_reviewer.py`](./scientific_reviewer.py) | Stage 3 Scientific Reviewer V2：只读冻结 Evidence Snapshot、严格 `pass`/`issues`/`incomplete` schema，以及冻结的 provider/base_url/model 指纹。省略 Artifact 不能判 pass。 |
 | [`store.py`](./store.py) | 持久化层的兼容 facade。唯一那条 SQLite 连接放在这里，schema 和受保护的只读查询也放在这里。各个聚焦的 storage 仓储拿到的是同一条连接和同一把锁。migration 已经不属于这个 facade：它们带版本、走事务、按 checksum 记录，放在 [`storage/migrations.py`](./storage/migrations.py) 里——每次打开都把所有表重新探一遍、再把失败的 `ALTER` 逐个吞掉，会让「这个数据库是不是最新的」变成代码自己都答不上来的问题。`close()` 是幂等的，并且只逐出恰好是它自己的那个缓存实例，因此之后 `get_store(path)` 可以为同一路径开出新的一代。 |
 | [`webtools.py`](./webtools.py) | Host 侧的 Web 搜索、抓取、探测与下载。transport 优先走标准库。内容转换在这里做，网络开关、SSRF 检查和 egress 强制也都在这里生效——而且是每一跳都生效，这正是重定向要手工跟随、而不是交给 `urllib` 的原因：由 opener 在内部走完的跳转链，只在第一个 URL 上被检查过一次，之后再没有。任何绕开这里触达网络的能力（内置 Skill 用裸 `urllib` 拉一个归档、探测资源是否存在时另起一个函数），就等于同时跳过了允许名单和这道 guard。 |
 

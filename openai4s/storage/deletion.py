@@ -12,6 +12,8 @@ import sqlite3
 from collections.abc import Iterable
 from typing import Any
 
+from openai4s.storage.snapshots import revert_recovery_setting_key
+
 
 class SessionDeletionRepository:
     """Delete durable session aggregates without crossing ownership scopes."""
@@ -158,6 +160,14 @@ class SessionDeletionRepository:
                 artifacts,
             ).fetchall()
         version_ids = self._unique(row["version_id"] for row in version_rows)
+        observation_env_rows = []
+        if artifacts:
+            observation_env_rows = self._connection.execute(
+                "SELECT env_snapshot_id FROM artifact_capture_observations "
+                f"WHERE artifact_id IN {self._marks(artifacts)} "
+                "AND env_snapshot_id IS NOT NULL",
+                artifacts,
+            ).fetchall()
         cell_ids = ()
         if roots or frames:
             clauses: list[str] = []
@@ -177,7 +187,9 @@ class SessionDeletionRepository:
                 ).fetchall()
             )
         env_snapshot_ids = self._unique(
-            row["env_snapshot_id"] for row in version_rows if row["env_snapshot_id"]
+            row["env_snapshot_id"]
+            for row in (*version_rows, *observation_env_rows)
+            if row["env_snapshot_id"]
         )
         path_candidates = self._unique(
             path
@@ -207,6 +219,28 @@ class SessionDeletionRepository:
                 ).fetchall()
             )
 
+        if roots:
+            root_where = f"root_frame_id IN {self._marks(roots)}"
+            # Remove Auto Mode bindings before deleting action-ledger rows.
+            # Sealed repair ledgers reject event/attempt DELETE while their
+            # binding exists; aggregate deletion intentionally removes the
+            # owner first in this same transaction.
+            for table in (
+                "review_findings",
+                "repair_execution_groups",
+                "repair_runs",
+                "permission_review_assessments",
+                "review_runs",
+                "auto_mode_events",
+                "auto_mode_runs",
+            ):
+                self._delete_counted(deleted_rows, table, root_where, roots)
+            self._delete_counted(
+                deleted_rows,
+                "auto_mode_selections",
+                "scope_kind='frame' AND scope_id IN " + self._marks(roots),
+                roots,
+            )
         if group_ids:
             for table in ("action_events", "execution_attempts"):
                 self._delete_counted(
@@ -253,6 +287,29 @@ class SessionDeletionRepository:
                 )
         if roots:
             root_where = f"root_frame_id IN {self._marks(roots)}"
+            # Explicit rather than relying on foreign-key cascades: older
+            # databases may have been opened with enforcement disabled, and
+            # the recovery ledger must never outlive the message it binds.
+            delivery_ids = self._unique(
+                row["delivery_id"]
+                for row in self._connection.execute(
+                    "SELECT delivery_id FROM completion_deliveries WHERE " + root_where,
+                    roots,
+                ).fetchall()
+            )
+            if delivery_ids:
+                self._delete_counted(
+                    deleted_rows,
+                    "completion_delivery_artifacts",
+                    f"delivery_id IN {self._marks(delivery_ids)}",
+                    delivery_ids,
+                )
+            self._delete_counted(
+                deleted_rows,
+                "completion_deliveries",
+                root_where,
+                roots,
+            )
             for table in (
                 "action_groups",
                 "kernel_generations",
@@ -295,6 +352,12 @@ class SessionDeletionRepository:
             )
         if artifacts:
             artifact_where = f"artifact_id IN {self._marks(artifacts)}"
+            self._delete_counted(
+                deleted_rows,
+                "artifact_capture_observations",
+                artifact_where,
+                artifacts,
+            )
             self._delete_counted(
                 deleted_rows, "artifact_versions", artifact_where, artifacts
             )
@@ -352,7 +415,10 @@ class SessionDeletionRepository:
                 "env_snapshots",
                 f"snapshot_id IN {self._marks(env_snapshot_ids)} AND NOT EXISTS "
                 "(SELECT 1 FROM artifact_versions WHERE "
-                "artifact_versions.env_snapshot_id=env_snapshots.snapshot_id)",
+                "artifact_versions.env_snapshot_id=env_snapshots.snapshot_id) "
+                "AND NOT EXISTS (SELECT 1 FROM artifact_capture_observations WHERE "
+                "artifact_capture_observations.env_snapshot_id="
+                "env_snapshots.snapshot_id)",
                 env_snapshot_ids,
             )
 
@@ -437,6 +503,7 @@ class SessionDeletionRepository:
                     f"review:model:{root}",
                     f"delegation:{root}",
                     f"session:import-quarantine:{root}",
+                    revert_recovery_setting_key(root),
                 ):
                     self._delete_counted(deleted_rows, "settings", "key=?", (key,))
         for frame_id in frames:
@@ -451,6 +518,12 @@ class SessionDeletionRepository:
             )
 
         if project_id is not None:
+            self._delete_counted(
+                deleted_rows,
+                "auto_mode_selections",
+                "scope_kind='project' AND scope_id=?",
+                (project_id,),
+            )
             for table in (
                 "compaction_archives",
                 "permission_requests",

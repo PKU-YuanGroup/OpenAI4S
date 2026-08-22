@@ -11,6 +11,7 @@ Data-dir layout (~/.openai4s):
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -197,6 +198,144 @@ def _env_flag(name: str, default: bool) -> bool:
     if v is None:
         return default
     return v.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+_STRICT_TRUE_VALUES = frozenset(("1", "true", "yes", "on"))
+_STRICT_FALSE_VALUES = frozenset(("0", "false", "no", "off"))
+
+
+def _strict_env_flag(name: str, default: bool = False) -> bool:
+    """Read a security-sensitive rollout flag without truthy fall-through.
+
+    The older, general-purpose :func:`_env_flag` deliberately treats any value
+    outside its false vocabulary as true.  That is convenient for established
+    opt-in controls, but unsafe for dormant roadmap capabilities: a typo such
+    as ``OPENAI4S_AUTO_MODE=flase`` must not enable autonomous behaviour.
+    Unknown values therefore reject configuration instead of silently choosing
+    either branch.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _STRICT_TRUE_VALUES:
+        return True
+    if value in _STRICT_FALSE_VALUES:
+        return False
+    choices = ", ".join(sorted(_STRICT_TRUE_VALUES | _STRICT_FALSE_VALUES))
+    raise ValueError(f"invalid {name}: expected one of {choices}")
+
+
+def _strict_env_choice(name: str, default: str, allowed: frozenset[str]) -> str:
+    """Read and validate a closed-vocabulary environment setting."""
+
+    value = os.environ.get(name, default).strip().lower()
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ValueError(f"invalid {name}: expected one of {choices}")
+    return value
+
+
+def _strict_env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Read an ASCII integer constrained to a fail-closed safety range."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    if not value or not value.isascii() or not value.isdigit():
+        raise ValueError(f"invalid {name}: expected an integer")
+    parsed = int(value, 10)
+    if not minimum <= parsed <= maximum:
+        raise ValueError(
+            f"invalid {name}: expected an integer in [{minimum}, {maximum}]"
+        )
+    return parsed
+
+
+def _strict_env_float(
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    """Read a finite float constrained to a fail-closed safety range."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    if not value:
+        raise ValueError(f"invalid {name}: expected a finite number")
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid {name}: expected a finite number") from exc
+    if not math.isfinite(parsed) or not minimum <= parsed <= maximum:
+        raise ValueError(
+            f"invalid {name}: expected a finite number in [{minimum}, {maximum}]"
+        )
+    return parsed
+
+
+def _auto_mode_enabled() -> bool:
+    """Parse the Stage 0 Auto Mode preset spelling.
+
+    ``autonomous`` is the product name for the same bounded preset selected by
+    the ordinary strict true spellings.  It is deliberately accepted only for
+    this setting, not for the individual roadmap flags.
+    """
+
+    raw = os.environ.get("OPENAI4S_AUTO_MODE")
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value == "autonomous" or value in _STRICT_TRUE_VALUES:
+        return True
+    if value in _STRICT_FALSE_VALUES:
+        return False
+    choices = ", ".join(
+        sorted(_STRICT_TRUE_VALUES | _STRICT_FALSE_VALUES | {"autonomous"})
+    )
+    raise ValueError(f"invalid OPENAI4S_AUTO_MODE: expected one of {choices}")
+
+
+_AUTO_MODE_SELECTION_ENV_FIELDS = (
+    ("OPENAI4S_AUTO_MODE", "preset"),
+    ("OPENAI4S_RESULT_REVIEW_MODE", "result_review_mode"),
+    ("OPENAI4S_APPROVALS_REVIEWER", "approvals_reviewer"),
+)
+
+
+def _auto_mode_deployment_explicit_fields() -> tuple[str, ...]:
+    """Selection fields the operator actually set for this Config generation.
+
+    Capturing this beside the parsed values is load-bearing.  Looking at the
+    environment later cannot distinguish an unset deployment default from an
+    explicit ``off`` after tests, launch wrappers, or embedders have changed
+    ``os.environ``.  The Stage 2 resolver needs that distinction so a built-in
+    default does not erase an older frame's explicit result-review setting.
+    """
+
+    return tuple(
+        field_name
+        for env_name, field_name in _AUTO_MODE_SELECTION_ENV_FIELDS
+        if env_name in os.environ
+    )
+
+
+def _auto_mode_deployment_explicit() -> bool:
+    return any(
+        env_name in os.environ for env_name, _ in _AUTO_MODE_SELECTION_ENV_FIELDS
+    )
 
 
 @dataclass
@@ -386,6 +525,287 @@ def data_root_policies() -> list[tuple[Path, bool]]:
     return roots
 
 
+@dataclass(frozen=True)
+class RoadmapFeatureFlags:
+    """Stage 1--12 rollout reservations from the Auto Mode master plan.
+
+    Every flag defaults off. Stage 1--12 consume only their own flags. Stage
+    12 is the GA kill-switch declaration; it does not silently enable earlier
+    stages.
+    """
+
+    stage1_trusted_delivery: bool = field(
+        default_factory=lambda: _strict_env_flag("OPENAI4S_STAGE1_TRUSTED_DELIVERY")
+    )
+    stage2_auto_run_storage: bool = field(
+        default_factory=lambda: _strict_env_flag("OPENAI4S_STAGE2_AUTO_RUN_STORAGE")
+    )
+    stage3_scientific_review_shadow: bool = field(
+        default_factory=lambda: _strict_env_flag(
+            "OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW"
+        )
+    )
+    stage4_review_completion_gate: bool = field(
+        default_factory=lambda: _strict_env_flag(
+            "OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE"
+        )
+    )
+    stage5_auto_repair: bool = field(
+        default_factory=lambda: _strict_env_flag("OPENAI4S_STAGE5_AUTO_REPAIR")
+    )
+    stage6_guardian_shadow: bool = field(
+        default_factory=lambda: _strict_env_flag("OPENAI4S_STAGE6_GUARDIAN_SHADOW")
+    )
+    stage7_guardian_enforcement: bool = field(
+        default_factory=lambda: _strict_env_flag("OPENAI4S_STAGE7_GUARDIAN_ENFORCEMENT")
+    )
+    stage8_live_notebook_lineage: bool = field(
+        default_factory=lambda: _strict_env_flag(
+            "OPENAI4S_STAGE8_LIVE_NOTEBOOK_LINEAGE"
+        )
+    )
+    stage9_artifact_workbench: bool = field(
+        default_factory=lambda: _strict_env_flag("OPENAI4S_STAGE9_ARTIFACT_WORKBENCH")
+    )
+    stage10_scientific_connectors: bool = field(
+        default_factory=lambda: _strict_env_flag(
+            "OPENAI4S_STAGE10_SCIENTIFIC_CONNECTORS"
+        )
+    )
+    stage11_durable_remote_compute: bool = field(
+        default_factory=lambda: _strict_env_flag(
+            "OPENAI4S_STAGE11_DURABLE_REMOTE_COMPUTE"
+        )
+    )
+    stage12_auto_mode_ga: bool = field(
+        default_factory=lambda: _strict_env_flag("OPENAI4S_STAGE12_AUTO_MODE_GA")
+    )
+
+    def __post_init__(self) -> None:
+        # Dataclasses do not enforce annotations for direct construction.  Do
+        # not let ``1`` or a non-empty string become an accidental enable.
+        for name, value in self.__dict__.items():
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be a bool")
+
+
+_RESULT_REVIEW_MODES = frozenset(("off", "review_only", "auto_fix"))
+_APPROVAL_REVIEWERS = frozenset(("user", "auto_review"))
+
+# Stage 0 froze the selection precedence; the Stage 2 durable project/frame
+# resolver implements and preserves this exact order. ``deployment_explicit``
+# intentionally differs from the built-in
+# default: an unset deployment value must not erase an older frame's result-
+# review preference during compatibility migration.
+AUTO_MODE_SELECTION_PRECEDENCE = (
+    "import_quarantine",
+    "frame",
+    "project",
+    "deployment_explicit",
+    "legacy_result_review",
+    "built_in_defaults",
+)
+AUTO_MODE_LEGACY_RESULT_REVIEW_MODE = "review_only"
+AUTO_MODE_LEGACY_CAN_ENABLE_PERMISSION_REVIEW = False
+AUTO_MODE_IMPORT_QUARANTINE_SELECTION = (False, "off", "user")
+
+
+@dataclass(frozen=True)
+class AutoModeBudgets:
+    """Fail-closed deployment ceilings for the autonomous preset.
+
+    Stage 2 publishes these as read-only policy and freezes them into durable
+    runs; it does not accept a partial project/frame budget override. A later
+    policy layer may add a complete resolver whose overrides only tighten them.
+    """
+
+    max_review_rounds: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_MAX_REVIEW_ROUNDS", 2, minimum=1, maximum=2
+        )
+    )
+    max_repair_rounds: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_MAX_REPAIR_ROUNDS", 2, minimum=0, maximum=2
+        )
+    )
+    repair_turns_per_round: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_REPAIR_TURNS_PER_ROUND", 12, minimum=0, maximum=12
+        )
+    )
+    max_extra_cells: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_MAX_EXTRA_CELLS", 30, minimum=0, maximum=30
+        )
+    )
+    wall_time_s: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_WALL_TIME_S", 900, minimum=1, maximum=900
+        )
+    )
+    extra_token_multiplier: float = field(
+        default_factory=lambda: _strict_env_float(
+            "OPENAI4S_AUTO_EXTRA_TOKEN_MULTIPLIER",
+            1.5,
+            minimum=0.0,
+            maximum=1.5,
+        )
+    )
+    repeated_finding_limit: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_REPEATED_FINDING_LIMIT", 2, minimum=1, maximum=2
+        )
+    )
+    same_action_no_delta_limit: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_SAME_ACTION_NO_DELTA_LIMIT", 3, minimum=1, maximum=3
+        )
+    )
+    no_progress_turn_limit: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_NO_PROGRESS_TURN_LIMIT", 5, minimum=1, maximum=5
+        )
+    )
+    guardian_timeout_s: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_GUARDIAN_TIMEOUT_S", 90, minimum=1, maximum=90
+        )
+    )
+    guardian_consecutive_denial_limit: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_GUARDIAN_CONSECUTIVE_DENIAL_LIMIT",
+            3,
+            minimum=1,
+            maximum=3,
+        )
+    )
+    guardian_window_size: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_GUARDIAN_WINDOW_SIZE", 50, minimum=50, maximum=50
+        )
+    )
+    guardian_window_denial_limit: int = field(
+        default_factory=lambda: _strict_env_int(
+            "OPENAI4S_AUTO_GUARDIAN_WINDOW_DENIAL_LIMIT",
+            10,
+            minimum=1,
+            maximum=10,
+        )
+    )
+
+    def __post_init__(self) -> None:
+        integer_ranges = {
+            "max_review_rounds": (1, 2),
+            "max_repair_rounds": (0, 2),
+            "repair_turns_per_round": (0, 12),
+            "max_extra_cells": (0, 30),
+            "wall_time_s": (1, 900),
+            "repeated_finding_limit": (1, 2),
+            "same_action_no_delta_limit": (1, 3),
+            "no_progress_turn_limit": (1, 5),
+            "guardian_timeout_s": (1, 90),
+            "guardian_consecutive_denial_limit": (1, 3),
+            "guardian_window_size": (50, 50),
+            "guardian_window_denial_limit": (1, 10),
+        }
+        for name, (minimum, maximum) in integer_ranges.items():
+            value = getattr(self, name)
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+        token_multiplier = self.extra_token_multiplier
+        if (
+            isinstance(token_multiplier, bool)
+            or not isinstance(token_multiplier, (int, float))
+            or not math.isfinite(float(token_multiplier))
+            or not 0.0 <= float(token_multiplier) <= 1.5
+        ):
+            raise ValueError("extra_token_multiplier must be in [0.0, 1.5]")
+        object.__setattr__(self, "extra_token_multiplier", float(token_multiplier))
+        if self.guardian_window_denial_limit > self.guardian_window_size:
+            raise ValueError(
+                "guardian_window_denial_limit must not exceed guardian_window_size"
+            )
+
+
+@dataclass(frozen=True)
+class AutoModeConfig:
+    """Deployment selection parsed for the Stage 2 Auto Mode resolver.
+
+    ``enabled`` represents the UI/CLI preset, not a permission bypass.
+    The preset is normalized here so no contradictory configuration can exist:
+    enabled always means ``auto_fix`` + ``auto_review`` + bounded budgets.
+    Stage 2 stores/resolves this selection; later stages own execution.
+    """
+
+    enabled: bool = field(default_factory=_auto_mode_enabled)
+    result_review_mode: str = field(
+        default_factory=lambda: _strict_env_choice(
+            "OPENAI4S_RESULT_REVIEW_MODE", "off", _RESULT_REVIEW_MODES
+        )
+    )
+    approvals_reviewer: str = field(
+        default_factory=lambda: _strict_env_choice(
+            "OPENAI4S_APPROVALS_REVIEWER", "user", _APPROVAL_REVIEWERS
+        )
+    )
+    budgets: AutoModeBudgets = field(default_factory=AutoModeBudgets)
+    # These are captured metadata, not another enable switch.  In particular,
+    # OPENAI4S_AUTO_MODE=off is semantically different from an unset variable
+    # even though both normalize to the same values.
+    deployment_explicit: bool = field(default_factory=_auto_mode_deployment_explicit)
+    deployment_explicit_fields: tuple[str, ...] = field(
+        default_factory=_auto_mode_deployment_explicit_fields
+    )
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ValueError("enabled must be a bool")
+        if not isinstance(self.result_review_mode, str):
+            raise ValueError("result_review_mode must be a string")
+        if not isinstance(self.approvals_reviewer, str):
+            raise ValueError("approvals_reviewer must be a string")
+        if not isinstance(self.budgets, AutoModeBudgets):
+            raise ValueError("budgets must be an AutoModeBudgets")
+        if type(self.deployment_explicit) is not bool:
+            raise ValueError("deployment_explicit must be a bool")
+        if not isinstance(self.deployment_explicit_fields, tuple) or any(
+            not isinstance(field_name, str)
+            or field_name not in {"preset", "result_review_mode", "approvals_reviewer"}
+            for field_name in self.deployment_explicit_fields
+        ):
+            raise ValueError("deployment_explicit_fields contains an unknown field")
+        if len(set(self.deployment_explicit_fields)) != len(
+            self.deployment_explicit_fields
+        ):
+            raise ValueError("deployment_explicit_fields must not contain duplicates")
+        if self.deployment_explicit_fields and not self.deployment_explicit:
+            # Direct construction can supply metadata too.  A named explicit
+            # field and an explicit=false bit cannot both be true; reject the
+            # ambiguous input rather than silently choosing whichever a caller
+            # happened to inspect.
+            raise ValueError(
+                "deployment_explicit must be true when explicit fields are present"
+            )
+        result_mode = self.result_review_mode.strip().lower()
+        approvals_reviewer = self.approvals_reviewer.strip().lower()
+        if result_mode not in _RESULT_REVIEW_MODES:
+            choices = ", ".join(sorted(_RESULT_REVIEW_MODES))
+            raise ValueError(f"invalid result_review_mode: expected one of {choices}")
+        if approvals_reviewer not in _APPROVAL_REVIEWERS:
+            choices = ", ".join(sorted(_APPROVAL_REVIEWERS))
+            raise ValueError(f"invalid approvals_reviewer: expected one of {choices}")
+        if self.enabled:
+            result_mode = "auto_fix"
+            approvals_reviewer = "auto_review"
+        object.__setattr__(self, "result_review_mode", result_mode)
+        object.__setattr__(self, "approvals_reviewer", approvals_reviewer)
+
+    @property
+    def preset(self) -> str:
+        return "autonomous" if self.enabled else "off"
+
+
 @dataclass
 class Config:
     data_dir: Path = field(default_factory=_default_data_dir)
@@ -438,6 +858,10 @@ class Config:
     # Allowlisted roots for the team file area (OPENAI4S_DATA_ROOTS, colon-
     # separated). Empty = feature dormant.
     data_roots: list[Path] = field(default_factory=_data_roots)
+    # Stage 0 fields are appended to preserve Config's positional prefix. Each
+    # corresponding Stage 1–12 consumer remains independently gated and default-off.
+    roadmap_features: RoadmapFeatureFlags = field(default_factory=RoadmapFeatureFlags)
+    auto_mode: AutoModeConfig = field(default_factory=AutoModeConfig)
 
     def ensure_dirs(self) -> None:
         from openai4s.security.permissions import harden_dir

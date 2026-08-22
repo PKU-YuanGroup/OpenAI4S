@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_policy_requires_explicit_setup",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_terminal_contract"
+  ],
+  "surface": "auto_mode_terminal_contract",
+  "task": "Freeze a deterministic policy prerequisite as a non-Guardian terminal.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_terminal_v1",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "non_guardian_terminal",
+    "outcome": "policy_requires_explicit_setup",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-policy",
+      "root_frame_id": "frame-stage0-policy",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-policy",
+      "execution_id": "execution-stage0-policy"
+    },
+    "condition": {
+      "trigger_kind": "noncanonical_target",
+      "refusal_audit_durable": true,
+      "action_executed": false,
+      "guardian_invoked": false
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "policy_requires_explicit_setup",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "golden_payloads",
+      "non_guardian_terminal",
+      "recovery_contract"
+    ]
+  }
+}

@@ -44,6 +44,10 @@
         <button id="dash-new-project" class="outline-btn"><span class="ic" data-icon="plus" data-icon-size="16"></span><span data-i18n="palette.action.newProject">New project</span></button>
       </div>
     </header>
+    <div class="environment-readiness-banner hidden" role="status" aria-live="polite">
+      <div class="environment-readiness-copy"><strong data-environment-readiness-title></strong><span data-environment-readiness-summary></span></div>
+      <button class="outline-btn small" data-open-environment-readiness></button>
+    </div>
     <section id="dash-running" class="dash-running hidden"></section>
     <div class="dash-grid">
       <section class="dash-col">
@@ -99,6 +103,10 @@
             <button id="session-menu-btn" class="icon-ghost" data-i18n-title="session.menu.tip" title="会话操作" data-icon="more-horizontal" data-icon-size="16"></button>
             <button id="dock-toggle" class="icon-ghost" data-i18n-title="conv.dockToggle" title="侧栏面板" data-icon="panel-right" data-icon-size="16"></button>
           </div>
+        </div>
+        <div class="environment-readiness-banner hidden" role="status" aria-live="polite">
+          <div class="environment-readiness-copy"><strong data-environment-readiness-title></strong><span data-environment-readiness-summary></span></div>
+          <button class="outline-btn small" data-open-environment-readiness></button>
         </div>
         <div id="messages" class="messages"></div>
         <div class="composer-wrap">

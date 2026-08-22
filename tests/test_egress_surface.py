@@ -6,7 +6,7 @@ nothing in the repository recorded which modules can open an outbound
 connection. "Off by default, and not a single packet leaves the machine" is a
 claim about the whole tree, and it cannot be checked one file at a time.
 
-So the surface is frozen: twelve modules today, each with a stated reason. A new
+So the surface is frozen: thirteen modules today, each with a stated reason. A new
 one fails this test with its file and line, and the fix is to add it here with a
 justification a reviewer can weigh -- which is the point. Adding a line to this
 table is a decision; adding `urlopen` to a random module is a Tuesday.
@@ -113,6 +113,12 @@ _DECLARED: dict[str, str] = {
         "connections register only the live socket so one wall-clock watchdog "
         "can interrupt connect, TLS, response headers, and body reads."
     ),
+    "openai4s/benchmark/acceptance.py": (
+        "the Stage 0 Ketcher acceptance probe drives the public production "
+        "Gateway through one explicit 127.0.0.1 HTTP request in an isolated "
+        "child/data directory; its browser and benchmark contracts reject "
+        "external requests and record zero external network calls."
+    ),
 }
 
 
@@ -176,16 +182,16 @@ def test_every_declaration_states_a_reason():
 
 
 def test_the_surface_is_small_enough_to_review():
-    """Twelve modules is reviewable. If this fails, the question is not how to
+    """Thirteen modules is reviewable. If this fails, the question is not how to
     raise the bound -- it is why the surface grew.
 
-    It grew once, from eleven to twelve, and the answer is recorded rather than left to
-    archaeology: `kernel/worker.py` dials back to the daemon when a scheduler
-    places it on a compute node (M3b-1). It is a client, not a listener; it is
-    off unless the scheduler set the address; it refuses to run at all without
-    a credential file; and the address it dials was written by this daemon,
-    never taken from a cell or a model."""
-    assert len(_DECLARED) <= 12
+    It grew from eleven for two explicit reasons, recorded rather than left to
+    archaeology. `kernel/worker.py` dials back to the daemon when a scheduler
+    places it on a compute node (M3b-1). `benchmark/acceptance.py` makes one
+    literal-loopback request to an isolated production Gateway for the Stage 0
+    Ketcher route contract. Neither address comes from a cell or model, and the
+    latter's benchmark/browser contracts reject external network traffic."""
+    assert len(_DECLARED) <= 13
 
 
 def test_the_scan_finds_a_planted_call():
