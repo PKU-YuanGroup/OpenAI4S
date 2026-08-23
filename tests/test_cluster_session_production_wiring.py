@@ -155,7 +155,16 @@ def test_terminal_cleanup_does_not_block_the_orchestration_callback(daemon):
     callback_elapsed = time.monotonic() - started
 
     try:
-        assert callback_elapsed < 0.2
+        # The property is "the callback did not block on the session FIFO the
+        # holder thread owns", and the two outcomes are not close: not blocking
+        # is two SQLite reads and a lock, blocking is the holder's 5s barrier.
+        # 0.2s was measuring the fast path's absolute cost on a quiet machine,
+        # which is not what the test is about and is not something a loaded
+        # 4-vCPU runner promises.
+        assert callback_elapsed < 2.0, (
+            f"the orchestration callbacks took {callback_elapsed:.2f}s; anything "
+            "near the holder's 5s barrier means they queued behind it"
+        )
         assert _wait_for(
             lambda: daemon.store.leases.workload_for_session(second_session) is None
         ), "the first session's FIFO stalled cleanup of a second workload"

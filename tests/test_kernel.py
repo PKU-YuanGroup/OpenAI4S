@@ -994,6 +994,51 @@ def test_an_interrupt_inside_a_host_call_leaves_the_kernel_usable():
         assert k.execute("print(host._call('ping', []))")["stdout"].strip() == "pong"
 
 
+def test_a_worker_diagnostic_is_retained_rather_than_dropped(monkeypatch):
+    """`log` frames were read and discarded, so the worker had no way to tell
+    the host anything that does not fit in a response. It needs one: a cell
+    whose SIGINT handler could not be armed cannot be stopped at all, and looks
+    exactly like a slow cell until something says otherwise."""
+
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        real_readline = k._readline
+        injected = {"done": False}
+
+        def readline_once_with_a_diagnostic():
+            if not injected["done"]:
+                injected["done"] = True
+                return {"type": "log", "msg": "SIGINT could not be armed for this cell"}
+            return real_readline()
+
+        monkeypatch.setattr(k, "_readline", readline_once_with_a_diagnostic)
+        k.execute("print('ok')")
+
+        assert injected["done"]
+        assert any("SIGINT could not be armed" in line for line in k.worker_log_tail)
+
+
+def test_arming_failure_is_announced_instead_of_returning_silently(monkeypatch):
+    """Off the main thread `signal.signal` refuses, and `_arm_sigint` returned
+    normally anyway -- so the cell ran under the previous cell's swallow
+    handler with `_sigint_delivered` already cleared. Every stop discarded, and
+    the response frame reporting `interrupted: False` as though none had been
+    asked for."""
+
+    frames: list[dict] = []
+    monkeypatch.setattr(worker_mod, "_write_frame", frames.append)
+
+    def refuse(*_args):
+        raise ValueError("signal only works in main thread of the main interpreter")
+
+    monkeypatch.setattr(worker_mod.signal, "signal", refuse)
+
+    assert worker_mod._arm_sigint() is False
+    assert frames, "the failure was silent"
+    assert frames[0]["type"] == "log"
+    assert "could not be armed" in frames[0]["msg"]
+    assert "watchdog" in frames[0]["msg"], "say what does end the cell instead"
+
+
 def test_an_idle_worker_survives_an_interrupt_before_its_first_cell():
     """Interrupt stops a CELL. It must never end the worker.
 

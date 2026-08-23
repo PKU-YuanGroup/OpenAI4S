@@ -16,6 +16,7 @@ import threading
 import uuid
 from collections import deque
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -156,6 +157,29 @@ KernelBusyError = KernelBusyError
 KernelInterruptUnavailable = KernelInterruptUnavailable
 
 
+@dataclass(frozen=True)
+class InterruptDelivery:
+    """What actually happened when a cell was asked to stop.
+
+    `delivered` is the field to branch on: False means the cell is still
+    running and nothing further will stop it before the watchdog replaces the
+    worker. `target` names which path was taken (``transport`` for a remote
+    allocation, ``sandbox`` for bubblewrap's pinned identity, ``local-process``
+    for a direct signal) and `reason` says why a False is False.
+
+    Falsy when nothing was delivered, so the common check reads as
+    `if not kernel.interrupt():` and a caller that ignores the result keeps the
+    behaviour it had when this method returned None.
+    """
+
+    delivered: bool
+    target: str
+    reason: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.delivered
+
+
 class Kernel:
     def __init__(
         self,
@@ -214,6 +238,9 @@ class Kernel:
         # rather than silently dropped: a number nobody can read is the same
         # dropped frame with a better conscience.
         self._stale_stdout_chunks = 0
+        # The worker's own diagnostics, bounded. Public because the only point
+        # of keeping them is that something can read them back.
+        self.worker_log_tail: deque[str] = deque(maxlen=32)
         self._skill_sidecar_attestation_key = b""
         self.generation = 0  # bumped on every (re)spawn
         # Minted here for a local worker, which learns it through
@@ -573,8 +600,16 @@ class Kernel:
                             )
                         self._skill_sidecar_capture_failed = True
                     elif ftype == "log":
-                        # diagnostic from worker; ignore or log
-                        pass
+                        # Retained, bounded, instead of dropped. The worker
+                        # emits these for conditions it cannot put in a
+                        # response -- "SIGINT could not be armed for this
+                        # cell" is the one that matters, because a cell nobody
+                        # can stop otherwise looks exactly like a cell that is
+                        # merely slow. `openai4s doctor` and the watchdog read
+                        # `worker_log_tail`; nothing branches on it.
+                        message = frame.get("msg")
+                        if isinstance(message, str) and message:
+                            self.worker_log_tail.append(message[:2000])
             finally:
                 if capture is not None:
                     # Unconditional: an interrupt, a dead worker or a raising
@@ -727,12 +762,20 @@ class Kernel:
             )
         self.authorization_generation = text
 
-    def interrupt(self) -> None:
+    def interrupt(self) -> "InterruptDelivery":
         """Deliver ONE SIGINT to the worker ( exec_interrupt).
 
         The worker's one-shot handler raises KeyboardInterrupt inside user code
         and self-disarms, so the interrupt stops the cell but keeps the kernel
         (and its namespace) alive.
+
+        Returns what actually happened. This used to return None, so "the
+        signal went to the worker" and "no signal was sent at all" were the
+        same answer, and every caller reported a cancel it had no evidence for
+        -- while the sandbox's own diagnosis of the gap went to stderr, where
+        no caller can read it. The result is falsy when nothing was delivered,
+        so `if not kernel.interrupt():` is the whole check; callers that ignore
+        it behave exactly as before.
         """
         import signal
 
@@ -749,17 +792,30 @@ class Kernel:
                     "no way to interrupt this worker: it is remote and no "
                     "signal delivery was configured for its allocation"
                 )
-            return
+            return InterruptDelivery(True, "transport")
         sender = getattr(self._sandbox, "send_interrupt", None)
         if callable(sender) and sender(proc.pid, signal.SIGINT):
-            return
+            # The bool said only "this adapter owns delivery". Ask it whether
+            # delivery actually happened.
+            taker = getattr(self._sandbox, "take_interrupt_gap", None)
+            gap = taker() if callable(taker) else None
+            return InterruptDelivery(gap is None, "sandbox", gap)
+        if proc.poll() is not None:
+            # `Popen.send_signal` returns silently for an exited child, so
+            # without this the dead-worker case reported a delivered stop.
+            return InterruptDelivery(
+                False, "local-process", "the worker had already exited"
+            )
         try:
             # Popen owns the direct child identity and synchronizes its poll /
             # signal path. Bubblewrap's numeric grandchild never reaches here;
             # KernelSandbox pins that target with a pidfd above.
             proc.send_signal(signal.SIGINT)
-        except (ProcessLookupError, OSError):
-            pass
+        except (ProcessLookupError, OSError) as error:
+            return InterruptDelivery(
+                False, "local-process", f"{type(error).__name__}: {error}"
+            )
+        return InterruptDelivery(True, "local-process")
 
     def kill_worker(self) -> None:
         """Kill this exact worker without spawning or reading frames.

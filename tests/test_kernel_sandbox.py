@@ -847,6 +847,10 @@ def test_kernel_interrupt_lets_the_sandbox_own_bwrap_signal_delivery():
         pid = 4100
 
         @staticmethod
+        def poll():
+            return None  # alive; `interrupt()` refuses to signal a dead child
+
+        @staticmethod
         def send_signal(signum):
             calls.append(("direct", signum))
 
@@ -857,8 +861,7 @@ def test_kernel_interrupt_lets_the_sandbox_own_bwrap_signal_delivery():
         or True
     )
 
-    kernel.interrupt()
-
+    assert kernel.interrupt().delivered is True
     assert calls == [("sandbox", 4100, signal.SIGINT)]
 
 
@@ -869,6 +872,10 @@ def test_kernel_interrupt_signals_the_direct_process_outside_bwrap():
         pid = 4100
 
         @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
         def send_signal(signum):
             calls.append(("direct", signum))
 
@@ -876,9 +883,91 @@ def test_kernel_interrupt_signals_the_direct_process_outside_bwrap():
     kernel._proc = Process()
     kernel._sandbox = SimpleNamespace(send_interrupt=lambda _pid, _signum: False)
 
-    kernel.interrupt()
+    delivery = kernel.interrupt()
 
     assert calls == [("direct", signal.SIGINT)]
+    assert (delivery.delivered, delivery.target) == (True, "local-process")
+
+
+def test_an_owned_but_undelivered_interrupt_is_reported_as_undelivered():
+    """`send_interrupt` returning True means "this adapter owns delivery", not
+    "a signal arrived" -- six of its branches return True having sent nothing.
+    The sandbox already diagnosed each one; it printed the diagnosis to stderr,
+    where the caller that has to tell a user whether their stop worked cannot
+    read it. Now `interrupt()` reads it back, so a cancel that did nothing
+    stops being indistinguishable from one that worked."""
+
+    class Process:
+        pid = 4100
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def send_signal(signum):  # pragma: no cover - must not be reached
+            raise AssertionError("the sandbox owns delivery; do not double-send")
+
+    gap = "bubblewrap did not provide a pinned command identity"
+    kernel = Kernel.__new__(Kernel)
+    kernel._proc = Process()
+    kernel._sandbox = SimpleNamespace(
+        send_interrupt=lambda _pid, _signum: True,
+        take_interrupt_gap=lambda: gap,
+    )
+
+    delivery = kernel.interrupt()
+
+    assert delivery.delivered is False
+    assert not delivery, "the result must be falsy so `if not interrupt()` works"
+    assert delivery.reason == gap
+    assert delivery.target == "sandbox"
+
+
+def test_interrupting_an_exited_worker_does_not_report_a_delivered_stop():
+    """`Popen.send_signal` returns silently for a child that has already
+    exited, so the old code reported the same nothing for a dead worker as for
+    a live one that took the signal."""
+
+    class Process:
+        pid = 4100
+
+        @staticmethod
+        def poll():
+            return 1  # exited
+
+        @staticmethod
+        def send_signal(signum):  # pragma: no cover - must not be reached
+            raise AssertionError("nothing to signal")
+
+    kernel = Kernel.__new__(Kernel)
+    kernel._proc = Process()
+    kernel._sandbox = SimpleNamespace(send_interrupt=lambda _pid, _signum: False)
+
+    delivery = kernel.interrupt()
+
+    assert delivery.delivered is False
+    assert "already exited" in (delivery.reason or "")
+
+
+def test_the_sandbox_records_every_interrupt_gap_but_prints_once(capsys):
+    """The print is rate-limited for the human reading a terminal. The record
+    is not, because the second stop request needs this call's answer rather
+    than whether an earlier one used up the single print."""
+
+    sandbox = KernelSandbox.__new__(KernelSandbox)
+    sandbox._interrupt_gap_reported = False
+    sandbox._interrupt_gap = None
+
+    sandbox._report_interrupt_gap("first reason")
+    assert sandbox.take_interrupt_gap() == "first reason"
+    assert sandbox.take_interrupt_gap() is None, "the reason must be consumed once"
+
+    sandbox._report_interrupt_gap("second reason")
+    assert sandbox.take_interrupt_gap() == "second reason"
+
+    printed = capsys.readouterr().err
+    assert printed.count("[openai4s] cell interrupt cannot reach") == 1
 
 
 def test_seatbelt_profile_appends_targeted_read_denies():

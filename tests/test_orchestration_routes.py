@@ -68,11 +68,23 @@ def _submit(daemon, cookie: str, command: list[str], **extra):
     )
 
 
-def _await_phase(daemon, job_id: str, cookie: str, *, timeout_s: float = 20.0):
-    """Poll the route until the job reaches a terminal phase.
+def _await_phase(
+    daemon,
+    job_id: str,
+    cookie: str,
+    *,
+    timeout_s: float = 20.0,
+    until=lambda phase: phase.is_terminal,
+):
+    """Poll the route until the job's phase satisfies `until`.
 
     Through the route rather than the store: the DoD's claim is that a user
     can see the job finish, and a store read would prove something weaker.
+
+    `until` defaults to "terminal", which is every existing caller. It exists
+    so a test that needs an *earlier* phase -- "the reconciler has actually
+    started this, so the cancel below cancels something running" -- can wait
+    for that fact instead of sleeping for a second and hoping.
     """
     deadline = time.monotonic() + timeout_s
     last = None
@@ -82,7 +94,7 @@ def _await_phase(daemon, job_id: str, cookie: str, *, timeout_s: float = 20.0):
         )
         assert status == 200, raw[:300]
         last = _body(raw)
-        if Phase(last["phase"]).is_terminal:
+        if until(Phase(last["phase"])):
             return last
         time.sleep(0.2)
     # Self-explaining on failure. A bare "never reached terminal" sent the
@@ -144,8 +156,11 @@ def test_cancel_reaches_terminal(daemon):
         daemon, cookie, [sys.executable, "-c", "import time; time.sleep(120)"]
     )
     job_id = _body(raw)["id"]
-    # let the reconciler actually start it, so this cancels something running
-    time.sleep(1.0)
+    # The premise, asserted rather than slept for: cancelling a job the
+    # reconciler has not started yet exercises a different path, and a fixed
+    # second is a bet on the reconciler's 0.1s tick winning a race against a
+    # real `sys.executable` spawn on a loaded runner.
+    _await_phase(daemon, job_id, cookie, until=lambda phase: phase is not Phase.PENDING)
 
     status, raw = _post(
         daemon.port, f"/api/v1/orchestration/jobs/{job_id}/cancel", {}, cookie=cookie

@@ -334,6 +334,19 @@ host.submit_output(...)                         # scientific-cell completion
 - **One scientific writer per session** — a FIFO execution coordinator exposes
   an exact owner, queue positions, and scoped cancellation; interrupts target an
   execution ID, owner, and frozen kernel lease rather than a session-global PID.
+- **An interrupt reports whether it was delivered.** One SIGINT ends one cell
+  and never the worker: a signal the worker cannot raise yet is latched and
+  paid at the first instruction of user code, and an idle worker swallows one.
+  What the host cannot promise is arrival — `KernelSandbox.send_interrupt`
+  returns True to mean "this adapter owns delivery", and six of its branches
+  own it while sending nothing (no pidfd support, no pinned bubblewrap
+  identity, a worker that exited between being pinned and being signalled).
+  `Kernel.interrupt()` therefore returns an `InterruptDelivery`, falsy when
+  nothing was delivered and carrying the sandbox's own diagnosis of why;
+  `host.exec_interrupt(...)` surfaces it as `interrupt_undelivered`. The
+  alternative is what it replaced: a cancel API answering the same silence for
+  "the cell stopped" and "nothing was sent, and repeating this will send
+  nothing again".
 
 The engine is **pure Python stdlib**: the kernel is a subprocess speaking a hardened JSON-per-line protocol, the LLM client speaks OpenAI Chat-compatible, OpenAI Responses, Anthropic, and Gemini wires over `urllib`, and the daemon is `http.server` + a hand-rolled WebSocket — no framework, no third-party dependency in the core. Provider identities and model-profile presets live in validated process-local catalogs above those four adapters, so a deployment can add an endpoint or model without adding a router branch; a genuinely new wire still requires a focused adapter.
 

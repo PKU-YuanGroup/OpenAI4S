@@ -498,8 +498,16 @@ class KernelSupervisor:
             if not self._matches(slot, lease):
                 return False
             try:
-                slot.kernel.interrupt()
+                delivery = slot.kernel.interrupt()
                 self._touch_slot(slot)
+                # `Kernel.interrupt` now answers whether a signal actually
+                # reached the worker. Six branches of the bubblewrap adapter
+                # own delivery and send nothing, and this method's own contract
+                # -- its caller reads True as "the interrupt was delivered" --
+                # was affirming all of them. `None` is a kernel double making
+                # no claim, and keeps the old answer.
+                if delivery is not None and not delivery:
+                    return False
             except KernelInterruptUnavailable:
                 # Not best-effort, and not swallowable. A remote worker with
                 # no signal path cannot be interrupted at all, and reporting

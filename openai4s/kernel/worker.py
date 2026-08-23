@@ -692,13 +692,37 @@ def _sigint_handler(signum, frame):  # noqa: ANN001, ARG001
     _sigint_pending[0] = True
 
 
-def _arm_sigint() -> None:
+def _arm_sigint() -> bool:
+    """Arm the cell's handler. False means this cell cannot be interrupted.
+
+    The failure is not hypothetical for every caller: `signal.signal` refuses
+    off the main thread, which is where the Jupyter adapter and in-process
+    callers of `_run_cell` may be. It used to return silently, so the cell ran
+    under the *previous* cell's swallow handler with `_sigint_delivered`
+    already cleared -- every stop discarded, and the response frame reporting
+    `interrupted: False` as though none had been asked for. A cell nobody can
+    stop is indistinguishable from a slow one unless somebody says so.
+    """
     _sigint_delivered[0] = False
     _sigint_pending[0] = False
     try:
         signal.signal(signal.SIGINT, _sigint_handler)
-    except (ValueError, OSError):
-        pass  # not main thread / unsupported
+    except (ValueError, OSError) as error:  # not main thread / unsupported
+        try:
+            _write_frame(
+                {
+                    "type": "log",
+                    "msg": (
+                        "SIGINT could not be armed for this cell "
+                        f"({type(error).__name__}: {error}); it cannot be "
+                        "interrupted and only the watchdog can end it"
+                    ),
+                }
+            )
+        except Exception:  # noqa: BLE001 - the cell still runs
+            pass
+        return False
+    return True
 
 
 def _raise_if_sigint_pending() -> None:
