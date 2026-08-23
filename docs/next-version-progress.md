@@ -636,11 +636,12 @@ copy that drifts from the first.
 
 ### T0 — clearing the floor
 
-Uncommitted work landed; the Linux-sandbox release gate that could never pass --
-it required a `harness.smoke.linux_sandbox` run no GitHub-hosted runner can
-perform, so it blocked every release rather than a bad one -- was declared
-unprovable in `release_gates.PLATFORM_CHECKS_UNAVAILABLE` and carried in the
-evidence bundle instead of dropped.
+Uncommitted work landed; the Linux-sandbox release gate had no passing hosted
+evidence, so requiring it blocked every release rather than a bad one. It was
+declared unproven in `release_gates.PLATFORM_CHECKS_UNAVAILABLE` and carried in
+the evidence bundle instead of dropped. The later restricted bwrap profile may
+change the old runner result, but the raw-network interrupt job does not answer
+the full-boundary question.
 
 ### T1 — the security boundary an agent can actually reach
 

@@ -560,39 +560,54 @@ jobs:
         run: uv run python -m harness.smoke.macos_sandbox
 
   # This job proves the private-PID interrupt contract independently of the
-  # broader Linux sandbox smoke. GitHub-hosted runners cannot bring up loopback
-  # in bwrap's new network namespace, so the job deliberately allows raw worker
-  # networking and asserts that exception in the smoke. It therefore proves no
+  # broader Linux sandbox smoke. The job deliberately allows raw worker
+  # networking so its process evidence is independent of network-namespace
+  # setup, and asserts that exception in the smoke. It therefore proves no
   # egress claim. Team KernelReadIsolation, --unshare-pid, the real --info-fd +
   # procfs + pidfd adoption path, Python/R SIGINT delivery, and post-interrupt
-  # persistence all remain mandatory and fail closed.
+  # persistence all remain mandatory and fail closed. Ubuntu 24.04 denies an
+  # unprofiled bwrap's user namespace, so this ephemeral runner loads Ubuntu's
+  # restricted bwrap profile; it does not disable the host-wide AppArmor
+  # user-namespace policy.
   linux-bwrap-kernel-interrupt:
     name: Linux bubblewrap Python/R persistent interrupt
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
-      - name: Install bubblewrap and the real R worker runtime
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap r-base-core r-cran-jsonlite
+      - name: Refresh Ubuntu package metadata
+        run: sudo apt-get update
+      - name: Install bubblewrap, its restricted AppArmor profile, and real R
+        run: >-
+          sudo apt-get install --yes --no-install-recommends
+          apparmor apparmor-profiles bubblewrap r-base-core r-cran-jsonlite
+      - name: Load Ubuntu's bwrap-only user-namespace policy
+        run: >-
+          sudo apparmor_parser --replace
+          /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+      - name: Prove bubblewrap can create the required private PID namespace
+        run: >-
+          /usr/bin/bwrap --die-with-parent --new-session --unshare-ipc --unshare-uts
+          --unshare-pid --ro-bind / / --dev /dev --proc /proc --
+          /usr/bin/python3 -c
+          'import os; raise SystemExit((os.getpid(), os.getppid()) != (2, 1))'
       - name: Install the zero-dependency runtime
         run: uv sync --locked
       - name: Interrupt real private-PID Python and R kernels, then reuse them
         env:
           OPENAI4S_KERNEL_SANDBOX: enforce
-          # Narrow hosted-runner workaround only. The smoke asserts raw_allowed
-          # and does not claim to prove Linux network isolation.
+          # Deliberate scope boundary. The smoke asserts raw_allowed and does
+          # not claim to prove Linux network isolation.
           OPENAI4S_KERNEL_ALLOW_RAW_NETWORK: "1"
         run: uv run python -m harness.smoke.linux_bwrap_interrupt
 
   # The full Linux boundary smoke still does not run here. It includes network
-  # denial, and `harness.smoke.linux_sandbox` cannot pass when a GitHub-hosted
-  # runner refuses bwrap's loopback setup
-  # (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). Keep that
-  # broader claim manual rather than interpreting the interrupt-only job above
-  # as evidence for network confinement.
+  # denial and has not yet been re-evaluated with the restricted bwrap profile
+  # loaded above. Keep that broader claim manual rather than interpreting the
+  # raw-network interrupt job as evidence for network confinement.
 
   linux-bundle-smoke:
     name: Linux app bundle builds and imports (nightly)

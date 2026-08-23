@@ -118,6 +118,8 @@ def test_no_gate_sits_behind_another_command_that_can_fail_it(gate):
                     "npx ",
                     "python -m pip",
                     "sudo apt-get",
+                    "sudo apparmor_parser",
+                    "/usr/bin/bwrap ",
                     "uv run python -m compileall",
                     "uv run pytest --collect-only",
                 )

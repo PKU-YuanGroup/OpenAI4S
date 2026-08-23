@@ -2,10 +2,10 @@
 
 This is intentionally outside default pytest collection.  It needs Linux,
 working unprivileged bubblewrap namespaces, pidfds, and a real R installation.
-Unlike ``linux_sandbox.py`` it does not claim to prove network denial: GitHub's
-hosted runner cannot configure loopback in bwrap's new network namespace, so
-the dedicated CI job explicitly allows raw worker networking.  The filesystem
-and process boundaries under test remain the production team path.
+Unlike ``linux_sandbox.py`` it does not claim to prove network denial: the
+dedicated CI job explicitly allows raw worker networking so its process proof
+is independent of network-namespace setup.  The filesystem and process
+boundaries under test remain the production team path.
 
 Each language starts with ``KernelReadIsolation``, which forces bubblewrap,
 ``--unshare-pid``, the inherited ``--info-fd`` namespace-init report, procfs

@@ -12,15 +12,13 @@ prints. It asserts the backend really is bubblewrap: a run that fell back to
 something else and still passed would be reporting on a boundary it never
 tested.
 
-**This is a manual smoke, not a CI job.** It was scheduled nightly and failed
-every night: a GitHub-hosted runner confines unprivileged user namespaces, so
-bwrap creates its network namespace and then cannot bring up loopback inside it
-(``bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted``). Nothing in
-this repository can fix that from inside the runner, and a check that cannot
-pass is not evidence -- it just trains people to ignore red. docs/platforms.md
-now states the Linux tier as verified-by-hand rather than pointing at a job
-that was always failing. Restoring it to CI needs a host that permits those
-namespaces (self-hosted runner, or a suitably privileged container).
+**This is a manual smoke, not a CI job.** Its former hosted run failed during
+network-namespace setup and was removed because a permanently red check was not
+evidence. The newer targeted interrupt job loads Ubuntu's restricted bwrap
+AppArmor profile, which may change that old result, but this complete boundary
+smoke has not yet been re-evaluated under that setup. docs/platforms.md therefore
+keeps the broad Linux tier verified-by-hand instead of inferring it from the
+raw-network interrupt gate.
 
 Deliberately not in default pytest collection -- it requires `bwrap`, which a
 laptop may not have, and a check that quietly skips is the thing the frozen

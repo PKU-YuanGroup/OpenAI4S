@@ -225,13 +225,18 @@ The release jobs in `.github/workflows/ci.yml` run on pull requests, pushes to
   private PID namespaces, the info-fd/procfs/pidfd command identity path,
   SIGINT delivery, and same-generation execution after the interrupt.
 
-The Linux interrupt check explicitly allows raw worker networking because a
-GitHub-hosted runner cannot configure loopback inside bubblewrap's private
-network namespace. It therefore attests only the private-PID interrupt and
-persistence contract; the complete Linux filesystem-and-egress boundary stays
-a separate manual smoke. The normal CI browser smoke and nightly macOS
-Seatbelt smoke likewise remain separate because they exercise runtime/browser
-and operating-system boundaries rather than archive integrity.
+The Linux interrupt check deliberately allows raw worker networking so its
+process-identity evidence is independent of private-network setup. It
+therefore attests only the private-PID interrupt and persistence contract. On
+Ubuntu 24.04 it loads the distribution's
+`bwrap-userns-restrict` AppArmor profile, which permits bwrap's namespace setup
+but strips capabilities from the worker; it does not turn off the host-wide
+unprivileged-userns restriction. That profile may change the historical
+hosted-runner loopback result, but the complete Linux filesystem-and-egress
+boundary has not yet been re-evaluated there and stays a separate manual
+smoke. The normal CI browser smoke and nightly macOS Seatbelt smoke likewise
+remain separate because they exercise runtime/browser and operating-system
+boundaries rather than archive integrity.
 
 ## Trusted publication
 
