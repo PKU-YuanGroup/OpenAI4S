@@ -1031,14 +1031,20 @@ def test_the_spawn_wires_the_drain_to_the_raw_pipe():
     Asserted on the compiled code rather than the source text: an earlier draft
     matched a source string and broke on a variable rename, and spawning a real
     kernel here hangs the suite.
-    """
-    from openai4s.kernel.manager import Kernel
 
-    assert "fileno" in Kernel._spawn.__code__.co_names, (
+    The target moved from `Kernel._spawn` to `PipeTransport` when the kernel
+    grew a second transport (M3b-1). The claim did not move: this is still
+    about the production wiring for a local child, which is where every drain
+    the product actually runs comes from.
+    """
+    from openai4s.kernel.transport import PipeTransport
+
+    spawn = PipeTransport._start_stderr_drain
+    assert "fileno" in spawn.__code__.co_names, (
         "the drain no longer takes the raw descriptor, so its byte budget is "
         "counted on decoded text"
     )
-    nested = [c for c in Kernel._spawn.__code__.co_consts if hasattr(c, "co_names")]
+    nested = [c for c in spawn.__code__.co_consts if hasattr(c, "co_names")]
     drain = [c for c in nested if "feed" in c.co_names]
     assert drain, "the drain does not feed the bounded tail"
     # `os.read`, not a buffered read. A daemon thread parked inside a buffered

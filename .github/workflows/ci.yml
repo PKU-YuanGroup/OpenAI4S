@@ -111,7 +111,7 @@ jobs:
           python-version: "3.12"
       - name: Install locked development dependencies
         run: uv sync --locked
-      - name: Check the strict agent core and typed Host dispatcher
+      - name: Check the strict agent, Host, and orchestration contracts
         run: uv run mypy
 
   source-security:
@@ -452,11 +452,95 @@ jobs:
             # a file this job does not invoke would reproduce that finding
             # exactly, with a green tick on top.
             node tests/browser_p1_controls.mjs
+            # Stage 1 trusted-delivery acceptance owns a second disposable
+            # daemon on a random loopback port. It drives the production
+            # completion and stored-message renderers through 100 immutable
+            # version links, verifies every downloaded checksum across reload
+            # and reopen, and proves same-head capture observations survive.
+            node tests/browser_stage1_trusted_delivery.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure
         if: failure()
         run: cat "${RUNNER_TEMP}/openai4s-browser.log" || true
+
+  browser-team-mode:
+    name: Team mode in a real browser
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    # Its own job, not a step in `browser-smoke`, because it needs a daemon
+    # that job cannot provide: OPENAI4S_TEAM_MODE=1 plus two seeded accounts,
+    # where the smoke daemon is deliberately single-user and credential-less.
+    #
+    # It exists because `tests/browser_team_mode.mjs` was added, described in
+    # tests/README.md as "the only gate that needs its own daemon", and
+    # invoked by nothing -- which is the finding the comment in `browser-smoke`
+    # above already names: a browser file no gate invokes is not evidence of
+    # anything. This is the only end-to-end coverage of team mode as a person
+    # meets it: the login redirect, the identity chip, the admin governance
+    # panel, the guest's replay-only world, and the cross-user 404s.
+    #
+    # Chromium only: the value here is depth on one engine, not breadth. The
+    # engine matrix belongs to `browser_matrix.mjs`.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Install the zero-dependency server and browser driver
+        run: |
+          uv sync --locked
+          npm install --no-save --ignore-scripts playwright@1.54.1
+          npx playwright install --with-deps chromium
+      - name: Seed two accounts and run the team-mode walk
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-team-mode
+          OPENAI4S_TEAM_MODE: "1"
+          OPENAI4S_KERNEL_SANDBOX: "off"
+          OPENAI4S_SECRET_STORE: plaintext
+          OPENAI4S_HOST: 127.0.0.1
+          OPENAI4S_PORT: "8794"
+        run: |
+          # Generated here and passed by environment, never on argv: a
+          # password in a command line is readable from the process table,
+          # which is the same reason `user add` only takes --password-stdin.
+          admin_pw="$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')"
+          member_pw="$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')"
+
+          # Seed before the daemon starts: `user add` is direct database
+          # access and wants no daemon, and seeding first means the walk
+          # never races account creation.
+          printf '%s\n' "$admin_pw" \
+            | uv run openai4s user add erika --role admin --password-stdin
+          printf '%s\n' "$member_pw" \
+            | uv run openai4s user add mallory --password-stdin
+
+          uv run openai4s serve >"${RUNNER_TEMP}/openai4s-team-mode.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 40); do
+            # --fail treats the 401/303 of a team daemon as "not ready", so
+            # probe a path that answers before login instead.
+            if curl --fail --silent http://127.0.0.1:8794/health >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null; then
+              cat "${RUNNER_TEMP}/openai4s-team-mode.log"
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          OPENAI4S_TEAM_ADMIN_PW="$admin_pw" \
+          OPENAI4S_TEAM_MEMBER_PW="$member_pw" \
+          OPENAI4S_BROWSER_URL=http://127.0.0.1:8794 \
+            node tests/browser_team_mode.mjs
+      - name: Show daemon log after a failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/openai4s-team-mode.log" || true
 
   macos-sandbox-smoke:
     name: macOS sandbox enforcement (nightly)
@@ -475,16 +559,55 @@ jobs:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
 
-  # There is deliberately no Linux bubblewrap job here. `harness.smoke.linux_sandbox`
-  # still exists and still passes on a Linux host that permits unprivileged user
-  # namespaces -- but not on a GitHub-hosted runner, where bwrap cannot bring up
-  # the loopback interface inside its new network namespace
-  # (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). That is the
-  # runner's confinement, not a defect in the sandbox, so the job failed every
-  # single night while telling us nothing about the code. A check that cannot
-  # pass is not evidence; docs/platforms.md now states what is and is not proven
-  # rather than pointing at a job that was always red. Run the smoke by hand on a
-  # permissive Linux host to re-establish the claim.
+  # This job proves the private-PID interrupt contract independently of the
+  # broader Linux sandbox smoke. The job deliberately allows raw worker
+  # networking so its process evidence is independent of network-namespace
+  # setup, and asserts that exception in the smoke. It therefore proves no
+  # egress claim. Team KernelReadIsolation, --unshare-pid, the real --info-fd +
+  # procfs + pidfd adoption path, Python/R SIGINT delivery, and post-interrupt
+  # persistence all remain mandatory and fail closed. Ubuntu 24.04 denies an
+  # unprofiled bwrap's user namespace, so this ephemeral runner loads Ubuntu's
+  # restricted bwrap profile; it does not disable the host-wide AppArmor
+  # user-namespace policy.
+  linux-bwrap-kernel-interrupt:
+    name: Linux bubblewrap Python/R persistent interrupt
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - name: Refresh Ubuntu package metadata
+        run: sudo apt-get update
+      - name: Install bubblewrap, its restricted AppArmor profile, and real R
+        run: >-
+          sudo apt-get install --yes --no-install-recommends
+          apparmor apparmor-profiles bubblewrap r-base-core r-cran-jsonlite
+      - name: Load Ubuntu's bwrap-only user-namespace policy
+        run: >-
+          sudo apparmor_parser --replace
+          /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+      - name: Prove bubblewrap can create the required private PID namespace
+        run: >-
+          /usr/bin/bwrap --die-with-parent --new-session --unshare-ipc --unshare-uts
+          --unshare-pid --ro-bind / / --dev /dev --proc /proc --
+          /usr/bin/python3 -c
+          'import os; raise SystemExit((os.getpid(), os.getppid()) != (2, 1))'
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Interrupt real private-PID Python and R kernels, then reuse them
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+          # Deliberate scope boundary. The smoke asserts raw_allowed and does
+          # not claim to prove Linux network isolation.
+          OPENAI4S_KERNEL_ALLOW_RAW_NETWORK: "1"
+        run: uv run python -m harness.smoke.linux_bwrap_interrupt
+
+  # The full Linux boundary smoke still does not run here. It includes network
+  # denial and has not yet been re-evaluated with the restricted bwrap profile
+  # loaded above. Keep that broader claim manual rather than interpreting the
+  # raw-network interrupt job as evidence for network confinement.
 
   linux-bundle-smoke:
     name: Linux app bundle builds and imports (nightly)

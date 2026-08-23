@@ -88,6 +88,16 @@ class NotesRepository:
             for row in rows
         ]
 
+    def project_of(self, note_id: str) -> str | None:
+        """Which project owns a note. A note is addressed by its own id, so a
+        route that only has that id cannot ask the project guard anything
+        without this."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT project_id FROM notes WHERE note_id=?", (note_id,)
+            ).fetchone()
+        return str(row["project_id"]) if row and row["project_id"] else None
+
     def delete(self, note_id: str) -> None:
         self._execute("DELETE FROM notes WHERE note_id=?", (note_id,))
 
@@ -134,6 +144,14 @@ class FolderRepository:
                 (project_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def project_of(self, folder_id: str) -> str | None:
+        """Which project owns a folder — see `NoteRepository.project_of`."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT project_id FROM folders WHERE folder_id=?", (folder_id,)
+            ).fetchone()
+        return str(row["project_id"]) if row and row["project_id"] else None
 
     def rename(self, folder_id: str, name: str) -> None:
         self._execute(

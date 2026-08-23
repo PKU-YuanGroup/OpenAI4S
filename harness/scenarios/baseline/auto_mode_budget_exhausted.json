@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_budget_exhausted",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_terminal_contract"
+  ],
+  "surface": "auto_mode_terminal_contract",
+  "task": "Freeze admission-time budget exhaustion without silently refilling the run.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_terminal_v1",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "non_guardian_terminal",
+    "outcome": "budget_exhausted",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-budget",
+      "root_frame_id": "frame-stage0-budget",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-budget",
+      "execution_id": "execution-stage0-budget"
+    },
+    "condition": {
+      "budget_kind": "extra_cells",
+      "limit": 30,
+      "observed": 30,
+      "checked_before_admission": true,
+      "action_admitted": false,
+      "same_run_refilled": false,
+      "owner_domain": "general"
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "budget_exhausted",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "golden_payloads",
+      "non_guardian_terminal",
+      "recovery_contract"
+    ]
+  }
+}

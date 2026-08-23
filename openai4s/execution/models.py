@@ -29,6 +29,7 @@ class CaptureResult:
     figures: list[str] = field(default_factory=list)
     files_written: list[str] = field(default_factory=list)
     artifacts: list[dict] = field(default_factory=list)
+    files_read: list[str] = field(default_factory=list)
 
 
 @dataclass

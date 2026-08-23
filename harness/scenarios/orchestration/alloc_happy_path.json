@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "alloc.happy_path",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "A batch workload is submitted, runs, and completes.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "submits": [
+        {
+          "result": "created"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "ACTIVE"
+        },
+        {
+          "phase": "COMPLETED"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "COMPLETED",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submitted",
+      "workload_phase",
+      "workload_terminal",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

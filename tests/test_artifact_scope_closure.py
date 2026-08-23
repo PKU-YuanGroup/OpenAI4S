@@ -77,11 +77,12 @@ def _seed_version(cfg, store, root_frame_id, project_id, filename, payload):
         content_type="text/csv",
         size_bytes=len(payload),
         checksum=hashlib.sha256(payload).hexdigest(),
-        producing_cell_id=None,
+        producing_cell_id=f"cell-{filename}",
         frame_id=root_frame_id,
         root_frame_id=root_frame_id,
         project_id=project_id,
         snapshot_path=str(snapshot),
+        reuse_matching_head=True,
     )
 
 
@@ -121,7 +122,13 @@ def test_agent_sql_cannot_read_the_artifacts_table(two_projects):
 
 @pytest.mark.parametrize(
     "table",
-    ["artifacts", "artifact_versions", "lineage_edges", "env_snapshots"],
+    [
+        "artifacts",
+        "artifact_versions",
+        "artifact_capture_observations",
+        "lineage_edges",
+        "env_snapshots",
+    ],
 )
 def test_agent_sql_cannot_read_any_internal_artifact_table(two_projects, table):
     _cfg, _store, service, _ours, _foreign = two_projects
@@ -196,6 +203,34 @@ def test_a_legitimate_query_still_works(two_projects):
     assert rows == [{"one": 1}]
 
 
+def test_capture_observation_view_returns_only_the_callers_scope(two_projects):
+    _cfg, store, _service, ours, foreign = two_projects
+    mine = store.get_artifact(ours["artifact_id"])
+    rows = store.query(
+        "SELECT artifact_id,version_id,producing_cell_id "
+        "FROM my_artifact_capture_observations ORDER BY ordinal",
+        scope={
+            "root_frame_id": mine["root_frame_id"],
+            "project_id": mine["project_id"],
+        },
+    )
+    assert rows == [
+        {
+            "artifact_id": ours["artifact_id"],
+            "version_id": ours["version_id"],
+            "producing_cell_id": "cell-ours.csv",
+        }
+    ]
+    assert foreign["artifact_id"] not in repr(rows)
+
+
+def test_completion_delivery_ledger_is_never_agent_readable(two_projects):
+    _cfg, store, service, _ours, _foreign = two_projects
+    assert "completion_deliveries" not in store.schema()
+    with pytest.raises((PermissionError, ValueError)):
+        service.query({"sql": "SELECT * FROM completion_deliveries"})
+
+
 def test_agent_sql_cannot_write(two_projects):
     """Refused, and -- checked rather than inferred -- nothing was written."""
     import sqlite3
@@ -259,14 +294,18 @@ def test_a_scoped_view_may_read_its_base_table_but_a_cell_may_not():
     Skill legitimately reads `artifact_versions.source`."""
     import sqlite3
 
-    from openai4s.store import _QueryAuthorizer
+    from openai4s.store import _SCOPED_VIEWS, _QueryAuthorizer
 
-    guard = _QueryAuthorizer()
+    # `published_views` is what the statement actually created. `query()` passes
+    # the scoped set when it published the views and an empty one when it did
+    # not; the class defaults to empty, so "nothing said a view exists" reads as
+    # refused rather than as allowed.
+    guard = _QueryAuthorizer(published_views=_SCOPED_VIEWS)
     assert (
         guard(sqlite3.SQLITE_READ, "artifact_versions", "source", "main", None)
         == sqlite3.SQLITE_DENY
     )
-    guard = _QueryAuthorizer()
+    guard = _QueryAuthorizer(published_views=_SCOPED_VIEWS)
     assert (
         guard(
             sqlite3.SQLITE_READ,
@@ -278,9 +317,22 @@ def test_a_scoped_view_may_read_its_base_table_but_a_cell_may_not():
         == sqlite3.SQLITE_OK
     )
     # And a view name the caller invented does not count.
-    guard = _QueryAuthorizer()
+    guard = _QueryAuthorizer(published_views=_SCOPED_VIEWS)
     assert (
         guard(sqlite3.SQLITE_READ, "artifact_versions", "source", "main", "my_own_view")
+        == sqlite3.SQLITE_DENY
+    )
+    # Nor does the real name when no scope published the views: a statement that
+    # created nothing has no view to have been read through.
+    guard = _QueryAuthorizer()
+    assert (
+        guard(
+            sqlite3.SQLITE_READ,
+            "artifact_versions",
+            "source",
+            "main",
+            "my_artifact_versions",
+        )
         == sqlite3.SQLITE_DENY
     )
 
@@ -450,12 +502,20 @@ def test_the_scoped_views_are_published_once_per_scope_not_once_per_query(tmp_pa
         finally:
             store._conn.set_trace_callback(None)
 
-        assert first_round == 5, (
-            f"five identical-scope queries published {first_round} views; the "
-            f"definitions must be cached against the scope that produced them"
+        # Derived, not hard-coded: the claim is "one publication per scope",
+        # and pinning the literal count made adding a scoped view look like
+        # a caching regression. The number of views is a detail; publishing
+        # them once is the contract.
+        from openai4s.store import _SCOPED_VIEWS
+
+        expected = len(_SCOPED_VIEWS)
+        assert first_round == expected, (
+            f"five identical-scope queries published {first_round} views for "
+            f"{expected} definitions; they must be cached against the scope "
+            f"that produced them"
         )
         assert (
-            after_switch == first_round + 5
+            after_switch == first_round + expected
         ), "a scope change must republish the views"
     finally:
         store.close()

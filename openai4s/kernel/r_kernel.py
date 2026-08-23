@@ -28,6 +28,7 @@ import shutil
 from pathlib import Path
 
 from openai4s.kernel.manager import Kernel
+from openai4s.security.sandbox import KernelReadIsolation
 
 _R_WORKER = Path(__file__).resolve().parent / "r_worker.R"
 
@@ -71,6 +72,7 @@ def spawn_r_kernel(
     cwd: str | None = None,
     rscript: str | None = None,
     env: object | None = None,
+    read_isolation: KernelReadIsolation | None = None,
 ) -> Kernel:
     """Spawn a persistent R kernel, reusing the language-neutral manager.
 
@@ -98,6 +100,7 @@ def spawn_r_kernel(
         env_root=env_root,
         env_name=env_name,
         argv=r_argv(rs),
+        read_isolation=read_isolation,
         # R cannot bound its own output inside a single top-level expression —
         # single threaded, no callback fires mid-expression — so the cell's two
         # streams are sunk to fifos the host drains and caps. See

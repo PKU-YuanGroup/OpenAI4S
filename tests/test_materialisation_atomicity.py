@@ -35,6 +35,10 @@ and event count are all unchanged.
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
+import textwrap
+import threading
 import uuid
 from pathlib import Path
 
@@ -148,20 +152,348 @@ def test_the_live_file_never_shares_an_inode_with_a_snapshot(project):
     ), "the source version's checksum no longer describes its bytes"
 
 
-def test_the_two_snapshots_may_still_share_an_inode(project):
-    """The optimisation the docstring is actually about is kept: snapshot-to-
-    snapshot sharing is safe because both names are immutable by contract, so a
-    materialised multi-gigabyte dataset still costs a directory entry."""
+def test_the_two_snapshots_have_private_inodes(project):
+    """A writable alias must not be able to rewrite two version identities."""
     _cfg, store, service, _ws, _mine, _theirs, source = project
 
     source_snapshot = Path(store.version_meta(source["version_id"])["snapshot_path"])
     record = service.materialise_artifact({"version_id": source["version_id"]})
     new_snapshot = Path(store.version_meta(record["version_id"])["snapshot_path"])
 
-    assert new_snapshot.stat().st_ino == source_snapshot.stat().st_ino, (
-        "the snapshot-to-snapshot hardlink was replaced by a copy; a materialised "
-        "dataset now costs its own bytes"
+    assert new_snapshot.stat().st_ino != source_snapshot.stat().st_ino
+    assert new_snapshot.stat().st_nlink == source_snapshot.stat().st_nlink == 1
+
+
+def test_materialise_refuses_same_length_snapshot_tamper_before_any_write(project):
+    """The source row's checksum, not a pathname precheck, selects the bytes."""
+
+    cfg, store, service, workspace, mine, _theirs, source = project
+    source_snapshot = Path(store.version_meta(source["version_id"])["snapshot_path"])
+    original = source_snapshot.read_bytes()
+    tampered = b"X" * len(original)
+    assert tampered != original
+    source_snapshot.write_bytes(tampered)
+    before_names = {
+        path.name for path in (Path(cfg.data_dir) / "artifact-versions").iterdir()
+    }
+
+    from openai4s.artifact_restore import ArtifactRestoreRefused
+
+    with pytest.raises(ArtifactRestoreRefused, match="checksum verification failed"):
+        service.materialise_artifact({"version_id": source["version_id"]})
+
+    assert store.list_artifacts({"root_frame_id": mine}) == []
+    assert not (workspace / "cohort.csv").exists()
+    assert {
+        path.name for path in (Path(cfg.data_dir) / "artifact-versions").iterdir()
+    } == before_names
+
+
+def test_materialise_rejects_a_pending_snapshot_name_swap(project, monkeypatch):
+    """Materialise uses the upload writer's held pending snapshot inode."""
+
+    cfg, store, service, workspace, mine, _theirs, source = project
+    versions_dir = Path(cfg.data_dir) / "artifact-versions"
+    before_names = {path.name for path in versions_dir.iterdir()}
+    manager = service._default_artifact_manager()
+    original = manager._promote_version_stage
+
+    def swap_pending(stage, final, *, size_bytes, checksum):
+        from openai4s.server.artifacts import _PinnedUploadFile
+
+        attacker_path = stage.path.with_name(stage.path.name + ".evil")
+        with _PinnedUploadFile.create(stage.directory, attacker_path) as attacker:
+            attacker.write(b"X" * size_bytes)
+        stage.directory.replace(attacker_path, stage.path)
+        return original(
+            stage,
+            final,
+            size_bytes=size_bytes,
+            checksum=checksum,
+        )
+
+    monkeypatch.setattr(manager, "_promote_version_stage", swap_pending)
+    from openai4s.server.artifacts import ArtifactOperationError
+
+    with pytest.raises(ArtifactOperationError):
+        service.materialise_artifact({"version_id": source["version_id"]})
+
+    assert store.list_artifacts({"root_frame_id": mine}) == []
+    assert not (workspace / "cohort.csv").exists()
+    assert {path.name for path in versions_dir.iterdir()} == before_names
+
+
+def test_materialise_rejects_a_live_stage_name_swap_before_publication(
+    project, monkeypatch
+):
+    """Renaming a same-size alien stage never publishes a successful row."""
+
+    cfg, store, service, workspace, mine, _theirs, source = project
+    from openai4s.server.artifacts import (
+        _PinnedUploadDirectory,
+        _PinnedUploadFile,
     )
+
+    versions_dir = Path(cfg.data_dir) / "artifact-versions"
+    before_names = {path.name for path in versions_dir.iterdir()}
+    source_bytes = Path(store.version_meta(source["version_id"])["snapshot_path"])
+    expected_size = len(source_bytes.read_bytes())
+    real_replace = _PinnedUploadDirectory.replace
+    swapped = False
+
+    def replace_stage_with_alien(self, staged, destination):
+        nonlocal swapped
+        if not swapped and staged.name.endswith(".part"):
+            attacker_path = self.path / f".{staged.name}.evil"
+            attacker = _PinnedUploadFile.create(self, attacker_path)
+            try:
+                attacker.write(b"X" * expected_size)
+            finally:
+                attacker.close()
+            real_replace(self, attacker_path, staged)
+            swapped = True
+        real_replace(self, staged, destination)
+
+    monkeypatch.setattr(_PinnedUploadDirectory, "replace", replace_stage_with_alien)
+    from openai4s.server.artifacts import ArtifactOperationError
+
+    with pytest.raises(ArtifactOperationError):
+        service.materialise_artifact({"version_id": source["version_id"]})
+
+    assert swapped
+    assert store.list_artifacts({"root_frame_id": mine}) == []
+    assert not (workspace / "cohort.csv").exists()
+    assert list(workspace.iterdir()) == []
+    assert {path.name for path in versions_dir.iterdir()} == before_names
+
+
+def test_parallel_dispatchers_share_one_materialise_writer(project, monkeypatch):
+    """Web, delegated and background-compatible callers linearise by data dir."""
+
+    cfg, store, web_service, workspace, mine, _theirs, first = project
+    second_root = store.new_frame(kind="turn", project_id="p1")
+    second = _seed(
+        cfg,
+        store,
+        second_root,
+        "p1",
+        "cohort.csv",
+        b"BBBB,source\n",
+    )
+    delegated_service = _service(cfg, store, mine, workspace)
+    web_manager = web_service._default_artifact_manager()
+    delegated_manager = delegated_service._default_artifact_manager()
+    assert web_manager is delegated_manager
+    web_service.set_artifact_restorer(
+        None,
+        materialise=web_manager.materialise_version,
+        writer=web_manager.writer_transaction,
+    )
+
+    staged = threading.Event()
+    release = threading.Event()
+    second_started = threading.Event()
+    second_finished = threading.Event()
+    original_stage = web_manager._stage_version_bytes_pinned
+
+    def pause_first_writer(filename, data):
+        result = original_stage(filename, data)
+        staged.set()
+        assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(web_manager, "_stage_version_bytes_pinned", pause_first_writer)
+    outcomes = []
+
+    def run(service, version_id, *, announce=None, finished=None):
+        if announce is not None:
+            announce.set()
+        try:
+            outcomes.append(
+                ("success", service.materialise_artifact({"version_id": version_id}))
+            )
+        except BaseException as error:
+            outcomes.append(("error", error))
+        finally:
+            if finished is not None:
+                finished.set()
+
+    first_thread = threading.Thread(
+        target=run, args=(web_service, first["version_id"]), daemon=True
+    )
+    first_thread.start()
+    assert staged.wait(5)
+    second_thread = threading.Thread(
+        target=run,
+        args=(delegated_service, second["version_id"]),
+        kwargs={"announce": second_started, "finished": second_finished},
+        daemon=True,
+    )
+    second_thread.start()
+    assert second_started.wait(5)
+    assert not second_finished.wait(0.05), "the second dispatcher bypassed the writer"
+    release.set()
+    first_thread.join(5)
+    second_thread.join(5)
+    assert not first_thread.is_alive() and not second_thread.is_alive()
+
+    successes = [value for kind, value in outcomes if kind == "success"]
+    errors = [value for kind, value in outcomes if kind == "error"]
+    assert len(successes) == 1
+    assert len(errors) == 1 and isinstance(errors[0], FileExistsError)
+    artifacts = store.list_artifacts({"root_frame_id": mine})
+    assert len(artifacts) == 1
+    head = store.version_meta(artifacts[0]["latest_version_id"])
+    live = workspace / "cohort.csv"
+    assert head["checksum"] == hashlib.sha256(live.read_bytes()).hexdigest()
+    assert Path(head["snapshot_path"]).read_bytes() == live.read_bytes()
+    assert not list(workspace.glob("*.part"))
+    assert not list((Path(cfg.data_dir) / "artifact-versions").glob(".upload-*.json"))
+    assert not list((Path(cfg.data_dir) / "artifact-versions").glob(".pending-*"))
+
+
+def test_delegated_materialise_uses_root_workspace_and_child_provenance(project):
+    """The producer frame selects provenance, never a child-named workspace."""
+
+    cfg, store, _service_obj, _workspace, parent, _theirs, source = project
+    runner = _runner(cfg)
+    child = store.new_frame(parent_id=parent, kind="delegate", project_id="p1")
+    parent_workspace = runner.active_workspace_for(parent)
+    service = _service(cfg, store, child, parent_workspace)
+    service.set_artifact_restorer(
+        None,
+        materialise=runner.artifacts.materialise_version,
+        writer=runner.artifacts.writer_transaction,
+    )
+
+    record = service.materialise_artifact(
+        {
+            "version_id": source["version_id"],
+            "execution_cell_id": "cell-child-materialise",
+        }
+    )
+    artifact = store.get_artifact(record["artifact_id"])
+    version = store.version_meta(record["version_id"])
+    live = parent_workspace / "cohort.csv"
+    child_workspace = runner.active_workspace_for(child)
+
+    assert artifact["root_frame_id"] == parent
+    assert version["frame_id"] == child
+    assert version["producing_cell_id"] == "cell-child-materialise"
+    assert Path(version["path"]) == live
+    assert live.read_bytes() == b"authoritative,bytes\n"
+    assert not (child_workspace / "cohort.csv").exists()
+    assert [
+        item["version_id"] for item in store.lineage_inputs(record["version_id"])
+    ] == [source["version_id"]]
+
+
+def test_delegated_upload_also_separates_workspace_from_producer(tmp_path):
+    """The generic upload API applies the same actor/root separation."""
+
+    cfg = _cfg(tmp_path)
+    runner = _runner(cfg)
+    store = runner.store
+    try:
+        parent = store.new_frame(kind="turn", project_id="p1")
+        child = store.new_frame(parent_id=parent, kind="delegate", project_id="p1")
+        record = runner.artifacts.upload(
+            {
+                "filename": "child-result.txt",
+                "frame_id": child,
+                "project_id": "p1",
+                "content_base64": "Y2hpbGQgYnl0ZXMK",
+            }
+        )
+        artifact = store.get_artifact(record["artifact_id"])
+        version = store.version_meta(artifact["latest_version_id"])
+        parent_live = runner.active_workspace_for(parent) / "child-result.txt"
+
+        assert artifact["root_frame_id"] == parent
+        assert version["frame_id"] == child
+        assert Path(version["path"]) == parent_live
+        assert parent_live.read_bytes() == b"child bytes\n"
+        assert not (runner.active_workspace_for(child) / "child-result.txt").exists()
+    finally:
+        store.close()
+
+
+def test_materialise_crash_journal_recovers_and_allows_retry(project):
+    """A real process death after pathname publication leaves a recoverable intent."""
+
+    cfg, store, _service_obj, workspace, mine, _theirs, source = project
+    child = textwrap.dedent("""
+        import os
+        import sys
+        from pathlib import Path
+        from openai4s.config import Config
+        from openai4s.host.data import HostDataService
+        from openai4s.store import get_store
+
+        data_dir = Path(sys.argv[1])
+        workspace = Path(sys.argv[2])
+        frame_id = sys.argv[3]
+        source_version_id = sys.argv[4]
+        store = get_store(Config(data_dir=data_dir).db_path)
+
+        def resolve(path, must_exist=False):
+            target = (workspace / path).resolve()
+            if must_exist and not target.exists():
+                raise FileNotFoundError(target)
+            return target
+
+        service = HostDataService(
+            store=store,
+            config=Config(data_dir=data_dir),
+            frame_id=frame_id,
+            resolve_path=resolve,
+        )
+        real_materialise = store.materialise_artifact_version
+
+        def die_after_publish(**kwargs):
+            publish = kwargs["publish"]
+
+            def fatal_publish(version_id, artifact_id):
+                result = publish(version_id, artifact_id)
+                os._exit(73)
+
+            return real_materialise(**{**kwargs, "publish": fatal_publish})
+
+        store.materialise_artifact_version = die_after_publish
+        service.materialise_artifact({"version_id": source_version_id})
+        """)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            child,
+            str(cfg.data_dir),
+            str(workspace),
+            mine,
+            source["version_id"],
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 73, result.stderr
+    versions_dir = Path(cfg.data_dir) / "artifact-versions"
+    assert (workspace / "cohort.csv").exists()
+    assert len(list(versions_dir.glob(".upload-v-*.json"))) == 1
+    assert store.list_artifacts({"root_frame_id": mine}) == []
+
+    retry_service = _service(cfg, store, mine, workspace)
+    retried = retry_service.materialise_artifact({"version_id": source["version_id"]})
+    live = workspace / "cohort.csv"
+    head = store.version_meta(retried["version_id"])
+    assert live.read_bytes() == b"authoritative,bytes\n"
+    assert head["checksum"] == hashlib.sha256(live.read_bytes()).hexdigest()
+    assert Path(head["snapshot_path"]).read_bytes() == live.read_bytes()
+    assert not list(versions_dir.glob(".upload-v-*.json"))
+    assert not list(versions_dir.glob(".pending-*"))
+    assert not list(workspace.glob("*.part"))
+    assert len(list(versions_dir.glob("v-*__cohort.csv"))) == 2
 
 
 # --- a refusal must not have destroyed anything -----------------------------
@@ -240,7 +572,9 @@ def test_a_failed_db_commit_restores_the_previous_live_file(project, monkeypatch
 
     monkeypatch.setattr(store, "materialise_artifact_version", explode)
 
-    with pytest.raises(RuntimeError):
+    from openai4s.server.artifacts import ArtifactOperationError
+
+    with pytest.raises(ArtifactOperationError):
         service.materialise_artifact(
             {"version_id": source["version_id"], "filename": "borrowed.csv"}
         )
@@ -289,7 +623,9 @@ def test_no_staged_part_file_survives_a_failure(project, monkeypatch):
         "materialise_artifact_version",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    with pytest.raises(RuntimeError):
+    from openai4s.server.artifacts import ArtifactOperationError
+
+    with pytest.raises(ArtifactOperationError):
         service.materialise_artifact({"version_id": source["version_id"]})
 
     leftovers = sorted(p.name for p in workspace.rglob("*") if p.is_file())

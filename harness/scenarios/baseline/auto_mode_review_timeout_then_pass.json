@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_review_timeout_then_pass",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_contract"
+  ],
+  "surface": "auto_mode_contract",
+  "task": "Prove one Reviewer timeout retries once and may then verify.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_v3",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "result_review",
+    "outcome": "pass",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-result",
+      "root_frame_id": "frame-stage0-result",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-result",
+      "execution_id": "execution-stage0-result"
+    },
+    "audit_id": "audit-stage0-result",
+    "candidate": {
+      "candidate_id": "candidate-stage0-report-v1",
+      "producer_id": "primary-agent",
+      "summary": "Stage 0 deterministic candidate",
+      "artifact_versions": [
+        {
+          "version_id": "v-stage0-report-1",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "version_id": "v-stage0-table-1",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ]
+    },
+    "evidence_snapshot": {
+      "snapshot_id": "snapshot-stage0-result-1",
+      "candidate_id": "candidate-stage0-report-v1",
+      "artifact_versions": [
+        {
+          "version_id": "v-stage0-report-1",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "version_id": "v-stage0-table-1",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "provenance_version_ids": [
+        "v-stage0-input-1"
+      ],
+      "evidence_refs": [
+        {
+          "ref_id": "evidence-report",
+          "source_kind": "artifact_version",
+          "source_id": "v-stage0-report-1",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "ref_id": "evidence-table",
+          "source_kind": "artifact_version",
+          "source_id": "v-stage0-table-1",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        {
+          "ref_id": "evidence-input",
+          "source_kind": "provenance_version",
+          "source_id": "v-stage0-input-1",
+          "sha256": null
+        }
+      ],
+      "complete": true,
+      "frozen": true
+    },
+    "reviewer_identity": {
+      "reviewer_id": "scientific-reviewer",
+      "candidate_producer_id": "primary-agent",
+      "workspace_access": "read_only",
+      "artifact_write_access": false
+    },
+    "review_policy": {
+      "review_mode": "independent_read_only",
+      "auto_fix_enabled": true,
+      "auto_fix_budget_exhausted": false,
+      "termination_basis": "no_open_material_findings"
+    },
+    "material_findings": []
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [
+    {
+      "point": "scientific_review.before_decision",
+      "occurrence": 1,
+      "kind": "timeout",
+      "message": "first review attempt timed out",
+      "retryable": true
+    }
+  ],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "verified",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "candidate_ready",
+      "auto_audit_started",
+      "fault_injected",
+      "auto_audit_completed",
+      "auto_audit_started",
+      "auto_audit_completed",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "retry_bounded",
+      "golden_payloads",
+      "candidate_nonterminal",
+      "reviewer_independent",
+      "fail_closed"
+    ]
+  }
+}

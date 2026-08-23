@@ -188,12 +188,58 @@ def test_restore_copies_verified_snapshot_to_fresh_version_and_lineage(tmp_path)
         == restored["version_id"]
     )
     new_metadata = harness.store.version_meta(restored["version_id"])
-    assert Path(new_metadata["snapshot_path"]).parent == (harness.config.artifacts_dir)
+    assert Path(new_metadata["snapshot_path"]).parent == (
+        harness.config.data_dir / "artifact-versions"
+    )
     assert Path(new_metadata["snapshot_path"]).read_bytes() == b"alpha"
     assert harness.store.lineage_edges_for(restored["version_id"], "up") == [
         first["version_id"]
     ]
     assert len(harness.store.list_versions(first["artifact_id"])) == 3
+
+
+def test_direct_host_restore_manager_recovers_journals_before_serving(
+    tmp_path, monkeypatch
+):
+    harness = ArtifactControlHarness(tmp_path)
+    first, second, live = harness.two_versions()
+    real_unlink = Path.unlink
+
+    def leave_journal(path, *args, **kwargs):
+        if path.name.startswith(".upload-v-") and path.name.endswith(".json"):
+            raise OSError("simulated direct-host crash before cleanup")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", leave_journal)
+    restored = harness.service.restore_artifact_version(
+        {
+            "artifact_id": first["artifact_id"],
+            "version_id": first["version_id"],
+        }
+    )
+    monkeypatch.undo()
+    journals = list(
+        (harness.config.data_dir / "artifact-versions").glob(".upload-v-*.json")
+    )
+    assert restored["ok"] is True
+    assert journals
+
+    # A fresh headless/CLI service has no daemon ArtifactManager to recover on
+    # its behalf.  Its lazily-created fallback must reconcile the committed
+    # journal before it performs this next restore.
+    fresh_service = harness.service_for(harness.root_frame_id)
+    again = fresh_service.restore_artifact_version(
+        {
+            "artifact_id": first["artifact_id"],
+            "version_id": second["version_id"],
+        }
+    )
+
+    assert again["ok"] is True
+    assert live.read_bytes() == b"beta"
+    assert not list(
+        (harness.config.data_dir / "artifact-versions").glob(".upload-v-*.json")
+    )
 
 
 def test_dispatcher_keeps_restore_behind_approval_and_audits_call(tmp_path):
@@ -212,15 +258,18 @@ def test_dispatcher_keeps_restore_behind_approval_and_audits_call(tmp_path):
         workspace=harness.workspace,
     )
 
-    result = dispatcher(
-        "restore_artifact_version",
-        [
-            {
-                "artifact_id": first["artifact_id"],
-                "version_id": first["version_id"],
-            }
-        ],
-    )
+    with dispatcher.bind_action_context(
+        {"action_group_id": "g-restore", "action_id": "a-restore"}
+    ):
+        result = dispatcher(
+            "restore_artifact_version",
+            [
+                {
+                    "artifact_id": first["artifact_id"],
+                    "version_id": first["version_id"],
+                }
+            ],
+        )
 
     assert result["ok"] is True
     row = harness.store._conn.execute(
@@ -230,6 +279,45 @@ def test_dispatcher_keeps_restore_behind_approval_and_audits_call(tmp_path):
     assert row["method"] == "restore_artifact_version"
     assert row["ok"] == 1
     assert first["artifact_id"] in row["args_preview"]
+
+
+def test_dispatcher_refuses_unbound_background_restore_before_mutation(tmp_path):
+    harness = ArtifactControlHarness(tmp_path)
+    first, second, live = harness.two_versions()
+    harness.store.set_permission_rule(
+        scope="conversation",
+        scope_id=harness.root_frame_id,
+        tool="restore_artifact_version",
+        pattern="*",
+        decision="allow",
+    )
+    dispatcher = HostDispatcher(
+        harness.config,
+        frame_id=harness.root_frame_id,
+        workspace=harness.workspace,
+    )
+    versions_before = harness.store.list_versions(first["artifact_id"])
+
+    # Background kernels deliberately have neither an action context nor the
+    # foreground receipt binding installed by the watchdog worker dispatcher.
+    # Refuse before the shared writer can create a snapshot or change live/head.
+    with pytest.raises(RuntimeError, match="foreground execution scope"):
+        dispatcher(
+            "restore_artifact_version",
+            [
+                {
+                    "artifact_id": first["artifact_id"],
+                    "version_id": first["version_id"],
+                }
+            ],
+        )
+
+    assert live.read_bytes() == b"beta"
+    assert (
+        harness.store.get_artifact(first["artifact_id"])["latest_version_id"]
+        == second["version_id"]
+    )
+    assert harness.store.list_versions(first["artifact_id"]) == versions_before
 
 
 def test_restore_rejects_untrusted_or_corrupt_snapshots_without_mutation(tmp_path):
@@ -282,13 +370,14 @@ def test_restore_refuses_workspace_drift_and_rolls_back_store_failure(
     assert len(harness.store.list_versions(first["artifact_id"])) == 2
 
     live.write_bytes(b"beta")
-    snapshots_before = set(harness.config.artifacts_dir.iterdir())
+    versions_dir = harness.config.data_dir / "artifact-versions"
+    snapshots_before = set(versions_dir.iterdir()) if versions_dir.exists() else set()
 
     def fail_restore(**fields):
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(harness.store, "record_artifact_restore", fail_restore)
-    with pytest.raises(RuntimeError, match="database unavailable"):
+    with pytest.raises(RuntimeError, match="artifact restore failed"):
         harness.service.restore_artifact_version(
             {
                 "artifact_id": first["artifact_id"],
@@ -296,7 +385,7 @@ def test_restore_refuses_workspace_drift_and_rolls_back_store_failure(
             }
         )
     assert live.read_bytes() == b"beta"
-    assert set(harness.config.artifacts_dir.iterdir()) == snapshots_before
+    assert set(versions_dir.iterdir()) == snapshots_before
     assert (
         harness.store.get_artifact(first["artifact_id"])["latest_version_id"]
         == second["version_id"]

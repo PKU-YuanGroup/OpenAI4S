@@ -33,6 +33,7 @@ const ICONS = {
   "maximize-2": '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/>',
   "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
   "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  "server": '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
   "notebook": '<path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M16 2v20"/>',
   "folder": '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   "compass": '<circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3Z"/>',
@@ -124,6 +125,7 @@ const S = { projects: [], sessions: [], project: null, currentId: null, ws: null
   actionTimelineSelectedGroupId: null, actionTimelineSelectedBranchId: null,
   recoveryActions: null, branchState: null, branchUndo: null, contextState: null, securityState: null, computeTasks: null,
   delegationState: null,
+  environmentStatus: null, standardProfileReadiness: null, _environmentStatusPromise: null, _environmentStatusRefreshFailed: false,
   workbenchErrors: {}, _workbenchReq: 0, _timelineHistoryReq: 0, _timelineHistoryLoading: null, _timelineView: null,
   _recoveryActionLoading: null, _branchActionLoading: null, _timelineRestoreFocusGroupId: null,
   variableInspector: { language: "python", results: {}, loading: null, error: "", request: 0 } };
@@ -234,6 +236,7 @@ try {
 } catch {}
 // Re-render the dynamic (JS-built) views currently on screen after a language switch.
 function rerenderI18n() {
+  try { renderEnvironmentReadinessBanner(); } catch {}
   try { if (!$("#dashboard").classList.contains("hidden")) loadDashboard(); } catch {}
   try { renderProjMenu(); } catch {}
   try { renderSessions(); } catch {}
@@ -354,6 +357,23 @@ Object.assign(I18N.zh, {
   "conv.title.default": "会话",
   "conv.title.rename": "重命名会话（回车保存）",
   "cust.compute.desc": "本地内核环境、预装包与加速器",
+  "environment.readiness.bannerTitle": "standard 科研环境尚未就绪",
+  "environment.readiness.bannerMissing": "缺少 {0} 个环境、{1} 个软件包；首个科研 Cell 运行前需要处理。",
+  "environment.readiness.bannerUnavailable": "当前无法确认科研环境是否就绪；未知状态不会被显示成就绪。",
+  "environment.readiness.openCompute": "查看缺项与修复命令",
+  "environment.readiness.cardTitle": "Standard profile readiness",
+  "environment.readiness.ready": "就绪：Python 与 R 的 standard 依赖均已核对。",
+  "environment.readiness.needsSetup": "需要创建缺失的 standard 环境。",
+  "environment.readiness.needsRepair": "环境存在，但缺少 standard 清单中的软件包。",
+  "environment.readiness.unavailable": "无法完成本地 readiness 检查；系统未将它猜测为就绪。",
+  "environment.readiness.missingEnvironments": "缺少环境",
+  "environment.readiness.missingPackages": "{0} 缺少的软件包",
+  "environment.readiness.remediation": "受管修复命令",
+  "environment.readiness.explicitOnly": "仅复制；必须由你显式运行，不会自动安装。",
+  "environment.readiness.copy": "复制命令",
+  "environment.readiness.copied": "修复命令已复制",
+  "environment.readiness.refresh": "刷新 readiness",
+  "environment.readiness.sendBlocked": "首个科研 Cell 已在启动前停止。请先完成 standard 环境配置。",
   "cust.compute.gpuAvailable": "可用",
   "cust.compute.gpuName": "GPU",
   "cust.compute.gpuUnavailable": "不可用（本地无 GPU；重型模型以标注的 CPU 近似替代，或走 Modal/SSH 远程算力）",
@@ -632,6 +652,10 @@ Object.assign(I18N.zh, {
   "editor.label": "编辑 {0}",
   "empty.sub": "描述你的科研任务，智能体会写 Python、联网检索、调用技能并产出图表/报告/结构文件。可试试：",
   "empty.title": "开始一个新分析",
+  "review.badge.candidate": "候选 · 未验证",
+  "review.badge.verified": "已验证",
+  "review.badge.completed_with_issues": "完成 · 未验证",
+  "review.badge.review_unavailable": "审核不可用 · 未验证",
   "export.artifactsHeading": "## 产物",
   "export.messageAssistant": "🤖 助手",
   "export.messageUser": "🧑 用户",
@@ -658,6 +682,20 @@ Object.assign(I18N.zh, {
   "kernel.started": "内核已启动",
   "kernel.stopped": "内核已停止（会话保留，可随时启动以恢复）",
   "ketcher.modalTitle": "Ketcher — 化学结构编辑器",
+  "wb.table.filter": "筛选 col:值",
+  "wb.table.prev": "上一页",
+  "wb.table.next": "下一页",
+  "wb.table.meta": "{0} 行 · 显示 {1}–{2}",
+  "wb.ketcher.edit": "在 Ketcher 中编辑",
+  "wb.locator.title": "按位置评论（进入下一轮）",
+  "wb.locator.pdfPage": "PDF 页码",
+  "wb.locator.pdfPrev": "上一页",
+  "wb.locator.pdfNext": "下一页",
+  "wb.locator.quote": "选中的原文",
+  "wb.locator.selector": "CSS 选择器，如 #hit",
+  "wb.locator.body": "评论…",
+  "wb.locator.saved": "评论已保存",
+  "wb.locator.err": "评论失败：{0}",
   "key.banner.goConfigure": "去配置 →",
   "key.banner.notConfigured": " 尚未配置 API Key，发送消息会失败。",
   "label.apiKey": "API Key",
@@ -695,6 +733,11 @@ Object.assign(I18N.zh, {
   "nb.cell.statusOk": "ok",
   "nb.cell.statusRunning": "running",
   "nb.kernel.shared": "与 Agent 共享",
+  "nb.owner.agent": "Agent",
+  "nb.owner.user_repl": "用户 REPL",
+  "nb.owner.repair": "Repair",
+  "nb.owner.review_scratch": "Review scratch",
+  "nb.owner.generation": "generation {0}",
   "nb.chips.all": "全部",
   "nb.empty": "运行任务后，这里会显示 Notebook 代码单元与输出。",
   "nb.env.placeholder": "环境…",
@@ -970,6 +1013,7 @@ Object.assign(I18N.zh, {
   "perm.continuePrompt": "继续。刚才批准的是守护进程重启前被中断的操作；请先重新评估当前状态，只在仍有必要时发起新的操作，不要假设原操作已经执行。",
   "perm.lbl.rememberRule": "记住规则（可用 * 通配）",
   "perm.lbl.rememberScope": "记住范围",
+  "perm.lbl.resolvedPath": "解析后路径：{0}",
   "perm.placeholder.denyReason": "（可选）拒绝原因，会反馈给智能体",
   "perm.scope.conversation": "本对话",
   "perm.scope.global": "全局",
@@ -981,6 +1025,10 @@ Object.assign(I18N.zh, {
   "perm.status.afterRestartDenied": "已拒绝；守护进程重启后，原操作未执行。",
   "perm.status.denied": "已拒绝",
   "perm.sub.approvalNeeded": "智能体请求执行下面的操作，需要你的批准。",
+  "perm.review.credential_path": "解析后的目标命中了凭据路径规则。允许前请核对实际路径。",
+  "perm.review.dynamic_file_search": "此搜索会在开始后才确定要读取的文件。允许前请核对搜索范围。",
+  "perm.review.unreviewable_path": "自动复核无法确定目标路径，需要人工确认。",
+  "perm.review.verification_failed": "自动文件安全复核失败，需要人工确认。",
   "perm.title.run": "运行 {0}",
   "plan.approve": "批准并执行",
   "plan.approveFailed": "批准失败：{0}",
@@ -1096,6 +1144,11 @@ Object.assign(I18N.zh, {
   "prov.msg.roleUser": "User",
   "prov.review.noLineage": "暂无溯源信息（execution log 为空或未记录文件 I/O）。",
   "prov.review.producedBy": "由单元 {0} 生成",
+  "prov.review.producedByIdentity": "由 Cell {0} 生成",
+  "prov.review.producerFrame": "{0} frame · {1}",
+  "prov.review.nonCellProducer": "由非 Cell 动作生成",
+  "prov.review.sameBytesCapture": "相同字节 · capture observation",
+  "prov.review.versionCapture": "版本捕获 · capture observation",
   "prov.review.readsInputs": "读取 / 输入",
   "prov.review.saved": "已保存 · {0}",
   "prov.review.viewCode": "查看产生它的代码",
@@ -1120,6 +1173,21 @@ Object.assign(I18N.zh, {
   "sessionMenu.downloadArtifacts": "下载产物",
   "sessionMenu.exportMarkdown": "导出为 Markdown",
   "sessionMenu.viewNotebook": "查看 Notebook",
+  "compute.menu.runLocation": "运行位置",
+  "compute.location.local": "本机（守护进程）",
+  "compute.location.localHint": "内核跑在这台运行 daemon 的机器上。",
+  "compute.dialog.title": "这个会话在哪里运行",
+  "compute.dialog.notConfigured": "本 daemon 未开启 worker 监听，无法在集群上运行会话。",
+  "compute.dialog.release": "释放集群资源",
+  "compute.badge.local": "本机",
+  "compute.blocked.allocation": "排队等待资源",
+  "compute.blocked.workspace": "准备工作区",
+  "compute.blocked.worker": "等待 worker 连回",
+  "compute.blocked.kernel": "启动内核",
+  "compute.badge.ready": "集群就绪",
+  "compute.lost.title": "内核状态已丢失",
+  "compute.lost.body": "这个会话的资源被回收，内核的内存随之丢失（变量、import、已加载的数据都不在了）。会话已在新的 epoch 上继续，但之前定义的东西需要重新执行。",
+  "compute.lost.dismiss": "知道了",
   "sessionMenu.moveToFolder": "移动到文件夹",
   "skill.bodyPlaceholder": "SKILL.md 正文（Markdown 配方：步骤、代码、注意事项…）",
   "skill.descPlaceholder": "一句话描述（用于技能检索）",
@@ -1248,6 +1316,12 @@ Object.assign(I18N.zh, {
   "versions.empty": "暂无版本历史。",
   "versions.load.err": "加载失败：{0}",
   "versions.modal.title": "版本历史 — {0}",
+  "versions.diff": "比较 v{0} ↔ v{1}",
+  "versions.diff.title": "v{0} ↔ v{1} 文本差异",
+  "versions.diff.loading": "正在加载差异…",
+  "versions.diff.empty": "这两个版本的文本内容相同。",
+  "versions.diff.err": "差异加载失败：{0}",
+  "versions.diff.truncated": "差异过长，仅显示前 {0} 个字符。",
   "versions.restore": "恢复此版本",
   "versions.restore.err": "恢复失败：{0}",
   "versions.restored": "已恢复到 v{0}",
@@ -1387,6 +1461,23 @@ Object.assign(I18N.en, {
   "conv.title.default": "Session",
   "conv.title.rename": "Rename session (press Enter to save)",
   "cust.compute.desc": "Local kernel environments, preinstalled packages and accelerators",
+  "environment.readiness.bannerTitle": "The standard science environment is not ready",
+  "environment.readiness.bannerMissing": "Missing {0} environment(s) and {1} package(s); resolve these before the first science Cell runs.",
+  "environment.readiness.bannerUnavailable": "Science-environment readiness cannot be confirmed; an unknown state is not shown as ready.",
+  "environment.readiness.openCompute": "View gaps and repair command",
+  "environment.readiness.cardTitle": "Standard profile readiness",
+  "environment.readiness.ready": "Ready: the standard Python and R dependencies were checked.",
+  "environment.readiness.needsSetup": "One or more standard environments must be created.",
+  "environment.readiness.needsRepair": "The environments exist, but packages from the standard manifest are missing.",
+  "environment.readiness.unavailable": "The local readiness check could not complete; the UI does not guess that it is ready.",
+  "environment.readiness.missingEnvironments": "Missing environments",
+  "environment.readiness.missingPackages": "Packages missing from {0}",
+  "environment.readiness.remediation": "Managed repair command",
+  "environment.readiness.explicitOnly": "Copy only; you must run it explicitly. Nothing is installed automatically.",
+  "environment.readiness.copy": "Copy command",
+  "environment.readiness.copied": "Repair command copied",
+  "environment.readiness.refresh": "Refresh readiness",
+  "environment.readiness.sendBlocked": "The first science Cell was stopped before startup. Complete the standard environment setup first.",
   "cust.compute.gpuAvailable": "Available",
   "cust.compute.gpuName": "GPU",
   "cust.compute.gpuUnavailable": "Unavailable (no local GPU; heavy models fall back to annotated CPU approximations, or use Modal/SSH remote compute)",
@@ -1665,6 +1756,10 @@ Object.assign(I18N.en, {
   "editor.label": "Editing {0}",
   "empty.sub": "Describe your research task and the agent will write Python, search the web, invoke skills, and produce charts/reports/structure files. Try:",
   "empty.title": "Start a new analysis",
+  "review.badge.candidate": "Candidate · not verified",
+  "review.badge.verified": "Verified",
+  "review.badge.completed_with_issues": "Completed · unverified",
+  "review.badge.review_unavailable": "Unavailable · not verified",
   "export.artifactsHeading": "## Artifacts",
   "export.messageAssistant": "🤖 Assistant",
   "export.messageUser": "🧑 User",
@@ -1691,6 +1786,20 @@ Object.assign(I18N.en, {
   "kernel.started": "Kernel started",
   "kernel.stopped": "Kernel stopped (session preserved; start anytime to resume)",
   "ketcher.modalTitle": "Ketcher — Chemical Structure Editor",
+  "wb.table.filter": "Filter col:value",
+  "wb.table.prev": "Previous",
+  "wb.table.next": "Next",
+  "wb.table.meta": "{0} rows · showing {1}–{2}",
+  "wb.ketcher.edit": "Edit in Ketcher",
+  "wb.locator.title": "Location comments (sent on the next turn)",
+  "wb.locator.pdfPage": "PDF page",
+  "wb.locator.pdfPrev": "Previous page",
+  "wb.locator.pdfNext": "Next page",
+  "wb.locator.quote": "Selected source text",
+  "wb.locator.selector": "CSS selector, e.g. #hit",
+  "wb.locator.body": "Comment…",
+  "wb.locator.saved": "Comment saved",
+  "wb.locator.err": "Comment failed: {0}",
   "key.banner.goConfigure": "Configure →",
   "key.banner.notConfigured": " No API Key configured yet; sending messages will fail.",
   "label.apiKey": "API Key",
@@ -1728,6 +1837,11 @@ Object.assign(I18N.en, {
   "nb.cell.statusOk": "ok",
   "nb.cell.statusRunning": "running",
   "nb.kernel.shared": "shared with the agent",
+  "nb.owner.agent": "Agent",
+  "nb.owner.user_repl": "User REPL",
+  "nb.owner.repair": "Repair",
+  "nb.owner.review_scratch": "Review scratch",
+  "nb.owner.generation": "generation {0}",
   "nb.chips.all": "All",
   "nb.empty": "After running a task, Notebook code cells and outputs will appear here.",
   "nb.env.placeholder": "Environment…",
@@ -2003,6 +2117,7 @@ Object.assign(I18N.en, {
   "perm.continuePrompt": "Continue. The operation I just approved was interrupted before the daemon restarted. Re-evaluate the current state first, issue a fresh action only if it is still needed, and do not assume the original operation executed.",
   "perm.lbl.rememberRule": "Remember rule (use * as wildcard)",
   "perm.lbl.rememberScope": "Remember scope",
+  "perm.lbl.resolvedPath": "Resolved path: {0}",
   "perm.placeholder.denyReason": "(Optional) reason for denial, will be sent to the agent",
   "perm.scope.conversation": "This conversation",
   "perm.scope.global": "Global",
@@ -2014,6 +2129,10 @@ Object.assign(I18N.en, {
   "perm.status.afterRestartDenied": "Denied; the original operation did not execute after the daemon restart.",
   "perm.status.denied": "Denied",
   "perm.sub.approvalNeeded": "The agent requests to perform the operation below and needs your approval.",
+  "perm.review.credential_path": "The resolved destination matches a credential-path rule. Verify the actual path before allowing it.",
+  "perm.review.dynamic_file_search": "This search chooses the files it will read only after it starts. Verify the search scope before allowing it.",
+  "perm.review.unreviewable_path": "Automatic review could not establish the destination path. Manual confirmation is required.",
+  "perm.review.verification_failed": "Automatic file-safety verification failed. Manual confirmation is required.",
   "perm.title.run": "Run {0}",
   "plan.approve": "Approve and execute",
   "plan.approveFailed": "Approval failed: {0}",
@@ -2129,6 +2248,11 @@ Object.assign(I18N.en, {
   "prov.msg.roleUser": "User",
   "prov.review.noLineage": "No provenance information (execution log is empty or no file I/O was recorded).",
   "prov.review.producedBy": "produced by cell {0}",
+  "prov.review.producedByIdentity": "produced by Cell {0}",
+  "prov.review.producerFrame": "{0} frame · {1}",
+  "prov.review.nonCellProducer": "produced by a non-Cell action",
+  "prov.review.sameBytesCapture": "same bytes · capture observation",
+  "prov.review.versionCapture": "version capture · capture observation",
   "prov.review.readsInputs": "reads / inputs",
   "prov.review.saved": "saved · {0}",
   "prov.review.viewCode": "View the code that produced it",
@@ -2153,6 +2277,21 @@ Object.assign(I18N.en, {
   "sessionMenu.downloadArtifacts": "Download artifacts",
   "sessionMenu.exportMarkdown": "Export as Markdown",
   "sessionMenu.viewNotebook": "View notebook",
+  "compute.menu.runLocation": "Run location",
+  "compute.location.local": "This machine (daemon)",
+  "compute.location.localHint": "The kernel runs on the host running the daemon.",
+  "compute.dialog.title": "Where this session runs",
+  "compute.dialog.notConfigured": "This daemon has no worker listener, so sessions cannot run on a cluster.",
+  "compute.dialog.release": "Release the cluster resource",
+  "compute.badge.local": "local",
+  "compute.blocked.allocation": "queued for a resource",
+  "compute.blocked.workspace": "preparing the workspace",
+  "compute.blocked.worker": "waiting for the worker to dial in",
+  "compute.blocked.kernel": "starting the kernel",
+  "compute.badge.ready": "cluster ready",
+  "compute.lost.title": "Kernel state was lost",
+  "compute.lost.body": "This session's resource went away and the kernel's memory went with it — variables, imports and loaded data are gone. The session continued on a new attempt, but anything defined earlier has to be run again.",
+  "compute.lost.dismiss": "Got it",
   "sessionMenu.moveToFolder": "Move to folder",
   "skill.bodyPlaceholder": "SKILL.md body (Markdown recipe: steps, code, caveats…)",
   "skill.descPlaceholder": "One-line description (used for skill retrieval)",
@@ -2281,6 +2420,12 @@ Object.assign(I18N.en, {
   "versions.empty": "No version history yet.",
   "versions.load.err": "Load failed: {0}",
   "versions.modal.title": "Version history — {0}",
+  "versions.diff": "Compare v{0} ↔ v{1}",
+  "versions.diff.title": "Text diff v{0} ↔ v{1}",
+  "versions.diff.loading": "Loading diff…",
+  "versions.diff.empty": "These versions have identical text content.",
+  "versions.diff.err": "Could not load diff: {0}",
+  "versions.diff.truncated": "Diff is long; showing the first {0} characters.",
   "versions.restore": "Restore this version",
   "versions.restore.err": "Restore failed: {0}",
   "versions.restored": "Restored to v{0}",
@@ -2760,7 +2905,7 @@ function sanitizeBranches(payload) {
   };
 }
 function branchUndoFromProjection(state) {
-  if (!state || !state.branch_id) return null;
+  if (!state || !state.branch_id || !state.capabilities || state.capabilities.revert !== true) return null;
   const branch = (state.branches || []).find(item => item.branch_id === state.branch_id);
   const checkpoint = branch && (branch.checkpoints || []).find(item => item.checkpoint_id === branch.head_checkpoint_id);
   return checkpoint && checkpoint.undo_revert_checkpoint_id ? {
@@ -3009,10 +3154,11 @@ function scheduleWorkbenchRefresh(delay = 180) {
   clearTimeout(S._workbenchTimer);
   S._workbenchTimer = setTimeout(() => loadWorkbenchState(S.currentId, true), delay);
 }
-function scheduleBranchConversationResync(fid, delay = 120) {
+function scheduleConversationResync(fid, delay = 120) {
   clearTimeout(S._branchConversationTimer);
   S._branchConversationTimer = setTimeout(() => { if (S.currentId === fid) openConversation(fid, S.project); }, delay);
 }
+function scheduleBranchConversationResync(fid, delay = 120) { scheduleConversationResync(fid, delay); }
 function latestCellForLanguage(language) {
   return (S.cells || []).concat(S.liveCells || []).filter(cell => String(cell.language || cell.kernel_id || "python").toLowerCase().startsWith(language)).slice(-1)[0] || null;
 }
@@ -3023,7 +3169,8 @@ function runtimeSummary() {
   const recovery = S.recoveryState || {};
   const recoveryStatus = String(recovery.status || "").toLowerCase();
   const trustState = publicText(recovery.trust_state || (S.recoveryActions || {}).trust_state || (_kc.st || {}).trust_state, 32);
-  const viewOnly = recovery.view_only === true || (S.recoveryActions || {}).view_only === true || (_kc.st || {}).view_only === true;
+  const explicitRecoveryRequired = recovery.explicit_recovery_required === true || (S.recoveryActions || {}).explicit_recovery_required === true || (_kc.st || {}).explicit_recovery_required === true;
+  const viewOnly = explicitRecoveryRequired || recovery.view_only === true || (S.recoveryActions || {}).view_only === true || (_kc.st || {}).view_only === true;
   let status = "ended";
   if (/fail|error/.test(recoveryStatus)) status = "failed";
   else if (/partial/.test(recoveryStatus)) status = "partial";
@@ -4877,13 +5024,31 @@ function onEvent(m) {
     scheduleWorkbenchRefresh(60); if (S.activeTab === "timeline") renderActionTimeline();
   } }
   else if (["sandbox", "sandbox_status", "security_status"].includes(m.type)) { if (mine(fid)) { S.securityState = sanitizeSecurity(m); if (S.activeTab === "timeline") renderActionTimeline(); } }
-  else if (m.type === "text_chunk") { if (mine(fid) && !isStaleTurnEvent(m)) feed(m.block_type || "text", m.chunk || "", m); }
+  else if (m.type === "text_chunk") { if (mine(fid) && !isStaleTurnEvent(m)) feed(
+    // A persist-first gated turn can be reopened while its Reviewer is still
+    // running. REST has already rendered the canonical candidate in that case,
+    // and replaying the same provisional bytes below it creates a second answer.
+    // Shared turn/execution identity lets the durable row own those chunks.
+    m.block_type || "text", m.chunk || "", m, storedCandidateOwnsChunk(m)
+  ); }
   else if (m.type === "step") { if (mine(fid)) addLiveStep(m); }
   else if (m.type === "step_update") { if (mine(fid)) updateLiveStep(m); }
   else if (m.type === "plan_ready") { if (mine(fid)) renderPlanCard(m.plan, m.status); }
   else if (m.type === "plan_progress") { if (mine(fid)) updatePlanProgress(m); }
   else if (m.type === "await_permission") { if (mine(fid)) { renderPermissionCard(m); scheduleWorkbenchRefresh(); } }
   else if (m.type === "permission_resolved") { if (mine(fid)) { resolvePermissionCard(m); scheduleWorkbenchRefresh(); } }
+  else if (m.type === "candidate_ready" && m.gates_completion) {
+    if (mine(fid) || mine(m.root_frame_id)) markCandidateReady(m);
+  }
+  else if (m.type === "auto_run_terminal") {
+    // This closes the durable audit run, not the answer delivery. Keep the
+    // Timeline fresh, but wait for candidate_resolved (or the final frame
+    // receipt) before changing the badge on user-visible prose.
+    if (mine(fid) || mine(m.root_frame_id)) scheduleWorkbenchRefresh(60);
+  }
+  else if (m.type === "candidate_resolved") {
+    if (mine(fid) || mine(m.root_frame_id)) applyCandidateResolution(m, fid);
+  }
   else if (m.type === "frame_update") {
     if (mine(m.frame_id) || mine(fid)) {
       // Unconditional, and deliberately outside the `!S.running` guard below:
@@ -4892,13 +5057,13 @@ function onEvent(m) {
       // for.
       if (m.status === "processing") activateTurnTicket(m.request_id, m.execution_id);
       if (m.status === "processing" && !S.running) { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); resumeWatch(fid, S._openGen); }  // a turn observed on the WS (e.g. started from another tab) — watchdog covers a missed terminal event
-      if (["completed","failed","cancelled","success","done","ready"].includes(m.status)) {
+      if (["completed","failed","cancelled","blocked_by_guardian","success","done","ready"].includes(m.status)) {
         // A terminal event for a turn that is no longer on screen may not
         // close the one that is: no hint, no teardown, no ticket cleared. The
         // workbench still refreshes, because the artifacts and cells that turn
         // produced are real.
         if (isStaleTurnEvent(m)) scheduleWorkbenchRefresh();
-        else { turnDone(m.status, m); scheduleWorkbenchRefresh(); }
+        else { if (m.review_status) applyFinalReviewStatus(m, fid); handleEnvironmentReadinessTerminal(m); turnDone(m.status, m); scheduleWorkbenchRefresh(); }
       }
     }
     loadSessions();
@@ -5051,8 +5216,10 @@ function startStream() {
   S.liveCells = []; S._liveCell = null; down();
 }
 const ensure = () => { if (!S.stream) startStream(); return S.stream; };
-function feed(kind, chunk, event) {
+function feed(kind, chunk, event, storedOwnsChunk = false) {
+  if (storedOwnsChunk) return;
   const st = ensure();
+  rememberCandidateIdentity(st.wrap, event);
   const structuredCellId = event && (event.producing_cell_id || event.cell_id);
   if (kind === "tool") {
     const cellHeader = !!(event && event.cell_index != null);
@@ -5085,8 +5252,174 @@ function feed(kind, chunk, event) {
       if (st.toolMeta) { const n = (st.toolPre.textContent.match(/\n/g) || []).length; st.toolMeta.textContent = n > 1 ? (n + (n === 1 ? " line" : " lines")) : "done"; }
       if (!structuredCellId) nbLiveAppend(add);
     }
-  } else { st.text += chunk; st.full += chunk; st.md.classList.add("cursor"); scheduleRender(st); return; }
+  } else {
+    st.text += chunk; st.full += chunk; st.md.classList.add("cursor");
+    // Stage 4: this chunk is a candidate, not the answer. It is readable and
+    // copyable for the whole reviewer round-trip, so it has to say so on the
+    // block itself -- a badge that only appears after the verdict would leave
+    // the most dangerous window, the one before it, unlabelled.
+    if (event && (event.provisional || event.review_status === "candidate")) {
+      setLiveReviewBadge("candidate");
+    }
+    scheduleRender(st); return;
+  }
   down();
+}
+function candidateIdentityText(value) {
+  return value == null ? "" : String(value).trim().slice(0, 192);
+}
+// The REST row and the WS receipt use the public top-level fields. The nested
+// fallbacks keep this additive for an older captured response without exposing
+// arbitrary message metadata to selectors.
+function candidateIdentity(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const review = raw.review_status && typeof raw.review_status === "object" ? raw.review_status : {};
+  const meta = raw.metadata && typeof raw.metadata === "object" ? raw.metadata : {};
+  return {
+    messageId: candidateIdentityText(raw.message_id || raw.candidate_message_id || raw.replacement_message_id || review.message_id || meta.message_id),
+    turnId: candidateIdentityText(raw.turn_id || raw.candidate_turn_id || review.turn_id || meta.turn_id),
+    executionId: candidateIdentityText(raw.execution_id || review.execution_id || meta.execution_id),
+  };
+}
+function rememberCandidateIdentity(node, value) {
+  const identity = candidateIdentity(value);
+  if (!node || !node.dataset) return identity;
+  const bind = (key, next) => { if (next && (!node.dataset[key] || node.dataset[key] === next)) node.dataset[key] = next; };
+  bind("messageId", identity.messageId); bind("turnId", identity.turnId); bind("executionId", identity.executionId);
+  return identity;
+}
+function candidateNodeMatches(node, identity) {
+  if (!node || !node.dataset || !identity) return false;
+  if (identity.messageId) return node.dataset.messageId === identity.messageId;
+  if (identity.turnId) return node.dataset.turnId === identity.turnId && (!identity.executionId || !node.dataset.executionId || node.dataset.executionId === identity.executionId);
+  return !!identity.executionId && node.dataset.executionId === identity.executionId;
+}
+// Once the server supplies a durable message id, only that exact row may be
+// changed. Turn/execution identity exists solely for pre-promotion stream and
+// replay de-duplication; it is never a replacement target fallback.
+function candidateMessageNode(value) {
+  const identity = candidateIdentity(value);
+  const host = $("#messages");
+  const nodes = host ? Array.from(host.querySelectorAll(".msg.assistant")) : [];
+  if (identity.messageId) {
+    return nodes.find(node => node.dataset && node.dataset.messageId === identity.messageId) || null;
+  }
+  return nodes.find(node => candidateNodeMatches(node, identity)) || null;
+}
+function reviewStatusFrom(value) {
+  const review = value && value.review_status;
+  return candidateIdentityText(review && typeof review === "object" ? review.status : review);
+}
+function reviewTruthFrom(value) {
+  const review = value && value.review_status;
+  return candidateIdentityText((value && value.user_truth) || (review && typeof review === "object" ? review.user_truth : ""));
+}
+function setMessageReviewBadge(node, status, userTruth) {
+  if (!node || !status) return false;
+  let badge = node.querySelector(":scope > .review-badge");
+  if (!badge) {
+    badge = el("div", "review-badge");
+    const actions = node.querySelector(":scope > .msg-actions");
+    if (actions) node.insertBefore(badge, actions); else node.appendChild(badge);
+  }
+  badge.className = "review-badge review-badge-" + String(status).replace(/[^a-z_]/g, "");
+  badge.textContent = userTruth || t("review.badge." + status);
+  if (node.dataset) node.dataset.reviewStatus = status;
+  S.reviewGate = { status, user_truth: badge.textContent };
+  return true;
+}
+// The live counterpart of the badge `renderStored` puts on a reopened message.
+// One node, replaced in place, so candidate -> verified never stacks two.
+function setLiveReviewBadge(status, userTruth) {
+  const st = S.stream; return !!(st && st.wrap && setMessageReviewBadge(st.wrap, status, userTruth));
+}
+function markCandidateReady(value) {
+  const target = candidateMessageNode(value);
+  if (target) {
+    rememberCandidateIdentity(target, value);
+    // A stale replay must never demote a row REST already projected as final.
+    if (!target.dataset.reviewStatus || target.dataset.reviewStatus === "candidate") setMessageReviewBadge(target, "candidate", value.user_truth);
+    return true;
+  }
+  if (S.stream && S.stream.wrap) rememberCandidateIdentity(S.stream.wrap, value);
+  return setLiveReviewBadge("candidate", value.user_truth);
+}
+function discardDuplicateLiveCandidate(stored, value) {
+  const live = S.stream && S.stream.wrap;
+  if (!stored || !live || live === stored) return;
+  const identity = candidateIdentity(value);
+  rememberCandidateIdentity(live, { turn_id: identity.turnId, execution_id: identity.executionId });
+  if (!candidateNodeMatches(live, { ...identity, messageId: "" })) return;
+  live.remove(); S.stream = null;
+}
+function storedCandidateOwnsChunk(value) {
+  if (!value || (value.block_type || "text") !== "text" || !(value.provisional || reviewStatusFrom(value) === "candidate")) return false;
+  const target = candidateMessageNode(value);
+  if (!target || (S.stream && target === S.stream.wrap) || !target.dataset || !target.dataset.messageId) return false;
+  discardDuplicateLiveCandidate(target, value);
+  if (!target.dataset.reviewStatus || target.dataset.reviewStatus === "candidate") setMessageReviewBadge(target, "candidate", value.user_truth);
+  return true;
+}
+function candidateReplacementText(value) {
+  if (value && typeof value.text === "string") return value.text;
+  return value && typeof value.final_answer === "string" ? value.final_answer : "";
+}
+function candidateReplacementCommitted(value) {
+  const identity = candidateIdentity(value), text = candidateReplacementText(value);
+  return !!(value && value.replaced === true && value.delivered === true && value.durable === true && identity.messageId && text && (value.persisted == null || value.persisted === true) && (value.promotion_committed == null || value.promotion_committed === true));
+}
+// Replace one identified answer, whether it is the current live wrapper or a
+// canonical assistant row already rendered from REST. Message actions capture
+// their text in closures, so refresh them as part of the replacement too.
+function replaceMessageAnswer(node, text) {
+  if (!node || !node.classList || !node.classList.contains("assistant") || !String(text || "").trim()) return false;
+  const hadActions = !!node.querySelector(":scope > .msg-actions");
+  node.querySelectorAll(":scope > .md").forEach(item => item.remove());
+  const md = el("div", "md"); md.innerHTML = renderMd(text);
+  if (S.stream && S.stream.wrap === node) {
+    const badge = node.querySelector(":scope > .review-badge");
+    if (badge) node.insertBefore(md, badge); else node.appendChild(md);
+    S.stream.md = md; S.stream.text = text; S.stream.full = text;
+    S.stream._stableAt = 0; S.stream._stableHtml = "";
+  } else if (node.firstChild) node.insertBefore(md, node.firstChild);
+  else node.appendChild(md);
+  node._messageText = text;
+  if (hadActions) { const actions = node.querySelector(":scope > .msg-actions"); if (actions) actions.remove(); addMsgActions(node, text); }
+  return true;
+}
+// Compatibility seam for callers/tests that only have the current stream.
+function replaceLiveAnswer(text) {
+  const st = S.stream; return !!(st && st.wrap && replaceMessageAnswer(st.wrap, text));
+}
+function applyCandidateResolution(value, fid) {
+  const target = candidateMessageNode(value), status = reviewStatusFrom(value), truth = reviewTruthFrom(value);
+  const replacementWanted = !!(value && value.replaced === true);
+  let replacementApplied = false;
+  if (target) { discardDuplicateLiveCandidate(target, value); rememberCandidateIdentity(target, value); }
+  if (replacementWanted && candidateReplacementCommitted(value) && target) {
+    replacementApplied = replaceMessageAnswer(target, candidateReplacementText(value));
+    if (replacementApplied && target.dataset) target.dataset.candidateResolved = "true";
+  }
+  if (replacementWanted && !replacementApplied) scheduleConversationResync(fid);
+  // Never put Verified on bytes that an advertised replacement failed to reach,
+  // or on any answer the receipt itself says was not delivered.
+  const mayApplyBadge = status && (status !== "verified" || (value.delivered === true && value.durable === true && (!replacementWanted || replacementApplied)));
+  if (mayApplyBadge && target) {
+    setMessageReviewBadge(target, status, truth);
+    if (value.delivered === true && value.durable === true && target.dataset) target.dataset.candidateResolved = "true";
+  } else if (status && !target) scheduleConversationResync(fid);
+  else if (status === "verified" && !mayApplyBadge) scheduleConversationResync(fid);
+  return { targetFound: !!target, replacementApplied, badgeApplied: !!(mayApplyBadge && target) };
+}
+function applyFinalReviewStatus(value, fid) {
+  const status = reviewStatusFrom(value); if (!status) return false;
+  if (value && value.replaced === true) return applyCandidateResolution(value, fid).badgeApplied;
+  const target = candidateMessageNode(value);
+  // A previously applied candidate_resolved receipt is sufficient. Otherwise a
+  // Verified terminal must itself say the durable answer was delivered.
+  const mayVerify = status !== "verified" || (value.delivered === true && value.durable === true) || !!(target && target.dataset && target.dataset.candidateResolved === "true");
+  if (target && mayVerify) return setMessageReviewBadge(target, status, reviewTruthFrom(value));
+  scheduleConversationResync(fid); return false;
 }
 // A turn's request ticket, guarded by a generation.
 //
@@ -5281,7 +5614,7 @@ function turnDone(status, detail) {
   // A plan that was still "executing …" must reach a terminal state when the turn
   // ends, or the card reads "finished but not finished". Flip the live card to
   // completed/failed to match the turn outcome.
-  if (S.planReady && S.planStatus === "executing") renderPlanCard(S.planReady, status === "failed" ? "failed" : "completed");
+  if (S.planReady && S.planStatus === "executing") renderPlanCard(S.planReady, ["failed", "blocked_by_guardian"].includes(status) ? "failed" : "completed");
   if (S.planPending && status !== "failed") { S.planPending = false; if (!S.planReady) showPlanApproval(); }
 }
 // Legacy fallback card (only shown if a plan-mode turn produced no structured
@@ -5851,6 +6184,18 @@ function renderPermissionCard(m) {
   card.appendChild(el("div", "perm-sub", t("perm.sub.approvalNeeded")));
   const act = permActionLine(m);
   if (act.text) card.appendChild(el("div", "perm-detail" + (act.mono ? " mono" : ""), act.text));
+  const fileReviewKeys = {
+    credential_path: "perm.review.credential_path",
+    dynamic_file_search: "perm.review.dynamic_file_search",
+    unreviewable_path: "perm.review.unreviewable_path",
+    verification_failed: "perm.review.verification_failed",
+  };
+  const fileReviewKey = fileReviewKeys[m.policy_review_kind];
+  if (fileReviewKey) {
+    card.appendChild(el("div", "perm-sub", t(fileReviewKey)));
+    if (m.resolved_file_path)
+      card.appendChild(el("div", "perm-detail mono", t("perm.lbl.resolvedPath", m.resolved_file_path)));
+  }
 
   let scope = defaultRememberScope(m);
   card.appendChild(el("div", "perm-lbl", t("perm.lbl.rememberScope")));
@@ -6486,6 +6831,10 @@ async function openConversation(fid, pid) {
   S.stepEls = {};  // fresh step registry so reopen-then-replay dedupes by step_id
   S.permCards = Object.create(null);  // fresh permission-card registry (null-proto; drop cards from the prior conversation)
   S.planReady = null; S.planStatus = null; S.planPending = false;  // fresh plan state per session
+  S.computeStatus = null;  // where the *previous* session ran says nothing about this one
+  { const badge = $("#compute-badge"); if (badge) badge.remove(); }
+  { const banner = $("#compute-lost"); if (banner) banner.remove(); }
+  refreshComputeStatus(fid);  // deliberately not awaited: a session must open even if this route does not exist
   S.annotations = []; closeAnnotDraft(); closeAnnotPop(); updateAnnotBadge();
   edacTeardown(); S._editing = null;  // stop any live editor autocomplete + clear edit state when switching sessions
   _molTeardown(); $("#dock-viewer").innerHTML = ""; renderDockTabs();
@@ -6567,6 +6916,7 @@ function renderStored(m, target) {
   const text = Array.isArray(m.content) ? m.content.map(b => (b && b.text) || "").join("") : (m.content || "");
   if (!text.trim()) return null;
   const w = el("div", "msg " + (m.role === "user" ? "user" : "assistant"));
+  rememberCandidateIdentity(w, m); w._messageText = text;
   if (m.role === "user") { const b = el("div", "bubble"); b.textContent = text; w.appendChild(b); renderMessageRefChips(w, m.artifact_refs); }
   else {
     const md = el("div", "md"); md.innerHTML = renderMd(text); w.appendChild(md);
@@ -6576,6 +6926,9 @@ function renderStored(m, target) {
     // successful turns ago, or one on a page the reader scrolled back to --
     // become the current state of the whole UI.
     if (m.failure && m.failure.request_id) w.appendChild(failureMeta(m.failure));
+    const review = m.review_status || (m.metadata && m.metadata.review_status);
+    const reviewStatus = review && (review.status || review);
+    if (reviewStatus) { setMessageReviewBadge(w, reviewStatus, review && review.user_truth); if (reviewStatus !== "candidate" && w.dataset) w.dataset.candidateResolved = "true"; }
   }
   // Stamped with its own time so a page of OLDER messages can be put where it
   // belongs. Activity steps are fetched whole while messages are paged, so the
@@ -6827,6 +7180,7 @@ function sessionMenu(anchor, fid) {
     { label: t("sessionPackage.export"), icon: "archive", onClick: () => exportSessionPackage(fid, frame) },
     { label: t("sessionMenu.downloadArtifacts"), icon: "files", onClick: () => downloadArtifactBundle(`${API}/frames/${encodeURIComponent(fid)}/artifacts.zip`, `${frame.name || frame.task_summary || "session"}-artifacts.zip`) },
     { label: t("sessionMenu.viewNotebook"), icon: "notebook", onClick: async () => { if (fid !== S.currentId) await openConversation(fid, frame.project_id); setActiveTab("notebook"); } },
+    { label: t("compute.menu.runLocation"), icon: "server", onClick: () => openRunLocationDialog(fid) },
     { sep: true },
     { label: t("sessionMenu.duplicate"), icon: "copy", onClick: () => duplicateSession(fid) },
     { label: t("sessionMenu.moveToFolder"), icon: "folder", onClick: () => moveToFolderAt(anchor, fid) },
@@ -7118,6 +7472,120 @@ async function cancelTurn() {
   catch (error) { hint(t("nb.action.failed", apiErrorText(error)), true); }
 }
 
+/* ---------- standard environment readiness ---------- */
+function sanitizeStandardProfileReadiness(value) {
+  if (!value || typeof value !== "object") return null;
+  const allowedStates = new Set(["ready", "needs_setup", "needs_repair", "unavailable"]);
+  const state = allowedStates.has(value.state) ? value.state : "unavailable";
+  const missingEnvironments = (Array.isArray(value.missing_environments) ? value.missing_environments : [])
+    .map(name => publicText(name, 160)).filter(Boolean);
+  const missingPackages = {};
+  const sourcePackages = value.missing_packages && typeof value.missing_packages === "object" ? value.missing_packages : {};
+  Object.keys(sourcePackages).sort().forEach(name => {
+    const environment = publicText(name, 160);
+    if (!environment) return;
+    missingPackages[environment] = (Array.isArray(sourcePackages[name]) ? sourcePackages[name] : [])
+      .map(packageName => publicText(packageName, 160)).filter(Boolean);
+  });
+  const sourceRemediation = value.remediation && typeof value.remediation === "object" ? value.remediation : null;
+  const commands = [];
+  if (sourceRemediation && sourceRemediation.requires_explicit_action === true) {
+    const candidates = Array.isArray(sourceRemediation.commands)
+      ? sourceRemediation.commands
+      : (sourceRemediation.command ? [sourceRemediation] : []);
+    candidates.forEach(candidate => {
+      if (!candidate || typeof candidate !== "object" || typeof candidate.command !== "string") return;
+      const command = candidate.command;
+      if (!command || command.length > 1000) return;
+      commands.push({ command, label: publicText(candidate.label, 120) });
+    });
+  }
+  return {
+    schema_version: Number(value.schema_version) || 0,
+    enabled: value.enabled === true,
+    ready: value.ready === true && state === "ready",
+    state,
+    reason: publicText(value.reason, 120),
+    requirements_digest: publicText(value.requirements_digest, 96),
+    missing_environments: missingEnvironments,
+    missing_packages: missingPackages,
+    remediation: sourceRemediation ? {
+      requires_explicit_action: sourceRemediation.requires_explicit_action === true,
+      commands,
+    } : null,
+  };
+}
+function environmentReadinessSummary(readiness) {
+  if (!readiness || readiness.state === "unavailable") return t("environment.readiness.bannerUnavailable");
+  const packageCount = Object.values(readiness.missing_packages || {}).reduce((count, names) => count + names.length, 0);
+  return t("environment.readiness.bannerMissing", readiness.missing_environments.length, packageCount);
+}
+function renderEnvironmentReadinessBanner() {
+  const readiness = S.standardProfileReadiness;
+  const visible = !!(readiness && readiness.enabled === true && readiness.ready !== true);
+  document.querySelectorAll(".environment-readiness-banner").forEach(banner => {
+    banner.classList.toggle("hidden", !visible);
+    if (!visible) return;
+    const title = banner.querySelector("[data-environment-readiness-title]");
+    const summary = banner.querySelector("[data-environment-readiness-summary]");
+    const action = banner.querySelector("[data-open-environment-readiness]");
+    if (title) title.textContent = t("environment.readiness.bannerTitle");
+    if (summary) summary.textContent = environmentReadinessSummary(readiness);
+    if (action) action.textContent = t("environment.readiness.openCompute");
+  });
+}
+async function refreshEnvironmentStatus() {
+  if (S._environmentStatusPromise) return S._environmentStatusPromise;
+  S._environmentStatusPromise = (async () => {
+    try {
+      const payload = await api("/environments/status");
+      S._environmentStatusRefreshFailed = false;
+      S.environmentStatus = payload && typeof payload === "object" ? payload : null;
+      S.standardProfileReadiness = sanitizeStandardProfileReadiness(
+        S.environmentStatus && S.environmentStatus.standard_profile_readiness
+      );
+    } catch (error) {
+      S._environmentStatusRefreshFailed = true;
+      // A server that predates the opt-in field behaves exactly as before. If
+      // this browser already knows the feature is enabled, however, losing the
+      // refresh cannot turn the last snapshot into a claim of readiness.
+      if (S.standardProfileReadiness && S.standardProfileReadiness.enabled === true) {
+        S.standardProfileReadiness = {
+          ...S.standardProfileReadiness,
+          ready: false,
+          state: "unavailable",
+          reason: "status_refresh_failed",
+        };
+      }
+    }
+    renderEnvironmentReadinessBanner();
+    return S.environmentStatus;
+  })();
+  try { return await S._environmentStatusPromise; }
+  finally { S._environmentStatusPromise = null; }
+}
+function isEnvironmentReadinessError(error) {
+  return !!(error && (
+    (error.status === 409 && error.code === "environment_not_ready")
+    || (error.status === 503 && error.code === "environment_readiness_unavailable")
+  ));
+}
+function handleEnvironmentReadinessTerminal(detail) {
+  const code = detail && detail.code;
+  if (!detail || detail.status !== "failed" || ![
+    "environment_not_ready",
+    "environment_readiness_unavailable",
+  ].includes(code)) return false;
+  // A control-only turn is allowed even while the scientific profile is
+  // incomplete.  If routing selected a Code Cell, the server rejects it before
+  // runtime side effects and this terminal event is the authoritative signal.
+  void refreshEnvironmentStatus().finally(() => {
+    openCust("compute");
+    hint(t("environment.readiness.sendBlocked"), true);
+  });
+  return true;
+}
+
 /* ---------- send ---------- */
 async function send(text, opts) {
   text = (text || "").trim(); opts = opts || {};
@@ -7135,6 +7603,9 @@ async function send(text, opts) {
   if (!text && !anns.length) return;              // nothing to send
   const planNow = S.planMode && !opts.execute;
   const exploreNow = S.exploreMode && !planNow && !opts.execute;
+  // Readiness is visible before send, but admission belongs to the first Code
+  // Cell. Keeping ordinary sends routable preserves native-tool and structured-
+  // finalization turns that never need a kernel.
   // Explicit skill invocation: a "/skillname" token (from the / autocomplete or
   // the Skills settings tab) is turned into a hard directive so the skill is
   // actually loaded — left as plain text the model routinely skips
@@ -7296,6 +7767,41 @@ async function send(text, opts) {
       if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       refreshAllStages(); updateAnnotBadge();
     }
+    // The preflight is advisory UX; the server remains authoritative. A
+    // readiness transition between GET and POST is surfaced by these exact
+    // contracts. Refresh the durable banner/card and give the rejected text
+    // back instead of leaving an optimistic message that never ran.
+    if (isEnvironmentReadinessError(e)) {
+      await refreshEnvironmentStatus();
+      // The POST itself proved that readiness admission is enabled. If the
+      // requested refresh also failed, retain that authoritative fact as an
+      // unavailable snapshot so the persistent banner cannot disappear and
+      // imply readiness. A successful refresh (including an explicit flag-off
+      // payload) remains authoritative and is not overwritten here.
+      if (S._environmentStatusRefreshFailed) {
+        S.standardProfileReadiness = {
+          schema_version: 1,
+          enabled: true,
+          ready: false,
+          state: "unavailable",
+          reason: "status_refresh_failed",
+          requirements_digest: null,
+          missing_environments: [],
+          missing_packages: {},
+          remediation: null,
+        };
+        renderEnvironmentReadinessBanner();
+      }
+      const composer = $("#composer");
+      if (composer && !composer.value.trim()) composer.value = text;
+      if (composer) { grow(); renderComposerRefChips(); }
+      w.remove();
+      if (ownsTurnTicket(turnTicket)) turnDone("failed");
+      openCust("compute");
+      hint(t("environment.readiness.sendBlocked"), true);
+      loadSessions();
+      return;
+    }
     // The two 409s a send can end on that the user cannot resolve from
     // anywhere else in the app. Both say "choose one to continue" and both are
     // answered by the same rebind: the binding is in no PATCH allowlist and
@@ -7350,6 +7856,151 @@ function annotAttachment(anns) {
   anns.forEach(an => { const r = el("div", "annot-attach-row"); r.appendChild(el("span", "annot-attach-pin", String(an.number))); r.appendChild(el("span", "annot-attach-file", (an.artifact_name || "artifact"))); r.appendChild(el("span", "annot-attach-body", "· " + (an.body || ""))); list.appendChild(r); });
   box.appendChild(list);
   return box;
+}
+
+/* ---------- where a session runs (M3b-6) ----------
+   Three things the user cannot infer from a spinner:
+   WHERE the kernel is, WHICH of the four readiness conditions is still
+   outstanding, and WHETHER the kernel's memory was lost and quietly
+   replaced. The last one is not a nicety -- results produced after a
+   recovery look exactly like results from the session that was lost, so
+   INV-11 makes saying so mandatory. */
+const COMPUTE_BLOCKED_LABEL = {
+  allocation: "compute.blocked.allocation",
+  workspace: "compute.blocked.workspace",
+  worker: "compute.blocked.worker",
+  kernel: "compute.blocked.kernel",
+};
+async function loadComputeStatus(fid) {
+  if (!fid) return null;
+  try { return await api(`/sessions/${encodeURIComponent(fid)}/compute`); }
+  catch { return null; }   // a daemon without the feature is not an error state
+}
+async function refreshComputeStatus(fid) {
+  const status = await loadComputeStatus(fid);
+  if (!fid || fid !== S.currentId) return status;   // session switched mid-flight
+  S.computeStatus = status;
+  renderComputeBadge();
+  renderComputeLostBanner();
+  return status;
+}
+function renderComputeBadge() {
+  const host = $(".conv-head-actions");
+  if (!host) return;
+  let badge = $("#compute-badge");
+  const status = S.computeStatus;
+  // A local session gets no badge at all. A chip reading "local" on every
+  // session in an install that has no cluster is pure noise.
+  if (!status || status.location !== "cluster") { if (badge) badge.remove(); return; }
+  if (!badge) {
+    badge = el("button", "compute-badge"); badge.id = "compute-badge";
+    badge.onclick = () => openRunLocationDialog(S.currentId);
+    host.insertBefore(badge, host.firstChild);
+  }
+  const readiness = status.readiness || {};
+  const allocation = status.allocation || {};
+  const workload = status.workload || {};
+  badge.innerHTML = "";
+  badge.appendChild(iconEl("server", 13));
+  const ready = !!readiness.ready;
+  const blockedKey = COMPUTE_BLOCKED_LABEL[readiness.blocked_on];
+  const label = ready
+    ? `${workload.profile || t("compute.badge.ready")}`
+    : (blockedKey ? t(blockedKey) : (allocation.phase || workload.phase || "").toLowerCase());
+  badge.appendChild(el("span", "cb-label", label));
+  badge.className = "compute-badge" + (ready ? " ready" : " waiting");
+  // The phase is the tooltip rather than the label: an allocation id and a
+  // phase name are what a support conversation needs, and neither belongs
+  // in a chip somebody reads fifty times a day.
+  badge.title = [
+    workload.profile ? `profile: ${workload.profile}` : "",
+    allocation.allocation_id ? `allocation: ${allocation.allocation_id}` : "",
+    allocation.phase ? `phase: ${allocation.phase}` : "",
+    workload.reason ? `reason: ${workload.reason}` : "",
+  ].filter(Boolean).join("\n");
+}
+function renderComputeLostBanner() {
+  const status = S.computeStatus || {};
+  const epochs = status.state_lost_epochs || [];
+  const seen = S._computeLostSeen || (S._computeLostSeen = {});
+  const key = S.currentId + ":" + epochs.join(",");
+  let banner = $("#compute-lost");
+  if (!epochs.length || seen[key]) { if (banner) banner.remove(); return; }
+  if (!banner) {
+    banner = el("div", "compute-lost"); banner.id = "compute-lost";
+    const messages = $("#messages");
+    if (!messages) return;
+    messages.parentNode.insertBefore(banner, messages);
+  }
+  banner.innerHTML = "";
+  banner.appendChild(iconEl("alert-triangle", 15));
+  const text = el("div", "cl-text");
+  text.appendChild(el("strong", null, t("compute.lost.title")));
+  text.appendChild(el("div", "cl-body", t("compute.lost.body")));
+  banner.appendChild(text);
+  const dismiss = el("button", "cl-dismiss", t("compute.lost.dismiss"));
+  // Dismissal is per (session, set of lost epochs): a *further* loss
+  // raises it again rather than being swallowed by an earlier "got it".
+  dismiss.onclick = () => { seen[key] = true; banner.remove(); };
+  banner.appendChild(dismiss);
+}
+async function openRunLocationDialog(fid) {
+  const target = fid || S.currentId;
+  if (!target) return;
+  let status = null, catalog = { profiles: [] };
+  try {
+    [status, catalog] = await Promise.all([
+      loadComputeStatus(target),
+      api("/orchestration/profiles").catch(() => ({ profiles: [] })),
+    ]);
+  } catch (error) { hint(apiErrorText(error), true); return; }
+
+  const wrap = el("div", "run-location");
+  const current = (status && status.location) || "local";
+  const choose = async (profile) => {
+    try {
+      if (profile === null) await api(`/sessions/${encodeURIComponent(target)}/compute/release`, { method: "POST", body: "{}" });
+      else await api(`/sessions/${encodeURIComponent(target)}/compute`, { method: "POST", body: JSON.stringify({ profile }) });
+      closeModalEl($("#modal"));
+      await refreshComputeStatus(target);
+    } catch (error) {
+      // The 409 that means "this daemon has no listener" is the one a user
+      // will actually hit, and its body already explains itself.
+      hint(apiErrorText(error), true);
+    }
+  };
+
+  const local = el("button", "rl-option" + (current === "local" ? " current" : ""));
+  local.appendChild(el("div", "rl-name", t("compute.location.local")));
+  local.appendChild(el("div", "rl-hint", t("compute.location.localHint")));
+  local.onclick = () => (current === "local" ? closeModalEl($("#modal")) : choose(null));
+  wrap.appendChild(local);
+
+  const profiles = (catalog && catalog.profiles) || [];
+  if (!profiles.length) wrap.appendChild(el("div", "rl-empty", t("compute.dialog.notConfigured")));
+  profiles.forEach(profile => {
+    const option = el("button", "rl-option" + (current === "cluster" && status.workload && status.workload.profile === profile.name ? " current" : ""));
+    option.appendChild(el("div", "rl-name", profile.name));
+    const bits = [
+      `${profile.cpus} CPU`,
+      profile.gpus ? `${profile.gpus} GPU` : "",
+      `${Math.round((profile.memory_mb || 0) / 1024)} GiB`,
+      `${Math.round((profile.walltime_s || 0) / 3600)} h`,
+    ].filter(Boolean).join(" · ");
+    option.appendChild(el("div", "rl-hint", bits));
+    option.onclick = () => choose(profile.name);
+    wrap.appendChild(option);
+  });
+
+  if (current === "cluster") {
+    const release = el("button", "rl-release", t("compute.dialog.release"));
+    release.onclick = () => choose(null);
+    wrap.appendChild(release);
+  }
+  $("#modal-title").textContent = t("compute.dialog.title");
+  const download = $("#modal-download"); if (download) download.style.display = "none";
+  const body = $("#modal-body"); body.innerHTML = ""; body.appendChild(wrap);
+  openModalEl($("#modal"));
 }
 
 /* ---------- api-key banner (C3) ---------- */
@@ -7690,8 +8341,8 @@ function renderArtifactDescriptor(body, a, descriptor) {
   const content = el("div", "renderer-content"); shell.appendChild(content); body.appendChild(shell);
   const url = artUrl(a); const nm = String(a.filename || "").toLowerCase();
   if (rendererId === "image") renderAnnotatableImage(content, a, url);
-  else if (rendererId === "pdf") { const frame = el("iframe"); frame.src = url; content.appendChild(frame); }
-  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", "allow-scripts allow-forms"); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); }
+  else if (rendererId === "pdf") { const frame = el("iframe"); frame.dataset.currentPage = "1"; frame.src = url + "#page=1"; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "pdf", frame); }
+  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", "allow-scripts allow-forms"); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
   else if (rendererId === "molecule-3d") molecule(content, url, nm);
   else if (rendererId === "chemistry-2d") renderChemistry2D(content, a, url);
   else if (rendererId === "genome-track") renderGenomeTrack(content, a, url);
@@ -7736,7 +8387,11 @@ function renderStructuredText(container, a, text) {
   if (!rows || !rows.length) { const pre = el("pre", "renderer-source"); pre.textContent = text.slice(0, 300000); container.appendChild(pre); return; }
   renderSheet(container, rows);
 }
+function artifactWorkbenchOn() {
+  return !!(S.artifactWorkbench || (_kc && _kc.st && _kc.st.artifact_workbench));
+}
 function renderTableArtifact(container, a, url) {
+  if (artifactWorkbenchOn()) return renderWorkbenchTable(container, a);
   fetchArtifactText(url).then(text => {
     if (!container.isConnected) return;
     if (looksBinary(text)) return renderDownloadArtifact(container, a, url);
@@ -7744,6 +8399,51 @@ function renderTableArtifact(container, a, url) {
     if (rows && rows.length) renderSheet(container, rows);
     else { const pre = el("pre", "renderer-source"); pre.textContent = text.slice(0, 300000); container.appendChild(pre); }
   }).catch(() => rendererFailure(container, a, url));
+}
+function renderWorkbenchTable(container, a) {
+  const state = { sort: "", dir: "asc", filters: {}, offset: 0, limit: 50 };
+  const chrome = el("div", "wb-table");
+  const controls = el("div", "wb-table-controls");
+  const filter = el("input", "wb-filter"); filter.placeholder = t("wb.table.filter");
+  const prev = el("button", "outline-btn small", t("wb.table.prev"));
+  const next = el("button", "outline-btn small", t("wb.table.next"));
+  const meta = el("div", "wb-table-meta");
+  controls.appendChild(filter); controls.appendChild(prev); controls.appendChild(next); chrome.appendChild(controls); chrome.appendChild(meta);
+  const hold = el("div", "wb-table-hold"); chrome.appendChild(hold); container.appendChild(chrome);
+  const load = async () => {
+    const query = new URLSearchParams({ sort: state.sort, dir: state.dir, offset: String(state.offset), limit: String(state.limit) });
+    Object.entries(state.filters).forEach(([key, value]) => { if (value) query.set("q_" + key, value); });
+    let payload;
+    try { payload = await api(`/artifacts/${encodeURIComponent(a.id)}/table?${query}`); }
+    catch (error) { hold.textContent = apiErrorText(error); return; }
+    if (!container.isConnected) return;
+    meta.textContent = t("wb.table.meta", payload.total_rows, payload.offset + 1, Math.min(payload.offset + payload.rows.length, payload.total_rows));
+    hold.innerHTML = "";
+    const table = el("table", "sheet"); const head = el("tr");
+    (payload.columns || []).forEach(name => {
+      const th = el("th", payload.sorted_by === name ? "wb-sorted" : "", name);
+      th.onclick = () => { state.sort = name; state.dir = payload.sorted_by === name && state.dir === "asc" ? "desc" : "asc"; state.offset = 0; load(); };
+      head.appendChild(th);
+    });
+    table.appendChild(head);
+    (payload.rows || []).forEach(row => {
+      const tr = el("tr"); (payload.columns || []).forEach((_, index) => tr.appendChild(el("td", null, String(row[index] ?? "")))); table.appendChild(tr);
+    });
+    hold.appendChild(table);
+    prev.disabled = payload.offset <= 0;
+    next.disabled = payload.offset + payload.rows.length >= payload.total_rows;
+  };
+  filter.onchange = () => { state.filters = payloadFilters(filter.value, a); state.offset = 0; load(); };
+  prev.onclick = () => { state.offset = Math.max(0, state.offset - state.limit); load(); };
+  next.onclick = () => { state.offset += state.limit; load(); };
+  load();
+}
+function payloadFilters(text, a) {
+  const value = String(text || "").trim();
+  if (!value) return {};
+  const named = value.match(/^([^:]+):(.*)$/);
+  if (named) return { [named[1].trim()]: named[2].trim() };
+  return { [((a && a.filename) || "col").replace(/\.[^.]+$/, "")]: value };
 }
 // The true shape of a parsed table: rows, and the union of every row's keys.
 // Not `rows[0]`'s keys, which is what decides the drawn columns -- records
@@ -7888,6 +8588,20 @@ function molecule2dSvg(model) {
   return svg;
 }
 function renderChemistry2D(container, a, url) {
+  if (artifactWorkbenchOn()) {
+    const bar = el("div", "wb-ketcher-bar");
+    const open = el("button", "solid-btn small", t("wb.ketcher.edit"));
+    open.onclick = () => {
+      $("#modal-title").textContent = t("ketcher.modalTitle");
+      $("#modal-download").style.display = "none";
+      const body = $("#modal-body"); body.innerHTML = "";
+      const frame = el("iframe");
+      frame.src = (S.sandboxOrigin || "") + "/ketcher?artifact_id=" + encodeURIComponent(a.id);
+      frame.setAttribute("allow", "clipboard-read; clipboard-write");
+      body.appendChild(frame); openModalEl($("#modal"));
+    };
+    bar.appendChild(open); container.appendChild(bar);
+  }
   fetchArtifactText(url).then(text => {
     if (!container.isConnected) return;
     const runtime = scientificRenderers(); const model = runtime && runtime.parseMolfile(text); const drawing = molecule2dSvg(model);
@@ -8510,6 +9224,30 @@ async function exportMetadata(a) {
     setTimeout(() => URL.revokeObjectURL(url), 2000); hint(t("artifact.metadataExported"));
   } catch (e) { hint(t("toast.exportFailed", apiErrorText(e)), true); }
 }
+async function renderArtifactVersionDiff(panel, a, fromVersion, toVersion, fromOrdinal, toOrdinal) {
+  const request = panel._diffRequest = (panel._diffRequest || 0) + 1;
+  panel.classList.remove("hidden"); panel.innerHTML = "";
+  panel.appendChild(el("div", "ver-diff-title", t("versions.diff.title", fromOrdinal, toOrdinal)));
+  const status = el("div", "dock-empty", t("versions.diff.loading")); panel.appendChild(status);
+  try {
+    const query = `from=${encodeURIComponent(fromVersion)}&to=${encodeURIComponent(toVersion)}`;
+    const payload = await api(`/artifacts/${encodeURIComponent(a.id)}/diff?${query}`);
+    if (panel._diffRequest !== request) return;
+    status.remove();
+    const raw = String((payload && payload.diff) || "");
+    if (!raw || (payload && payload.changed === false)) {
+      panel.appendChild(el("div", "dock-empty", t("versions.diff.empty"))); return;
+    }
+    const limit = 200000, pre = el("pre", "ver-diff-body");
+    // The unified diff is untrusted Artifact content. textContent keeps file
+    // bytes inert even when they contain HTML/script syntax.
+    pre.textContent = raw.slice(0, limit); panel.appendChild(pre);
+    if (raw.length > limit) panel.appendChild(el("div", "ver-diff-note", t("versions.diff.truncated", limit)));
+  } catch (error) {
+    if (panel._diffRequest !== request) return;
+    status.textContent = t("versions.diff.err", apiErrorText(error)); status.classList.add("error");
+  }
+}
 async function showVersions(a) {
   S._modalMode = "versions:" + a.id;
   $("#modal-title").textContent = t("versions.modal.title", (a.filename || ""));
@@ -8519,7 +9257,7 @@ async function showVersions(a) {
   const render = async () => {
     let d; try { d = await api(`/artifacts/${a.id}/versions`); } catch (e) { body.textContent = t("versions.load.err", e.message); return; }
     const vs = (d && d.versions) || []; body.innerHTML = "";
-    const wrap = el("div", "ver-list");
+    const wrap = el("div", "ver-list"), diffPanel = el("section", "ver-diff hidden");
     if (!vs.length) { wrap.appendChild(el("div", "dock-empty", t("versions.empty"))); }
     vs.forEach(v => {
       const row = el("div", "ver-row" + (v.is_latest ? " current" : ""));
@@ -8529,6 +9267,13 @@ async function showVersions(a) {
       row.appendChild(info);
       const acts = el("div", "ver-acts");
       const view = el("a", "outline-btn small", t("common.view")); view.href = `${API}/artifacts/${v.version_id}`; view.target = "_blank"; acts.appendChild(view);
+      const previous = isTextEditable(a) ? vs.find(candidate => Number(candidate.ordinal) === Number(v.ordinal) - 1) : null;
+      if (previous) {
+        const compare = el("button", "outline-btn small", t("versions.diff", previous.ordinal, v.ordinal));
+        compare.dataset.action = "compare-artifact-versions";
+        compare.onclick = () => renderArtifactVersionDiff(diffPanel, a, previous.version_id, v.version_id, previous.ordinal, v.ordinal);
+        acts.appendChild(compare);
+      }
       if (!v.is_latest) { const rb = el("button", "solid-btn small", t("versions.restore")); rb.onclick = async () => { rb.disabled = true; rb.textContent = t("versions.restoring"); try { const restored = await api(`/artifacts/${a.id}/versions/${v.version_id}/restore`, { method: "POST" }); syncArtifactVersion((restored && restored.artifact) || { id: a.id, version_id: v.version_id }, true); hint(t("versions.restored", v.ordinal)); (S._artBust = S._artBust || {})[a.id] = Date.now(); if (S.currentId) loadArtifacts(S.currentId); if (S.dockArtifact && S.dockArtifact.id === a.id) { if (S.provMode) showProvenance(S.dockArtifact); else renderViewer(); } render(); } catch (e) { rb.disabled = false; rb.textContent = t("versions.restore"); hint(t("versions.restore.err", apiErrorText(e)), true); } }; acts.appendChild(rb); }
       row.appendChild(acts); wrap.appendChild(row);
       // Where this version's data came from, when it came from anywhere. The
@@ -8539,7 +9284,7 @@ async function showVersions(a) {
       // client renders what it is given and derives nothing.
       if (v.retrieval_source) wrap.appendChild(retrievalSourcePanel(v.retrieval_source));
     });
-    body.appendChild(wrap);
+    body.appendChild(wrap); body.appendChild(diffPanel);
   };
   render();
 }
@@ -8898,6 +9643,7 @@ function _paintKernel(els, st) {
   }
   const env = st.env || {};
   if (title) title.textContent = kernelLabel(kernelIdFromEnv(env)) + " kernel · " + t("nb.kernel.shared")
+    + (st.generation_id ? " · " + t("nb.owner.generation", shortRuntime(st.generation_id)) : "")
     + (env.pending ? t("nb.kernel.pendingSwitch", env.pending) : "");
   if (badge && badge.root && badge.label) {
     const mode = runtimeSummary().status;
@@ -8941,6 +9687,7 @@ async function refreshKernelState(els, _b, _c) {
   const previousRuntimeKey = _kc.st && [_kc.st.state, _kc.st.alive, _kc.st.turn_running, _kc.st.generation_id, _kc.st.generation, _kc.st.view_only, _kc.st.trust_state].join(":");
   if (_kc.id !== sid) { _kc.id = sid; _kc.envs = null; }
   _kc.st = st; _kc.stAt = Date.now();
+  S.artifactWorkbench = !!st.artifact_workbench;
   _paintKernel(els, st);  // els may be stale (a newer render replaced it); harmless — the next render repaints from cache
   // The first render happens before kernel status is known and therefore uses
   // the passive strip. If this daemon explicitly enables the developer REPL,
@@ -9201,6 +9948,16 @@ function renderNotebook() {
   let shown = entries; if (S.kernelFilter) shown = entries.filter(e => (e.kernel_id || "python") === S.kernelFilter);
   if (!shown.length) nb.appendChild(el("div", "dock-empty", t("nb.empty")));
   else shown.forEach(e => nb.appendChild(cellNode(e)));
+  const owners = el("div", "nb-owners");
+  ["agent", "user_repl", "repair", "review_scratch"].forEach(kind => {
+    const chip = el("span", "nb-owner-chip");
+    const active = identityForOwner(S.executionQueue, kind);
+    if (active) chip.classList.add("active");
+    chip.textContent = t("nb.owner." + kind);
+    chip.title = active && active.execution_id ? active.execution_id : kind;
+    owners.appendChild(chip);
+  });
+  nb.appendChild(owners);
   // Read-only Notebook by default: the interactive REPL (input, env selector,
   // stop/start/restart/interrupt) is built ONLY when the server explicitly
   // enables it (developer flag repl_enabled). Otherwise render a passive,
@@ -9596,22 +10353,108 @@ async function renderProvMessages(body) {
 function renderProvReview(body, a, lin) {
   if (!lin) { body.appendChild(el("div", "dock-empty", t("common.loading"))); return; }
   const inter = lin.interactions || []; const cell = inter.find(i => i.kind === "cell");
+  const producer = lin.producer && typeof lin.producer === "object" ? lin.producer : null;
   const mapped = lin.dependency_mappings && lin.dependency_mappings.inputs;
-  const inputs = Array.isArray(mapped) ? mapped : (cell && cell.files_read) || [];
-  if (!cell && !inputs.length) { body.appendChild(el("div", "dock-empty", t("prov.review.noLineage"))); return; }
+  const inputs = Array.isArray(mapped) ? mapped : [];
+  const cellInputs = (cell && Array.isArray(cell.files_read)) ? cell.files_read : [];
+  const captures = Array.isArray(lin.capture_observations) ? lin.capture_observations : [];
+  if (!cell && !inputs.length && !captures.length && !producer) { body.appendChild(el("div", "dock-empty", t("prov.review.noLineage"))); return; }
   const card = el("div", "prov-card");
   if (cell) {
     card.appendChild(el("div", "prov-h", t("prov.review.producedBy", (cell.cell_index != null ? cell.cell_index : "?"))));
     card.appendChild(el("div", "prov-meta", (cell.language || "python") + " · " + (cell.exit_status || cell.status || "ok") + (cell.kernel_id ? (" · " + cell.kernel_id) : "")));
     if ((cell.files_written || []).length) card.appendChild(provRow("wrote", cell.files_written));
-    if (inputs.length) card.appendChild(provRow("reads / inputs", inputs));
+    if (cellInputs.length) card.appendChild(provRow("reads / inputs", cellInputs));
     const link = el("a", "prov-link"); link.appendChild(iconEl("arrow-left", 14)); link.appendChild(el("span", null, t("prov.review.viewCode"))); link.onclick = () => { S.provMode = false; setActiveTab("notebook"); scrollToCell(cell.cell_index, cell.kernel_id); }; card.appendChild(link);
   } else if (inputs.length) card.appendChild(provRow("reads / inputs", inputs));
-  body.appendChild(card);
+  if (cell || inputs.length) body.appendChild(card);
+  captures.filter(capture => capture && (capture.capture_kind === "head_checksum_reused" || !cell)).forEach(capture => {
+    const captureCard = el("div", "prov-card");
+    const identity = publicText(capture.producing_cell_id || "unknown Cell", 96);
+    captureCard.appendChild(el("div", "prov-h", capture.cell_index != null ? t("prov.review.producedBy", capture.cell_index) : t("prov.review.producedByIdentity", identity)));
+    const captureKind = capture.capture_kind === "head_checksum_reused" ? t("prov.review.sameBytesCapture") : t("prov.review.versionCapture");
+    const frameMeta = capture.frame_id ? (" · " + t("prov.review.producerFrame", publicText(capture.frame_kind || "unknown", 32), publicText(capture.frame_id, 96))) : "";
+    captureCard.appendChild(el("div", "prov-meta", captureKind + " · " + identity + frameMeta));
+    if (Array.isArray(capture.inputs) && capture.inputs.length) captureCard.appendChild(provRow("reads / inputs", capture.inputs));
+    if (capture.cell_index != null) {
+      const link = el("a", "prov-link"); link.appendChild(iconEl("arrow-left", 14)); link.appendChild(el("span", null, t("prov.review.viewCode"))); link.onclick = () => { S.provMode = false; setActiveTab("notebook"); scrollToCell(capture.cell_index, capture.kernel_id); }; captureCard.appendChild(link);
+    }
+    body.appendChild(captureCard);
+  });
+  if (!cell && !captures.length && producer) {
+    const producerCard = el("div", "prov-card");
+    const producerHeading = producer.kind === "cell" ? t("prov.review.producedByIdentity", publicText(producer.producing_cell_id || "unknown Cell", 96)) : t("prov.review.nonCellProducer");
+    producerCard.appendChild(el("div", "prov-h", producerHeading));
+    if (producer.frame_id) producerCard.appendChild(el("div", "prov-meta", t("prov.review.producerFrame", publicText(producer.frame_kind || "unknown", 32), publicText(producer.frame_id, 96))));
+    body.appendChild(producerCard);
+  }
   const save = inter.find(i => i.kind === "save");
   if (save && save.at) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(save.at))));
 }
 function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = (S.sandboxOrigin || "") + "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); openModalEl($("#modal")); }
+function renderLocatorComments(container, a, kind, viewer) {
+  const box = el("div", "wb-locator");
+  box.appendChild(el("div", "wb-locator-title", t("wb.locator.title")));
+  const quote = el("textarea", "wb-locator-quote"); quote.placeholder = t("wb.locator.quote");
+  const selector = el("input", "wb-locator-selector"); selector.placeholder = t("wb.locator.selector");
+  const comment = el("textarea", "wb-locator-body"); comment.placeholder = t("wb.locator.body");
+  const save = el("button", "solid-btn small", t("common.save"));
+  const preview = el("pre", "wb-locator-preview");
+  let pdfPage = null, pdfPages = [];
+  const selectPdfPage = value => {
+    if (!pdfPage) return 1;
+    const page = Math.max(1, Math.floor(Number(value) || 1)); pdfPage.value = String(page);
+    if (viewer && viewer.dataset.currentPage !== String(page)) {
+      const base = String(viewer.src || artUrl(a)).split("#", 1)[0];
+      viewer.dataset.currentPage = String(page); viewer.src = base + "#page=" + encodeURIComponent(page);
+    }
+    const extracted = pdfPages.find(item => Number(item && item.page) === page);
+    preview.textContent = extracted ? String(extracted.text || "").slice(0, 4000) : "";
+    return page;
+  };
+  if (kind === "pdf") {
+    const pageControls = el("div", "wb-pdf-page-controls");
+    const label = el("label", "wb-pdf-page-label", t("wb.locator.pdfPage"));
+    pdfPage = el("input", "wb-pdf-page"); pdfPage.type = "number"; pdfPage.min = "1"; pdfPage.step = "1"; pdfPage.value = "1";
+    label.appendChild(pdfPage); pageControls.appendChild(label);
+    const previous = el("button", "outline-btn small", t("wb.locator.pdfPrev")); previous.type = "button";
+    const next = el("button", "outline-btn small", t("wb.locator.pdfNext")); next.type = "button";
+    previous.onclick = () => selectPdfPage(Number(pdfPage.value) - 1);
+    next.onclick = () => selectPdfPage(Number(pdfPage.value) + 1);
+    pdfPage.onchange = () => selectPdfPage(pdfPage.value);
+    pageControls.appendChild(previous); pageControls.appendChild(next); box.appendChild(pageControls);
+  }
+  if (kind === "html") box.appendChild(selector);
+  box.appendChild(quote); box.appendChild(comment); box.appendChild(save);
+  box.appendChild(preview);
+  container.appendChild(box);
+  const endpoint = kind === "pdf" ? "pdf-text" : "html-outline";
+  api(`/artifacts/${encodeURIComponent(a.id)}/${endpoint}`).then(payload => {
+    if (kind === "pdf") { pdfPages = Array.isArray(payload.pages) ? payload.pages : []; selectPdfPage(pdfPage.value); }
+    else preview.textContent = (payload.elements || []).map(item => (item.selector || item.tag) + " " + (item.text || "")).join("\n").slice(0, 4000);
+  }).catch(() => { preview.textContent = ""; });
+  save.onclick = async () => {
+    if (!S.currentId || !String(comment.value || "").trim()) return;
+    save.disabled = true;
+    try {
+      await api(`/frames/${S.currentId}/annotations`, {
+        method: "POST",
+        body: JSON.stringify({
+          artifact_id: a.id,
+          artifact_name: a.filename,
+          kind,
+          body: comment.value,
+          locator: kind === "pdf"
+            ? { page: selectPdfPage(pdfPage.value), quote: quote.value }
+            : { selector: selector.value, quote: quote.value },
+        }),
+      });
+      comment.value = ""; hint(t("wb.locator.saved"));
+      if (S.currentId) loadAnnotations(S.currentId);
+    } catch (error) { hint(t("wb.locator.err", apiErrorText(error)), true); }
+    save.disabled = false;
+  };
+}
 
 /* ---------- upload ---------- */
 function uploadFiles(files) {
@@ -10339,7 +11182,111 @@ const infoRow = (name, detail) => {
   return row;
 };
 
-async function custCompute(c) { try { const gpu = await api("/compute/gpu"); const env = await api("/environments/status").catch(() => ({ environments: [] })); const host = await api("/compute/local/hostinfo").catch(() => ({})); c.innerHTML = ""; c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc"))); c.appendChild(infoRow(t("cust.compute.host"), t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?"))); c.appendChild(infoRow("GPU", gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable"))); await renderRemoteGPU(c); const envs = env.environments || []; envs.forEach(e => { const inst = (e.packages || []).filter(p => p.installed); c.appendChild(infoRow(t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady")), t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : "")))); }); const ins = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", t("cust.compute.installExtraName"))); const dsc = el("div", "ds"); const inp = el("input"); inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input"; const btn = el("button", "outline-btn small", t("cust.compute.installBtn")); btn.onclick = async () => { const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return; btn.disabled = true; btn.textContent = t("cust.compute.installingBtn"); try { const r = S.currentId ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) }) : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) }); hint(r.ok ? (t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))) : (t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))))); if (r.ok) S._envSnapById = {}; custTab("compute"); } catch (e) { hint(t("toast.compute.installFailed", apiErrorText(e)), true); } btn.disabled = false; btn.textContent = t("cust.compute.installBtn"); }; dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins); await renderJobs(c); } catch (e) { c.textContent = t("versions.load.err", e.message); } }
+function standardReadinessStateText(readiness) {
+  if (readiness.ready) return t("environment.readiness.ready");
+  if (readiness.state === "needs_setup") return t("environment.readiness.needsSetup");
+  if (readiness.state === "needs_repair") return t("environment.readiness.needsRepair");
+  return t("environment.readiness.unavailable");
+}
+function renderStandardProfileReadiness(readiness) {
+  const card = el("section", "standard-readiness-card state-" + readiness.state);
+  const head = el("div", "standard-readiness-head");
+  const title = el("div");
+  title.appendChild(el("div", "standard-readiness-title", t("environment.readiness.cardTitle")));
+  title.appendChild(el("div", "standard-readiness-summary", standardReadinessStateText(readiness)));
+  head.appendChild(title);
+  const refresh = el("button", "outline-btn small", t("environment.readiness.refresh"));
+  refresh.onclick = () => custTab("compute");
+  head.appendChild(refresh); card.appendChild(head);
+
+  if (readiness.missing_environments.length) {
+    const section = el("div", "standard-readiness-gap");
+    section.appendChild(el("div", "standard-readiness-label", t("environment.readiness.missingEnvironments")));
+    const list = el("ul");
+    readiness.missing_environments.forEach(name => list.appendChild(el("li", null, name)));
+    section.appendChild(list); card.appendChild(section);
+  }
+  Object.entries(readiness.missing_packages).forEach(([environment, packages]) => {
+    if (!packages.length) return;
+    const section = el("div", "standard-readiness-gap");
+    section.appendChild(el("div", "standard-readiness-label", t("environment.readiness.missingPackages", environment)));
+    const list = el("ul", "standard-readiness-packages");
+    packages.forEach(packageName => list.appendChild(el("li", null, packageName)));
+    section.appendChild(list); card.appendChild(section);
+  });
+
+  const remediation = readiness.remediation;
+  if (remediation && remediation.requires_explicit_action && remediation.commands.length) {
+    const section = el("div", "standard-readiness-remediation");
+    section.appendChild(el("div", "standard-readiness-label", t("environment.readiness.remediation")));
+    section.appendChild(el("div", "standard-readiness-explicit", t("environment.readiness.explicitOnly")));
+    remediation.commands.forEach(item => {
+      const row = el("div", "standard-readiness-command");
+      const command = el("code", null, item.command);
+      if (item.label) command.setAttribute("aria-label", item.label);
+      const copy = el("button", "outline-btn small", t("environment.readiness.copy"));
+      copy.onclick = async () => {
+        try {
+          if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("clipboard unavailable");
+          await navigator.clipboard.writeText(item.command);
+          copy.textContent = t("code.copied");
+          hint(t("environment.readiness.copied"));
+          setTimeout(() => { copy.textContent = t("environment.readiness.copy"); }, 1200);
+        } catch { hint(t("nb.action.failed"), true); }
+      };
+      row.appendChild(command); row.appendChild(copy); section.appendChild(row);
+    });
+    card.appendChild(section);
+  }
+  return card;
+}
+
+async function custCompute(c) {
+  try {
+    const [gpu, env, host] = await Promise.all([
+      api("/compute/gpu").catch(() => ({ available: false })),
+      refreshEnvironmentStatus().then(status => status || { environments: [] }),
+      api("/compute/local/hostinfo").catch(() => ({})),
+    ]);
+    c.innerHTML = "";
+    c.appendChild(hdr(t("cust.compute.title"), t("cust.compute.desc")));
+    const readiness = S.standardProfileReadiness;
+    if (readiness && readiness.enabled) c.appendChild(renderStandardProfileReadiness(readiness));
+    c.appendChild(infoRow(t("cust.compute.host"), t("cust.compute.hostDetail", host.python || "?", host.machine || "", host.cpu_count || "?", host.ram_gb || "?", host.disk_free_gb || "?")));
+    c.appendChild(infoRow("GPU", gpu.available ? (gpu.gpu_name || t("cust.compute.gpuAvailable")) : t("cust.compute.gpuUnavailable")));
+    await renderRemoteGPU(c);
+    const envs = env.environments || [];
+    envs.forEach(e => {
+      const inst = (e.packages || []).filter(p => p.installed);
+      c.appendChild(infoRow(
+        t("cust.compute.kernelLabel", e.language, e.status === "installing" ? t("cust.compute.kernelInstalling") : t("cust.compute.kernelReady")),
+        t("cust.compute.preinstalledDetail", e.package_count, inst.slice(0, 18).map(p => p.name).join("、") + (inst.length > 18 ? " …" : ""))
+      ));
+    });
+    const ins = el("div", "cust-row"); const info = el("div", "info");
+    info.appendChild(el("div", "nm", t("cust.compute.installExtraName")));
+    const dsc = el("div", "ds"); const inp = el("input");
+    inp.placeholder = t("cust.compute.installPlaceholder"); inp.className = "cust-input";
+    const btn = el("button", "outline-btn small", t("cust.compute.installBtn"));
+    btn.onclick = async () => {
+      const pkgs = inp.value.trim().split(/\s+/).filter(Boolean); if (!pkgs.length) return;
+      btn.disabled = true; btn.textContent = t("cust.compute.installingBtn");
+      try {
+        const r = S.currentId
+          ? await api(`/frames/${S.currentId}/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs, restart: true }) })
+          : await api(`/kernel/install`, { method: "POST", body: JSON.stringify({ packages: pkgs }) });
+        hint(r.ok
+          ? t("step.env.installed", (r.installed || []).join("、") + (r.restarted ? t("cust.compute.kernelRestarted") : ""))
+          : t("toast.compute.installFailed", ((r.failed && r.failed[0] && r.failed[0].error) || t("toast.compute.installSeeLogs"))));
+        if (r.ok) S._envSnapById = {};
+        custTab("compute");
+      } catch (e) { hint(t("toast.compute.installFailed", apiErrorText(e)), true); }
+      btn.disabled = false; btn.textContent = t("cust.compute.installBtn");
+    };
+    dsc.appendChild(inp); dsc.appendChild(btn); info.appendChild(dsc); ins.appendChild(info); c.appendChild(ins);
+    await renderJobs(c);
+  } catch (e) { c.textContent = t("versions.load.err", e.message); }
+}
 async function renderJobs(c) {
   c.appendChild(hdr(t("cust.jobs.title"), t("cust.jobs.desc")));
   const sub = el("div", "cust-row"); const si = el("div", "info"); si.appendChild(el("div", "nm", t("cust.jobs.submitName")));
@@ -11482,7 +12429,10 @@ async function init() {
   document.querySelectorAll(".lang-btn").forEach(b => b.onclick = () => setLang(b.dataset.lang));
   applyLayout(localStorage.getItem("os-layout") || "comfortable");
   restoreColWidths(); initColResizers();
-  connectWS(); await loadModels(); refreshKeyBanner();
+  connectWS(); await loadModels(); await refreshEnvironmentStatus(); refreshKeyBanner();
+  document.querySelectorAll("[data-open-environment-readiness]").forEach(button => {
+    button.onclick = () => openCust("compute");
+  });
   $("#dash-new-project").onclick = () => openProjectModal();
   $("#dash-import-session").onclick = chooseSessionPackage;
   $("#session-package-input").onchange = async (event) => {
@@ -11594,3 +12544,240 @@ document.addEventListener("click", function (e) {
   clearTimeout(btn._t);
   btn._t = setTimeout(function () { btn.classList.remove("copied"); if (lbl) lbl.textContent = lbl.getAttribute("data-o") || t("msgAction.copy"); }, 1400);
 });
+
+/* ---- Team mode (docs/team-server-plan.md M1-9) -------------------------
+ * Self-contained: with team mode off and no data roots, every element
+ * stays hidden and nothing below changes the single-user UI. */
+(function teamBootstrap() {
+  "use strict";
+  function el(id) { return document.getElementById(id); }
+
+  // Identity: redirect to /login when the session died; show the user chip
+  // and a sign-out action when team mode is on.
+  fetch(API + "/auth/me")
+    .then(function (r) {
+      if (r.status === 401) { location.replace("/login"); return null; }
+      return r.ok ? r.json() : null;
+    })
+    .then(function (me) {
+      if (!me || me.team_mode !== true || !me.user) return;
+      var chip = el("team-user");
+      if (chip) {
+        chip.textContent = me.user.username + (me.user.role === "admin" ? " (admin)" : "");
+        chip.classList.remove("hidden");
+        chip.onclick = function () {
+          if (!confirm("Sign out?")) return;
+          fetch(API + "/auth/logout", { method: "POST" })
+            .then(function () { location.replace("/login"); })
+            .catch(function () { location.replace("/login"); });
+        };
+      }
+    })
+    .catch(function () {});
+
+  // The team file area: probe once; the buttons appear only when roots exist.
+  var tfState = { path: "" };
+  function probe() {
+    fetch(API + "/files")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.roots || !d.roots.length) return;
+        ["team-files-btn", "team-files-dash"].forEach(function (id) {
+          var b = el(id);
+          if (b) { b.classList.remove("hidden"); b.onclick = function () { openPanel(); }; }
+        });
+      })
+      .catch(function () {});
+  }
+  function openPanel() {
+    el("team-files-modal").classList.remove("hidden");
+    load(tfState.path);
+  }
+  function fmtSize(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return n + " B";
+  }
+  function load(path) {
+    tfState.path = path || "";
+    var url = API + "/files" + (tfState.path ? "?path=" + encodeURIComponent(tfState.path) : "");
+    fetch(url)
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) { render(res); })
+      .catch(function () {});
+  }
+  function render(res) {
+    var crumbs = el("team-files-crumbs");
+    var list = el("team-files-list");
+    if (!crumbs || !list) return;
+    crumbs.textContent = "";
+    list.textContent = "";
+    if (!res.ok) {
+      list.textContent = (res.body && res.body.error) || "unavailable";
+      return;
+    }
+    var home = document.createElement("a");
+    home.href = "#"; home.textContent = "roots";
+    home.onclick = function (e) { e.preventDefault(); load(""); };
+    crumbs.appendChild(home);
+    if (tfState.path) {
+      crumbs.appendChild(document.createTextNode("  ›  " + tfState.path));
+    }
+    var upBtn = el("team-files-upload");
+    if (upBtn) upBtn.style.display = tfState.path ? "" : "none";
+    if (res.body.roots) {
+      res.body.roots.forEach(function (root) {
+        var row = document.createElement("div");
+        row.className = "team-files-row";
+        var a = document.createElement("a");
+        a.href = "#"; a.textContent = "📁 " + root.path;
+        a.onclick = function (e) { e.preventDefault(); load(root.path); };
+        row.appendChild(a);
+        list.appendChild(row);
+      });
+      return;
+    }
+    (res.body.entries || []).forEach(function (entry) {
+      var row = document.createElement("div");
+      row.className = "team-files-row";
+      var full = res.body.path + "/" + entry.name;
+      if (entry.dir) {
+        var a = document.createElement("a");
+        a.href = "#"; a.textContent = "📁 " + entry.name;
+        a.onclick = function (e) { e.preventDefault(); load(full); };
+        row.appendChild(a);
+      } else {
+        var link = document.createElement("a");
+        link.href = API + "/files/download?path=" + encodeURIComponent(full);
+        link.textContent = "📄 " + entry.name;
+        row.appendChild(link);
+        var size = document.createElement("span");
+        size.className = "team-files-size";
+        size.textContent = fmtSize(entry.size);
+        row.appendChild(size);
+      }
+      list.appendChild(row);
+    });
+    if (!(res.body.entries || []).length) {
+      var empty = document.createElement("div");
+      empty.className = "team-files-row";
+      empty.textContent = "(empty)";
+      list.appendChild(empty);
+    }
+  }
+  var closeBtn = el("team-files-close");
+  if (closeBtn) closeBtn.onclick = function () { el("team-files-modal").classList.add("hidden"); };
+  var uploadBtn = el("team-files-upload");
+  var uploadInput = el("team-files-input");
+  if (uploadBtn && uploadInput) {
+    uploadBtn.onclick = function () { if (tfState.path) uploadInput.click(); };
+    uploadInput.onchange = function () {
+      var file = uploadInput.files && uploadInput.files[0];
+      uploadInput.value = "";
+      if (!file || !tfState.path) return;
+      var url = API + "/files/upload?dir=" + encodeURIComponent(tfState.path) +
+        "&name=" + encodeURIComponent(file.name) + "&overwrite=1";
+      fetch(url, { method: "POST", body: file })
+        .then(function (r) {
+          if (!r.ok) return r.json().then(function (b) { alert((b && b.error) || ("upload failed (" + r.status + ")")); });
+          load(tfState.path);
+        })
+        .catch(function () { alert("upload failed"); });
+    };
+  }
+  probe();
+})();
+
+/* ---- Team governance (M2-7): guest redirect + minimal admin panel ------ */
+(function teamGovernance() {
+  "use strict";
+  function el(id) { return document.getElementById(id); }
+
+  fetch(API + "/auth/me")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (me) {
+      if (!me || me.team_mode !== true || !me.user) return;
+      if (me.user.role === "guest") {
+        // A guest's whole surface is the replay viewer (D3).
+        if (location.pathname === "/") location.replace("/replay");
+        return;
+      }
+      if (me.user.role === "admin" || me.user.kind === "service") {
+        var btn = el("team-admin");
+        if (btn) { btn.classList.remove("hidden"); btn.onclick = openAdmin; }
+      }
+    })
+    .catch(function () {});
+
+  function openAdmin() {
+    el("team-admin-modal").classList.remove("hidden");
+    loadAdmin();
+  }
+  var closeBtn = el("team-admin-close");
+  if (closeBtn) closeBtn.onclick = function () { el("team-admin-modal").classList.add("hidden"); };
+  var refreshBtn = el("team-admin-refresh");
+  if (refreshBtn) refreshBtn.onclick = function () { loadAdmin(); };
+
+  function section(parent, title) {
+    var h = document.createElement("h3");
+    h.className = "team-admin-h";
+    h.textContent = title;
+    parent.appendChild(h);
+    var box = document.createElement("div");
+    box.className = "team-admin-sec";
+    parent.appendChild(box);
+    return box;
+  }
+  function table(box, headers, rows) {
+    var t = document.createElement("table");
+    t.className = "team-admin-table";
+    var tr = document.createElement("tr");
+    headers.forEach(function (h) {
+      var th = document.createElement("th"); th.textContent = h; tr.appendChild(th);
+    });
+    t.appendChild(tr);
+    rows.forEach(function (cells) {
+      var r = document.createElement("tr");
+      cells.forEach(function (c) {
+        var td = document.createElement("td"); td.textContent = c == null ? "" : String(c); r.appendChild(td);
+      });
+      t.appendChild(r);
+    });
+    box.appendChild(t);
+    if (!rows.length) {
+      var d = document.createElement("div"); d.className = "team-admin-empty"; d.textContent = "(none)"; box.appendChild(d);
+    }
+  }
+  function jget(path) {
+    return fetch(API + path).then(function (r) { return r.ok ? r.json() : null; });
+  }
+
+  function loadAdmin() {
+    var body = el("team-admin-body");
+    body.textContent = "loading…";
+    Promise.all([
+      jget("/team/users"), jget("/team/usage"), jget("/team/audit?limit=50"),
+      jget("/team/invites"), jget("/team/quotas"),
+    ]).then(function (res) {
+      var users = (res[0] || {}).users || [];
+      var usage = (res[1] || {}).usage || [];
+      var audit = (res[2] || {}).audit || [];
+      var invites = (res[3] || {}).invites || [];
+      var quotas = (res[4] || {}).quotas || [];
+      body.textContent = "";
+      var idName = {};
+      users.forEach(function (u) { idName[u.id] = u.username; });
+      table(section(body, "Users"), ["user", "role", "state", "id"],
+        users.map(function (u) { return [u.username, u.role, u.disabled ? "disabled" : "active", u.id]; }));
+      table(section(body, "Usage"), ["user", "project", "kind", "total", "events"],
+        usage.map(function (r) { return [idName[r.user_id] || r.user_id, r.project_id, r.kind, Math.round(r.total * 100) / 100, r.events]; }));
+      table(section(body, "Quotas"), ["scope", "scope id", "kind", "limit", "window"],
+        quotas.map(function (r) { return [r.scope, r.scope_id, r.kind, r.limit_amount, r.window]; }));
+      table(section(body, "Invites"), ["prefix", "project", "by", "state"],
+        invites.map(function (r) { return [r.token_prefix, r.project_id, r.created_by, r.live ? "live" : (r.used_at ? "used/revoked" : "expired")]; }));
+      table(section(body, "Audit (latest 50)"), ["when", "actor", "action", "target"],
+        audit.map(function (r) { return [new Date(r.ts).toLocaleString(), r.actor, r.action, r.target || r.user_id || ""]; }));
+    }).catch(function () { el("team-admin-body").textContent = "failed to load"; });
+  }
+})();

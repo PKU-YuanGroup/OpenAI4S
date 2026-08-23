@@ -93,7 +93,7 @@ Run locally and make sure everything is green:
 
 ```bash
 uv run pytest                       # full offline suite — no network, no keys
-uv run mypy                         # strict agent core + typed Host dispatcher
+uv run mypy                         # strict agent/Host + orchestration contracts
 uv run pre-commit run --all-files   # black · isort · ruff · mypy · hygiene
 ```
 

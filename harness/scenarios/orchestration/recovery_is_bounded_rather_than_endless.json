@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "id": "recovery.is_bounded_rather_than_endless",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "A node that kills every worker must not be resubmitted to forever.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 6,
+      "max_recoveries": 1,
+      "workload": {
+        "kind": "SESSION"
+      },
+      "submits": [
+        {
+          "result": "created"
+        },
+        {
+          "result": "created"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "LOST",
+          "reason": "NODE_FAILED"
+        },
+        {
+          "phase": "LOST",
+          "reason": "NODE_FAILED"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "LOST:NODE_FAILED",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submitted",
+      "session_kernel_state_lost",
+      "allocation_submitted",
+      "session_recovery_exhausted",
+      "workload_terminal",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

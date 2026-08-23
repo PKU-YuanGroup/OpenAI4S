@@ -50,13 +50,14 @@ an interrupted upgrade recoverable by simply running again.
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 # Bump when adding a numbered migration below.
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 27
 
 _MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -70,6 +71,34 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 class MigrationError(RuntimeError):
     """A migration could not be applied. The database is unchanged."""
+
+
+def apply_ddl_script(conn: sqlite3.Connection, script: str) -> None:
+    """Run a multi-statement DDL script *without* committing the caller's
+    transaction.
+
+    `Connection.executescript` issues an implicit COMMIT before it runs. A
+    numbered step that used it therefore ended `run_migrations`' explicit
+    BEGIN on its way in, and the ROLLBACK in the error handler below then
+    raised "cannot rollback - no transaction is active" and was swallowed --
+    so a failure in a later step left the earlier ones committed while the
+    operator was told "The database was rolled back and remains at version
+    N", and `current_version()` and `applied_migrations()` disagreed
+    afterwards. Six of the team-mode schemas were applied that way.
+
+    Statements are split on `;`, which is sound for plain CREATE
+    TABLE/INDEX DDL and not for a trigger body, so a script containing one
+    is refused rather than silently mis-split.
+    """
+    if re.search(r"\bBEGIN\b", script, re.IGNORECASE):
+        raise MigrationError(
+            "apply_ddl_script cannot split a script containing a BEGIN block "
+            "(a trigger body); give it the statements as a sequence instead"
+        )
+    for statement in script.split(";"):
+        text = statement.strip()
+        if text:
+            conn.execute(text)
 
 
 def _is_duplicate_column(exc: sqlite3.OperationalError) -> bool:

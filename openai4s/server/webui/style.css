@@ -470,6 +470,17 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 /* REPL console */
 .nb-repl{border-top:.5px solid var(--border);margin-top:14px;padding-top:10px}
 .nb-repl-head{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--text-400);margin-bottom:6px}
+.nb-owners{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 4px}
+.nb-owner-chip{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border,#ccc);color:var(--text-400)}
+.nb-owner-chip.active{border-color:var(--accent);color:var(--accent)}
+.wb-table-controls{display:flex;gap:8px;align-items:center;margin:8px 0}
+.wb-filter{flex:1;min-width:8rem}
+.wb-table-meta{font-size:12px;color:var(--text-400);margin-bottom:6px}
+.wb-sorted{text-decoration:underline}
+.wb-ketcher-bar{margin-bottom:8px}
+.wb-locator{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.wb-locator-preview{max-height:8rem;overflow:auto;font-size:11px}
+.wb-pdf-page-controls{display:flex;align-items:end;gap:6px;flex-wrap:wrap}.wb-pdf-page-label{display:flex;flex-direction:column;gap:3px;color:var(--text-400);font-size:11px}.wb-pdf-page{width:6.5rem}
 .nb-repl-body{font-family:var(--mono);font-size:12px;color:var(--text-400);white-space:pre-wrap}
 .nb-repl-prompt{display:flex;align-items:baseline;gap:6px;margin-top:8px;font-family:var(--mono);font-size:12px}
 .nb-repl-prompt .pmt{color:var(--accent)}
@@ -733,6 +744,7 @@ body.layout-wide{--col:1080px}
 .ver-badge{font-size:10px;color:#fff;background:var(--clay,#d0704e);border-radius:8px;padding:1px 7px}
 .ver-meta{font-size:12px;color:var(--muted,#888);margin-top:2px}
 .ver-acts{display:flex;align-items:center;gap:8px;flex:none}
+.ver-diff{margin-top:12px;border:.5px solid var(--border,#8883);border-radius:10px;background:var(--bg-100);overflow:hidden}.ver-diff-title{padding:9px 12px;border-bottom:.5px solid var(--border,#8883);color:var(--text-200);font-size:12px;font-weight:650}.ver-diff-body{max-height:45vh;margin:0;padding:12px;overflow:auto;background:var(--bg-000);color:var(--text-100);font:11px/1.5 var(--mono);white-space:pre;tab-size:4}.ver-diff-note{padding:7px 12px;border-top:.5px solid var(--border,#8883);color:var(--text-400);font-size:11px}
 
 /* --- added: skill authoring editor --- */
 .cust-actrow{display:flex;gap:8px;margin-top:6px}
@@ -818,6 +830,30 @@ body.layout-wide{--col:1080px}
 .key-banner .kb-link{background:#e85520;color:#fff;border:0;border-radius:7px;padding:2px 10px;font-size:12px;margin-left:6px}
 body.has-key-banner .dashboard{padding-top:52px}
 body.has-key-banner #sidebar,body.has-key-banner #main,body.has-key-banner #rightdock{padding-top:34px}
+
+/* Standard scientific environment readiness. The same persistent projection
+   appears on the dashboard and above the conversation; flag-off keeps both
+   static shells hidden. */
+.environment-readiness-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--clay) 42%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--clay) 10%,var(--panel));color:var(--text-200)}
+.environment-readiness-copy{display:flex;align-items:baseline;gap:8px;min-width:0;font-size:12.5px;line-height:1.45}
+.environment-readiness-copy strong{flex:none;color:var(--text-000);font-size:13px}
+.environment-readiness-copy span{min-width:0}
+#conv-view>.environment-readiness-banner{flex:none;margin:0 20px 8px}
+
+.standard-readiness-card{margin:0 0 14px;padding:14px;border:1px solid var(--border-card);border-left:3px solid var(--clay);border-radius:12px;background:var(--bg-100)}
+.standard-readiness-card.state-ready{border-left-color:var(--success)}
+.standard-readiness-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.standard-readiness-title{font-size:14px;font-weight:650;color:var(--text-000)}
+.standard-readiness-summary{margin-top:3px;font-size:12px;line-height:1.45;color:var(--text-400)}
+.standard-readiness-gap,.standard-readiness-remediation{margin-top:12px;padding-top:10px;border-top:.5px solid var(--border)}
+.standard-readiness-label{font-size:11px;font-weight:650;letter-spacing:.03em;color:var(--text-200)}
+.standard-readiness-gap ul{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0 0;padding:0;list-style:none}
+.standard-readiness-gap li{padding:2px 7px;border:.5px solid var(--border);border-radius:7px;background:var(--panel);font:11px/1.45 var(--mono);color:var(--text-200)}
+.standard-readiness-explicit{margin-top:3px;font-size:11.5px;color:var(--text-400)}
+.standard-readiness-command{display:flex;align-items:center;gap:8px;margin-top:8px}
+.standard-readiness-command code{min-width:0;flex:1;overflow:auto;padding:7px 9px;border:.5px solid var(--border);border-radius:7px;background:var(--panel);color:var(--text-000);white-space:pre;font:11.5px/1.4 var(--mono);user-select:all}
+.standard-readiness-command .outline-btn{flex:none}
+@media(max-width:640px){.environment-readiness-banner,.environment-readiness-copy,.standard-readiness-command{align-items:stretch;flex-direction:column}.environment-readiness-copy{gap:2px}.environment-readiness-banner .outline-btn,.standard-readiness-command .outline-btn{align-self:flex-start}}
 
 /* --- image annotations (figure review) --- */
 .annot-stage{position:relative;display:block;width:max-content;max-width:100%;margin:16px auto}
@@ -1621,3 +1657,55 @@ body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
    Muted: it is a support id and a warning, not part of the conversation. */
 .msg-failure-meta { margin-top: 6px; font-size: 12px; opacity: .72; line-height: 1.5; }
 .msg-failure-meta:empty { display: none; }
+.review-badge { margin-top: 6px; display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border, #ccc); }
+.review-badge-candidate { opacity: .8; }
+.review-badge-verified { border-color: #2e7d32; color: #2e7d32; }
+.review-badge-completed_with_issues, .review-badge-review_unavailable { border-color: #ef6c00; color: #ef6c00; }
+
+/* ---- Team mode (M1-9): user chip + team files panel ---- */
+.team-files-crumbs{padding:10px 18px;border-bottom:.5px solid var(--border);font-size:13px;color:var(--text-300)}
+.team-files-crumbs a{color:var(--text-100);text-decoration:none;font-weight:600}
+.team-files-list{padding:6px 0}
+.team-files-row{display:flex;align-items:center;justify-content:space-between;padding:7px 18px;font-size:14px;border-bottom:.5px solid var(--border)}
+.team-files-row a{color:var(--text-100);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-files-row a:hover{text-decoration:underline}
+.team-files-size{color:var(--text-300);font-size:12px;margin-left:12px;flex:none}
+
+/* ---- Team admin panel (M2-7) ---- */
+.team-admin-body{padding:6px 18px 18px}
+.team-admin-h{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-300);margin:18px 0 6px}
+.team-admin-table{border-collapse:collapse;width:100%;font-size:13px}
+.team-admin-table th{font-weight:600;text-align:left;border-bottom:.5px solid var(--border);padding:5px 8px}
+.team-admin-table td{border-bottom:.5px solid var(--border);padding:5px 8px;font-family:var(--mono);font-size:12px}
+.team-admin-empty{color:var(--text-300);font-size:12px;padding:4px 8px}
+
+/* ---- where a session runs (M3b-6) ---- */
+.compute-badge { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 9px;
+  border-radius:999px; border:1px solid var(--line); background:var(--panel); color:var(--fg-2);
+  font-size:12px; cursor:pointer; white-space:nowrap; max-width:220px; }
+.compute-badge:hover { border-color:var(--accent); color:var(--fg); }
+.compute-badge .cb-label { overflow:hidden; text-overflow:ellipsis; }
+/* Waiting reads as in-progress, ready reads as settled. Deliberately not red:
+   queueing for a node is the system working, not a fault. */
+.compute-badge.waiting { color:var(--warn, #b8860b); border-style:dashed; }
+.compute-badge.ready { color:var(--fg-2); }
+
+.compute-lost { display:flex; align-items:flex-start; gap:10px; margin:10px 16px 0;
+  padding:11px 13px; border-radius:10px; border:1px solid var(--danger);
+  background:color-mix(in srgb, var(--danger) 8%, transparent); font-size:13px; }
+.compute-lost .cl-text { flex:1; min-width:0; }
+.compute-lost .cl-body { margin-top:3px; color:var(--fg-2); line-height:1.5; }
+.compute-lost .cl-dismiss { flex:none; align-self:center; height:28px; padding:0 12px;
+  border-radius:8px; border:1px solid var(--line); background:var(--panel); cursor:pointer; }
+
+.run-location { display:flex; flex-direction:column; gap:8px; padding:4px 2px; }
+.run-location .rl-option { text-align:left; padding:11px 13px; border-radius:10px;
+  border:1px solid var(--line); background:var(--panel); cursor:pointer; }
+.run-location .rl-option:hover { border-color:var(--accent); }
+.run-location .rl-option.current { border-color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 8%, transparent); }
+.run-location .rl-name { font-weight:600; }
+.run-location .rl-hint { margin-top:3px; font-size:12px; color:var(--fg-2); }
+.run-location .rl-empty { padding:10px 2px; font-size:13px; color:var(--fg-2); }
+.run-location .rl-release { margin-top:4px; height:32px; border-radius:8px;
+  border:1px solid var(--line); background:var(--panel); color:var(--danger); cursor:pointer; }

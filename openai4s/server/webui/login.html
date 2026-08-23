@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenAI4S — sign in</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.6 -apple-system, system-ui, sans-serif;
+    max-width: 22rem; margin: 16vh auto; padding: 0 1.5rem; color: #222;
+  }
+  h1 { font-size: 1.25rem; margin-bottom: 1.2rem; }
+  label { display: block; margin: .8em 0 .25em; font-weight: 600; font-size: .85rem; }
+  input {
+    width: 100%; box-sizing: border-box; padding: .55em .7em;
+    border: 1px solid #d4d4d8; border-radius: 6px; font: inherit;
+    background: transparent; color: inherit;
+  }
+  button {
+    margin-top: 1.2em; width: 100%; padding: .6em; border: 0; border-radius: 6px;
+    background: #2563eb; color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+  #err { color: #dc2626; min-height: 1.4em; margin-top: .8em; font-size: .9rem; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #18181b; color: #e4e4e7; }
+    input { border-color: #3f3f46; }
+  }
+</style>
+</head>
+<body>
+<h1>OpenAI4S · Team sign in</h1>
+<form id="f">
+  <label for="u">Username</label>
+  <input id="u" name="username" autocomplete="username" autofocus required>
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  <button id="b" type="submit">Sign in</button>
+  <div id="err" role="alert"></div>
+</form>
+<script src="/static/login.js"></script>
+</body>
+</html>

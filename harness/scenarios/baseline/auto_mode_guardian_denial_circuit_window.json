@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_guardian_denial_circuit_window",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_contract"
+  ],
+  "surface": "auto_mode_contract",
+  "task": "Open only the denial circuit when the current denial becomes the tenth denial in the ordered recent-50 window.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_v3",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "permission_guardian",
+    "outcome": "deny_circuit",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-circuit-window",
+      "root_frame_id": "frame-stage0-circuit-window",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-circuit-window",
+      "execution_id": "execution-stage0-circuit-window"
+    },
+    "audit_id": "audit-stage0-circuit-window",
+    "canonical_action": {
+      "schema_version": 1,
+      "action_kind": "network_post",
+      "target": {
+        "origin": "https://example.invalid",
+        "path": "/stage0/window"
+      },
+      "parameters": {
+        "body_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      "risk": {
+        "irreversible": true,
+        "external_write": true
+      }
+    },
+    "policy_resolution": "ask",
+    "guardian_identity": {
+      "guardian_id": "permission-guardian",
+      "standing_allow_policy": "never"
+    },
+    "denial_history": {
+      "prior_decisions": [
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "deny",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow",
+        "allow"
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "blocked_by_guardian",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "auto_audit_started",
+      "auto_audit_completed",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "retry_bounded",
+      "golden_payloads"
+    ]
+  }
+}

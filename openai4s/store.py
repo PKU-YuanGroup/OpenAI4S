@@ -50,7 +50,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from openai4s.capabilities import CapabilityStateService, SpecialistProfileService
 from openai4s.execution.dependencies import (
@@ -63,9 +63,17 @@ from openai4s.storage.actions import ActionLedgerRepository
 from openai4s.storage.activation import SessionActivationRepository
 from openai4s.storage.agents import AgentProfileRepository
 from openai4s.storage.annotations import AnnotationRepository
+from openai4s.storage.artifact_observations import (
+    create_artifact_observations_schema,
+)
 from openai4s.storage.artifacts import ArtifactRepository
 from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
+from openai4s.storage.auto_mode import (
+    AutoModeRepository,
+    create_auto_mode_schema,
+    install_auto_mode_action_guards,
+)
 from openai4s.storage.branch_projection import count_cursor, project_branch_records
 from openai4s.storage.capabilities import CapabilityStateRepository
 from openai4s.storage.checkpoint_state import CheckpointStateRepository
@@ -81,8 +89,17 @@ from openai4s.storage.datapro_index import (
     create_datapro_index_schema,
 )
 from openai4s.storage.delegation import DelegationProjectionRepository
-from openai4s.storage.frames import FrameRepository
+from openai4s.storage.delivery import (
+    CompletionDeliveryRepository,
+    create_completion_delivery_schema,
+)
+from openai4s.storage.frames import FrameRepository, visible_session_clause
+from openai4s.storage.governance import (
+    GovernanceRepository,
+    create_governance_schema,
+)
 from openai4s.storage.kernels import KernelGenerationRepository
+from openai4s.storage.leases import LeaseRepository, create_lease_schema
 from openai4s.storage.memories import MemoryRepository
 from openai4s.storage.metadata import (
     DERIVABLE_HOST_CALLS,
@@ -110,10 +127,22 @@ from openai4s.storage.permissions import (
 from openai4s.storage.permissions import perm_match as _perm_match
 from openai4s.storage.plans import PlanRepository
 from openai4s.storage.recovery import RecoveryJournalRepository
+from openai4s.storage.session_imports import SessionImportRepository
 from openai4s.storage.settings import SettingsRepository
 from openai4s.storage.shares import SharesRepository
 from openai4s.storage.skills import SkillVersionRepository
-from openai4s.storage.snapshots import SessionSnapshotRepository
+from openai4s.storage.snapshots import (
+    SessionSnapshotRepository,
+    WorkspaceCAS,
+    revert_recovery_setting_key,
+)
+from openai4s.storage.team import (
+    TeamRepository,
+    create_session_owners_schema,
+    create_team_schema,
+)
+from openai4s.storage.user_keys import UserKeyRepository, create_user_key_schema
+from openai4s.storage.workloads import WorkloadRepository, create_workload_schema
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -458,6 +487,10 @@ CREATE TABLE IF NOT EXISTS compute_jobs (
     -- exists remotely, independent of anything we chose to believe.
     receipt         TEXT,
     outputs         TEXT,              -- JSON: declared output globs
+    -- Exact Artifact versions staged into the remote job.  This is separate
+    -- from `outputs`: it survives daemon restart and is copied onto every
+    -- harvested version's provenance record.
+    input_versions  TEXT,              -- JSON: ordered version ids
     -- Which session/workspace submitted this job. `_rehydrate` filters on it so
     -- a restart does not hand one session's live jobs — and their harvested
     -- outputs — to whichever session happens to build a manager first. NULL is
@@ -536,7 +569,11 @@ CREATE TABLE IF NOT EXISTS annotations (
     reservation_id TEXT,
     status         TEXT NOT NULL DEFAULT 'open',   -- open|reserved|sent|resolved|dismissed
     created_at     INTEGER NOT NULL,
-    updated_at     INTEGER NOT NULL
+    updated_at     INTEGER NOT NULL,
+    -- Stage 9 workbench locators. Image pins stay on rel_x/rel_y; PDF/HTML
+    -- comments name a quote or element. NULL on rows created before this.
+    kind           TEXT,
+    locator        TEXT
 );
 -- One row per attempt to admit pinned comments into a message.
 --
@@ -611,6 +648,9 @@ CREATE TABLE IF NOT EXISTS permission_requests (
     side_effect_class TEXT,
     resource_keys  TEXT,
     payload        TEXT,
+    dangerous      INTEGER NOT NULL DEFAULT 0,
+    canonical_arguments_sha256 TEXT,
+    action_digest  TEXT,
     state          TEXT NOT NULL DEFAULT 'pending',
     scope          TEXT,
     pattern        TEXT,
@@ -660,6 +700,40 @@ QUERY_DENYLIST = frozenset(
         "settings",
         "connectors",
         "memories",
+        # Same class as `connectors`: `managed_endpoints.credential` is a
+        # plaintext bearer token for a local model endpoint, and it was
+        # readable with one `SELECT credential FROM managed_endpoints` from
+        # any agent cell -- in single-user installs as well as team ones. A
+        # credential the API never returns must not be reachable through the
+        # query surface that goes around the API.
+        "managed_endpoints",
+        # Team-mode identity (INV-9 hygiene): password hashes, login-token
+        # hashes, and the governance audit trail are never agent-readable.
+        "users",
+        "auth_sessions",
+        "team_audit_log",
+        "session_owners",
+        # Team-mode governance (M2): invites hold credential digests, and
+        # membership/metering/limits are the operator's data, not the agent's.
+        "project_members",
+        "invites",
+        "usage_ledger",
+        "quotas",
+        # Orchestration state: submission tokens are credentials of a sort
+        # (they are what INV-8 reconciliation matches on), and a workload's
+        # spec carries another user's command line.
+        "workloads",
+        "allocations",
+        # Cluster sessions (M3b/M4). `user_llm_keys` holds a broker reference
+        # and every user's id -- the two fields `UserKeyRecord.public()`
+        # deliberately withholds from a route, so leaving the table readable
+        # would hand the agent exactly what the API refuses. `leases` and
+        # `session_workloads` map sessions to workloads and to each other,
+        # which is the same "who is working on what" that INV-13 protects
+        # everywhere else.
+        "user_llm_keys",
+        "leases",
+        "session_workloads",
         "host_call_log",
         "permission_rules",
         "permission_requests",
@@ -684,6 +758,22 @@ QUERY_DENYLIST = frozenset(
         "checkpoint_state_snapshots",
         "snapshot_operations",
         "recovery_journal",
+        # Auto Mode contains immutable Reviewer/Guardian inputs, exact action
+        # digests, raw audit payloads, and recovery ownership. It is projected
+        # only through the bounded server service; agent SQL cannot inspect or
+        # use it as an alternate permission channel.
+        "auto_mode_selections",
+        "auto_mode_runs",
+        "auto_mode_events",
+        "review_runs",
+        "review_findings",
+        "repair_runs",
+        "repair_execution_groups",
+        "permission_review_assessments",
+        # Publication ledger binds exact manifests to final assistant messages.
+        # It is server recovery/audit state, not an agent data source.
+        "completion_deliveries",
+        "completion_delivery_artifacts",
         # SQLite's own catalogue. The denylist above protects the *contents* of
         # these tables and this one handed back their entire definition:
         # `SELECT sql FROM sqlite_master WHERE name='permission_rules'` returned
@@ -717,6 +807,21 @@ def _strip_sql_literals(sql: str) -> str:
     return _SQL_LITERAL_RE.sub(" ", sql or "")
 
 
+#: Word-boundary matcher for the denylist pre-check. A bare substring test
+#: (`if bad in text`) denies any query that merely *contains* a denied word —
+#: harmless for a specific name like `settings`, but a real single-user
+#: regression once the team tables add generic words: `SELECT * FROM
+#: active_users` contains `users`. `\b` treats a denied table as a token, so
+#: `\busers\b` matches `FROM users`, `"users"`, `main.users`, and `users,`
+#: (every real reference) but NOT `active_users` (`_` is a word char). This
+#: only makes the cheap pre-check less aggressive; the SQLite authorizer,
+#: which denies by the *resolved* table name, stays the real enforcement, so
+#: no denied table becomes readable.
+_DENY_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in sorted(QUERY_DENYLIST)) + r")\b"
+)
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -742,11 +847,164 @@ _SCOPED_VIEWS = frozenset(
     {
         "my_artifacts",
         "my_artifact_versions",
+        "my_artifact_capture_observations",
         "my_lineage_edges",
         "my_frames",
         "my_env_snapshots",
+        # The conversation/execution family, scoped the same way (team mode).
+        "my_messages",
+        "my_execution_log",
     }
 )
+
+#: A CTE binding one of `_SCOPED_VIEWS` by name. The authorizer's fifth
+#: argument names "the view responsible for this read", and SQLite fills it in
+#: for a *common table expression* exactly as it does for a view -- measured:
+#: `WITH my_messages AS (SELECT * FROM main.messages) SELECT content FROM
+#: my_messages` hands the authorizer `(20, 'messages', 'content', 'main',
+#: 'my_messages')`, which is byte-for-byte what the real temp view produces.
+#: So the one string the escape hatch trusts was a string the caller could
+#: mint, and in team mode that string was the entire tenant boundary for
+#: `host.query`: one CTE returned every colleague's prompts, replies, cell
+#: code and stdout.
+#:
+#: SQLite accepts identifiers quoted with double quotes, brackets, backticks
+#: and (for compatibility) single quotes. The denylist scanner deliberately
+#: removes single-quoted *literals*, so a regex over that scanner can never
+#: distinguish `SELECT 'my_messages'` from `WITH 'my_messages' AS (...)`.
+#: This small lexer keeps quote kind and punctuation, then parses only the
+#: `WITH name [(columns)] AS [NOT] [MATERIALIZED] (...)` binding shape. It is
+#: intentionally not a SQL parser; SQLite's authorizer remains the enforcement
+#: for every other name and operation.
+
+
+def _sql_cte_tokens(sql: str) -> list[tuple[str, str]]:
+    """Tokenize just enough SQL to recognize quoted CTE bindings."""
+
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    length = len(sql or "")
+    while index < length:
+        char = sql[index]
+        if char.isspace():
+            index += 1
+            continue
+        if sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+            continue
+        if char in "'\"`[":
+            closing = "]" if char == "[" else char
+            index += 1
+            value: list[str] = []
+            while index < length:
+                current = sql[index]
+                if current == closing:
+                    # SQLite doubles quote delimiters inside quoted names.
+                    if index + 1 < length and sql[index + 1] == closing:
+                        value.append(closing)
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                value.append(current)
+                index += 1
+            tokens.append(("quoted", "".join(value)))
+            continue
+        if char in "(),":
+            tokens.append(("punct", char))
+            index += 1
+            continue
+        # SQLite's ALPHABETIC class includes every non-ASCII code point, not
+        # only characters Python calls alphanumeric. Combining marks are a
+        # practical example: ``e\u0301`` is one valid bare identifier. Treating
+        # the mark as an unknown token let an attacker put that harmless CTE
+        # first and hide a scoped-view shadow later in the same WITH list.
+        if char.isalnum() or char in "_$" or ord(char) >= 0x80:
+            start = index
+            while index < length and (
+                sql[index].isalnum() or sql[index] in "_$" or ord(sql[index]) >= 0x80
+            ):
+                index += 1
+            tokens.append(("word", sql[start:index]))
+            continue
+        tokens.append(("other", char))
+        index += 1
+    return tokens
+
+
+def _after_sql_parentheses(tokens: list[tuple[str, str]], index: int) -> int | None:
+    """Return the token after one balanced parenthesized span."""
+
+    if index >= len(tokens) or tokens[index] != ("punct", "("):
+        return None
+    depth = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == ("punct", "("):
+            depth += 1
+        elif token == ("punct", ")"):
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _is_sql_word(token: tuple[str, str], word: str) -> bool:
+    return token[0] == "word" and token[1].casefold() == word
+
+
+def _cte_shadow_name(sql: str) -> str | None:
+    """Return a scoped-view name rebound by any CTE in *sql*."""
+
+    tokens = _sql_cte_tokens(sql)
+    for start, token in enumerate(tokens):
+        if not _is_sql_word(token, "with"):
+            continue
+        index = start + 1
+        if index < len(tokens) and _is_sql_word(tokens[index], "recursive"):
+            index += 1
+        while index < len(tokens):
+            kind, spelling = tokens[index]
+            if kind not in {"word", "quoted"}:
+                break
+            name = spelling.casefold()
+            index += 1
+            if index < len(tokens) and tokens[index] == ("punct", "("):
+                after_columns = _after_sql_parentheses(tokens, index)
+                if after_columns is None:
+                    break
+                index = after_columns
+            if index >= len(tokens) or not _is_sql_word(tokens[index], "as"):
+                break
+            index += 1
+            if index < len(tokens) and _is_sql_word(tokens[index], "not"):
+                index += 1
+                if index >= len(tokens) or not _is_sql_word(
+                    tokens[index], "materialized"
+                ):
+                    break
+                index += 1
+            elif index < len(tokens) and _is_sql_word(tokens[index], "materialized"):
+                index += 1
+            if index >= len(tokens) or tokens[index] != ("punct", "("):
+                break
+            if name in _SCOPED_VIEWS:
+                return name
+            after_body = _after_sql_parentheses(tokens, index)
+            if after_body is None:
+                break
+            index = after_body
+            if index >= len(tokens) or tokens[index] != ("punct", ","):
+                break
+            index += 1
+    return None
+
 
 #: Base tables reachable only through `_SCOPED_VIEWS`. These were readable
 #: directly and were not on `QUERY_DENYLIST` at all, so one `SELECT` returned
@@ -757,6 +1015,7 @@ _VIEW_ONLY_TABLES = frozenset(
     {
         "artifacts",
         "artifact_versions",
+        "artifact_capture_observations",
         "lineage_edges",
         # Interpreter, prefix and the complete installed-package manifest of
         # every kernel generation in the database.
@@ -769,6 +1028,51 @@ _VIEW_ONLY_TABLES = frozenset(
         # separate decision with its own migration for anything reading it, not a
         # side effect of this change. `my_frames` exists for callers that want the
         # scoped form.
+    }
+)
+
+#: The same rule, applied to the conversation and execution family, and only
+#: when team mode is on.
+#:
+#: In a single-user install "every session in this database" is the user's own
+#: work, and `tests/test_store.py` documents reading it. In team mode it is
+#: every colleague's prompts, the model's replies, and the code they ran --
+#: which is INV-13 on the most sensitive surface the product has, reachable
+#: from a single agent `SELECT`. So the closure is conditional: the
+#: single-user path keeps the behaviour it has always had (INV-1), and a team
+#: daemon reads these through the scoped views or not at all.
+#:
+#: Longer than the conversation triple because the conversation is stored in
+#: more than one shape. `compaction_archives.compacted` is a JSON dump of the
+#: very message rows `messages` is closed for, so closing one and not the
+#: other closed nothing: `SELECT compacted FROM compaction_archives` returned
+#: a colleague's prompts verbatim. The rest are the same question asked of
+#: other per-session or per-project content -- review comments (which are
+#: also injected into turns), plans, notes, step records, share capabilities,
+#: and the command lines on compute jobs, a surface `team_policy` already
+#: makes admin-only *for reads* over HTTP.
+#:
+#: There is no `my_*` view for these yet, so in team mode they are unreadable
+#: rather than row-scoped. That is the deliberate direction: a table nobody
+#: has scoped is refused, not served whole.
+_TEAM_VIEW_ONLY_TABLES = frozenset(
+    {
+        "frames",
+        "messages",
+        "execution_log",
+        "compaction_archives",
+        "annotations",
+        "annotation_admissions",
+        "plans",
+        "notes",
+        "folders",
+        "projects",
+        "frame_steps",
+        "shares",
+        "compute_jobs",
+        "compute_job_events",
+        "custom_skills",
+        "agents",
     }
 )
 
@@ -792,8 +1096,26 @@ class _QueryAuthorizer:
     interface, so matching on it would work until it did not.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        view_only: frozenset[str] | None = None,
+        *,
+        published_views: frozenset[str] = frozenset(),
+    ) -> None:
         self.denied: list[str] = []
+        # Which scoped views this statement may be read *through*. Empty when
+        # the caller supplied no scope, so a query with no scope cannot reach
+        # a view-only base table by claiming a view that was never created --
+        # the escape hatch used to accept the name whether or not anything
+        # answered to it.
+        self._published_views = frozenset(published_views)
+        # Which base tables are reachable only through a scoped view. Passed
+        # in rather than read from a module constant because the answer
+        # depends on the deployment: a team daemon closes the conversation
+        # family that a single-user one leaves open (INV-1).
+        self._view_only = (
+            _VIEW_ONLY_TABLES if view_only is None else frozenset(view_only)
+        )
 
     def _deny(self, what: str) -> int:
         if what not in self.denied:
@@ -836,9 +1158,11 @@ class _QueryAuthorizer:
             return self._deny(table)
         if table in QUERY_DENYLIST:
             return self._deny(table)
-        if table in _VIEW_ONLY_TABLES:
-            # Permitted only as the underlying read of a trusted scoped view.
-            if (source or "").lower() in _SCOPED_VIEWS:
+        if table in self._view_only:
+            # Permitted only as the underlying read of a trusted scoped view
+            # that this statement actually published. `_SCOPED_VIEWS` alone was
+            # the test, and the name is caller-mintable through a CTE.
+            if (source or "").lower() in self._published_views:
                 return sqlite3.SQLITE_OK
             return self._deny(table)
         return sqlite3.SQLITE_OK
@@ -906,7 +1230,15 @@ class Store:
             self._conn,
             self._lock,
             clock_ms=lambda: _now_ms(),
+            admit_action_group=lambda group_id, operation: self._auto_mode.assert_repair_action_group_appendable(
+                group_id, operation=operation
+            ),
+            admit_action_scope=lambda root_frame_id, branch_id, operation: self._auto_mode.assert_session_action_group_appendable(
+                root_frame_id, branch_id, operation
+            ),
         )
+        install_auto_mode_action_guards(self._conn)
+        self._conn.commit()
         self._kernel_generations = KernelGenerationRepository(
             self._conn,
             self._lock,
@@ -922,6 +1254,22 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
             checkpoint_state=self._checkpoint_states,
+        )
+        self._auto_mode = AutoModeRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+            get_branch=self._session_snapshots.get_branch,
+            get_checkpoint=self._session_snapshots.get_checkpoint,
+            checkpoint_is_restorable=lambda tree_id: WorkspaceCAS(
+                self.db_path.parent / "workspace-cas"
+            ).verify_tree(tree_id),
+            get_action_group=lambda group_id: self._actions.get_group(
+                group_id, include_events=True
+            ),
+        )
+        self._session_snapshots.set_revert_commit_hook(
+            self._auto_mode.abandon_active_run_for_revert
         )
         self._session_activation = SessionActivationRepository(
             self._conn,
@@ -959,6 +1307,31 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._team = TeamRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._governance = GovernanceRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._workloads = WorkloadRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._leases = LeaseRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._user_keys = UserKeyRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -970,6 +1343,7 @@ class Store:
             clock_ms=lambda: _now_ms(),
             get_setting=self.get_setting,
             set_setting=self.set_setting,
+            admit_action_group=self._auto_mode.assert_repair_action_group_appendable,
         )
         self._connectors = ConnectorRepository(
             self._conn,
@@ -1033,6 +1407,16 @@ class Store:
             identify_file=lambda path: _file_identity(path),
             paths_match=lambda left, right: _same_file_path(left, right),
             delete_related=self._datapro_index.delete_for_artifact,
+        )
+        self._completion_deliveries = CompletionDeliveryRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
+        self._session_imports = SessionImportRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
         )
         self._notes = NotesRepository(
             self._conn,
@@ -1104,6 +1488,9 @@ class Store:
             ("tool_call_id", "TEXT"),
             ("side_effect_class", "TEXT"),
             ("resource_keys", "TEXT"),
+            ("dangerous", "INTEGER NOT NULL DEFAULT 0"),
+            ("canonical_arguments_sha256", "TEXT"),
+            ("action_digest", "TEXT"),
         ],
         "host_call_log": [
             ("action_group_id", "TEXT"),
@@ -1177,6 +1564,34 @@ class Store:
                         "datapro_content_index_repair",
                         self._apply_datapro_content_index_repair,
                     ),
+                    18: ("team_users", self._apply_team_users),
+                    19: ("session_owners", self._apply_session_owners),
+                    20: ("team_governance", self._apply_team_governance),
+                    21: (
+                        "orchestration_workloads",
+                        self._apply_orchestration_workloads,
+                    ),
+                    22: (
+                        "orchestration_leases",
+                        self._apply_orchestration_leases,
+                    ),
+                    23: ("user_llm_keys", self._apply_user_llm_keys),
+                    24: (
+                        "artifact_observations_and_completion_delivery",
+                        self._apply_artifact_delivery,
+                    ),
+                    25: (
+                        "auto_mode_durable_state",
+                        self._apply_auto_mode_state,
+                    ),
+                    26: (
+                        "annotation_locators",
+                        self._apply_annotation_locators,
+                    ),
+                    27: (
+                        "compute_job_input_versions",
+                        self._apply_compute_job_input_versions,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1186,6 +1601,118 @@ class Store:
         """Version 16: lossless local indexing for DataPro responses."""
 
         create_datapro_index_schema(conn)
+
+    def _apply_team_users(self, conn: sqlite3.Connection) -> None:
+        """Version 18: team-mode identity (users / auth_sessions / audit log).
+
+        Additive only — no existing table changes shape, so a single-user
+        install upgrades without behavioral change (INV-1). The DDL lives in
+        storage/team.py and runs inside this numbered step, never at
+        repository init (the v16/v17 lesson).
+        """
+
+        create_team_schema(conn)
+
+    def _apply_session_owners(self, conn: sqlite3.Connection) -> None:
+        """Version 19: session ownership for team mode (M1-6, INV-13).
+
+        Additive; existing sessions get no row, which the visibility rule
+        reads as admin-only rather than everyone's.
+        """
+
+        create_session_owners_schema(conn)
+
+    def _apply_orchestration_workloads(self, conn: sqlite3.Connection) -> None:
+        """Version 21: workloads and allocations (M3a-8).
+
+        Carries the partial unique index that IS INV-3: a second live
+        allocation for one workload is refused by the database, in the
+        window between a check and an insert that no Python guard covers.
+        """
+
+        create_workload_schema(conn)
+
+    def _apply_orchestration_leases(self, conn: sqlite3.Connection) -> None:
+        """Version 22: session leases and session↔workload bindings (M3b-4).
+
+        Additive; a single-user install gets two empty tables and no
+        behaviour change (INV-1). Nothing writes to them until a session
+        actually asks for a cluster kernel.
+        """
+
+        create_lease_schema(conn)
+
+    def _apply_user_llm_keys(self, conn: sqlite3.Connection) -> None:
+        """Version 23: per-user LLM credential references (M4-1, D7).
+
+        Additive, and it holds references rather than keys — the secrets
+        themselves stay in the SecretBroker, so this table copied off the
+        machine names slots it cannot open.
+        """
+
+        create_user_key_schema(conn)
+
+    def _apply_artifact_delivery(self, conn: sqlite3.Connection) -> None:
+        """Version 24: capture observations and recoverable final delivery.
+
+        Both tables close one Artifact publication contract, so they advance
+        together: an upgraded database can either record the producing Cell
+        for reused bytes *and* bind final prose to exact versions, or it stays
+        at v23 with neither half advertised as available.
+        """
+
+        create_artifact_observations_schema(conn)
+        create_completion_delivery_schema(conn)
+
+    def _apply_auto_mode_state(self, conn: sqlite3.Connection) -> None:
+        """Version 25: durable, idempotent Auto Run and audit facts.
+
+        The focused repository constructor is deliberately passive. All seven
+        tables and the checkpoint cursor advance in this one numbered,
+        rollback-safe migration so an interrupted upgrade advertises neither
+        half of the recovery contract.
+        """
+
+        create_auto_mode_schema(conn)
+
+    def _apply_annotation_locators(self, conn: sqlite3.Connection) -> None:
+        """Version 26: PDF/HTML annotation locators next to image pins."""
+
+        from openai4s.storage.migrations import _is_duplicate_column
+
+        for statement in (
+            "ALTER TABLE annotations ADD COLUMN kind TEXT",
+            "ALTER TABLE annotations ADD COLUMN locator TEXT",
+        ):
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as error:
+                if not _is_duplicate_column(error):
+                    raise
+
+    def _apply_compute_job_input_versions(self, conn: sqlite3.Connection) -> None:
+        """Version 27: durable lineage for inputs staged into remote jobs.
+
+        Historical jobs keep NULL.  Their input versions cannot be recovered
+        from output manifests or command text, and inventing lineage would be
+        worse than leaving it absent.
+        """
+
+        from openai4s.storage.migrations import _is_duplicate_column
+
+        try:
+            conn.execute("ALTER TABLE compute_jobs ADD COLUMN input_versions TEXT")
+        except sqlite3.OperationalError as error:
+            if not _is_duplicate_column(error):
+                raise
+
+    def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
+        """Version 20: membership, invites, usage ledger, quotas (M2).
+
+        Additive; every table is dormant until team-mode governance uses it.
+        """
+
+        create_governance_schema(conn)
 
     def _apply_datapro_content_index_repair(self, conn: sqlite3.Connection) -> None:
         """Version 17: repair an early v16 database stamped without its tables.
@@ -1848,6 +2375,32 @@ class Store:
 
     # --- secrets ---------------------------------------------------------
     @property
+    def team(self) -> TeamRepository:
+        """Team-mode identity: users, login sessions, audit log (M1-2)."""
+        return self._team
+
+    @property
+    def governance(self) -> GovernanceRepository:
+        """Team-mode governance: members, invites, usage, quotas (M2)."""
+        return self._governance
+
+    @property
+    def workloads(self) -> WorkloadRepository:
+        """Cluster workloads and allocations (M3a). Also the reconciler's
+        WorkloadStore: the Protocol it needs is exactly this surface."""
+        return self._workloads
+
+    @property
+    def user_keys(self) -> UserKeyRepository:
+        """Per-user LLM credential references (M4-1)."""
+        return self._user_keys
+
+    @property
+    def leases(self) -> LeaseRepository:
+        """Session leases and session↔workload bindings (M3b-4)."""
+        return self._leases
+
+    @property
     def secrets(self):
         """The SecretBroker for this database, resolved once on first use.
 
@@ -2038,6 +2591,17 @@ class Store:
             is_example=is_example,
         )
 
+    def create_quarantined_import_session(
+        self,
+        *,
+        project_id: str,
+        quarantine_value: str,
+    ) -> dict[str, Any]:
+        return self._session_imports.create_quarantined_root(
+            project_id=project_id,
+            quarantine_value=quarantine_value,
+        )
+
     def get_project(self, project_id: str) -> dict | None:
         return self._frames.get_project(project_id)
 
@@ -2078,6 +2642,121 @@ class Store:
     def update_message_metadata(self, message_id: str, patch: dict) -> dict | None:
         return self._frames.update_message_metadata(message_id, patch)
 
+    def promote_candidate_message(
+        self,
+        *,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        metadata: Mapping[str, Any],
+    ) -> dict:
+        return self._frames.promote_candidate_message(
+            message_id=message_id,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            frame_id=frame_id,
+            expected_content=expected_content,
+            content=content,
+            metadata=metadata,
+        )
+
+    def commit_completion_delivery(
+        self,
+        *,
+        idempotency_key: str,
+        root_frame_id: str,
+        branch_id: str | None,
+        frame_id: str | None,
+        content: str,
+        manifest: Mapping[str, Any],
+        message_metadata: Mapping[str, Any] | None = None,
+        expected_manifest_sha256: str | None = None,
+        created_at: int | None = None,
+        snapshot_verifier: Callable[[Mapping[str, Any]], object] | None = None,
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.commit_final_message(
+            idempotency_key=idempotency_key,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            frame_id=frame_id,
+            content=content,
+            manifest=manifest,
+            message_metadata=message_metadata,
+            expected_manifest_sha256=expected_manifest_sha256,
+            created_at=created_at,
+            snapshot_verifier=snapshot_verifier,
+        )
+
+    def promote_candidate_delivery(
+        self,
+        *,
+        delivery_id: str,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str | None,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        message_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.promote_candidate_delivery(
+            delivery_id=delivery_id,
+            message_id=message_id,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            frame_id=frame_id,
+            expected_content=expected_content,
+            content=content,
+            message_metadata=message_metadata,
+        )
+
+    def mark_completion_delivery_published(
+        self,
+        delivery_id: str,
+        *,
+        published_at: int | None = None,
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.mark_published(
+            delivery_id,
+            published_at=published_at,
+        )
+
+    def get_completion_delivery(self, delivery_id: str) -> dict[str, Any] | None:
+        return self._completion_deliveries.get(delivery_id)
+
+    def committed_completion_deliveries(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        branch_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        return self._completion_deliveries.committed(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            limit=limit,
+        )
+
+    def completion_deliveries_for_session(
+        self,
+        root_frame_id: str,
+        *,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        return self._completion_deliveries.for_session(
+            root_frame_id,
+            limit=limit,
+        )
+
+    def bind_imported_completion_delivery(
+        self,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        return self._completion_deliveries.bind_imported_message(**fields)
+
     def list_messages(
         self,
         root_frame_id: str,
@@ -2088,13 +2767,17 @@ class Store:
         before_seq: int | None = None,
         newest_first: bool = False,
     ) -> list[dict]:
-        return self._frames.list_messages(
+        messages = self._frames.list_messages(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
             before_seq=before_seq,
             newest_first=newest_first,
+        )
+        return self._completion_deliveries.validate_message_projection(
+            root_frame_id,
+            messages,
         )
 
     def list_message_boundaries(
@@ -2105,11 +2788,15 @@ class Store:
         start: int = 0,
         limit: int | None = 300,
     ) -> list[dict]:
-        return self._frames.list_message_boundaries(
+        messages = self._frames.list_message_boundaries(
             root_frame_id,
             branch_id=branch_id,
             start=start,
             limit=limit,
+        )
+        return self._completion_deliveries.validate_message_projection(
+            root_frame_id,
+            messages,
         )
 
     def list_branch_messages(
@@ -2125,11 +2812,7 @@ class Store:
     ) -> list[dict]:
         """Project one branch's visible conversation without deleting rows."""
 
-        reader = (
-            self._frames.list_message_boundaries
-            if boundaries
-            else self._frames.list_messages
-        )
+        reader = self.list_message_boundaries if boundaries else self.list_messages
         projected = project_branch_records(
             self,
             root_frame_id,
@@ -2257,6 +2940,7 @@ class Store:
         roots_only: bool = True,
         limit: int = 50,
         before: tuple[int, str] | None = None,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         return self._frames.browse_frames(
             project_id=project_id,
@@ -2264,24 +2948,37 @@ class Store:
             roots_only=roots_only,
             limit=limit,
             before=before,
+            visible_to_user_id=visible_to_user_id,
         )
 
     def frame_detail(
-        self, frame_id: str, *, page: int = 0, page_size: int = 50
+        self,
+        frame_id: str,
+        *,
+        page: int = 0,
+        page_size: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> dict | None:
         return self._frames.frame_detail(
             frame_id,
             page=page,
             page_size=page_size,
+            visible_to_user_id=visible_to_user_id,
         )
 
     def search_frames(
-        self, pattern: str, *, project_id: str | None = "default", limit: int = 50
+        self,
+        pattern: str,
+        *,
+        project_id: str | None = "default",
+        limit: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         return self._frames.search_frames(
             pattern,
             project_id=project_id,
             limit=limit,
+            visible_to_user_id=visible_to_user_id,
         )
 
     # --- execution_log ---------------------------------------------------
@@ -2439,6 +3136,29 @@ class Store:
             cost_usd=cost_usd,
             group_id=group_id,
             created_at=created_at,
+        )
+
+    def append_action_group_with_events(
+        self,
+        *,
+        root_frame_id: str,
+        branch_id: str,
+        turn_id: str,
+        kind: str,
+        events: list[dict[str, Any]],
+        group_id: str,
+        admission_operation: str,
+    ) -> dict:
+        """Atomically publish one non-provider lifecycle group and its events."""
+
+        return self._actions.append_tool_group(
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+            kind=kind,
+            events=events,
+            group_id=group_id,
+            admission_operation=admission_operation,
         )
 
     def get_action_group(
@@ -2638,6 +3358,139 @@ class Store:
             branch_id=branch_id,
         )
 
+    # --- durable Auto Mode state / audit events ------------------------
+    def reconcile_orphaned_auto_mode_candidates(
+        self, *, now: int
+    ) -> list[dict[str, Any]]:
+        return self._completion_deliveries.reconcile_orphaned_candidates(now=now)
+
+    def reconcile_orphaned_auto_mode_runs(
+        self, *, owner_instance_id: str, now: int
+    ) -> list[dict]:
+        return self._auto_mode.reconcile_orphaned_runs(
+            owner_instance_id=owner_instance_id, now=now
+        )
+
+    def get_auto_mode_selection(self, scope_kind: str, scope_id: str) -> dict | None:
+        return self._auto_mode.get_selection(scope_kind, scope_id)
+
+    def set_auto_mode_selection(
+        self,
+        scope_kind: str,
+        scope_id: str,
+        values: dict,
+        expected_revision: int,
+    ) -> dict:
+        return self._auto_mode.set_selection(
+            scope_kind,
+            scope_id,
+            values,
+            expected_revision=expected_revision,
+        )
+
+    def start_auto_mode_run(self, **fields: Any) -> dict:
+        return self._auto_mode.start_run(**fields)
+
+    def record_auto_mode_candidate(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.record_candidate(run_id, **fields)
+
+    def start_auto_mode_review(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.start_review(run_id, **fields)
+
+    def complete_auto_mode_review(self, review_run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.complete_review(review_run_id, **fields)
+
+    def start_auto_mode_repair(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.start_repair(run_id, **fields)
+
+    def complete_auto_mode_repair(self, repair_run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.complete_repair(repair_run_id, **fields)
+
+    def bind_auto_mode_repair_execution_group(
+        self, repair_run_id: str, **fields: Any
+    ) -> dict:
+        return self._auto_mode.bind_repair_execution_group(repair_run_id, **fields)
+
+    def start_permission_review_assessment(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.start_permission_review(run_id, **fields)
+
+    def complete_permission_review_assessment(
+        self, assessment_id: str, **fields: Any
+    ) -> dict:
+        return self._auto_mode.complete_permission_review(assessment_id, **fields)
+
+    def terminate_auto_mode_run(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.terminate_run(run_id, **fields)
+
+    def auto_mode_event_cursor(
+        self, root_frame_id: str, branch_id: str | None = None
+    ) -> int:
+        return self._auto_mode.event_cursor(root_frame_id, branch_id=branch_id)
+
+    def list_auto_mode_events(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        after_cursor: int | None = None,
+        upto_cursor: int | None = None,
+        limit: int = 100_000,
+    ) -> list[dict]:
+        return self._auto_mode.list_events(
+            root_frame_id,
+            branch_id=branch_id,
+            after_cursor=after_cursor,
+            upto_cursor=upto_cursor,
+            limit=limit,
+        )
+
+    def project_auto_mode_run(
+        self,
+        root_frame_id: str,
+        branch_id: str,
+        upto_event_cursor: int | None = None,
+    ) -> dict:
+        return self._auto_mode.project_run(
+            root_frame_id,
+            branch_id,
+            upto_event_cursor=upto_event_cursor,
+        )
+
+    def list_auto_mode_audits(
+        self,
+        root_frame_id: str,
+        branch_id: str,
+        *,
+        subject_kind: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        return self._auto_mode.list_audits(
+            root_frame_id,
+            branch_id,
+            subject_kind=subject_kind,
+            before=before,
+            limit=limit,
+        )
+
+    def export_auto_mode_projection(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        upto_event_cursor: int | None = None,
+    ) -> dict:
+        return self._auto_mode.export_projection(
+            root_frame_id,
+            branch_id=branch_id,
+            upto_event_cursor=upto_event_cursor,
+        )
+
+    def import_quarantined_auto_mode_projection(
+        self, source: dict, **context: Any
+    ) -> dict:
+        return self._auto_mode.import_quarantined_projection(source, **context)
+
     # --- immutable session checkpoints / branches ----------------------
     def ensure_session_branch(self, **fields: Any) -> dict:
         return self._session_snapshots.ensure_branch(**fields)
@@ -2775,6 +3628,14 @@ class Store:
 
     def active_session_branch(self, root_frame_id: str) -> str:
         return self._session_activation.current(root_frame_id)
+
+    def session_export_guard(self, root_frame_id: str) -> dict:
+        """Return one atomic branch/head/revert-marker export boundary."""
+
+        return self._session_activation.export_guard(
+            root_frame_id,
+            recovery_setting_key=revert_recovery_setting_key(root_frame_id),
+        )
 
     def activate_session_branch_checkpoint(self, **fields: Any) -> dict:
         return self._session_activation.activate_checkpoint(**fields)
@@ -2940,6 +3801,7 @@ class Store:
         preserve_filename: bool = False,
         preserve_content_type: bool = False,
         reuse_policy: str = "any",
+        reuse_matching_head: bool = False,
     ) -> dict:
         return self._artifacts.record_cell_artifact(
             path=path,
@@ -2958,6 +3820,59 @@ class Store:
             preserve_filename=preserve_filename,
             preserve_content_type=preserve_content_type,
             reuse_policy=reuse_policy,
+            reuse_matching_head=reuse_matching_head,
+        )
+
+    def commit_artifact_upload(self, **fields) -> dict:
+        """Thin facade for the upload repository's cross-store transaction."""
+
+        return self._artifacts.commit_artifact_upload(**fields)
+
+    def artifact_by_scope_filename(self, *args, **kwargs) -> dict | None:
+        """Thin facade for exact nullable-root upload lookup."""
+
+        return self._artifacts.artifact_by_scope_filename(*args, **kwargs)
+
+    def rollback_artifact_upload(self, **fields) -> bool:
+        """Thin facade used by durable upload-journal recovery."""
+
+        return self._artifacts.rollback_artifact_upload(**fields)
+
+    def list_artifact_capture_observations(
+        self,
+        *,
+        artifact_id: str | None = None,
+        version_id: str | None = None,
+    ) -> list[dict]:
+        return self._artifacts.list_capture_observations(
+            artifact_id=artifact_id,
+            version_id=version_id,
+        )
+
+    def artifact_capture_observation_cursor(
+        self,
+        *,
+        root_frame_id: str | None = None,
+        project_id: str | None = None,
+    ) -> int:
+        return self._artifacts.capture_observation_cursor(
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+        )
+
+    def artifact_capture_observations_since(
+        self,
+        cursor: int,
+        *,
+        root_frame_id: str | None,
+        project_id: str,
+        limit: int = 10_000,
+    ) -> list[dict]:
+        return self._artifacts.capture_observations_since(
+            cursor,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+            limit=limit,
         )
 
     def record_artifact_restore(
@@ -2968,12 +3883,13 @@ class Store:
         expected_latest_version_id: str,
         version_id: str,
         path: str,
-        snapshot_path: str,
+        snapshot_path: str | None,
         size_bytes: int,
         checksum: str,
         frame_id: str | None,
         root_frame_id: str | None = None,
         project_id: str | None = None,
+        publish=None,
     ) -> dict:
         return self._artifacts.record_artifact_restore(
             artifact_id=artifact_id,
@@ -2987,6 +3903,7 @@ class Store:
             frame_id=frame_id,
             root_frame_id=root_frame_id,
             project_id=project_id,
+            publish=publish,
         )
 
     def materialise_artifact_version(
@@ -2997,11 +3914,12 @@ class Store:
         version_id: str,
         filename: str,
         path: str,
-        snapshot_path: str,
+        snapshot_path: str | None,
         frame_id: str | None,
         root_frame_id: str,
         project_id: str,
         producing_cell_id: str | None = None,
+        publish=None,
     ) -> dict:
         return self._artifacts.materialise_artifact_version(
             source_version_id=source_version_id,
@@ -3014,6 +3932,7 @@ class Store:
             root_frame_id=root_frame_id,
             project_id=project_id,
             producing_cell_id=producing_cell_id,
+            publish=publish,
         )
 
     def upsert_env_snapshot(self, snapshot: dict) -> str:
@@ -3051,6 +3970,9 @@ class Store:
 
     def version_meta(self, version_id: str) -> dict | None:
         return self._artifacts.version_meta(version_id)
+
+    def set_version_source(self, version_id: str, source: Any) -> None:
+        self._artifacts.set_version_source(version_id, source)
 
     def list_versions(self, artifact_id: str) -> list[dict]:
         return self._artifacts.list_versions(artifact_id)
@@ -3093,8 +4015,16 @@ class Store:
             frame_id=frame_id,
         )
 
-    def lineage_inputs(self, version_id: str) -> list[dict]:
-        return self._artifacts.lineage_inputs(version_id)
+    def lineage_inputs(
+        self,
+        version_id: str,
+        *,
+        producing_cell_id: str | None = None,
+    ) -> list[dict]:
+        return self._artifacts.lineage_inputs(
+            version_id,
+            producing_cell_id=producing_cell_id,
+        )
 
     def lineage_edges_for(self, version_id: str, direction: str) -> list[dict]:
         return self._artifacts.lineage_edges_for(version_id, direction)
@@ -3115,6 +4045,9 @@ class Store:
     def list_notes(self, project_id: str) -> list[dict]:
         return self._notes.list(project_id)
 
+    def project_of_note(self, note_id: str) -> str | None:
+        return self._notes.project_of(note_id)
+
     def delete_note(self, note_id: str) -> None:
         self._notes.delete(note_id)
 
@@ -3127,6 +4060,9 @@ class Store:
 
     def delete_setting(self, key: str) -> None:
         self._settings.delete(key)
+
+    def delete_setting_if_value(self, key: str, expected_value: str) -> bool:
+        return self._settings.delete_if_value(key, expected_value)
 
     # --- web shares (public read-only snapshots) -------------------------
     def get_share(self, share_id: str) -> dict | None:
@@ -3271,6 +4207,7 @@ class Store:
         message: str | None = None,
         resolution_context: str | None = None,
         continuation_required: bool = False,
+        expected_action_digest: str | None = None,
         resolved_at: int | None = None,
     ) -> dict:
         return self._permissions.resolve_request(
@@ -3281,6 +4218,7 @@ class Store:
             message=message,
             resolution_context=resolution_context,
             continuation_required=continuation_required,
+            expected_action_digest=expected_action_digest,
             resolved_at=resolved_at,
         )
 
@@ -3291,6 +4229,10 @@ class Store:
         tool: str,
         target: str = "",
         project_id: str | None = None,
+        side_effect_class: str | None = None,
+        resource_keys: list[str] | tuple[str, ...] | None = None,
+        dangerous: bool = False,
+        canonical_arguments: Any = None,
         consumed_at: int | None = None,
     ) -> dict | None:
         return self._permissions.consume_restart_once_grant(
@@ -3298,6 +4240,10 @@ class Store:
             tool=tool,
             target=target,
             project_id=project_id,
+            side_effect_class=side_effect_class,
+            resource_keys=resource_keys,
+            dangerous=dangerous,
+            canonical_arguments=canonical_arguments,
             consumed_at=consumed_at,
         )
 
@@ -3314,6 +4260,9 @@ class Store:
 
     def get_permission_request(self, decision_id: str) -> dict | None:
         return self._permissions.get_request(decision_id)
+
+    def permission_request_action_digest(self, decision_id: str) -> str:
+        return self._permissions.request_action_digest(decision_id)
 
     def list_permission_requests(
         self,
@@ -3430,6 +4379,9 @@ class Store:
     def list_folders(self, project_id: str) -> list[dict]:
         return self._folders.list(project_id)
 
+    def project_of_folder(self, folder_id: str) -> str | None:
+        return self._folders.project_of(folder_id)
+
     def rename_folder(self, folder_id: str, name: str) -> None:
         self._folders.rename(folder_id, name)
 
@@ -3502,6 +4454,8 @@ class Store:
         body: str,
         version_id: str | None = None,
         checksum: str | None = None,
+        kind: str | None = None,
+        locator: str | None = None,
     ) -> dict:
         return self._annotations.add(
             root_frame_id=root_frame_id,
@@ -3512,6 +4466,8 @@ class Store:
             body=body,
             version_id=version_id,
             checksum=checksum,
+            kind=kind,
+            locator=locator,
         )
 
     def get_annotation(self, annotation_id: str) -> dict | None:
@@ -4009,21 +4965,46 @@ class Store:
         self._datapro_index.delete_batch(batch_id)
 
     # --- global search (command palette) --------------------------------
-    def search(self, query: str, limit: int = 20) -> dict:
-        """Search sessions, artifacts, and indexed DataPro content for ⌘K."""
+    def search(
+        self, query: str, limit: int = 20, *, visible_to_user_id: str | None = None
+    ) -> dict:
+        """Search sessions, artifacts, and indexed DataPro content for ⌘K.
+
+        `visible_to_user_id` narrows the queries themselves. It used to be a
+        post-filter in the route, applied *after* `LIMIT 20` -- so on a team
+        where the twenty most recently updated matches belong to colleagues,
+        every one of them was dropped and the caller was told their own
+        session does not exist. `visible_session_clause` is the same rule the
+        frame listings use, and it exists precisely because "filter after the
+        read" turns a full page of hidden rows into a phantom empty result.
+        """
         q = f"%{query.strip()}%"
+        frame_scope = artifact_scope = ""
+        frame_params: list = []
+        artifact_params: list = []
+        if visible_to_user_id is not None:
+            clause, frame_params = visible_session_clause(visible_to_user_id)
+            frame_scope = " AND " + clause
+            clause, artifact_params = visible_session_clause(
+                visible_to_user_id,
+                table="artifacts",
+                session_expr="artifacts.root_frame_id",
+            )
+            artifact_scope = " AND " + clause
         with self._lock:
             frames = self._conn.execute(
                 "SELECT frame_id,project_id,name,task_summary,updated_at FROM frames "
-                "WHERE parent_id IS NULL AND (name LIKE ? OR task_summary LIKE ?) "
+                "WHERE parent_id IS NULL AND (name LIKE ? OR task_summary LIKE ?)"
+                f"{frame_scope} "
                 "ORDER BY updated_at DESC LIMIT ?",
-                (q, q, limit),
+                (q, q, *frame_params, limit),
             ).fetchall()
             arts = self._conn.execute(
                 "SELECT artifact_id,filename,content_type,root_frame_id,project_id "
-                "FROM artifacts WHERE filename LIKE ? ORDER BY created_at DESC "
+                f"FROM artifacts WHERE filename LIKE ?{artifact_scope} "
+                "ORDER BY created_at DESC "
                 "LIMIT ?",
-                (q, limit),
+                (q, *artifact_params, limit),
             ).fetchall()
         return {
             "sessions": [
@@ -4386,6 +5367,11 @@ class Store:
                   JOIN main.artifacts a ON a.artifact_id = v.artifact_id
                  WHERE a.root_frame_id = {root_sql}
                    AND a.project_id = {project_sql}""",
+            f"""CREATE TEMP VIEW my_artifact_capture_observations AS
+                SELECT o.* FROM main.artifact_capture_observations o
+                  JOIN main.artifacts a ON a.artifact_id = o.artifact_id
+                 WHERE a.root_frame_id = {root_sql}
+                   AND a.project_id = {project_sql}""",
             f"""CREATE TEMP VIEW my_lineage_edges AS
                 SELECT e.* FROM main.lineage_edges e
                   JOIN main.artifact_versions v
@@ -4400,12 +5386,49 @@ class Store:
                 SELECT s.* FROM main.env_snapshots s
                   JOIN main.frames f ON f.frame_id = s.frame_id
                  WHERE f.frame_id = {root_sql} OR f.root_frame_id = {root_sql}""",
+            # Both tables carry `root_frame_id` themselves, so this is a
+            # filter and not a join. The join was tried first and returned
+            # nothing: a message's `frame_id` is nullable (a turn's messages
+            # are keyed by the root), so joining on it dropped every row --
+            # a scoped view that is always empty is indistinguishable from a
+            # working guard until somebody asserts the owner can still read.
+            f"""CREATE TEMP VIEW my_messages AS
+                SELECT * FROM main.messages
+                 WHERE root_frame_id = {root_sql}""",
+            f"""CREATE TEMP VIEW my_execution_log AS
+                SELECT * FROM main.execution_log
+                 WHERE root_frame_id = {root_sql}""",
         )
         for name in _SCOPED_VIEWS:
             conn.execute(f"DROP VIEW IF EXISTS temp.{name}")
         for statement in statements:
             conn.execute(statement)
         self._view_scope = (root, project)
+
+    def _query_view_only(self) -> frozenset[str]:
+        """Which base tables `host.query` may reach only through a view.
+
+        Team mode adds the conversation/execution family. Off, the set is
+        byte-identical to what it has always been, which is what keeps a
+        single-user install's documented `SELECT * FROM frames` working
+        (INV-1). Read from the environment rather than from a Config
+        because `Store` is constructed in places that have no Config, and a
+        guard that silently loosened when its config was unavailable would
+        be the wrong failure.
+
+        Reading the env is fine; *re-implementing the truthiness rule* was
+        not. This used to accept only ("1","true","yes","on") while
+        `Config.team_mode` accepts everything outside
+        ("0","false","no","off",""), so `OPENAI4S_TEAM_MODE=enabled` -- or
+        `y`, or `2` -- booted a daemon with login forced and ownership
+        filtering on while this guard returned the single-user set and
+        `host.query` read every member's prompts. One rule, one place.
+        """
+        from openai4s.config import _env_flag
+
+        if _env_flag("OPENAI4S_TEAM_MODE", False):
+            return _VIEW_ONLY_TABLES | _TEAM_VIEW_ONLY_TABLES
+        return _VIEW_ONLY_TABLES
 
     def query(
         self,
@@ -4430,9 +5453,19 @@ class Store:
         """
         lowered = sql.lower()
         deny_scan = _strip_sql_literals(lowered)
-        for bad in QUERY_DENYLIST:
-            if bad in deny_scan:
-                raise PermissionError(f"host.query: table '{bad}' is not readable")
+        bad = _DENY_WORD_RE.search(deny_scan)
+        if bad is not None:
+            raise PermissionError(f"host.query: table '{bad.group(0)}' is not readable")
+        shadow = _cte_shadow_name(sql)
+        if shadow is not None:
+            # See `_cte_shadow_name`: naming a CTE after a scoped view makes
+            # SQLite hand the authorizer that name as the view responsible for
+            # the read, which is how the escape hatch below came to trust a
+            # string the caller wrote.
+            raise PermissionError(
+                f"host.query: {shadow!r} is a scoped view and cannot "
+                f"be used as a CTE name"
+            )
         stripped = lowered.lstrip()
         if not (stripped.startswith("select") or stripped.startswith("with")):
             raise ValueError("host.query only allows read-only SELECT/CTE")
@@ -4449,7 +5482,10 @@ class Store:
         # by rule and not by keyword.
         conn = self._conn
         with self._lock:
-            guard = _QueryAuthorizer()
+            guard = _QueryAuthorizer(
+                view_only=self._query_view_only(),
+                published_views=_SCOPED_VIEWS if scope else frozenset(),
+            )
             try:
                 # Views first, with the guard off: creating them is a privileged
                 # setup step, not part of the caller's statement.

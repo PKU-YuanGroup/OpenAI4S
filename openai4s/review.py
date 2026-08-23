@@ -9,7 +9,7 @@ persists as an ordinary ``review`` activity step.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 from openai4s.config import LLMConfig
 from openai4s.llm import chat
@@ -333,7 +333,12 @@ def _bounded_packet(evidence: dict[str, Any]) -> str:
     return packet
 
 
-def review_evidence(evidence: dict[str, Any], cfg: LLMConfig) -> dict[str, Any]:
+def review_evidence(
+    evidence: dict[str, Any],
+    cfg: LLMConfig,
+    *,
+    chat_call: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Run one bounded reviewer call and return a normalized verdict + usage."""
     packet = _bounded_packet(evidence)
     raw_artifacts = evidence.get("changed_artifacts") or []
@@ -350,7 +355,12 @@ def review_evidence(evidence: dict[str, Any], cfg: LLMConfig) -> dict[str, Any]:
         omitted_count = max(0, len(raw_artifacts) - 64)
     if omitted_count > 0:
         raise ReviewError("review evidence omitted changed artifacts")
-    result = chat(
+    # Dependency injection is call-scoped.  The production default remains the
+    # module's provider chat function, while deterministic offline callers can
+    # supply one bounded fake without replacing a process-global that another
+    # Reviewer thread may be using at the same time.
+    invoke = chat if chat_call is None else chat_call
+    result = invoke(
         [
             {"role": "system", "content": REVIEWER_SYSTEM_PROMPT},
             {

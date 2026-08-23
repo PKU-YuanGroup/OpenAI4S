@@ -15,6 +15,10 @@ def test_science_tools_are_two_flat_schema_checked_registry_entries():
     assert get_tool("science_search") == search
     assert catalog.requires_approval is False
     assert search.needs_network is True
+    assert search.read_only is False
+    assert search.writes_files is True
+    assert search.derived_write_path is True
+    assert search.side_effect_class == "workspace_write"
     assert search.screen_untrusted_output is True
     assert search.permission_target({"database": "uniprot"}) == "uniprot"
     assert search.resource_keys({"database": "uniprot"}) == ("network:science/uniprot",)

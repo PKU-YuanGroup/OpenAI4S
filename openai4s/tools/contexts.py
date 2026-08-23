@@ -22,6 +22,18 @@ class WorkspaceToolContext(Protocol):
 
     def is_secret_path(self, path: str) -> bool: ...
 
+    def resolved_secret_checker(self) -> Callable[[Path], bool]: ...
+
+    def verified_read_opener(self) -> Callable[[str | Path], Any]: ...
+
+    def open_verified_read(self, relative: str | Path) -> Any: ...
+
+    def open_verified_directory(self, relative: str | Path) -> Any: ...
+
+    def secure_parent(
+        self, relative: str | Path, *, create_parents: bool = False
+    ) -> Any: ...
+
 
 class EnvironmentToolContext(Protocol):
     """Mutable session hooks required by environment control tools."""
@@ -29,6 +41,12 @@ class EnvironmentToolContext(Protocol):
     active_env_bin: str | None
     active_r_env: str | None
     on_env_switch: Callable[[str], None] | None
+
+
+class ScienceArtifactToolContext(Protocol):
+    """Single-purpose Stage 10 result writer; no Store capability leaks in."""
+
+    def record_science_artifact(self, result: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class ControlToolContext:
@@ -48,6 +66,7 @@ class ControlToolContext:
         get_active_r_env: Callable[[], str | None],
         set_active_r_env: Callable[[str | None], None],
         get_on_env_switch: Callable[[], Callable[[str], None] | None],
+        get_stage10_enabled: Callable[[], bool] | None = None,
         invoke_control: Callable[..., Any] | None = None,
         search_web: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
@@ -56,6 +75,7 @@ class ControlToolContext:
         self._get_active_r_env = get_active_r_env
         self._set_active_r_env = set_active_r_env
         self._get_on_env_switch = get_on_env_switch
+        self._get_stage10_enabled = get_stage10_enabled
         self._invoke_control = invoke_control
         self._search_web = search_web
 
@@ -70,6 +90,23 @@ class ControlToolContext:
 
     def is_secret_path(self, path: str) -> bool:
         return self._workspace.is_secret_path(path)
+
+    def resolved_secret_checker(self) -> Callable[[Path], bool]:
+        return self._workspace.resolved_secret_checker()
+
+    def verified_read_opener(self) -> Callable[[str | Path], Any]:
+        return self._workspace.verified_read_opener()
+
+    def open_verified_read(self, relative: str | Path) -> Any:
+        return self._workspace.open_verified_read(relative)
+
+    def open_verified_directory(self, relative: str | Path) -> Any:
+        return self._workspace.open_verified_directory(relative)
+
+    def secure_parent(
+        self, relative: str | Path, *, create_parents: bool = False
+    ) -> Any:
+        return self._workspace.secure_parent(relative, create_parents=create_parents)
 
     @property
     def active_env_bin(self) -> str | None:
@@ -122,9 +159,22 @@ class ControlToolContext:
             timeout=timeout,
         )
 
+    def record_science_artifact(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Write a search result for the Gateway's trusted native capture."""
+
+        from openai4s.host.stage10_science import write_search_artifact
+
+        return write_search_artifact(self.workspace(), result)
+
+    def stage10_enabled(self) -> bool:
+        """Expose only the feature decision, never the full daemon config."""
+
+        return bool(self._get_stage10_enabled and self._get_stage10_enabled())
+
 
 __all__ = [
     "WorkspaceToolContext",
     "EnvironmentToolContext",
+    "ScienceArtifactToolContext",
     "ControlToolContext",
 ]

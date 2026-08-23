@@ -36,12 +36,10 @@ def workspace(tmp_path):
     root.mkdir()
     for index in range(12):
         (root / f"file{index}.txt").write_text("needle\n", encoding="utf-8")
-    return SimpleNamespace(
+    return files_mod.WorkspaceFileService(
+        data_dir=tmp_path / "data",
+        frame_id=lambda: "deadline-test",
         workspace=lambda: root,
-        resolve=lambda name: root / name,
-        relative=lambda path: str(path.relative_to(root)),
-        is_secret_path=lambda relative: False,
-        root=root,
     )
 
 
@@ -61,7 +59,9 @@ def slow_clock(monkeypatch):
 
     for module in ("content_search", "glob_files", "list_directory"):
         monkeypatch.setattr(
-            f"openai4s.tools.{module}.time.monotonic", monotonic, raising=True
+            f"openai4s.tools.{module}.time",
+            SimpleNamespace(monotonic=monotonic),
+            raising=True,
         )
     return ticks
 

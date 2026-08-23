@@ -55,6 +55,10 @@ def _never_cancelled() -> bool:
     return False
 
 
+def _allow_cell(_action: CodeCell) -> None:
+    return None
+
+
 def _env_switch_notice(exc: BaseException) -> str:
     """What the model is told when a pending environment switch failed.
 
@@ -444,6 +448,12 @@ class WebActionExecutor:
     events: WebEventSink
     prose_nudge: str
     explore_nudge: str
+    # Admission belongs immediately before a Code Cell's first side effect.
+    # In particular it must precede ``apply_pending``: applying an environment
+    # switch may retire or respawn a persistent worker.  Control tools and a
+    # sole structured finalization deliberately bypass this gate so the lazy-
+    # kernel contract remains true when the scientific profile is absent.
+    admit_cell: Callable[[CodeCell], None] = _allow_cell
     native_wrapper: (
         Callable[[Any, Callable[[], tuple[str, bool]]], tuple[str, bool]] | None
     ) = None
@@ -479,7 +489,15 @@ class WebActionExecutor:
                 "cancelled": self.cancelled,
                 "prepare_group": self.apply_pending,
                 "parallel_policy": lambda call: tool_parallel_policy(
-                    call, self.tool_catalog
+                    call,
+                    self.tool_catalog,
+                    metadata_resolver=(
+                        getattr(
+                            self.dispatcher(),
+                            "control_tool_execution_metadata",
+                            None,
+                        )
+                    ),
                 ),
             }
             if self.tool_catalog is not None:
@@ -510,6 +528,7 @@ class WebActionExecutor:
                 return outcome
             return self._apply_trailing_pending(outcome)
         if isinstance(action, CodeCell):
+            self.admit_cell(action)
             self.apply_pending()
             cell_outcome = self.execute_cell(action)
             # ``execute_cell`` returns the gateway's full outcome dict; legacy

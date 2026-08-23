@@ -115,10 +115,14 @@ def install(
     skill_event_origin: Callable[[], str] | None = None,
     skill_event_key: bytes | None = None,
 ) -> bool:
-    """Install the dlopen and optional Skill-attestation audit hook.
+    """Install the dlopen and optional Skill-diagnostic audit hook.
 
     Idempotent-ish: a second call installs a second (equivalent) hook, harmless
     but wasteful, so callers guard with `sys._openai4s_audit_armed`.
+
+    The diagnostic MAC is not a trust boundary: arbitrary Python running in
+    this interpreter can recover the key or invoke the signer. The Host must
+    never use these events as durable recovery evidence.
     """
     if not enabled and skill_event_sink is None:
         return False

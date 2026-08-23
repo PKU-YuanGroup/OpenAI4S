@@ -8,8 +8,6 @@ this is the inner synchronous RPC loop.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
 import subprocess
@@ -22,11 +20,63 @@ from pathlib import Path
 from typing import Any, Callable
 
 from openai4s.kernel.environment import build_kernel_environment
+from openai4s.kernel.errors import KernelBusyError, KernelInterruptUnavailable
 from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
 from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
-from openai4s.security.sandbox import KernelSandbox, create_kernel_sandbox
+from openai4s.kernel.transport import KernelTransport, PipeTransport
+from openai4s.security.sandbox import (
+    KernelReadIsolation,
+    KernelSandbox,
+    SandboxUnavailableError,
+    create_kernel_sandbox,
+)
+
+
+def _sandbox_mode() -> str:
+    """The requested posture, read the same way the sandbox itself reads it."""
+    return (os.environ.get("OPENAI4S_KERNEL_SANDBOX") or "auto").strip().lower()
+
 
 _WORKER = Path(__file__).resolve().parent / "worker.py"
+_KERNEL_RUNTIME_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _kernel_runtime_read_roots(
+    python: str,
+    argv: list[str] | None,
+    env_root: str | None,
+) -> tuple[Path, ...]:
+    """Return exact immutable roots needed to start a local worker.
+
+    Team isolation also masks the canonical system-temp directory. Source
+    checkouts, virtual environments and CI runtimes can legitimately live
+    there, so preserve only the actual worker source/runtime roots rather than
+    reopening the whole temp tree (which would expose stale sibling kernels).
+    """
+
+    roots: list[Path] = [_KERNEL_RUNTIME_SOURCE_ROOT]
+    if env_root:
+        roots.append(Path(env_root).expanduser())
+
+    for value in (python, *(argv or ())):
+        path = Path(value).expanduser()
+        try:
+            is_runtime_file = path.is_absolute() and path.is_file()
+        except (OSError, ValueError):
+            is_runtime_file = False
+        if not is_runtime_file:
+            continue
+        # Keep both a venv's lexical prefix and the resolved interpreter's
+        # framework/base prefix. The latter matters when bin/python is a
+        # symlink; the former contains the selected environment's packages.
+        for executable in (path, path.resolve(strict=False)):
+            prefix = executable.parent.parent
+            if prefix == Path(prefix.anchor) or not prefix.is_dir():
+                continue
+            if prefix not in roots:
+                roots.append(prefix)
+    return tuple(roots)
+
 
 # A host-call dispatcher: (method:str, args:list) -> data. Raises to signal error.
 Dispatcher = Callable[[str, list], Any]
@@ -36,7 +86,12 @@ Dispatcher = Callable[[str, list], Any]
 #: chatty R `system()` fits; the point is that it is a ceiling on what the
 #: daemon allocates, not on what the caller is shown.
 _STDERR_TAIL_BYTES = 64 * 1024
-_SKILL_SIDECAR_CAPTURE_B64_BYTES = 10_000_000
+#: A worker has already authenticated at the transport layer by the time this
+#: handshake starts, but it has not yet become a supervisor candidate.  An old
+#: or wedged peer must not hold that lifecycle ticket forever.  A timer kills
+#: the transport to wake the existing (and only) frame reader; it never starts
+#: a competing reader.
+_SKILL_SIDECAR_INITIALIZATION_TIMEOUT_S = 15.0
 
 
 class _StderrTail:
@@ -93,8 +148,12 @@ class _StderrTail:
         return bool(self._buf)
 
 
-class KernelBusyError(RuntimeError):
-    """The worker protocol is owned by an in-flight cell transaction."""
+# Re-exported, not redefined: both live in `kernel/errors.py` so that
+# `supervisor` -- which this module reaches through the watchdog -- can catch
+# them without importing a partially-initialised `manager`. Every existing
+# `from openai4s.kernel.manager import KernelBusyError` keeps working.
+KernelBusyError = KernelBusyError
+KernelInterruptUnavailable = KernelInterruptUnavailable
 
 
 class Kernel:
@@ -108,7 +167,9 @@ class Kernel:
         env_name: str | None = None,
         argv: list[str] | None = None,
         sandbox: KernelSandbox | None = None,
+        read_isolation: KernelReadIsolation | None = None,
         capture_sinks: bool = False,
+        transport_factory: Callable[[], KernelTransport] | None = None,
     ):
         self.dispatcher = dispatcher
         self.mode = mode
@@ -124,25 +185,40 @@ class Kernel:
         # manager loop (execute/host_call routing/restart/interrupt) is reused
         # verbatim. Kept across restart() so a respawn preserves the language.
         self.argv = argv
+        # How this kernel reaches its worker. None means the local path:
+        # a child process over pipes, byte-for-byte what it always was. A
+        # factory (not an instance) because `restart()` builds a fresh one,
+        # and a transport that could only be created once would make a
+        # respawn impossible for exactly the remote case that needs it most.
+        self.transport_factory = transport_factory
+        self._transport: KernelTransport | None = None
         # The OS boundary is independent of the JSON frame protocol: it only
         # wraps the worker argv and supplies a private temp directory.  Host RPC
         # remains on the existing pipes and is still serviced by this manager's
         # one synchronous reader loop.
-        self._sandbox = sandbox or create_kernel_sandbox(self.cwd)
+        if read_isolation is not None:
+            read_isolation = read_isolation.with_allowed_roots(
+                _kernel_runtime_read_roots(self.python, self.argv, self.env_root)
+            )
+        self._sandbox = sandbox or create_kernel_sandbox(
+            self.cwd, read_isolation=read_isolation
+        )
         # Exactly one host thread may write a request and consume worker frames
         # at a time.  ``inspect_variables`` deliberately acquires this lock
         # without waiting: an inspector is an idle-only read, never a second
         # reader racing an executing Cell's host_call/response loop.
         self._protocol_transaction_lock = threading.Lock()
         self._action_context_local = threading.local()
-        # Sidecar source capture is a generation-wide budget. Keeping it on
-        # the manager prevents a Cell from resetting accounting by clearing a
-        # worker-side diagnostic list between execute requests.
-        self._skill_sidecar_capture_b64_bytes = 0
         self._skill_sidecar_capture_failed = False
         self._skill_sidecar_attestation_key = b""
-        self._skill_sidecar_attestation_ids: set[str] = set()
         self.generation = 0  # bumped on every (re)spawn
+        # Minted here for a local worker, which learns it through
+        # `_child_env`. A remote worker cannot: the transport branch of
+        # `_spawn` returns before any child environment is built, and by the
+        # time this runs its bootstrap credential was already issued. So for
+        # a cluster kernel the Host mints the value during the *handshake*
+        # instead and the caller replaces this one -- see
+        # `adopt_authorization_generation`.
         self.authorization_generation = f"kernel:{uuid.uuid4()}"
         # A worker that cannot bound its own output between top-level
         # expressions (r_worker.R) sinks to a fifo per cell and lets the host
@@ -160,64 +236,132 @@ class Kernel:
             self._sandbox.close()
             raise
 
-    def _spawn(self) -> "subprocess.Popen":
-        # Fail closed on an unsupported platform, here rather than in a warning
-        # at onboarding: every Python and R kernel passes through this method,
-        # so there is no route that reaches a subprocess without being asked.
-        # A program that warns and proceeds has made a different promise from
-        # one that refuses, and a half-working kernel is the worse outcome for
-        # a product whose claim is that its results can be trusted.
+    def _spawn(self) -> "subprocess.Popen | None":
+        """Create this kernel's transport and return its local child, if any.
+
+        Fail closed on an unsupported platform, here rather than in a warning
+        at onboarding: every Python and R kernel passes through this method,
+        so there is no route that reaches a subprocess without being asked.
+        A program that warns and proceeds has made a different promise from
+        one that refuses, and a half-working kernel is the worse outcome for
+        a product whose claim is that its results can be trusted.
+
+        The transport is where "local pipes" and "a worker that dialled in
+        from a compute node" differ; everything above this line — the single
+        frame reader, the id-routed host_response, the host-call transaction
+        lock — is identical for both and stays that way.
+        """
         from openai4s.platform_support import require_supported
 
         require_supported()
-        command = self.argv or [self.python, "-u", str(_WORKER)]
-        child_environment = self._child_env()
-        if self.argv is None:
+        is_python_worker = self.argv is None
+        if is_python_worker:
             self._skill_sidecar_attestation_key = os.urandom(32)
-            self._skill_sidecar_attestation_ids.clear()
         else:
             self._skill_sidecar_attestation_key = b""
-            self._skill_sidecar_attestation_ids.clear()
-        proc = subprocess.Popen(
-            self._sandbox.wrap_command(command),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+
+        if self.transport_factory is not None:
+            # `enforce` is the posture that promises the boundary is really
+            # there and fails closed when it is not. A remote worker is
+            # started by a scheduler on another machine, so `wrap_command`
+            # and `apply_environment` have nothing to wrap -- the daemon
+            # cannot confine a process it does not spawn. Silently running
+            # the cell anyway is what turns `enforce` into `auto` for the
+            # one execution path furthest from the operator; the boundary
+            # for remote work belongs to the resource plane (a job cgroup, a
+            # container image), and until it is declared there this refuses.
+            if _sandbox_mode() == "enforce":
+                raise SandboxUnavailableError(
+                    "OPENAI4S_KERNEL_SANDBOX=enforce, but this kernel runs on "
+                    "a remote node where the daemon cannot establish an OS "
+                    "boundary. Confine the job in the resource plane and set "
+                    "the mode to `auto`, or run this session locally."
+                )
+            self._transport = self.transport_factory()
+            self._stderr_tail = self._transport.stderr_tail
+            if is_python_worker:
+                self._initialize_skill_sidecar_attestation()
+            return self._transport.process
+
+        command = self.argv or [self.python, "-u", str(_WORKER)]
+        child_environment = self._child_env()
+        wrapped_command = self._sandbox.wrap_command(command)
+        pass_fds_for = getattr(self._sandbox, "popen_pass_fds", None)
+        adopt_process = getattr(self._sandbox, "adopt_process", None)
+        pass_fds = tuple(pass_fds_for()) if callable(pass_fds_for) else ()
+        self._transport = PipeTransport(
+            wrapped_command,
             cwd=self.cwd,
             env=self._sandbox.apply_environment(child_environment),
+            stderr_tail_factory=lambda: _StderrTail(_STDERR_TAIL_BYTES),
+            pass_fds=pass_fds,
+            # The process-adoption callback exists solely for the inherited
+            # bubblewrap ``--info-fd`` channel. Keeping it off the ordinary
+            # Seatbelt/single-user path preserves the historical Popen
+            # contract (including lightweight process fakes in embedders).
+            process_started=(
+                adopt_process if pass_fds and callable(adopt_process) else None
+            ),
         )
-        if self.argv is None:
-            # Give the Python worker its generation key over the existing
-            # private protocol before any Cell can run. Environment variables
-            # are the wrong channel: unsetenv() does not erase Linux's initial
-            # /proc/self/environ memory, so a Cell could recover the key and
-            # forge a sidecar-capture frame.
-            assert proc.stdin is not None and proc.stdout is not None
-            initialization_id = f"initialize-{uuid.uuid4()}"
-            proc.stdin.write(
-                json.dumps(
-                    {
-                        "type": "initialize",
-                        "id": initialization_id,
-                        "skill_attestation_key": (
-                            self._skill_sidecar_attestation_key.hex()
-                        ),
-                    }
-                )
-                + "\n"
+        self._stderr_tail = self._transport.stderr_tail
+        if is_python_worker:
+            self._initialize_skill_sidecar_attestation()
+        return self._transport.process
+
+    def _initialize_skill_sidecar_attestation(self) -> None:
+        """Give a Python worker its per-generation diagnostic signing key.
+
+        This handshake belongs above the transport boundary: local workers use
+        pipes and cluster workers use a socket, but both run the same Python
+        worker and must receive the initialization frame before any Cell. The
+        key cannot ride in the environment because Linux retains the initial
+        environment bytes in ``/proc/self/environ`` after ``unsetenv()``. The
+        key detects malformed/accidental protocol traffic only; because it
+        lives in the Cell interpreter it is not recovery evidence.
+        """
+        transport = self._transport
+        if transport is None:  # pragma: no cover - `_spawn` establishes it first
+            raise RuntimeError("kernel worker transport is unavailable")
+
+        initialization_id = f"initialize-{uuid.uuid4()}"
+        initialized = False
+        failure: BaseException | None = None
+        timed_out = False
+        finished = False
+        timer_state_lock = threading.Lock()
+
+        def _expire_initialization() -> None:
+            nonlocal timed_out
+            with timer_state_lock:
+                if finished:
+                    return
+                timed_out = True
+            try:
+                # `kill` is the transport-neutral way to wake a blocked
+                # `read_line`: SIGKILL for a local child, socket shutdown for
+                # a remote worker.  No second protocol reader is introduced.
+                transport.kill()
+            except Exception:  # noqa: BLE001 - cleanup continues below
+                pass
+
+        deadline = threading.Timer(
+            _SKILL_SIDECAR_INITIALIZATION_TIMEOUT_S,
+            _expire_initialization,
+        )
+        deadline.daemon = True
+        deadline.start()
+        try:
+            self._send(
+                {
+                    "type": "initialize",
+                    "id": initialization_id,
+                    "skill_attestation_key": self._skill_sidecar_attestation_key.hex(),
+                }
             )
-            proc.stdin.flush()
-            initialized = False
             diagnostic_frames = 0
             while diagnostic_frames <= 8:
-                line = proc.stdout.readline()
-                if not line:
-                    break
-                try:
-                    frame = json.loads(line)
-                except ValueError:
+                frame = self._readline()
+                if not isinstance(frame, dict):
                     break
                 if frame.get("type") == "log":
                     diagnostic_frames += 1
@@ -227,62 +371,30 @@ class Kernel:
                     and frame.get("id") == initialization_id
                 )
                 break
-            if not initialized:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                except (OSError, subprocess.TimeoutExpired):
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
-                raise RuntimeError("kernel worker attestation initialization failed")
-        # Drain stderr continuously into a bounded tail. Without this, a cell
-        # whose child processes write to inherited fd2 (R `system()`, an
-        # uncaptured subprocess in python) fills the 64KB pipe and deadlocks
-        # the cell forever — nothing used to read stderr until worker death.
-        # The tail keeps the death diagnostics the old blocking read provided.
-        #
-        # Bounded in BYTES, at the read. This was `for line in stream` into a
-        # `deque(maxlen=400)`: an unbounded `readline()` whose only cap was a
-        # line COUNT applied after the allocation, so one producer emitting a
-        # single enormous line -- which is what the comment above says reaches
-        # here -- allocated all of it before any limit applied. That is the
-        # pattern `mcp_client.py` and `jobs.py` were both changed to remove,
-        # and this drain was written after those fixes without adopting them.
-        #
-        # `.buffer` because the pipe is `text=True` for the stdout protocol
-        # frames and cannot be opened per-stream; the raw reader underneath it
-        # is where a byte budget can mean bytes.
-        self._stderr_tail = _StderrTail(_STDERR_TAIL_BYTES)
-        tail = self._stderr_tail
-        # `os.read` on the descriptor, not `BufferedReader.read`. Both give
-        # bytes, and only one of them is safe here: this thread is a daemon, and
-        # a daemon parked inside a buffered read holds that buffer's lock when
-        # the interpreter finalises. The whole suite passed and then aborted
-        # with `_enter_buffered_busy: could not acquire lock ... at interpreter
-        # shutdown` -- a clean exit turned into SIGABRT by the drain alone.
-        # `os.read` also returns as soon as anything is available rather than
-        # waiting to fill the request, which is what a drain wants.
+        except BaseException as exc:  # cleanup also covers cancellation/exit
+            failure = exc
+        finally:
+            with timer_state_lock:
+                finished = True
+            deadline.cancel()
+
+        if initialized and not timed_out:
+            return
         try:
-            stderr_fd = proc.stderr.fileno()
-        except (AttributeError, OSError, ValueError):  # pragma: no cover
-            stderr_fd = -1
-
-        def _drain(fd: int = stderr_fd, sink=tail) -> None:
-            if fd < 0:
-                return
+            transport.close(graceful=True)
+        except Exception:  # noqa: BLE001 — initialization already failed
             try:
-                while True:
-                    chunk = os.read(fd, 8192)
-                    if not chunk:
-                        return
-                    sink.feed(chunk)
-            except Exception:  # noqa: BLE001 — EOF/close ends the drain
+                transport.kill()
+            except Exception:  # noqa: BLE001 — best-effort final cleanup
                 pass
-
-        threading.Thread(target=_drain, name="os-kernel-stderr", daemon=True).start()
-        return proc
+        if failure is not None and not isinstance(failure, Exception):
+            raise failure
+        message = "kernel worker attestation initialization failed"
+        if timed_out:
+            message += f" after {_SKILL_SIDECAR_INITIALIZATION_TIMEOUT_S:g}s deadline"
+        if failure is not None:
+            raise RuntimeError(message) from failure
+        raise RuntimeError(message)
 
     def _child_env(self) -> dict:
         # Build from a strict runtime allowlist: daemon LLM/provider keys,
@@ -299,13 +411,10 @@ class Kernel:
         )
 
     def _send(self, obj: dict) -> None:
-        assert self._proc.stdin is not None
-        self._proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        self._proc.stdin.flush()
+        self._transport.write_line(json.dumps(obj, ensure_ascii=False) + "\n")
 
     def _readline(self) -> dict | None:
-        assert self._proc.stdout is not None
-        line = self._proc.stdout.readline()
+        line = self._transport.read_line()
         if not line:
             return None
         line = line.strip()
@@ -363,9 +472,6 @@ class Kernel:
 
                 stdout_chunks: list[str] = []
                 sidecar_loads: list[dict[str, Any]] = []
-                pending_sidecar_attestations: dict[str, str] = {}
-                sidecar_capture_bytes = self._skill_sidecar_capture_b64_bytes
-                sidecar_capture_failed = self._skill_sidecar_capture_failed
                 while True:
                     frame = self._readline()
                     if frame is None:
@@ -392,13 +498,6 @@ class Kernel:
                         raise RuntimeError(f"kernel worker exited unexpectedly: {err}")
                     ftype = frame.get("type")
                     if ftype == "response":
-                        if pending_sidecar_attestations:
-                            self._skill_sidecar_attestation_ids.update(
-                                pending_sidecar_attestations
-                            )
-                            sidecar_loads.append({"event": "invalid_sidecar_event"})
-                            sidecar_capture_failed = True
-                            self._skill_sidecar_capture_failed = True
                         if capture is not None and frame.get("sink_capture"):
                             # The worker declares it sank to the host's fifos,
                             # so the host — not the worker — is what has the
@@ -418,14 +517,12 @@ class Kernel:
                                 usage.update(capture.counters())
                         elif stdout_chunks and not frame.get("stdout"):
                             frame["stdout"] = "".join(stdout_chunks)
-                        # A successful sidecar import is published before the
-                        # Cell resumes, so clearing/replacing objects in the
-                        # persistent user namespace cannot retract it. Prefer
-                        # those manager-held frames over the worker response's
-                        # legacy diagnostic-list snapshot.
-                        # Never trust the worker response's user-visible legacy
-                        # mirror. Only independently MAC-authenticated protocol
-                        # frames are recovery evidence.
+                        # A Python Cell and its audit hook share one interpreter.
+                        # The Cell can therefore recover or invoke any signing
+                        # oracle held by the hook. Worker frames are useful only
+                        # as private diagnostics; they are never durable recovery
+                        # evidence. The recorder independently enforces the same
+                        # fail-closed boundary.
                         frame.pop("skill_sidecar_loads", None)
                         if sidecar_loads:
                             frame["skill_sidecar_loads"] = sidecar_loads
@@ -446,98 +543,15 @@ class Kernel:
                         if on_chunk is not None and text:
                             on_chunk(text)
                     elif ftype == "skill_sidecar_load":
-                        if sidecar_capture_failed:
-                            if not sidecar_loads:
-                                sidecar_loads.append({"event": "invalid_sidecar_event"})
-                            continue
-                        event = frame.get("event")
-                        if frame.get("id") != cell_id or not isinstance(event, dict):
-                            sidecar_loads.append({"event": "invalid_sidecar_event"})
-                            sidecar_capture_failed = True
-                            self._skill_sidecar_capture_failed = True
-                            continue
-                        event = dict(event)
-                        attestation_mac = event.pop("attestation_mac", None)
-                        encoded_event = json.dumps(
-                            event,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                        expected_mac = hmac.new(
-                            self._skill_sidecar_attestation_key,
-                            encoded_event,
-                            hashlib.sha256,
-                        ).hexdigest()
-                        if (
-                            len(self._skill_sidecar_attestation_key) != 32
-                            or not isinstance(attestation_mac, str)
-                            or not hmac.compare_digest(attestation_mac, expected_mac)
-                        ):
-                            sidecar_loads.append({"event": "invalid_sidecar_event"})
-                            sidecar_capture_failed = True
-                            self._skill_sidecar_capture_failed = True
-                            continue
-                        event_name = event.get("event")
-                        attestation_id = event.get("attestation_id")
-                        if event_name == "sidecar_capture_started":
-                            source_sha256 = event.get("sha256")
-                            if (
-                                not isinstance(attestation_id, str)
-                                or not attestation_id
-                                or attestation_id in pending_sidecar_attestations
-                                or attestation_id in self._skill_sidecar_attestation_ids
-                                or not isinstance(source_sha256, str)
-                                or len(source_sha256) != 64
-                                or any(
-                                    char not in "0123456789abcdef"
-                                    for char in source_sha256
-                                )
-                            ):
-                                sidecar_loads.append({"event": "invalid_sidecar_event"})
-                                sidecar_capture_failed = True
-                                self._skill_sidecar_capture_failed = True
-                                continue
-                            pending_sidecar_attestations[attestation_id] = source_sha256
-                            continue
-                        if event_name == "invalid_sidecar_event":
-                            if isinstance(attestation_id, str):
-                                pending_sidecar_attestations.pop(attestation_id, None)
-                                if attestation_id:
-                                    self._skill_sidecar_attestation_ids.add(
-                                        attestation_id
-                                    )
-                            sidecar_loads.append({"event": "invalid_sidecar_event"})
-                            sidecar_capture_failed = True
-                            self._skill_sidecar_capture_failed = True
-                            continue
-                        source_b64 = event.get("source_b64")
-                        source_sha256 = event.get("sha256")
-                        expected_sha256 = (
-                            pending_sidecar_attestations.pop(attestation_id, None)
-                            if isinstance(attestation_id, str)
-                            else None
-                        )
-                        if (
-                            expected_sha256 is None
-                            or source_sha256 != expected_sha256
-                            or not isinstance(source_b64, str)
-                        ):
-                            sidecar_loads.append({"event": "invalid_sidecar_event"})
-                            sidecar_capture_failed = True
-                            self._skill_sidecar_capture_failed = True
-                            continue
-                        self._skill_sidecar_attestation_ids.add(attestation_id)
-                        sidecar_capture_bytes += len(source_b64)
-                        if sidecar_capture_bytes > _SKILL_SIDECAR_CAPTURE_B64_BYTES:
-                            sidecar_loads.append({"event": "invalid_sidecar_event"})
-                            sidecar_capture_failed = True
-                            self._skill_sidecar_capture_failed = True
-                            continue
-                        self._skill_sidecar_capture_b64_bytes = sidecar_capture_bytes
-                        recorded_event = dict(event)
-                        recorded_event.pop("attestation_id", None)
-                        sidecar_loads.append(recorded_event)
+                        # A MAC generated inside the untrusted Cell interpreter
+                        # cannot attest that a sidecar executed: Python
+                        # introspection can recover the key or signing callable.
+                        # Do not retain source bytes or event claims here.
+                        if not sidecar_loads:
+                            sidecar_loads.append(
+                                {"event": "untrusted_worker_sidecar_event"}
+                            )
+                        self._skill_sidecar_capture_failed = True
                     elif ftype == "log":
                         # diagnostic from worker; ignore or log
                         pass
@@ -626,14 +640,72 @@ class Kernel:
             self._protocol_transaction_lock.release()
 
     @property
-    def pid(self) -> int:
-        return self._proc.pid
+    def pid(self) -> int | None:
+        """The local child's pid, or None for a worker on another machine.
+
+        None rather than a remote pid: callers record this as "a process on
+        this host", and a number that means nothing here is worse than an
+        absence a reader can see.
+        """
+        return self._proc.pid if self._proc is not None else None
 
     @property
     def sandbox_status(self) -> dict[str, Any]:
-        """Serializable OS-boundary state for status APIs and the UI."""
+        """Serializable OS-boundary state for status APIs and the UI.
 
-        return self._sandbox.status.to_dict()
+        A remote kernel reports what is actually true of it, which is that
+        this daemon's sandbox does not apply. `create_kernel_sandbox` runs in
+        `__init__` for every kernel and self-tests on the *daemon's* host, so
+        a cluster session used to render `enforced: true`, `backend:
+        "seatbelt"` and `self_test_passed: true` in the Security panel for
+        cells running unconfined on a compute node -- and the same values
+        were written into the durable generation record. The transport branch
+        of `_spawn` never calls `wrap_command` or `apply_environment`, and it
+        could not: the process is on another machine, started by a scheduler.
+        Saying so is the fix available here; confining it is the resource
+        plane's job (a job-level cgroup, a container image), not something
+        the daemon can assert from a distance.
+        """
+        if self.transport_factory is None:
+            return self._sandbox.status.to_dict()
+        status = dict(self._sandbox.status.to_dict())
+        status.update(
+            {
+                "enforced": False,
+                "backend": "remote",
+                "self_test_passed": False,
+                "reason": (
+                    "this kernel runs on a remote node; the daemon's OS "
+                    "sandbox does not apply to it"
+                ),
+            }
+        )
+        return status
+
+    def adopt_authorization_generation(self, generation: str) -> None:
+        """Use the generation a remote worker was admitted under.
+
+        Only meaningful for a transport-backed kernel, and only with a value
+        that came from a `Registration` -- which exists solely for a peer
+        that presented a valid, unburned, in-epoch bootstrap credential. The
+        Host minted it in the handshake and echoed it to the worker there,
+        so this is the two ends agreeing on the Host's own value, not the
+        Host accepting the worker's.
+
+        Refused on a local kernel: there the environment already carries a
+        generation the child was started with, and replacing it afterwards
+        would leave the running worker authorizing against one string while
+        the Host checked another.
+        """
+        text = str(generation or "")
+        if not text:
+            return
+        if self.transport_factory is None:
+            raise RuntimeError(
+                "a local kernel's generation comes from its child environment "
+                "and must not be replaced after the worker has started"
+            )
+        self.authorization_generation = text
 
     def interrupt(self) -> None:
         """Deliver ONE SIGINT to the worker ( exec_interrupt).
@@ -644,28 +716,50 @@ class Kernel:
         """
         import signal
 
+        # A remote worker has no pid here; its transport knows whether it
+        # can deliver an interrupt at all, and says so rather than
+        # pretending. Local kernels fall straight through to the signal path
+        # they always used.
+        proc = self._proc
+        if proc is None:
+            if not self._transport.interrupt():
+                # Nothing delivered it. Silence here would leave a cell
+                # apparently cancelled and actually running.
+                raise KernelInterruptUnavailable(
+                    "no way to interrupt this worker: it is remote and no "
+                    "signal delivery was configured for its allocation"
+                )
+            return
         sender = getattr(self._sandbox, "send_interrupt", None)
-        if callable(sender) and sender(self._proc.pid, signal.SIGINT):
+        if callable(sender) and sender(proc.pid, signal.SIGINT):
             return
         try:
             # Popen owns the direct child identity and synchronizes its poll /
             # signal path. Bubblewrap's numeric grandchild never reaches here;
             # KernelSandbox pins that target with a pidfd above.
-            self._proc.send_signal(signal.SIGINT)
+            proc.send_signal(signal.SIGINT)
         except (ProcessLookupError, OSError):
             pass
 
     def kill_worker(self) -> None:
-        """Kill this exact worker process without spawning or reading frames.
+        """Kill this exact worker without spawning or reading frames.
 
         This is the watchdog's last-resort escape hatch.  Keeping it on the
         manager avoids callers reaching through the private ``_proc`` field;
         recovery or abandonment remains the owner's responsibility.
+
+        ``_proc`` stays the canonical handle for a local child — it is what
+        the sandbox signals and what the watchdog's tests substitute — and
+        the transport answers only when there is no local process, which is
+        the remote case.
         """
-        try:
-            self._proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            return
+        self._transport.kill()
 
     def _service_host_call(self, frame: dict) -> None:
         call_id = frame.get("id")
@@ -720,48 +814,70 @@ class Kernel:
         against the new process — the ``Kernel`` object itself is reused so all
         references held by the session stay valid.
         """
-        old = self._proc
+        # Refused *before* anything is torn down. A remote worker is not this
+        # process's to spawn, so this can only ever fail for one -- and it
+        # used to fail after closing the transport and bumping the
+        # generation, which left the supervisor's slot and the durable
+        # `kernel_generations` row pointing at a worker whose socket was
+        # already gone, with the exception escaping before
+        # `_finish_generation` could record anything. The session's kernel
+        # was destroyed by a request that answered 500.
+        #
+        # The caller's correct move is recovery -- a new epoch, state
+        # declared lost -- and it can only make it if the kernel it has is
+        # still the one it had.
+        if self.transport_factory is not None:
+            raise RuntimeError(
+                "this worker cannot be respawned in place: it dialled in "
+                "from elsewhere, so a new one has to be placed and dial back "
+                "in. Recover the session (a new epoch) instead of restarting "
+                "its kernel."
+            )
+        # Teardown belongs to the transport: a local child needs a shutdown
+        # frame, a wait, a kill and a reap (a restart that skipped the reap
+        # leaked a zombie every time); a remote worker has a socket to close
+        # and no pid to signal. Each sequence lives with the thing it is a
+        # sequence for.
         try:
-            old.stdin and old.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
-            old.stdin and old.stdin.flush()
+            self._transport.close(graceful=True)
         except Exception:  # noqa: BLE001
             pass
-        try:
-            old.wait(timeout=3)
-        except Exception:  # noqa: BLE001
-            try:
-                old.kill()
-                old.wait(timeout=2)  # reap so we don't leak a zombie per restart
-            except Exception:  # noqa: BLE001
-                pass
-        for stream in (old.stdin, old.stdout, old.stderr):
-            try:
-                stream and stream.close()
-            except Exception:  # noqa: BLE001
-                pass
         self.authorization_generation = f"kernel:{uuid.uuid4()}"
-        self._proc = self._spawn()
-        self._skill_sidecar_capture_b64_bytes = 0
+        try:
+            self._proc = self._spawn()
+        except Exception as exc:
+            from openai4s.kernel.errors import KernelRestartFailed
+
+            raise KernelRestartFailed(
+                "the old kernel was cleared but its replacement could not "
+                f"start: {exc}"
+            ) from exc
+        # Every respawn bumps the generation: a lease, a watchdog or an
+        # in-flight interrupt naming the previous incarnation has to be
+        # refused, and this counter is the whole of how it is refused.
         self._skill_sidecar_capture_failed = False
         self.generation += 1
+        if not self._transport.alive():
+            # A local respawn that produced a dead child. The remote case is
+            # refused at the top of this method, before the old worker is
+            # torn down, so reaching here means the fresh local process did
+            # not come up.
+            from openai4s.kernel.errors import KernelRestartFailed
+
+            raise KernelRestartFailed(
+                "the restarted worker is not alive: its process failed to "
+                "start or exited immediately"
+            )
 
     def is_alive(self) -> bool:
-        return self._proc.poll() is None
+        return self._transport.alive()
 
     def shutdown(self) -> None:
         try:
-            self._send({"type": "shutdown"})
-            self._proc.wait(timeout=5)
+            self._transport.close(graceful=True)
         except Exception:  # noqa: BLE001
-            self._proc.kill()
+            self._transport.kill()
         finally:
-            # close the pipe wrappers now — a dead worker's buffered stdin
-            # otherwise raises BrokenPipeError at GC-time flush
-            for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
-                try:
-                    stream and stream.close()
-                except Exception:  # noqa: BLE001
-                    pass
             if self._sinks is not None:
                 self._sinks.close()
             self._sandbox.close()

@@ -1,0 +1,8 @@
+# `openai4s/orchestration/local/`
+
+The default resource plane: this machine. Same `AllocationBackend` contract as any cluster, so the reconciler, the routes and the CLI have one code path whether or not a scheduler exists — "no cluster configured" is a different *backend*, not a different program.
+
+| file | what it is |
+|---|---|
+| [`__init__.py`](__init__.py) | Re-exports `LocalBackend`. |
+| [`backend.py`](backend.py) | Allocations as child processes. The submission token is honoured exactly as a cluster honours it: before user code can execute, a tiny resident supervisor fsyncs a receipt carrying token, PID, PGID, and a per-launch identity lock that user code never inherits. A restarted daemon adopts that exact generation, while a pre-arm wrapper is proved unable to execute or conclusively stopped before retry, so neither a lost submit response nor a fast process exit creates a duplicate. Receipts remain at-most-once tombstones until the reconciler reloads a durably terminal allocation plus a terminal workload or later recovery epoch; only then does the optional acknowledgement capability rename the receipt to a durable `.acked` cleanup marker, evict `_jobs`, and remove receipt/lock/identity sidecars. Restart completes an interrupted marker cleanup, while logs remain addressable by deterministic allocation paths. A vanished adopted process is `LOST`, never `COMPLETED`: success is reported only for an exit status this daemon reaped. Children get their own process group so cancel kills the tree rather than the wrapper, a named environment rather than the daemon's (which holds API keys), and `MAX_CONCURRENT` refuses with `UNSCHEDULABLE` — the reason a cluster gives — so no caller needs a local-only branch. |

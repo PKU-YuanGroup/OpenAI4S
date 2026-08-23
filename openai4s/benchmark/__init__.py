@@ -1,7 +1,7 @@
 """The versioned science-workflow benchmark: manifests, steps, and a runner.
 
-The proposal asks for ten representative workflows and at least twenty
-versioned cases, and it is specific about what would make them worthless: a
+The suite freezes eleven representative workflows and thirty-four versioned
+cases, and it is specific about what would make them worthless: a
 directory of fixtures nobody executes, or cases that pass because the thing
 they exercise is a mock.
 
@@ -19,14 +19,38 @@ permission, a provenance claim. A benchmark that only measures the happy path
 measures the half of the system that was never in doubt.
 """
 
+from openai4s.benchmark.acceptance import (
+    AcceptanceManifestError,
+    AcceptancePack,
+    load_acceptance_pack,
+    run_acceptance_pack,
+)
+from openai4s.benchmark.bringup import (
+    BRINGUP_FILENAME,
+    RECORD_DIR,
+    SCHEMA_VERSION,
+    BringupError,
+    seal_record,
+    verify_bringup,
+)
 from openai4s.benchmark.model import Case, Workflow, load_workflows
 from openai4s.benchmark.runner import CaseResult, run_all, run_case
 
 __all__ = [
+    "AcceptanceManifestError",
+    "AcceptancePack",
+    "BRINGUP_FILENAME",
+    "BringupError",
     "Case",
     "CaseResult",
+    "RECORD_DIR",
+    "SCHEMA_VERSION",
     "Workflow",
+    "load_acceptance_pack",
     "load_workflows",
+    "run_acceptance_pack",
     "run_all",
     "run_case",
+    "seal_record",
+    "verify_bringup",
 ]

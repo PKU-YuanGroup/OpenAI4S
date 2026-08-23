@@ -41,10 +41,42 @@ import sys
 import threading
 import time
 import traceback
+from functools import partial
 
-MAX_OUTPUT = 1_000_000  # 1M-character head cap on captured cell output
+# A remote source-checkout worker is launched by its absolute script path with
+# a deliberately sparse environment.  Python then puts `openai4s/kernel`, not
+# the repository root, on `sys.path`, so mandatory audit-hook and Host imports
+# fail before the first Cell.  Derive the package parent from the trusted
+# executable path itself; never rely on an inherited, attacker-selectable
+# PYTHONPATH to make the worker importable.
+_TRUSTED_PACKAGE_PARENT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+)
+if (
+    os.path.isfile(os.path.join(_TRUSTED_PACKAGE_PARENT, "openai4s", "__init__.py"))
+    and _TRUSTED_PACKAGE_PARENT not in sys.path
+):
+    sys.path.insert(0, _TRUSTED_PACKAGE_PARENT)
+
+from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+    JSON_WORST_BYTES_PER_CHAR as _JSON_WORST_BYTES_PER_CHAR,
+)
+from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+    MAX_FRAME_BYTES as _MAX_FRAME_BYTES,
+)
+from openai4s.kernel.protocol import (  # noqa: E402 - trusted path fixed above
+    MAX_OUTPUT_CHARS as MAX_OUTPUT,
+)
+
 _DISCARD_BUDGET = 8  # bounded discard for desync
 _HOST_CALL_WIRE_CAP = 15_000_000  # 15MB host_call payload cap
+#: A Cell can open an unbounded number of paths.  ``files_read`` is evidence
+#: metadata carried in the one response frame, so bound both its cardinality
+#: and each retained spelling at the producer.  Omitting later observations is
+#: conservative (it cannot invent a lineage edge); retaining an unbounded list
+#: would let ordinary user code grow the protocol frame without limit.
+_MAX_FILES_READ = 256
+_MAX_FILE_READ_PATH_CHARS = 1_024
 #: One streamed chunk. A `write()` used to become one frame of whatever size it
 #: was handed, so `print("x" * 200_000_000)` put a single ~200MB JSON line on
 #: the pipe and the host's `readline()` materialised it whole -- ~200MB
@@ -74,14 +106,113 @@ _MAX_CHUNK_CHARS = 64_000
 #:
 #: It still bounds the allocation the backstop is for: a
 #: `print("x" * 200_000_000)` is stopped just the same.
-_JSON_WORST_BYTES_PER_CHAR = 12
-_MAX_FRAME_BYTES = _JSON_WORST_BYTES_PER_CHAR * 2 * MAX_OUTPUT + 2_000_000
 #: One spelling of the marker, so the streamed tail and the captured result
 #: cannot disagree about what happened.
 _TRUNCATION_MARKER = f"\n...(truncated at {MAX_OUTPUT} characters)"
 _MAX_CACHED_CELLS = 128  # linecache retention, evicted by counter
 
 # --- protocol channel setup (dup2 swap + publish) ---------------------
+
+
+#: Where a remote worker finds the daemon, and the file holding its proof.
+#: Both are plain paths/addresses on purpose: the credential itself travels
+#: as a 0600 FILE and only its path is given to the scheduler, so nothing
+#: secret ever appears in a job's environment (INV-9).
+_CONNECT_ENV = "OPENAI4S_WORKER_CONNECT"
+_CREDENTIAL_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH"
+_CREDENTIAL_TEMPLATE_ENV = "OPENAI4S_WORKER_BOOTSTRAP_PATH_TEMPLATE"
+_RANK_ENV_NAME_ENV = "OPENAI4S_WORKER_RANK_ENV"
+
+
+def _remote_credential_path() -> str:
+    template = (os.environ.get(_CREDENTIAL_TEMPLATE_ENV) or "").strip()
+    if not template:
+        return (os.environ.get(_CREDENTIAL_ENV) or "").strip()
+    rank_env = (os.environ.get(_RANK_ENV_NAME_ENV) or "").strip()
+    if not rank_env:
+        raise ValueError(
+            f"{_CREDENTIAL_TEMPLATE_ENV} is set but {_RANK_ENV_NAME_ENV} is not"
+        )
+    raw_rank = (os.environ.get(rank_env) or "").strip()
+    try:
+        rank = int(raw_rank)
+    except ValueError as exc:
+        raise ValueError(f"invalid worker rank in {rank_env}: {raw_rank!r}") from exc
+    if rank < 0 or "{rank}" not in template:
+        raise ValueError("worker credential template/rank is invalid")
+    return template.replace("{rank}", str(rank))
+
+
+def _connect_remote_protocol():
+    """Dial the daemon and authenticate; return (in_fd, out_fd) or None.
+
+    None is the ordinary case — a local worker inherits its pipes and this
+    whole path is skipped. When the variables ARE set, failure exits rather
+    than falling back: a worker that cannot prove who it is must not go on
+    to run cells, and a silent fallback to inherited fds on a compute node
+    would be a worker talking to nothing.
+    """
+    target = (os.environ.get(_CONNECT_ENV) or "").strip()
+    if not target:
+        return None
+    import json as _json
+    import socket as _socket
+
+    try:
+        credential_path = _remote_credential_path()
+        if not credential_path:
+            raise ValueError(
+                f"{_CONNECT_ENV} is set but {_CREDENTIAL_ENV} is not; refusing "
+                "to connect without a credential"
+            )
+        with open(credential_path, encoding="utf-8") as handle:
+            credential = handle.read().strip()
+        host, _, port = target.rpartition(":")
+        sock = _socket.create_connection((host or "127.0.0.1", int(port)), timeout=60)
+        sock.sendall((credential + "\n").encode("utf-8"))
+        # One byte at a time, deliberately. A chunked read consumes whatever
+        # arrived in the same segment as the handshake reply, and the previous
+        # version then threw the remainder away -- so a protocol frame the
+        # daemon wrote immediately afterwards (registration wakes a thread
+        # that builds the Kernel and executes at once, so "immediately" is the
+        # normal case) was lost before the reader wrapper existed to see it,
+        # and the daemon blocked forever on a reply to a cell the worker never
+        # received. The reply is one short line; the syscalls are cheap and
+        # happen once.
+        reply = b""
+        while not reply.endswith(b"\n"):
+            chunk = sock.recv(1)
+            if not chunk:
+                raise OSError("daemon closed during handshake")
+            reply += chunk
+            if len(reply) > 65536:
+                raise OSError("handshake reply too long")
+        answer = _json.loads(reply.rstrip(b"\n").decode("utf-8"))
+        if not answer.get("ok"):
+            raise OSError(f"daemon refused this worker: {answer.get('error')}")
+        # The generation the Host admitted this connection under. A local
+        # worker learns it from `OPENAI4S_KERNEL_GENERATION` in its
+        # environment; a remote one has no such environment, so the
+        # handshake response is where it arrives. Published on `sys` for
+        # `main()` to hand to the Host it builds -- before the Host and its
+        # BashExecutor exist, so the executor is constructed knowing it
+        # rather than guessing `worker:<pid>` and being refused.
+        generation = answer.get("generation")
+        if generation:
+            sys._openai4s_remote_generation = str(  # type: ignore[attr-defined]
+                generation
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"worker bootstrap failed: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(70) from exc
+    sock.settimeout(None)
+    # Two independent descriptors over the one connection, so the reader and
+    # the writer can be wrapped separately exactly as the pipe path wraps
+    # its two pipes.
+    in_fd = os.dup(sock.fileno())
+    out_fd = os.dup(sock.fileno())
+    sock.detach()
+    return in_fd, out_fd
 
 
 def _setup_protocol_channels() -> None:
@@ -92,11 +223,23 @@ def _setup_protocol_channels() -> None:
     sys._openai4s_protocol_stdin / sys._openai4s_protocol_stdout. A reserve dup of
     the input fd is stashed on sys._openai4s_proto_in_reserve for recovery.
     """
-    # Duplicate the inherited protocol fds to fresh (high) fds.
-    proto_in_fd = os.dup(0)
-    proto_out_fd = os.dup(1)
-    reserve_fd = os.dup(0)  # spare for one-shot recovery
+    remote = _connect_remote_protocol()
+    if remote is not None:
+        # A worker placed on a compute node has no inherited protocol pipes:
+        # it dialled the daemon, and both directions ride that one socket.
+        # Everything downstream — _readline_protocol, _write_frame, the
+        # host_call transaction — is unchanged, because what they consume is
+        # the pair of file objects published below, not their provenance.
+        proto_in_fd, proto_out_fd = remote
+        reserve_fd = -1
+    else:
+        # Duplicate the inherited protocol fds to fresh (high) fds.
+        proto_in_fd = os.dup(0)
+        proto_out_fd = os.dup(1)
+        reserve_fd = os.dup(0)  # spare for one-shot recovery
     for fd in (proto_in_fd, proto_out_fd, reserve_fd):
+        if fd < 0:
+            continue
         try:
             os.set_inheritable(fd, False)
         except OSError:
@@ -159,7 +302,13 @@ def _recover_protocol_in() -> None:
     so CPython refcount finalization can't slam an fd now owned by user code.
     """
     reserve = getattr(sys, "_openai4s_proto_in_reserve", None)
-    if reserve is None:
+    # `< 0` as well as None. The remote branch publishes -1 as its "no
+    # reserve" sentinel (the fd-closing loop above already tests `fd < 0`
+    # for the same value), and testing only `is None` let it through to
+    # `os.dup(-1)` -- a bare EBADF out of the read loop instead of this
+    # deliberate message, after the live wrapper had already been parked,
+    # and with no stderr tail on a remote worker to explain it.
+    if reserve is None or reserve < 0:
         raise RuntimeError("protocol IN corrupted and no reserve fd to recover")
     old = getattr(sys, "_openai4s_protocol_stdin", None)
     ident = getattr(sys, "_openai4s_protocol_ident", None)
@@ -282,6 +431,32 @@ def _peak_rss_kb() -> int:
 _HOST_CALL_SEQ = 0
 _ACTIVE_CELL_ID: list[str | None] = [None]
 _ACTIVE_CELL_ORIGIN = [""]
+# The audit hook installed at worker initialization owns the observer.  A
+# Cell only opens/closes this narrow collection window around its actual
+# eval/exec.  ``tag`` is the compiled Cell filename and is also the caller-stack
+# proof that an ``open`` event belongs to synchronous user execution rather
+# than to worker housekeeping or a persistent background thread.
+_FILE_READ_STATE: dict[str, object] = {
+    "tag": None,
+    "paths": [],
+    "seen": set(),
+}
+
+
+def _begin_file_read_observation(tag: str) -> None:
+    _FILE_READ_STATE["tag"] = tag
+    _FILE_READ_STATE["paths"] = []
+    _FILE_READ_STATE["seen"] = set()
+
+
+def _finish_file_read_observation() -> list[str]:
+    paths = _FILE_READ_STATE.get("paths")
+    _FILE_READ_STATE["tag"] = None
+    _FILE_READ_STATE["paths"] = []
+    _FILE_READ_STATE["seen"] = set()
+    if type(paths) is not list:
+        return []
+    return [value for value in paths if type(value) is str]
 
 
 def _attach_cell_context(method: str, args: list) -> list:
@@ -386,11 +561,12 @@ def _publish_skill_sidecar_event(
     _cell_state=_ACTIVE_CELL_ID,
     _frame_count=_SKILL_LOAD_PROTOCOL_FRAMES,
 ) -> None:
-    """Publish one audit-attested import before user code can revoke it.
+    """Publish one audit-observed import as a private diagnostic.
 
     The CPython audit hook calls this sink only when the caller's code object is
-    the loader registered by a system/recovery bootstrap Cell. The sink itself
-    is never placed in the persistent user namespace.
+    the loader registered by a system/recovery bootstrap Cell. This is not an
+    attestation boundary: arbitrary Python in the same interpreter can recover
+    the sink/signing objects, so the manager and recorder fail closed on it.
     """
 
     payload = dict(event) if type(event) is dict else {}
@@ -526,7 +702,7 @@ def _drain_skill_sidecar_loads() -> list[dict]:
     return [] if protocol_frames else captured
 
 
-def _install_host(ns: dict) -> None:
+def _install_host(ns: dict, *, mode: str) -> None:
     try:
         from openai4s.sdk.host import build_host
 
@@ -534,11 +710,46 @@ def _install_host(ns: dict) -> None:
         # manager sets OPENAI4S_KERNEL_MODE ("repl" control-plane vs "python"/"R"
         # analysis). An analysis kernel is spliced without frames/query/mcp/
         # delegate — those symbols are genuinely absent (AttributeError).
-        mode = os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
-        ns["host"] = build_host(host_call, mode=mode)
+        # A remote worker has no OPENAI4S_KERNEL_GENERATION -- the transport
+        # branch of `Kernel._spawn` never builds a child environment -- so it
+        # takes the value the Host handed back on the handshake. Passed at
+        # construction because `BashExecutor` resolves its fallback once, in
+        # `__init__`, and a value set afterwards would arrive too late.
+        generation = getattr(sys, "_openai4s_remote_generation", None)
+        ns["host"] = build_host(host_call, mode=mode, generation=generation)
         ns["openai4s"] = ns["host"]  # openai4s alias
     except Exception as e:  # noqa: BLE001 - keep kernel alive
         _write_frame({"type": "log", "msg": f"host sdk unavailable: {e}"})
+        # A marker, but only for a worker that was *supposed* to have a host.
+        #
+        # `log` frames are dropped by the manager, so this failure was silent
+        # where it matters most. A direct worker launch now derives the package
+        # root from this script's trusted path, but a partial or damaged remote
+        # installation can still lack the SDK. Raise where `host` is *used* so
+        # that failure is visible rather than silently running a diminished
+        # kernel.
+        #
+        # Scoped to the remote case because absence is a real contract
+        # elsewhere: the Jupyter bridge deliberately exposes no `host` (it is
+        # not a second outer loop), and `'host' in globals()` being False is
+        # what its tests assert. Installing a raising stand-in there would
+        # turn a documented absence into a present-but-broken name.
+        if (os.environ.get(_CONNECT_ENV) or "").strip():
+            detail = (
+                f"the host SDK could not be imported in this worker ({e}). "
+                "Install a complete OpenAI4S package beside kernel/worker.py; "
+                "see docs/team-server.md."
+            )
+
+            class _HostUnavailable:
+                def __getattr__(self, name):
+                    raise RuntimeError(detail)
+
+                def __call__(self, *a, **k):
+                    raise RuntimeError(detail)
+
+            ns["host"] = _HostUnavailable()
+            ns["openai4s"] = ns["host"]
     # provenance: monkeypatch readers/writers to track object-level lineage.
     try:
         from openai4s.kernel import provenance
@@ -709,7 +920,13 @@ def _bounded_format_exc(exc: BaseException) -> str:
     return buf.captured()
 
 
-def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
+def _run_cell(
+    code: str,
+    cell_id: str,
+    origin: str = "agent",
+    *,
+    kernel_mode: str | None = None,
+) -> dict:
     global _CELL_SEQ
     _CELL_SEQ += 1
     tag = f"<kernel:{_CELL_SEQ}>"
@@ -717,8 +934,15 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     _ACTIVE_CELL_ID[0] = cell_id
     _ACTIVE_CELL_ORIGIN[0] = origin
 
-    if "host" not in _NS:
-        _install_host(_NS)
+    # The optional Jupyter adapter is a standalone language kernel, not a
+    # second Agent/Host control plane.  Its public contract promises no Host
+    # RPC or Gateway provenance capture, so do not install either facade in
+    # that mode.  Other modes keep the long-standing lazy installation.
+    # Protocol workers receive the startup-captured value from ``main``.
+    # Direct in-process callers retain the historical environment fallback.
+    mode = kernel_mode or os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
+    if mode != "jupyter" and "host" not in _NS:
+        _install_host(_NS, mode=mode)
 
     # tell the provenance layer which cell any lineage writes belong to
     try:
@@ -742,6 +966,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     error_lineno = None
     error_call = None
     interrupted = False
+    files_read: list[str] = []
 
     # isolation guards: snapshot fragile global state before user code.
     guard = None
@@ -760,6 +985,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
     t0 = time.time()
     cpu0 = _cpu_seconds()
     _arm_sigint()
+    _begin_file_read_observation(tag)
     try:
         try:
             compiled = compile(code, tag, "eval")
@@ -805,6 +1031,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         error_lineno, error_call = _error_lineno(tb, tag)
     finally:
         _in_user_code[0] = False
+        files_read = _finish_file_read_observation()
         signal.signal(signal.SIGINT, _sigint_swallow)  # disarm outside user code
         sys.stdout, sys.stderr = real_out, real_err
 
@@ -845,6 +1072,7 @@ def _run_cell(code: str, cell_id: str, origin: str = "agent") -> dict:
         "interrupted": interrupted,
         "trace": {"error_lineno": error_lineno, "error_call": error_call},
         "guards": guard_report,
+        "files_read": files_read,
         "usage": {
             "wall_s": round(wall, 4),
             "cpu_s": round(cpu, 4),
@@ -1094,13 +1322,171 @@ def _inspect_namespace(limit: int) -> dict:
     }
 
 
+def _workspace_relative_read_path(
+    raw_path: str,
+    *,
+    root: str,
+    cwd: str,
+    isabs,
+    normpath,
+    relpath,
+    separator: str,
+) -> str | None:
+    """Return one lexical workspace-relative path, for any host path module.
+
+    ``ntpath`` can exercise the Windows rules on a non-Windows test runner.
+    Deliberately do not resolve symlinks here: the worker reports the spelling
+    that was actually opened, while the Host remains the authority that
+    resolves and scopes that spelling against durable Artifact versions.
+    """
+
+    try:
+        if isabs(raw_path):
+            absolute = normpath(raw_path)
+        else:
+            absolute = normpath(cwd.rstrip(separator) + separator + raw_path)
+        relative = relpath(absolute, normpath(root))
+    except (OSError, ValueError):
+        # Different Windows drives, malformed paths, and unavailable cwd state
+        # are absence of evidence, never reasons to fail a Cell.
+        return None
+    if (
+        not relative
+        or relative == "."
+        or isabs(relative)
+        or relative == ".."
+        or relative.startswith(".." + separator)
+    ):
+        return None
+    if separator != "/":
+        relative = relative.replace(separator, "/")
+    return relative
+
+
+def _install_file_read_audit_hook() -> None:
+    """Observe synchronous, workspace-local file reads made by a Cell.
+
+    CPython's ``open`` audit event fires at the operation, unlike source
+    inspection: a dead branch emits nothing.  The event also exposes the mode
+    or OS flags, so write-only opens are excluded.  We additionally require the
+    active Cell's synthetic filename to appear in the caller stack.  That keeps
+    worker housekeeping and a persistent thread left behind by an earlier Cell
+    from being attributed to whichever Cell happens to be running now.
+
+    The hook is observational and must never turn an unreadable path or a
+    malformed third-party path object into a Cell failure.  All dependencies
+    are captured before user code exists; the state is bounded at insertion.
+    """
+
+    # Capture the platform's real path primitives before any Cell exists.
+    # Unlike importing posix/posixpath, this is valid for a Windows worker too.
+    getcwd = os.getcwd
+    path_isabs = os.path.isabs
+    path_normpath = os.path.normpath
+    path_relpath = os.path.relpath
+    path_separator = os.sep
+    fsdecode = os.fsdecode
+    root = path_normpath(getcwd())
+    read_state = _FILE_READ_STATE
+    max_files = _MAX_FILES_READ
+    max_chars = _MAX_FILE_READ_PATH_CHARS
+
+    def _observe_file_read(
+        event,
+        args,
+        *,
+        _state=read_state,
+        _root=root,
+        _relative_path=_workspace_relative_read_path,
+        _isabs=path_isabs,
+        _normpath=path_normpath,
+        _relpath=path_relpath,
+        _separator=path_separator,
+        _getcwd=getcwd,
+        _fsdecode=fsdecode,
+        _getframe=sys._getframe,
+        _o_accmode=getattr(os, "O_ACCMODE", os.O_WRONLY | os.O_RDWR),
+        _o_wronly=os.O_WRONLY,
+        _max_files=max_files,
+        _max_chars=max_chars,
+    ):  # noqa: ANN001 - CPython owns the audit-hook signature
+        if event != "open":
+            return
+        try:
+            tag = _state.get("tag")
+            if type(tag) is not str or not tag:
+                return
+            if not args:
+                return
+            raw_path = args[0]
+            if isinstance(raw_path, bytes):
+                raw_path = _fsdecode(raw_path)
+            if type(raw_path) is not str or not raw_path or "\x00" in raw_path:
+                return
+
+            mode = args[1] if len(args) > 1 else None
+            flags = args[2] if len(args) > 2 else None
+            if type(mode) is str:
+                # r/rb and every update mode read.  w/a/x without '+' are
+                # write-only and must not become input evidence.
+                if "r" not in mode and "+" not in mode:
+                    return
+            elif type(flags) is int:
+                if (flags & _o_accmode) == _o_wronly:
+                    return
+            else:
+                # An unknown mode is not evidence of a read.
+                return
+
+            # Require a synchronous call chain rooted in this Cell.  Bound the
+            # walk so a deliberately deep stack cannot make one audit event
+            # unbounded work.  Child/background threads have no such frame and
+            # are conservatively omitted rather than mis-attributed.
+            frame = _getframe(1)
+            matched = False
+            for _ in range(128):
+                if frame is None:
+                    break
+                if frame.f_code.co_filename == tag:
+                    matched = True
+                    break
+                frame = frame.f_back
+            if not matched:
+                return
+
+            relative = _relative_path(
+                raw_path,
+                root=_root,
+                cwd=_getcwd(),
+                isabs=_isabs,
+                normpath=_normpath,
+                relpath=_relpath,
+                separator=_separator,
+            )
+            if not relative or len(relative) > _max_chars:
+                return
+
+            paths = _state.get("paths")
+            seen = _state.get("seen")
+            if type(paths) is not list or type(seen) is not set:
+                return
+            if relative in seen or len(paths) >= _max_files:
+                return
+            seen.add(relative)
+            paths.append(relative)
+        except BaseException:  # noqa: BLE001 - observation never blocks an open
+            return
+
+    sys.addaudithook(_observe_file_read)
+
+
 def _install_audit_hook(event_key: bytes) -> bool:
-    """Arm the in-kernel dlopen guard and Skill-load attestation hook.
+    """Arm the in-kernel dlopen guard and Skill-load diagnostic hook.
 
     Runs inside THIS worker process — an audit hook only sees events raised in
     its own interpreter. ``OPENAI4S_SAFETY_AUDIT_HOOK=0`` disables the dlopen
-    policy, but not the result-integrity event channel. Best-effort: a failure
-    here must never stop the kernel from serving cells.
+    policy, but not the diagnostic event channel. Best-effort: a failure here
+    must never stop the kernel from serving cells.
     """
     dlopen_enabled = os.environ.get(
         "OPENAI4S_SAFETY_AUDIT_HOOK", "1"
@@ -1118,9 +1504,10 @@ def _install_audit_hook(event_key: bytes) -> bool:
             skill_event_origin=skill_event_origin,
             skill_event_key=event_key,
         )
-        # The audit hook owns the sole live publisher reference. In particular,
-        # ``import __main__`` from a Cell must not expose a callable that can
-        # manufacture manager protocol frames.
+        _install_file_read_audit_hook()
+        # Remove the convenient global name, while making no security claim:
+        # Python introspection can still recover the hook's live references.
+        # The Host therefore rejects these frames as recovery evidence.
         globals().pop("_publish_skill_sidecar_event", None)
         return True
     except Exception as e:  # noqa: BLE001
@@ -1153,8 +1540,9 @@ def _initialize_manager_attestation() -> bool:
         event_key = bytes.fromhex(raw_key)
     except ValueError:
         event_key = b""
-    # Drop the protocol document before any user frame exists. The only live
-    # key reference after this helper returns is inside the hidden audit hook.
+    # Drop the convenient protocol references before any user frame exists.
+    # The hook still retains the key inside the same interpreter, so this is
+    # hygiene rather than a security boundary.
     request.clear()
     raw_line = ""
     raw_key = ""
@@ -1175,6 +1563,15 @@ def main() -> None:
     _setup_protocol_channels()
     if not _initialize_manager_attestation():
         return
+    # Kernel mode is process identity established by the manager at spawn.
+    # Capture both it and the runner object in this driver frame. This keeps
+    # ordinary cell mutations of ``os.environ`` and ``__main__`` globals from
+    # changing how a later protocol request is admitted. The manager's absent
+    # dispatcher remains the independent authority that rejects Jupyter Host
+    # RPC even if arbitrary in-process Python tampers with implementation
+    # details beyond this namespace-isolation contract.
+    kernel_mode = os.environ.get("OPENAI4S_KERNEL_MODE", "repl")
+    run_cell = partial(_run_cell, kernel_mode=kernel_mode)
     while True:
         raw_line = _readline_protocol()
         if not raw_line:
@@ -1203,7 +1600,7 @@ def main() -> None:
         if rtype == "shutdown":
             break
         if rtype == "execute":
-            resp = _run_cell(
+            resp = run_cell(
                 req.get("code", ""),
                 req.get("id", "unknown"),
                 req.get("origin", "agent"),

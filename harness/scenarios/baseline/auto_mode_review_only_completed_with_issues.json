@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_review_only_completed_with_issues",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_contract"
+  ],
+  "surface": "auto_mode_contract",
+  "task": "Freeze review_only findings as completed_with_issues without starting Repair.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_v3",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "result_review",
+    "outcome": "issues",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-review-only",
+      "root_frame_id": "frame-stage0-review-only",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-review-only",
+      "execution_id": "execution-stage0-review-only"
+    },
+    "audit_id": "audit-stage0-review-only",
+    "candidate": {
+      "candidate_id": "candidate-stage0-review-only-v1",
+      "producer_id": "primary-agent",
+      "summary": "Stage 0 review-only candidate",
+      "artifact_versions": [
+        {
+          "version_id": "v-stage0-review-only-report-1",
+          "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      ]
+    },
+    "evidence_snapshot": {
+      "snapshot_id": "snapshot-stage0-review-only-1",
+      "candidate_id": "candidate-stage0-review-only-v1",
+      "artifact_versions": [
+        {
+          "version_id": "v-stage0-review-only-report-1",
+          "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      ],
+      "provenance_version_ids": [
+        "v-stage0-review-only-input-1"
+      ],
+      "evidence_refs": [
+        {
+          "ref_id": "evidence-review-only-report",
+          "source_kind": "artifact_version",
+          "source_id": "v-stage0-review-only-report-1",
+          "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        {
+          "ref_id": "evidence-review-only-input",
+          "source_kind": "provenance_version",
+          "source_id": "v-stage0-review-only-input-1",
+          "sha256": null
+        }
+      ],
+      "complete": true,
+      "frozen": true
+    },
+    "reviewer_identity": {
+      "reviewer_id": "scientific-reviewer",
+      "candidate_producer_id": "primary-agent",
+      "workspace_access": "read_only",
+      "artifact_write_access": false
+    },
+    "review_policy": {
+      "review_mode": "independent_read_only",
+      "auto_fix_enabled": false,
+      "auto_fix_budget_exhausted": false,
+      "termination_basis": "review_only_no_repair"
+    },
+    "material_findings": [
+      {
+        "fingerprint": "finding-stage0-review-only-material-1",
+        "status": "open",
+        "severity": "material",
+        "evidence_refs": [
+          "evidence-review-only-report",
+          "evidence-review-only-input"
+        ],
+        "summary": "Review-only mode preserves this material evidence gap without starting Repair."
+      }
+    ]
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "completed_with_issues",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "candidate_ready",
+      "auto_audit_started",
+      "auto_audit_completed",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "retry_bounded",
+      "golden_payloads",
+      "candidate_nonterminal",
+      "reviewer_independent"
+    ]
+  }
+}

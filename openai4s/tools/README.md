@@ -10,6 +10,15 @@ When a model reply contains native calls, the outer loop runs the ordered tool b
 
 [`registry.py`](./registry.py) is the only place that instantiates a built-in tool class. [`catalog.py`](./catalog.py) builds the per-session progressively disclosed view and layers isolated dynamic proxies on top of it, leaving the global built-in registry untouched. A provider schema is a hint for generation, nothing more; [`schema.py`](./schema.py) enforces the supported contract again before dispatch.
 
+Workspace-backed file tools share one capability-checked boundary. On POSIX,
+they traverse pinned parents with `dir_fd`/openat-style operations and
+`O_NOFOLLOW`, consume reads through the same descriptor they validated, reject
+multiply linked regular files, and publish staged writes inside that pinned
+parent. Native Windows lacks the required capabilities, so these operations
+fail closed rather than reverting to pathname `os.replace` or check-then-open.
+This protects against concurrent userspace namespace substitution, not a
+compromised kernel or arbitrary changes to kernel filesystem semantics.
+
 ## Files
 
 | File | Responsibility |
@@ -27,13 +36,13 @@ When a model reply contains native calls, the outer loop runs the ordered tool b
 | [`dynamic.py`](./dynamic.py) | Validates session-authored Python tool source and manifests, then runs every smoke test and every invocation in a fresh `python -I -S` worker with a strict non-secret environment and an enforced OS sandbox. Session, project and global versions resolve through trusted proxies. |
 | [`dynamic_control.py`](./dynamic_control.py) | The human-governed lifecycle for Dynamic Tools: define, list, promote, version-list, activate, rollback. |
 | [`dynamic_scopes.py`](./dynamic_scopes.py) | Stores the content-addressed project and global Dynamic Tool manifests plus an append-only activation history. It never compiles or executes model-authored code. |
-| [`edit.py`](./edit.py) | Exact-string editing in the workspace, with a static precheck that rejects a degenerate edit before approval is even requested. The rewrite streams into a staged sibling holding one chunk at a time — carrying `len(old_string) - 1` characters across the boundary so a match straddling it is still found — and the count that decides whether the edit is allowed is only known at the end, so a refused or non-unique edit discards the staged file and leaves the original untouched. The swap is `os.replace`, atomic on the same filesystem. The legacy `edit_file` compatibility lookup is still here. |
+| [`edit.py`](./edit.py) | Exact-string editing in the workspace, with a static precheck that rejects a degenerate edit before approval is even requested. The source is read from one already verified, no-follow descriptor and the rewrite streams into a staged sibling holding one chunk at a time — carrying `len(old_string) - 1` characters across the boundary so a match straddling it is still found — and the count that decides whether the edit is allowed is only known at the end, so a refused or non-unique edit discards the staged file and leaves the original untouched. Publication is an atomic descriptor-relative rename within the pinned parent directory. The legacy `edit_file` compatibility lookup is still here. |
 | [`env.py`](./env.py) | Compatibility facade for the environment list/use/create tool classes and instances. |
 | [`env_create.py`](./env_create.py) | Installs packages through the kernel preinstall service. |
 | [`env_list.py`](./env_list.py) | Finds the prebuilt environments and can compare their package coverage. |
 | [`env_use.py`](./env_use.py) | Queues a switch to a named Python or R environment, to take effect on the next scientific cell. |
 | [`fs.py`](./fs.py) | Compatibility facade for the directory-listing and text file read/write tools. |
-| [`glob_files.py`](./glob_files.py) | Globs the workspace for filenames, filtering credential-shaped basenames out of the result. The generator is consumed one path at a time under a `BoundedSelection`, so a directory of a million files does not cost a million retained paths to answer a thousand-path question, and the walk itself stops on an entry or a seconds budget rather than only on what it keeps. `count` is what came back — it used to be the pre-slice total printed beside a sliced list, and it disagreed with `content_search`'s `count` in the same tool family; `total_count`, `dropped` and `truncated` now carry the rest. |
+| [`glob_files.py`](./glob_files.py) | Globs the workspace for filenames, filtering credential-shaped paths — basenames and credential directories alike — out of the result. The generator is consumed one path at a time under a `BoundedSelection`, so a directory of a million files does not cost a million retained paths to answer a thousand-path question, and the walk itself stops on an entry or a seconds budget rather than only on what it keeps. `count` is what came back — it used to be the pre-slice total printed beside a sliced list, and it disagreed with `content_search`'s `count` in the same tool family; `total_count`, `dropped` and `truncated` now carry the rest. |
 | [`list_directory.py`](./list_directory.py) | Lists one workspace directory, and only inside it — under `glob_files`'s entry cap and the same truncation counters, so the two tools cut at the same place and say so the same way. It had no cap at all, and a `stat()` and a dict per entry. |
 | [`mcp.py`](./mcp.py) | MCP discovery for servers, tools, resources and prompts, plus tool calls and resource/prompt reads. What an external server returns is untrusted and gets screened at the Host boundary. |
 | [`native.py`](./native.py) | Turns declared tools into portable, provider-neutral `ToolSpec` metadata, and checks that every function name is legal on every supported provider. |
@@ -53,7 +62,7 @@ When a model reply contains native calls, the outer loop runs the ordered tool b
 | [`web_download.py`](./web_download.py) | Fetches a URL straight into the session workspace for content `web_fetch` cannot represent as text. Two guards meet here: the URL side is `web_fetch`'s (network enabled, egress allowlist per redirect hop, SSRF refusal), and the path side is `write_file`'s (the destination is resolved against the workspace and an escape is refused **before** the request, so a rejected path does not reveal whether the URL was reachable). The byte ceiling is enforced while reading. |
 | [`web_fetch.py`](./web_fetch.py) | Normalizes a single-URL fetch and its resource identity, keeping the Host soft-fail behavior intact. |
 | [`web_search.py`](./web_search.py) | Normalizes live Web search, and likewise preserves the Host soft-fail behavior. |
-| [`write_file.py`](./write_file.py) | Creates or overwrites one UTF-8 file in the confined workspace, and marks the write so the Web control-tool boundary can capture it as an Artifact. Staged beside the target and `os.replace`d, like `edit.py`: `write_text` truncates first and writes second, so an interrupt in between left a half-written file where a complete one had been. The staged file inherits the target's mode, or an overwrite would silently tighten it. |
+| [`write_file.py`](./write_file.py) | Creates or overwrites one UTF-8 file in the confined workspace, and marks the write so the Web control-tool boundary can capture it as an Artifact. It writes a sibling through the already verified parent directory descriptor, then publishes with an atomic descriptor-relative rename: `write_text` truncates first and writes second, so an interrupt in between used to leave a half-written file where a complete one had been. The staged file inherits the target's mode, or an overwrite would silently tighten it. |
 
 ## Adding or changing a tool
 

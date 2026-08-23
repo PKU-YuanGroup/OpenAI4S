@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
-from pathlib import Path
+import stat
 
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
@@ -37,9 +35,9 @@ class WriteFileTool(Tool):
     resource_target_key = "path"
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
-        path = workspace.resolve(arguments.get("path", ""))
+        relative = arguments.get("path", "")
         content = arguments.get("content", "")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        parent = workspace.secure_parent(relative, create_parents=True)
         # Staged beside the target, then `os.replace`d -- the same shape
         # `edit_file` already uses, and for the reason its comment gives:
         # `write_text` truncates first and writes second, so a failure in
@@ -48,25 +46,33 @@ class WriteFileTool(Tool):
         # overwrite that can destroy the old bytes without producing the new
         # ones is the one outcome this tool must not have.
         #
-        # `mkstemp` in the target's own directory keeps the rename atomic (same
-        # filesystem) and gives the staged file 0600; `copymode` puts the
-        # target's permissions back, or an overwrite would silently tighten
-        # them.
-        descriptor, name = tempfile.mkstemp(
-            dir=str(path.parent), prefix=f".{path.name}.", suffix=".write"
-        )
-        staged = Path(name)
-        try:
-            with open(descriptor, "w", encoding="utf-8", newline="") as sink:
-                sink.write(content)
-            if path.exists():
-                shutil.copymode(path, staged)
-            os.replace(str(staged), str(path))
-        except Exception:
-            staged.unlink(missing_ok=True)
-            raise
+        # The staged file and final rename are addressed through the same
+        # verified parent descriptor. A concurrent `subdir -> outside` symlink
+        # swap therefore cannot redirect either operation out of the workspace.
+        with parent:
+            descriptor, staged = parent.create_staged(suffix=".write")
+            descriptor_open = True
+            try:
+                existing = parent.target_metadata()
+                sink = os.fdopen(
+                    descriptor, "w", encoding="utf-8", newline="", closefd=True
+                )
+                descriptor_open = False
+                with sink:
+                    sink.write(content)
+                    if existing is not None and stat.S_ISREG(existing.st_mode):
+                        os.fchmod(sink.fileno(), stat.S_IMODE(existing.st_mode))
+                parent.publish(staged)
+            except BaseException:
+                if descriptor_open:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                parent.discard(staged)
+                raise
         return {
-            "path": workspace.relative(path),
+            "path": parent.target_relative,
             "bytes": len(content.encode("utf-8")),
         }
 

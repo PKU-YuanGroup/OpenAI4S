@@ -88,6 +88,7 @@ def _key_name(value: Any) -> str:
 
 
 ToolResolver = Callable[[str], Any | None]
+ToolPolicyResolver = Callable[[str, Any], tuple[str, list[str]]]
 
 
 def _resolve_tool(name: str, resolver: ToolResolver | None = None) -> Any | None:
@@ -300,6 +301,7 @@ class RuntimeActionLedger:
     model: str | None = None
     branch_id: str | None = None
     tool_resolver: ToolResolver | None = field(default=None, repr=False)
+    tool_policy_resolver: ToolPolicyResolver | None = field(default=None, repr=False)
     current_group_id: str | None = field(default=None, init=False)
     terminal_recorded: bool = field(default=False, init=False)
     _reply: ModelReply | None = field(default=None, init=False, repr=False)
@@ -349,6 +351,7 @@ class RuntimeActionLedger:
         reply = self._reply
         message, wire_state = _sanitize_reply(reply, self.tool_resolver)
         usage, cost_usd = self._reply_accounting(reply)
+        self._record_team_usage(usage)
         self._action = action
         if isinstance(action, FinalizeAction):
             call = action.call
@@ -385,11 +388,23 @@ class RuntimeActionLedger:
             events: list[dict[str, Any]] = []
             for sequence, call in enumerate(action.calls):
                 canonical, raw = redact_tool_call(call, self.tool_resolver)
-                side_effect, resources = _tool_policy(
-                    call.name,
-                    canonical.get("arguments"),
-                    self.tool_resolver,
-                )
+                if self.tool_policy_resolver is None:
+                    side_effect, resources = _tool_policy(
+                        call.name,
+                        canonical.get("arguments"),
+                        self.tool_resolver,
+                    )
+                else:
+                    try:
+                        side_effect, resources = self.tool_policy_resolver(
+                            call.name, canonical.get("arguments")
+                        )
+                    except Exception:  # noqa: BLE001 - audit metadata stays total
+                        side_effect, resources = _tool_policy(
+                            call.name,
+                            canonical.get("arguments"),
+                            self.tool_resolver,
+                        )
                 events.append(
                     {
                         "sequence": sequence,
@@ -456,6 +471,24 @@ class RuntimeActionLedger:
                 ),
             )
         self.current_group_id = group["group_id"]
+
+    def _record_team_usage(self, usage: dict[str, int] | None) -> None:
+        """Best-effort team-mode metering (M2-5, decision D10 账本).
+
+        Attribution walks ``root_frame_id -> session root -> session owner``;
+        with no ownership row (single-user installs, unowned sessions) this
+        is two SELECTs and no write, so the off state stays inert (INV-1).
+        Accounting must never fail an action — same contract as
+        ``_reply_accounting``.
+        """
+        if not usage:
+            return
+        # One metering hook, shared with the reviewer's provider path: a
+        # second copy of this loop is how review calls came to bill only the
+        # per-frame counters and never the ledger the quota check reads.
+        from openai4s.storage.governance import record_session_llm_usage
+
+        record_session_llm_usage(self.store, self.root_frame_id, usage)
 
     def _reply_accounting(
         self, reply: ModelReply

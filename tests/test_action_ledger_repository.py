@@ -9,6 +9,8 @@ import threading
 import pytest
 
 from openai4s.storage.actions import ActionLedgerRepository, AttemptStateError
+from openai4s.storage.auto_mode import AutoModeConflictError
+from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store
 
 
@@ -351,3 +353,93 @@ def test_repository_additively_migrates_normalized_assistant_message_column():
         assistant_message={"role": "assistant", "content": "done"},
     )
     assert group["assistant_message"] == {"role": "assistant", "content": "done"}
+
+
+def _append_group_variant(store: Store, variant: str, *, turn_id: str) -> dict:
+    if variant == "group":
+        return store.append_action_group(
+            root_frame_id="root-race",
+            branch_id="root-race",
+            turn_id=turn_id,
+            kind="system",
+        )
+    return store.append_tool_action_group(
+        root_frame_id="root-race",
+        branch_id="root-race",
+        turn_id=turn_id,
+        events=[{"type": "proposed", "action_id": f"action-{turn_id}"}],
+    )
+
+
+@pytest.mark.parametrize("variant", ["group", "tool_group"])
+def test_revert_barrier_and_new_group_are_linearized_across_store_connections(
+    tmp_path, variant
+):
+    database = tmp_path / "openai4s.db"
+    action_store = Store(database)
+    barrier_store = Store(database)
+    admitted = threading.Event()
+    release = threading.Event()
+    writer_started = threading.Event()
+    writer_done = threading.Event()
+    outcomes: list[object] = []
+    original_admission = action_store._actions._admit_action_scope
+
+    def paused_admission(root_frame_id, branch_id, operation):
+        assert original_admission is not None
+        original_admission(root_frame_id, branch_id, operation)
+        admitted.set()
+        assert release.wait(5)
+
+    action_store._actions._admit_action_scope = paused_admission
+
+    def append_action():
+        try:
+            outcomes.append(
+                _append_group_variant(action_store, variant, turn_id="turn-before")
+            )
+        except BaseException as error:  # recorded for the parent-thread assertion
+            outcomes.append(error)
+
+    def publish_barrier():
+        writer_started.set()
+        barrier_store.set_setting(
+            revert_recovery_setting_key("root-race"),
+            '{"schema_version":1,"state":"preparing"}',
+        )
+        writer_done.set()
+
+    action_thread = threading.Thread(target=append_action)
+    marker_thread = threading.Thread(target=publish_barrier)
+    try:
+        action_thread.start()
+        assert admitted.wait(5)
+        marker_thread.start()
+        assert writer_started.wait(5)
+        # BEGIN IMMEDIATE spans admission through INSERT, so the second Store
+        # cannot commit the marker in the middle of that decision.
+        assert writer_done.wait(0.2) is False
+        release.set()
+        action_thread.join(5)
+        marker_thread.join(5)
+        assert not action_thread.is_alive()
+        assert not marker_thread.is_alive()
+        assert len(outcomes) == 1 and isinstance(outcomes[0], dict)
+        assert writer_done.is_set()
+        assert barrier_store.get_setting(revert_recovery_setting_key("root-race"))
+
+        with pytest.raises(AutoModeConflictError, match="requires recovery"):
+            _append_group_variant(
+                action_store,
+                variant,
+                turn_id="turn-after",
+            )
+        assert [
+            group["turn_id"] for group in action_store.list_action_groups("root-race")
+        ] == ["turn-before"]
+    finally:
+        release.set()
+        action_thread.join(5)
+        marker_thread.join(5)
+        action_store.close()
+        barrier_store.close()

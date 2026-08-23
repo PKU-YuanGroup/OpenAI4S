@@ -164,6 +164,39 @@ def test_cancellation_cuts_through_permission_pause_with_one_interrupt():
     assert kernel.kill_calls == 0
 
 
+def test_cancellation_hard_stop_is_not_reported_as_a_timeout():
+    """A user cancellation can need the same recovery ladder as a deadline."""
+    from openai4s.execution.watchdog import KernelCancellation
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(
+        KernelCancellation, match="cancellation|required a hard stop"
+    ) as raised:
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=10,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+            cancelled=lambda: True,
+        )
+
+    assert not isinstance(raised.value, TimeoutError)
+    assert "10s" not in str(raised.value)
+    assert kernel.interrupt_calls == kernel.kill_calls == kernel.restart_calls == 1
+
+
 def test_hard_kill_restarts_exact_lease_and_runs_bootstrap():
     supervisor, kernel, lease = _lease()
     release = threading.Event()
@@ -228,6 +261,11 @@ def test_host_call_zombie_is_abandoned_without_touching_a_future_worker():
 
 
 def test_bootstrap_failure_detaches_the_restarted_generation():
+    from openai4s.execution.watchdog import (
+        KernelNotResetTimeout,
+        KernelResetUnavailableTimeout,
+    )
+
     supervisor, kernel, lease = _lease()
     release = threading.Event()
     kernel.on_kill = release.set
@@ -239,7 +277,9 @@ def test_bootstrap_failure_detaches_the_restarted_generation():
     def broken_bootstrap(worker):
         raise RuntimeError("bootstrap failed")
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(
+        KernelResetUnavailableTimeout, match="replacement failed to initialize"
+    ) as raised:
         execute_with_watchdog(
             supervisor,
             lease,
@@ -253,5 +293,113 @@ def test_bootstrap_failure_detaches_the_restarted_generation():
             after_restart=broken_bootstrap,
         )
 
+    assert not isinstance(raised.value, KernelNotResetTimeout)
     assert supervisor.current("python") is None
     assert kernel.restart_calls == kernel.shutdown_calls == 1
+
+
+def test_local_respawn_failure_is_a_cleared_but_unavailable_namespace():
+    from openai4s.execution.watchdog import (
+        KernelNotResetTimeout,
+        KernelResetUnavailableTimeout,
+    )
+    from openai4s.kernel.errors import KernelRestartFailed
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("old worker pipe closed")
+
+    def failed_local_respawn():
+        kernel.restart_calls += 1
+        kernel.live = False
+        raise KernelRestartFailed("replacement process failed to start")
+
+    kernel.restart = failed_local_respawn
+    with pytest.raises(
+        KernelResetUnavailableTimeout, match="replacement failed to initialize"
+    ) as raised:
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+        )
+
+    assert not isinstance(raised.value, KernelNotResetTimeout)
+    assert supervisor.current("python") is None
+    assert kernel.restart_calls == kernel.shutdown_calls == 1
+
+
+def test_a_worker_that_cannot_be_respawned_is_not_reported_as_reset():
+    """The ladder assumed its last rung always lands.
+
+    A kernel this daemon did not spawn cannot be respawned by it -- a cluster
+    session's worker dialled in from a compute node, so `restart()` refuses --
+    and the refusal was swallowed one line before a message that told the user
+    their kernel had been reset and their variables cleared. Neither was true:
+    the interpreter is untouched on the node and the cell may still be running
+    there, which is exactly when a user needs to be told to go look.
+    """
+    from openai4s.execution.watchdog import KernelNotResetTimeout
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def _refuse_restart():
+        kernel.restart_calls += 1
+        raise RuntimeError("this worker cannot be respawned in place")
+
+    kernel.restart = _refuse_restart
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(KernelNotResetTimeout, match="could not be reset"):
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+        )
+    assert kernel.restart_calls == 1, "the ladder skipped the restart attempt"
+
+
+def test_a_real_reset_still_says_so():
+    """The positive control: the honest branch must not swallow the ordinary
+    case, or the reworded message becomes the only message."""
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(1)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(TimeoutError, match="the kernel was reset"):
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=0.1,
+            ),
+        )

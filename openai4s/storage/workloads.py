@@ -1,0 +1,674 @@
+"""Durable workloads and allocations — the reconciler's WorkloadStore (M3a-8).
+
+Two tables from the plan's appendix A, and one index that is the whole of
+INV-3:
+
+    CREATE UNIQUE INDEX ux_active_allocation ON allocations(workload_id)
+      WHERE phase IN (...)
+
+That partial index is the enforcement, not the Python check beside it. The
+check exists to give a readable error; the index exists because the failure
+it prevents happens *between* a check and an insert — a reconciler tick that
+dies right there, restarts, and submits a second job holding a second GPU.
+One of those two is a race the other cannot have.
+
+`submission_token` is UNIQUE for the same reason: INV-8's reconciliation
+asks "does anything carry this token", and an answer is only meaningful if
+the token could never have been minted twice.
+
+Rows are converted to and from the orchestration dataclasses here, so the
+reconciler never sees a database row and this module never sees a backend.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from typing import Any, Callable
+
+from openai4s.orchestration.models import (
+    Allocation,
+    DesiredState,
+    ExternalHandle,
+    Phase,
+    Reason,
+    ResourceProfile,
+    SubmissionToken,
+    Workload,
+    WorkloadKind,
+    WorkloadSpec,
+)
+from openai4s.storage.migrations import apply_ddl_script
+
+#: The phases that hold a resource. Kept in sync with
+#: `Phase.is_active_allocation` by a test rather than by hope — they are the
+#: same rule written for two different consumers (SQL and Python).
+_ACTIVE_SQL = "'SUBMITTING','PENDING','GRANTED','ACTIVE','RELEASING'"
+
+WORKLOAD_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS workloads (
+    id             TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL CHECK (kind IN ('SESSION','BATCH')),
+    owner_user_id  TEXT NOT NULL,
+    project_id     TEXT,
+    backend        TEXT NOT NULL DEFAULT 'local',
+    spec_json      TEXT NOT NULL,
+    spec_revision  INTEGER NOT NULL DEFAULT 1,
+    desired_state  TEXT NOT NULL,
+    phase          TEXT NOT NULL,
+    execution_epoch INTEGER NOT NULL DEFAULT 0,
+    reason         TEXT,
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_workloads_owner ON workloads(owner_user_id);
+CREATE INDEX IF NOT EXISTS ix_workloads_phase ON workloads(phase);
+
+CREATE TABLE IF NOT EXISTS allocations (
+    id               TEXT PRIMARY KEY,
+    workload_id      TEXT NOT NULL,
+    epoch            INTEGER NOT NULL,
+    phase            TEXT NOT NULL,
+    external_backend TEXT,
+    external_ns      TEXT,
+    external_id      TEXT,
+    submission_token TEXT UNIQUE NOT NULL,
+    reason           TEXT,
+    observed_json    TEXT,
+    created_at       INTEGER NOT NULL,
+    released_at      INTEGER,
+    UNIQUE (workload_id, epoch)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_active_allocation
+    ON allocations(workload_id) WHERE phase IN ({_ACTIVE_SQL});
+CREATE INDEX IF NOT EXISTS ix_allocations_workload ON allocations(workload_id);
+"""
+
+
+def create_workload_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent DDL, called from the numbered Store migration."""
+    apply_ddl_script(conn, WORKLOAD_SCHEMA)
+
+
+class ActiveAllocationExists(RuntimeError):
+    """INV-3, surfaced from the index rather than from a check.
+
+    Raised when the database refuses a second live allocation for one
+    workload. A caller sees this only when it lost a race it could not have
+    detected — which is precisely why the index is the enforcement.
+    """
+
+
+def _spec_to_json(spec: WorkloadSpec) -> str:
+    return json.dumps(
+        {
+            "kind": spec.kind.value,
+            "profile": {
+                "name": spec.profile.name,
+                "cpus": spec.profile.cpus,
+                "memory_mb": spec.profile.memory_mb,
+                "gpus": spec.profile.gpus,
+                "walltime_s": spec.profile.walltime_s,
+                "nodes": spec.profile.nodes,
+            },
+            "command": list(spec.command),
+            "workdir": spec.workdir,
+            "environment": dict(spec.environment),
+            "spec_revision": spec.spec_revision,
+        },
+        sort_keys=True,
+    )
+
+
+def _spec_from_json(text: str) -> WorkloadSpec:
+    data = json.loads(text)
+    profile = data.get("profile") or {}
+    return WorkloadSpec(
+        kind=WorkloadKind(data["kind"]),
+        profile=ResourceProfile(
+            name=profile.get("name") or "default",
+            cpus=int(profile.get("cpus") or 1),
+            memory_mb=int(profile.get("memory_mb") or 4096),
+            gpus=int(profile.get("gpus") or 0),
+            walltime_s=int(profile.get("walltime_s") or 3600),
+            nodes=int(profile.get("nodes") or 1),
+        ),
+        command=tuple(data.get("command") or ()),
+        workdir=data.get("workdir"),
+        environment=dict(data.get("environment") or {}),
+        spec_revision=int(data.get("spec_revision") or 1),
+    )
+
+
+class WorkloadRepository:
+    """Persistence for workloads and allocations, in orchestration types."""
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        lock: Any,
+        *,
+        clock_ms: Callable[[], int],
+    ) -> None:
+        self._connection = connection
+        self._lock = lock
+        self._clock_ms = clock_ms
+
+    # --- workloads --------------------------------------------------------
+
+    def create_workload(
+        self,
+        *,
+        spec: WorkloadSpec,
+        owner_user_id: str,
+        project_id: str | None = None,
+        backend: str = "local",
+    ) -> Workload:
+        workload = Workload(
+            id=Workload.new_id(),
+            spec=spec,
+            owner_user_id=owner_user_id,
+            project_id=project_id,
+            backend=backend,
+        )
+        now = self._clock_ms()
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO workloads(id, kind, owner_user_id, project_id,"
+                " backend, spec_json, spec_revision, desired_state, phase,"
+                " execution_epoch, reason, created_at, updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    workload.id,
+                    spec.kind.value,
+                    owner_user_id,
+                    project_id,
+                    backend,
+                    _spec_to_json(spec),
+                    spec.spec_revision,
+                    workload.desired_state.value,
+                    workload.phase.value,
+                    workload.execution_epoch,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+            self._connection.commit()
+        return workload
+
+    def create_session_workload(
+        self,
+        *,
+        session_id: str,
+        spec: WorkloadSpec,
+        owner_user_id: str,
+        project_id: str | None,
+        backend: str,
+        idle_ttl_s: int,
+        max_lifetime_s: int,
+    ) -> Workload:
+        """Atomically create a session workload, binding and live lease.
+
+        A reconciler submits every RUNNING workload it can see. Committing the
+        workload before its session binding/lease meant a crash or later write
+        failure produced an unreachable orphan that was nevertheless eligible
+        for cluster submission. These three rows are one durable fact.
+        """
+
+        workload = Workload(
+            id=Workload.new_id(),
+            spec=spec,
+            owner_user_id=owner_user_id,
+            project_id=project_id,
+            backend=backend,
+        )
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._connection.execute(
+                    "INSERT INTO workloads(id, kind, owner_user_id, project_id,"
+                    " backend, spec_json, spec_revision, desired_state, phase,"
+                    " execution_epoch, reason, created_at, updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        workload.id,
+                        spec.kind.value,
+                        owner_user_id,
+                        project_id,
+                        backend,
+                        _spec_to_json(spec),
+                        spec.spec_revision,
+                        workload.desired_state.value,
+                        workload.phase.value,
+                        workload.execution_epoch,
+                        None,
+                        now,
+                        now,
+                    ),
+                )
+                self._connection.execute(
+                    "INSERT INTO session_workloads"
+                    " (session_id, workload_id, created_at) VALUES (?,?,?)"
+                    " ON CONFLICT(session_id) DO UPDATE SET"
+                    " workload_id=excluded.workload_id,"
+                    " created_at=excluded.created_at",
+                    (session_id, workload.id, now),
+                )
+                self._connection.execute(
+                    "INSERT INTO leases"
+                    " (workload_id, created_at, last_active_at, idle_ttl_s,"
+                    " max_lifetime_s, released_at) VALUES (?,?,?,?,?,NULL)",
+                    (
+                        workload.id,
+                        now,
+                        now,
+                        int(idle_ttl_s),
+                        int(max_lifetime_s),
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return workload
+
+    def release_session_workload(
+        self,
+        *,
+        session_id: str,
+        reason: Reason,
+        expected_workload_id: str | None = None,
+    ) -> str | None:
+        """Atomically stop, release and unbind one session workload.
+
+        These rows describe one durable lifecycle fact.  Committing them in
+        three repository calls allowed a crash (or a failed DELETE) to leave
+        a STOPPED, released workload still bound to the session.  On restart
+        ``request_session`` then returned that unusable workload forever.
+
+        The optional workload id is an ABA fence for delayed reclaimer and
+        terminal-event cleanup: an event for W1 must never consume a newer W2
+        binding for the same chat session.
+        """
+
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._connection.execute(
+                    "SELECT workload_id FROM session_workloads" " WHERE session_id=?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    self._connection.rollback()
+                    return None
+                workload_id = str(row[0])
+                if (
+                    expected_workload_id is not None
+                    and workload_id != expected_workload_id
+                ):
+                    self._connection.rollback()
+                    return None
+                self._connection.execute(
+                    "UPDATE workloads SET desired_state=?, reason=?, updated_at=?"
+                    " WHERE id=? AND phase NOT IN"
+                    " ('COMPLETED','FAILED','CANCELLED','LOST')",
+                    (
+                        DesiredState.STOPPED.value,
+                        reason.value,
+                        now,
+                        workload_id,
+                    ),
+                )
+                self._connection.execute(
+                    "UPDATE leases SET released_at=?"
+                    " WHERE workload_id=? AND released_at IS NULL",
+                    (now, workload_id),
+                )
+                deleted = self._connection.execute(
+                    "DELETE FROM session_workloads"
+                    " WHERE session_id=? AND workload_id=?",
+                    (session_id, workload_id),
+                )
+                if deleted.rowcount != 1:
+                    raise RuntimeError(
+                        "session workload binding changed during release"
+                    )
+                self._connection.commit()
+                return workload_id
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def _row_to_workload(self, row: Any) -> Workload:
+        workload = Workload(
+            id=row["id"],
+            spec=_spec_from_json(row["spec_json"]),
+            owner_user_id=row["owner_user_id"],
+            project_id=row["project_id"],
+            desired_state=DesiredState(row["desired_state"]),
+            phase=Phase(row["phase"]),
+            execution_epoch=int(row["execution_epoch"] or 0),
+            reason=Reason(row["reason"]) if row["reason"] else None,
+            backend=row["backend"] or "",
+        )
+        setattr(workload, "created_at", row["created_at"])
+        setattr(workload, "updated_at", row["updated_at"])
+        return workload
+
+    def get_workload(self, workload_id: str) -> Workload | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM workloads WHERE id=?", (workload_id,)
+            ).fetchone()
+        return self._row_to_workload(row) if row else None
+
+    def list_workloads(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        project_id: str | None = None,
+        include_terminal: bool = True,
+        limit: int = 100,
+    ) -> list[Workload]:
+        clauses, params = [], []
+        if owner_user_id:
+            clauses.append("owner_user_id=?")
+            params.append(owner_user_id)
+        if project_id:
+            clauses.append("project_id=?")
+            params.append(project_id)
+        if not include_terminal:
+            clauses.append("phase NOT IN ('COMPLETED','FAILED','CANCELLED','LOST')")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM workloads"
+                + where
+                + " ORDER BY created_at DESC, id DESC LIMIT ?",
+                (*params, max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [self._row_to_workload(r) for r in rows]
+
+    def session_cleanup_candidates(self) -> list[tuple[str, str, Reason | None]]:
+        """Return bound sessions whose durable compute cleanup is unfinished.
+
+        Terminal events are edge-triggered, while daemon restart is not. A
+        terminal/stopped workload or a missing/released lease that remains in
+        ``session_workloads`` is therefore a durable cleanup intent which the
+        gateway must replay. Keep this join in the repository so the gateway
+        neither reaches into Store internals nor imposes an arbitrary list
+        limit that can strand an older binding forever.
+        """
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT sw.session_id, sw.workload_id, w.reason "
+                "FROM session_workloads AS sw "
+                "JOIN workloads AS w ON w.id=sw.workload_id "
+                "LEFT JOIN leases AS l ON l.workload_id=sw.workload_id "
+                "WHERE w.phase IN ('COMPLETED','FAILED','CANCELLED','LOST') "
+                "OR w.desired_state='STOPPED' "
+                "OR l.workload_id IS NULL OR l.released_at IS NOT NULL "
+                "ORDER BY sw.created_at, sw.session_id"
+            ).fetchall()
+        candidates = []
+        for row in rows:
+            raw_reason = row["reason"]
+            try:
+                reason = Reason(raw_reason) if raw_reason else None
+            except ValueError:
+                reason = None
+            candidates.append((str(row["session_id"]), str(row["workload_id"]), reason))
+        return candidates
+
+    def workloads_needing_attention(self) -> list[Workload]:
+        """The reconciler's queue: everything not yet terminal."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM workloads WHERE phase NOT IN"
+                " ('COMPLETED','FAILED','CANCELLED','LOST')"
+                " ORDER BY created_at"
+            ).fetchall()
+        return [self._row_to_workload(r) for r in rows]
+
+    def save_workload(self, workload: Workload) -> None:
+        """Persist observed state — phase, epoch, reason — and NOT intent.
+
+        `desired_state` is deliberately absent from this UPDATE. It is the
+        *user's* statement of what they want; the reconciler is the actuator,
+        not its author. Writing it back from a reconciler's in-memory copy is
+        a lost update with a specific, expensive shape: a tick that loaded
+        the row before a cancel arrived writes RUNNING back over STOPPED, and
+        the cancel is silently dropped — the user sees a job they cancelled
+        keep running, with nothing anywhere recording that their request was
+        overwritten. Intent is written only by `request_stop` and by
+        creation.
+        """
+        with self._lock:
+            self._connection.execute(
+                # COALESCE on `reason` for a related reason: writing NULL
+                # means "I have nothing to report", not "forget what you
+                # were told". `request_stop` records *why* a user asked for a
+                # stop; a reconciler pass that observed nothing new would
+                # otherwise erase it, and the audit trail would say a job
+                # ended for no stated cause. A real reason still overwrites.
+                "UPDATE workloads SET phase=?, execution_epoch=?,"
+                " reason=COALESCE(?, reason), updated_at=? WHERE id=?",
+                (
+                    workload.phase.value,
+                    workload.execution_epoch,
+                    workload.reason.value if workload.reason else None,
+                    self._clock_ms(),
+                    workload.id,
+                ),
+            )
+            self._connection.commit()
+
+    def save_allocation_and_workload(
+        self, allocation: Allocation, workload: Workload
+    ) -> None:
+        """Persist one allocation/workload state transition atomically.
+
+        Two writes, one commit. Split, the window between them is not
+        theoretical for terminal and rejected attempts: the allocation goes
+        terminal, the process dies, and the workload can come back nonterminal
+        on the same epoch. The next tick then calls
+        `create_allocation(workload_id, epoch)` where a row already exists,
+        hits `UNIQUE (workload_id, epoch)`, and repeats forever.
+
+        Swapping the order does not fix it: bumping the epoch first leaves
+        the *old* allocation still in the active set, and INV-3's partial
+        unique index then refuses the replacement instead. The window has to
+        close, not move.
+        """
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute(
+                    "UPDATE allocations SET phase=?, external_backend=?,"
+                    " external_ns=?, external_id=?, reason=?, observed_json=?,"
+                    " released_at=COALESCE(released_at, ?) WHERE id=?",
+                    (
+                        allocation.phase.value,
+                        allocation.handle.backend if allocation.handle else None,
+                        allocation.handle.namespace if allocation.handle else None,
+                        allocation.handle.external_id if allocation.handle else None,
+                        allocation.reason.value if allocation.reason else None,
+                        json.dumps(allocation.diagnostics, sort_keys=True),
+                        now if allocation.phase.is_terminal else None,
+                        allocation.id,
+                    ),
+                )
+                self._connection.execute(
+                    "UPDATE workloads SET phase=?, execution_epoch=?,"
+                    " reason=COALESCE(?, reason), updated_at=? WHERE id=?",
+                    (
+                        workload.phase.value,
+                        workload.execution_epoch,
+                        workload.reason.value if workload.reason else None,
+                        now,
+                        workload.id,
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def open_recovery_epoch(self, allocation: Allocation, workload: Workload) -> None:
+        """Retire the dead allocation and start the next epoch, atomically."""
+        self.save_allocation_and_workload(allocation, workload)
+
+    def request_stop(self, workload_id: str, *, reason: Reason) -> bool:
+        """Ask for cancellation. The reconciler runs the barrier; this only
+        records the desire, so a cancel is durable across a restart."""
+        with self._lock:
+            cur = self._connection.execute(
+                "UPDATE workloads SET desired_state=?, reason=?, updated_at=?"
+                " WHERE id=? AND phase NOT IN"
+                " ('COMPLETED','FAILED','CANCELLED','LOST')",
+                (
+                    DesiredState.STOPPED.value,
+                    reason.value,
+                    self._clock_ms(),
+                    workload_id,
+                ),
+            )
+            self._connection.commit()
+        return cur.rowcount > 0
+
+    # --- allocations ------------------------------------------------------
+
+    def create_allocation(self, workload_id: str, epoch: int) -> Allocation:
+        allocation = Allocation(
+            id=Allocation.new_id(),
+            workload_id=workload_id,
+            epoch=epoch,
+            submission_token=SubmissionToken.mint(),
+        )
+        with self._lock:
+            try:
+                self._connection.execute(
+                    "INSERT INTO allocations(id, workload_id, epoch, phase,"
+                    " submission_token, created_at) VALUES(?,?,?,?,?,?)",
+                    (
+                        allocation.id,
+                        workload_id,
+                        epoch,
+                        allocation.phase.value,
+                        allocation.submission_token.value,
+                        self._clock_ms(),
+                    ),
+                )
+                self._connection.commit()
+            except sqlite3.IntegrityError as exc:
+                # The partial unique index refused a second live allocation.
+                # This is INV-3 doing its job in the window a check cannot
+                # cover.
+                raise ActiveAllocationExists(
+                    f"workload {workload_id} already has a live allocation"
+                ) from exc
+        return allocation
+
+    def _row_to_allocation(self, row: Any) -> Allocation:
+        handle = None
+        if row["external_id"]:
+            handle = ExternalHandle(
+                backend=row["external_backend"] or "",
+                external_id=row["external_id"],
+                namespace=row["external_ns"],
+            )
+        return Allocation(
+            id=row["id"],
+            workload_id=row["workload_id"],
+            epoch=int(row["epoch"] or 0),
+            submission_token=SubmissionToken(row["submission_token"]),
+            phase=Phase(row["phase"]),
+            handle=handle,
+            reason=Reason(row["reason"]) if row["reason"] else None,
+            diagnostics=json.loads(row["observed_json"] or "{}"),
+        )
+
+    def get_allocation(self, allocation_id: str) -> Allocation | None:
+        """Load one attempt by durable id, including terminal history."""
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM allocations WHERE id=?", (allocation_id,)
+            ).fetchone()
+        return self._row_to_allocation(row) if row else None
+
+    def active_allocation(self, workload_id: str) -> Allocation | None:
+        with self._lock:
+            row = self._connection.execute(
+                f"SELECT * FROM allocations WHERE workload_id=? AND phase IN"
+                f" ({_ACTIVE_SQL}) ORDER BY epoch DESC LIMIT 1",
+                (workload_id,),
+            ).fetchone()
+        return self._row_to_allocation(row) if row else None
+
+    def session_registration_expected(self, allocation_id: str, epoch: int) -> bool:
+        """Whether an authenticated worker still belongs to a live session.
+
+        A scheduler may start the worker long before the user's first Cell.
+        Such a registration is parked in ``WorkerGateway`` but is not an
+        orphan: the durable binding, live lease and active allocation are its
+        owner.  This single query lets gateway housekeeping distinguish that
+        case from a straggler after release/recovery without caching lifecycle
+        state in the transport layer.
+        """
+
+        with self._lock:
+            row = self._connection.execute(
+                f"SELECT 1 FROM allocations AS a"
+                " JOIN workloads AS w ON w.id=a.workload_id"
+                " JOIN session_workloads AS sw ON sw.workload_id=w.id"
+                " JOIN leases AS l ON l.workload_id=w.id"
+                " WHERE a.id=? AND a.epoch=?"
+                f" AND a.phase IN ({_ACTIVE_SQL})"
+                " AND w.execution_epoch=a.epoch"
+                " AND w.desired_state='RUNNING'"
+                " AND w.phase NOT IN ('COMPLETED','FAILED','CANCELLED','LOST')"
+                " AND l.released_at IS NULL LIMIT 1",
+                (allocation_id, int(epoch)),
+            ).fetchone()
+        return row is not None
+
+    def list_allocations(self, workload_id: str) -> list[Allocation]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM allocations WHERE workload_id=? ORDER BY epoch",
+                (workload_id,),
+            ).fetchall()
+        return [self._row_to_allocation(r) for r in rows]
+
+    def save_allocation(self, allocation: Allocation) -> None:
+        released = self._clock_ms() if allocation.phase.is_terminal else None
+        with self._lock:
+            self._connection.execute(
+                "UPDATE allocations SET phase=?, external_backend=?,"
+                " external_ns=?, external_id=?, reason=?, observed_json=?,"
+                " released_at=COALESCE(released_at, ?) WHERE id=?",
+                (
+                    allocation.phase.value,
+                    allocation.handle.backend if allocation.handle else None,
+                    allocation.handle.namespace if allocation.handle else None,
+                    allocation.handle.external_id if allocation.handle else None,
+                    allocation.reason.value if allocation.reason else None,
+                    json.dumps(allocation.diagnostics, sort_keys=True),
+                    released,
+                    allocation.id,
+                ),
+            )
+            self._connection.commit()
+
+
+__all__ = [
+    "ActiveAllocationExists",
+    "WORKLOAD_SCHEMA",
+    "WorkloadRepository",
+    "create_workload_schema",
+]

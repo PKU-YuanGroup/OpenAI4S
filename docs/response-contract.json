@@ -85,6 +85,18 @@
         404
       ]
     },
+    "/artifacts/([^/]+)/diff": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/artifacts/([^/]+)/edit": {
       "content_types": [
         "application/json"
@@ -109,6 +121,18 @@
         404
       ]
     },
+    "/artifacts/([^/]+)/html-outline": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/artifacts/([^/]+)/lineage": {
       "content_types": [
         "application/json"
@@ -118,6 +142,18 @@
       ],
       "statuses": [
         200,
+        404
+      ]
+    },
+    "/artifacts/([^/]+)/pdf-text": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
         404
       ]
     },
@@ -158,6 +194,30 @@
         404
       ]
     },
+    "/artifacts/([^/]+)/structure": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/artifacts/([^/]+)/table": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/artifacts/([^/]+)/versions": {
       "content_types": [
         "application/json"
@@ -179,6 +239,80 @@
       ],
       "statuses": [
         200,
+        404
+      ]
+    },
+    "/artifacts/versions/([^/]+)": {
+      "content_types": [
+        "application/json",
+        "application/octet-stream"
+      ],
+      "kinds": [
+        "binary",
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/auth/login": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/auth/logout": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/auth/me": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/auth/me/llm-key": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
+    "/auth/redeem-invite": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
         404
       ]
     },
@@ -483,6 +617,39 @@
         404
       ]
     },
+    "/files": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/files/download": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/files/upload": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/folders/([^/]+)": {
       "content_types": [
         "application/json"
@@ -653,6 +820,30 @@
         404
       ]
     },
+    "/frames/([^/]+)/auto-audits": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/auto-mode": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/frames/([^/]+)/branches": {
       "content_types": [
         "application/json"
@@ -745,6 +936,7 @@
       ],
       "statuses": [
         200,
+        400,
         404
       ]
     },
@@ -1197,6 +1389,18 @@
         404
       ]
     },
+    "/frames/([^/]+)/visibility": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403,
+        404
+      ]
+    },
     "/frames/[^/]+/(?:revert/preview|branches/revert-preview)": {
       "content_types": [
         "application/json"
@@ -1209,7 +1413,7 @@
         404
       ]
     },
-    "/frames/[^/]+/recovery/actions/restart_fresh": {
+    "/frames/[^/]+/recovery/actions/(?:restore|retry|restart_fresh)": {
       "content_types": [
         "application/json"
       ],
@@ -1447,6 +1651,64 @@
         404
       ]
     },
+    "/orchestration/jobs": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        400,
+        404
+      ]
+    },
+    "/orchestration/jobs/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/orchestration/jobs/([^/]+)/cancel": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/orchestration/jobs/([^/]+)/logs": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
+    "/orchestration/profiles": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/permissions": {
       "content_types": [
         "application/json"
@@ -1663,6 +1925,42 @@
         200
       ]
     },
+    "/sessions/([^/]+)/compute": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404,
+        409
+      ]
+    },
+    "/sessions/([^/]+)/compute/release": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        409
+      ]
+    },
+    "/sessions/([^/]+)/replay": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/sessions/import": {
       "content_types": [
         "application/json"
@@ -1856,6 +2154,116 @@
       "statuses": [
         200,
         404
+      ]
+    },
+    "/team/audit": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/invites": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/invites/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/projects/([^/]+)/members": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/projects/([^/]+)/members/([^/]+)": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/quotas": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/usage": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/users": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/users/([^/]+)/disable": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
+      ]
+    },
+    "/team/users/([^/]+)/reset-password": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        403
       ]
     },
     "/telemetry/consent": {

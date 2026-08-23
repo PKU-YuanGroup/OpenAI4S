@@ -243,6 +243,39 @@ older, and `after_ordinal` moves newer. The cursors are non-negative and
 mutually exclusive, and the projection returns explicit truncation/cursor
 metadata. Consumers must not treat per-field truncation as history pagination.
 
+## Enable interactive remote sessions
+
+An `AllocationBackend` can run `BATCH` workloads without any additional
+capability. Interactive remote `SESSION` workloads are different: the daemon
+mints a worker bootstrap credential before the queued allocation starts, then
+sends session Cell source and services `host.*` calls over the authenticated
+worker connection. If sibling allocations run as the same Unix uid, one can
+read another's unused credential even when its directory is `0700` and the
+file is `0600`, register first, and become the victim's worker.
+
+Implement the optional `SessionIsolationProvider` Protocol from
+`openai4s.orchestration.ports` only when the backend guarantees that code in
+one allocation cannot read or modify another allocation's workspace or
+pre-use bootstrap credential. `isolates_session_credentials()` may return
+`True` only after the deployment prerequisites for a per-allocation OS
+identity, container, or mount namespace have been verified. A shared uid,
+random path, file modes, token expiry, single-use verification, or network
+isolation alone does not satisfy this contract. If the check is absent,
+returns false, or raises, composition fails closed. A true result is a
+backend-lifetime promise for every interactive allocation the backend accepts;
+it must not be a transient configuration observation or profile-specific best
+effort.
+
+The built-in `LocalBackend` and Slurm backend deliberately do not implement
+this capability. They remain valid for `BATCH`, while interactive placement
+returns `409 remote_isolation_required` before creating a session-keyed
+workspace, workload, lease, allocation, or credential. An extension that
+opts in must test both sides of the boundary: a sibling allocation cannot
+read the workspace/credential or register as the worker, while the intended
+allocation can still connect and execute Cell and Host-RPC traffic. Also test
+that an unavailable or misconfigured isolation provider refuses before every
+durable or filesystem write.
+
 ## Add Web session behaviour
 
 HTTP and WebSocket code is an adapter. Stateful behaviour belongs in a service

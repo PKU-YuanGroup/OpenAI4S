@@ -1,9 +1,10 @@
-"""Durably extend one exact Python generation with observed Skill sidecars.
+"""Fail closed on worker-reported Skill sidecar recovery records.
 
-The worker is the only process that knows which source bytes actually executed.
-This service validates those bounded result records, merges them into the
-content-addressed bootstrap manifest, and persists with compare-and-swap.  It
-never imports or executes a sidecar in the Host process.
+An arbitrary Python Cell shares its interpreter with the worker audit hook, so
+it can recover or invoke any in-process signing oracle. Worker events remain
+private diagnostics, never proof that source executed and never input to a
+durable recovery manifest. A future capture path must establish an independent
+Host/process trust boundary before automatic sidecar replay can be enabled.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-from openai4s.kernel.recovery import merge_bootstrap_sidecar_loads
 from openai4s.kernel.supervisor import KernelLease, KernelSupervisor
 
 RESULT_KEY = "skill_sidecar_loads"
@@ -31,7 +31,7 @@ class SidecarGenerationStore(Protocol):
 
 
 class GenerationSidecarRecorder:
-    """Persist successful imports for a frozen, still-current worker lease."""
+    """Reject in-process sidecar claims for a frozen worker lease."""
 
     def __init__(self, store: SidecarGenerationStore, *, max_retries: int = 4) -> None:
         if max_retries < 1:
@@ -45,11 +45,12 @@ class GenerationSidecarRecorder:
         lease: KernelLease,
         result: dict[str, Any],
     ) -> dict | None:
-        """Consume and persist private sidecar load records from one Cell.
+        """Consume private sidecar records and make recovery fail closed.
 
         The records are removed before the ordinary Cell result reaches the
-        execution log, Notebook, or model observation.  Source bytes live only
-        in the generation bootstrap manifest used by checkpoint/recovery.
+        execution log, Notebook, or model observation. They cannot enter the
+        bootstrap manifest because their producer shares the untrusted Cell's
+        Python interpreter.
         """
 
         raw_events = result.pop(RESULT_KEY, None)
@@ -65,27 +66,12 @@ class GenerationSidecarRecorder:
             generation_id = str(lease.generation_id or "")
             if not generation_id:
                 raise RuntimeError("sidecar import has no durable kernel generation")
-
-            for _attempt in range(self.max_retries):
-                if not _lease_is_current(supervisor, lease):
-                    raise RuntimeError(
-                        "kernel generation changed before sidecar capture"
-                    )
-                current = self.store.get_kernel_generation(generation_id)
-                if current is None or current.get("ended_at") is not None:
-                    raise RuntimeError("kernel generation ended before sidecar capture")
-                bootstrap = current.get("bootstrap")
-                if not isinstance(bootstrap, Mapping):
-                    raise RuntimeError("generation has no bootstrap manifest")
-                merged = merge_bootstrap_sidecar_loads(bootstrap, raw_events)
-                updated = self.store.compare_and_swap_kernel_bootstrap(
-                    generation_id,
-                    expected_manifest_id=current.get("bootstrap_manifest_id"),
-                    bootstrap=merged,
-                )
-                if updated is not None:
-                    return updated
-            raise RuntimeError("concurrent bootstrap manifest updates did not converge")
+            if not _lease_is_current(supervisor, lease):
+                raise RuntimeError("kernel generation changed before sidecar capture")
+            raise RuntimeError(
+                "worker-side Skill sidecar evidence shares the untrusted Cell "
+                "interpreter and cannot authorize automatic recovery"
+            )
         except Exception as error:  # noqa: BLE001 - Cell already executed
             durable = self._mark_failed(lease, str(error))
             _attach_capture_warning(result, durable=durable)

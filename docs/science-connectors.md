@@ -15,6 +15,9 @@ records without scraping provider-specific pages.
 | `pubchem` | PubChem PUG REST | chemistry | CID and computed compound properties |
 | `arxiv` | arXiv Atom API | ML, physics, literature | preprint metadata, authors, categories, abstract |
 | `openalex` | OpenAlex Works API | multidisciplinary literature | work, DOI, authors, concepts, citations, OA state |
+| `clinvar` | ClinVar E-utilities (Stage 10 flag) | biology | variant accession, interpretation, gene |
+| `pubmed` | PubMed E-utilities (Stage 10 flag) | literature | PMID, title, journal, date |
+| `clinicaltrials` | ClinicalTrials.gov API v2 (Stage 10 flag) | biology, literature | NCT id, title, status |
 
 The public model-facing surface remains two tools:
 

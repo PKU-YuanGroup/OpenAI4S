@@ -58,6 +58,8 @@ class AnnotationRepository:
         body: str,
         version_id: str | None = None,
         checksum: str | None = None,
+        kind: str | None = None,
+        locator: str | None = None,
     ) -> dict:
         """Pin a comment to a normalized point on an image artifact.
 
@@ -81,8 +83,8 @@ class AnnotationRepository:
             self._connection.execute(
                 "INSERT INTO annotations(annotation_id,root_frame_id,artifact_id,"
                 "artifact_name,rel_x,rel_y,number,body,status,created_at,"
-                "updated_at,version_id,checksum) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "updated_at,version_id,checksum,kind,locator) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     annotation_id,
                     root_frame_id,
@@ -97,6 +99,8 @@ class AnnotationRepository:
                     now,
                     version_id or None,
                     checksum or None,
+                    kind or "image",
+                    locator,
                 ),
             )
             self._connection.commit()

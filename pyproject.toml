@@ -60,7 +60,7 @@ dev = [
     # major the resolver happened to pick.
     "mypy>=2.3,<3",
     "pytest>=7.4",
-    # The offline suite is ~4800 tests and was the whole critical path of CI:
+    # The offline suite is ~6,000 tests and was the whole critical path of CI:
     # 1094 of the offline-test job's 1122 seconds were this one command. xdist
     # splits it across the runner's cores. CI runs it as `-n auto
     # --maxprocesses=4 --dist loadfile`; the cap and scheduler choice are
@@ -215,6 +215,11 @@ files = [
     "openai4s/agent/models.py",
     "openai4s/agent/ports.py",
     "openai4s/host_dispatch.py",
+    # The orchestration contract. Strict from birth rather than retrofitted:
+    # these two modules are the boundary a second backend is written against,
+    # and a wrong type here is discovered on a cluster at 2am.
+    "openai4s/orchestration/models.py",
+    "openai4s/orchestration/ports.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true

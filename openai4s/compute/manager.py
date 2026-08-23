@@ -226,6 +226,19 @@ def _safe_stage_name(value: str, *, label: str) -> str:
     return text
 
 
+def _declared_input_versions(inputs: Any) -> list[str]:
+    """Ordered, de-duplicated Artifact versions explicitly staged by a job."""
+
+    versions: list[str] = []
+    for item in inputs or ():
+        if not isinstance(item, dict):
+            continue
+        version_id = str(item.get("version_id") or "").strip()
+        if version_id and version_id not in versions:
+            versions.append(version_id)
+    return versions
+
+
 def _sandbox_lifetime_s(spec: Any) -> int:
     """The container lifetime the caller declared, in seconds.
 
@@ -1095,6 +1108,7 @@ class ComputeManager:
             "provider": record["provider"],
             "status": record.get("status") or "running",
             "outputs": record.get("outputs"),
+            "input_versions": list(record.get("input_versions") or []),
             "idempotency_key": record.get("idempotency_key"),
             "receipt": record.get("receipt"),
             "termination_reason": record.get("termination_reason"),
@@ -1288,7 +1302,11 @@ class ComputeManager:
 
     @staticmethod
     def _terminal_conflict_result(
-        job: dict, requested: str, row: dict, output_files: list[str]
+        job: dict,
+        requested: str,
+        row: dict,
+        output_files: list[str],
+        artifact_manifest: list[dict] | None = None,
     ) -> dict:
         """A poll that harvested real files onto a job that had already ended.
 
@@ -1301,6 +1319,7 @@ class ComputeManager:
             "job_id": job["job_id"],
             "exit_code": row.get("exit_code"),
             "output_files": output_files,
+            "artifact_manifest": list(artifact_manifest or []),
             "conflict": {"requested": requested, "actual": row.get("status")},
             "hint": (
                 "this job reached a terminal state before the poll completed; "
@@ -1414,7 +1433,13 @@ class ComputeManager:
                 {"error": str(exc), "kind": kind, "sandbox_id": sandbox_id},
             )
 
-    def _claim(self, provider: str, idempotency_key: str | None, outputs: Any) -> str:
+    def _claim(
+        self,
+        provider: str,
+        idempotency_key: str | None,
+        outputs: Any,
+        input_versions: list[str] | None = None,
+    ) -> str:
         """Reserve a job row *before* the submit is attempted.
 
         The ordering is the whole point. A row written only after a successful
@@ -1445,6 +1470,7 @@ class ComputeManager:
                 status=states.STAGING,
                 idempotency_key=idempotency_key,
                 outputs=outputs,
+                input_versions=input_versions or None,
                 owner_key=self._owner_key,
             )
         except sqlite3.IntegrityError as exc:
@@ -1953,7 +1979,12 @@ class ComputeManager:
         return {k: os.environ[k] for k in keys if k in os.environ}
 
     # --- submit -----------------------------------------------------------
-    def submit(self, kw: dict) -> dict:
+    def submit(
+        self,
+        kw: dict,
+        *,
+        trusted_version_paths: dict[str, str] | None = None,
+    ) -> dict:
         provider = kw["provider"]
         fam, rest = self._split(provider)
         with self._lock:
@@ -1972,10 +2003,20 @@ class ComputeManager:
             # was authorised, which is what lets the harvest and cancel paths
             # trust it later.
             return self._submit_ssh(self._named_destination(rest), kw)
-        return self._submit_byoc(rest, kw)
+        return self._submit_byoc(
+            rest,
+            kw,
+            trusted_version_paths=trusted_version_paths,
+        )
 
     def _stage_inputs(
-        self, stage: Path, inputs: list | None, command: str, timeout_s: int
+        self,
+        stage: Path,
+        inputs: list | None,
+        command: str,
+        timeout_s: int,
+        *,
+        trusted_version_paths: dict[str, str] | None = None,
     ) -> Path:
         """Build the in.tar.gz the helper untars into /work: the wrapper, the
         run.sh (command), and every staged input flat in the root."""
@@ -1990,14 +2031,37 @@ class ComputeManager:
         (work / "_openai4s_wrapper.sh").write_text(wrapper, encoding="utf-8")
         (work / "run.sh").write_text(run, encoding="utf-8")
         for inp in inputs or []:
-            src = inp.get("src") or inp.get("remote_path")
+            if not isinstance(inp, dict):
+                raise ComputeError(
+                    "each staged input must be an object", "invalid_request"
+                )
+            version_id = str(inp.get("version_id") or "").strip()
+            if version_id:
+                trusted = (trusted_version_paths or {}).get(version_id)
+                if not trusted:
+                    raise ComputeError(
+                        f"artifact input {version_id!r} was not resolved by the Host",
+                        "invalid_request",
+                    )
+                src_path = Path(trusted).resolve()
+                if not src_path.is_file():
+                    raise ComputeError(
+                        f"artifact input {version_id!r} has no frozen bytes",
+                        "invalid_request",
+                    )
+                src = str(src_path)
+            else:
+                src = inp.get("src") or inp.get("remote_path")
             if not src:
                 continue
             # A source that does not exist used to be skipped in silence, so
             # the job ran to completion against missing data and reported
             # success. Refusing here is the difference between a failed job
             # and a wrong result nobody questions.
-            src_path = self._safe_local_path(src, label="input src", must_exist=True)
+            if not version_id:
+                src_path = self._safe_local_path(
+                    src, label="input src", must_exist=True
+                )
             dst = _safe_stage_name(
                 inp.get("dst_filename") or Path(src).name, label="input dst_filename"
             )
@@ -2007,12 +2071,22 @@ class ComputeManager:
             tf.add(work, arcname=".")
         return tgz
 
-    def _submit_byoc(self, pid: str, kw: dict) -> dict:
+    def _submit_byoc(
+        self,
+        pid: str,
+        kw: dict,
+        *,
+        trusted_version_paths: dict[str, str] | None = None,
+    ) -> dict:
         prov = self._byoc(pid)
         self._confinement_gate(pid)
         creds = self._provider_creds(prov)
+        input_versions = _declared_input_versions(kw.get("inputs"))
         job_id = self._claim(
-            f"byoc:{pid}", kw.get("idempotency_key"), kw.get("outputs")
+            f"byoc:{pid}",
+            kw.get("idempotency_key"),
+            kw.get("outputs"),
+            input_versions,
         )
         timeout_s = int(kw.get("timeout_seconds") or 14400)
         sid: str | None = None
@@ -2045,7 +2119,13 @@ class ComputeManager:
                     else:
                         self._sandbox_deadlines.pop(pid, None)
                 # 2. stage inputs then submit.
-                self._stage_inputs(stage, kw.get("inputs"), kw["command"], timeout_s)
+                self._stage_inputs(
+                    stage,
+                    kw.get("inputs"),
+                    kw["command"],
+                    timeout_s,
+                    trusted_version_paths=trusted_version_paths,
+                )
                 # The wrapper implements a watchdog that stops the job with
                 # `harvest_margin_s` to spare so its outputs can still be
                 # staged, and the helper forwards these straight through — but
@@ -2100,6 +2180,7 @@ class ComputeManager:
                 "sandbox_id": sid,
                 "status": "running",
                 "outputs": kw.get("outputs"),
+                "input_versions": input_versions,
                 "creds": bool(creds),
             }
         self._event(job_id, "submitted", {"sandbox_id": sid})
@@ -2112,6 +2193,12 @@ class ComputeManager:
 
     # --- ssh --------------------------------------------------------------
     def _submit_ssh(self, alias: str, kw: dict) -> dict:
+        if kw.get("inputs"):
+            raise ComputeError(
+                "staged inputs are not supported by the ssh transport; upload "
+                "them explicitly before submit rather than running without them",
+                "invalid_request",
+            )
         job_id = self._claim(
             f"ssh:{alias}", kw.get("idempotency_key"), kw.get("outputs")
         )
@@ -2340,8 +2427,21 @@ class ComputeManager:
             raise ComputeError(f"no such job {job_id!r}", "not_found")
         fam, rest = self._split(job["provider"])
         if fam == "ssh":
-            return self._result_ssh(job)
-        return self._result_byoc(job)
+            result = self._result_ssh(job)
+        else:
+            result = self._result_byoc(job)
+        enriched = dict(result)
+        enriched.setdefault("job_id", job["job_id"])
+        enriched.setdefault("provider", job.get("provider"))
+        enriched.setdefault(
+            "receipt", job.get("receipt") or job.get("sandbox_id") or job.get("pid")
+        )
+        enriched.setdefault(
+            "remote_environment",
+            job.get("alias") or job.get("provider"),
+        )
+        enriched.setdefault("input_versions", list(job.get("input_versions") or []))
+        return enriched
 
     def _result_byoc(self, job: dict) -> dict:
         # Before the provider is dispatched at all, exactly as the ssh path
@@ -2468,7 +2568,9 @@ class ComputeManager:
             integrity_sha256=manifest.manifest_digest(entries),
         )
         if conflict is not None:
-            return self._terminal_conflict_result(job, status, conflict, out_files)
+            return self._terminal_conflict_result(
+                job, status, conflict, out_files, entries
+            )
         job["exit_code"] = exit_code
         result = {
             "status": status,
@@ -2753,6 +2855,7 @@ class ComputeManager:
                 status,
                 conflict,
                 [str(dest / item["path"]) for item in entries],
+                entries,
             )
         job["exit_code"] = exit_code
         result = {

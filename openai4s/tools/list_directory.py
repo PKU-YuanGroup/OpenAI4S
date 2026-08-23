@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+import stat
 import time
-from pathlib import Path
 
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
@@ -48,44 +48,58 @@ class ListDirectoryTool(Tool):
             MAX_SCAN_ENTRIES,
             MAX_SCAN_SECONDS,
             BoundedSelection,
+            UnsafeWorkspaceCandidate,
         )
 
         relative = arguments.get("path") or "."
-        base = workspace.resolve(relative) if relative != "." else workspace.workspace()
-        if not base.exists():
+        try:
+            directory = workspace.open_verified_directory(relative)
+        except FileNotFoundError:
             return {"error": f"list_dir: no such directory: {relative}"}
         selection = BoundedSelection(_MAX_ENTRIES)
         scan_truncated = False
+        scanned = 0
         try:
-            deadline = time.monotonic() + MAX_SCAN_SECONDS
-            with os.scandir(base) as scan:
-                for entry in scan:
-                    # Seconds as well as entries: see `MAX_SCAN_SECONDS`. One
-                    # directory can hold enough cold entries that `scandir`
-                    # outlives the caller's timeout well under the entry cap.
-                    if (
-                        selection.seen >= MAX_SCAN_ENTRIES
-                        or time.monotonic() > deadline
-                    ):
-                        scan_truncated = True
-                        break
-                    selection.offer(entry.name, entry)
+            with directory:
+                deadline = time.monotonic() + MAX_SCAN_SECONDS
+                with os.scandir(directory.fd) as scan:
+                    for entry in scan:
+                        scanned += 1
+                        # Seconds as well as entries: see `MAX_SCAN_SECONDS`. One
+                        # directory can hold enough cold entries that `scandir`
+                        # outlives the caller's timeout well under the entry cap.
+                        if scanned > MAX_SCAN_ENTRIES or time.monotonic() > deadline:
+                            scan_truncated = True
+                            break
+                        try:
+                            metadata = directory.inspect_entry(entry.name)
+                        except UnsafeWorkspaceCandidate:
+                            continue
+                        except ValueError as error:
+                            return {"error": f"list_dir: {error}"}
+                        selection.offer(entry.name, (entry.name, metadata))
         except OSError as error:
             # Was an unhandled `NotADirectoryError` when the path named a file.
             # Soft-failing keeps it in the same shape as the missing-directory
             # answer just above, which is the same mistake by the agent.
             return {"error": f"list_dir: {error}"}
         entries = []
-        # A `stat()` only for what survived the bound. It used to be paid for
-        # every entry in the directory, including the ones no reply mentioned.
-        for entry in selection.values():
-            path = Path(entry.path)
+        # Metadata was captured with a no-follow stat through the same pinned
+        # directory FD during enumeration; never reopen a retained pathname.
+        for name, metadata in selection.values():
+            entry_path = (
+                name if directory.relative == "." else f"{directory.relative}/{name}"
+            )
             entries.append(
                 {
-                    "name": entry.name,
-                    "path": workspace.relative(path) or entry.name,
-                    "is_dir": entry.is_dir(),
-                    "size_bytes": entry.stat().st_size if entry.is_file() else None,
+                    "name": name,
+                    "path": entry_path,
+                    "is_dir": stat.S_ISDIR(metadata.st_mode),
+                    "size_bytes": (
+                        int(metadata.st_size)
+                        if stat.S_ISREG(metadata.st_mode)
+                        else None
+                    ),
                 }
             )
         result = {"path": relative}

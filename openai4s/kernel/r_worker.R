@@ -16,8 +16,8 @@
 # Frames handled: {"type":"execute","id":...,"code":...,"sink_out":...,
 # "sink_err":...} -> one {"type":"response", id, sink_capture, stdout, stderr,
 #  error, interrupted, trace:{error_lineno,error_call}, guards:{},
-#  usage:{wall_s,cpu_s,peak_rss_kb}} per cell (identical result contract to
-# worker.py); {"type":"shutdown"} exits.
+#  files_read:[], usage:{wall_s,cpu_s,peak_rss_kb}} per cell (identical result
+# contract to worker.py); {"type":"shutdown"} exits.
 #
 # The two `sink_*` paths are fifos the HOST drains, and they are required: this
 # worker refuses an execute frame without them rather than running the cell
@@ -41,9 +41,9 @@
 # oversized response was written and the manager's readline() materialised it
 # whole. Derived from the SAME numbers rather than hand-picked, so the two
 # workers cannot drift into different contracts: worst-case JSON expansion
-# (12 bytes — an astral character costs a `\uXXXX` surrogate PAIR) times the
-# two capped streams, plus room for the rest of the frame.
-.oai4s_MAX_FRAME_BYTES <- 12L * 2L * .oai4s_MAX_OUTPUT + 2000000L
+# (6 bytes for a control-character escape) times the three independently
+# capped stdout/stderr/error fields, plus room for the rest of the frame.
+.oai4s_MAX_FRAME_BYTES <- 6L * 3L * .oai4s_MAX_OUTPUT + 2000000L
 
 .oai4s_or <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
 
@@ -82,6 +82,12 @@
           big.mark = "", decimal.mark = ".")
 }
 
+.oai4s_string_array <- function(values) {
+  if (is.null(values) || length(values) == 0L) return("[]")
+  encoded <- vapply(as.character(values), .oai4s_esc, character(1))
+  paste0("[", paste(encoded, collapse = ","), "]")
+}
+
 # exactly ONE response frame per execute frame: the manager returns on the
 # FIRST response it reads, so a duplicate would desync the NEXT cell
 .oai4s_responded <- FALSE
@@ -110,7 +116,7 @@
 
 .oai4s_respond <- function(id, stdout_txt, stderr_txt, error, interrupted,
                            lineno, callname, wall, cpu, rss,
-                           sink_capture = FALSE) {
+                           sink_capture = FALSE, files_read = character(0)) {
   json <- paste0(
     '{"type":"response","id":', .oai4s_esc(id),
     ',"sink_capture":', if (isTRUE(sink_capture)) "true" else "false",
@@ -121,7 +127,8 @@
     ',"trace":{"error_lineno":',
     if (is.null(lineno)) "null" else sprintf("%d", as.integer(lineno)),
     ',"error_call":', if (is.null(callname)) "null" else .oai4s_esc(callname),
-    '},"guards":{},"usage":{"wall_s":', .oai4s_num(wall),
+    '},"guards":{},"files_read":', .oai4s_string_array(files_read),
+    ',"usage":{"wall_s":', .oai4s_num(wall),
     ',"cpu_s":', .oai4s_num(cpu),
     ',"peak_rss_kb":',
     if (is.null(rss)) "null" else sprintf("%d", as.integer(rss)),
@@ -146,6 +153,7 @@
       )),
       ',"interrupted":', if (isTRUE(interrupted)) "true" else "false",
       ',"trace":{"error_lineno":null,"error_call":null},"guards":{}',
+      ',"files_read":[]',
       ',"usage":{"wall_s":', .oai4s_num(wall),
       ',"cpu_s":', .oai4s_num(cpu),
       ',"peak_rss_kb":',
@@ -226,6 +234,135 @@
   }, error = function(e) NULL)
 }
 
+# --- actual file-read observation -------------------------------------------
+
+# R has no CPython-style audit hook.  Static source scanning is not evidence:
+# a path in ``if (FALSE) read.csv(...)`` was never read.  Instead, trace the
+# small base I/O boundary that the common readers cross and record only while a
+# Cell is actually evaluating.  No user binding in .GlobalEnv is shadowed or
+# replaced; the private controller is locked before the first request.
+.oai4s_lineage <- evalq({
+  state <- new.env(parent = emptyenv())
+  state$active <- FALSE
+  state$recording <- FALSE
+  state$paths <- character(0)
+  state$root <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
+  state$installed <- FALSE
+  state$fread_installed <- FALSE
+
+  record <- function(value) {
+    if (!isTRUE(state$active) || isTRUE(state$recording)) return(invisible(NULL))
+    if (!is.character(value) || length(value) != 1L || is.na(value) || !nzchar(value)) {
+      return(invisible(NULL))
+    }
+    # Remote/resource identifiers are not workspace files.  A connection
+    # object is rejected by the character check above.
+    if (grepl("^(https?|ftp|s3)://", value, ignore.case = TRUE)) {
+      return(invisible(NULL))
+    }
+    state$recording <- TRUE
+    on.exit({ state$recording <- FALSE }, add = TRUE)
+    resolved <- tryCatch(
+      normalizePath(value, winslash = "/", mustWork = TRUE),
+      error = function(e) NULL,
+      warning = function(w) NULL
+    )
+    if (is.null(resolved) || length(resolved) != 1L) return(invisible(NULL))
+    root <- state$root
+    prefix <- if (identical(root, "/")) "/" else paste0(root, "/")
+    if (identical(resolved, root) || !startsWith(resolved, prefix)) {
+      return(invisible(NULL))
+    }
+    relative <- substring(resolved, nchar(prefix, type = "chars") + 1L)
+    if (!nzchar(relative) || nchar(relative, type = "chars") > 1024L) {
+      return(invisible(NULL))
+    }
+    if (!(relative %in% state$paths) && length(state$paths) < 256L) {
+      state$paths <- c(state$paths, relative)
+    }
+    invisible(NULL)
+  }
+
+  trace_one <- function(name, tracer, where = baseenv()) {
+    tryCatch({
+      suppressMessages(suppressWarnings(
+        trace(name, exit = tracer, where = where, print = FALSE)
+      ))
+      TRUE
+    }, error = function(e) FALSE)
+  }
+
+  install_fread <- function() {
+    if (isTRUE(state$fread_installed) || !("data.table" %in% loadedNamespaces())) {
+      return(invisible(FALSE))
+    }
+    tracer <- quote(.GlobalEnv$.oai4s_lineage$record(
+      if (!missing(file) && !is.null(file)) file else input
+    ))
+    namespace <- asNamespace("data.table")
+    traced <- trace_one("fread", tracer, where = namespace)
+    attached <- tryCatch(as.environment("package:data.table"), error = function(e) NULL)
+    if (!is.null(attached)) traced <- trace_one("fread", tracer, where = attached) || traced
+    state$fread_installed <- traced
+    invisible(traced)
+  }
+
+  api <- new.env(parent = baseenv())
+  api$begin <- function() {
+    # Loading an optional package solely to observe it would change Cell
+    # semantics.  If data.table was explicitly loaded by an earlier Cell,
+    # instrument its next real fread call; otherwise omit it conservatively.
+    install_fread()
+    state$paths <- character(0)
+    state$recording <- FALSE
+    state$active <- TRUE
+    invisible(NULL)
+  }
+  api$finish <- function() {
+    state$active <- FALSE
+    paths <- state$paths
+    state$paths <- character(0)
+    state$recording <- FALSE
+    paths
+  }
+  api$record <- record
+  api$install <- function() {
+    if (isTRUE(state$installed)) return(invisible(TRUE))
+    # Trace actual reader invocation, not source strings.  Do not wrap
+    # base::file itself: that constructor owns the private /dev/fd protocol
+    # recovery path, and provenance must never perturb transport semantics.
+    trace_one("readLines", quote(
+      .GlobalEnv$.oai4s_lineage$record(con)
+    ))
+    trace_one("readRDS", quote(
+      .GlobalEnv$.oai4s_lineage$record(file)
+    ))
+    trace_one("load", quote(
+      .GlobalEnv$.oai4s_lineage$record(file)
+    ))
+    trace_one("scan", quote(
+      .GlobalEnv$.oai4s_lineage$record(file)
+    ))
+    utils_namespace <- asNamespace("utils")
+    utils_attached <- tryCatch(
+      as.environment("package:utils"), error = function(e) NULL
+    )
+    for (name in c("read.table", "read.csv", "read.csv2",
+                   "read.delim", "read.delim2")) {
+      tracer <- quote({
+        if (!missing(file)) .GlobalEnv$.oai4s_lineage$record(file)
+      })
+      trace_one(name, tracer, where = utils_namespace)
+      if (!is.null(utils_attached)) trace_one(name, tracer, where = utils_attached)
+    }
+    state$installed <- TRUE
+    invisible(TRUE)
+  }
+  lockEnvironment(api, bindings = TRUE)
+  api
+}, envir = new.env(parent = baseenv()))
+lockBinding(".oai4s_lineage", globalenv())
+
 # --- one cell ----------------------------------------------------------------
 
 .oai4s_run <- function(code, id, sink_out, sink_msg) {
@@ -253,7 +390,12 @@
   sink(msg_con, type = "message")
 
   err <- NULL; lineno <- NULL; callname <- NULL; interrupted <- FALSE
+  files_read <- character(0); observing_reads <- TRUE
   t0 <- Sys.time(); p0 <- proc.time()
+  .oai4s_lineage$begin()
+  on.exit({
+    if (isTRUE(observing_reads)) .oai4s_lineage$finish()
+  }, add = TRUE)
 
   parsed <- tryCatch(parse(text = code, keep.source = TRUE), error = function(e) e)
   if (inherits(parsed, "error")) {
@@ -311,6 +453,9 @@
     }
   }
 
+  files_read <- .oai4s_lineage$finish()
+  observing_reads <- FALSE
+
   .oai4s_unwind_sinks()
   # Closed BEFORE the response frame, so that by the time the host learns the
   # cell is over the fifos are already at EOF and its readers end on that
@@ -330,7 +475,8 @@
   # Empty, and `sink_capture` says why: the host holds this cell's output and
   # fills both fields in. A worker that does not set the flag keeps its own.
   .oai4s_respond(id, "", "", err, interrupted, lineno, callname,
-                 wall, cpu, .oai4s_rss_kb(), sink_capture = TRUE)
+                 wall, cpu, .oai4s_rss_kb(), sink_capture = TRUE,
+                 files_read = files_read)
 }
 
 # --- read-only variable inspection ------------------------------------------
@@ -542,6 +688,11 @@ if (is.null(.oai4s_in)) {
   message("openai4s r_worker: protocol fd 4 unavailable — spawn via kernel/r_kernel.py")
   quit(save = "no", status = 2)
 }
+
+# Trace only after the private protocol connections exist.  R treats /dev/fd
+# specially; wrapping base::file before those two handles are established can
+# change how it classifies a pipe on some releases.
+.oai4s_lineage$install()
 
 .oai4s_have_jsonlite <- requireNamespace("jsonlite", quietly = TRUE)
 

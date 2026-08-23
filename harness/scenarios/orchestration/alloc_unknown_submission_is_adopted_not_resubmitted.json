@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "alloc.unknown_submission_is_adopted_not_resubmitted",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "A submission whose outcome was lost is found by token, not sent twice.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "submits": [
+        {
+          "result": "unknown"
+        }
+      ],
+      "find_by_token": [
+        "job-7"
+      ],
+      "observations": [
+        {
+          "phase": "ACTIVE"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "ACTIVE",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submission_unknown",
+      "allocation_adopted",
+      "workload_phase",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

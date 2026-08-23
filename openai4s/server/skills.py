@@ -12,6 +12,7 @@ import re
 import shutil
 from typing import Any
 
+from openai4s import execution_principal
 from openai4s.skills_loader import SkillLoader, SkillVersionService, frontmatter_edit
 from openai4s.skills_loader.loader import skill_readiness
 
@@ -37,6 +38,7 @@ SKILL_FAILURE_STATUS: dict[str, int] = {
     "skill_name_conflict": 409,
     "skill_not_found": 404,
     "skill_read_only": 403,
+    "skill_admin_required": 403,
     "skill_no_version_history": 404,
     # The version store is a dependency that is absent, not a bad request.
     "skill_version_storage_unavailable": 503,
@@ -500,6 +502,51 @@ class SkillCustomizationService:
                 "skill_version_storage_unavailable",
                 "skill version storage is unavailable",
             )
+        if self.scope == "project":
+            scope_id = str(self.project_id or "")
+            repository = self.versions.repository
+            # Resolve ownership before reading the target manifest or event
+            # metadata.  Otherwise the distinct admin-only answer below becomes
+            # a cross-project oracle for a guessed version id.
+            if repository.version_belongs_to(
+                name,
+                version_id,
+                scope="project",
+                scope_id=scope_id,
+            ):
+                version = repository.get_version(version_id, include_files=False)
+                provenance = repository.activation_metadata_for_version(
+                    name,
+                    version_id,
+                    scope="project",
+                    scope_id=scope_id,
+                )
+                manifest = version.get("manifest") or {}
+                sidecar = manifest.get("sidecar") or {}
+                human_recipe = any(
+                    item.get("source") == "web_customize"
+                    or item.get("authorized_admin") is True
+                    for item in provenance
+                    if isinstance(item, dict)
+                )
+                # A kernel.py is executable Python, even when Web-authored.  A
+                # recipe-only version remains a member's deliberate project
+                # mutation only when its activation provenance proves a Web
+                # save (or a post-fix administrator Host edit).  Legacy/unknown
+                # Host versions fail closed so the old poisoning path cannot be
+                # reactivated through the human rollback route.
+                needs_admin = sidecar.get("present") is True or not human_recipe
+                if needs_admin:
+                    try:
+                        principal = execution_principal.resolve()
+                    except PermissionError:
+                        principal = None
+                    if principal is None or not principal.is_admin:
+                        return _fail(
+                            "skill_admin_required",
+                            "project Skill executable or untrusted-history "
+                            "rollback requires a team administrator",
+                        )
         try:
             result = self.versions.rollback(
                 name,

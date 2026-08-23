@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from openai4s import execution_principal
 from openai4s.config import Config
 from openai4s.host import resource_allowlist
 from openai4s.skills_loader import SkillLoader, SkillVersionService
@@ -101,6 +102,36 @@ class SkillService:
         if getattr(skill, "source", "") == "project" and self.project_id:
             return "project", self.project_id
         return "personal", None
+
+    def _authorize_mutation(
+        self, scope: str, project_id: str | None
+    ) -> execution_principal.Principal:
+        """Apply team authorization in addition to interactive approval.
+
+        The permission broker answers whether the person running this turn
+        consents to an agent mutation.  It does not make that person an
+        administrator.  Both the personal Skill directory and a project Skill
+        overlay are executable inputs to later agent runs: a project member's
+        model must not be able to rewrite the recipe or ``kernel.py`` that a
+        peer will load merely because the member may make an ordinary project
+        edit through the authenticated Web API.  Host-originated Skill writes
+        therefore require an administrator in team mode.  Human project
+        authoring remains on the separate HTTP service and its project-member
+        authorization boundary.
+
+        ``resolve()`` is deliberately used instead of reading an optional
+        principal: an unpropagated team identity must fail closed.  Off team
+        mode it returns the explicit single-user principal, preserving the
+        existing local authoring contract.
+        """
+
+        principal = execution_principal.resolve()
+        if principal.is_admin:
+            return principal
+        target = "project" if scope == "project" and project_id else "personal"
+        raise PermissionError(
+            f"{target} Skill mutation through Host requires a team administrator"
+        )
 
     def load(self, name: str | dict) -> dict:
         """Load full guidance, with the historical fuzzy-name fallback."""
@@ -223,6 +254,8 @@ class SkillService:
             raise PermissionError(
                 f"skill {name!r} origin={existing.origin} is read-only"
             )
+        scope, project_id = self._writable_scope(existing)
+        principal = self._authorize_mutation(scope, project_id)
         candidate_directory = (
             existing.root.name if existing is not None else self.versions.slug(name)
         )
@@ -278,7 +311,6 @@ class SkillService:
                 fallback=existing.name if existing is not None else name,
             )
         files[relative] = updated_content.encode("utf-8")
-        scope, project_id = self._writable_scope(existing)
         self.versions.install(
             existing.name if existing is not None else name,
             files,
@@ -287,7 +319,16 @@ class SkillService:
             scope=scope,
             project_id=project_id,
             require_sidecar_gate=False,
-            metadata={"source": "host_skills_edit", "path": relative},
+            metadata={
+                "source": "host_skills_edit",
+                "path": relative,
+                # This bit is written by the trusted Host only after the
+                # authorization check above.  The human HTTP rollback service
+                # can therefore distinguish a post-fix administrator-authored
+                # recipe from an un-attributed legacy Host version without
+                # exposing a user id in version history.
+                "authorized_admin": principal.is_admin,
+            },
         )
 
         result: dict[str, Any] = {
@@ -312,8 +353,18 @@ class SkillService:
             raise KeyError(f"no such skill: {name!r}")
         if skill.read_only:
             raise PermissionError(f"skill {name!r} is read-only")
-        self.versions.publish(name, slug=skill.root.name)
-        return {"ok": True, "origin": "personal"}
+        scope, project_id = self._writable_scope(skill)
+        self._authorize_mutation(scope, project_id)
+        self.versions.publish(
+            name,
+            scope=scope,
+            project_id=project_id,
+            slug=skill.root.name,
+        )
+        return {
+            "ok": True,
+            "origin": "personal" if scope == "personal" else skill.origin,
+        }
 
     def delete(self, name: str) -> dict:
         if not self._permits(str(name or "")):
@@ -325,6 +376,7 @@ class SkillService:
         if skill.read_only:
             raise PermissionError(f"skill {name!r} is read-only")
         scope, project_id = self._writable_scope(skill)
+        self._authorize_mutation(scope, project_id)
         installation = self.versions.repository.get_installation(
             skill.name,
             scope=scope,
@@ -418,6 +470,7 @@ class SkillService:
             else {"name": name, "version_id": version_id, "scope": "personal"}
         )
         skill_name, scope, project_id, _limit = self._version_request(spec)
+        self._authorize_mutation(scope, project_id)
         target_version = str(spec.get("version_id") or "").strip()
         if not target_version:
             raise ValueError("skill version_id is required")

@@ -8,7 +8,7 @@ a support claim nobody has to take on faith is the only kind worth publishing.
 | --- | --- | --- | --- | --- |
 | macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization — **not yet done** |
 | macOS (Intel) | stable | runs | Seatbelt | the `.dmg` is Apple Silicon only; install from PyPI |
-| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | enforced-bubblewrap E2E — **written, not continuously verified** (`harness/smoke/linux_sandbox.py`; see below) |
+| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | full boundary E2E remains manual; private-PID Python/R interrupt and persistence run in every CI (`harness/smoke/linux_bwrap_interrupt.py`; see below) |
 | Windows (native) | **unsupported** | **refused** | none exists | not planned; use WSL2, which reports as Linux |
 | Anything else | unsupported | **refused** | — | — |
 
@@ -130,10 +130,14 @@ both. The tiers differ in what has been *proven*:
   top of a technical one. **That signing and notarization has not happened
   yet**, so the stable tier is the target, not the current state.
 - Linux is gated on a real enforced-bubblewrap end-to-end test rather than on a
-  probe that degrades. That test exists and asserts the backend really is
-  bubblewrap, so a host that silently fell back cannot report a pass for a
-  boundary it never tested. **It is not running in CI**, for the reason below,
-  so the Linux tier currently rests on manual runs.
+  probe that degrades. The full boundary test exists and asserts the backend
+  really is bubblewrap, so a host that silently fell back cannot report a pass
+  for a boundary it never tested. **That full test is not running in CI**
+  because the complete filesystem-and-egress path has not yet been
+  re-evaluated on the runner with the packaged AppArmor profile loaded. The
+  broad Linux tier therefore still rests on manual runs. A narrower CI smoke
+  now proves the private-PID interrupt path with real persistent Python and R
+  workers on every change.
 
 Both smokes check the same four boundaries, from one shared implementation
 ([`harness/smoke/sandbox_boundary.py`](../harness/smoke/sandbox_boundary.py)):
@@ -142,32 +146,42 @@ inside its workspace, and cannot leak the daemon's credentials into a
 subprocess it spawns. They are shared rather than copied because two copies
 drift until one platform quietly stops checking what the other still does.
 
-## Why the Linux smoke is not in CI
+The separate
+[`linux_bwrap_interrupt.py`](../harness/smoke/linux_bwrap_interrupt.py) smoke is
+deliberately narrower. It retains team `KernelReadIsolation`, requires the
+real `--unshare-pid` + `--info-fd` + procfs + pidfd production path, observes
+Python and R as PID 2, interrupts a long-running Cell, and proves the same
+kernel executes again. The hosted-runner job sets
+`OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1`, so this is evidence for process identity
+and SIGINT persistence only—not for the network boundary. The job pins Ubuntu
+24.04 and loads its packaged `bwrap-userns-restrict` AppArmor profile, which
+allows bwrap to construct the namespace and strips capabilities from the
+executed worker. It does not disable the runner's host-wide unprivileged-userns
+restriction.
 
-A GitHub-hosted runner cannot run it. `bwrap` creates its network namespace and
-then fails to bring up the loopback interface inside it:
+## Why the full Linux boundary smoke is not in CI
 
-```
-bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
-```
+An earlier GitHub-hosted run failed while bringing up loopback in bubblewrap's
+private network namespace. The current interrupt job now loads Ubuntu 24.04's
+packaged `bwrap-userns-restrict` AppArmor profile, which may also change that
+network-namespace behavior, but the complete filesystem-and-egress smoke has
+not yet been re-evaluated under that profile. The interrupt job deliberately
+allows raw networking so its process-identity evidence does not depend on
+network setup; that exception necessarily removes the network-denial assertion
+carried by the full boundary smoke.
 
-That is the runner's own confinement of unprivileged user namespaces, not a
-defect in the sandbox and not something the code under test can influence. The
-job was therefore red every night from the day it was added, and a check that
-cannot pass is not evidence of anything — it is a signal everyone learns to
-scroll past, which costs more than the absent check does.
-
-So the claim is downgraded here instead of being propped up by a job that never
-went green. To re-establish it, run the smoke on a Linux host that permits
-unprivileged user namespaces:
+The broader Linux claim therefore remains manual and explicitly unproven in
+CI. To establish it for a release, run the full smoke on a compatible Linux
+host:
 
 ```bash
 OPENAI4S_KERNEL_SANDBOX=enforce uv run python -m harness.smoke.linux_sandbox
 ```
 
-Restoring it to CI needs a runner where that is possible — a self-hosted Linux
-runner, or a container with the namespace permissions bwrap needs. Until one
-exists, "beta" here means the boundary is implemented and asserted by a test
+Adding it to CI requires first re-evaluating the full smoke on the profiled
+hosted runner, using a compatible self-hosted Linux runner, or using a
+container with the namespace permissions bwrap needs. Until one of those paths
+is verified, "beta" here means the boundary is implemented and asserted by a test
 someone has to run, not one that runs itself.
 
 ## Degraded sandboxes

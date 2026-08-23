@@ -155,7 +155,7 @@ def _install_fake_runtime(monkeypatch, runner, *, expect_attempt_for=None):
 
     monkeypatch.setattr(gateway_mod, "build_dispatcher", build_dispatcher)
     monkeypatch.setattr(gateway_mod, "Kernel", FakeKernel)
-    monkeypatch.setattr(runner, "_wire_delegation", lambda state: None)
+    monkeypatch.setattr(runner, "_wire_delegation", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_spawn_title_summary", lambda *args, **kwargs: None)
     runner.skills = SimpleNamespace(system_context="", bootstrap_code="")
     return dispatchers, kernels

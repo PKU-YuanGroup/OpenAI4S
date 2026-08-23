@@ -15,6 +15,7 @@ that grows with the fixtures rather than with the surface.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -827,21 +828,13 @@ def _drive_seeded_downloads(
     except Exception:  # noqa: BLE001 - already present on a re-drive
         pass
     frame_id = store.new_frame(kind="turn", project_id=_CAPTURE_PROJECT, status="ready")
-    blob = runner.workspace_for(frame_id) / _CAPTURE_FILENAME
-    blob.write_bytes(_CAPTURE_BYTES)
-    artifact = store.save_artifact(
-        path=str(blob),
-        filename=_CAPTURE_FILENAME,
-        # Opaque bytes on purpose. This route echoes the stored artifact's own
-        # content type, so seeding a `text/plain` would freeze a fact about the
-        # fixture; `application/octet-stream` is what the route promises when it
-        # knows nothing about the file, which is the honest general case.
-        content_type="application/octet-stream",
-        size_bytes=len(_CAPTURE_BYTES),
-        checksum=hashlib.sha256(_CAPTURE_BYTES).hexdigest(),
-        frame_id=frame_id,
-        root_frame_id=frame_id,
-        project_id=_CAPTURE_PROJECT,
+    artifact = runner.artifacts.upload(
+        {
+            "frame_id": frame_id,
+            "project_id": _CAPTURE_PROJECT,
+            "filename": _CAPTURE_FILENAME,
+            "content_base64": base64.b64encode(_CAPTURE_BYTES).decode("ascii"),
+        }
     )
     store.create_plan(
         frame_id=frame_id,
@@ -869,6 +862,14 @@ def _drive_seeded_downloads(
             root_frame_id=frame_id,
             frame_id=frame_id,
             project_id=_CAPTURE_PROJECT,
+            # Stage 2 makes every allow-shaped restart decision prove the
+            # immutable action envelope it resolves.  Seed a real envelope,
+            # rather than asking the route driver to approve a legacy row
+            # whose exact arguments can no longer be reconstructed.
+            canonical_arguments={
+                "filename": _CAPTURE_FILENAME,
+                "content_sha256": hashlib.sha256(_CAPTURE_BYTES).hexdigest(),
+            },
         )
     except Exception:  # noqa: BLE001 - already present on a re-drive
         pass
@@ -876,6 +877,7 @@ def _drive_seeded_downloads(
         content="capture memory", block="general", project_id=_CAPTURE_PROJECT
     )
     artifact_id = artifact["artifact_id"]
+    version_id = store.get_artifact(artifact_id)["latest_version_id"]
     probes: tuple[tuple[str, str, dict[str, list[str]]], ...] = (
         # Both notebook forms. The default is a zip *bundle* and a named
         # language is an `.ipynb`; a contract saying only "binary" cannot tell a
@@ -900,6 +902,11 @@ def _drive_seeded_downloads(
         # frozen contract credited `binary` to both. Only one of them ever
         # served it.
         (r"/artifacts/(.+)", f"/artifacts/{artifact_id}", {}),
+        (
+            r"/artifacts/versions/([^/]+)",
+            f"/artifacts/versions/{version_id}",
+            {},
+        ),
     )
     # Re-driven with a row present. The parameterless sweep runs before this
     # fixture exists, so it observes `memories: []` -- and an empty array
@@ -1158,6 +1165,8 @@ def _drive_session_surface(
         (r"/frames/([^/]+)/delegations", f"{base}/delegations"),
         (r"/frames/([^/]+)/recovery", f"{base}/recovery"),
         (r"/frames/([^/]+)/recovery/actions", f"{base}/recovery/actions"),
+        (r"/frames/([^/]+)/auto-mode", f"{base}/auto-mode"),
+        (r"/frames/([^/]+)/auto-audits", f"{base}/auto-audits"),
         (r"/frames/([^/]+)/branches", f"{base}/branches"),
         # One inventory entry covers both spellings; there is no bare
         # `/frames/<id>/checkpoints` pattern, and naming one would publish a
@@ -1332,23 +1341,18 @@ def _drive_session_surface(
     # the restore ran there was again nothing historical to name. Adjacent, on
     # a private artifact, with nothing scheduled between them.
     history_bytes = b"contract capture, versioned\n"
-    history_path = runner.workspace_for(frame_id) / _CAPTURE_HISTORY_FILENAME
-    history_path.write_bytes(history_bytes)
-    history_artifact = store.save_artifact(
-        path=str(history_path),
-        filename=_CAPTURE_HISTORY_FILENAME,
-        content_type="text/plain",
-        size_bytes=len(history_bytes),
-        checksum=hashlib.sha256(history_bytes).hexdigest(),
-        frame_id=frame_id,
-        root_frame_id=frame_id,
-        project_id=_CAPTURE_PROJECT,
+    history_artifact = runner.artifacts.upload(
+        {
+            "frame_id": frame_id,
+            "project_id": _CAPTURE_PROJECT,
+            "filename": _CAPTURE_HISTORY_FILENAME,
+            "content_text": history_bytes.decode("utf-8"),
+        }
     )
-    # Edited twice, because the route restores a version that has an immutable
-    # snapshot and the one `save_artifact` mints does not have one. With a
-    # single edit the only historical version is that original, and the route
-    # refuses it -- correctly, and with a message about snapshots that says
-    # nothing about the case a client actually hits.
+    # Edited twice to exercise a real historical version through the same
+    # exact writer the route itself uses. The fixture's initial upload already
+    # has immutable bytes; the second edit keeps the intended newest-history
+    # selection deterministic.
     edit_path = f"/artifacts/{history_artifact['artifact_id']}/edit"
     for revision in ("second", "third"):
         handler = _probe_handler(

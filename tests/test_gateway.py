@@ -8,11 +8,14 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 
-from openai4s.config import Config, LLMConfig
+from openai4s.config import AutoModeConfig, Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.server import gateway as gateway_mod
+from openai4s.server.artifacts import ArtifactOperationError
+from openai4s.server.urls import artifact_version_url
 from openai4s.store import get_store
 
 
@@ -832,6 +835,17 @@ def test_ws_subscribe_replay_enqueue_is_atomic_with_live_broadcast():
             self.replay_started = threading.Event()
             self.release_replay = threading.Event()
 
+        def refresh_visibility(self, root_frame_id):
+            """Re-asked outside the hub lock before every fan-out; a no-op
+            here, as it is on a daemon with no team mode."""
+
+        def may_receive(self, root_frame_id):
+            """The fan-out re-checks team visibility per delivery. A double
+            that is a subscriber has to answer the same question a real
+            connection does -- single-user is the permissive answer, which is
+            what this test is about."""
+            return True
+
         def send_json(self, event):
             self.events.append(dict(event))
             if event.get("type") == "replay_begin":
@@ -868,6 +882,161 @@ def test_ws_subscribe_replay_enqueue_is_atomic_with_live_broadcast():
     assert [
         event.get("chunk") for event in conn.events if event.get("type") == "text_chunk"
     ] == ["old", "new"]
+
+
+def test_ws_broadcast_refreshes_a_subscription_added_during_authorization():
+    """A subscriber may arrive while broadcast checks viewers outside its lock.
+
+    It receives the replay before the new event is recorded, so broadcast must
+    either refresh and deliver that event or keep it out until the event can be
+    replayed. Silently including the connection only in the final fan-out loses
+    exactly one event.
+    """
+    hub = gateway_mod.WSHub()
+    root = "root-subscribe-refresh-race"
+
+    class CheckedConnection:
+        def __init__(self, *, block_first=False):
+            self.alive = True
+            self.subs = set()
+            self.events = []
+            self.checked = set()
+            self.block_first = block_first
+            self.refresh_started = threading.Event()
+            self.release_refresh = threading.Event()
+
+        def refresh_visibility(self, root_frame_id):
+            if self.block_first:
+                self.block_first = False
+                self.refresh_started.set()
+                assert self.release_refresh.wait(2)
+            self.checked.add(root_frame_id)
+
+        def may_receive(self, root_frame_id):
+            return root_frame_id in self.checked
+
+        def send_json(self, event):
+            self.events.append(dict(event))
+
+    existing = CheckedConnection(block_first=True)
+    hub.add(existing)
+    hub.subscribe(root, existing)
+    existing.events.clear()
+
+    live = threading.Thread(
+        target=hub.broadcast,
+        args=(root, {"type": "text_chunk", "frame_id": root, "chunk": "new"}),
+    )
+    live.start()
+    assert existing.refresh_started.wait(2)
+
+    arriving = CheckedConnection()
+    hub.add(arriving)
+    hub.subscribe(root, arriving)
+    arriving.events.clear()
+
+    existing.release_refresh.set()
+    live.join(2)
+    assert not live.is_alive()
+    assert [event.get("chunk") for event in arriving.events] == ["new"]
+
+
+def test_ws_restored_visibility_replays_the_denied_sequence_gap():
+    hub = gateway_mod.WSHub()
+    root = "root-visibility-gap"
+
+    class VisibilityConnection:
+        refresh_visibility = gateway_mod.WSConnection.refresh_visibility
+        commit_visibility = gateway_mod.WSConnection.commit_visibility
+        note_delivered = gateway_mod.WSConnection.note_delivered
+
+        def __init__(self):
+            self.alive = True
+            self.subs = set()
+            self.events = []
+            self.allowed = True
+            self.visibility_check = lambda _root: self.allowed
+            self._visibility_denied = set()
+            self._last_delivered_seq = {}
+
+        def send_json(self, event):
+            self.events.append(dict(event))
+
+    conn = VisibilityConnection()
+    hub.broadcast(root, {"type": "text_reset", "frame_id": root})
+    hub.add(conn)
+    hub.subscribe(root, conn)
+    conn.events.clear()
+
+    hub.broadcast(root, {"type": "step", "marker": "before"})
+    conn.allowed = False
+    hub.broadcast(root, {"type": "step", "marker": "denied"})
+    conn.allowed = True
+    hub.broadcast(root, {"type": "step", "marker": "restored"})
+
+    markers = [event.get("marker") for event in conn.events if event.get("marker")]
+    assert markers == ["before", "denied", "restored"]
+    sequences = [event["seq"] for event in conn.events if "seq" in event]
+    assert sequences == [2, 3, 4]
+    types = [event.get("type") for event in conn.events]
+    assert types[1:5] == ["replay_begin", "step", "replay_end", "step"]
+
+
+def test_ws_idle_delta_gap_is_declared_when_visibility_returns():
+    hub = gateway_mod.WSHub()
+    root = "root-idle-visibility-gap"
+
+    class VisibilityConnection:
+        refresh_visibility = gateway_mod.WSConnection.refresh_visibility
+        commit_visibility = gateway_mod.WSConnection.commit_visibility
+        note_delivered = gateway_mod.WSConnection.note_delivered
+
+        def __init__(self):
+            self.alive = True
+            self.subs = set()
+            self.events = []
+            self.allowed = True
+            self.visibility_check = lambda _root: self.allowed
+            self._visibility_denied = set()
+            self._last_delivered_seq = {}
+
+        def send_json(self, event):
+            self.events.append(dict(event))
+
+    conn = VisibilityConnection()
+    hub.add(conn)
+    hub.subscribe(root, conn, 0, hub.epoch)
+    conn.events.clear()
+
+    conn.allowed = False
+    hub.broadcast(root, {"type": "kernel_status", "status": "busy"})
+    assert root not in hub._live  # idle deltas do not invent a running turn
+    conn.allowed = True
+    hub.broadcast(root, {"type": "kernel_status", "status": "idle"})
+
+    begin = next(e for e in conn.events if e.get("type") == "replay_begin")
+    assert begin["gap"] is True
+    delivered = [e for e in conn.events if e.get("type") == "kernel_status"]
+    assert [e["seq"] for e in delivered] == [2]
+
+
+def test_ws_replay_declares_an_unbuffered_idle_delta_at_the_tail():
+    hub = gateway_mod.WSHub()
+    root = "root-replay-tail-gap"
+    hub.broadcast(root, {"type": "text_reset", "frame_id": root})  # seq 1
+    hub.broadcast(root, {"type": "text_chunk", "chunk": "kept"})  # seq 2
+    # Approval cards replay from their durable source, so they advance the
+    # stream counter but intentionally do not enter the live-turn buffer.
+    hub.broadcast(root, {"type": "await_permission", "request_id": "p1"})  # seq 3
+
+    conn = _Recorder()
+    hub.add(conn)
+    # Exercise the envelope directly with a retained prefix and an unbuffered
+    # tail; subscribe intentionally omits completed live windows.
+    with hub._lock:
+        hub._enqueue_replay_locked(root, conn, hub._live[root]["events"], 1)
+
+    assert conn.replay_begin()["gap"] is True
 
 
 def test_ws_outbound_queue_covers_a_complete_resume_envelope():
@@ -1006,6 +1175,536 @@ def _cfg(tmp_path):
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
         max_turns=3,
     )
+
+
+def _stage1_cfg(tmp_path):
+    return Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+
+
+def _stage1_stage4_cfg(tmp_path):
+    return Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+        roadmap_features=RoadmapFeatureFlags(
+            stage1_trusted_delivery=True,
+            stage4_review_completion_gate=True,
+        ),
+    )
+
+
+def test_guardian_circuit_terminalizes_the_gateway_auto_run(tmp_path):
+    """A durable circuit beats standing allow and closes the owning Web run."""
+
+    from openai4s.permissions import broker
+
+    cfg = _cfg(tmp_path)
+    cfg.roadmap_features = RoadmapFeatureFlags(
+        stage2_auto_run_storage=True,
+        stage7_guardian_enforcement=True,
+    )
+    cfg.auto_mode = AutoModeConfig(
+        enabled=True,
+        result_review_mode="off",
+        approvals_reviewer="auto_review",
+        deployment_explicit=True,
+        deployment_explicit_fields=("preset", "approvals_reviewer"),
+    )
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    try:
+        # The exact threshold is durable and reconstructed by a fresh gate.
+        for index in range(3):
+            request = runner.store.create_permission_request(
+                decision_id=f"guardian-prior-{index}",
+                root_frame_id=frame_id,
+                frame_id=frame_id,
+                project_id="default",
+                tool="read_file",
+                target=f"note-{index}.txt",
+                payload={},
+                dangerous=False,
+                canonical_arguments={"path": f"note-{index}.txt"},
+                expires_at=int(time.time() * 1000) + 60_000,
+            )
+            runner.store.resolve_permission_request(
+                str(request["decision_id"]),
+                state="denied",
+                scope="once",
+                message="guardian denied",
+                resolution_context="guardian",
+            )
+
+        decisions = []
+
+        def hit_open_circuit(state, _emit, _visible):
+            decisions.append(
+                broker().gate(
+                    store=runner.store,
+                    frame_id=frame_id,
+                    project_id="default",
+                    method="read_file",
+                    target="otherwise-allowed.txt",
+                    canonical_arguments={"path": "otherwise-allowed.txt"},
+                    side_effect_class="read_only",
+                    guardian_config=cfg,
+                    approvals_reviewer="auto_review",
+                )
+            )
+            return "submitted"
+
+        runner._loop = hit_open_circuit
+        runner._spawn_title_summary = lambda *_args, **_kwargs: None
+        result = runner.run_message(frame_id, "default", "read the safe note")
+
+        assert result["status"] == "blocked_by_guardian"
+        assert decisions[0]["allow"] is False
+        assert "blocked_by_guardian" in decisions[0]["message"]
+        projected = runner.store.project_auto_mode_run(frame_id, frame_id)["run"]
+        assert projected["status"] == "blocked_by_guardian"
+        assert projected["terminal_reason"] == "blocked_by_guardian"
+        assert projected["stop_reason"] == "loop_detected"
+        assert any(
+            event.get("type") == "auto_run_terminal"
+            and event.get("status") == "blocked_by_guardian"
+            for event in hub.events
+        )
+        assert any(
+            event.get("type") == "frame_update"
+            and event.get("status") == "blocked_by_guardian"
+            for event in hub.events
+        )
+    finally:
+        broker().unregister_channel(frame_id)
+        runner.close()
+
+
+def _readiness(*, state="ready"):
+    ready = state == "ready"
+    unavailable = state == "unavailable"
+    return {
+        "schema_version": 1,
+        "enabled": True,
+        "profile": "standard",
+        "state": state,
+        "ready": ready,
+        "reason": (
+            None
+            if ready
+            else (
+                "package_inventory_unavailable"
+                if unavailable
+                else "environment_incomplete"
+            )
+        ),
+        "checked_locally": True,
+        "network_contacted": False,
+        "mutation_performed": False,
+        "requirements_digest": "sha256:" + "a" * 64,
+        "required_environments": ["python", "r"],
+        "missing_environments": [] if ready or unavailable else ["r"],
+        "missing_packages": (
+            {} if ready or unavailable else {"python": ["numpy"], "r": ["r-base"]}
+        ),
+        "environments": [],
+        "remediation": (
+            None
+            if ready or unavailable
+            else {
+                "kind": "managed_generation_repair",
+                "plan_argv": [
+                    "openai4s",
+                    "env",
+                    "plan",
+                    "python",
+                    "r",
+                    "--repair",
+                ],
+                "apply_argv": [
+                    "openai4s",
+                    "env",
+                    "apply",
+                    "python",
+                    "r",
+                    "--repair",
+                ],
+                "commands": [
+                    {
+                        "label": "plan",
+                        "argv": [
+                            "openai4s",
+                            "env",
+                            "plan",
+                            "python",
+                            "r",
+                            "--repair",
+                        ],
+                        "command": "openai4s env plan python r --repair",
+                    },
+                    {
+                        "label": "apply",
+                        "argv": [
+                            "openai4s",
+                            "env",
+                            "apply",
+                            "python",
+                            "r",
+                            "--repair",
+                        ],
+                        "command": "openai4s env apply python r --repair",
+                    },
+                ],
+                "requires_explicit_action": True,
+            }
+        ),
+    }
+
+
+def _write_standard_generation_fixture(
+    root: Path,
+    *,
+    missing: set[tuple[str, str]] | None = None,
+) -> None:
+    """Write metadata-only current generations for production discovery.
+
+    These prefixes deliberately contain no runnable interpreter: a placeholder
+    under ``bin/`` is enough for environment discovery, while readiness reads
+    only the real conda metadata inventory. Runtime verification belongs to the
+    managed-generation acceptance, not to this response-shape fixture.
+    """
+
+    from openai4s.kernel.readiness import load_standard_profile_requirements
+
+    omitted = missing or set()
+    requirements = load_standard_profile_requirements()
+    for name in ("python", "r"):
+        generation_id = f"env-stage1-{name}"
+        environment_root = root / name
+        prefix = environment_root / "generations" / generation_id / "prefix"
+        binary = prefix / "bin" / ("Rscript" if name == "r" else "python")
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+        metadata = prefix / "conda-meta"
+        metadata.mkdir()
+        for ordinal, package in enumerate(requirements[name]):
+            if (name, package) in omitted:
+                continue
+            (metadata / f"{ordinal:02d}-{package}.json").write_text(
+                json.dumps({"name": package}), encoding="utf-8"
+            )
+        (prefix.parent / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "generation_id": generation_id,
+                    "environment": name,
+                    "state": "ready",
+                    "spec_sha256": "0" * 64,
+                    "prefix": str(prefix),
+                    "created_at": 1,
+                    "interpreter": str(binary),
+                }
+            ),
+            encoding="utf-8",
+        )
+        (environment_root / "current").write_text(
+            generation_id + "\n", encoding="utf-8"
+        )
+
+
+def _production_environment_status_route(cfg: Config) -> dict:
+    """Drive the real route so response capture observes the production DTO."""
+
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    handler.path = "/api/v1/environments/status"
+    replies: list[tuple[int, dict]] = []
+    handler._json = lambda obj, code=200: replies.append((code, obj))
+    try:
+        handler._api("GET", "/environments/status")
+        code, body = replies[-1]
+        assert code == 200
+        return body
+    finally:
+        runner.close()
+
+
+def test_environment_status_route_captures_flag_off_production_projection(tmp_path):
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=False),
+    )
+
+    body = _production_environment_status_route(cfg)
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["enabled"] is False
+    assert readiness["state"] == "unavailable"
+    assert readiness["reason"] == "feature_disabled"
+
+
+def test_environment_status_route_captures_ready_production_metadata(
+    tmp_path, monkeypatch
+):
+    from openai4s.kernel import environments
+
+    generation_root = tmp_path / "managed-environments"
+    _write_standard_generation_fixture(generation_root)
+    monkeypatch.setenv("OPENAI4S_ENV_GENERATIONS_ROOT", str(generation_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(tmp_path / "no-conda-envs"))
+    environments.invalidate_cache()
+    cfg = _stage1_cfg(tmp_path)
+    try:
+        body = _production_environment_status_route(cfg)
+    finally:
+        environments.invalidate_cache()
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["state"] == "ready"
+    assert readiness["missing_environments"] == []
+    assert readiness["missing_packages"] == {}
+    assert [row["required_package_count"] for row in readiness["environments"]] == [
+        32,
+        8,
+    ]
+
+
+def test_environment_status_route_captures_both_missing_package_lists(
+    tmp_path, monkeypatch
+):
+    from openai4s.kernel import environments
+
+    generation_root = tmp_path / "managed-environments"
+    _write_standard_generation_fixture(
+        generation_root,
+        missing={("python", "numpy"), ("r", "r-jsonlite")},
+    )
+    monkeypatch.setenv("OPENAI4S_ENV_GENERATIONS_ROOT", str(generation_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(tmp_path / "no-conda-envs"))
+    environments.invalidate_cache()
+    cfg = _stage1_cfg(tmp_path)
+    try:
+        body = _production_environment_status_route(cfg)
+    finally:
+        environments.invalidate_cache()
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["state"] == "needs_repair"
+    assert readiness["missing_environments"] == []
+    assert readiness["missing_packages"] == {
+        "python": ["numpy"],
+        "r": ["r-jsonlite"],
+    }
+    remediation = readiness["remediation"]
+    assert remediation["plan_argv"][-1] == "--repair"
+    assert remediation["apply_argv"][-1] == "--repair"
+
+
+def test_environment_status_route_captures_package_inventory_failure(
+    tmp_path, monkeypatch
+):
+    """The real route preserves unknown inventory as ``null``, never zero."""
+
+    from openai4s.kernel import environments
+    from openai4s.kernel import readiness as readiness_mod
+
+    generation_root = tmp_path / "managed-environments"
+    _write_standard_generation_fixture(generation_root)
+    monkeypatch.setenv("OPENAI4S_ENV_GENERATIONS_ROOT", str(generation_root))
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(tmp_path / "no-conda-envs"))
+
+    def unavailable_inventory(*args, **kwargs):
+        del args, kwargs
+        raise OSError("fixture-local inventory failure")
+
+    monkeypatch.setattr(
+        readiness_mod.pkgscan, "collect_packages", unavailable_inventory
+    )
+    environments.invalidate_cache()
+    cfg = _stage1_cfg(tmp_path)
+    try:
+        body = _production_environment_status_route(cfg)
+    finally:
+        environments.invalidate_cache()
+
+    readiness = body["standard_profile_readiness"]
+    assert readiness["state"] == "unavailable"
+    assert readiness["reason"] == "package_inventory_unavailable"
+    assert readiness["missing_packages"] == {}
+    assert readiness["remediation"] is None
+    assert all(
+        row["installed_required_package_count"] is None
+        for row in readiness["environments"]
+    )
+
+
+def test_stage1_readiness_does_not_block_an_ordinary_control_only_turn(
+    tmp_path, monkeypatch
+):
+    """Message routing remains available when no Code Cell is selected."""
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def forbidden_readiness():
+        raise AssertionError("message admission probed scientific readiness")
+
+    monkeypatch.setattr(runner, "standard_profile_readiness", forbidden_readiness)
+    monkeypatch.setattr(
+        runner,
+        "run_message",
+        lambda *args, **kwargs: {
+            "status": "completed",
+            "frame_id": args[0],
+            "control_only": True,
+        },
+    )
+
+    try:
+        job = runner.submit_message(frame_id, "default", "answer with a control tool")
+        assert job.wait_result()["control_only"] is True
+    finally:
+        runner.close()
+
+
+def test_stage1_readiness_allows_plan_draft_but_refuses_approve_and_resume_pre_cas(
+    tmp_path, monkeypatch
+):
+    """Planning may proceed, but execution cannot strand a plan in ``executing``."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    monkeypatch.setattr(
+        runner,
+        "standard_profile_readiness",
+        lambda: _readiness(state="needs_repair"),
+    )
+    planned: list[tuple[str, bool]] = []
+
+    def plan_turn(
+        root_frame_id,
+        project_id,
+        user_text,
+        model=None,
+        plan=False,
+        annos=None,
+        explore=False,
+        frozen_binding=None,
+    ):
+        del project_id, user_text, model, annos, explore, frozen_binding
+        planned.append((root_frame_id, bool(plan)))
+        return {"status": "completed", "frame_id": root_frame_id}
+
+    monkeypatch.setattr(runner, "run_message", plan_turn)
+    try:
+        job = runner.submit_message(frame_id, "default", "draft a plan", plan=True)
+        assert job.wait_result()["status"] == "completed"
+        assert planned == [(frame_id, True)]
+
+        handler_cls = gateway_mod.make_handler(cfg, hub, runner)
+        handler = object.__new__(handler_cls)
+        handler.path = "/api/v1/frames/plan"
+        handler._query = lambda: {}
+        handler._body = lambda: {}
+        handler._json = lambda *_args, **_kwargs: None
+
+        for action, initial in (("approve", "draft"), ("resume", "paused")):
+            plan = runner.store.create_plan(
+                frame_id=frame_id,
+                project_id="default",
+                title=f"{action} me",
+                rationale="",
+                confidence="high",
+                steps=[
+                    {
+                        "id": f"{action}-step",
+                        "title": "science",
+                        "detail": "run it",
+                        "deliverables": [],
+                    }
+                ],
+                status=initial,
+            )
+            claim_name = (
+                "claim_plan_approval" if action == "approve" else "claim_plan_resume"
+            )
+            claims: list[str] = []
+
+            def must_not_claim(*_args):
+                claims.append(action)
+                raise AssertionError("readiness refusal happened after plan CAS")
+
+            monkeypatch.setattr(runner, claim_name, must_not_claim)
+            with pytest.raises(gateway_mod.GatewayError) as refused:
+                handler._api("POST", f"/frames/{frame_id}/plan/{action}")
+            assert refused.value.code == 409
+            assert refused.value.error_code == "environment_not_ready"
+            assert runner.store.get_plan(plan["plan_id"])["status"] == initial
+            assert claims == []
+            runner.store.update_plan(plan["plan_id"], status="discarded")
+    finally:
+        runner.close()
+
+
+def test_stage1_direct_notebook_cell_hits_readiness_before_any_cell_fact(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    monkeypatch.setattr(
+        runner,
+        "standard_profile_readiness",
+        lambda: _readiness(state="needs_repair"),
+    )
+    try:
+        with pytest.raises(gateway_mod.GatewayError) as refused:
+            runner.run_repl(frame_id, "default", "import missing_science_package")
+
+        assert refused.value.code == 409
+        assert refused.value.error_code == "environment_not_ready"
+        assert state.cell_index == 0
+        assert runner.store.cell_count(frame_id) == 0
+        attempts = runner.store._conn.execute(  # noqa: SLF001 - admission proof
+            "SELECT COUNT(*) FROM execution_attempts"
+        ).fetchone()[0]
+        assert attempts == 0
+        assert state.kernels.status("python")["alive"] is False
+        assert not [
+            event
+            for event in hub.events
+            if event.get("type", "").startswith("notebook_cell_")
+        ]
+    finally:
+        runner.close()
+
+
+def test_environment_status_exposes_stage1_readiness_as_a_top_level_projection(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    expected = _readiness(state="needs_repair")
+    monkeypatch.setattr(runner, "standard_profile_readiness", lambda: expected)
+    monkeypatch.setattr("openai4s.kernel.preinstall.installed_report", lambda: [])
+    monkeypatch.setattr("openai4s.kernel.preinstall.status", lambda: {"phase": "idle"})
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    try:
+        response = handler._environments_status()
+        assert set(response) == {"environments", "standard_profile_readiness"}
+        assert response["standard_profile_readiness"] is expected
+        assert response["environments"][0]["status"] == "ready"
+    finally:
+        runner.close()
 
 
 def test_permission_resolution_does_not_create_live_turn_buffer():
@@ -1177,6 +1876,967 @@ def test_gateway_projects_submit_only_result_as_live_and_persisted_final_message
         if event.get("type") == "frame_update" and event.get("status") == "completed"
     )
     assert final_text_index < terminal_index
+
+
+def test_stage4_persists_one_canonical_candidate_before_one_review(
+    monkeypatch, tmp_path
+):
+    """The runtime ordering, not a source-string approximation, is the contract."""
+
+    cfg = _cfg(tmp_path)
+    cfg.roadmap_features = RoadmapFeatureFlags(stage4_review_completion_gate=True)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    calls = {"review": 0, "finalize": 0}
+    observed = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def finish_with_two_prose_blocks(state, emit, visible):
+        for at, text in ((100, "first claim"), (200, "second claim")):
+            visible.append({"at": at, "text": text})
+            emit(
+                {
+                    "type": "text_chunk",
+                    "frame_id": frame_id,
+                    "block_type": "text",
+                    "chunk": text + "\n",
+                }
+            )
+        state.last_engine_completion = {"output": {"summary": "final claim"}}
+        state.last_model_prose = "first claim\nsecond claim"
+        return "submitted"
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "review_only"
+
+        def gate_after_turn(self, **fields):
+            calls["review"] += 1
+            rows = runner.store.list_branch_message_boundaries(
+                frame_id, branch_id=frame_id
+            )
+            observed["review_rows"] = rows
+            observed["review_fields"] = dict(fields)
+            return {
+                "terminal": "review_unavailable",
+                "user_truth": "Unavailable · not verified",
+                "unverified": True,
+                "gate": {"unverified": True},
+                "final_answer": fields["candidate_answer"],
+                "answer_replaced": False,
+            }
+
+        def finalize_after_delivery(self, **fields):
+            calls["finalize"] += 1
+            runner.store.promote_candidate_message(
+                message_id=fields["message_id"],
+                root_frame_id=frame_id,
+                branch_id=frame_id,
+                frame_id=frame_id,
+                expected_content=fields["expected_message_content"],
+                content=fields["promoted_message_content"],
+                metadata=fields["message_metadata"],
+            )
+            return {
+                **fields["result"],
+                "finalized": True,
+                "durable_terminal": False,
+            }
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", finish_with_two_prose_blocks)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    runner.completion_gate = _Gate()
+
+    try:
+        result = runner.run_message(frame_id, "default", "state the result")
+        assert result["status"] == "completed"
+        assert calls == {"review": 1, "finalize": 1}
+        review_assistants = [
+            row for row in observed["review_rows"] if row["role"] == "assistant"
+        ]
+        assert len(review_assistants) == 1
+        review_row = review_assistants[0]
+        review_metadata = json.loads(review_row["metadata"])
+        review_fields = observed["review_fields"]
+        assert review_row["message_id"]
+        assert review_row["content"] == review_fields["candidate_answer"]
+        assert review_metadata["review_status"] == "candidate"
+        assert review_metadata["turn_id"] == review_fields["turn_id"]
+        assert review_metadata["execution_id"] == review_fields["execution_id"]
+        rows = runner.store.list_branch_message_boundaries(frame_id, branch_id=frame_id)
+        assistants = [row for row in rows if row["role"] == "assistant"]
+        assert len(assistants) == 1
+        assistant_metadata = json.loads(assistants[0]["metadata"])
+        assert assistant_metadata["review_status"] == "review_unavailable"
+        resolved = [
+            event for event in hub.events if event["type"] == "candidate_resolved"
+        ]
+        assert len(resolved) == 1
+        assert resolved[0]["message_id"] == assistants[0]["message_id"]
+        assert resolved[0]["durable"] is True
+        assert resolved[0]["replaced"] is True
+        assert resolved[0]["answer_repaired"] is False
+        assert resolved[0]["text"] == assistants[0]["content"]
+        terminal_frames = [
+            event
+            for event in hub.events
+            if event["type"] == "frame_update" and event.get("status") != "processing"
+        ]
+        assert len(terminal_frames) == 1
+    finally:
+        runner.close()
+
+
+def test_stage3_prestart_freezes_real_selection_when_stage4_is_off(
+    monkeypatch, tmp_path
+):
+    """Stage 4's local ``off`` sentinel must not overwrite Stage 2/3 state."""
+
+    cfg = _cfg(tmp_path)
+    cfg.roadmap_features = RoadmapFeatureFlags(
+        stage2_auto_run_storage=True,
+        stage3_scientific_review_shadow=True,
+        stage4_review_completion_gate=False,
+    )
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    runner.auto_mode.patch(
+        frame_id,
+        {
+            "revision": 0,
+            "preset": "off",
+            "result_review_mode": "review_only",
+            # Keeps the pre-Candidate run enabled even before result review.
+            # Before the fix the gateway started that owner as mode=off, then
+            # Stage 3 replayed it as review_only and hit a digest mismatch.
+            "approvals_reviewer": "auto_review",
+        },
+    )
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def finish(state, emit, visible):
+        visible.append({"at": 100, "text": "candidate claim"})
+        emit(
+            {
+                "type": "text_chunk",
+                "frame_id": frame_id,
+                "block_type": "text",
+                "chunk": "candidate claim\n",
+            }
+        )
+        state.last_engine_completion = {"output": {"summary": "candidate claim"}}
+        state.last_model_prose = "candidate claim"
+        return "submitted"
+
+    def pass_review(_messages, _config, **_kwargs):
+        return {
+            "content": json.dumps({"verdict": "pass", "summary": "ok", "findings": []}),
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", finish)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    runner.scientific_review.chat_call = pass_review
+
+    try:
+        result = runner.run_message(frame_id, "default", "state the result")
+        assert result["status"] == "completed"
+
+        projection = runner.store.project_auto_mode_run(frame_id, frame_id)
+        run = projection["run"]
+        assert (
+            runner.store._conn.execute(
+                "SELECT COUNT(*) FROM auto_mode_runs WHERE root_frame_id=?",
+                (frame_id,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert run["mode"] == "review_only"
+        assert run["selection"]["result_review_mode"] == "review_only"
+        assert run["finished_at"] is not None
+
+        audits = runner.store.list_auto_mode_audits(
+            frame_id, frame_id, subject_kind="result_review"
+        )
+        rows = audits.get("audits") if isinstance(audits, dict) else audits
+        assert len(rows) == 1
+        assert rows[0]["status"] == "completed"
+        assert any(
+            event.get("type") == "auto_audit_completed"
+            for event in projection["events"]
+        )
+    finally:
+        runner.close()
+
+
+def test_stop_after_review_wins_the_gateway_terminal_proposal(monkeypatch, tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.roadmap_features = RoadmapFeatureFlags(stage4_review_completion_gate=True)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    observed = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def finish(state, emit, visible):
+        visible.append({"at": 100, "text": "candidate claim"})
+        emit(
+            {
+                "type": "text_chunk",
+                "frame_id": frame_id,
+                "block_type": "text",
+                "chunk": "candidate claim\n",
+            }
+        )
+        state.last_engine_completion = {"output": {"summary": "candidate claim"}}
+        state.last_model_prose = "candidate claim"
+        return "submitted"
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "review_only"
+
+        def gate_after_turn(self, **fields):
+            # This is the narrow window after review returns but before the
+            # gateway crosses the atomic finalizing boundary.
+            runner._state(frame_id, "default").cancel.set()
+            return {
+                "status": "verified",
+                "terminal": "verified",
+                "review_status": "verified",
+                "user_truth": "Verified",
+                "unverified": False,
+                "final_answer": fields["candidate_answer"],
+                "answer_replaced": False,
+            }
+
+        def finalize_after_delivery(self, **fields):
+            observed.update(fields)
+            return {
+                **fields["result"],
+                "finalized": True,
+                "durable_terminal": True,
+            }
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", finish)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    runner.completion_gate = _Gate()
+
+    try:
+        result = runner.run_message(frame_id, "default", "state the result")
+        assert result["status"] == "cancelled"
+        assert observed["delivered"] is False
+        assert observed["result"]["terminal"] == "cancelled"
+        assert observed["result"]["review_status"] == "cancelled"
+        rows = runner.store.list_branch_message_boundaries(frame_id, branch_id=frame_id)
+        candidate = next(row for row in rows if row["role"] == "assistant")
+        metadata = json.loads(candidate["metadata"])
+        assert metadata["review_status"] == "candidate"
+    finally:
+        runner.close()
+
+
+def _install_artifact_submission(
+    monkeypatch,
+    runner,
+    *,
+    filename="result.csv",
+    content=b"sample,score\nA,1\n",
+    cell_id="cell-stage1",
+    after_capture=None,
+):
+    """Make one deterministic submitted turn without an LLM or kernel."""
+    captured: dict[str, dict] = {}
+
+    def fake_ensure(state):
+        state.dispatcher = SimpleNamespace(last_output=None)
+        state.messages = [{"role": "system", "content": "sys"}]
+        state.booted = True
+
+    def finish_with_artifact(state, emit, visible):
+        del visible
+        path = state.workspace / filename
+        path.write_bytes(content)
+        record = runner._register_file(state, path, cell_id, emit)
+        assert record is not None
+        captured["record"] = record
+        if after_capture is not None:
+            after_capture(record)
+        state.dispatcher.last_output = {
+            "output": {"summary": "Scientific result is ready."},
+            "completion_bullets": ["Validated the result table"],
+        }
+        state.last_model_prose = ""
+        return "submitted"
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", finish_with_artifact)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *_a, **_k: None)
+    return captured
+
+
+def test_stage1_flag_off_keeps_legacy_completion_and_skips_delivery_ledger(
+    tmp_path, monkeypatch
+):
+    """The rollout must not change the default Artifact-bearing turn."""
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    captured = _install_artifact_submission(monkeypatch, runner)
+    try:
+        result = runner.run_message(frame_id, "default", "analyze the table")
+
+        assert result["status"] == "completed"
+        assert runner.stage1_trusted_delivery is False
+        assert runner.artifacts.trusted_delivery is False
+        assert runner.completion_delivery is None
+        legacy = "/api/artifacts/" + captured["record"]["artifact_id"].replace(
+            "/", "%2F"
+        )
+        chunks = "".join(
+            str(event.get("chunk") or "")
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+        )
+        assert legacy in chunks
+        assert "/api/v1/artifacts/" not in chunks
+        count = runner.store._conn.execute(  # noqa: SLF001 - integration proof
+            "SELECT COUNT(*) FROM completion_deliveries"
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        runner.close()
+
+
+def test_stage1_same_head_capture_is_verified_committed_then_emitted_and_reopens_once(
+    tmp_path, monkeypatch
+):
+    """A reused version is still this turn's deliverable, with durable ordering."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    artifact_path = state.workspace / "result.csv"
+    artifact_path.write_bytes(b"sample,score\nA,1\n")
+    first = runner._register_file(state, artifact_path, "cell-first", lambda _e: None)
+    assert first is not None
+    before_version_count = len(runner.store.list_versions(first["artifact_id"]))
+    captured = _install_artifact_submission(
+        monkeypatch,
+        runner,
+        cell_id="cell-second",
+    )
+
+    order: list[str] = []
+    delivery: dict[str, object] = {}
+    service = runner.completion_delivery
+    assert service is not None
+    real_build = service.build_manifest
+    real_commit = runner.store.commit_completion_delivery
+
+    def assert_no_link_was_emitted():
+        assert not [
+            event
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/" in str(event.get("chunk") or "")
+        ]
+
+    def observed_build(**kwargs):
+        assert_no_link_was_emitted()
+        verified = real_build(**kwargs)
+        order.append("verified")
+        return verified
+
+    def observed_commit(**kwargs):
+        assert order == ["verified"]
+        assert_no_link_was_emitted()
+        row = real_commit(**kwargs)
+        persisted = runner.store.list_messages(frame_id)
+        assert (
+            sum(
+                "/api/v1/artifacts/" in str(message.get("content") or "")
+                for message in persisted
+            )
+            == 1
+        )
+        delivery.update(row)
+        order.append("committed")
+        return row
+
+    monkeypatch.setattr(service, "build_manifest", observed_build)
+    monkeypatch.setattr(runner.store, "commit_completion_delivery", observed_commit)
+
+    try:
+        result = runner.run_message(frame_id, "default", "repeat the analysis")
+        assert result["status"] == "completed"
+        assert order == ["verified", "committed"]
+        assert captured["record"]["version_id"] == first["version_id"]
+        assert len(runner.store.list_versions(first["artifact_id"])) == (
+            before_version_count
+        )
+        observations = runner.store.list_artifact_capture_observations(
+            artifact_id=first["artifact_id"]
+        )
+        assert [row["producing_cell_id"] for row in observations] == [
+            "cell-first",
+            "cell-second",
+        ]
+        assert observations[-1]["capture_kind"] == "head_checksum_reused"
+
+        link_events = [
+            event
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/" in str(event.get("chunk") or "")
+        ]
+        assert len(link_events) == 1
+        assert link_events[0]["delivery_id"] == delivery["delivery_id"]
+        assert (
+            f"/api/v1/artifacts/versions/{first['version_id']}"
+            in link_events[0]["chunk"]
+        )
+        durable = runner.store.get_completion_delivery(str(delivery["delivery_id"]))
+        assert durable is not None and durable["status"] == "published"
+    finally:
+        runner.close()
+
+    reopened = get_store(cfg.db_path)
+    try:
+        linked = [
+            message
+            for message in reopened.list_messages(frame_id)
+            if "/api/v1/artifacts/" in str(message.get("content") or "")
+        ]
+        assert len(linked) == 1
+        metadata = json.loads(linked[0]["metadata"])
+        assert metadata["completion_delivery"]["delivery_id"] == (
+            delivery["delivery_id"]
+        )
+        reopened_delivery = reopened.get_completion_delivery(
+            str(delivery["delivery_id"])
+        )
+        assert reopened_delivery is not None
+        assert reopened_delivery["message_content"] == linked[0]["content"]
+    finally:
+        reopened.close()
+
+
+def test_stage4_reviews_the_exact_same_head_version_in_the_stage1_manifest(
+    tmp_path, monkeypatch
+):
+    """A checksum-reused capture is delivery evidence even when the head is stable."""
+
+    from openai4s.server.evidence_snapshot import collect_turn_evidence
+
+    cfg = _stage1_stage4_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    artifact_path = state.workspace / "result.csv"
+    artifact_path.write_bytes(b"sample,score\nA,1\n")
+    first = runner._register_file(state, artifact_path, "cell-first", lambda _e: None)
+    assert first is not None
+    _install_artifact_submission(monkeypatch, runner, cell_id="cell-second")
+    observed: dict[str, object] = {}
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "review_only"
+
+        def gate_after_turn(self, **fields):
+            snapshot = collect_turn_evidence(
+                runner.store,
+                root_frame_id=fields["root_frame_id"],
+                branch_id=fields["branch_id"],
+                turn_id=fields["turn_id"],
+                execution_id=fields["execution_id"],
+                user_request=fields["user_request"],
+                candidate_answer=fields["candidate_answer"],
+                structured_completion=fields["structured_completion"],
+                artifact_versions_before=fields["artifact_versions_before"],
+                produced_artifacts=fields["produced_artifacts"],
+                cell_count_before=fields["cell_count_before"],
+                step_count_before=fields["step_count_before"],
+            )
+            observed["snapshot"] = snapshot
+            return {
+                "terminal": "completed_with_issues",
+                "user_truth": "Completed · unverified",
+                "unverified": True,
+                "final_answer": fields["candidate_answer"],
+                "answer_replaced": False,
+                "snapshot": snapshot,
+            }
+
+        def finalize_after_delivery(self, **fields):
+            observed["delivered"] = fields["delivered"]
+            return {**fields["result"], "finalized": False, "durable_terminal": False}
+
+    runner.completion_gate = _Gate()
+    try:
+        result = runner.run_message(frame_id, "default", "repeat the analysis")
+        assert result["status"] == "completed"
+        snapshot = observed["snapshot"]
+        assert isinstance(snapshot, dict)
+        reviewed_versions = {row["version_id"] for row in snapshot["artifacts"]}
+        pending = runner.store.committed_completion_deliveries(root_frame_id=frame_id)
+        assert len(pending) == 1
+        manifest_versions = {
+            row["version_id"] for row in pending[0]["manifest"]["artifacts"]
+        }
+        assert reviewed_versions == manifest_versions == {first["version_id"]}
+        assert observed["delivered"] is True
+    finally:
+        runner.close()
+
+
+def test_stage4_never_publishes_a_stage1_manifest_the_repair_did_not_review(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_stage4_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    observed: dict[str, object] = {}
+
+    class _Gate:
+        @staticmethod
+        def active_mode(_root_frame_id):
+            return "auto_fix"
+
+        def gate_after_turn(self, **fields):
+            produced = fields["produced_artifacts"]
+            assert len(produced) == 1
+            artifact = produced[0]
+            return {
+                "terminal": "verified",
+                "user_truth": "Verified",
+                "unverified": False,
+                "final_answer": "Repaired prose that removed the trusted link.",
+                "answer_replaced": True,
+                "snapshot": {
+                    "artifacts": [
+                        {
+                            "artifact_id": artifact["artifact_id"],
+                            "version_id": "different-version",
+                            "size_bytes": artifact["size_bytes"],
+                            "checksum": artifact["checksum"],
+                        }
+                    ]
+                },
+            }
+
+        def finalize_after_delivery(self, **fields):
+            observed["delivered"] = fields["delivered"]
+            observed["result"] = fields["result"]
+            return {**fields["result"], "finalized": False, "durable_terminal": False}
+
+    runner.completion_gate = _Gate()
+    try:
+        result = runner.run_message(frame_id, "default", "repair the analysis")
+        assert result["status"] == "completed"
+        assert observed["delivered"] is False
+        assert observed["result"]["terminal"] == "review_unavailable"
+        assert observed["result"]["reason"] == "delivery_manifest_review_mismatch"
+        pending = runner.store.committed_completion_deliveries(root_frame_id=frame_id)
+        assert len(pending) == 1
+        durable = runner.store.get_completion_delivery(pending[0]["delivery_id"])
+        assert durable is not None
+        assert durable["status"] == "committed"
+        assert durable["message_metadata"]["review_status"] == "candidate"
+        resolved = [
+            event for event in hub.events if event["type"] == "candidate_resolved"
+        ]
+        assert len(resolved) == 1
+        assert resolved[0]["delivered"] is False
+        assert resolved[0]["durable"] is False
+        assert resolved[0]["replaced"] is False
+    finally:
+        runner.close()
+
+
+def test_stage1_candidate_commit_lost_response_replays_exactly_once(
+    tmp_path, monkeypatch
+):
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    real_commit = runner.store.commit_completion_delivery
+    calls = {"n": 0}
+
+    def commit_then_lose_response(**fields):
+        calls["n"] += 1
+        result = real_commit(**fields)
+        if calls["n"] == 1:
+            raise OSError("injected lost response after commit")
+        return result
+
+    monkeypatch.setattr(
+        runner.store, "commit_completion_delivery", commit_then_lose_response
+    )
+    try:
+        result = runner.run_message(frame_id, "default", "analyze the data")
+        assert result["status"] == "completed"
+        assert calls["n"] == 2
+        deliveries = runner.store.completion_deliveries_for_session(frame_id)
+        assert len(deliveries) == 1
+        messages = [
+            row
+            for row in runner.store.list_branch_message_boundaries(
+                frame_id, branch_id=frame_id
+            )
+            if row["role"] == "assistant"
+        ]
+        assert len(messages) == 1
+        assert messages[0]["message_id"] == deliveries[0]["message_id"]
+        assert deliveries[0]["status"] == "published"
+    finally:
+        runner.close()
+
+
+def test_stage1_publish_marker_fault_leaves_one_committed_message_for_recovery(
+    tmp_path, monkeypatch
+):
+    """A crash after emission is recoverable by delivery id, never a duplicate."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    publication_attempts: list[str] = []
+
+    def lose_publication_marker(delivery_id):
+        publication_attempts.append(delivery_id)
+        raise OSError("injected publication marker fault")
+
+    monkeypatch.setattr(
+        runner.store,
+        "mark_completion_delivery_published",
+        lose_publication_marker,
+    )
+    try:
+        result = runner.run_message(frame_id, "default", "deliver recoverably")
+
+        assert result["status"] == "completed"
+        assert len(publication_attempts) == 1
+        delivery_id = publication_attempts[0]
+        link_events = [
+            event
+            for event in hub.events
+            if event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/" in str(event.get("chunk") or "")
+        ]
+        assert len(link_events) == 1
+        assert link_events[0]["delivery_id"] == delivery_id
+        pending = runner.store.committed_completion_deliveries(root_frame_id=frame_id)
+        assert [row["delivery_id"] for row in pending] == [delivery_id]
+        assert (
+            sum(
+                "/api/v1/artifacts/" in str(message.get("content") or "")
+                for message in runner.store.list_messages(frame_id)
+            )
+            == 1
+        )
+    finally:
+        runner.close()
+
+    reopened = get_store(cfg.db_path)
+    try:
+        pending = reopened.committed_completion_deliveries(root_frame_id=frame_id)
+        assert [row["delivery_id"] for row in pending] == [delivery_id]
+        linked = [
+            message
+            for message in reopened.list_messages(frame_id)
+            if "/api/v1/artifacts/" in str(message.get("content") or "")
+        ]
+        assert len(linked) == 1
+        assert json.loads(linked[0]["metadata"])["completion_delivery"] == {
+            "delivery_id": delivery_id,
+            "manifest_sha256": pending[0]["manifest_sha256"],
+            "status": "committed",
+        }
+    finally:
+        reopened.close()
+
+
+def test_stage1_delivery_pin_rejects_delete_between_commit_and_link_emit(
+    tmp_path, monkeypatch
+):
+    """A committed exact-version claim pins its bytes before publication."""
+
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    captured = _install_artifact_submission(monkeypatch, runner)
+    commit_reached = threading.Event()
+    allow_commit_return = threading.Event()
+    real_commit = runner.store.commit_completion_delivery
+
+    def commit_then_pause(**kwargs):
+        row = real_commit(**kwargs)
+        commit_reached.set()
+        assert allow_commit_return.wait(5), "test did not release delivery commit"
+        return row
+
+    monkeypatch.setattr(runner.store, "commit_completion_delivery", commit_then_pause)
+    turn_result: dict[str, object] = {}
+
+    def run_turn():
+        try:
+            turn_result["value"] = runner.run_message(
+                frame_id, "default", "deliver before deleting"
+            )
+        except BaseException as error:  # pragma: no cover - reported below
+            turn_result["error"] = error
+
+    turn_thread = threading.Thread(target=run_turn)
+    try:
+        turn_thread.start()
+        assert commit_reached.wait(5), "turn never committed its delivery"
+        version_id = captured["record"]["version_id"]
+        version = runner.store.version_meta(version_id)
+        assert version is not None
+        assert Path(version["snapshot_path"]).is_file()
+        assert not any(
+            event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/versions/" in str(event.get("chunk") or "")
+            for event in hub.events
+        )
+
+        with pytest.raises(ArtifactOperationError) as refused:
+            runner.artifacts.delete(captured["record"]["artifact_id"])
+        assert refused.value.code == 409
+        assert "completion message" in refused.value.message
+        assert runner.store.version_meta(version_id) is not None
+        assert Path(version["snapshot_path"]).is_file()
+
+        allow_commit_return.set()
+        turn_thread.join(5)
+        assert not turn_thread.is_alive()
+        assert "error" not in turn_result
+        assert turn_result["value"]["status"] == "completed"
+        assert any(
+            event.get("type") == "text_chunk"
+            and f"/api/v1/artifacts/versions/{version_id}"
+            in str(event.get("chunk") or "")
+            for event in hub.events
+        )
+    finally:
+        allow_commit_return.set()
+        turn_thread.join(5)
+        runner.close()
+
+
+@pytest.mark.parametrize("fault", ["missing_snapshot", "hash_mismatch", "db_insert"])
+def test_stage1_artifact_delivery_faults_fail_closed_without_a_success_link(
+    tmp_path, monkeypatch, fault
+):
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def damage_snapshot(record):
+        if fault == "db_insert":
+            return
+        version = runner.store.version_meta(record["version_id"])
+        assert version is not None
+        snapshot = Path(version["snapshot_path"])
+        if fault == "missing_snapshot":
+            snapshot.unlink()
+        else:
+            snapshot.write_bytes(b"x" * int(version["size_bytes"]))
+
+    _install_artifact_submission(
+        monkeypatch,
+        runner,
+        after_capture=damage_snapshot,
+    )
+    if fault == "db_insert":
+        runner.store._conn.execute(  # noqa: SLF001 - injected transactional fault
+            "CREATE TRIGGER fail_stage1_delivery BEFORE INSERT "
+            "ON completion_deliveries BEGIN "
+            "SELECT RAISE(ABORT, 'injected stage1 delivery failure'); END"
+        )
+
+    try:
+        result = runner.run_message(frame_id, "default", "deliver the result")
+
+        assert result["status"] == "failed"
+        assert result["code"] == "artifact_delivery_unverified"
+        text_events = [
+            event for event in hub.events if event.get("type") == "text_chunk"
+        ]
+        assert text_events
+        assert all(
+            "/api/v1/artifacts/" not in str(event.get("chunk") or "")
+            for event in text_events
+        )
+        assistant = [
+            message
+            for message in runner.store.list_messages(frame_id)
+            if message.get("role") == "assistant"
+        ]
+        assert len(assistant) == 1
+        assert "no completion link was published" in assistant[0]["content"]
+        assert "/api/" not in assistant[0]["content"]
+        assert (
+            runner.store.committed_completion_deliveries(root_frame_id=frame_id) == []
+        )
+        count = runner.store._conn.execute(  # noqa: SLF001 - integration proof
+            "SELECT COUNT(*) FROM completion_deliveries WHERE root_frame_id=?",
+            (frame_id,),
+        ).fetchone()[0]
+        assert count == 0
+    finally:
+        runner.close()
+
+
+def test_stage1_commit_rechecks_snapshot_bytes_after_manifest_build(
+    tmp_path, monkeypatch
+):
+    """A verified manifest is not a capability to commit changed bytes."""
+    cfg = _stage1_cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    monkeypatch.setattr(
+        runner, "standard_profile_readiness", lambda: _readiness(state="ready")
+    )
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    _install_artifact_submission(monkeypatch, runner)
+    service = runner.completion_delivery
+    assert service is not None
+    real_build = service.build_manifest
+
+    def build_then_mutate(**kwargs):
+        verified = real_build(**kwargs)
+        version_id = verified.value["artifacts"][0]["version_id"]
+        version = runner.store.version_meta(version_id)
+        assert version is not None
+        snapshot = Path(version["snapshot_path"])
+        original = snapshot.read_bytes()
+        snapshot.write_bytes(bytes(byte ^ 0xFF for byte in original))
+        assert snapshot.stat().st_size == len(original)
+        return verified
+
+    monkeypatch.setattr(service, "build_manifest", build_then_mutate)
+    try:
+        result = runner.run_message(frame_id, "default", "deliver the result")
+
+        assert result["status"] == "failed"
+        assert result["code"] == "artifact_delivery_unverified"
+        assert (
+            runner.store.committed_completion_deliveries(root_frame_id=frame_id) == []
+        )
+        assert not any(
+            event.get("type") == "text_chunk"
+            and "/api/v1/artifacts/versions/" in str(event.get("chunk") or "")
+            for event in hub.events
+        )
+    finally:
+        runner.close()
+
+
+def test_stage1_messages_route_refuses_a_corrupt_delivery_ledger(tmp_path):
+    """REST reopen validates the durable delivery before projecting prose."""
+
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = gateway_mod.SessionState(
+        frame_id,
+        "default",
+        runner.workspace_for(frame_id),
+    )
+    source = state.workspace / "reopen.csv"
+    source.write_bytes(b"sample,score\nA,1\n")
+    record = runner._register_file(state, source, "cell-reopen", lambda _event: None)
+    assert record is not None
+    service = runner.completion_delivery
+    assert service is not None
+    verified = service.build_manifest(
+        root_frame_id=frame_id,
+        project_id="default",
+        versions=[record["version_id"]],
+    )
+    delivery = runner.store.commit_completion_delivery(
+        idempotency_key="reopen-corruption:completion",
+        root_frame_id=frame_id,
+        branch_id=frame_id,
+        frame_id=frame_id,
+        content="Verified completion with an exact Artifact link.",
+        manifest=verified.value,
+        expected_manifest_sha256=verified.sha256,
+    )
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    responses: list[tuple[dict, int]] = []
+    handler._json = lambda body, code=200: responses.append((body, code))
+    handler._query = lambda: {}
+    handler.path = f"/api/v1/frames/{frame_id}/messages"
+
+    try:
+        with runner.store._lock:  # noqa: SLF001 - durable fault injection
+            runner.store._conn.execute(  # noqa: SLF001
+                "UPDATE completion_deliveries SET manifest_json='{}' "
+                "WHERE delivery_id=?",
+                (delivery["delivery_id"],),
+            )
+            runner.store._conn.commit()  # noqa: SLF001
+
+        with pytest.raises(RuntimeError, match="completion delivery"):
+            handler._api("GET", f"/frames/{frame_id}/messages")
+        assert responses == []
+    finally:
+        runner.close()
 
 
 def test_submit_message_runs_turn_in_background(tmp_path):
@@ -2325,10 +3985,11 @@ def test_plan_restore_and_delete_artifact_created_shapes(tmp_path):
 def test_frame_update_status_literal_vocabulary(tmp_path):
     """Source-level lock on the frame_update status vocabulary documented in
     docs/webapp-api.md §3. Literal statuses in gateway.py emit sites are
-    exactly {processing, titled, failed, success, updated}; the run_message
-    terminal site emits a VARIABLE status ∈ {completed, failed, cancelled}
-    (asserted behaviorally by the structured-submit and max-turn tests above).
-    If this fails, a status was added/removed — update docs/webapp-api.md.
+    exactly {processing, titled, failed, success, updated}; the
+    run_message terminal site emits a VARIABLE status ∈ {completed, failed,
+    cancelled} (asserted behaviorally by the structured-submit and max-turn
+    tests above). If this fails, a status was added/removed — update
+    docs/webapp-api.md.
 
     The *vocabulary* is what docs/webapp-api.md promises, so the vocabulary is
     what is locked. This used to also require at least seven emit sites, which
@@ -2350,7 +4011,13 @@ def test_frame_update_status_literal_vocabulary(tmp_path):
         s = re.search(r'"status": "([a-z_]+)"', window)
         if s:
             literals.add(s.group(1))
-    assert literals == {"processing", "titled", "failed", "success", "updated"}
+    assert literals == {
+        "processing",
+        "titled",
+        "failed",
+        "success",
+        "updated",
+    }
 
     # The one status no longer written at more than one emit site. It is built
     # by a named helper, so it is checked by calling it -- which also pins that
@@ -2884,6 +4551,13 @@ def test_lineage_serializer_producing_cell_and_inputs(tmp_path):
     assert lin["dependency_mappings"] == {
         "inputs": ["legacy.csv", "raw.csv", "edge.csv"]
     }
+    assert lin["producer"] == {
+        "kind": "cell",
+        "frame_id": fid,
+        "frame_kind": "turn",
+        "producing_cell_id": "cell-7",
+        "cell_recorded": True,
+    }
 
     empty = handler._lineage("a-does-not-exist")
     assert empty == {
@@ -2949,6 +4623,84 @@ def test_lineage_serializer_follows_latest_and_restored_version_edges(tmp_path):
     restored = handler._lineage(versions[0]["artifact_id"])
     assert restored["dependency_mappings"] == {"inputs": ["input-a.txt"]}
     assert restored["interactions"][0]["files_read"] == ["input-a.txt"]
+
+
+def test_same_byte_capture_keeps_each_cells_lineage_without_rewriting_the_first(
+    tmp_path,
+):
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+    handler = object.__new__(handler_cls)
+    inputs = []
+    for name in ("input-first.txt", "input-second.txt"):
+        source = st.workspace / name
+        source.write_text(name, encoding="utf-8")
+        inputs.append(
+            store.save_artifact(
+                path=str(source),
+                filename=name,
+                content_type="text/plain",
+                size_bytes=source.stat().st_size,
+                checksum=hashlib.sha256(source.read_bytes()).hexdigest(),
+                frame_id=fid,
+            )
+        )
+    for index, cell_id in enumerate(("cell-first", "cell-second"), 1):
+        store.log_cell(
+            frame_id=fid,
+            root_frame_id=fid,
+            code=f"produce_from_{index}()",
+            result={"id": cell_id, "stdout": "", "stderr": "", "error": None},
+            cell_index=index,
+            files_read=[inputs[index - 1]["filename"]],
+            files_written=["same.txt"],
+        )
+
+    live = st.workspace / "same.txt"
+    live.write_bytes(b"identical")
+    snapshot = st.workspace / "same.snapshot"
+    snapshot.write_bytes(b"identical")
+    first = store.record_cell_artifact(
+        path=str(live),
+        filename="same.txt",
+        content_type="text/plain",
+        size_bytes=9,
+        checksum=hashlib.sha256(b"identical").hexdigest(),
+        producing_cell_id="cell-first",
+        frame_id=fid,
+        snapshot_path=str(snapshot),
+        input_version_ids=[inputs[0]["version_id"]],
+        reuse_matching_head=True,
+    )
+    second = store.record_cell_artifact(
+        path=str(live),
+        filename="same.txt",
+        content_type="text/plain",
+        size_bytes=9,
+        checksum=hashlib.sha256(b"identical").hexdigest(),
+        producing_cell_id="cell-second",
+        frame_id=fid,
+        snapshot_path=str(snapshot),
+        input_version_ids=[inputs[1]["version_id"]],
+        reuse_matching_head=True,
+    )
+
+    assert first["version_id"] == second["version_id"]
+    assert len(store.list_versions(first["artifact_id"])) == 1
+    lineage = handler._lineage(first["artifact_id"])
+    assert lineage["interactions"][0]["files_read"] == ["input-first.txt"]
+    assert lineage["dependency_mappings"] == {
+        "inputs": ["input-first.txt", "input-second.txt"]
+    }
+    assert [
+        observation["producing_cell_id"]
+        for observation in lineage["capture_observations"]
+    ] == ["cell-first", "cell-second"]
+    assert lineage["capture_observations"][1]["cell_index"] == 2
+    assert lineage["capture_observations"][1]["inputs"] == ["input-second.txt"]
+    assert lineage["capture_observations"][1]["frame_id"] == fid
+    assert lineage["capture_observations"][1]["frame_kind"] == "turn"
+    assert lineage["capture_observations"][1]["cell_recorded"] is True
 
 
 def test_upload_decodes_base64_or_refuses_it(tmp_path):
@@ -3105,6 +4857,12 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     assert (code, body) == (200, b"v1")
     assert ctype == store.version_meta(rec1["version_id"])["content_type"]
 
+    # Trusted completion uses a reserved exact-version namespace. It returns
+    # the same immutable bytes, but unlike the compatibility route it can
+    # never degrade to an Artifact-id or filename lookup.
+    handler._api("GET", f"/artifacts/versions/{rec1['version_id']}")
+    assert sends[-1][:2] == (200, b"v1")
+
     # artifact_id → the LATEST version's bytes (GET on a bare id is bytes,
     # not JSON — only DELETE matches the JSON route above it)
     handler._api("GET", f"/artifacts/{rec1['artifact_id']}")
@@ -3122,6 +4880,51 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     handler._api("GET", f"/artifacts/{rec1['version_id']}")
     assert sends[-1][:2] == (200, b"v1")
 
+    missing_version_trap = st.workspace / "no-such-version"
+    missing_version_trap.write_text("legacy-filename-fallback")
+    runner._register_file(st, missing_version_trap, "c4", lambda e: None)
+    handler._api("GET", "/artifacts/no-such-version")
+    assert sends[-1][:2] == (200, b"legacy-filename-fallback")
+    handler._api("GET", "/artifacts/versions/no-such-version")
+    assert sends[-1][0] == 404
+    handler._api("GET", "/artifacts/versions/%2E%2E")
+    assert sends[-1][0] == 404
+
+    # One decode, end to end: a literal "%2F" inside an opaque version id is
+    # encoded as "%252F" in the URL and must not become a path separator. The
+    # unicode/query/fragment characters exercise the rest of the URL helper's
+    # escaping contract at the same boundary.
+    opaque_version = "literal%2Fβ?#"
+    opaque_snapshot = cfg.artifacts_dir / "opaque-version"
+    opaque_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    opaque_snapshot.write_bytes(b"opaque-version-bytes")
+    with store._lock:  # noqa: SLF001 - seed an otherwise valid opaque legacy id
+        store._conn.execute(  # noqa: SLF001
+            """INSERT INTO artifact_versions(
+                   version_id, artifact_id, filename, content_type, size_bytes,
+                   checksum, path, snapshot_path, producing_cell_id, frame_id,
+                   created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                opaque_version,
+                rec1["artifact_id"],
+                "opaque.bin",
+                "application/octet-stream",
+                len(b"opaque-version-bytes"),
+                hashlib.sha256(b"opaque-version-bytes").hexdigest(),
+                str(opaque_snapshot),
+                str(opaque_snapshot),
+                "cell-opaque",
+                fid,
+                int(time.time() * 1000),
+            ),
+        )
+        store._conn.commit()  # noqa: SLF001
+    exact_url = artifact_version_url(opaque_version)
+    assert exact_url.endswith("/" + quote(opaque_version, safe=""))
+    handler._api("GET", exact_url.removeprefix("/api/v1"))
+    assert sends[-1][:2] == (200, b"opaque-version-bytes")
+
     # the wart: unknown ident answers this bytes route with a JSON envelope
     handler._api("GET", "/artifacts/no-such-ident")
     code, body, ctype = sends[-1]
@@ -3136,6 +4939,57 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
     assert envelope["status"] == 404
     assert envelope["request_id"] is None
     assert ctype.startswith("application/json")
+
+
+def test_stage1_exact_get_rechecks_committed_snapshot_bytes(tmp_path):
+    """An exact URL never serves bytes that drifted after delivery commit."""
+    cfg = _stage1_cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    store = runner.store
+    frame_id = store.new_frame(kind="turn", project_id="default", status="ready")
+    state = gateway_mod.SessionState(
+        frame_id,
+        "default",
+        runner.workspace_for(frame_id),
+    )
+    source = state.workspace / "committed.bin"
+    source.write_bytes(b"ORIGINAL")
+    record = runner._register_file(state, source, "cell-commit", lambda _event: None)
+    assert record is not None
+    service = runner.completion_delivery
+    assert service is not None
+    verified = service.build_manifest(
+        root_frame_id=frame_id,
+        project_id="default",
+        versions=[record["version_id"]],
+    )
+    store.commit_completion_delivery(
+        idempotency_key="exact-get:completion",
+        root_frame_id=frame_id,
+        branch_id=frame_id,
+        frame_id=frame_id,
+        content="Committed exact Artifact.",
+        manifest=verified.value,
+        expected_manifest_sha256=verified.sha256,
+    )
+    handler, sends = _bytes_handler(cfg, runner)
+    exact_path = artifact_version_url(record["version_id"]).removeprefix("/api/v1")
+
+    try:
+        handler._api("GET", exact_path)
+        assert sends[-1][:2] == (200, b"ORIGINAL")
+
+        version = store.version_meta(record["version_id"])
+        assert version is not None
+        snapshot = Path(version["snapshot_path"])
+        snapshot.write_bytes(b"MUTATED!")
+        assert snapshot.stat().st_size == len(b"ORIGINAL")
+
+        handler._api("GET", exact_path)
+        assert sends[-1][0] == 404
+        assert sends[-1][1] != b"MUTATED!"
+    finally:
+        runner.close()
 
 
 def test_preview_route_forces_html_content_type(tmp_path):
@@ -3825,6 +5679,48 @@ def test_a_cursor_within_the_same_run_replays_only_what_was_missed():
     replayed = [e for e in conn.events if e.get("type") == "text_chunk"]
     assert replayed, "the missed tail must still arrive"
     assert all(int(e["seq"]) > cursor for e in replayed)
+
+
+def test_candidate_resolution_is_kept_in_the_live_resume_window():
+    """Reconnect must not restore old Candidate prose with a terminal badge."""
+
+    hub = gateway_mod.WSHub()
+    root = "root-candidate-resolution"
+    hub.broadcast(root, {"type": "text_reset", "frame_id": root})
+    hub.broadcast(
+        root,
+        {
+            "type": "text_chunk",
+            "frame_id": root,
+            "chunk": "old claim",
+            "provisional": True,
+        },
+    )
+    cursor = int(hub._live[root]["events"][-1]["seq"])
+    hub.broadcast(
+        root,
+        {
+            "type": "candidate_resolved",
+            "frame_id": root,
+            "message_id": "m-final",
+            "delivered": True,
+            "durable": True,
+            "replaced": True,
+            "text": "corrected claim",
+            "review_status": "verified",
+        },
+    )
+
+    conn = _Recorder()
+    hub.add(conn)
+    hub.subscribe(root, conn, cursor, hub.epoch)
+
+    replayed = [
+        event for event in conn.events if event.get("type") == "candidate_resolved"
+    ]
+    assert len(replayed) == 1
+    assert replayed[0]["message_id"] == "m-final"
+    assert replayed[0]["text"] == "corrected claim"
 
 
 def test_a_fresh_subscriber_with_no_cursor_is_not_a_gap():

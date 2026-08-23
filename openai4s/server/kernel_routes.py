@@ -15,8 +15,9 @@ by parsing the handler source.
 
 Nothing else here was rewritten, and three things that look like oversights are
 not: the `store.get_frame(fid) or {}` fallback on the ten permissive routes, the
-duplicate `store.get_frame` in `kernel/variables`, and the six `notebook_repl`
-gates with `install` deliberately left ungated.
+duplicate `store.get_frame` in `kernel/variables`, and the six live-Notebook
+gates (`official_notebook_enabled`, covering the Stage 8 flag and the older
+`notebook_repl` override) with `install` deliberately left ungated.
 
 TWO POSITION DEPENDENCIES, written down because a 2,100-line if-chain is
 exactly where this kind of thing hides:
@@ -43,7 +44,9 @@ import os
 import re
 from typing import Any
 
-from . import contract, errors
+from openai4s.server.notebook_lineage import official_notebook_enabled
+
+from . import contract, errors, team_policy
 
 _EXECUTION = contract.RouteSpec(
     "kernel.execution",
@@ -143,6 +146,31 @@ ROUTES = contract.validate_routes(
     )
 )
 
+
+def _require_session_control(self: Any, store: Any, frame_id: str) -> None:
+    """Keep readable project sessions from becoming shared namespaces."""
+
+    identity = getattr(self, "_team_identity", None)
+    if not team_policy.may_control_session(store, identity, frame_id):
+        raise errors.GatewayError(
+            403,
+            "only the session owner or an admin may control its kernel",
+            "owner_only",
+        )
+
+
+def _require_instance_admin(self: Any, operation: str) -> None:
+    """Gate instance-global mutations while preserving single-user mode."""
+
+    identity = getattr(self, "_team_identity", None)
+    if identity is not None and not identity.is_admin:
+        raise errors.GatewayError(
+            403,
+            f"only an admin may {operation}",
+            "admin_only",
+        )
+
+
 #: Every pattern above is under `/frames/`, so a request that is not cannot
 #: match any of them -- and 56 of the 91 non-`/frames` routes are declared
 #: *after* this group's call site in `Handler._api`, so they used to walk all
@@ -175,7 +203,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _EXECUTE.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -184,6 +212,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             )
             return True
         fid = m.group(1)
+        _require_session_control(self, store, fid)
         f = store.get_frame(fid) or {}
         pid = f.get("project_id") or "default"
         body = self._body()
@@ -238,7 +267,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _RESTART.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -248,12 +277,13 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         pid = f.get("project_id") or "default"
         self._json(runner.restart_kernel(fid, pid))
         return True
     m = _STOP.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -263,11 +293,12 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         self._json(runner.stop_kernel(fid, f.get("project_id") or "default"))
         return True
     m = _INTERRUPT.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -275,6 +306,8 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
                 403,
             )
             return True
+        fid = m.group(1)
+        _require_session_control(self, store, fid)
         body = self._body()
         owner = body.get("owner") or body.get("owner_kind")
         owner_kind = owner.get("kind") if isinstance(owner, dict) else owner
@@ -283,7 +316,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             self._json(
                 {
                     "ok": False,
-                    "frame_id": m.group(1),
+                    "frame_id": fid,
                     "error": ("execution_id, owner.kind, and owner.id are required"),
                     "reason": ("execution_id, owner.kind, and owner.id are required"),
                 },
@@ -295,11 +328,11 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             "owner": owner,
             "owner_id": str(owner_id),
         }
-        self._json(runner.interrupt_kernel(m.group(1), **kwargs))
+        self._json(runner.interrupt_kernel(fid, **kwargs))
         return True
     m = _START.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -309,6 +342,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         self._json(runner.start_kernel(fid, f.get("project_id") or "default"))
         return True
     m = _VARIABLES.match(method, sub)
@@ -354,8 +388,10 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
     m = _INSTALL.match(method, sub)
     if m:
         # NOT gated by notebook_repl: prebuilt-env package install is a
-        # separate Customize → Compute affordance, not the code REPL, and
-        # the global /kernel/install route is ungated too.
+        # separate Customize → Compute affordance, not the code REPL. Both
+        # this route and global /kernel/install are nevertheless admin-only
+        # in team mode because they mutate the shared runtime environment.
+        _require_instance_admin(self, "install shared kernel packages")
         fid = m.group(1)
         f = store.get_frame(fid) or {}
         pid = f.get("project_id") or "default"
@@ -377,7 +413,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
         return True
     m = _ENV.match(method, sub)
     if m:
-        if not runner.cfg.notebook_repl:
+        if not official_notebook_enabled(runner.cfg):
             self._json(
                 {
                     "error": "notebook REPL is disabled; send a message to resume the agent"
@@ -387,6 +423,7 @@ def handle(self, method: str, sub: str, q: dict, runner: Any, store: Any) -> boo
             return True
         fid = m.group(1)
         f = store.get_frame(fid) or {}
+        _require_session_control(self, store, fid)
         pid = f.get("project_id") or "default"
         b = self._body()
         name = b.get("env") or b.get("name") or ""

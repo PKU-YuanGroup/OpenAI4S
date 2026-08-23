@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_guardian_allow_once_replay",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_contract"
+  ],
+  "surface": "auto_mode_contract",
+  "task": "Issue and atomically consume one exact-action capability, then reject its replay.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_v3",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "permission_guardian",
+    "outcome": "allow_once_replay",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-allow-replay",
+      "root_frame_id": "frame-stage0-allow-replay",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-allow-replay",
+      "execution_id": "execution-stage0-allow-replay"
+    },
+    "audit_id": "audit-stage0-allow-replay",
+    "canonical_action": {
+      "schema_version": 1,
+      "action_kind": "file_write",
+      "target": {
+        "scope": "workspace",
+        "relative_path": "results/stage0-allow-once.txt"
+      },
+      "parameters": {
+        "mode": "replace",
+        "content_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "risk": {
+        "risk_level": "low",
+        "dangerous": false,
+        "explicit_allowlist": true,
+        "irreversible": false,
+        "external_write": false
+      }
+    },
+    "policy_resolution": "ask",
+    "guardian_identity": {
+      "guardian_id": "permission-guardian",
+      "standing_allow_policy": "never"
+    },
+    "one_shot_capability": {
+      "capability_id": "cap-stage0-allow-replay",
+      "context_generation": "generation-stage0-allow-replay-1",
+      "expires_at": "2099-01-01T00:00:00Z",
+      "max_uses": 1
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "safety_boundary",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "auto_audit_started",
+      "auto_audit_completed",
+      "permission_resolved",
+      "permission_resolved",
+      "permission_resolved",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "retry_bounded",
+      "golden_payloads"
+    ]
+  }
+}

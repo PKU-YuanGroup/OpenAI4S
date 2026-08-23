@@ -1,6 +1,7 @@
 """Kernel tests: persistent namespace, print capture, error attribution,
 usage accounting, and host_call RPC round-trip (dispatcher stubbed)."""
 
+import ntpath
 import os
 import threading
 
@@ -9,6 +10,8 @@ import pytest
 from openai4s.config import Config, LLMConfig
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelBusyError
+from openai4s.kernel import manager as manager_mod
+from openai4s.kernel import worker as worker_mod
 from openai4s.kernel.environment import build_kernel_environment
 
 
@@ -52,6 +55,63 @@ def test_persistent_namespace():
         k.execute("x = 41")
         r = k.execute("print(x + 1)")
         assert r["stdout"].strip() == "42"
+
+
+def test_files_read_are_runtime_observations_not_source_guesses(tmp_path):
+    (tmp_path / "executed.txt").write_text("observed", encoding="utf-8")
+    (tmp_path / "dead.txt").write_text("not observed", encoding="utf-8")
+
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path)) as kernel:
+        result = kernel.execute(
+            "from pathlib import Path\n"
+            "if False:\n"
+            "    Path('dead.txt').read_text()\n"
+            "print(Path('executed.txt').read_text())\n"
+            "Path('write-only.txt').write_text('output')"
+        )
+
+    assert result["error"] is None
+    assert result["stdout"].strip() == "observed"
+    assert result["files_read"] == ["executed.txt"]
+    assert (tmp_path / "write-only.txt").read_text(encoding="utf-8") == "output"
+
+
+def test_files_read_normalize_workspace_paths_and_exclude_external_reads(tmp_path):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "input.bin").write_bytes(b"data")
+
+    with Kernel(dispatcher=_echo_dispatcher, cwd=str(tmp_path)) as kernel:
+        result = kernel.execute(
+            "import os\n"
+            "open(os.path.join('nested', '..', 'nested', 'input.bin'), 'rb').read()\n"
+            "open('/dev/null', 'rb').read()\n"
+            "fd = os.open('created.bin', os.O_CREAT | os.O_WRONLY, 0o600)\n"
+            "os.close(fd)"
+        )
+
+    assert result["error"] is None
+    assert result["files_read"] == ["nested/input.bin"]
+
+
+def test_file_read_path_normalization_uses_windows_rules_without_posix_imports():
+    def relative(raw_path, *, cwd=r"C:\Workspace\analysis"):
+        return worker_mod._workspace_relative_read_path(
+            raw_path,
+            root=r"C:\Workspace",
+            cwd=cwd,
+            isabs=ntpath.isabs,
+            normpath=ntpath.normpath,
+            relpath=ntpath.relpath,
+            separator="\\",
+        )
+
+    assert relative(r"..\Data\input.csv") == "Data/input.csv"
+    assert relative(r"c:\workspace\Data\input.csv") == "Data/input.csv"
+    assert relative(r"link\input.csv") == "analysis/link/input.csv"
+    assert relative(r"C:\Other\secret.csv") is None
+    assert relative(r"D:\Workspace\input.csv") is None
+    assert relative(r"C:\Workspace", cwd=r"C:\Workspace") is None
 
 
 def test_variable_inspector_reads_only_safe_builtins_without_repr_hooks():
@@ -133,6 +193,62 @@ def test_variable_inspector_limit_validation_is_local():
         with pytest.raises(TypeError, match="integer"):
             kernel.inspect_variables(limit=True)
         assert kernel.execute("print('aligned')")["stdout"].strip() == "aligned"
+
+
+class _InitializationFailureTransport:
+    """A transport peer that fails before a kernel candidate can be published."""
+
+    def __init__(self, failure: str) -> None:
+        self.failure = failure
+        self.process = None
+        self.stderr_tail = None
+        self.closed = False
+        self.killed = False
+        self._released = threading.Event()
+
+    def write_line(self, _line: str) -> None:
+        if self.failure == "write":
+            raise OSError("initialization write failed")
+
+    def read_line(self) -> str:
+        if self.failure == "read":
+            raise OSError("initialization read failed")
+        self._released.wait(timeout=5)
+        return ""
+
+    def alive(self) -> bool:
+        return not self.closed
+
+    def interrupt(self) -> bool:
+        return False
+
+    def kill(self) -> None:
+        self.killed = True
+        self._released.set()
+
+    def close(self, *, graceful: bool = True) -> None:
+        self.closed = True
+        self._released.set()
+
+
+@pytest.mark.parametrize("failure", ["write", "read"])
+def test_attestation_initialization_errors_close_the_transport(failure):
+    transport = _InitializationFailureTransport(failure)
+    with pytest.raises(RuntimeError, match="attestation initialization") as caught:
+        Kernel(transport_factory=lambda: transport)
+    assert isinstance(caught.value.__cause__, OSError)
+    assert transport.closed is True
+
+
+def test_attestation_initialization_deadline_kills_the_blocked_transport(
+    monkeypatch,
+):
+    transport = _InitializationFailureTransport("block")
+    monkeypatch.setattr(manager_mod, "_SKILL_SIDECAR_INITIALIZATION_TIMEOUT_S", 0.01)
+    with pytest.raises(RuntimeError, match="deadline"):
+        Kernel(transport_factory=lambda: transport)
+    assert transport.killed is True
+    assert transport.closed is True
 
 
 def test_kernel_child_environment_is_rebuilt_from_strict_allowlist(tmp_path):
@@ -322,7 +438,8 @@ def test_response_frame_shape():
     `cwd` is a host-side annotation added by the manager, not a field the
     worker produces: the observation formatter needs a workspace-relative place
     to spill an oversized stdout, and the manager is the only layer that knows
-    where that is. The worker protocol is unchanged — it never sends this key.
+    where that is. ``files_read`` is worker-observed response metadata; older
+    managers ignore unknown response fields and remain wire-compatible.
     """
     with Kernel(dispatcher=_echo_dispatcher) as k:
         r = k.execute("print('shape')")
@@ -335,6 +452,7 @@ def test_response_frame_shape():
             "interrupted",
             "trace",
             "guards",
+            "files_read",
             "usage",
             "cwd",
         }
