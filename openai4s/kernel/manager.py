@@ -210,6 +210,10 @@ class Kernel:
         self._protocol_transaction_lock = threading.Lock()
         self._action_context_local = threading.local()
         self._skill_sidecar_capture_failed = False
+        # Chunks that arrived stamped with someone else's cell id. Counted
+        # rather than silently dropped: a number nobody can read is the same
+        # dropped frame with a better conscience.
+        self._stale_stdout_chunks = 0
         self._skill_sidecar_attestation_key = b""
         self.generation = 0  # bumped on every (re)spawn
         # Minted here for a local worker, which learns it through
@@ -538,6 +542,22 @@ class Kernel:
                     if ftype == "host_call":
                         self._service_host_call(frame)
                     elif ftype == "stdout_chunk":
+                        # A chunk belongs to the cell whose id it carries.
+                        # Without this comparison ANY chunk read during this
+                        # call was attributed here -- including one stamped
+                        # with a previous cell's id, which is what a
+                        # `logging.StreamHandler` bound to that cell's
+                        # `sys.stdout`, a finalizer, or a background thread
+                        # still writing produces. Two things went wrong with
+                        # that: the stale text was concatenated into THIS
+                        # cell's stdout, and `on_chunk` fired for it -- so a
+                        # caller watching for the cell's first output (the
+                        # Notebook, `exec_peek`, and the interrupt contract's
+                        # own test) could be told user code had started before
+                        # this cell had compiled a line.
+                        if frame.get("id") != cell_id:
+                            self._stale_stdout_chunks += 1
+                            continue
                         text = frame.get("text", "")
                         stdout_chunks.append(text)
                         if on_chunk is not None and text:

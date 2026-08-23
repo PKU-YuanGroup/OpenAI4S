@@ -390,10 +390,27 @@ def _write_frame(obj: dict) -> None:
         else:
             replacement = {"type": "log", "msg": note}
         line = json.dumps(replacement, ensure_ascii=False) + "\n"
-    with _write_lock():
-        out = _proto_out()
-        out.write(line)
-        out.flush()
+    # A KeyboardInterrupt raised inside this critical section unwinds through
+    # the protocol lock, and the worker's very next act after an interrupt is
+    # to write the response frame through that same lock. CPython does not
+    # promise that a signal arriving between `acquire()` and the `with` block's
+    # cleanup registration leaves the lock released, and one lost release here
+    # is a worker that never answers the cell it was told to stop -- alive, its
+    # namespace intact, and silent until the watchdog kills it. So the signal
+    # is deferred across the write and raised the moment the lock is back.
+    deferred = _in_user_code[0]
+    if deferred:
+        _in_user_code[0] = False
+    try:
+        with _write_lock():
+            out = _proto_out()
+            out.write(line)
+            out.flush()
+    finally:
+        if deferred:
+            _in_user_code[0] = True
+    if deferred:
+        _raise_if_sigint_pending()
 
 
 # --- resource accounting -------------------------------------------
@@ -627,8 +644,23 @@ def _complete_skill_sidecar_attestations(_audit=sys.audit) -> None:
 
 
 # SIGINT discipline
+#
+# One delivered SIGINT must end exactly one cell, and must never end the
+# worker. Three states carry that:
+#
+#   _in_user_code     the handler may raise right now
+#   _sigint_pending   a signal arrived while it could not, and is owed
+#   _sigint_delivered this cell's KeyboardInterrupt came from a SIGNAL, not
+#                     from user code raising KeyboardInterrupt itself
+#
+# `_sigint_pending` is the half that was missing. `Kernel.interrupt()` sends
+# ONE signal; every window in which the handler could not raise it used to
+# swallow it AND disarm, so a stop pressed a millisecond early left the cell
+# running to completion with nothing anywhere saying the interrupt had been
+# dropped. Deferring instead of dropping keeps the one signal the host sent.
 _in_user_code = [False]
 _sigint_delivered = [False]
+_sigint_pending = [False]
 
 
 def _sigint_swallow(signum, frame):  # noqa: ANN001, ARG001
@@ -636,21 +668,48 @@ def _sigint_swallow(signum, frame):  # noqa: ANN001, ARG001
     return None
 
 
+def _disarm_sigint() -> None:
+    try:
+        signal.signal(signal.SIGINT, _sigint_swallow)
+    except (ValueError, OSError):  # pragma: no cover - not main thread
+        pass
+
+
 def _sigint_handler(signum, frame):  # noqa: ANN001, ARG001
-    # one-shot: immediately disarm so a second signal during unwinding is eaten
-    signal.signal(signal.SIGINT, _sigint_swallow)
     if _in_user_code[0]:
+        # one-shot: disarm so a second signal during unwinding is eaten
+        _disarm_sigint()
         _sigint_delivered[0] = True
         raise KeyboardInterrupt
-    # else: we're in the loop skeleton — swallow, keep the worker alive
+    # Not raisable yet: either the cell has not reached its first bytecode, or
+    # user code is inside a protocol write and unwinding through the write lock
+    # is not safe. Record it and STAY ARMED -- the previous code disarmed here,
+    # which turned "too early" into "uninterruptible for the rest of the cell".
+    _sigint_pending[0] = True
 
 
 def _arm_sigint() -> None:
     _sigint_delivered[0] = False
+    _sigint_pending[0] = False
     try:
         signal.signal(signal.SIGINT, _sigint_handler)
     except (ValueError, OSError):
         pass  # not main thread / unsupported
+
+
+def _raise_if_sigint_pending() -> None:
+    """Raise a SIGINT that arrived while the handler could not raise it.
+
+    Called at the first instruction of user code and immediately after every
+    protocol write user code can cause, so a deferred signal is owed for
+    microseconds rather than for the length of the cell.
+    """
+    if not _sigint_pending[0]:
+        return
+    _sigint_pending[0] = False
+    _disarm_sigint()
+    _sigint_delivered[0] = True
+    raise KeyboardInterrupt
 
 
 def _register_cell(code: str, tag: str) -> None:
@@ -934,6 +993,16 @@ def _run_cell(
     _ACTIVE_CELL_ID[0] = cell_id
     _ACTIVE_CELL_ORIGIN[0] = origin
 
+    # Armed HERE, at the top of the cell, and not thirty lines further down.
+    # `sys.stdout` is swapped to the chunk-emitting buffer below, and between
+    # that swap and the old arming point sat `GuardBundle.before_cell()`, whose
+    # `import matplotlib.pyplot` has been measured at 18.4 seconds against a
+    # cold font cache. A host watching for the cell's first stdout chunk can
+    # therefore see output -- and send its one interrupt -- while the worker is
+    # still in that phase. Arming first means such a signal is LATCHED rather
+    # than lost; it is raised at the first instruction of user code below.
+    _arm_sigint()
+
     # The optional Jupyter adapter is a standalone language kernel, not a
     # second Agent/Host control plane.  Its public contract promises no Host
     # RPC or Gateway provenance capture, so do not install either facade in
@@ -984,7 +1053,6 @@ def _run_cell(
     _reset_peak_rss()
     t0 = time.time()
     cpu0 = _cpu_seconds()
-    _arm_sigint()
     _begin_file_read_observation(tag)
     try:
         try:
@@ -995,14 +1063,22 @@ def _run_cell(
             is_expr = False
 
         _in_user_code[0] = True  # narrow the 1-bytecode arming window
+        # `_arm_sigint` runs before `compile`, so the window is wider than one
+        # bytecode: anything the host sent while this cell was still compiling
+        # is owed to it, and is owed before the first user statement runs.
+        _raise_if_sigint_pending()
         if is_expr:
             result = eval(compiled, _NS)  # noqa: S307 - intentional in kernel
-            _in_user_code[0] = False
             if result is not None:
+                # Inside user code on purpose. `repr()` runs the object's own
+                # `__repr__`, and this print is the ONLY stdout an expression
+                # cell produces -- clearing the flag first made every chunk a
+                # host can see for such a cell arrive in the one state where an
+                # interrupt could not be raised. The `finally` below clears it
+                # unconditionally, so nothing here needs to.
                 print(repr(result))
         else:
             exec(compiled, _NS)  # noqa: S102 - intentional in kernel
-            _in_user_code[0] = False
     except KeyboardInterrupt as e:
         _in_user_code[0] = False
         if _sigint_delivered[0]:
@@ -1032,7 +1108,7 @@ def _run_cell(
     finally:
         _in_user_code[0] = False
         files_read = _finish_file_read_observation()
-        signal.signal(signal.SIGINT, _sigint_swallow)  # disarm outside user code
+        _disarm_sigint()  # outside user code, a signal must not raise here
         sys.stdout, sys.stderr = real_out, real_err
 
     wall = time.time() - t0
@@ -1560,6 +1636,14 @@ def _initialize_manager_attestation() -> bool:
 
 
 def main() -> None:
+    # First statement, before any handshake: an idle worker must survive a
+    # signal. Until the first cell armed one, SIGINT kept Python's default
+    # disposition, so a stop delivered before or between cells raised
+    # KeyboardInterrupt straight out of this loop and killed the worker --
+    # taking the namespace with it, which is the one thing the interrupt
+    # contract promises not to do. Placing it ahead of the attestation makes
+    # "the manager has a live worker" imply "that worker is signal-safe".
+    _disarm_sigint()
     _setup_protocol_channels()
     if not _initialize_manager_attestation():
         return

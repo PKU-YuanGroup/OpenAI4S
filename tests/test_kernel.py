@@ -4,6 +4,7 @@ usage accounting, and host_call RPC round-trip (dispatcher stubbed)."""
 import ntpath
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -689,25 +690,44 @@ def test_host_call_desync_over_budget_raises_and_kernel_survives():
 def test_sigint_interrupt_reports_interrupted_true_lineno_none():
     """The host.exec_interrupt contract: a DELIVERED SIGINT ends the cell with
     interrupted=True, error='Interrupted' and NO error_lineno — and the kernel
-    (with its namespace) survives the interrupt."""
-    with Kernel(dispatcher=_echo_dispatcher) as k:
+    (with its namespace) survives the interrupt.
+
+    The gate is a host_call, not a stdout chunk. A chunk proved nothing it was
+    once read as proving: `sys.stdout` is swapped to the chunk-emitting buffer
+    at the top of the cell, well before user code runs and before the SIGINT
+    handler used to be armed, and the guard phase in between has been measured
+    at 18 seconds against a cold Matplotlib font cache. So a test that
+    interrupted on the first chunk could deliver its one signal into the window
+    where the worker swallowed it — and then fail, intermittently, on a Linux
+    runner under load, blaming the interrupt path for a race in its own
+    premise. A `host_call` frame can only be emitted from inside the cell's
+    `host._call`, so receiving one is proof that `exec` is running user code.
+    """
+
+    reached_user_code = threading.Event()
+
+    def dispatcher(method, args):
+        if method == "ping":
+            reached_user_code.set()
+        return _echo_dispatcher(method, args)
+
+    with Kernel(dispatcher=dispatcher) as k:
         k.execute("marker = 'still-here'")
-        started = threading.Event()
         result = {}
 
         def run():
             result["r"] = k.execute(
-                "print('cell-started')\nimport time\ntime.sleep(30)",
-                on_chunk=lambda _text: started.set(),
+                "host._call('ping', [])\nimport time\ntime.sleep(30)"
             )
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
-        # the first stdout chunk proves user code is executing (handler armed)
-        assert started.wait(15), "cell never produced its first stdout chunk"
+        # 60s, not 15: a completely cold optional-science install can spend
+        # most of a minute in the guard phase before the first user byte runs.
+        assert reached_user_code.wait(60), "the cell never reached its host call"
         k.interrupt()
-        t.join(timeout=15)
-        assert not t.is_alive(), "interrupt did not stop the cell"
+        t.join(timeout=30)
+        assert not t.is_alive(), _interrupt_diagnosis(k)
 
         r = result["r"]
         assert r["interrupted"] is True
@@ -715,6 +735,70 @@ def test_sigint_interrupt_reports_interrupted_true_lineno_none():
         assert r["trace"]["error_lineno"] is None
         assert k.is_alive()
         assert k.execute("print(marker)")["stdout"].strip() == "still-here"
+
+
+def _interrupt_diagnosis(kernel) -> str:
+    """What a failing interrupt looked like, instead of `assert not True`.
+
+    This assertion has failed twice in CI and said nothing either time, so the
+    next occurrence carries its own evidence: whether the worker is alive, and
+    what the kernel itself says about the signal. On Linux `/proc/<pid>/status`
+    settles the question this test cannot otherwise answer — `SigCgt` bit 1 set
+    means the worker HAS a SIGINT handler installed, `SigIgn` means it is
+    ignoring the signal, and `ShdPnd` means one was delivered and never taken.
+    """
+
+    lines = ["interrupt did not stop the cell"]
+    proc = getattr(kernel, "_proc", None)
+    pid = getattr(proc, "pid", None)
+    lines.append(f"  worker pid={pid} alive={kernel.is_alive()}")
+    if pid is not None:
+        try:
+            status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+        except OSError:
+            lines.append("  /proc unavailable (not Linux, or the worker is gone)")
+        else:
+            wanted = ("State", "SigIgn", "SigCgt", "SigPnd", "ShdPnd")
+            for line in status.splitlines():
+                if line.split(":", 1)[0] in wanted:
+                    lines.append(f"  {line.strip()}")
+            lines.append("  (SIGINT is bit 1: mask 0x2 in the Sig* words)")
+    return "\n".join(lines)
+
+
+def test_a_chunk_from_another_cell_is_not_this_cell_s_output(monkeypatch):
+    """`on_chunk` and the assembled stdout belong to the cell that was asked
+    for. A frame stamped with a different cell id used to satisfy both — so a
+    `logging.StreamHandler` still bound to a finished cell's `sys.stdout`, or a
+    background thread writing after its cell returned, fed text into the next
+    cell's stream and told a live watcher that user code had started. The
+    interrupt contract is one of the things that watcher decides: a host that
+    stops a cell on its first output would have been aiming at a cell that had
+    not begun."""
+
+    seen: list[str] = []
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        real_readline = k._readline
+        injected = {"done": False}
+
+        def readline_once_from_another_cell():
+            if not injected["done"]:
+                injected["done"] = True
+                return {
+                    "type": "stdout_chunk",
+                    "id": "a-cell-that-is-not-this-one",
+                    "text": "not mine\n",
+                }
+            return real_readline()
+
+        monkeypatch.setattr(k, "_readline", readline_once_from_another_cell)
+        out = k.execute("print('mine')", on_chunk=seen.append)
+
+        assert injected["done"], "the foreign frame was never injected"
+        assert "not mine" not in "".join(seen), "a foreign cell's text reached on_chunk"
+        assert "not mine" not in out["stdout"]
+        assert out["stdout"].strip() == "mine"
+        assert k._stale_stdout_chunks == 1, "the dropped frame was not counted"
 
 
 def test_user_raised_keyboardinterrupt_is_normal_error_with_lineno():
@@ -727,6 +811,164 @@ def test_user_raised_keyboardinterrupt_is_normal_error_with_lineno():
         assert "KeyboardInterrupt" in r["error"]
         assert r["trace"]["error_lineno"] == 2
         assert k.is_alive()
+
+
+@pytest.fixture
+def sigint_probe(monkeypatch):
+    """Observe which SIGINT handler the worker installs, without installing one.
+
+    The contract under test is *which* handler is armed at each moment, so the
+    probe records the installs rather than performing them: a test that really
+    re-pointed this process's SIGINT would be asserting the worker's behaviour
+    by adopting it.
+    """
+
+    import signal as signal_mod
+
+    installed = {"handler": None}
+
+    def fake_signal(signum, handler):
+        assert signum == signal_mod.SIGINT
+        previous = installed["handler"]
+        installed["handler"] = handler
+        return previous
+
+    monkeypatch.setattr(worker_mod.signal, "signal", fake_signal)
+    for cell in (
+        worker_mod._in_user_code,
+        worker_mod._sigint_delivered,
+        worker_mod._sigint_pending,
+    ):
+        cell[0] = False
+    yield installed
+    for cell in (
+        worker_mod._in_user_code,
+        worker_mod._sigint_delivered,
+        worker_mod._sigint_pending,
+    ):
+        cell[0] = False
+
+
+def test_a_sigint_that_beats_user_code_is_owed_not_dropped(sigint_probe):
+    """`Kernel.interrupt()` sends exactly ONE signal, and `_arm_sigint` runs
+    before the cell is compiled -- so a stop pressed a millisecond early lands
+    while the handler cannot raise. Swallowing it there (and disarming, which
+    is what the handler used to do) made the rest of the cell uninterruptible:
+    the user saw no interrupt, no error, and a cell that ran to completion."""
+
+    worker_mod._arm_sigint()
+    assert sigint_probe["handler"] is worker_mod._sigint_handler
+
+    worker_mod._sigint_handler(worker_mod.signal.SIGINT, None)  # must not raise
+
+    assert worker_mod._sigint_pending[0] is True, "the signal was dropped"
+    assert (
+        sigint_probe["handler"] is worker_mod._sigint_handler
+    ), "the handler disarmed itself; the rest of the cell cannot be interrupted"
+
+    worker_mod._in_user_code[0] = True
+    with pytest.raises(KeyboardInterrupt):
+        worker_mod._raise_if_sigint_pending()
+
+    # Reported as a DELIVERED signal, so the cell ends interrupted=True with no
+    # error_lineno -- not as user code raising KeyboardInterrupt itself.
+    assert worker_mod._sigint_delivered[0] is True
+    assert worker_mod._sigint_pending[0] is False
+    assert sigint_probe["handler"] is worker_mod._sigint_swallow, "not one-shot"
+
+
+def test_arming_a_cell_clears_a_signal_owed_to_the_previous_one(sigint_probe):
+    """A pending flag that outlived its cell would interrupt the next one at
+    its first bytecode, for a stop the user pressed against a cell that has
+    already finished."""
+
+    worker_mod._sigint_pending[0] = True
+    worker_mod._sigint_delivered[0] = True
+
+    worker_mod._arm_sigint()
+
+    assert worker_mod._sigint_pending[0] is False
+    assert worker_mod._sigint_delivered[0] is False
+    worker_mod._in_user_code[0] = True
+    worker_mod._raise_if_sigint_pending()  # nothing owed: must not raise
+
+
+def test_a_sigint_during_a_protocol_write_leaves_the_write_lock_free(monkeypatch):
+    """A cell's stdout and its response frame go out through the SAME lock.
+
+    If a KeyboardInterrupt could unwind out of that critical section, the very
+    next thing the worker does after an interrupt -- write the response -- can
+    deadlock against a lock its own interrupted stdout write left held. The
+    kernel then stays alive with its namespace intact and never answers the
+    cell it was told to stop, which reads to `Kernel.execute` as a hang rather
+    than as an interrupt.
+    """
+
+    import signal as signal_mod
+    import sys as _sys
+    import threading as _threading
+
+    if not hasattr(_sys, "_openai4s_protocol_lock"):
+        monkeypatch.setattr(
+            _sys, "_openai4s_protocol_lock", _threading.Lock(), raising=False
+        )
+    monkeypatch.setattr(worker_mod.signal, "signal", lambda *_args: None)
+
+    written = []
+
+    class _SignallingSink:
+        """Stands in for the protocol channel, and fires a SIGINT mid-write."""
+
+        def write(self, text):
+            written.append(text)
+            worker_mod._sigint_handler(signal_mod.SIGINT, None)
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(worker_mod, "_proto_out", lambda: _SignallingSink())
+    worker_mod._in_user_code[0] = True
+    worker_mod._sigint_delivered[0] = False
+    worker_mod._sigint_pending[0] = False
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            worker_mod._write_frame({"type": "stdout_chunk", "id": "c1", "text": "hi"})
+
+        assert written, "the frame never reached the channel"
+        lock = worker_mod._write_lock()
+        acquired = lock.acquire(blocking=False)
+        try:
+            assert acquired, "the interrupt left the protocol write lock held"
+        finally:
+            if acquired:
+                lock.release()
+        assert worker_mod._sigint_delivered[0] is True
+    finally:
+        for cell in (
+            worker_mod._in_user_code,
+            worker_mod._sigint_delivered,
+            worker_mod._sigint_pending,
+        ):
+            cell[0] = False
+
+
+def test_an_idle_worker_survives_an_interrupt_before_its_first_cell():
+    """Interrupt stops a CELL. It must never end the worker.
+
+    Until the first cell armed a handler the worker kept Python's default
+    SIGINT disposition, so a stop delivered to an idle kernel raised
+    KeyboardInterrupt straight out of its own read loop and took the namespace
+    with it. `inspect_variables` is what proves the worker has reached that
+    loop, so this asserts the contract instead of racing it.
+    """
+
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        k.inspect_variables(limit=1)  # the worker is in its read loop
+        k.interrupt()
+        assert k.is_alive()
+        result = k.execute("marker = 'survived'\nprint(marker)")
+        assert result["error"] is None
+        assert result["stdout"].strip() == "survived"
 
 
 def test_host_bash_is_kernel_local_and_never_rpcs(tmp_path):
