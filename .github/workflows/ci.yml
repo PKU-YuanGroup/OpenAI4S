@@ -519,17 +519,22 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Install the zero-dependency server
+        run: uv sync --locked
       # Before the browser: the harness's own redaction, schema, binding and
-      # production-projection checks, which load no Playwright and contact no
-      # daemon. A precondition of the same gate rather than a second one -- the
-      # same relationship `pytest --collect-only` has to `pytest` -- and it
-      # fails in seconds when the summary contract has drifted, instead of
-      # after a browser download and a daemon boot.
+      # production-projection checks. No Playwright and no daemon -- but it is
+      # not free of Python: the production-projection check spawns
+      # `.venv/bin/python` to drive the real completion projector, which is the
+      # point of calling it a *production* check. Ordered after `uv sync` for
+      # that reason and before the browser download for the other one: it fails
+      # in seconds when the summary contract has drifted, instead of after a
+      # Chromium install and a daemon boot. (Run ahead of `uv sync` on the
+      # first attempt, where it reported `spawnSync <path> ENOENT` -- invisible
+      # locally, where a worktree already has its .venv.)
       - name: Stage 0 harness self-check (no browser, no daemon)
         run: OPENAI4S_STAGE0_SELF_TEST=1 node tests/browser_stage0_acceptance.mjs
-      - name: Install the zero-dependency server and browser driver
+      - name: Install the browser driver
         run: |
-          uv sync --locked
           npm install --no-save --ignore-scripts playwright@1.54.1
           npx playwright install --with-deps chromium
       - name: Accept Stage 0 against a disposable daemon
