@@ -893,15 +893,16 @@ def test_arming_a_cell_clears_a_signal_owed_to_the_previous_one(sigint_probe):
     worker_mod._raise_if_sigint_pending()  # nothing owed: must not raise
 
 
-def test_a_sigint_during_a_protocol_write_leaves_the_write_lock_free(monkeypatch):
-    """A cell's stdout and its response frame go out through the SAME lock.
+def test_a_sigint_during_a_protocol_write_still_finishes_the_frame(monkeypatch):
+    """A frame is written and flushed as one thing, or it is not a frame.
 
-    If a KeyboardInterrupt could unwind out of that critical section, the very
-    next thing the worker does after an interrupt -- write the response -- can
-    deadlock against a lock its own interrupted stdout write left held. The
-    kernel then stays alive with its namespace intact and never answers the
-    cell it was told to stop, which reads to `Kernel.execute` as a hang rather
-    than as an interrupt.
+    `write` fills a buffer; `flush` is what reaches the host. A
+    KeyboardInterrupt raised between them leaves a partial line on the channel,
+    and the next flush concatenates it with the frame that follows --
+    `Kernel._readline` hands the result to `json.loads`, so a correctly handled
+    interrupt surfaces to the caller as a JSONDecodeError from a stream that no
+    longer parses. A cell's stdout goes out through exactly this path, which is
+    where a stop lands.
     """
 
     import signal as signal_mod
@@ -914,17 +915,17 @@ def test_a_sigint_during_a_protocol_write_leaves_the_write_lock_free(monkeypatch
         )
     monkeypatch.setattr(worker_mod.signal, "signal", lambda *_args: None)
 
-    written = []
+    calls: list[str] = []
 
     class _SignallingSink:
-        """Stands in for the protocol channel, and fires a SIGINT mid-write."""
+        """The protocol channel, with a SIGINT arriving mid-frame."""
 
         def write(self, text):
-            written.append(text)
+            calls.append("write")
             worker_mod._sigint_handler(signal_mod.SIGINT, None)
 
         def flush(self):
-            return None
+            calls.append("flush")
 
     monkeypatch.setattr(worker_mod, "_proto_out", lambda: _SignallingSink())
     worker_mod._in_user_code[0] = True
@@ -934,7 +935,10 @@ def test_a_sigint_during_a_protocol_write_leaves_the_write_lock_free(monkeypatch
         with pytest.raises(KeyboardInterrupt):
             worker_mod._write_frame({"type": "stdout_chunk", "id": "c1", "text": "hi"})
 
-        assert written, "the frame never reached the channel"
+        assert calls == ["write", "flush"], (
+            "the interrupt escaped before the frame was flushed; the host's next "
+            f"read gets half a line (calls: {calls})"
+        )
         lock = worker_mod._write_lock()
         acquired = lock.acquire(blocking=False)
         try:
@@ -942,6 +946,7 @@ def test_a_sigint_during_a_protocol_write_leaves_the_write_lock_free(monkeypatch
         finally:
             if acquired:
                 lock.release()
+        # Deferred, not swallowed: the cell still ends as interrupted.
         assert worker_mod._sigint_delivered[0] is True
     finally:
         for cell in (
@@ -950,6 +955,43 @@ def test_a_sigint_during_a_protocol_write_leaves_the_write_lock_free(monkeypatch
             worker_mod._sigint_pending,
         ):
             cell[0] = False
+
+
+def test_an_interrupt_inside_a_host_call_leaves_the_kernel_usable():
+    """The seam the deferred-signal fix opens, asserted rather than assumed.
+
+    A protocol write now finishes before a latched SIGINT is raised, so the
+    interrupt can land in a new place: between a `host_call` request going out
+    and its `host_response` being read. The cell abandons an RPC the host has
+    already dispatched, and the answer arrives for nobody — it reaches the
+    worker's main loop as a frame that is not a request. That is contained by
+    the loop's bounded discard, but "contained" is a claim, and an abandoned
+    RPC that poisoned the next cell would look exactly like a healthy kernel
+    until someone made a second host call.
+    """
+
+    interrupted_from_the_dispatcher = threading.Event()
+
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+
+        def dispatcher(method, args):
+            if method == "ping" and not interrupted_from_the_dispatcher.is_set():
+                interrupted_from_the_dispatcher.set()
+                # Delivered while the worker is blocked reading this call's
+                # response — the exact window the deferral creates.
+                k.interrupt()
+            return _echo_dispatcher(method, args)
+
+        k.dispatcher = dispatcher
+        k.execute("marker = 'still-here'")
+        result = k.execute("host._call('ping', [])\nimport time\ntime.sleep(30)")
+
+        assert interrupted_from_the_dispatcher.is_set(), "the host call never ran"
+        assert result["interrupted"] is True, result
+        assert k.is_alive()
+        assert k.execute("print(marker)")["stdout"].strip() == "still-here"
+        # The abandoned RPC must not have consumed the next one's answer.
+        assert k.execute("print(host._call('ping', []))")["stdout"].strip() == "pong"
 
 
 def test_an_idle_worker_survives_an_interrupt_before_its_first_cell():

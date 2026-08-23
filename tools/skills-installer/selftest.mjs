@@ -158,6 +158,30 @@ test("resolves a Skill by directory name and by frontmatter name", () => {
   assert.deepEqual(unknown, ["no-such-skill"]);
 });
 
+test("a directory name always resolves to its own directory", () => {
+  // The two namespaces overlap: a Skill's frontmatter `name` need not equal
+  // its directory, and bioskills members prove it (`bio-alignment-alignment-io`
+  // declares `name: bio-alignment-io`). Nothing stops one Skill's declared
+  // name from being another Skill's directory, and if the name won, an install
+  // would copy the wrong recipe under the right label. The real tree has no
+  // such pair today, so the collision is constructed rather than hoped for --
+  // a test that can only pass is not a test.
+  const catalog = {
+    skills: [
+      { name: "impostor", dir: "real-one", collection: null, relPath: "skills/real-one" },
+      { name: "real-one", dir: "impostor", collection: null, relPath: "skills/impostor" },
+    ],
+    collections: [],
+  };
+  const { chosen } = select(catalog, ["real-one"]);
+  assert.equal(chosen.length, 1);
+  assert.equal(
+    chosen[0].relPath,
+    "skills/real-one",
+    "a directory name resolved to a different Skill that merely claimed it as a name"
+  );
+});
+
 // --- install / uninstall --------------------------------------------------
 
 function withTempDirs(body) {

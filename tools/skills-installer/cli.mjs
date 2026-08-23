@@ -67,7 +67,7 @@ OTHER
   --force                 Overwrite / remove even when locally modified
   --dry-run               Report what would happen and write nothing
   --json                  Machine-readable output (list, installed)
-  --quiet                 Only errors and results
+  --quiet                 Drop progress chatter; results still print
 
 The default target is chosen by detection, not preference: ${defaultTarget()} on
 this machine. The resolved absolute path is always printed before any write.
@@ -185,7 +185,7 @@ function chooseEntries(catalog, options) {
   return chosen;
 }
 
-async function commandList(options, out) {
+async function commandList(options, out, note) {
   const { rootDir, provenance } = await resolveSource({
     repo: options.repo,
     ref: options.ref,
@@ -193,7 +193,7 @@ async function commandList(options, out) {
     preferLocal: !options.remote,
     refresh: options.refresh,
     moduleDir: MODULE_DIR,
-    log: options.quiet ? () => {} : (message) => out(`… ${message}`),
+    log: (message) => note(`… ${message}`),
   });
   const catalog = buildCatalog(rootDir);
 
@@ -223,7 +223,7 @@ async function commandList(options, out) {
   return 0;
 }
 
-async function commandInstall(options, out) {
+async function commandInstall(options, out, note) {
   const targets = resolveTargets(options);
   const { rootDir, provenance } = await resolveSource({
     repo: options.repo,
@@ -232,14 +232,17 @@ async function commandInstall(options, out) {
     preferLocal: !options.remote,
     refresh: options.refresh,
     moduleDir: MODULE_DIR,
-    log: options.quiet ? () => {} : (message) => out(`… ${message}`),
+    log: (message) => note(`… ${message}`),
   });
   const catalog = buildCatalog(rootDir);
   const entries = chooseEntries(catalog, options);
 
+  // Under --dry-run the plan IS the deliverable, so it survives --quiet.
+  const plan = options.dryRun ? out : note;
+
   let failures = 0;
   for (const target of targets) {
-    out(`${options.dryRun ? "dry run → " : ""}${entries.length} Skill(s) → ${target.path}`);
+    plan(`${options.dryRun ? "dry run → " : ""}${entries.length} Skill(s) → ${target.path}`);
     const results = installSkills({
       sourceRoot: rootDir,
       targetDir: target.path,
@@ -256,13 +259,13 @@ async function commandInstall(options, out) {
         out(`  ${result.action}: ${result.entry.dir} — ${result.reason}`);
       }
     }
-    out(`  ${[...tally].map(([action, count]) => `${action} ${count}`).join(", ")}`);
-    if (!options.dryRun) out(`  manifest: ${path.join(target.path, MANIFEST_NAME)}`);
+    plan(`  ${[...tally].map(([action, count]) => `${action} ${count}`).join(", ")}`);
+    if (!options.dryRun) note(`  manifest: ${path.join(target.path, MANIFEST_NAME)}`);
   }
   return failures ? 1 : 0;
 }
 
-async function commandUninstall(options, out) {
+async function commandUninstall(options, out, note) {
   const targets = resolveTargets(options);
   let failures = 0;
   for (const target of targets) {
@@ -272,7 +275,7 @@ async function commandUninstall(options, out) {
       out(`nothing recorded in ${target.path}`);
       continue;
     }
-    out(`${options.dryRun ? "dry run → " : ""}removing ${names.length} Skill(s) from ${target.path}`);
+    note(`${options.dryRun ? "dry run → " : ""}removing ${names.length} Skill(s) from ${target.path}`);
     for (const result of uninstallSkills({
       targetDir: target.path,
       names,
@@ -283,7 +286,7 @@ async function commandUninstall(options, out) {
         failures += 1;
         out(`  ${result.action}: ${result.name} — ${result.reason}`);
       } else {
-        out(`  ${result.action}: ${result.name}`);
+        note(`  ${result.action}: ${result.name}`);
       }
     }
   }
@@ -342,16 +345,20 @@ async function main(argv) {
     return 2;
   }
 
-  const out = options.quiet ? () => {} : (line) => process.stdout.write(`${line}\n`);
+  // Two writers, because `--quiet` means "less chatter", not "no answer".
+  // With one writer, `list --quiet` printed nothing: the command's entire
+  // result was classified as progress.
+  const out = (line) => process.stdout.write(`${line}\n`);
+  const note = options.quiet ? () => {} : out;
 
   try {
     switch (options.command) {
       case "list":
-        return await commandList(options, out);
+        return await commandList(options, out, note);
       case "install":
-        return await commandInstall(options, out);
+        return await commandInstall(options, out, note);
       case "uninstall":
-        return await commandUninstall(options, out);
+        return await commandUninstall(options, out, note);
       case "installed":
         return commandInstalled(options, out);
       case null:

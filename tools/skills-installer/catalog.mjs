@@ -162,11 +162,14 @@ export function flatten(catalog) {
 /** Resolve requested names against the catalogue, reporting what is unknown. */
 export function select(catalog, names) {
   const all = flatten(catalog);
+  // Directory names are unique; frontmatter names are not guaranteed to be,
+  // and the two namespaces overlap (a bioskills member directory
+  // `bio-alignment-alignment-io` declares `name: bio-alignment-io`). Names
+  // first, directories second, so a directory name always resolves to its own
+  // directory rather than to whichever entry happened to claim it as a name.
   const byKey = new Map();
-  for (const entry of all) {
-    byKey.set(entry.dir, entry);
-    byKey.set(entry.name, entry);
-  }
+  for (const entry of all) byKey.set(entry.name, entry);
+  for (const entry of all) byKey.set(entry.dir, entry);
   const chosen = [];
   const unknown = [];
   const seen = new Set();

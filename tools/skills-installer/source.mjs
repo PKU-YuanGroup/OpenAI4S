@@ -3,12 +3,15 @@
  *
  * Two sources, in this order:
  *
- *   1. A checkout that already contains `skills/`. `npx github:PKU-YuanGroup/OpenAI4S`
- *      clones the repository before running this file, so that case needs no
- *      network at all and the installed bytes are the ones npm just fetched.
- *   2. The published source tarball at codeload.github.com, extracted into a
- *      cache directory. This is the path `npx openai4s-skills` takes, because
- *      the npm package deliberately does not carry 24 MB of Skills.
+ *   1. A tree that already contains `skills/`. That covers both ordinary
+ *      cases: `npx github:PKU-YuanGroup/OpenAI4S` clones the repository before
+ *      running this file, and the published npm package ships `skills/` inside
+ *      it (about 6.4 MiB packed). Either way the common path needs no network
+ *      at all and installs the bytes npm just fetched.
+ *   2. The source tarball at codeload.github.com, extracted into a cache
+ *      directory. This is the `--remote` / `--repo` / `--ref` path -- a
+ *      specific commit, a branch newer than the installed package, a fork --
+ *      and the fallback when neither tree above is present.
  *
  * What the manifest records about a download is what was actually verified:
  * the ref asked for, the URL, and the SHA-256 of the bytes received. It does

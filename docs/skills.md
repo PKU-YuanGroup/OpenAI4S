@@ -162,7 +162,7 @@ members sit one level below and are addressable by name like any other Skill.
 Neither side hardcodes a directory name, so a new bundled collection is
 installable the moment its marker exists.
 
-**Source.** The npm package carries `skills/` (about 6.4 MB packed), so the
+**Source.** The npm package carries `skills/` (about 6.4 MiB packed), so the
 common path needs no second download; `--remote`, `--repo`, or `--ref` fetch
 the source tarball from codeload.github.com instead, cached per ref under
 `~/.cache/openai4s-skills`. A download records the ref, the URL, and the

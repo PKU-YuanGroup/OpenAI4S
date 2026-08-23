@@ -390,14 +390,18 @@ def _write_frame(obj: dict) -> None:
         else:
             replacement = {"type": "log", "msg": note}
         line = json.dumps(replacement, ensure_ascii=False) + "\n"
-    # A KeyboardInterrupt raised inside this critical section unwinds through
-    # the protocol lock, and the worker's very next act after an interrupt is
-    # to write the response frame through that same lock. CPython does not
-    # promise that a signal arriving between `acquire()` and the `with` block's
-    # cleanup registration leaves the lock released, and one lost release here
-    # is a worker that never answers the cell it was told to stop -- alive, its
-    # namespace intact, and silent until the watchdog kills it. So the signal
-    # is deferred across the write and raised the moment the lock is back.
+    # A frame is written and flushed as one thing, or the host reads a line
+    # that is not a frame. `out.write(line)` fills a buffer and `out.flush()`
+    # is what puts it on the wire, so a KeyboardInterrupt raised between them
+    # leaves a partial line behind -- and the next flush concatenates it with
+    # whatever frame follows. `Kernel._readline` hands that to `json.loads`,
+    # so an interrupt the worker handled correctly reaches the caller as a
+    # JSONDecodeError from a desynchronised stream instead. A cell's stdout
+    # goes out through exactly this path, which is where a stop lands.
+    #
+    # So the signal is deferred across the write and raised the moment it is
+    # done. Deferring, not masking: the interrupt is owed and paid microseconds
+    # later, still inside user code, so the cell ends with interrupted=True.
     deferred = _in_user_code[0]
     if deferred:
         _in_user_code[0] = False
@@ -1062,10 +1066,13 @@ def _run_cell(
             compiled = compile(code, tag, "exec")
             is_expr = False
 
-        _in_user_code[0] = True  # narrow the 1-bytecode arming window
-        # `_arm_sigint` runs before `compile`, so the window is wider than one
-        # bytecode: anything the host sent while this cell was still compiling
-        # is owed to it, and is owed before the first user statement runs.
+        _in_user_code[0] = True
+        # From here the handler may raise. Everything before it -- the guard
+        # phase, both `compile()` calls, whose cost scales with the source --
+        # could only latch, so anything the host sent while this cell was
+        # getting ready is owed to it, and is owed before the first user
+        # statement runs. The comment this replaces called the gap "the
+        # 1-bytecode arming window", which it has not been for a long time.
         _raise_if_sigint_pending()
         if is_expr:
             result = eval(compiled, _NS)  # noqa: S307 - intentional in kernel
