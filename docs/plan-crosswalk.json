@@ -365,11 +365,11 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "MCP fault-driven eviction, bounded reads, process-group close. Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. The wrong-ID flood arm had no test until tests/test_mcp_lifecycle.py grew one; the budget could be deleted without turning anything red.",
+      "status_note": "MCP fault-driven eviction, bounded reads, process-group close. Re-audited: `_MAX_FRAME_BYTES` was counted in characters off a `text=True` pipe, one `read(1)` per character, so a frame at the limit allocated a four-million-element list of one-character strings. The reader is now raw and chunked and the budget is bytes. The wrong-ID flood arm had no test until tests/test_mcp_lifecycle.py grew one; the budget could be deleted without turning anything red. Re-audited 2026-08-23 after tests/test_mcp_lifecycle.py changed: four connections stopped putting the cold-subprocess `initialize` handshake on the same short deadline as the request under test (construct at 30s, then `connection._timeout = <short>`, the idiom the file already used at its flush points), and the late-reply-discard case waits for the abandoned id to be popped instead of sleeping four seconds. No assertion moved: the eviction bound, `len(_abandoned)`, the desync flush and the byte budget are asserted exactly as before, and the late-reply case now also asserts the late answer arrived, which it previously assumed.",
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "97ca5d4083638b08192f12865440d28feb42a5082ea9a1db9384060b6f114004"
+      "evidence_digest": "dcdd7b190837e9b35d329c8e16fe1c172cc84f7461d99b5f486e6997286acf71"
     },
     {
       "source": "R4",
@@ -463,11 +463,11 @@
       "integrated": "P0-3",
       "plan_conclusion": "纳入",
       "status": "closed",
-      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited with R4/P0-2: same reader, same byte budget. Re-audited with R4/P0-2: same reader, same byte budget. Re-audited with R4/P0-2: same reader, same byte budget. The wrong-ID flood arm had no test until tests/test_mcp_lifecycle.py grew one; the budget could be deleted without turning anything red.",
+      "status_note": "MCP fault-driven eviction, bounded reads, process-group close Re-audited with R4/P0-2: same reader, same byte budget. The wrong-ID flood arm had no test until tests/test_mcp_lifecycle.py grew one; the budget could be deleted without turning anything red. Re-audited 2026-08-23 after tests/test_mcp_lifecycle.py changed: four connections stopped putting the cold-subprocess `initialize` handshake on the same short deadline as the request under test (construct at 30s, then `connection._timeout = <short>`, the idiom the file already used at its flush points), and the late-reply-discard case waits for the abandoned id to be popped instead of sleeping four seconds. No assertion moved: the eviction bound, `len(_abandoned)`, the desync flush and the byte budget are asserted exactly as before, and the late-reply case now also asserts the late answer arrived, which it previously assumed.",
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "97ca5d4083638b08192f12865440d28feb42a5082ea9a1db9384060b6f114004"
+      "evidence_digest": "dcdd7b190837e9b35d329c8e16fe1c172cc84f7461d99b5f486e6997286acf71"
     },
     {
       "source": "R5",

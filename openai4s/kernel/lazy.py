@@ -87,8 +87,10 @@ class LazyKernel:
             kernel = self._kernel
         if kernel is None:
             return False
-        kernel.interrupt()
-        return True
+        # As above: report what the kernel says was delivered, not that a call
+        # was made. `None` is a double making no claim.
+        delivery = kernel.interrupt()
+        return delivery is None or bool(delivery)
 
     def shutdown(self) -> None:
         with self._lock:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -675,3 +677,62 @@ def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, 
     assert "model    : demo" in output
     assert "data_dir : /trusted/local-data" in output
     assert "/leaked" not in output
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGINT dispositions are POSIX")
+def test_ctrl_c_during_a_run_stops_this_agent_s_cell_and_still_exits():
+    """Both halves of what a terminal Ctrl-C used to do, restored.
+
+    The kernel worker now runs in its own session, so a group-wide SIGINT no
+    longer reaches it. That is the point -- a stray Ctrl-C must not end every
+    cell a daemon is running -- and it takes something real away from the CLI,
+    where `Agent.run` executes cells on this very thread: before, the signal
+    reached both this process (whose default handler raised KeyboardInterrupt
+    out of the run) and the worker (whose handler ended the cell). Restoring
+    one half without the other would be a behaviour change arriving through a
+    signal handler.
+    """
+
+    cli = _cli_module()
+    calls = []
+    agent = SimpleNamespace(
+        interrupt_foreground=lambda: (calls.append("interrupt"), True)[1]
+    )
+
+    before = signal.getsignal(signal.SIGINT)
+    with cli._foreground_cell_interrupt(agent):
+        handler = signal.getsignal(signal.SIGINT)
+        assert handler is not before, "no handler was installed"
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+
+    assert calls == ["interrupt"], "the running cell was not interrupted"
+    assert signal.getsignal(signal.SIGINT) is before, "the disposition leaked"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGINT dispositions are POSIX")
+@pytest.mark.parametrize(
+    "interrupt_foreground",
+    [
+        pytest.param(lambda: False, id="nothing_to_interrupt"),
+        pytest.param(
+            lambda: (_ for _ in ()).throw(RuntimeError("worker gone")),
+            id="interrupt_raises",
+        ),
+    ],
+)
+def test_ctrl_c_exits_even_when_the_cell_cannot_be_interrupted(interrupt_foreground):
+    """The exit is unconditional. A run that survived Ctrl-C because no worker
+    happened to be up, or because interrupting one raised, would be a new
+    behaviour nobody asked for -- and the user's second Ctrl-C would be their
+    only way out."""
+
+    cli = _cli_module()
+    agent = SimpleNamespace(interrupt_foreground=interrupt_foreground)
+
+    before = signal.getsignal(signal.SIGINT)
+    with cli._foreground_cell_interrupt(agent):
+        handler = signal.getsignal(signal.SIGINT)
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+    assert signal.getsignal(signal.SIGINT) is before

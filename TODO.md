@@ -27,21 +27,16 @@ is a factual record of the v0.3 plan and is validated by
       with no checkout. Needs an npm account with publish rights — no automated
       agent should hold that credential.
 
-## Interrupt path
-
-- [ ] **Decide on `start_new_session=True` for the local kernel worker**
-      ([`openai4s/kernel/transport.py`](openai4s/kernel/transport.py)). With
-      bubblewrap the wrapped argv already carries `--new-session`; without it
-      the worker stays in the daemon's process group, so a group-directed
-      SIGINT (an operator's Ctrl-C on a foreground daemon, a CI job
-      cancellation) reaches every kernel worker. The two configurations
-      therefore have different signal semantics, which is the kind of
-      difference that only shows up on the platform you do not develop on.
-      *Done when:* the change is made and an interactive `openai4s run` Ctrl-C
-      is verified on Linux, or the divergence is deliberately kept and the
-      reason is written into that file's comment block.
-
 ## Closed recently, recorded so it is not re-investigated
+
+The local kernel worker now spawns into its own session, so a signal aimed at
+the daemon's process group is no longer aimed at every cell under it — the
+divergence Linux + bubblewrap did not have. It landed with the two things that
+make it an improvement rather than a trade: the worker's group is captured at
+spawn and `kill` routes through the existing stop ladder, which reaps the cell's
+own subprocesses (impossible before, because the worker's group *was* the
+daemon's); and `openai4s run` installs a SIGINT handler that does what the
+terminal's group-wide Ctrl-C used to do.
 
 The wall-clock budgets in `tests/test_mcp_lifecycle.py`,
 `tests/test_local_jobs.py`, `tests/test_cluster_session_production_wiring.py`,

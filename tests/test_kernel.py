@@ -3,7 +3,9 @@ usage accounting, and host_call RPC round-trip (dispatcher stubbed)."""
 
 import ntpath
 import os
+import signal
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1037,6 +1039,70 @@ def test_arming_failure_is_announced_instead_of_returning_silently(monkeypatch):
     assert frames[0]["type"] == "log"
     assert "could not be armed" in frames[0]["msg"]
     assert "watchdog" in frames[0]["msg"], "say what does end the cell instead"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process sessions are POSIX")
+def test_the_worker_runs_in_its_own_session():
+    """A signal aimed at the daemon's process group must not also be aimed at
+    every cell running under it.
+
+    Linux + bubblewrap has had this since the wrapped argv started carrying
+    `--new-session`; without bwrap the worker sat in the parent's group, so the
+    two configurations had different signal semantics and the one nobody
+    develops on was the isolated one."""
+
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        worker_pid = k._proc.pid
+        assert os.getpgid(worker_pid) == worker_pid, "the worker leads no group"
+        assert os.getpgid(worker_pid) != os.getpgid(os.getpid())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
+def test_killing_the_worker_also_ends_what_the_cell_started():
+    """The kernel was the one long-lived child here with no group-scoped stop.
+
+    `proc.kill()` ends the leader; a cell's own subprocess is a grandchild and
+    survived it, so a watchdog kill left the actual work running with nothing
+    holding a handle to it. The group stop was not merely missing -- it was
+    unaddressable, because `os.getpgid(worker)` WAS the daemon's group and
+    signalling it would have taken the daemon down. Session isolation is what
+    makes the ladder pointable, so the two land together.
+
+    Deliberately a raw `subprocess.Popen`, not `host.bash`: bash already puts
+    itself in its own session, so it would prove nothing about the worker's.
+    """
+
+    with Kernel(dispatcher=_echo_dispatcher) as k:
+        result = k.execute(
+            "import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(child.pid)"
+        )
+        assert result["error"] is None, result
+        grandchild = int(result["stdout"].strip())
+        assert os.getpgid(grandchild) == os.getpgid(k._proc.pid), (
+            "the cell's subprocess is not in the worker's group, so this test "
+            "would pass without the stop ladder ever being exercised"
+        )
+
+        k.kill_worker()
+
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            try:
+                os.kill(grandchild, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:  # pragma: no cover - the failure this test exists for
+            try:
+                os.kill(grandchild, signal.SIGKILL)
+            except OSError:
+                pass
+            raise AssertionError(
+                f"the cell's subprocess {grandchild} outlived the worker; "
+                "killing the leader left the actual work running"
+            )
 
 
 def test_an_idle_worker_survives_an_interrupt_before_its_first_cell():

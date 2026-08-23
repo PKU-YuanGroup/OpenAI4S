@@ -825,17 +825,32 @@ class Kernel:
         recovery or abandonment remains the owner's responsibility.
 
         ``_proc`` stays the canonical handle for a local child — it is what
-        the sandbox signals and what the watchdog's tests substitute — and
-        the transport answers only when there is no local process, which is
-        the remote case.
+        the sandbox signals and what the watchdog's tests substitute — but the
+        kill goes through the transport whenever the transport is holding that
+        same process, because only the transport knows the session it spawned
+        it into. `proc.kill()` ends the leader; the cell's own subprocesses are
+        grandchildren and outlived it, so this escape hatch left the actual
+        work running with nothing holding a handle to it. A substituted
+        ``_proc`` still takes the direct path, which is what those tests are
+        about.
         """
-        if self._proc is not None:
+        # `getattr`, not attribute access: this method is the watchdog's escape
+        # hatch and its tests build a Kernel through `__new__` with `_proc`
+        # substituted and nothing else. Requiring a transport here made the
+        # exact-and-idempotent contract raise AttributeError instead.
+        transport = getattr(self, "_transport", None)
+        proc = self._proc
+        if proc is not None and getattr(transport, "process", None) is proc:
+            transport.kill()
+            return
+        if proc is not None:
             try:
-                self._proc.kill()
+                proc.kill()
             except (ProcessLookupError, OSError):
                 pass
             return
-        self._transport.kill()
+        if transport is not None:
+            transport.kill()
 
     def _service_host_call(self, frame: dict) -> None:
         call_id = frame.get("id")

@@ -271,6 +271,57 @@ def _sigterm_to_keyboard_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
+def _foreground_cell_interrupt(agent):
+    """Restore what Ctrl-C did before the worker had its own session.
+
+    Until the kernel worker was moved into its own session, a terminal Ctrl-C
+    was delivered to the whole foreground process group -- so it reached both
+    this process, where the default handler raised KeyboardInterrupt out of
+    `Agent.run`, and the worker, whose handler ended the running cell. Session
+    isolation is deliberate (a stray Ctrl-C must not end every cell a daemon is
+    running) and it takes the second half away from the CLI, where `Agent.run`
+    executes cells on this very thread.
+
+    So this restores exactly that pair and invents nothing: interrupt this
+    Agent's own workers, then raise, which is what the two handlers did between
+    them. Returns a context manager; off the main thread, or where the
+    disposition cannot be set, it is a no-op and the old behaviour stands.
+    """
+
+    import contextlib
+    import threading
+
+    @contextlib.contextmanager
+    def _installed():
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        def _handler(signum, frame):  # noqa: ANN001, ARG001
+            try:
+                agent.interrupt_foreground()
+            finally:
+                # Unconditionally: the CLI has always exited on Ctrl-C, and a
+                # run that survived because no worker happened to be up would
+                # be a new behaviour arriving through a signal handler.
+                raise KeyboardInterrupt
+
+        try:
+            previous = signal.signal(signal.SIGINT, _handler)
+        except (ValueError, OSError):  # pragma: no cover - unsupported platform
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                signal.signal(signal.SIGINT, previous)
+            except (ValueError, OSError):  # pragma: no cover
+                pass
+
+    return _installed()
+
+
 def _bind_failure_message(exc: OSError, cfg) -> str | None:
     """One clear line naming the env var to fix, or ``None`` to re-raise.
 
@@ -752,8 +803,10 @@ def cmd_run(args) -> int:
         # Before get_config(), which reads these at construction.
         auto_applied = enable_auto_run_environment()
     cfg = get_config()
+    agent = Agent(cfg=cfg, verbose=args.verbose)
     try:
-        result = Agent(cfg=cfg, verbose=args.verbose).run(args.task)
+        with _foreground_cell_interrupt(agent):
+            result = agent.run(args.task)
     except EnvironmentReadinessError as error:
         # A standard-profile refusal is raised only at the first Code Cell.
         # Keeping this adapter typed lets native tools and structured
