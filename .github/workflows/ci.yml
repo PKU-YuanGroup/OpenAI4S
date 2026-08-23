@@ -126,6 +126,33 @@ jobs:
       - name: Scan tracked release sources without echoing matches
         run: python scripts/source_secret_scan.py
 
+  skills-installer:
+    name: Skills installer (npx)
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The installer is the only shipped surface with no Python in it, and the
+      # only one that writes into a directory the user already owns. Its own
+      # job because a red pytest must not be able to hide an extraction that
+      # escapes its target or an uninstall that deletes a file it did not write.
+      - name: Self-test the Skill installer
+        run: node tools/skills-installer/selftest.mjs
+
+  skills-package:
+    name: npm package carries the Skills
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Separate from the self-test above, and for the reason this whole file
+      # exists: "the installer behaves" and "the published package contains
+      # anything to install" are different questions. A `files` entry that
+      # stopped matching the tree would publish a working CLI with an empty
+      # Skill library, and a red self-test must not be what hides that.
+      - name: The npm package still carries the CLI and the Skill tree
+        run: node tools/skills-installer/check_package.mjs
+
   release-artifacts:
     name: Build and install wheel/sdist
     timeout-minutes: 25

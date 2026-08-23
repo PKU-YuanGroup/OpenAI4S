@@ -194,6 +194,22 @@ docker compose exec openai4s openai4s url   # 带令牌、可直接打开的 URL
 
 目前还没有发布镜像，请从检出的源码自行构建。公开它之前有两件事值得知道。在容器内绑定 `0.0.0.0` 会让访问令牌变成强制、同时关掉防 DNS 重绑定的 `Host` 白名单，于是挡在那些会执行代码的端点前面的就只剩令牌——这也是为什么 compose 只发布到 loopback、Service 只用 `ClusterIP`。另外，非特权容器无法给 bubblewrap 它所需要的命名空间，因此内核沙箱会可见地降级、由容器充当边界；那是一道更粗的边界，**[容器指南](docs/docker.md)** 写清楚了它不再覆盖什么。
 
+### 🧩 把 Skills 带去任何地方（`npx`）
+
+内置的 602 个 Skill 是配方——文字、代码，以及跑通它们所需的操作知识——其中没有任何东西是 OpenAI4S 专属的。一条命令就能把它们从本仓库装到机器上：
+
+```bash
+npx openai4s-skills install --all                  # 41 个精选 Skill
+npx openai4s-skills install --collection bioskills # 561 个固定版生信配方
+npx openai4s-skills install alphafold2 boltz --target claude
+npx openai4s-skills list
+npx openai4s-skills uninstall --all
+```
+
+`--target claude` 写入 `~/.claude/skills`，`--target openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写入你指定的任意位置；在写任何东西之前，解析出的绝对路径都会先打印出来，而 `--dry-run` 什么都不写。每个已安装文件的 SHA-256 都会记进 Skills 旁边的清单，因此重装会拒绝覆盖你改过的 Skill，卸载也只删它自己写下的文件。想中间不经任何发布、直接从本仓库运行：`npx github:PKU-YuanGroup/OpenAI4S install --all`。
+
+如果你本来就在跑 OpenAI4S，那 602 个你已经全有了——同名时自带 Skill 优先于数据目录里的那个。这条命令是为反方向准备的。
+
 ---
 
 ## 📚 文档

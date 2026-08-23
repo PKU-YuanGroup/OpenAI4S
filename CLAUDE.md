@@ -44,6 +44,8 @@ OPENAI4S_KERNEL_SANDBOX=enforce OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1 \
 node tests/browser_smoke.mjs                                # workbench E2E, needs a daemon on :8760
 node tests/browser_admission_fault.mjs                      # pinned-comment admission survives a lost response
 node tests/browser_matrix.mjs --browser=firefox             # cross-engine breadth (chromium/firefox/webkit)
+node tools/skills-installer/selftest.mjs                    # the npx Skill installer: extraction safety, install/uninstall
+node tools/skills-installer/check_package.mjs               # `npm pack` still carries the CLI *and* the Skill tree
 ```
 
 The hosted-Linux interrupt smoke deliberately allows raw worker networking so
