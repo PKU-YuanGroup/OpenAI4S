@@ -31,6 +31,7 @@ from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
 from openai4s.host.delegation_policy import child_execution_policy
 from openai4s.observability import carry_context
+from openai4s.security.sandbox import KernelReadIsolation
 
 FANOUT_CAP = 48
 SESSION_CAP = 1000
@@ -772,6 +773,7 @@ class DelegationRunner:
         owner_instance_id: str | None = None,
         runner_instance_id: str | None = None,
         workspace: str | Path | None = None,
+        read_isolation: KernelReadIsolation | None = None,
         cell_hooks_factory: Callable[[str], object] | None = None,
         trusted_capture_admission: Callable[[], str | None] | None = None,
         trusted_capture_lease: Callable[[], Any] | None = None,
@@ -795,6 +797,9 @@ class DelegationRunner:
         # never in the daemon's launch directory. None preserves the CLI
         # contract: each child resolves its own process cwd at run() start.
         self.workspace = workspace
+        # Carried unchanged through every nesting level. This is a process
+        # boundary selected by the Web owner, not a child-model option.
+        self.read_isolation = read_isolation
         # Web embedding supplies the Artifact boundary.  The delegation core
         # only forwards this duck-typed hook and remains independent of server
         # storage or UI projections.
@@ -955,6 +960,7 @@ class DelegationRunner:
                 cancellation=_ChildCancellation(child),
                 context_policy=_SteeringContextPolicy(child_cfg, child, self._tree),
                 workspace=self.workspace,
+                read_isolation=self.read_isolation,
                 cell_execution_hooks=(
                     self.cell_hooks_factory(child_frame_id)
                     if self.cell_hooks_factory is not None and child_frame_id

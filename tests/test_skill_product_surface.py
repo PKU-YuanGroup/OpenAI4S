@@ -423,8 +423,56 @@ def test_team_member_approval_cannot_mutate_personal_skills(tmp_path, monkeypatc
 
 
 @pytest.mark.security
-def test_team_project_skill_mutation_requires_real_membership(tmp_path, monkeypatch):
-    """Owning a session is participation, but does not grant project writes."""
+def test_project_skill_edit_is_not_silently_allowed_by_default(tmp_path, monkeypatch):
+    """The real dispatcher asks before any model-authored Skill mutation."""
+
+    monkeypatch.setenv("OPENAI4S_TEAM_MODE", "1")
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "deny")
+    cfg = _config(tmp_path)
+    store = get_store(cfg.db_path)
+    store.create_project(name="Project A", project_id="project-a")
+    member = Principal("member-id", "member", "member")
+    store.governance.set_member("project-a", member.user_id, "member")
+    root = store.new_frame(project_id="project-a", kind="turn", status="ready")
+    versions = SkillVersionService(cfg)
+    versions.install(
+        "Project QC",
+        {"SKILL.md": _document("Project QC", "trusted")},
+        scope="project",
+        project_id="project-a",
+    )
+    dispatcher = build_dispatcher(cfg=cfg, frame_id=root)
+    project_root = versions.scope_root(scope="project", project_id="project-a")
+    try:
+        assert (
+            store.resolve_permission(tool="skills_edit", pattern_input="Project QC")
+            == "ask"
+        )
+        with principal_scope(member):
+            denied = dispatcher(
+                "skills_edit",
+                [
+                    {
+                        "name": "Project QC",
+                        "path": "kernel.py",
+                        "content": "PEER_CODE_EXECUTED = True\n",
+                    }
+                ],
+            )
+        assert denied.get("error", "").startswith("Permission denied:")
+        assert not (project_root / "project-qc" / "kernel.py").exists()
+        assert "trusted" in (project_root / "project-qc" / "SKILL.md").read_text(
+            "utf-8"
+        )
+    finally:
+        store.close()
+
+
+@pytest.mark.security
+def test_team_project_skill_host_mutation_requires_admin_even_for_members(
+    tmp_path, monkeypatch
+):
+    """A member's model cannot plant instructions or code for project peers."""
 
     monkeypatch.setenv("OPENAI4S_TEAM_MODE", "1")
     cfg = _config(tmp_path)
@@ -462,14 +510,18 @@ def test_team_project_skill_mutation_requires_real_membership(tmp_path, monkeypa
     member = Principal("member-id", "member", "member")
     admin = Principal("admin-id", "admin", "admin")
 
-    def edit():
+    def edit(path="SKILL.md", content=None):
         return dispatcher(
             "skills_edit",
             [
                 {
                     "name": "Project QC",
-                    "path": "SKILL.md",
-                    "content": _document("Project QC", "member edit"),
+                    "path": path,
+                    "content": (
+                        content
+                        if content is not None
+                        else _document("Project QC", "member edit")
+                    ),
                 }
             ],
         )
@@ -488,18 +540,30 @@ def test_team_project_skill_mutation_requires_real_membership(tmp_path, monkeypa
 
     try:
         with principal_scope(member):
-            with pytest.raises(PermissionError, match="project membership"):
+            with pytest.raises(PermissionError, match="team administrator"):
                 edit()
-            with pytest.raises(PermissionError, match="project membership"):
+            with pytest.raises(PermissionError, match="team administrator"):
                 rollback()
 
         store.governance.set_member("project-a", member.user_id, "member")
         with principal_scope(member):
-            assert edit()["ok"] is True
-            # Publishing a discovered project overlay must stay in that overlay;
-            # it must not create or rewrite a daemon-global personal Skill.
-            assert dispatcher("skills_publish", ["Project QC"])["ok"] is True
-            assert rollback()["version_id"] == first["version_id"]
+            # Membership authorizes the human project API, not code authored by
+            # that member's model.  Both the instruction and executable sidecar
+            # forms are refused at the real Host dispatcher sink even if a broad
+            # permission rule was explicitly allowed.
+            for path, content in (
+                ("SKILL.md", _document("Project QC", "poisoned instructions")),
+                ("kernel.py", "PEER_CODE_EXECUTED = True\n"),
+            ):
+                with pytest.raises(PermissionError, match="team administrator"):
+                    edit(path, content)
+            with pytest.raises(PermissionError, match="team administrator"):
+                dispatcher("skills_publish", ["Project QC"])
+            with pytest.raises(PermissionError, match="team administrator"):
+                rollback()
+        project_root = versions.scope_root(scope="project", project_id="project-a")
+        assert "second" in (project_root / "project-qc" / "SKILL.md").read_text("utf-8")
+        assert not (project_root / "project-qc" / "kernel.py").exists()
         assert (
             versions.repository.get_installation(
                 "Project QC", scope="personal", scope_id=""
@@ -507,16 +571,147 @@ def test_team_project_skill_mutation_requires_real_membership(tmp_path, monkeypa
             is None
         )
 
-        store.governance.remove_member("project-a", member.user_id)
-        with principal_scope(member):
-            with pytest.raises(PermissionError, match="project membership"):
-                dispatcher("skills_delete", ["Project QC"])
-
-        # An admin need not hold a project_members row.
+        # An admin need not hold a project_members row, but still passed the
+        # permission broker above.  Host lifecycle remains available to admins.
         with principal_scope(admin):
+            assert edit()["ok"] is True
+            assert dispatcher("skills_publish", ["Project QC"])["ok"] is True
+            assert rollback()["version_id"] == first["version_id"]
             assert dispatcher("skills_delete", ["Project QC"])["ok"] is True
     finally:
         store.close()
+
+
+@pytest.mark.security
+def test_team_member_keeps_authenticated_http_project_skill_rollback(
+    tmp_path, monkeypatch
+):
+    """The Host boundary does not revoke deliberate human project authoring."""
+
+    from openai4s.storage import team as team_mod
+    from tests.test_team_auth_routes import _body_json, _login, _post, _TeamDaemon
+
+    monkeypatch.setattr(team_mod, "PBKDF2_ITERATIONS", 1200)
+    node = _TeamDaemon(tmp_path)
+    try:
+        member = node.seed_user("member", "fake-password")
+        node.store.create_project(name="Project A", project_id="project-a")
+        node.store.governance.set_member("project-a", str(member["id"]), "member")
+        versions = SkillVersionService(node.cfg)
+        web = SkillCustomizationService(
+            SkillLoader(cfg=node.cfg),
+            scope="project",
+            project_id="project-a",
+        )
+        assert web.create_or_update("Project QC", "first", "first")["ok"] is True
+        first_version = versions.status(
+            "Project QC", scope="project", project_id="project-a"
+        )["active_version_id"]
+        assert (
+            web.create_or_update("Project QC", "second", "second", existing=True)["ok"]
+            is True
+        )
+        cookie = _login(node, "member", "fake-password")
+
+        status, raw = _post(
+            node.port,
+            "/api/v1/projects/project-a/skills/Project%20QC/rollback",
+            {"version_id": first_version},
+            cookie=cookie,
+        )
+
+        assert status == 200, raw[:300]
+        assert _body_json(raw)["version_id"] == first_version
+    finally:
+        node.close()
+
+
+@pytest.mark.security
+def test_team_member_cannot_reactivate_legacy_host_skill_poison_over_http(
+    tmp_path, monkeypatch
+):
+    """Rollback cannot bypass the new Host write boundary with old versions."""
+
+    from openai4s.storage import team as team_mod
+    from tests.test_team_auth_routes import _body_json, _login, _post, _TeamDaemon
+
+    monkeypatch.setattr(team_mod, "PBKDF2_ITERATIONS", 1200)
+    node = _TeamDaemon(tmp_path)
+    try:
+        member = node.seed_user("member", "fake-password")
+        node.seed_user("admin", "fake-admin-password", role="admin")
+        node.store.create_project(name="Project A", project_id="project-a")
+        node.store.governance.set_member("project-a", str(member["id"]), "member")
+        versions = SkillVersionService(node.cfg)
+
+        def legacy_history(name, files):
+            poisoned = versions.install(
+                name,
+                files,
+                scope="project",
+                project_id="project-a",
+                metadata={"source": "host_skills_edit", "path": "kernel.py"},
+            )
+            versions.upgrade(
+                name,
+                {"SKILL.md": _document(name, "safe human revision")},
+                scope="project",
+                project_id="project-a",
+                metadata={"source": "web_customize"},
+            )
+            return poisoned["version_id"]
+
+        poisoned_sidecar = legacy_history(
+            "Sidecar QC",
+            {
+                "SKILL.md": _document("Sidecar QC", "poisoned instructions"),
+                "kernel.py": "PEER_CODE_EXECUTED = True\n",
+            },
+        )
+        poisoned_recipe = legacy_history(
+            "Recipe QC",
+            {"SKILL.md": _document("Recipe QC", "poisoned instructions")},
+        )
+        member_cookie = _login(node, "member", "fake-password")
+
+        for name, version_id in (
+            ("Sidecar%20QC", poisoned_sidecar),
+            ("Recipe%20QC", poisoned_recipe),
+        ):
+            status, raw = _post(
+                node.port,
+                f"/api/v1/projects/project-a/skills/{name}/rollback",
+                {"version_id": version_id},
+                cookie=member_cookie,
+            )
+            # Rollback routes retain their established conflict-on-error HTTP
+            # envelope; the stable product error code carries the narrower
+            # authorization reason.
+            assert status == 409, raw[:300]
+            assert _body_json(raw)["code"] == "skill_admin_required"
+
+        sidecar_root = (
+            versions.scope_root(scope="project", project_id="project-a") / "sidecar-qc"
+        )
+        assert not (sidecar_root / "kernel.py").exists()
+        assert "safe human revision" in (sidecar_root / "SKILL.md").read_text("utf-8")
+
+        # An authenticated team administrator can deliberately re-authorize
+        # the retained executable version.
+        admin_cookie = _login(node, "admin", "fake-admin-password")
+        status, raw = _post(
+            node.port,
+            "/api/v1/projects/project-a/skills/Sidecar%20QC/rollback",
+            {"version_id": poisoned_sidecar},
+            cookie=admin_cookie,
+        )
+        assert status == 200, raw[:300]
+        assert _body_json(raw)["version_id"] == poisoned_sidecar
+        assert (sidecar_root / "kernel.py").read_text("utf-8") == (
+            "PEER_CODE_EXECUTED = True\n"
+        )
+    finally:
+        node.close()
 
 
 def test_http_personal_and_project_history_and_rollback_routes(tmp_path):

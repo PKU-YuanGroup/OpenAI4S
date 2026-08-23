@@ -33163,7 +33163,10 @@
                     "type": "boolean"
                   },
                   "sha256": {
-                    "type": "null"
+                    "type": [
+                      "null",
+                      "string"
+                    ]
                   },
                   "size": {
                     "type": "integer"

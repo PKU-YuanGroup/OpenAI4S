@@ -9,7 +9,10 @@ self-test, enforces the boundary when available, and otherwise continues with a
 high-visibility **degraded** status. Use `enforce` to fail closed before a worker
 starts, or `off` for an explicit trusted-host opt-out. Unsupported/degraded is
 not equivalent to sandboxed; keep the default loopback bind even when the
-self-test passes.
+self-test passes. Team-mode local Cells are stricter: their session read policy
+is an authorization boundary, so `auto` may not degrade, `off` is refused, and
+a missing backend or incomplete/failed self-test prevents the Cell from
+starting.
 
 The sandbox makes the host filesystem read-only to a worker except for the
 session workspace and its private temporary directory. Raw worker network is
@@ -19,6 +22,27 @@ services remain available through audited Host RPC. This boundary covers
 Python/R kernels and their subprocesses; the separate local `compute/jobs`
 surface remains a privileged local operation and must not be treated as an
 untrusted multi-tenant sandbox.
+
+For a team-mode local Cell (including a first-action `exec_background` worker),
+the verified policy additionally hides the entire OpenAI4S data directory,
+other members' `users/<name>` areas in writable `OPENAI4S_DATA_ROOTS`, and the
+canonical system temporary directory where stale sibling kernel directories
+may remain. It re-exposes only the current workspace and private kernel temp as
+writable, plus exact read-only roots needed by this session: its runtime and
+authorized Skill sidecars, its owner's personal data area, and its opaque
+checksum-verified Artifact input cache. A bounded no-follow inventory refuses
+a pre-existing workspace hardlink whose other name is outside the workspace.
+Data roots that overlap the system temporary directory are rejected in team
+mode instead of silently hiding their shared/read-only content or reopening
+another user's namespace.
+
+This is a boundary around OpenAI4S-managed tenant data, **not** general hostile
+same-UID containment. The kernel retains read access to ordinary host paths
+outside those managed roots (for example unrelated files in the daemon
+account's home), and an arbitrary non-OpenAI4S process running as the daemon's
+Unix UID remains inside the operator trust boundary. Use separate OS accounts,
+containers/VMs, or equivalent resource-plane isolation when users must be
+mutually hostile at the host-filesystem level.
 
 [`openai4s.security`](../openai4s/security) adds independent policy layers:
 
@@ -122,10 +146,14 @@ workspace diff enter the audit/step records. A missing, expired, reused,
 wrong-generation, or mismatched token fails closed.
 
 User-authored Skills are likewise separated from bundled trust. Host/Web writes
-are confined to `<data_dir>/user-skills`, reject symlink/path escapes, and
-cannot shadow a bundled directory. User-space frontmatter cannot promote a
+are confined to personal or project Skill roots, reject symlink/path escapes,
+and cannot shadow a bundled directory. User-space frontmatter cannot promote a
 document to the trusted `openai4s` origin; the normal Host authoring workflow
-uses an explicit publish transition from `draft` to `personal`.
+uses an explicit publish transition from `draft` to `personal`. A model's Host
+edit asks by default because both `SKILL.md` and `kernel.py` become executable
+inputs to later turns. In team mode the Host lifecycle is admin-only even for a
+project member; deliberate human project mutations remain on the authenticated
+HTTP project boundary.
 
 ### Secret reads and secret logs
 

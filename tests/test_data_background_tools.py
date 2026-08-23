@@ -213,6 +213,18 @@ def test_background_submit_is_gated_but_exact_interrupt_stays_available(tmp_path
     ]
 
 
+def test_team_dispatcher_refuses_bare_background_kernel_fallback(tmp_path):
+    cfg = Config(data_dir=tmp_path / "data")
+    cfg.team_mode = True
+    dispatcher = build_dispatcher(
+        cfg,
+        workspace=tmp_path / "data" / "agent-workspaces" / "session",
+    )
+
+    with pytest.raises(RuntimeError, match="session-scoped kernel factory"):
+        dispatcher._new_background_kernel()
+
+
 def test_tool_only_turn_background_kernel_shares_the_write_file_workspace(
     tmp_path, monkeypatch
 ):

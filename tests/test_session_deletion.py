@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from openai4s.config import Config
+from openai4s.host.data import kernel_artifact_input_dir
 from openai4s.server.delivery import CompletionDeliveryService
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.storage.snapshots import WorkspaceCAS
@@ -40,6 +41,12 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
     shared_dynamic_root = tmp_path / "dynamic-tools" / "_scoped"
     shared_dynamic_root.mkdir(parents=True)
     (shared_dynamic_root / "events.jsonl").write_text("shared", "utf-8")
+    deleted_inputs = kernel_artifact_input_dir(tmp_path, deleted)
+    kept_inputs = kernel_artifact_input_dir(tmp_path, kept)
+    deleted_inputs.mkdir(parents=True)
+    kept_inputs.mkdir(parents=True)
+    (deleted_inputs / "version.bin").write_bytes(b"delete")
+    (kept_inputs / "version.bin").write_bytes(b"keep")
 
     cas = WorkspaceCAS(tmp_path / "workspace-cas")
     shared_blob = cas.put_blob(b"shared")
@@ -213,6 +220,7 @@ def test_session_delete_cleans_new_aggregate_and_preserves_shared_cas(tmp_path):
     assert dropped == [(deleted, "frame_deleted")] and resumed == [deleted]
     assert not deleted_workspace.exists() and not branch_root.exists()
     assert not dynamic_root.exists() and shared_dynamic_root.exists()
+    assert not deleted_inputs.exists() and kept_inputs.exists()
     assert kept_workspace.exists()
     assert (
         not unique_snapshot.exists() and shared_snapshot.exists() and outside.exists()

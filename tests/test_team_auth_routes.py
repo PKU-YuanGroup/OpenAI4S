@@ -307,6 +307,9 @@ def test_login_sets_httponly_lax_cookie(daemon):
     assert b"httponly" in header
     assert b"samesite=lax" in header
     assert b"max-age=" in header
+    # Direct-loopback HTTP remains supported when no TLS proxy origin is
+    # configured; a Secure cookie would not round-trip on that deployment.
+    assert b"secure" not in header
 
 
 def test_exact_trusted_proxy_origin_allows_login_and_websocket(tmp_path):
@@ -323,6 +326,12 @@ def test_exact_trusted_proxy_origin_allows_login_and_websocket(tmp_path):
             origin="https://lab.example",
         )
         assert status == 200, raw[:300]
+        login_cookie_header = next(
+            line
+            for line in raw.split(b"\r\n")
+            if line.lower().startswith(b"set-cookie:") and b"os_user=" in line
+        ).lower()
+        assert b"secure" in login_cookie_header
         cookie = _set_cookie(raw)
 
         status, raw = _ws_upgrade(
@@ -341,6 +350,22 @@ def test_exact_trusted_proxy_origin_allows_login_and_websocket(tmp_path):
         )
         assert status == 403, raw[:300]
         assert _body_json(raw).get("error") == "cross-origin request refused"
+
+        status, raw = _post(
+            node.port,
+            "/api/v1/auth/logout",
+            {},
+            cookie=cookie,
+            origin="https://lab.example",
+        )
+        assert status == 200, raw[:300]
+        clear_cookie_header = next(
+            line
+            for line in raw.split(b"\r\n")
+            if line.lower().startswith(b"set-cookie:") and b"os_user=" in line
+        ).lower()
+        assert b"max-age=0" in clear_cookie_header
+        assert b"secure" in clear_cookie_header
 
         status, raw = _ws_upgrade(
             node.port,
@@ -418,11 +443,76 @@ def test_loopback_access_token_header_still_works(daemon):
     assert status == 200, raw[:300]
 
 
+@pytest.mark.parametrize(
+    "credential_header",
+    (local_auth.TOKEN_HEADER, "Authorization"),
+)
+def test_proxy_mode_never_mints_service_identity_from_machine_token(
+    tmp_path, credential_header
+):
+    """A reverse proxy and the local CLI are both loopback TCP peers.
+
+    Once that topology is declared, neither accepted spelling of the machine
+    token may turn the proxy's public client into the admin-equivalent service
+    principal. The attacker can omit Origin/X-Forwarded-* entirely, so this
+    regression deliberately does too.
+    """
+
+    node = _TeamDaemon(
+        tmp_path,
+        trusted_proxy_origins=("https://lab.example",),
+    )
+    try:
+        value = node.token
+        if credential_header == "Authorization":
+            value = f"Bearer {value}"
+        status, raw = _speak(
+            node.port,
+            (
+                f"GET /api/v1/auth/me HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{node.port}\r\n"
+                f"{credential_header}: {value}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii"),
+        )
+        assert status == 401, raw[:300]
+        assert _body_json(raw).get("code") == "login_required"
+        status, raw = _speak(
+            node.port,
+            (
+                "GET /api/v1/auth/status HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{node.port}\r\n"
+                f"{credential_header}: {value}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii"),
+        )
+        assert status == 200, raw[:300]
+        assert _body_json(raw)["authenticated"] is False
+
+        # Proxy mode remains usable through a real user identity; only the
+        # ambiguous machine-principal path is disabled.
+        node.seed_user("admin", "fake-pw-admin", role="admin")
+        cookie = _login(node, "admin", "fake-pw-admin")
+        status, raw = _get(node.port, "/api/v1/auth/me", cookie=cookie)
+        assert status == 200, raw[:300]
+        me = _body_json(raw)
+        assert me["user"]["username"] == "admin"
+        assert me["user"]["kind"] == "user"
+        status, raw = _get(node.port, "/api/v1/auth/status", cookie=cookie)
+        assert status == 200, raw[:300]
+        assert _body_json(raw)["authenticated"] is True
+    finally:
+        node.close()
+
+
 def test_me_reports_the_service_identity(daemon):
     status, raw = _get(daemon.port, "/api/v1/auth/me", token=daemon.token)
     assert status == 200
     me = _body_json(raw)
     assert me["user"]["kind"] == "service"
+    status, raw = _get(daemon.port, "/api/v1/auth/status", token=daemon.token)
+    assert status == 200
+    assert _body_json(raw)["authenticated"] is True
 
 
 # -- websocket ---------------------------------------------------------------

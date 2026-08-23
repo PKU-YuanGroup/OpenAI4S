@@ -114,6 +114,19 @@ current `project` scope. Python cells expose the matching
 `host.skills.status(...)`, `host.skills.history(...)`, and
 `host.skills.rollback(...)` methods.
 
+Every model-authored `host.skills.edit(...)` asks for human approval by default.
+This includes `SKILL.md` because its instructions enter later agent prompts, and
+`kernel.py` because the compile gate proves only that the sidecar parses, not
+that it is trustworthy. In team mode all Host-originated Skill mutations
+(`edit`, `publish`, `delete`, and `rollback`) additionally require an
+administrator. Project membership continues to authorize the authenticated
+human project routes below; it does not authorize a member's model to plant a
+recipe or sidecar that another project member may load. A member may roll back
+to a retained, recipe-only version whose activation history proves it came
+from Web Customize. A project version containing `kernel.py`, or legacy
+history whose authoring boundary cannot be proven, requires an administrator
+to reactivate it. The compile gate is not an authorization decision.
+
 Customize uses narrow HTTP routes. Personal history/rollback lives at
 `/api/skills/<name>/versions` and `/api/skills/<name>/rollback`; project-local
 state uses `/api/projects/<project_id>/skills/<name>/versions` and

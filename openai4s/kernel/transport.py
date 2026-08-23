@@ -105,17 +105,42 @@ class PipeTransport:
         cwd: str | None,
         env: dict[str, str],
         stderr_tail_factory: Callable[[], Any] | None = None,
+        pass_fds: tuple[int, ...] = (),
+        process_started: Callable[[int], None] | None = None,
     ) -> None:
-        self._proc = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            cwd=cwd,
-            env=env,
-        )
+        options: dict[str, Any] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "bufsize": 1,
+            "cwd": cwd,
+            "env": env,
+        }
+        if pass_fds:
+            options["pass_fds"] = tuple(int(fd) for fd in pass_fds)
+        self._proc = subprocess.Popen(command, **options)
+        try:
+            if process_started is not None:
+                process_started(int(self._proc.pid))
+        except BaseException:
+            # Adoption is part of establishing the sandbox boundary. If its
+            # bounded PID channel fails, the just-spawned wrapper must not keep
+            # running without a reliable interrupt identity.
+            try:
+                self._proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                self._proc.wait(timeout=2)
+            except Exception:  # noqa: BLE001 - best-effort reap after failure
+                pass
+            for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
+                try:
+                    stream and stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
         self._stderr_tail = (
             stderr_tail_factory() if stderr_tail_factory is not None else None
         )

@@ -107,7 +107,13 @@ these commands; it never runs them automatically.
 `OPENAI4S_TRUSTED_PROXY_ORIGINS` (empty) is a comma-separated list of exact
 external browser origins allowed when a trusted TLS proxy rewrites `Host` to
 the loopback upstream. It accepts no wildcards or non-root URL paths (one
-trailing slash is normalized); see
+trailing slash is normalized). Configuring an `https://` origin also makes
+team browser session cookies `Secure`. Setting any trusted proxy origin also
+disables the team-mode machine-token `SERVICE_IDENTITY` on the HTTP listener,
+because a loopback reverse proxy makes public clients indistinguishable from
+the local CLI at the TCP peer boundary. Proxy deployments use a normal admin
+login; the local access-token CLI path remains available while this setting is
+empty. See
 [Team Server](team-server.md#5-reaching-it-from-outside-the-lab).
 
 `OPENAI4S_SEED_DEMO` (`0`) — set to `1` to run the bundled example analysis at

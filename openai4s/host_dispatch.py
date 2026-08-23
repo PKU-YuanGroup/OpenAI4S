@@ -2452,6 +2452,15 @@ class HostDispatcher:
     def _new_background_kernel(self) -> Any:
         if self.background_kernel_factory is not None:
             return self.background_kernel_factory()
+        if self.cfg.team_mode:
+            # A team Cell needs the embedding to provide an OS read boundary
+            # scoped to its durable session owner.  The generic dispatcher
+            # cannot derive that ownership safely, so its historical bare
+            # Kernel fallback must not turn a first-turn native
+            # ``exec_background`` into an unsandboxed cross-session read path.
+            raise RuntimeError(
+                "team exec_background requires a session-scoped kernel factory"
+            )
         from openai4s.kernel import Kernel
 
         # ``background_kernel_factory`` is wired when a *foreground* kernel

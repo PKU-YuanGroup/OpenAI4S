@@ -559,16 +559,40 @@ jobs:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
 
-  # There is deliberately no Linux bubblewrap job here. `harness.smoke.linux_sandbox`
-  # still exists and still passes on a Linux host that permits unprivileged user
-  # namespaces -- but not on a GitHub-hosted runner, where bwrap cannot bring up
-  # the loopback interface inside its new network namespace
-  # (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). That is the
-  # runner's confinement, not a defect in the sandbox, so the job failed every
-  # single night while telling us nothing about the code. A check that cannot
-  # pass is not evidence; docs/platforms.md now states what is and is not proven
-  # rather than pointing at a job that was always red. Run the smoke by hand on a
-  # permissive Linux host to re-establish the claim.
+  # This job proves the private-PID interrupt contract independently of the
+  # broader Linux sandbox smoke. GitHub-hosted runners cannot bring up loopback
+  # in bwrap's new network namespace, so the job deliberately allows raw worker
+  # networking and asserts that exception in the smoke. It therefore proves no
+  # egress claim. Team KernelReadIsolation, --unshare-pid, the real --info-fd +
+  # procfs + pidfd adoption path, Python/R SIGINT delivery, and post-interrupt
+  # persistence all remain mandatory and fail closed.
+  linux-bwrap-kernel-interrupt:
+    name: Linux bubblewrap Python/R persistent interrupt
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - name: Install bubblewrap and the real R worker runtime
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap r-base-core r-cran-jsonlite
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Interrupt real private-PID Python and R kernels, then reuse them
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+          # Narrow hosted-runner workaround only. The smoke asserts raw_allowed
+          # and does not claim to prove Linux network isolation.
+          OPENAI4S_KERNEL_ALLOW_RAW_NETWORK: "1"
+        run: uv run python -m harness.smoke.linux_bwrap_interrupt
+
+  # The full Linux boundary smoke still does not run here. It includes network
+  # denial, and `harness.smoke.linux_sandbox` cannot pass when a GitHub-hosted
+  # runner refuses bwrap's loopback setup
+  # (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). Keep that
+  # broader claim manual rather than interpreting the interrupt-only job above
+  # as evidence for network confinement.
 
   linux-bundle-smoke:
     name: Linux app bundle builds and imports (nightly)

@@ -55,7 +55,13 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
-from openai4s.config import Config, _canonical_http_origin, get_config
+from openai4s.config import (
+    DATA_ROOT_USERS_DIR,
+    Config,
+    _canonical_http_origin,
+    data_root_policies,
+    get_config,
+)
 from openai4s.execution import (
     CaptureResult,
     CellRequest,
@@ -63,6 +69,7 @@ from openai4s.execution import (
     WatchdogPolicy,
     execute_with_watchdog,
 )
+from openai4s.host.data import kernel_artifact_input_dir
 from openai4s.host_dispatch import build_dispatcher
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.llm import (
@@ -81,6 +88,7 @@ from openai4s.observability import (
     set_correlation_id,
 )
 from openai4s.review import review_evidence
+from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
     artifact_refs,
     artifact_workbench_routes,
@@ -2997,6 +3005,170 @@ class SessionRunner:
         branch_id = self.store.active_session_branch(root_frame_id)
         return self.workspace_for_branch(root_frame_id, branch_id)
 
+    def _kernel_read_isolation(
+        self,
+        st: SessionState,
+        *,
+        workspace: Path | None = None,
+        include_skill_sidecars: bool = False,
+    ) -> KernelReadIsolation | None:
+        """Compose the exact filesystem read boundary for one team Cell.
+
+        All daemon-owned session data is hidden by protecting ``data_dir``.
+        Writable external data roots keep their shared area visible but hide
+        ``users/<other>``; only the durable session owner's personal directory
+        is re-exposed. Python may additionally read enabled sidecar directories
+        from this session's project-scoped loader. The Kernel adds its selected
+        immutable environment root itself.
+        """
+
+        if not self.cfg.team_mode:
+            return None
+        data_dir = Path(self.cfg.data_dir).expanduser().resolve()
+        workspace_root = self._ws_root.expanduser().resolve()
+        candidate = Path(workspace or st.workspace).expanduser().resolve()
+        try:
+            relative = candidate.relative_to(workspace_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                "team kernel workspace is outside the isolated workspace root"
+            ) from exc
+        if not relative.parts:
+            raise RuntimeError(
+                "team kernel workspace cannot be the shared workspace root"
+            )
+
+        roots: list[Path] = [data_dir]
+        allowed: list[Path] = []
+
+        # ``host.artifact_path()`` materializes a checksum-verified copy below
+        # this opaque session directory.  Expose that one directory read-only
+        # instead of reopening the global Artifact/snapshot stores hidden by
+        # the data-dir mask.  Validate both path components before granting the
+        # exception so an existing symlink cannot redirect it to another
+        # session or an arbitrary host directory.
+        artifact_inputs = kernel_artifact_input_dir(data_dir, st.root_frame_id)
+        artifact_parent = artifact_inputs.parent
+        try:
+            if artifact_parent.is_symlink():
+                raise OSError("Artifact input parent is a symlink")
+            artifact_parent.mkdir(mode=0o700, parents=False, exist_ok=True)
+            resolved_artifact_parent = artifact_parent.resolve()
+            if resolved_artifact_parent.parent != data_dir:
+                raise OSError("Artifact input parent escapes daemon data")
+            if artifact_inputs.is_symlink():
+                raise OSError("Artifact input session directory is a symlink")
+            artifact_inputs.mkdir(mode=0o700, parents=False, exist_ok=True)
+            resolved_artifact_inputs = artifact_inputs.resolve()
+            if resolved_artifact_inputs.parent != resolved_artifact_parent:
+                raise OSError("Artifact input session directory escapes its parent")
+        except OSError as exc:
+            raise RuntimeError(
+                "team kernel Artifact input scope cannot be isolated"
+            ) from exc
+        allowed.append(resolved_artifact_inputs)
+
+        username: str | None = None
+        try:
+            owner = self.store.team.session_owner(st.root_frame_id)
+            user = self.store.team.get_user(owner["user_id"]) if owner else None
+            if user is not None:
+                username = str(user.get("username") or "").strip() or None
+        except Exception as exc:  # noqa: BLE001 - an allow grant must be provable
+            raise RuntimeError("team kernel owner scope cannot be resolved") from exc
+
+        configured_policies = {
+            Path(root).expanduser().resolve(): bool(writable)
+            for root, writable in data_root_policies()
+        }
+        system_temp = Path(tempfile.gettempdir()).expanduser().resolve()
+        for configured in self.cfg.data_roots:
+            external_root = Path(configured).expanduser().resolve()
+            if (
+                external_root == data_dir
+                or external_root in data_dir.parents
+                or data_dir in external_root.parents
+            ):
+                raise RuntimeError(
+                    "team data roots must not overlap the daemon data directory"
+                )
+            if (
+                external_root == system_temp
+                or external_root in system_temp.parents
+                or system_temp in external_root.parents
+            ):
+                raise RuntimeError(
+                    "team data roots must not overlap the canonical system "
+                    "temporary directory"
+                )
+            if not configured_policies.get(external_root, True):
+                continue
+            if not external_root.is_dir():
+                raise RuntimeError(f"team data root does not exist: {external_root}")
+            users_root = external_root / DATA_ROOT_USERS_DIR
+            try:
+                if users_root.is_symlink():
+                    raise OSError("personal namespace is a symlink")
+                users_root.mkdir(mode=0o700, parents=False, exist_ok=True)
+                resolved_users = users_root.resolve()
+                if resolved_users.parent != external_root:
+                    raise OSError("personal namespace escapes its data root")
+            except OSError as exc:
+                raise RuntimeError(
+                    f"team personal-data namespace cannot be isolated: {users_root}"
+                ) from exc
+            roots.append(resolved_users)
+            if username:
+                personal = users_root / username
+                try:
+                    if personal.is_symlink():
+                        raise OSError("personal area is a symlink")
+                    personal.mkdir(mode=0o700, parents=False, exist_ok=True)
+                    resolved_personal = personal.resolve()
+                    if resolved_personal.parent != resolved_users:
+                        raise OSError("personal area escapes its namespace")
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"team personal-data area cannot be isolated: {personal}"
+                    ) from exc
+                allowed.append(resolved_personal)
+
+        if include_skill_sidecars:
+            try:
+                for skill in self._skills_for(st).skills().values():
+                    if getattr(skill, "has_kernel", False):
+                        root = Path(skill.root)
+                        source = str(getattr(skill, "source", ""))
+                        if root.is_symlink():
+                            raise RuntimeError("Skill sidecar root is a symlink")
+                        resolved = root.resolve()
+                        loader = self._skills_for(st)
+                        raw_loader = getattr(loader, "loader", loader)
+                        expected = None
+                        if source == "project":
+                            expected = raw_loader.project_skills_dir()
+                        elif source == "user":
+                            expected = raw_loader.user_skills_dir()
+                        if expected is not None:
+                            if Path(expected).is_symlink():
+                                raise RuntimeError(
+                                    "Skill sidecar scope root is a symlink"
+                                )
+                            expected = Path(expected).resolve()
+                            if expected not in resolved.parents:
+                                raise RuntimeError(
+                                    "Skill sidecar root escapes its authorized scope"
+                                )
+                        allowed.append(resolved)
+            except Exception as exc:  # noqa: BLE001 - guessed grants fail closed
+                raise RuntimeError(
+                    "team kernel Skill sidecar scope cannot be resolved"
+                ) from exc
+        return KernelReadIsolation(
+            roots=tuple(str(root) for root in roots),
+            allowed_roots=tuple(str(root) for root in allowed),
+        )
+
     def _existing_state(self, root_frame_id: str) -> SessionState | None:
         with self._lock:
             return self._sessions.get(root_frame_id)
@@ -4597,7 +4769,8 @@ class SessionRunner:
                 unbind_candidate=self.executions.unbind_lease,
                 cancelled=st.cancel.is_set,
                 event_sink=emit,
-            )
+            ),
+            read_isolation=self._kernel_read_isolation(st, include_skill_sidecars=True),
         )
 
     # --- web share lifecycle ------------------------------------------------
@@ -5229,6 +5402,52 @@ class SessionRunner:
         if callable(rebind):
             rebind(target)
 
+    def _configure_background_kernel_factory(
+        self, st: SessionState, dispatcher
+    ) -> None:
+        """Bind first-turn background Cells to the selected execution plane.
+
+        ``exec_background`` is a native tool and can be the first action in a
+        session, before a foreground Python worker exists.  Its factory must
+        therefore be installed with the control-plane dispatcher rather than
+        as a side effect of spawning that foreground worker.
+        """
+
+        if self.store.leases.workload_for_session(st.root_frame_id):
+
+            def refuse_cluster_background() -> Kernel:
+                raise RuntimeError(
+                    "host.exec_background is not available on a cluster "
+                    "session: this session's kernel runs on an allocated "
+                    "node, and a background kernel would run on the daemon "
+                    "instead, in a different workspace. Submit a batch job "
+                    "with POST /orchestration/jobs, or release the cluster "
+                    "resource to run this session locally."
+                )
+
+            dispatcher.background_kernel_factory = refuse_cluster_background
+            return
+
+        def spawn_local_background() -> Kernel:
+            environment = self._resolve_env(st)
+            if environment is None or environment.interpreter is None:
+                raise RuntimeError("no Python runtime is available")
+            return Kernel(
+                dispatcher=dispatcher,
+                cwd=str(st.local_workspace),
+                mode="repl",
+                python=environment.interpreter,
+                env_root=(str(environment.root) if environment.is_conda else None),
+                env_name=environment.name,
+                read_isolation=self._kernel_read_isolation(
+                    st,
+                    workspace=st.local_workspace,
+                    include_skill_sidecars=True,
+                ),
+            )
+
+        dispatcher.background_kernel_factory = spawn_local_background
+
     def _ensure_runtime(self, st: SessionState):
         """Build the session control plane without acquiring a language worker."""
 
@@ -5301,6 +5520,7 @@ class SessionRunner:
         # The lease spans the whole background job and is the atomic peer of
         # every trusted foreground capture boundary.
         dispatcher.background_execution_lease = st.trusted_capture.background
+        self._configure_background_kernel_factory(st, dispatcher)
         # Refresh per-turn model/delegation wiring without replacing the stable
         # dispatcher (and without starting Python).
         self._wire_delegation(st)
@@ -5779,6 +5999,11 @@ class SessionRunner:
             "python": env.interpreter,
             "env_root": str(env.root) if env.is_conda else None,
             "env_name": env.name,
+            "read_isolation": self._kernel_read_isolation(
+                st,
+                workspace=st.local_workspace,
+                include_skill_sidecars=True,
+            ),
         }
 
         # A session that asked to run on a cluster gets its cells executed by
@@ -6079,6 +6304,7 @@ class SessionRunner:
                     # kernels and relative writes pollute the checkout and
                     # stay invisible to this session's artifact capture.
                     workspace=st.workspace,
+                    read_isolation=self._kernel_read_isolation(st),
                     cell_hooks_factory=cell_hooks_factory,
                     trusted_capture_admission=capture_admission,
                     trusted_capture_lease=capture_lease,
@@ -6092,6 +6318,7 @@ class SessionRunner:
                 # Branch fork/activate can retarget the live workspace; future
                 # children must follow it, not the one at runner creation.
                 runner.workspace = st.workspace
+                runner.read_isolation = self._kernel_read_isolation(st)
                 runner.cell_hooks_factory = cell_hooks_factory
                 runner.set_trusted_capture_admission(capture_admission)
                 runner.set_trusted_capture_lease(capture_lease)
@@ -6773,7 +7000,9 @@ class SessionRunner:
                 "r",
                 want,
                 lambda: spawn_r_kernel(
-                    cwd=str(st.workspace), env=get_environment(want)
+                    cwd=str(st.workspace),
+                    env=get_environment(want),
+                    read_isolation=self._kernel_read_isolation(st),
                 ),
             )
             if previous is None or previous.kernel is not lease.kernel:
@@ -11810,7 +12039,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     from openai4s.server.team_auth import TEAM_COOKIE as _TEAM_COOKIE
     from openai4s.server.team_auth import TeamAuthService as _TeamAuthService
 
-    _team_auth = _TeamAuthService(store) if cfg.team_mode else None
+    # A TLS proxy terminates encryption before this loopback HTTP server, so
+    # transport state here cannot prove whether the browser used HTTPS.  The
+    # exact, operator-owned external-origin allowlist is that proof.  Once any
+    # HTTPS proxy origin is configured, every team browser cookie is Secure;
+    # this prevents a later cleartext request to that public host from leaking
+    # the session even when a login/redeem request omitted Origin.
+    _team_cookie_secure = any(
+        _canonical_http_origin(origin).startswith("https://")
+        for origin in (getattr(cfg, "trusted_proxy_origins", ()) or ())
+    )
+    _team_auth = (
+        _TeamAuthService(store, secure_cookie=_team_cookie_secure)
+        if cfg.team_mode
+        else None
+    )
     from openai4s.config import data_root_policies as _data_root_policies
     from openai4s.server.file_area import FileArea as _FileArea
 
@@ -11897,6 +12140,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             gate actually accepts -- a status route that answers from its own
             reasoning is how the old hardcoded "none" survived.
             """
+            if _team_auth is not None:
+                return self._team_identity_from_request() is not None
             if not _auth_token:
                 return True
             from http.cookies import SimpleCookie
@@ -11923,7 +12168,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             header *from loopback* is the CLI's admin-equivalent service
             path (M1-4: the Bearer channel stays open for the server-side
             management CLI, and only there — over the network the token is
-            a shared machine secret, not a person).
+            a shared machine secret, not a person). A configured reverse
+            proxy erases that peer provenance by making every request arrive
+            from loopback, so its public listener never mints this identity.
             """
             from http.cookies import SimpleCookie
 
@@ -11935,6 +12182,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return identity
             if (
                 _auth_token
+                # This is a transport fact, not an Origin/header heuristic.
+                # In the documented TLS-proxy topology every public client has
+                # the proxy's loopback source address. Once that topology is
+                # configured this listener cannot prove that a bearer came
+                # from the local CLI, so fail closed. Login cookies remain the
+                # human identity path; an independent local management
+                # transport can restore proxy-mode CLI service access later.
+                and not _trusted_proxy_origins
                 and local_auth.matches(_presented_token(self.headers), _auth_token)
                 and self._peer_is_loopback()
             ):

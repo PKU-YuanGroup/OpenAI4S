@@ -67,9 +67,21 @@ class RateLimited(Exception):
 class TeamAuthService:
     """Login/logout/resolve on top of the Store's TeamRepository."""
 
-    def __init__(self, store: Any, *, clock: Callable[[], float] = time.monotonic):
+    def __init__(
+        self,
+        store: Any,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        secure_cookie: bool = False,
+    ):
         self._store = store
         self._clock = clock
+        # The daemon itself speaks HTTP on loopback when a TLS reverse proxy
+        # fronts it, so request transport cannot tell us whether a browser used
+        # HTTPS.  The explicit trusted-proxy origin configuration is the trust
+        # anchor; gateway composition sets this for HTTPS deployments.  Keep it
+        # false by default so the supported direct-loopback HTTP workflow works.
+        self._secure_cookie = bool(secure_cookie)
         self._lock = threading.Lock()
         # (username.lower(), ip) -> (tokens, last_refill_ts)
         self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
@@ -155,17 +167,17 @@ class TeamAuthService:
             user_id=user["id"], username=user["username"], role=user["role"]
         )
 
-    @staticmethod
-    def cookie_header(token: str) -> str:
-        """The Set-Cookie value for a fresh login (M1-4: HttpOnly, Lax)."""
-        return (
+    def cookie_header(self, token: str) -> str:
+        """The Set-Cookie value for a fresh browser login."""
+        header = (
             f"{TEAM_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; "
             f"Max-Age={SESSION_TTL_S}"
         )
+        return header + ("; Secure" if self._secure_cookie else "")
 
-    @staticmethod
-    def clear_cookie_header() -> str:
-        return f"{TEAM_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    def clear_cookie_header(self) -> str:
+        header = f"{TEAM_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        return header + ("; Secure" if self._secure_cookie else "")
 
 
 def public_user(user: dict) -> dict:

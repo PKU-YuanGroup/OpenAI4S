@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
+from openai4s.host.data import kernel_artifact_input_dir
 from openai4s.storage.snapshots import WorkspaceCAS
 from openai4s.tools.dynamic_scopes import DynamicScopeStore
 
@@ -184,6 +185,8 @@ class SessionDeletionService:
             if self._remove_dynamic_tools(root_frame_id):
                 freed_workspaces += 1
             if self._remove_session_import(root_frame_id):
+                freed_workspaces += 1
+            if self._remove_kernel_artifact_inputs(root_frame_id):
                 freed_workspaces += 1
 
         cas = self.cas.release_trees(
@@ -359,6 +362,21 @@ class SessionDeletionService:
             parent / root_frame_id,
             direct_parent=parent,
         )
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+        return removed
+
+    def _remove_kernel_artifact_inputs(self, root_frame_id: str) -> bool:
+        """Reclaim the exact-version copies retained for a persistent kernel."""
+
+        try:
+            path = kernel_artifact_input_dir(self.data_dir, root_frame_id)
+        except ValueError:
+            return False
+        parent = path.parent
+        removed = self._remove_owned_tree(path, direct_parent=parent)
         try:
             parent.rmdir()
         except OSError:

@@ -35,6 +35,7 @@ from openai4s.kernel import Kernel
 from openai4s.kernel.lazy import LazyKernel
 from openai4s.llm import chat, get_model_capabilities
 from openai4s.security import classify_code, gather_trajectory, screen_trajectory
+from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.tools import parse_tool_calls, scan_fenced_blocks
 
 SYSTEM_PROMPT = """\
@@ -236,6 +237,10 @@ class Agent:
     # in its parent session's workspace, not in the daemon's launch directory;
     # unset falls back to os.getcwd(), which is the CLI contract.
     workspace: str | Path | None = None
+    # Optional OS read-isolation policy supplied by the embedding team Web
+    # session. Standalone CLI Agents leave this unset and preserve their
+    # historical filesystem-read behavior.
+    read_isolation: KernelReadIsolation | None = field(default=None, repr=False)
     # Optional runtime observation owned by the embedding Web session.  A
     # delegated Agent shares that session's workspace, so its Cell writes must
     # be captured under the child's frame before the parent's outer sweep.
@@ -286,6 +291,7 @@ class Agent:
                     parent_frame_id=self.frame_id,
                     store=self.dispatcher.store,
                     workspace=self.workspace,
+                    read_isolation=self.read_isolation,
                     cell_hooks_factory=self.delegated_cell_hooks_factory,
                 )
                 self._delegation_runner = runner
@@ -323,6 +329,48 @@ class Agent:
     def _log(self, *a: object) -> None:
         if self.verbose:
             print(*a, flush=True)
+
+    def _python_read_isolation(self) -> KernelReadIsolation | None:
+        """Add only sidecars visible to this Agent to its exact read grants."""
+
+        policy = self.read_isolation
+        disclosure = self._skill_loader
+        if policy is None or disclosure is None:
+            return policy
+        loader = getattr(disclosure, "loader", disclosure)
+        visible: set[str] | None = None
+        if loader is not disclosure:
+            rows = disclosure.list()
+            visible = {
+                str(row.get("name") or "")
+                for row in rows
+                if isinstance(row, Mapping) and row.get("name")
+            }
+        roots = []
+        for skill in loader.skills().values():
+            if not getattr(skill, "has_kernel", False):
+                continue
+            if visible is not None and str(getattr(skill, "name", "")) not in visible:
+                continue
+            root = Path(getattr(skill, "root"))
+            source = str(getattr(skill, "source", ""))
+            expected = None
+            if source == "project":
+                expected = loader.project_skills_dir()
+            elif source == "user":
+                expected = loader.user_skills_dir()
+            if root.is_symlink() or (
+                expected is not None and Path(expected).is_symlink()
+            ):
+                raise RuntimeError("Skill sidecar scope contains a symlink")
+            resolved = root.resolve()
+            if (
+                expected is not None
+                and Path(expected).resolve() not in resolved.parents
+            ):
+                raise RuntimeError("Skill sidecar root escapes its authorized scope")
+            roots.append(resolved)
+        return policy.with_allowed_roots(roots)
 
     def _system_prompt(self) -> str:
         prompt = SYSTEM_PROMPT
@@ -422,9 +470,11 @@ class Agent:
         transcript: list[Turn] = []
         run_cwd = str(self.workspace) if self.workspace else os.getcwd()
         self.dispatcher.set_workspace(run_cwd)
+        python_read_isolation = self._python_read_isolation()
         self.dispatcher.background_kernel_factory = lambda: Kernel(
             dispatcher=self.dispatcher,
             cwd=run_cwd,
+            read_isolation=python_read_isolation,
         )
 
         def publish_foreground(kernel: object | None) -> None:
@@ -439,7 +489,11 @@ class Agent:
                 kernel.execute(boot, origin="system")
 
         lazy_kernel = LazyKernel(
-            lambda: Kernel(dispatcher=self.dispatcher, cwd=run_cwd),
+            lambda: Kernel(
+                dispatcher=self.dispatcher,
+                cwd=run_cwd,
+                read_isolation=python_read_isolation,
+            ),
             bootstrap=bootstrap,
             publish=publish_foreground,
         )
@@ -558,7 +612,11 @@ class Agent:
             from openai4s.kernel.r_kernel import spawn_r_kernel
 
             try:
-                k = spawn_r_kernel(env=get_environment(want_env))
+                k = spawn_r_kernel(
+                    cwd=(str(self.workspace) if self.workspace is not None else None),
+                    env=get_environment(want_env),
+                    read_isolation=self.read_isolation,
+                )
             except Exception as e:  # noqa: BLE001 — soft-fail into the observation
                 return {"error": f"R kernel unavailable: {e}"}
             with self._foreground_lock:

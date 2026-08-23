@@ -98,7 +98,7 @@ gateway.py
 | [`reviews.py`](reviews.py) | 先攒出一次科学审阅所依据的有界证据包，再把这次审阅推到结果。整个过程可取消，结果会落到持久化、用量记账和公开的审阅事件上。 |
 | [`security_headers.py`](security_headers.py) | 基于 hash 的 CSP 与加固响应头，作用于每一个响应。用 hash 而不是 nonce，是因为 `index.html` 直接从工作树按静态文件发出，中间没有任何渲染步骤可以盖上 nonce；而给它那唯一一段内联主题引导脚本算 hash，正是让 `script-src` 不必写 `'unsafe-inline'` 的关键——一旦写上，整套策略就只剩装饰意义。hash 按「路径 / mtime / 大小」为键从文件重新计算，因为过期的 hash 不是让页面退化，而是直接把页面变空白。 |
 | [`session_branching.py`](session_branching.py) | 让一个会话长出分支所需的全部动作：打 checkpoint、隔离 fork、预览 revert、激活分支，以及把 revert/undo 历史只追加地记下来。revert 从不改写旧的 checkpoint：它先把当前状态记成撤销目标；如果当前 head 之后有外部文件被改动，这次操作会记为 `conflict`，一个字节都不会动。 |
-| [`session_deletion.py`](session_deletion.py) | 会话被持久删除后的清理。会话聚合、工作区、快照/CAS 引用和进程内状态都会清掉，而这个会话自己 scope 之外的东西一概不碰。 |
+| [`session_deletion.py`](session_deletion.py) | 会话被持久删除后的清理。会话聚合、工作区、按 root 隔离的 kernel Artifact 输入缓存、快照/CAS 引用和进程内状态都会清掉，而这个会话自己 scope 之外的东西一概不碰。 |
 | [`session_domain.py`](session_domain.py) | 高层的会话领域组合，路由 handler 调它，而不是自己去拼装仓储。它对外承接 checkpoint 与 cursor checkpoint、分支、Timeline、导出、renderer、会话包操作与恢复。 |
 | [`session_package.py`](session_package.py) | 创建和导入会话 ZIP 包，过程确定、带 checksum。传输这一段由过滤秘密、防路径穿越和隔离区中转来把关。导入会先校验整个压缩包再创建任何东西；导入进来的会话落在一个已结束的内核 generation 上，这是一条显式的只读/待恢复边界。 |
 | [`session_recovery.py`](session_recovery.py) | 启动时协调过期的运行时状态，并在 activity 与恢复阻塞条件的约束下确定性地回收空闲内核。旧 daemon 遗留下来的活 generation 会被标成 `abandoned` 并保持可审计；这里没有任何代码反序列化对象，也不声称内存还活着。 |
@@ -110,7 +110,7 @@ gateway.py
 | [`skills.py`](skills.py) | Web Customize 里用户自撰 Skill 文档的生命周期。它管增删改查和导入，管 UI 读的那份目录投影，也管能力的启用。 |
 | [`file_area.py`](file_area.py) | 团队文件区的路径策略（M1-8）：`OPENAI4S_DATA_ROOTS` 列出唯一可达的目录，一切操作都过同一个解析器，包含检查作用在**解析后**的路径上——先解 symlink 和 `..`——所以任何写法的外部路径都过不去，"在白名单外"与"不存在"答同一句话。上传目标再加一条纯文件名规则（无分隔符、无 dot-dot、不许 symlink 跳转），上传能创建文件却不能用来逃逸。 |
 | [`file_routes.py`](file_routes.py) | `GET /files`、`GET /files/download`、`POST /files/upload`，经校验的 `RouteSpec` 表。上传是真流式：网关的整体预读对这条路径单独跳过，处理器把 `rfile` 按 1 MiB 块拷进同目录临时文件再原子 `os.replace`——512 MiB 不经过 daemon 内存，截断的 body 也不会在最终名字下留半个文件。guest 在这里什么都不能读（D3：仅回放）。 |
-| [`team_auth.py`](team_auth.py) | 团队模式认证（`OPENAI4S_TEAM_MODE`）：`os_user` 登录 cookie；按（用户名, ip）的令牌桶限速——在 PBKDF2 计算**之前**消耗令牌，所以限速同时约束了攻击者能让 daemon 做多少哈希功；以及 loopback CLI 的 service 身份，让服务器上的管理 CLI 继续用 daemon 访问令牌而不冒充任何真人账号。每次登录结果都写审计（INV-12）。 |
+| [`team_auth.py`](team_auth.py) | 团队模式认证（`OPENAI4S_TEAM_MODE`）：`os_user` 登录 cookie；按（用户名, ip）的令牌桶限速——在 PBKDF2 计算**之前**消耗令牌，所以限速同时约束了攻击者能让 daemon 做多少哈希功；以及 loopback CLI 的 service 身份，让服务器上的管理 CLI 继续用 daemon 访问令牌而不冒充任何真人账号。当 trusted proxy 拓扑让所有客户端都呈现为 loopback peer 时，gateway 会禁用该机器身份。每次登录结果都写审计（INV-12）。 |
 | [`team_routes.py`](team_routes.py) | 认证路由（`/auth/login`、`/auth/logout`、`/auth/me`），按 `kernel_routes` 的形态组织：一张经校验的 `RouteSpec` 表，运行时分发和契约清单读同一份。两种模式下都确定性应答——团队模式关闭时返回稳定的"已禁用"形状，契约捕获冻结的正是它。Set-Cookie 走 `_send` 带消毒的 header 通道；原始会话 token 只存在于该头和客户端 cookie jar 里。 |
 | [`titles.py`](titles.py) | 在后台根据第一条消息生成会话标题。模型配置延迟绑定，持久化和广播都做了防竞态处理。 |
 | [`trusted_capture.py`](trusted_capture.py) | 管理 Stage 1 会话级前台 Artifact 捕获、独立后台内核与面向用户的外部工作区变更三者之间的准入边界。同一线程的捕获和外部变更均可在各自类别内嵌套；另一所有者或任何跨类别重叠都会在工作区动作开始前失败即关闭。 |

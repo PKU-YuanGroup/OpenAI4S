@@ -30,12 +30,13 @@ Two kinds of gate:
     records the exit code.
 `check_suite`
     Proven by GitHub's own check runs *at that exact SHA* rather than re-executed.
-    The browser matrix and the Python support matrix cost more than the rest of
-    the release combined and already ran on the push to `main` that the tag
-    points at, so re-running them would buy nothing but latency. What makes this
-    evidence rather than an assumption is that the attestation is pinned to
-    `head_sha`: a check run for a different commit does not count, and the
-    check-run and workflow-run IDs are recorded so a reader can go look.
+    The browser matrix, Python support matrix, and real Linux private-PID
+    interrupt smoke already ran on the push to `main` that the tag points at,
+    so re-running them would buy nothing but latency (and, for bubblewrap, a
+    different host). What makes this evidence rather than an assumption is that
+    the attestation is pinned to `head_sha`: a check run for a different commit
+    does not count, and the check-run and workflow-run IDs are recorded so a
+    reader can go look.
 
 Deliberately *not* a gate: the nightly macOS/Linux sandbox jobs. They only run on
 `schedule`/`workflow_dispatch`, so no check run for them exists at a release SHA
@@ -55,7 +56,7 @@ from typing import Any, Iterable, Mapping, Sequence
 #: Bumped whenever the receipt's shape or the gate list changes. The consumer
 #: requires an exact match rather than `>=`: an older producer cannot know about
 #: a gate added later, so accepting its receipt would silently drop that gate.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 RECEIPT_FORMAT = "openai4s-quality-receipt"
 
@@ -167,6 +168,11 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
         "ci-browser-webkit",
         CHECK_SUITE_KIND,
         check_name="Browser workbench E2E (webkit)",
+    ),
+    Gate(
+        "ci-linux-bwrap-kernel-interrupt",
+        CHECK_SUITE_KIND,
+        check_name="Linux bubblewrap Python/R persistent interrupt",
     ),
 )
 

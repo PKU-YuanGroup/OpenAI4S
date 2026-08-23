@@ -50,6 +50,21 @@ export OPENAI4S_DATA_ROOTS=/lab/datasets=ro:/lab/scratch
 
 `=ro` 让一个根对所有人只读，管理员也不例外——只读根的意义就在于每个分析都在读的参考数据不能漂。可写的根有一个固定的命名空间：每位成员的上传落在 `<root>/users/<用户名>/`，由身份算出而绝不来自请求；别人的 `users/<name>/` 不可读——共享区仍然共享，scratch 是个人的。这是固定命名空间而不是猜测，于是"这是不是别的成员的区域"是一个关于路径的问题，而不是"叫 `alice` 的目录是人还是数据集"的问题。
 
+本机 Python/R Cell 会在 `open(2)` 层执行同一套属主边界，而不只依赖 HTTP/Host
+API。OS 沙箱会隐藏整个 daemon 数据目录、可写 data root 中其他成员的
+`users/<name>`，以及 sibling 或旧版遗留的 kernel 临时目录；只把当前工作区和
+本 Cell 的私有临时目录开放写入，并精确只读开放本会话需要的 runtime、已授权
+Skill sidecar、属主个人区和按会话划分且校验过的 Artifact 输入缓存。若
+Seatbelt/bubblewrap 无法建立并通过自测，Cell 即使在
+`OPENAI4S_KERNEL_SANDBOX=auto` 下也会被拒绝；`off` 同样会拒绝。第一步就是
+`exec_background` 也走这套策略。
+
+不要把 `OPENAI4S_DATA_ROOTS` 放进系统 canonical 临时目录，也不要让两者互相
+包含：团队模式会拒绝这种重叠，因为重新开放共享数据也会同时开放嵌套的个人区。
+请使用持久化的实验室路径。这套策略隔离的是 OpenAI4S 管理的会话与个人数据，
+不是同一 Unix UID 下的通用敌对主机沙箱；daemon 账号 home 中其他普通文件仍可能
+被 Cell 读取。成员彼此不可信时，必须使用不同 OS 身份或容器/VM。
+
 ## 2c. 只有管理员能做的事
 
 团队模式加的是账号，并不会把每一个 daemon 级的面都变成按人的。有些事是**对着整个实例**做的，那就是运维的事，无论谁登录了：
@@ -59,6 +74,13 @@ export OPENAI4S_DATA_ROOTS=/lab/datasets=ro:/lab/scratch
 - 向任一内置 backend 提交批处理作业（`POST /orchestration/jobs`）。`local` 以 daemon 身份、在 kernel 沙箱之外执行 argv；`cluster` 则用 daemon 的 Unix 身份和站点凭据调用调度器。OpenAI4S 没有经过鉴权的“浏览器成员 → 调度器账号”映射，因此两种 backend 都不能当作该成员自己的执行身份；
 - 为会话请求交互式集群放置（`POST /sessions/{id}/compute`），它调用的是同一套 daemon 管理的调度器身份。会话属主可以释放一份已有的分配，但只有管理员可以请求分配；
 - 注册远程算力、通过 `/kernel/install` 或 `/frames/{fid}/kernel/install` 往所有内核共用的 venv 里装包、配置携带组凭据的连接器、往每位成员的 agent 都会加载的目录里发布 skill、重置常设权限规则，以及创建**全局**权限规则（成员可以为自己的会话、或自己参与的项目建规则）。
+
+同样的区分也适用于 Cell 内部。`host.skills.edit`、`publish`、`delete` 和
+`rollback` 会改写之后的会话将执行的指令或 Python sidecar，因此在团队模式下，
+即使调用者已加入当前 project，这些 Host 写操作也要求管理员。`skills_edit`
+默认也从静默放行改为询问。这不取消成员主动调用的 HTTP project 控制：成员仍可回滚到
+启用历史能证明由 Web 创作、且仅含配方的版本；重新启用含 `kernel.py` 的版本或
+来源无法确认的旧 Host 历史需要管理员。
 
 成员保留 UI 需要的每一项读取。完整清单在 `openai4s/server/team_policy.py`；不在其上的路由就是成员的。
 
@@ -132,7 +154,9 @@ daemon 默认绑 loopback，这也是推荐做法。从别处访问，两条受�
    export OPENAI4S_TRUSTED_PROXY_ORIGINS=https://lab.example
    ```
 
-   多个精确 origin 用逗号分隔；末尾一个 `/` 会被规范化。不接受通配符、凭据、非根路径、query 或 fragment。不设置这个变量时仍是严格默认值：`Origin` 必须与后端的 `Host` 字面一致。
+   多个精确 origin 用逗号分隔；末尾一个 `/` 会被规范化。不接受通配符、凭据、非根路径、query 或 fragment。不设置这个变量时仍是严格默认值：`Origin` 必须与后端的 `Host` 字面一致。只要配置中含有一个 `https://` origin，团队登录、邀请兑换和登出的所有 cookie 都会带上 `Secure`；配置存在期间，浏览器应只通过这个公开 TLS origin 访问。
+
+   配置任意 trusted proxy origin，也会在这个 HTTP listener 上禁用 daemon access token 对应的 admin 等价 `SERVICE_IDENTITY`。这是刻意的 fail-closed：代理连接 `127.0.0.1` 后，公网 HTTPS 客户端与本地 CLI 的 TCP peer 完全相同，`Origin`、`Host` 或 `X-Forwarded-*` 都无法还原可信的进程来源。经代理管理时请用普通 admin 账户登录，且不要向代理转发 daemon access token；未配置 trusted proxy origin 时（本机直连或 SSH 隧道拓扑），access-token CLI 通路仍保留。若要让公开代理入口与该 CLI 通路并存，需要独立的本机管理传输，约定一个 forwarded header 并不能建立这个边界。
 
 **relay 不是跑实验室服务器的第三条路。** `openai4s relay` 与 `openai4s share` 是另一件事——**单个**会话的只读、已脱敏快照，经由 daemon 主动拨出的隧道发送（见 [`webshare.md`](webshare.md)）。relay 看得到明文，而 share 投影刻意不是一个登录面：它不带 cookie、没有写路由、也没有活的内核。把它指向团队部署，得到的是某一个会话的投影，而不是把工作台开出去。
 

@@ -39,10 +39,17 @@ uv run python scripts/capture_response_schemas.py --check   # frozen response sh
 uv run python scripts/capture_response_contract.py --check  # every routable route still has a contract
 python scripts/source_secret_scan.py                        # no credential-shaped literal in release sources
 bash scripts/container_smoke.sh                             # the image builds AND the daemon runs inside it
+OPENAI4S_KERNEL_SANDBOX=enforce OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1 \
+  uv run python -m harness.smoke.linux_bwrap_interrupt      # Linux+bwrap: Python/R persistent SIGINT
 node tests/browser_smoke.mjs                                # workbench E2E, needs a daemon on :8760
 node tests/browser_admission_fault.mjs                      # pinned-comment admission survives a lost response
 node tests/browser_matrix.mjs --browser=firefox             # cross-engine breadth (chromium/firefox/webkit)
 ```
+
+The hosted-Linux interrupt smoke deliberately allows raw worker networking so
+GitHub's runner does not fail while configuring loopback in a new network
+namespace. It proves the team private-PID/info-fd/procfs/pidfd signal path and
+post-interrupt kernel reuse, not the full Linux filesystem-and-egress boundary.
 
 The browser jobs need `npm install --no-save --ignore-scripts playwright@1.54.1 && npx playwright install <engine>` plus a daemon already serving on `127.0.0.1:8760`.
 

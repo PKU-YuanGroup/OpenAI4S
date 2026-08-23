@@ -147,7 +147,11 @@ DEFAULT_PERMISSION_RULES = (
     ("web_fetch", "*", "allow"),
     ("web_search", "*", "allow"),
     ("science_search", "*", "allow"),
-    ("skills_edit", "*", "allow"),
+    # Skill documents and optional kernel.py sidecars are executable inputs to
+    # future turns.  A model-authored edit must be a visible human decision,
+    # including in the single-user daemon; team authorization is enforced again
+    # by SkillService at the mutation sink.
+    ("skills_edit", "*", "ask"),
     # The managed DataPro product flow uses the user's brokered Agent Plan Key;
     # supplying or activating that shared Ark credential is the explicit
     # authorization.  The bundled connector/Skill are enabled by default and
@@ -173,10 +177,21 @@ DEFAULT_PERMISSION_RULES = (
 # marker.  New releases advance this separate version and list only the rules
 # introduced by that version, so upgrades add new defaults without restoring a
 # default that an operator deliberately deleted or changed.
-_DEFAULT_PERMISSION_RULE_VERSION = 3
+_DEFAULT_PERMISSION_RULE_VERSION = 4
 _DEFAULT_PERMISSION_RULE_ADDITIONS = {
     2: (("science_search", "*", "allow"),),
     3: (("mcp_call", "volcengine-datapro/dataPro_search", "allow"),),
+}
+
+# Security migrations are deliberately separate from additive defaults.  An
+# installation seeded before v4 has an indistinguishable global
+# ``skills_edit * allow`` row: there was no provenance bit saying whether the
+# row was the shipped default or an operator later re-selected the same value.
+# Leaving it in place preserves silent executable project-overlay writes, so v4
+# revokes that legacy value once.  A deliberate operator may explicitly restore
+# an allow after upgrade; deny/ask and deleted rows are preserved.
+_DEFAULT_PERMISSION_RULE_REPLACEMENTS = {
+    4: (("skills_edit", "*", "allow", "ask"),),
 }
 
 
@@ -350,6 +365,20 @@ class PermissionRuleRepository:
             )
         except (TypeError, ValueError):
             seeded_version = 1 if seeded else 0
+        # A missing seed marker is not proof that no legacy defaults exist.
+        # Rules are committed before the marker, so a crash in that deliberate
+        # recovery window leaves a complete, markerless default set behind.
+        # Apply every security replacement in that case while the current
+        # defaults are inserted: on a fresh database the replacements are
+        # no-ops, while a stranded legacy allow is still revoked.
+        replacement_start = 1 if not seeded else seeded_version + 1
+        replacements = tuple(
+            replacement
+            for version in range(
+                replacement_start, _DEFAULT_PERMISSION_RULE_VERSION + 1
+            )
+            for replacement in _DEFAULT_PERMISSION_RULE_REPLACEMENTS.get(version, ())
+        )
         if force or not seeded:
             rules = DEFAULT_PERMISSION_RULES
         else:
@@ -360,7 +389,7 @@ class PermissionRuleRepository:
                 )
                 for rule in _DEFAULT_PERMISSION_RULE_ADDITIONS.get(version, ())
             )
-            if not rules:
+            if not rules and not replacements:
                 return
         now = self._clock_ms()
         with self._lock:
@@ -391,6 +420,13 @@ class PermissionRuleRepository:
                         now,
                         now,
                     ),
+                )
+            for tool, pattern, previous, decision in replacements:
+                self._connection.execute(
+                    "UPDATE permission_rules SET decision=?, updated_at=? "
+                    "WHERE scope='global' AND scope_id='' AND tool=? "
+                    "AND pattern=? AND decision=?",
+                    (decision, now, tool, pattern, previous),
                 )
             self._connection.commit()
         self._set_setting("perm_seeded", "1")

@@ -5,13 +5,19 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import openai4s.host.data as data_mod
 from openai4s.config import Config, RoadmapFeatureFlags
-from openai4s.host.data import HostDataService, rank_artifacts
+from openai4s.host.data import (
+    HostDataService,
+    kernel_artifact_input_dir,
+    rank_artifacts,
+)
 from openai4s.store import get_store
 
 
@@ -141,12 +147,15 @@ def _service(
     store: FakeStore | None = None,
     *,
     trusted_delivery: bool = False,
+    team_mode: bool = False,
 ):
     actual_store = store or FakeStore()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     config = SimpleNamespace(
+        data_dir=tmp_path / "data",
         artifacts_dir=tmp_path / "artifacts",
+        team_mode=team_mode,
         roadmap_features=SimpleNamespace(
             stage1_trusted_delivery=trusted_delivery,
         ),
@@ -167,11 +176,17 @@ def _service(
     return service, actual_store, workspace, config
 
 
-def _real_service(tmp_path: Path, *, trusted_delivery: bool):
+def _real_service(
+    tmp_path: Path,
+    *,
+    trusted_delivery: bool,
+    team_mode: bool = False,
+):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     config = Config(
         data_dir=tmp_path / "data",
+        team_mode=team_mode,
         roadmap_features=RoadmapFeatureFlags(
             stage1_trusted_delivery=trusted_delivery,
         ),
@@ -281,6 +296,426 @@ def test_rank_artifacts_never_mutates_source_rows():
 
     assert "_score" not in rows[0]
     assert ranked[0]["_score"] == 5.75
+
+
+def _team_artifact_source(
+    tmp_path: Path,
+    *,
+    version_id: str = "v-owned",
+    payload: bytes = b"exact-version-bytes",
+    snapshot: bool = True,
+):
+    service, store, workspace, config = _service(tmp_path, team_mode=True)
+    config.data_dir.mkdir(parents=True)
+    if snapshot:
+        source = config.data_dir / "artifacts" / f"{version_id}.bin"
+        source.parent.mkdir()
+    else:
+        source = workspace / f"{version_id}.bin"
+    source.write_bytes(payload)
+    store.metadata[version_id] = {
+        "version_id": version_id,
+        "artifact_id": "a-1",
+        "filename": f"{version_id}.bin",
+        "path": str(source),
+        "snapshot_path": str(source) if snapshot else None,
+        "checksum": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+    store.paths[version_id] = str(source)
+    return service, store, workspace, config, source
+
+
+def test_team_artifact_path_stages_current_and_historical_exact_bytes(tmp_path):
+    service, store, workspace, config, current_source = _team_artifact_source(
+        tmp_path,
+        version_id="v-current",
+        payload=b"current-live-version",
+        snapshot=False,
+    )
+    historical = config.data_dir / "artifact-versions" / "v-history.bin"
+    historical.parent.mkdir()
+    historical.write_bytes(b"historical-frozen-version")
+    store.metadata["v-history"] = {
+        "version_id": "v-history",
+        "artifact_id": "a-1",
+        "filename": "history.bin",
+        "path": str(current_source),
+        "snapshot_path": str(historical),
+        "checksum": hashlib.sha256(b"historical-frozen-version").hexdigest(),
+        "size_bytes": len(b"historical-frozen-version"),
+    }
+
+    current_path = Path(service.artifact_path("v-current"))
+    history_path = Path(service.artifact_path("v-history"))
+    expected_root = kernel_artifact_input_dir(config.data_dir, "frame-1")
+
+    assert current_path.parent == expected_root
+    assert history_path.parent == expected_root
+    assert current_path.read_bytes() == b"current-live-version"
+    assert history_path.read_bytes() == b"historical-frozen-version"
+    assert current_path != current_source
+    assert history_path != historical
+    assert not current_path.is_symlink()
+    assert current_path.stat().st_nlink == 1
+    assert expected_root.stat().st_mode & 0o777 == 0o700
+    # The remote-compute path keeps the strict snapshot-only rule and resolves
+    # to the same verified session copy rather than weakening to the live path.
+    assert Path(service.artifact_snapshot_path("v-history")) == history_path
+    with pytest.raises(FileNotFoundError, match="no frozen snapshot"):
+        service.artifact_snapshot_path("v-current")
+    assert service.provenance_resolve_path(str(current_path)) == "v-current"
+    assert service.provenance_resolve_path(str(history_path)) == "v-history"
+    assert not any(call[0] == "record_cell_artifact" for call in store.calls)
+    assert not any(expected_root.is_relative_to(path) for path in (workspace,))
+
+
+def test_team_artifact_path_is_stable_and_concurrently_idempotent(tmp_path):
+    service, _store, _workspace, _config, _source = _team_artifact_source(tmp_path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        paths = list(pool.map(service.artifact_path, ["v-owned"] * 24))
+
+    assert len(set(paths)) == 1
+    target = Path(paths[0])
+    first_identity = (target.stat().st_dev, target.stat().st_ino)
+    assert service.artifact_path("v-owned") == paths[0]
+    assert (target.stat().st_dev, target.stat().st_ino) == first_identity
+    assert target.read_bytes() == b"exact-version-bytes"
+
+
+def test_team_artifact_path_repeated_hit_does_not_consume_session_quota(
+    tmp_path,
+    monkeypatch,
+):
+    service, store, _workspace, config, _source = _team_artifact_source(
+        tmp_path,
+        payload=b"quota-one",
+    )
+    monkeypatch.setattr(data_mod, "_ARTIFACT_INPUT_SESSION_MAX_BYTES", 9)
+    monkeypatch.setattr(data_mod, "_ARTIFACT_INPUT_SESSION_MAX_FILES", 2)
+    first = service.artifact_path("v-owned")
+
+    assert service.artifact_path("v-owned") == first
+
+    second_source = config.data_dir / "artifacts" / "quota-two.bin"
+    second_source.write_bytes(b"X")
+    store.metadata["v-two"] = {
+        "version_id": "v-two",
+        "artifact_id": "a-1",
+        "filename": "quota-two.bin",
+        "path": str(second_source),
+        "snapshot_path": str(second_source),
+        "checksum": hashlib.sha256(b"X").hexdigest(),
+        "size_bytes": 1,
+    }
+
+    with pytest.raises(OSError, match="quota exceeded for this session"):
+        service.artifact_path("v-two")
+
+    stage = kernel_artifact_input_dir(config.data_dir, "frame-1")
+    assert [path.name for path in stage.iterdir()] == [Path(first).name]
+
+
+def test_team_artifact_path_enforces_daemon_wide_quota_across_sessions(
+    tmp_path,
+    monkeypatch,
+):
+    service, store, _workspace, config, _source = _team_artifact_source(
+        tmp_path,
+        payload=b"global-one",
+    )
+    monkeypatch.setattr(data_mod, "_ARTIFACT_INPUT_GLOBAL_MAX_BYTES", 10)
+    monkeypatch.setattr(data_mod, "_ARTIFACT_INPUT_SESSION_MAX_BYTES", 100)
+    service.artifact_path("v-owned")
+
+    store.scope = {
+        "frame_id": "frame-2",
+        "root_frame_id": "frame-2",
+        "project_id": "default",
+    }
+    store.artifacts_by_id["a-2"] = {
+        "artifact_id": "a-2",
+        "root_frame_id": "frame-2",
+        "project_id": "default",
+    }
+    second_source = config.data_dir / "artifacts" / "global-two.bin"
+    second_source.write_bytes(b"Y")
+    store.metadata["v-global-two"] = {
+        "version_id": "v-global-two",
+        "artifact_id": "a-2",
+        "filename": "global-two.bin",
+        "path": str(second_source),
+        "snapshot_path": str(second_source),
+        "checksum": hashlib.sha256(b"Y").hexdigest(),
+        "size_bytes": 1,
+    }
+
+    with pytest.raises(OSError, match="global Artifact input staging quota"):
+        service.artifact_path("v-global-two")
+
+    assert list(kernel_artifact_input_dir(config.data_dir, "frame-2").iterdir()) == []
+
+
+def test_team_artifact_path_fails_closed_without_root_scope(tmp_path):
+    service, store, _workspace, config, _source = _team_artifact_source(tmp_path)
+    store.scope = {"frame_id": "frame-1", "root_frame_id": "", "project_id": ""}
+    store.artifacts_by_id["a-1"].update(root_frame_id="", project_id="")
+
+    with pytest.raises(RuntimeError, match="staging scope is unavailable"):
+        service.artifact_path("v-owned")
+
+    assert not (config.data_dir / "kernel-artifact-inputs").exists()
+
+
+def test_team_artifact_path_preserves_disk_free_reserve(tmp_path, monkeypatch):
+    service, _store, _workspace, config, _source = _team_artifact_source(
+        tmp_path,
+        payload=b"reserve",
+    )
+    monkeypatch.setattr(data_mod, "_ARTIFACT_INPUT_MIN_FREE_BYTES", 10)
+    monkeypatch.setattr(data_mod, "_ARTIFACT_INPUT_MAX_FREE_RESERVE", 10)
+    monkeypatch.setattr(
+        data_mod.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=100, used=84, free=16),
+    )
+
+    with pytest.raises(OSError, match="exhaust reserved disk space"):
+        service.artifact_path("v-owned")
+
+    assert list(kernel_artifact_input_dir(config.data_dir, "frame-1").iterdir()) == []
+
+
+def test_team_artifact_path_denies_foreign_version_before_staging(tmp_path):
+    service, store, _workspace, config, _source = _team_artifact_source(tmp_path)
+    foreign = config.data_dir / "artifacts" / "foreign.bin"
+    foreign.write_bytes(b"foreign-secret")
+    store.artifacts_by_id["a-foreign"] = {
+        "artifact_id": "a-foreign",
+        "root_frame_id": "frame-other",
+        "project_id": "other-project",
+    }
+    store.metadata["v-foreign"] = {
+        "version_id": "v-foreign",
+        "artifact_id": "a-foreign",
+        "filename": "foreign.bin",
+        "path": str(foreign),
+        "snapshot_path": str(foreign),
+        "checksum": hashlib.sha256(b"foreign-secret").hexdigest(),
+        "size_bytes": len(b"foreign-secret"),
+    }
+
+    with pytest.raises(KeyError, match="current session"):
+        service.artifact_path("v-foreign")
+
+    assert not kernel_artifact_input_dir(config.data_dir, "frame-1").exists()
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_team_artifact_path_safely_replaces_preexisting_cache_alias(
+    tmp_path,
+    alias_kind,
+):
+    service, _store, _workspace, _config, _source = _team_artifact_source(tmp_path)
+    target = Path(service.artifact_path("v-owned"))
+    target.unlink()
+    outside = tmp_path / f"outside-{alias_kind}.bin"
+    outside.write_bytes(b"must-not-change")
+    if alias_kind == "symlink":
+        target.symlink_to(outside)
+    else:
+        os.link(outside, target)
+
+    returned = Path(service.artifact_path("v-owned"))
+
+    assert returned == target
+    assert returned.read_bytes() == b"exact-version-bytes"
+    assert outside.read_bytes() == b"must-not-change"
+    assert not returned.is_symlink()
+    assert returned.stat().st_nlink == 1
+
+
+def test_team_artifact_path_refuses_symlinked_cache_parent(tmp_path):
+    service, _store, _workspace, config, _source = _team_artifact_source(tmp_path)
+    outside = tmp_path / "outside-cache"
+    outside.mkdir()
+    parent = config.data_dir / "kernel-artifact-inputs"
+    parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        service.artifact_path("v-owned")
+
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_team_artifact_path_refuses_aliased_snapshot_source(tmp_path, alias_kind):
+    service, _store, _workspace, config, source = _team_artifact_source(tmp_path)
+    exact = config.data_dir / "artifacts" / f"exact-{alias_kind}.bin"
+    source.replace(exact)
+    if alias_kind == "symlink":
+        source.symlink_to(exact)
+    else:
+        os.link(exact, source)
+
+    with pytest.raises(OSError):
+        service.artifact_path("v-owned")
+
+    stage = kernel_artifact_input_dir(config.data_dir, "frame-1")
+    assert list(stage.iterdir()) == []
+
+
+def test_team_artifact_path_detects_snapshot_name_swap_during_stream(
+    tmp_path,
+    monkeypatch,
+):
+    payload = b"A" * (1024 * 1024 + 4096)
+    service, _store, _workspace, config, source = _team_artifact_source(
+        tmp_path,
+        payload=payload,
+    )
+    source_identity = (source.stat().st_dev, source.stat().st_ino)
+    detached = source.with_suffix(".detached")
+    native_read = os.read
+    swapped = False
+
+    def swap_name_after_first_read(descriptor, count):
+        nonlocal swapped
+        chunk = native_read(descriptor, count)
+        opened = os.fstat(descriptor)
+        if chunk and not swapped and (opened.st_dev, opened.st_ino) == source_identity:
+            swapped = True
+            source.rename(detached)
+            source.write_bytes(payload)
+        return chunk
+
+    monkeypatch.setattr("openai4s.host.data.os.read", swap_name_after_first_read)
+
+    with pytest.raises(OSError, match="changed during input staging"):
+        service.artifact_path("v-owned")
+
+    assert swapped is True
+    stage = kernel_artifact_input_dir(config.data_dir, "frame-1")
+    assert list(stage.iterdir()) == []
+
+
+def test_team_artifact_path_does_not_follow_cache_parent_swap(tmp_path, monkeypatch):
+    service, _store, _workspace, config, _source = _team_artifact_source(tmp_path)
+    stage = kernel_artifact_input_dir(config.data_dir, "frame-1")
+    moved = stage.with_name(f"{stage.name}-moved")
+    outside = tmp_path / "outside-race"
+    outside.mkdir()
+    native_read = os.read
+    swapped = False
+
+    def swap_cache_parent_after_source_open(descriptor, count):
+        nonlocal swapped
+        chunk = native_read(descriptor, count)
+        if chunk and not swapped and stage.is_dir():
+            swapped = True
+            stage.rename(moved)
+            stage.symlink_to(outside, target_is_directory=True)
+        return chunk
+
+    monkeypatch.setattr(
+        "openai4s.host.data.os.read",
+        swap_cache_parent_after_source_open,
+    )
+
+    with pytest.raises(OSError):
+        service.artifact_path("v-owned")
+
+    assert swapped is True
+    assert list(outside.iterdir()) == []
+    assert list(moved.iterdir()) == []
+
+
+def test_team_artifact_path_rejects_tampered_snapshot(tmp_path):
+    service, _store, _workspace, config, source = _team_artifact_source(tmp_path)
+    source.write_bytes(b"other-version-bytes")  # same size, different digest
+
+    with pytest.raises(OSError, match="checksum verification failed"):
+        service.artifact_path("v-owned")
+
+    stage = kernel_artifact_input_dir(config.data_dir, "frame-1")
+    assert stage.is_dir()
+    assert list(stage.iterdir()) == []
+
+
+def test_team_artifact_path_bounds_oversized_source_read_to_recorded_size(
+    tmp_path,
+    monkeypatch,
+):
+    service, _store, _workspace, config, source = _team_artifact_source(
+        tmp_path,
+        payload=b"recorded",
+    )
+    source.write_bytes(b"X" * (4 * 1024 * 1024))
+    native_read = os.read
+    bytes_read = 0
+
+    def observe_read(descriptor, count):
+        nonlocal bytes_read
+        chunk = native_read(descriptor, count)
+        bytes_read += len(chunk)
+        return chunk
+
+    monkeypatch.setattr("openai4s.host.data.os.read", observe_read)
+
+    with pytest.raises(OSError, match="size verification failed"):
+        service.artifact_path("v-owned")
+
+    assert bytes_read == len(b"recorded") + 1
+    stage = kernel_artifact_input_dir(config.data_dir, "frame-1")
+    assert list(stage.iterdir()) == []
+
+
+def test_single_user_artifact_path_keeps_direct_path_compatibility(tmp_path):
+    service, store, _workspace, _config = _service(tmp_path, team_mode=False)
+    direct = tmp_path / "legacy-direct.bin"
+    direct.write_bytes(b"legacy")
+    store.metadata["v-direct"] = {
+        "version_id": "v-direct",
+        "artifact_id": "a-1",
+        "snapshot_path": str(direct),
+    }
+    store.paths["v-direct"] = str(direct)
+
+    assert service.artifact_path("v-direct") == str(direct)
+    assert service.artifact_snapshot_path("v-direct") == str(direct)
+    assert not (tmp_path / "data" / "kernel-artifact-inputs").exists()
+
+
+def test_real_team_store_stages_each_immutable_version_in_session_root(tmp_path):
+    service, store, workspace, config, frame_id = _real_service(
+        tmp_path,
+        trusted_delivery=True,
+        team_mode=True,
+    )
+    source = workspace / "evolving.csv"
+    try:
+        source.write_bytes(b"generation,score\n1,0.4\n")
+        first = service.save_artifact({"path": source.name})
+        source.write_bytes(b"generation,score\n2,0.9\n")
+        second = service.save_artifact({"path": source.name})
+
+        first_path = Path(service.artifact_path(first["version_id"]))
+        second_path = Path(service.artifact_path(second["version_id"]))
+        scope = store.resolve_frame_scope(frame_id)
+        expected_root = kernel_artifact_input_dir(
+            config.data_dir,
+            scope["root_frame_id"],
+        )
+
+        assert first["version_id"] != second["version_id"]
+        assert first_path.parent == second_path.parent == expected_root
+        assert first_path.read_bytes() == b"generation,score\n1,0.4\n"
+        assert second_path.read_bytes() == b"generation,score\n2,0.9\n"
+        assert Path(service.artifact_snapshot_path(first["version_id"])) == first_path
+        assert service.provenance_resolve_path(str(first_path)) == first["version_id"]
+    finally:
+        store.close()
 
 
 def test_save_artifact_copies_snapshot_and_preserves_record_shape(tmp_path):

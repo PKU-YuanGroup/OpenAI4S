@@ -136,12 +136,238 @@ _MAX_LINEAGE_EDGES = 5000
 
 FRAME_STATUSES = frozenset({"processing", "done", "failed", "awaiting_user_response"})
 
+#: Team-kernel-readable copies of versioned inputs live in a daemon-owned,
+#: session-scoped directory. The sandbox exposes only that exact directory and
+#: mounts it read-only, while the remainder of the data directory stays masked.
+_KERNEL_ARTIFACT_INPUT_PARENT = "kernel-artifact-inputs"
+_ARTIFACT_INPUT_CHUNK = 1024 * 1024
+#: Persistent-kernel paths cannot be evicted while a session is live. Bound
+#: both one session and the daemon-wide aggregate so many sessions cannot turn
+#: exact-version compatibility into an unbounded disk-allocation primitive.
+_ARTIFACT_INPUT_SESSION_MAX_BYTES = 8 * 1024 * 1024 * 1024
+_ARTIFACT_INPUT_SESSION_MAX_FILES = 1024
+_ARTIFACT_INPUT_GLOBAL_MAX_BYTES = 32 * 1024 * 1024 * 1024
+_ARTIFACT_INPUT_GLOBAL_MAX_FILES = 4096
+_ARTIFACT_INPUT_GLOBAL_MAX_SESSIONS = 4096
+_ARTIFACT_INPUT_MIN_FREE_BYTES = 512 * 1024 * 1024
+_ARTIFACT_INPUT_MAX_FREE_RESERVE = 8 * 1024 * 1024 * 1024
+_ARTIFACT_INPUT_GLOBAL_LOCK = threading.RLock()
+
 
 _VALID_MARKER_ID = re.compile(
     r"^(v-)?[0-9a-fA-F]{8,}$|"
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+
+
+def _artifact_directory_flags() -> int:
+    """Return the flags required for a pinned, no-follow directory open."""
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    if os.name != "posix" or not nofollow or not directory:
+        raise RuntimeError(
+            "secure Artifact input staging is unavailable on this platform"
+        )
+    return (
+        os.O_RDONLY
+        | nofollow
+        | directory
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+
+
+def _require_artifact_dirfd() -> None:
+    """Fail closed where an atomic no-follow staging transaction is impossible."""
+
+    required = (os.open, os.stat, os.mkdir, os.unlink, os.rename)
+    if any(operation not in os.supports_dir_fd for operation in required):
+        raise RuntimeError(
+            "secure Artifact input staging is unavailable on this platform"
+        )
+    _artifact_directory_flags()
+
+
+def _artifact_inode(metadata: os.stat_result) -> tuple[int, int]:
+    return (int(metadata.st_dev), int(metadata.st_ino))
+
+
+def _artifact_file_state(
+    metadata: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(metadata.st_size),
+        int(metadata.st_mtime_ns),
+        int(metadata.st_ctime_ns),
+        int(metadata.st_nlink),
+    )
+
+
+class _PinnedArtifactDirectory:
+    """One held directory descriptor used for exact input staging.
+
+    The kernel owns the workspace namespace and may have left aliases in it.
+    Opening every component with ``O_NOFOLLOW`` and publishing by descriptor
+    keeps a symlink or rename from redirecting the daemon's write outside the
+    session workspace.  ``assert_current`` additionally prevents returning a
+    pathname after its visible directory was exchanged underneath us.
+    """
+
+    def __init__(self, descriptor: int, *, root: Path, parts: tuple[str, ...]):
+        self.fd = descriptor
+        self.root = root
+        self.parts = parts
+        self.path = root.joinpath(*parts)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise OSError("Artifact input parent is not a directory")
+        self.identity = _artifact_inode(metadata)
+
+    def __enter__(self) -> _PinnedArtifactDirectory:
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+    @staticmethod
+    def _component(name: str) -> str:
+        if (
+            not name
+            or name in {".", ".."}
+            or "\x00" in name
+            or os.sep in name
+            or (os.altsep is not None and os.altsep in name)
+        ):
+            raise OSError("Artifact input path component is invalid")
+        return name
+
+    @classmethod
+    def open_under(
+        cls,
+        root: Path,
+        parts: tuple[str, ...],
+        *,
+        create: bool,
+    ) -> _PinnedArtifactDirectory:
+        """Pin ``root/parts`` without following any child alias."""
+
+        _require_artifact_dirfd()
+        root = Path(root)
+        clean = tuple(cls._component(part) for part in parts)
+        before = os.stat(root, follow_symlinks=False)
+        descriptor = os.open(root, _artifact_directory_flags())
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISDIR(opened.st_mode) or _artifact_inode(
+                before
+            ) != _artifact_inode(opened):
+                raise OSError("Artifact input root changed during secure open")
+            for part in clean:
+                try:
+                    child = os.open(
+                        part,
+                        _artifact_directory_flags(),
+                        dir_fd=descriptor,
+                    )
+                except FileNotFoundError:
+                    if not create:
+                        raise
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    child = os.open(
+                        part,
+                        _artifact_directory_flags(),
+                        dir_fd=descriptor,
+                    )
+                os.close(descriptor)
+                descriptor = child
+            return cls(descriptor, root=root, parts=clean)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def assert_current(self) -> None:
+        with self.open_under(self.root, self.parts, create=False) as current:
+            if current.identity != self.identity:
+                raise OSError("Artifact input parent changed during staging")
+
+    def lstat(self, name: str) -> os.stat_result:
+        return os.stat(
+            self._component(name),
+            dir_fd=self.fd,
+            follow_symlinks=False,
+        )
+
+    def open_read(self, name: str) -> int:
+        return os.open(
+            self._component(name),
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=self.fd,
+        )
+
+    def create_exclusive(self, name: str) -> int:
+        return os.open(
+            self._component(name),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=self.fd,
+        )
+
+    def replace(self, source: str, destination: str) -> None:
+        # POSIX rename atomically replaces a non-directory destination.  Both
+        # names are interpreted relative to this already-pinned directory.
+        os.rename(
+            self._component(source),
+            self._component(destination),
+            src_dir_fd=self.fd,
+            dst_dir_fd=self.fd,
+        )
+
+    def unlink(self, name: str, *, missing_ok: bool = False) -> None:
+        try:
+            os.unlink(self._component(name), dir_fd=self.fd)
+        except FileNotFoundError:
+            if not missing_ok:
+                raise
+
+    def fsync(self) -> None:
+        os.fsync(self.fd)
+
+
+def kernel_artifact_input_dir(
+    data_dir: Path | str,
+    root_frame_id: str,
+) -> Path:
+    """Derive one opaque team-session input directory without creating it.
+
+    This helper is shared with the kernel sandbox policy so staging and the
+    read-only allowlist cannot drift to different paths. The raw frame id is
+    not placed in a host pathname or disclosed through sibling enumeration.
+    """
+
+    scope = str(root_frame_id or "").strip()
+    if not scope:
+        raise ValueError("kernel Artifact input staging requires a root frame id")
+    key = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+    return Path(data_dir).expanduser().resolve() / _KERNEL_ARTIFACT_INPUT_PARENT / key
 
 
 def rank_artifacts(items: list[dict], query: str) -> list[dict]:
@@ -191,6 +417,8 @@ class HostDataService:
         self._artifact_writer = artifact_writer
         self._restore_manager: tuple[int, str, Any] | None = None
         self._restore_lock = threading.RLock()
+        self._artifact_stage_lock = threading.RLock()
+        self._artifact_stage_versions: dict[str, str] = {}
 
     def _store(self) -> HostDataStore:
         source = self._store_source
@@ -567,12 +795,473 @@ class HostDataService:
 
         return self._default_artifact_manager().restore
 
+    @staticmethod
+    def _version_integrity(metadata: dict) -> tuple[str, int]:
+        checksum = str(metadata.get("checksum") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            raise OSError("artifact version has no valid recorded checksum")
+        raw_size = metadata.get("size_bytes")
+        if isinstance(raw_size, bool) or not isinstance(raw_size, (int, str)):
+            raise OSError("artifact version has no valid recorded size")
+        try:
+            size_bytes = int(raw_size)
+        except (TypeError, ValueError) as error:
+            raise OSError("artifact version has no valid recorded size") from error
+        if size_bytes < 0:
+            raise OSError("artifact version has no valid recorded size")
+        return checksum, size_bytes
+
+    @staticmethod
+    def _version_cache_name(version_id: str, metadata: dict) -> str:
+        identity = hashlib.sha256(version_id.encode("utf-8")).hexdigest()
+        filename = Path(str(metadata.get("filename") or "artifact")).name
+        safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip(".")
+        return f"{identity}__{(safe_filename or 'artifact')[:96]}"
+
+    @staticmethod
+    def _descriptor_digest(descriptor: int, *, expected_size: int) -> tuple[str, int]:
+        """Hash at most the recorded size plus one oversized-byte canary."""
+
+        digest = hashlib.sha256()
+        size_bytes = 0
+        remaining = expected_size + 1
+        while remaining:
+            chunk = os.read(descriptor, min(_ARTIFACT_INPUT_CHUNK, remaining))
+            if not chunk:
+                break
+            size_bytes += len(chunk)
+            remaining -= len(chunk)
+            digest.update(chunk)
+        return digest.hexdigest(), size_bytes
+
+    @staticmethod
+    def _cache_usage(
+        directory: _PinnedArtifactDirectory,
+        *,
+        entry_limit: int,
+        quota_message: str,
+    ) -> tuple[int, int]:
+        """Count direct regular cache entries without following any alias."""
+
+        files = 0
+        size_bytes = 0
+        visited = 0
+        with os.scandir(directory.fd) as entries:
+            for entry in entries:
+                visited += 1
+                if visited > entry_limit:
+                    raise OSError(quota_message)
+                metadata = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode):
+                    raise OSError("Artifact input cache has an unexpected directory")
+                if not stat.S_ISREG(metadata.st_mode):
+                    # A symlink/FIFO at the deterministic destination is safe
+                    # to replace by held-dirfd rename and consumes no staged
+                    # version bytes. Never follow it for accounting.
+                    continue
+                files += 1
+                size_bytes += max(0, int(metadata.st_size))
+        return files, size_bytes
+
+    @staticmethod
+    def _global_cache_usage(data_root: Path) -> tuple[int, int]:
+        """Count every session cache under one pinned daemon-owned parent."""
+
+        quota_message = "global Artifact input staging quota exceeded"
+        files = 0
+        size_bytes = 0
+        sessions = 0
+        visited = 0
+        with _PinnedArtifactDirectory.open_under(
+            data_root,
+            (_KERNEL_ARTIFACT_INPUT_PARENT,),
+            create=True,
+        ) as parent:
+            if int(os.fstat(parent.fd).st_uid) != os.geteuid():
+                raise PermissionError(
+                    "Artifact input cache parent is not owned by the daemon user"
+                )
+            os.fchmod(parent.fd, 0o700)
+            with os.scandir(parent.fd) as entries:
+                for entry in entries:
+                    visited += 1
+                    if visited > _ARTIFACT_INPUT_GLOBAL_MAX_SESSIONS:
+                        raise OSError(quota_message)
+                    metadata = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISDIR(metadata.st_mode):
+                        # Never follow a malicious alias in the global parent.
+                        continue
+                    sessions += 1
+                    if sessions > _ARTIFACT_INPUT_GLOBAL_MAX_SESSIONS:
+                        raise OSError(quota_message)
+                    descriptor = parent.open_read(entry.name)
+                    try:
+                        session = _PinnedArtifactDirectory(
+                            descriptor,
+                            root=parent.path,
+                            parts=(entry.name,),
+                        )
+                    except BaseException:
+                        os.close(descriptor)
+                        raise
+                    try:
+                        remaining = _ARTIFACT_INPUT_GLOBAL_MAX_FILES - files
+                        if remaining < 0:
+                            raise OSError(quota_message)
+                        child_files, child_bytes = HostDataService._cache_usage(
+                            session,
+                            entry_limit=remaining + 1,
+                            quota_message=quota_message,
+                        )
+                        files += child_files
+                        size_bytes += child_bytes
+                        if files > _ARTIFACT_INPUT_GLOBAL_MAX_FILES:
+                            raise OSError(quota_message)
+                    finally:
+                        session.close()
+        return files, size_bytes
+
+    @staticmethod
+    def _enforce_stage_quota(
+        data_root: Path,
+        destination: _PinnedArtifactDirectory,
+        cache_name: str,
+        *,
+        size_bytes: int,
+    ) -> None:
+        """Reserve one replacement against session and daemon-wide limits."""
+
+        session_message = "Artifact input staging quota exceeded for this session"
+        session_files, session_bytes = HostDataService._cache_usage(
+            destination,
+            entry_limit=_ARTIFACT_INPUT_SESSION_MAX_FILES + 1,
+            quota_message=session_message,
+        )
+        replaced_files = 0
+        replaced_bytes = 0
+        try:
+            existing = destination.lstat(cache_name)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and stat.S_ISREG(existing.st_mode):
+            replaced_files = 1
+            replaced_bytes = max(0, int(existing.st_size))
+        projected_files = session_files - replaced_files + 1
+        projected_bytes = session_bytes - replaced_bytes + size_bytes
+        if (
+            projected_files > _ARTIFACT_INPUT_SESSION_MAX_FILES
+            or projected_bytes > _ARTIFACT_INPUT_SESSION_MAX_BYTES
+        ):
+            raise OSError(session_message)
+
+        global_message = "global Artifact input staging quota exceeded"
+        global_files, global_bytes = HostDataService._global_cache_usage(data_root)
+        if (
+            global_files - replaced_files + 1 > _ARTIFACT_INPUT_GLOBAL_MAX_FILES
+            or global_bytes - replaced_bytes + size_bytes
+            > _ARTIFACT_INPUT_GLOBAL_MAX_BYTES
+        ):
+            raise OSError(global_message)
+        disk = shutil.disk_usage(data_root)
+        reserve = min(
+            _ARTIFACT_INPUT_MAX_FREE_RESERVE,
+            max(_ARTIFACT_INPUT_MIN_FREE_BYTES, int(disk.total) // 20),
+        )
+        # Publication temporarily holds the old target and the new pending
+        # copy at once, so even a replacement needs its full size available.
+        if int(disk.free) < size_bytes + reserve:
+            raise OSError("Artifact input staging would exhaust reserved disk space")
+
+    @staticmethod
+    def _cache_is_exact(
+        directory: _PinnedArtifactDirectory,
+        name: str,
+        *,
+        checksum: str,
+        size_bytes: int,
+    ) -> bool:
+        """Verify an existing cache entry through the descriptor consumed."""
+
+        try:
+            named_before = directory.lstat(name)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(named_before.st_mode) or int(named_before.st_nlink) != 1:
+            return False
+        if int(named_before.st_mode) & 0o222:
+            return False
+        descriptor: int | None = None
+        try:
+            descriptor = directory.open_read(name)
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or int(before.st_nlink) != 1:
+                return False
+            actual_checksum, actual_size = HostDataService._descriptor_digest(
+                descriptor,
+                expected_size=size_bytes,
+            )
+            after = os.fstat(descriptor)
+            named_after = directory.lstat(name)
+            return (
+                _artifact_file_state(named_before)
+                == _artifact_file_state(before)
+                == _artifact_file_state(after)
+                == _artifact_file_state(named_after)
+                and actual_size == size_bytes
+                and actual_checksum == checksum
+            )
+        except OSError:
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _artifact_source(
+        self,
+        metadata: dict,
+        *,
+        require_snapshot: bool,
+    ) -> tuple[Path, tuple[str, ...]]:
+        """Return a trusted root and no-follow relative source components."""
+
+        raw_snapshot = str(metadata.get("snapshot_path") or "")
+        if raw_snapshot:
+            try:
+                lexical = Path(os.path.abspath(Path(raw_snapshot).expanduser()))
+                # Resolve parent aliases once, but never the final component:
+                # `_PinnedArtifactDirectory.open_read` must be what decides
+                # whether the stored source itself is a symlink.
+                source = lexical.parent.resolve(strict=True) / lexical.name
+            except OSError as error:
+                raise FileNotFoundError("artifact snapshot is unavailable") from error
+            for candidate in trusted_snapshot_roots(self._config().data_dir):
+                try:
+                    root = candidate.expanduser().resolve(strict=True)
+                    relative = source.relative_to(root)
+                except (FileNotFoundError, ValueError):
+                    continue
+                if relative.parts:
+                    return root, tuple(relative.parts)
+            raise PermissionError("artifact snapshot is outside trusted storage")
+
+        if require_snapshot:
+            raise FileNotFoundError(
+                f"artifact version {metadata.get('version_id')!r} has no frozen snapshot"
+            )
+
+        raw_path = str(metadata.get("path") or "")
+        if not raw_path:
+            resolved = self._store().resolve_artifact_path(
+                str(metadata.get("version_id") or "")
+            )
+            raw_path = str(resolved or "")
+        if not raw_path:
+            raise FileNotFoundError("artifact version has no readable source")
+        workspace = self._resolve_path(".").expanduser().resolve()
+        source = self._resolve_path(raw_path, must_exist=True).expanduser().resolve()
+        try:
+            relative = source.relative_to(workspace)
+        except ValueError as error:  # defensive: the resolver owns this boundary
+            raise PermissionError(
+                "artifact live path is outside the workspace"
+            ) from error
+        if not relative.parts:
+            raise FileNotFoundError("artifact source is not a regular file")
+        return workspace, tuple(relative.parts)
+
+    @staticmethod
+    def _copy_exact_version(
+        source: _PinnedArtifactDirectory,
+        source_name: str,
+        destination: _PinnedArtifactDirectory,
+        pending_name: str,
+        *,
+        checksum: str,
+        size_bytes: int,
+    ) -> None:
+        """Stream one stable private source into one exclusive pending file."""
+
+        source_descriptor: int | None = None
+        target_descriptor: int | None = None
+        try:
+            source_descriptor = source.open_read(source_name)
+            before = os.fstat(source_descriptor)
+            if not stat.S_ISREG(before.st_mode) or int(before.st_nlink) != 1:
+                raise OSError("artifact source is not a private regular file")
+            target_descriptor = destination.create_exclusive(pending_name)
+            digest = hashlib.sha256()
+            copied = 0
+            remaining = size_bytes + 1
+            while remaining:
+                chunk = os.read(
+                    source_descriptor,
+                    min(_ARTIFACT_INPUT_CHUNK, remaining),
+                )
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(target_descriptor, view)
+                    if written <= 0:  # pragma: no cover - OS write contract
+                        raise OSError("Artifact input staging made no progress")
+                    view = view[written:]
+                copied += len(chunk)
+                remaining -= len(chunk)
+                digest.update(chunk)
+            os.fsync(target_descriptor)
+            after = os.fstat(source_descriptor)
+            named = source.lstat(source_name)
+            if _artifact_file_state(before) != _artifact_file_state(
+                after
+            ) or _artifact_file_state(after) != _artifact_file_state(named):
+                raise OSError("artifact source changed during input staging")
+            if copied != size_bytes:
+                raise OSError("artifact source size verification failed")
+            if digest.hexdigest() != checksum:
+                raise OSError("artifact source checksum verification failed")
+            target = os.fstat(target_descriptor)
+            if (
+                not stat.S_ISREG(target.st_mode)
+                or int(target.st_nlink) != 1
+                or int(target.st_size) != size_bytes
+            ):
+                raise OSError("staged Artifact input is not a private regular file")
+            os.fchmod(target_descriptor, 0o400)
+        finally:
+            if target_descriptor is not None:
+                os.close(target_descriptor)
+            if source_descriptor is not None:
+                os.close(source_descriptor)
+
+    def _stage_artifact_version(
+        self,
+        version_id: str,
+        metadata: dict,
+        *,
+        require_snapshot: bool,
+    ) -> str:
+        """Publish verified bytes in the team's read-only session input root.
+
+        A returned path can remain referenced by a persistent Python/R kernel,
+        so entries are stable for the session rather than evicted behind live
+        code. Disk use is linear in distinct opened versions, never calls, and
+        is bounded by per-session/global byte and file quotas plus a free-space
+        reserve. Session deletion reclaims the whole opaque cache directory.
+        """
+
+        if require_snapshot and not metadata.get("snapshot_path"):
+            raise FileNotFoundError(
+                f"artifact version {version_id!r} has no frozen snapshot"
+            )
+        checksum, size_bytes = self._version_integrity(metadata)
+        cache_name = self._version_cache_name(version_id, metadata)
+        store = self._store()
+        scope = store.resolve_frame_scope(self._frame_id()) or {}
+        root_frame_id = str(scope.get("root_frame_id") or "")
+        if not root_frame_id:
+            raise RuntimeError("Artifact input staging scope is unavailable")
+        config = self._config()
+        data_root = Path(config.data_dir).expanduser().resolve()
+        stage_root = kernel_artifact_input_dir(data_root, root_frame_id)
+        stage_parts = tuple(stage_root.relative_to(data_root).parts)
+        with _ARTIFACT_INPUT_GLOBAL_LOCK, self._artifact_stage_lock:
+            with _PinnedArtifactDirectory.open_under(
+                data_root,
+                stage_parts,
+                create=True,
+            ) as destination:
+                stage_metadata = os.fstat(destination.fd)
+                if int(stage_metadata.st_uid) != os.geteuid():
+                    raise PermissionError(
+                        "Artifact input directory is not owned by the daemon user"
+                    )
+                os.fchmod(destination.fd, 0o700)
+                if stat.S_IMODE(os.fstat(destination.fd).st_mode) != 0o700:
+                    raise PermissionError(
+                        "Artifact input directory is not private to the daemon user"
+                    )
+                if self._cache_is_exact(
+                    destination,
+                    cache_name,
+                    checksum=checksum,
+                    size_bytes=size_bytes,
+                ):
+                    destination.assert_current()
+                    result = str(destination.path / cache_name)
+                    self._artifact_stage_versions[os.path.abspath(result)] = version_id
+                    return result
+
+                self._enforce_stage_quota(
+                    data_root,
+                    destination,
+                    cache_name,
+                    size_bytes=size_bytes,
+                )
+                source_root, source_parts = self._artifact_source(
+                    metadata,
+                    require_snapshot=require_snapshot,
+                )
+                pending_name = f".{cache_name}.{uuid.uuid4().hex}.part"
+                try:
+                    with _PinnedArtifactDirectory.open_under(
+                        source_root,
+                        source_parts[:-1],
+                        create=False,
+                    ) as source:
+                        self._copy_exact_version(
+                            source,
+                            source_parts[-1],
+                            destination,
+                            pending_name,
+                            checksum=checksum,
+                            size_bytes=size_bytes,
+                        )
+                    destination.assert_current()
+                    destination.replace(pending_name, cache_name)
+                    destination.fsync()
+                    # Another service for the same session may atomically
+                    # publish the same immutable bytes between our rename and
+                    # verification. Retry the held-FD check so that benign
+                    # concurrency stays idempotent without accepting aliases.
+                    for _attempt in range(3):
+                        if self._cache_is_exact(
+                            destination,
+                            cache_name,
+                            checksum=checksum,
+                            size_bytes=size_bytes,
+                        ):
+                            destination.assert_current()
+                            result = str(destination.path / cache_name)
+                            self._artifact_stage_versions[os.path.abspath(result)] = (
+                                version_id
+                            )
+                            return result
+                    raise OSError("staged Artifact input verification failed")
+                finally:
+                    destination.unlink(pending_name, missing_ok=True)
+
     def artifact_path(self, version_id: str) -> str:
-        self._scoped_version(version_id)
-        path = self._store().resolve_artifact_path(version_id)
-        if path is None:
-            raise KeyError(f"no artifact for id={version_id!r}")
-        return path
+        """Resolve single-user bytes or stage exact team-session bytes.
+
+        The store's canonical path normally lives below the process-wide data
+        directory.  Team kernels intentionally cannot read that directory, and
+        returning it also disclosed the host layout. Scope is checked before
+        any filesystem access; in team mode the exact version is streamed into
+        the session's daemon-owned, sandbox-read-only input directory. The
+        default single-user mode keeps its established direct-path contract.
+        """
+
+        metadata = self._scoped_version(version_id)
+        if not bool(getattr(self._config(), "team_mode", False)):
+            path = self._store().resolve_artifact_path(version_id)
+            if path is None:
+                raise KeyError(f"no artifact for id={version_id!r}")
+            return path
+        return self._stage_artifact_version(
+            version_id,
+            metadata,
+            require_snapshot=False,
+        )
 
     def artifact_snapshot_path(self, version_id: str) -> str:
         """Return exact frozen bytes for one version in the caller's session.
@@ -582,14 +1271,19 @@ class HostDataService:
         even if its live filename still happens to exist.
         """
 
-        self._scoped_version(version_id)
-        metadata = self._store().version_meta(version_id) or {}
-        snapshot = str(metadata.get("snapshot_path") or "")
-        if not snapshot or not Path(snapshot).is_file():
-            raise FileNotFoundError(
-                f"artifact version {version_id!r} has no frozen snapshot"
-            )
-        return snapshot
+        metadata = self._scoped_version(version_id)
+        if not bool(getattr(self._config(), "team_mode", False)):
+            snapshot = str(metadata.get("snapshot_path") or "")
+            if not snapshot or not Path(snapshot).is_file():
+                raise FileNotFoundError(
+                    f"artifact version {version_id!r} has no frozen snapshot"
+                )
+            return snapshot
+        return self._stage_artifact_version(
+            version_id,
+            metadata,
+            require_snapshot=True,
+        )
 
     def materialise_artifact(self, spec: dict) -> dict:
         """Materialise under the process-wide exact Artifact writer lock."""
@@ -1049,6 +1743,17 @@ class HostDataService:
         frame_id = self._frame_id()
         if frame_id is None:
             return None
+        with self._artifact_stage_lock:
+            staged_version = self._artifact_stage_versions.get(os.path.abspath(path))
+        if staged_version is not None:
+            # Only paths this exact session service staged are entered here;
+            # rechecking scope keeps a later frame/scope switch from carrying
+            # an old mapping across the boundary.
+            try:
+                self._scoped_version(staged_version)
+            except KeyError:
+                return None
+            return staged_version
         scope = self._store().resolve_frame_scope(frame_id)
         root_frame_id = scope.get("root_frame_id")
         project_id = scope.get("project_id")
@@ -1178,4 +1883,9 @@ class HostDataService:
         return record
 
 
-__all__ = ["FRAME_STATUSES", "HostDataService", "rank_artifacts"]
+__all__ = [
+    "FRAME_STATUSES",
+    "HostDataService",
+    "kernel_artifact_input_dir",
+    "rank_artifacts",
+]

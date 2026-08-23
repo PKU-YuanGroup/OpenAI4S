@@ -37,6 +37,7 @@ def test_seed_defaults_and_fallback(tmp_path):
     assert st.resolve_permission(tool="env_setup", pattern_input="numpy") == "allow"
     # genuinely risky ones still ask
     assert st.resolve_permission(tool="bash", pattern_input="ls -la") == "ask"
+    assert st.resolve_permission(tool="skills_edit", pattern_input="QC") == "ask"
     assert st.resolve_permission(tool="mcp_call", pattern_input="x") == "ask"
     assert (
         st.resolve_permission(

@@ -187,7 +187,7 @@ def test_scope_projection_and_default_seed_reset_semantics(tmp_path):
     assert grouped["global"]
 
 
-def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
+def test_seed_upgrade_adds_defaults_and_revokes_legacy_skill_edit_allow(tmp_path):
     store, repository = _repository(tmp_path)
     for tool, pattern, decision in DEFAULT_PERMISSION_RULES:
         if tool not in {"mcp_call", "science_search"}:
@@ -195,13 +195,15 @@ def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
                 scope="global",
                 tool=tool,
                 pattern=pattern,
-                decision=decision,
+                # v1-v3 shipped this executable mutation as a silent allow.
+                decision="allow" if tool == "skills_edit" else decision,
             )
     store.set_setting("perm_seeded", "1")
 
     repository.seed_defaults()
 
     assert repository.resolve(tool="science_search", pattern_input="uniprot") == "allow"
+    assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
     assert repository.resolve(tool="mcp_call", pattern_input="server/tool") == "ask"
     assert (
         repository.resolve(
@@ -218,7 +220,54 @@ def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
     assert [(rule["pattern"], rule["decision"]) for rule in mcp_rules] == [
         ("volcengine-datapro/dataPro_search", "allow")
     ]
-    assert store.get_setting("perm_seed_version") == "3"
+    assert store.get_setting("perm_seed_version") == "4"
+
+
+def test_seed_security_upgrade_revokes_markerless_legacy_skill_edit_allow(tmp_path):
+    """Recover the commit-before-marker crash window across seed versions."""
+
+    store, repository = _repository(tmp_path)
+    repository.set_rule(
+        scope="global",
+        tool="skills_edit",
+        pattern="*",
+        decision="allow",
+    )
+    assert store.get_setting("perm_seeded") is None
+
+    repository.seed_defaults()
+
+    assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
+    assert store.get_setting("perm_seeded") == "1"
+    assert store.get_setting("perm_seed_version") == "4"
+
+
+@pytest.mark.parametrize("decision", ["ask", "deny", None])
+def test_seed_security_upgrade_preserves_stricter_skill_edit_rules(tmp_path, decision):
+    store, repository = _repository(tmp_path)
+    if decision is not None:
+        repository.set_rule(
+            scope="global",
+            tool="skills_edit",
+            pattern="*",
+            decision=decision,
+        )
+    store.set_setting("perm_seeded", "1")
+    store.set_setting("perm_seed_version", "3")
+
+    repository.seed_defaults()
+
+    expected = decision or "ask"
+    assert repository.resolve(tool="skills_edit", pattern_input="QC") == expected
+    rules = [
+        rule
+        for rule in repository.get_rules(scope="global")
+        if rule["tool"] == "skills_edit" and rule["pattern"] == "*"
+    ]
+    assert [rule["decision"] for rule in rules] == (
+        [] if decision is None else [decision]
+    )
+    assert store.get_setting("perm_seed_version") == "4"
 
 
 def test_seed_rules_commit_before_marker_and_recover_after_marker_failure(tmp_path):

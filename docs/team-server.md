@@ -98,6 +98,24 @@ namespace rather than a guess, so "is this another member's area?" is a
 question about a path and not about whether a directory called `alice` is
 a person or a dataset.
 
+Local Python/R Cells enforce the same ownership boundary at `open(2)`, not only
+through HTTP/Host APIs. The OS sandbox hides the whole daemon data directory,
+other members' writable-root `users/<name>` directories, and sibling or stale
+kernel temp directories. It exposes the current workspace and private temp for
+writes, and exact read-only session inputs (runtime, authorized Skill sidecars,
+the owner's personal area, and a per-session verified Artifact cache). If
+Seatbelt/bubblewrap cannot establish and self-test that boundary, the Cell is
+refused even when `OPENAI4S_KERNEL_SANDBOX=auto`; `off` is likewise refused.
+First-turn `exec_background` uses the same policy.
+
+Do not place an `OPENAI4S_DATA_ROOTS` entry inside the canonical system temp
+directory (or make either path contain the other): team mode rejects that
+overlap because reopening shared data would also reopen nested private areas.
+Use a persistent lab path instead. This policy isolates OpenAI4S-owned session
+and personal data; it is not a general same-Unix-UID host sandbox. Ordinary
+files elsewhere in the daemon account's home remain readable to a Cell. Use
+separate OS identities or containers/VMs when members are mutually hostile.
+
 ## 2c. What only an admin can do
 
 Team mode adds accounts; it does not turn every daemon-level surface into
@@ -131,6 +149,16 @@ operator's regardless of who is logged in:
   agent loads recipes from, resetting standing permission rules, and
   creating a *global* permission rule (a member may create rules scoped to
   their own session or a project they participate in).
+
+The same distinction applies inside a Cell. `host.skills.edit`, `publish`,
+`delete`, and `rollback` are model-originated mutations of instructions or
+Python sidecars that later sessions may execute, so team mode requires an
+administrator even when the active overlay belongs to a project the caller has
+joined. `skills_edit` also asks by default instead of inheriting the old silent
+allow. This does not remove members' deliberate HTTP project controls, whose
+project-membership guard remains the human authoring boundary. Member rollback
+is limited to recipe-only versions with Web-authoring provenance; reactivating
+a `kernel.py` version or un-attributed legacy Host history requires an admin.
 
 Members keep every read the UI needs. The full list is
 `openai4s/server/team_policy.py`, and a route not on it is a member's.
@@ -293,7 +321,21 @@ supported ways to reach it from elsewhere, in order of preference:
    Multiple exact origins are comma-separated. One trailing slash is
    normalized; wildcards, credentials, non-root paths, queries, and fragments
    are refused. Leaving the variable unset preserves the strict default:
-   `Origin` must name the literal backend `Host`.
+   `Origin` must name the literal backend `Host`. Configuring any `https://`
+   origin also makes every team login, invite-redemption, and logout cookie
+   `Secure`; use that public TLS origin for browser access while the setting is
+   present.
+
+   Configuring any trusted proxy origin also disables the daemon access token's
+   admin-equivalent `SERVICE_IDENTITY` on this HTTP listener. That is
+   intentional: after a proxy connects to `127.0.0.1`, a public HTTPS client
+   and a local CLI have the same TCP peer, and `Origin`, `Host`, or
+   `X-Forwarded-*` cannot recover trustworthy process provenance. Use a normal
+   admin login for management through a proxy, and do not forward the daemon
+   access token. The access-token CLI path remains available when no trusted
+   proxy origin is configured (direct loopback and the SSH-tunnel topology).
+   Supporting it alongside public proxy ingress requires an independent local
+   management transport; a forwarded-header convention is not such a boundary.
 
 **The relay is not a third way to run a lab server.** `openai4s relay` and
 `openai4s share` exist for a different purpose — a read-only, redacted

@@ -8,7 +8,7 @@ a support claim nobody has to take on faith is the only kind worth publishing.
 | --- | --- | --- | --- | --- |
 | macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization — **not yet done** |
 | macOS (Intel) | stable | runs | Seatbelt | the `.dmg` is Apple Silicon only; install from PyPI |
-| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | enforced-bubblewrap E2E — **written, not continuously verified** (`harness/smoke/linux_sandbox.py`; see below) |
+| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | full boundary E2E remains manual; private-PID Python/R interrupt and persistence run in every CI (`harness/smoke/linux_bwrap_interrupt.py`; see below) |
 | Windows (native) | **unsupported** | **refused** | none exists | not planned; use WSL2, which reports as Linux |
 | Anything else | unsupported | **refused** | — | — |
 
@@ -130,10 +130,12 @@ both. The tiers differ in what has been *proven*:
   top of a technical one. **That signing and notarization has not happened
   yet**, so the stable tier is the target, not the current state.
 - Linux is gated on a real enforced-bubblewrap end-to-end test rather than on a
-  probe that degrades. That test exists and asserts the backend really is
-  bubblewrap, so a host that silently fell back cannot report a pass for a
-  boundary it never tested. **It is not running in CI**, for the reason below,
-  so the Linux tier currently rests on manual runs.
+  probe that degrades. The full boundary test exists and asserts the backend
+  really is bubblewrap, so a host that silently fell back cannot report a pass
+  for a boundary it never tested. **That full test is not running in CI**, for
+  the network-namespace reason below, so the broad Linux tier still rests on
+  manual runs. A narrower CI smoke now proves the private-PID interrupt path
+  with real persistent Python and R workers on every change.
 
 Both smokes check the same four boundaries, from one shared implementation
 ([`harness/smoke/sandbox_boundary.py`](../harness/smoke/sandbox_boundary.py)):
@@ -142,7 +144,16 @@ inside its workspace, and cannot leak the daemon's credentials into a
 subprocess it spawns. They are shared rather than copied because two copies
 drift until one platform quietly stops checking what the other still does.
 
-## Why the Linux smoke is not in CI
+The separate
+[`linux_bwrap_interrupt.py`](../harness/smoke/linux_bwrap_interrupt.py) smoke is
+deliberately narrower. It retains team `KernelReadIsolation`, requires the
+real `--unshare-pid` + `--info-fd` + procfs + pidfd production path, observes
+Python and R as PID 2, interrupts a long-running Cell, and proves the same
+kernel executes again. The hosted-runner job sets
+`OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1`, so this is evidence for process identity
+and SIGINT persistence only—not for the network boundary.
+
+## Why the full Linux boundary smoke is not in CI
 
 A GitHub-hosted runner cannot run it. `bwrap` creates its network namespace and
 then fails to bring up the loopback interface inside it:
@@ -153,9 +164,11 @@ bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
 
 That is the runner's own confinement of unprivileged user namespaces, not a
 defect in the sandbox and not something the code under test can influence. The
-job was therefore red every night from the day it was added, and a check that
-cannot pass is not evidence of anything — it is a signal everyone learns to
-scroll past, which costs more than the absent check does.
+full job was therefore red every night from the day it was added, and a check
+that cannot pass is not evidence of anything — it is a signal everyone learns
+to scroll past, which costs more than the absent check does. Allowing raw
+networking makes the new interrupt-only job runnable, but necessarily removes
+the network-denial assertion that the full boundary smoke carries.
 
 So the claim is downgraded here instead of being propped up by a job that never
 went green. To re-establish it, run the smoke on a Linux host that permits

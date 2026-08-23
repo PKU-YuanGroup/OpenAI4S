@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import re
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from openai4s.config import Config, LLMConfig
+from openai4s.host.data import kernel_artifact_input_dir
 from openai4s.server import gateway as gateway_mod
+from openai4s.skills_loader.versions import project_skills_root
 
 
 class _Hub:
@@ -32,12 +35,13 @@ class _Hub:
         return False
 
 
-def _runner(tmp_path):
+def _runner(tmp_path, *, team_mode: bool = False):
     cfg = Config(
         data_dir=tmp_path,
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
         max_turns=3,
     )
+    cfg.team_mode = team_mode
     return gateway_mod.SessionRunner(cfg, _Hub())
 
 
@@ -411,6 +415,222 @@ def test_environment_replacement_keeps_session_dispatcher_and_commits_active_env
     assert bootstrapped == [old_kernel, st.kernel]
 
 
+def test_team_mode_composes_read_isolation_into_every_local_kernel(
+    monkeypatch, tmp_path
+):
+    from openai4s.kernel import r_kernel as r_kernel_mod
+
+    runner = _runner(tmp_path, team_mode=True)
+    st = runner._state("frame-team-isolation", "default")
+    st.messages = [{"role": "system", "content": "test"}]
+    environment = SimpleNamespace(
+        name="base",
+        interpreter="base-python",
+        root=tmp_path / "base",
+        is_conda=False,
+        bin_dir=None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_env",
+        lambda state: (setattr(state, "env_name", "base") or environment),
+    )
+    monkeypatch.setattr(runner, "_run_bootstrap", lambda *_args, **_kwargs: {})
+
+    created = []
+
+    class FakeKernel:
+        def __init__(self, dispatcher, **options) -> None:
+            self.dispatcher = dispatcher
+            self.options = options
+            self.live = True
+            created.append(self)
+
+        def is_alive(self) -> bool:
+            return self.live
+
+        def shutdown(self) -> None:
+            self.live = False
+
+    monkeypatch.setattr(gateway_mod, "Kernel", FakeKernel)
+    lease = runner._spawn_kernel(st)
+    isolation_root = str(tmp_path.resolve())
+
+    policy = lease.kernel.options["read_isolation"]
+    assert policy.roots == (isolation_root,)
+    assert Path(policy.allowed_roots[0]) == kernel_artifact_input_dir(
+        tmp_path, st.root_frame_id
+    )
+    background = st.dispatcher.background_kernel_factory()
+    assert background.options["read_isolation"].roots == (isolation_root,)
+    assert st.delegation_runner.read_isolation.roots == (isolation_root,)
+
+    r_options = []
+
+    def spawn_r_kernel(**options):
+        r_options.append(options)
+        return _RecordingKernel("r")
+
+    monkeypatch.setattr(r_kernel_mod, "spawn_r_kernel", spawn_r_kernel)
+    monkeypatch.setattr(
+        gateway_mod,
+        "bootstrap_r_generation",
+        lambda _kernels, _workspace, _lease: {},
+    )
+    assert runner._ensure_r_kernel(st) is None
+    assert r_options == [
+        {
+            "cwd": str(st.workspace),
+            "env": None,
+            "read_isolation": st.delegation_runner.read_isolation,
+        }
+    ]
+
+
+def test_team_first_action_background_cell_gets_read_isolation(monkeypatch, tmp_path):
+    runner = _runner(tmp_path, team_mode=True)
+    st = runner._state("frame-team-background-first", "default")
+    environment = SimpleNamespace(
+        name="base",
+        interpreter="base-python",
+        root=tmp_path / "base",
+        is_conda=False,
+        bin_dir=None,
+    )
+    monkeypatch.setattr(runner, "_resolve_env", lambda _state: environment)
+    created = []
+
+    class FakeKernel:
+        def __init__(self, dispatcher, **options) -> None:
+            self.dispatcher = dispatcher
+            self.options = options
+            created.append(self)
+
+        def execute(self, code, origin="agent", on_chunk=None):
+            if on_chunk is not None:
+                on_chunk("done")
+            return {"stdout": "done", "stderr": "", "error": None}
+
+        def shutdown(self) -> None:
+            pass
+
+    monkeypatch.setattr(gateway_mod, "Kernel", FakeKernel)
+    dispatcher = runner._ensure_runtime(st)
+    assert st.kernels.lease("python") is None
+
+    launched = dispatcher._m_exec_background({"code": "print('first')"})
+    deadline = threading.Event()
+    for _ in range(100):
+        peek = dispatcher._m_exec_peek(launched["exec_id"])
+        if peek["done"]:
+            break
+        deadline.wait(0.01)
+    else:  # pragma: no cover - bounded thread scheduling failure
+        raise AssertionError("background Cell did not finish")
+
+    assert peek["error"] is None
+    assert len(created) == 1
+    options = created[0].options
+    assert Path(options["cwd"]) == st.local_workspace
+    policy = options["read_isolation"]
+    assert policy is not None
+    assert policy.roots == (str(tmp_path.resolve()),)
+    assert kernel_artifact_input_dir(
+        runner.cfg.data_dir, st.root_frame_id
+    ).resolve() in {Path(root).resolve() for root in policy.allowed_roots}
+    assert st.kernels.lease("python") is None
+
+
+def test_team_read_policy_covers_data_personal_and_only_current_project_sidecars(
+    monkeypatch,
+    tmp_path,
+):
+    canonical_temp = tmp_path / "canonical-temp"
+    canonical_temp.mkdir()
+    monkeypatch.setattr(gateway_mod.tempfile, "gettempdir", lambda: str(canonical_temp))
+    runner = _runner(tmp_path / "daemon", team_mode=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    runner.cfg.data_roots = [scratch]
+    st = runner._state("frame-team-owner", "default")
+    owner = runner.store.team.create_user(
+        username="alice", password="test-password-not-real"
+    )
+    runner.store.team.set_session_owner(
+        st.root_frame_id, owner["id"], project_id=st.project_id
+    )
+
+    current = project_skills_root(runner.cfg, st.project_id) / "current-sidecar"
+    foreign = project_skills_root(runner.cfg, "foreign-project") / "foreign-sidecar"
+    for root, name in ((current, "Current"), (foreign, "Foreign")):
+        root.mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\n\nRecipe\n",
+            encoding="utf-8",
+        )
+        (root / "kernel.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    policy = runner._kernel_read_isolation(st, include_skill_sidecars=True)
+    assert policy is not None
+    roots = {Path(root).resolve() for root in policy.roots}
+    allowed = {Path(root).resolve() for root in policy.allowed_roots}
+    assert roots == {
+        runner.cfg.data_dir.resolve(),
+        (scratch / "users").resolve(),
+    }
+    assert (scratch / "users" / "alice").resolve() in allowed
+    assert (
+        kernel_artifact_input_dir(runner.cfg.data_dir, st.root_frame_id).resolve()
+        in allowed
+    )
+    assert current.resolve() in allowed
+    assert foreign.resolve() not in allowed
+
+
+def test_team_read_policy_rejects_symlinked_personal_namespace_and_root_overlap(
+    monkeypatch,
+    tmp_path,
+):
+    canonical_temp = tmp_path / "canonical-temp"
+    canonical_temp.mkdir()
+    monkeypatch.setattr(gateway_mod.tempfile, "gettempdir", lambda: str(canonical_temp))
+    runner = _runner(tmp_path / "daemon", team_mode=True)
+    st = runner._state("frame-team-symlink", "default")
+    scratch = tmp_path / "scratch"
+    outside = tmp_path / "outside-users"
+    scratch.mkdir()
+    outside.mkdir()
+    (scratch / "users").symlink_to(outside, target_is_directory=True)
+    runner.cfg.data_roots = [scratch]
+
+    with pytest.raises(RuntimeError, match="personal-data namespace"):
+        runner._kernel_read_isolation(st)
+
+    runner.cfg.data_roots = [runner.cfg.data_dir / "nested-data-root"]
+    (runner.cfg.data_roots[0]).mkdir()
+    with pytest.raises(RuntimeError, match="must not overlap"):
+        runner._kernel_read_isolation(st)
+
+    temporary_data_root = canonical_temp / "lab-root"
+    temporary_data_root.mkdir()
+    runner.cfg.data_roots = [temporary_data_root]
+    with pytest.raises(RuntimeError, match="canonical system temporary"):
+        runner._kernel_read_isolation(st)
+
+
+def test_team_read_policy_rejects_symlinked_artifact_input_scope(tmp_path):
+    runner = _runner(tmp_path / "daemon", team_mode=True)
+    st = runner._state("frame-team-artifact-symlink", "default")
+    outside = tmp_path / "outside-artifact-inputs"
+    outside.mkdir()
+    session_inputs = kernel_artifact_input_dir(runner.cfg.data_dir, st.root_frame_id)
+    session_inputs.parent.mkdir()
+    session_inputs.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="Artifact input scope"):
+        runner._kernel_read_isolation(st)
+
+
 def test_r_slot_is_lazy_reused_and_soft_fails_without_touching_python(
     monkeypatch, tmp_path
 ):
@@ -427,7 +647,8 @@ def test_r_slot_is_lazy_reused_and_soft_fails_without_touching_python(
     def get_environment(name):
         return SimpleNamespace(name=name) if name else None
 
-    def spawn_r_kernel(*, cwd, env):
+    def spawn_r_kernel(*, cwd, env, read_isolation=None):
+        assert read_isolation is None
         name = env.name if env is not None else "default"
         if name == "broken":
             raise RuntimeError("R is missing")

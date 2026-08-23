@@ -215,13 +215,14 @@ def test_a_check_with_no_run_id_is_refused(tmp_path):
         _verify(tmp_path, document)
 
 
-def test_the_python_support_matrix_and_browser_matrix_are_both_required():
+def test_python_browser_and_linux_private_pid_checks_are_required():
     """Item 4's binding, asserted on the manifest rather than on prose."""
     names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
     for version in ("3.10", "3.12", "3.13"):
         assert f"Offline tests (py{version})" in names
     for engine in ("chromium", "firefox", "webkit"):
         assert f"Browser workbench E2E ({engine})" in names
+    assert "Linux bubblewrap Python/R persistent interrupt" in names
 
 
 def test_every_required_check_names_a_job_that_really_exists_in_ci():
@@ -747,6 +748,51 @@ def test_every_job_has_an_explicit_timeout(workflow):
         assert (
             isinstance(budget, int) and 0 < budget <= 120
         ), f"{workflow}:{name} has an implausible timeout: {budget}"
+
+
+def test_linux_bwrap_interrupt_smoke_is_an_independent_real_runtime_job():
+    """The private-PID SIGINT proof must not collapse back into fake procfs.
+
+    Raw networking is a narrow hosted-runner compatibility choice: it avoids
+    the known loopback setup failure and deliberately proves no egress claim.
+    Everything relevant to worker identity still runs through real bwrap plus
+    real Python and R interpreters on every CI event.
+    """
+
+    jobs = _workflow("ci.yml")["jobs"]
+    job = jobs["linux-bwrap-kernel-interrupt"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert "if" not in job, "the security regression must run on pull requests"
+    assert job.get("continue-on-error") is not True
+
+    steps = job["steps"]
+    install = "\n".join(str(step.get("run") or "") for step in steps)
+    for package in ("bubblewrap", "r-base-core", "r-cran-jsonlite"):
+        assert package in install
+
+    smoke_steps = [
+        step
+        for step in steps
+        if "harness.smoke.linux_bwrap_interrupt" in str(step.get("run") or "")
+    ]
+    assert len(smoke_steps) == 1
+    smoke = smoke_steps[0]
+    assert "if" not in smoke
+    assert (
+        str(smoke.get("run") or "").strip()
+        == "uv run python -m harness.smoke.linux_bwrap_interrupt"
+    )
+    assert smoke.get("env") == {
+        "OPENAI4S_KERNEL_SANDBOX": "enforce",
+        "OPENAI4S_KERNEL_ALLOW_RAW_NETWORK": "1",
+    }
+    assert smoke.get("continue-on-error") is not True
+    install_steps = [
+        step for step in steps if "r-base-core" in str(step.get("run") or "")
+    ]
+    assert len(install_steps) == 1
+    assert "if" not in install_steps[0]
+    assert install_steps[0].get("continue-on-error") is not True
 
 
 def test_the_release_binds_the_platform_checks_to_the_frozen_sha():

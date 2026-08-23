@@ -103,16 +103,21 @@ class SkillService:
             return "project", self.project_id
         return "personal", None
 
-    def _authorize_mutation(self, scope: str, project_id: str | None) -> None:
+    def _authorize_mutation(
+        self, scope: str, project_id: str | None
+    ) -> execution_principal.Principal:
         """Apply team authorization in addition to interactive approval.
 
         The permission broker answers whether the person running this turn
         consents to an agent mutation.  It does not make that person an
-        administrator.  In team mode the personal Skill directory is one
-        daemon-global runtime input, so only an admin may change it.  A project
-        overlay may be changed by a real member of that project, matching the
-        HTTP project-mutation boundary; merely owning a session there is not
-        enough.
+        administrator.  Both the personal Skill directory and a project Skill
+        overlay are executable inputs to later agent runs: a project member's
+        model must not be able to rewrite the recipe or ``kernel.py`` that a
+        peer will load merely because the member may make an ordinary project
+        edit through the authenticated Web API.  Host-originated Skill writes
+        therefore require an administrator in team mode.  Human project
+        authoring remains on the separate HTTP service and its project-member
+        authorization boundary.
 
         ``resolve()`` is deliberately used instead of reading an optional
         principal: an unpropagated team identity must fail closed.  Off team
@@ -122,25 +127,11 @@ class SkillService:
 
         principal = execution_principal.resolve()
         if principal.is_admin:
-            return
-        if scope != "project":
-            raise PermissionError(
-                "personal Skill mutation requires a team administrator"
-            )
-        if not project_id or project_id != self.project_id:
-            raise PermissionError(
-                "project Skill mutation requires the active project scope"
-            )
-        try:
-            from openai4s.store import get_store
-
-            role = get_store(self.cfg.db_path).governance.member_role(
-                project_id, principal.user_id
-            )
-        except Exception:  # noqa: BLE001 - undecidable authorization is refused
-            role = None
-        if principal.role == "guest" or role is None or str(role) == "guest":
-            raise PermissionError("project Skill mutation requires project membership")
+            return principal
+        target = "project" if scope == "project" and project_id else "personal"
+        raise PermissionError(
+            f"{target} Skill mutation through Host requires a team administrator"
+        )
 
     def load(self, name: str | dict) -> dict:
         """Load full guidance, with the historical fuzzy-name fallback."""
@@ -264,7 +255,7 @@ class SkillService:
                 f"skill {name!r} origin={existing.origin} is read-only"
             )
         scope, project_id = self._writable_scope(existing)
-        self._authorize_mutation(scope, project_id)
+        principal = self._authorize_mutation(scope, project_id)
         candidate_directory = (
             existing.root.name if existing is not None else self.versions.slug(name)
         )
@@ -328,7 +319,16 @@ class SkillService:
             scope=scope,
             project_id=project_id,
             require_sidecar_gate=False,
-            metadata={"source": "host_skills_edit", "path": relative},
+            metadata={
+                "source": "host_skills_edit",
+                "path": relative,
+                # This bit is written by the trusted Host only after the
+                # authorization check above.  The human HTTP rollback service
+                # can therefore distinguish a post-fix administrator-authored
+                # recipe from an un-attributed legacy Host version without
+                # exposing a user id in version history.
+                "authorized_admin": principal.is_admin,
+            },
         )
 
         result: dict[str, Any] = {

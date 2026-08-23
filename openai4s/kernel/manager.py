@@ -25,6 +25,7 @@ from openai4s.kernel.sink_drain import CAP_BYTES as _SINK_CAP
 from openai4s.kernel.sink_drain import SinkCapture, SinkDirectory
 from openai4s.kernel.transport import KernelTransport, PipeTransport
 from openai4s.security.sandbox import (
+    KernelReadIsolation,
     KernelSandbox,
     SandboxUnavailableError,
     create_kernel_sandbox,
@@ -37,6 +38,45 @@ def _sandbox_mode() -> str:
 
 
 _WORKER = Path(__file__).resolve().parent / "worker.py"
+_KERNEL_RUNTIME_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _kernel_runtime_read_roots(
+    python: str,
+    argv: list[str] | None,
+    env_root: str | None,
+) -> tuple[Path, ...]:
+    """Return exact immutable roots needed to start a local worker.
+
+    Team isolation also masks the canonical system-temp directory. Source
+    checkouts, virtual environments and CI runtimes can legitimately live
+    there, so preserve only the actual worker source/runtime roots rather than
+    reopening the whole temp tree (which would expose stale sibling kernels).
+    """
+
+    roots: list[Path] = [_KERNEL_RUNTIME_SOURCE_ROOT]
+    if env_root:
+        roots.append(Path(env_root).expanduser())
+
+    for value in (python, *(argv or ())):
+        path = Path(value).expanduser()
+        try:
+            is_runtime_file = path.is_absolute() and path.is_file()
+        except (OSError, ValueError):
+            is_runtime_file = False
+        if not is_runtime_file:
+            continue
+        # Keep both a venv's lexical prefix and the resolved interpreter's
+        # framework/base prefix. The latter matters when bin/python is a
+        # symlink; the former contains the selected environment's packages.
+        for executable in (path, path.resolve(strict=False)):
+            prefix = executable.parent.parent
+            if prefix == Path(prefix.anchor) or not prefix.is_dir():
+                continue
+            if prefix not in roots:
+                roots.append(prefix)
+    return tuple(roots)
+
 
 # A host-call dispatcher: (method:str, args:list) -> data. Raises to signal error.
 Dispatcher = Callable[[str, list], Any]
@@ -127,6 +167,7 @@ class Kernel:
         env_name: str | None = None,
         argv: list[str] | None = None,
         sandbox: KernelSandbox | None = None,
+        read_isolation: KernelReadIsolation | None = None,
         capture_sinks: bool = False,
         transport_factory: Callable[[], KernelTransport] | None = None,
     ):
@@ -155,7 +196,13 @@ class Kernel:
         # wraps the worker argv and supplies a private temp directory.  Host RPC
         # remains on the existing pipes and is still serviced by this manager's
         # one synchronous reader loop.
-        self._sandbox = sandbox or create_kernel_sandbox(self.cwd)
+        if read_isolation is not None:
+            read_isolation = read_isolation.with_allowed_roots(
+                _kernel_runtime_read_roots(self.python, self.argv, self.env_root)
+            )
+        self._sandbox = sandbox or create_kernel_sandbox(
+            self.cwd, read_isolation=read_isolation
+        )
         # Exactly one host thread may write a request and consume worker frames
         # at a time.  ``inspect_variables`` deliberately acquires this lock
         # without waiting: an inspector is an idle-only read, never a second
@@ -238,11 +285,23 @@ class Kernel:
 
         command = self.argv or [self.python, "-u", str(_WORKER)]
         child_environment = self._child_env()
+        wrapped_command = self._sandbox.wrap_command(command)
+        pass_fds_for = getattr(self._sandbox, "popen_pass_fds", None)
+        adopt_process = getattr(self._sandbox, "adopt_process", None)
+        pass_fds = tuple(pass_fds_for()) if callable(pass_fds_for) else ()
         self._transport = PipeTransport(
-            self._sandbox.wrap_command(command),
+            wrapped_command,
             cwd=self.cwd,
             env=self._sandbox.apply_environment(child_environment),
             stderr_tail_factory=lambda: _StderrTail(_STDERR_TAIL_BYTES),
+            pass_fds=pass_fds,
+            # The process-adoption callback exists solely for the inherited
+            # bubblewrap ``--info-fd`` channel. Keeping it off the ordinary
+            # Seatbelt/single-user path preserves the historical Popen
+            # contract (including lightweight process fakes in embedders).
+            process_started=(
+                adopt_process if pass_fds and callable(adopt_process) else None
+            ),
         )
         self._stderr_tail = self._transport.stderr_tail
         if is_python_worker:

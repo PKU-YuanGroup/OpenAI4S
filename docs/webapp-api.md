@@ -736,7 +736,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `POST /skills/{name}/rollback` | Body `{version_id}` atomically activates a retained personal version. |
 | `GET /projects/{project_id}/skills/catalog` | Project-owned Skill overlays only; personal fallbacks and bundled entries are omitted. |
 | `GET /projects/{project_id}/skills/{name}/versions` | Exact project-scoped immutable history. Unknown projects fail closed. |
-| `POST /projects/{project_id}/skills/{name}/rollback` | Body `{version_id}` activates a retained version in that project only. |
+| `POST /projects/{project_id}/skills/{name}/rollback` | Body `{version_id}` activates a retained version in that project only. In team mode a member may reactivate a recipe-only Web-authored version; versions containing `kernel.py` and un-attributed legacy Host versions require an administrator and otherwise return the route's established `409` envelope with `code: "skill_admin_required"`. |
 | `GET /agents` | Bare array of built-in agent descriptors (with `enabled`). |
 | `PUT|PATCH /agents/{name}/enabled` | `{"ok":true}`. This legacy built-in-agent roster toggle remains process-local; persisted Specialist capability policy is enforced in delegation separately. |
 | `GET /agents/{name}` | Agent descriptor or `404 {"error":"unknown agent"}`. |
