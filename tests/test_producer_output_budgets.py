@@ -764,22 +764,49 @@ def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
     what they had already taken is what the cell reports. Driving the frame
     parser instead would prove the protocol and say nothing about whether the
     drain survives its writer being killed.
+
+    The interrupt is armed by the first drained chunk, not by a timer: a conda
+    Rscript can take seconds to start, and a fixed delay that expires first
+    lands the SIGINT before the cell has streamed a byte — outside r_worker.R's
+    handler it halts the interpreter, inside it it interrupts a cell whose
+    `stdout_seen_bytes` is legitimately 0. Both are startup races, not the
+    mid-stream case. `on_chunk` fires on the drain thread after `seen` was
+    bumped, so the SIGINT is sent only when bytes have provably crossed the
+    fifo while the writer still has ~4 GB left to produce.
     """
-    import threading
+    import signal
 
     from openai4s.kernel.r_kernel import spawn_r_kernel
 
+    if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
+        # A shell backgrounds `cmd &` with SIGINT ignored; SIG_IGN survives
+        # exec, and R honours an inherited ignore instead of installing its
+        # handler — so kernel.interrupt()'s SIGINT would be silently dropped
+        # and this test would "fail" by running the full 4 GB. Diagnosed with
+        # lldb: sigaction(SIGINT) in the child R was SIG_IGN, pending set
+        # empty. Nothing about the drain is wrong in that state; skip loudly.
+        pytest.skip(
+            "SIGINT is SIG_IGN in this process (backgrounded shell?); "
+            "no SIGINT can reach the R worker"
+        )
+
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
-        timer = threading.Timer(1.0, kernel.interrupt)
-        timer.start()
-        try:
-            result = kernel.execute(
-                "invisible(lapply(1:4000, function(i) cat(strrep('x', 1e6))))"
-            )
-        finally:
-            timer.cancel()
+        fired = threading.Event()
 
+        def interrupt_once_streaming(_text: str) -> None:
+            # Exactly one SIGINT: the drain can keep delivering chunks after
+            # the first, and a second signal could land between cells.
+            if not fired.is_set():
+                fired.set()
+                kernel.interrupt()
+
+        result = kernel.execute(
+            "invisible(lapply(1:4000, function(i) cat(strrep('x', 1e6))))",
+            on_chunk=interrupt_once_streaming,
+        )
+
+        assert fired.is_set(), "the cell finished without streaming a chunk"
         assert result.get("interrupted") is True, result
         usage = result["usage"]
         # The host drained real bytes before the interrupt landed, and the
