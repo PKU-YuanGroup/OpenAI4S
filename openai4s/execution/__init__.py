@@ -13,7 +13,13 @@ from openai4s.execution.coordinator import (
     TicketStateError,
 )
 from openai4s.execution.models import CaptureResult, CellExecutionResult, CellRequest
-from openai4s.execution.watchdog import WatchdogPolicy, execute_with_watchdog
+from openai4s.execution.watchdog import (
+    KernelCancellation,
+    KernelNotResetCancellation,
+    KernelResetUnavailableCancellation,
+    WatchdogPolicy,
+    execute_with_watchdog,
+)
 
 __all__ = [
     "CancellationSignal",
@@ -25,6 +31,9 @@ __all__ = [
     "ExecutionCancelled",
     "ExecutionOwner",
     "ExecutionTicket",
+    "KernelCancellation",
+    "KernelNotResetCancellation",
+    "KernelResetUnavailableCancellation",
     "QueueDepthExceeded",
     "SessionExecutionCoordinator",
     "TicketState",

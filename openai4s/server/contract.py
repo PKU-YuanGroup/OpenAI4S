@@ -42,6 +42,7 @@ import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 #: The verbs the gateway can actually dispatch. Membership, not spelling: an
 #: "uppercase and alphabetic" test accepts `GTE`, `BANANA`, and the full-width
@@ -207,7 +208,13 @@ def _route_module_specs(name: str) -> tuple[RouteSpec, ...]:
 #: have swallowed this one?". Deliberately boring: it must not contain "/" or a
 #: regex metacharacter.
 _SAMPLE_SEGMENT = "x"
-_GROUP = re.compile(r"\((?:\?[a-zA-Z:=!<][^()]*|[^()])*\)")
+# Both alternatives in the former nested expression matched the ``?`` prefix
+# character-by-character, so a malformed declaration such as repeated ``?a``
+# without a closing parenthesis caused exponential backtracking during startup.
+# The special-prefix arm did not add any accepted text: ``[^()]`` already
+# covers every character it matched.  Keep the exact non-nested-group language
+# with the single linear alternative.
+_GROUP = re.compile(r"\([^()]*\)")
 
 
 def _sample_path(pattern: str) -> str | None:
@@ -582,9 +589,55 @@ def route_families(source: str | None = None) -> set[str]:
     }
 
 
+class QueryParamError(ValueError):
+    """A client-supplied query parameter that is not what it claims to be.
+
+    Carries the wire shape so a route can answer 400 instead of letting a
+    bare `int()` raise into the gateway's catch-all, which prints a
+    traceback and answers 500 -- telling the caller the server is broken
+    when the request was.
+    """
+
+    def __init__(self, name: str, message: str, code: str = "invalid_query_param"):
+        super().__init__(message)
+        self.name = name
+        self.code = code
+
+
+def int_param(
+    values: Any,
+    default: int | None = None,
+    *,
+    name: str = "limit",
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    """One query parameter as an int, clamped, or `QueryParamError`.
+
+    `values` is the raw `parse_qs` list, so callers pass `q.get("limit")`
+    directly. The clamp runs *after* parsing, which is the ordering the
+    hand-rolled copies got wrong: their repository-side `max(1, min(...))`
+    sat downstream of a throw that never reached it.
+    """
+    raw = (values or [None])[0]
+    if raw is None or raw == "":
+        return default
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        raise QueryParamError(name, f"{name} must be an integer") from None
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
 __all__ = [
     "API_ROOT",
+    "QueryParamError",
     "RouteSpec",
+    "int_param",
     "declared_http_routes",
     "http_routes",
     "is_complete_matcher",

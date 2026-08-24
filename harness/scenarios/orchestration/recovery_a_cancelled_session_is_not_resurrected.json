@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "recovery.a_cancelled_session_is_not_resurrected",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "Losing a node while being torn down must not resubmit the work.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 4,
+      "stop_at_tick": 1,
+      "workload": {
+        "kind": "SESSION"
+      },
+      "submits": [
+        {
+          "result": "created"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "ACTIVE"
+        },
+        {
+          "phase": "CANCELLED"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "CANCELLED:USER_CANCELLED",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submitted",
+      "stop_requested",
+      "workload_releasing",
+      "allocation_draining",
+      "allocation_draining",
+      "workload_terminal",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

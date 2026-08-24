@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -148,6 +150,7 @@ def test_setup_only_accepts_each_documented_environment(name):
         (["init", "--help"], "--api-key-stdin"),
         (["setup", "--help"], "--only"),
         (["setup", "--help"], "--dry-run"),
+        (["benchmark", "--help"], "--acceptance"),
         (["jupyter", "describe", "--help"], "--json"),
         (["jupyter", "export", "--help"], "--language"),
         (["jupyter", "install", "--help"], "--prefix"),
@@ -172,7 +175,7 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
     assert proc.returncode == 0, proc.stderr
     assert (
         "{serve,status,doctor,verify-package,diagnostics,stop,url,run,init,setup,"
-        "benchmark,env,jupyter,share,relay}" in proc.stdout
+        "benchmark,env,jupyter,share,cluster,user,relay}" in proc.stdout
     )
     for command in (
         "serve",
@@ -198,6 +201,12 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
         "setup",
         "jupyter",
         "share",
+        # Team-mode accounts are managed on the server, daemon or not; an
+        # admin who cannot find `user` in --help cannot bootstrap login.
+        "user",
+        # Batch jobs: the surface a researcher reaches for when the work is
+        # too long to sit in front of.
+        "cluster",
         "relay",
     ):
         assert command in proc.stdout
@@ -229,6 +238,150 @@ def test_url_command_is_offline_and_returns_success(monkeypatch, capsys):
 
     assert module.main(["url"]) == 0
     assert capsys.readouterr().out.strip() == "http://127.0.0.1:9876/"
+
+
+def test_stage1_run_allows_control_only_agent_before_any_readiness_probe(
+    tmp_path, monkeypatch, capsys
+):
+    from openai4s import agent as agent_module
+    from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
+
+    module = _cli_module()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    calls: list[tuple[str, object]] = []
+
+    class Agent:
+        def __init__(self, *, cfg, verbose):
+            calls.append(("construct", (cfg, verbose)))
+
+        def run(self, task):
+            calls.append(("run", task))
+            return {
+                "stop_reason": "submitted",
+                "submitted_output": {
+                    "output": {"summary": "control-only completion"},
+                    "completion_bullets": ["Answered without a science runtime"],
+                },
+                "final_message": "control-only completion",
+            }
+
+    def forbidden_readiness(**_kwargs):
+        raise AssertionError("cmd_run probed readiness before action routing")
+
+    monkeypatch.setattr(module, "get_config", lambda: cfg)
+    monkeypatch.setattr(agent_module, "Agent", Agent)
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        forbidden_readiness,
+    )
+
+    status = module.cmd_run(
+        SimpleNamespace(task="analyze data", json=True, verbose=False)
+    )
+
+    assert status == 0
+    assert calls == [
+        ("construct", (cfg, False)),
+        ("run", "analyze data"),
+    ]
+    payload = __import__("json").loads(capsys.readouterr().out)
+    assert payload["stop_reason"] == "submitted"
+    assert payload["final_message"] == "control-only completion"
+
+
+def test_stage1_run_projects_typed_first_cell_readiness_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    from openai4s import agent as agent_module
+    from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
+    from openai4s.kernel.readiness import EnvironmentReadinessError
+
+    module = _cli_module()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        roadmap_features=RoadmapFeatureFlags(stage1_trusted_delivery=True),
+    )
+    readiness = {
+        "state": "needs_repair",
+        "ready": False,
+        "missing_packages": {"python": ["numpy"], "r": ["r-base"]},
+        "missing_environments": [],
+        "remediation": {
+            "plan_argv": ["openai4s", "env", "plan", "python", "r", "--repair"],
+            "apply_argv": ["openai4s", "env", "apply", "python", "r", "--repair"],
+        },
+    }
+
+    class Agent:
+        def __init__(self, *, cfg, verbose):
+            del cfg, verbose
+
+        def run(self, task):
+            del task
+            raise EnvironmentReadinessError(readiness)
+
+    monkeypatch.setattr(module, "get_config", lambda: cfg)
+    monkeypatch.setattr(agent_module, "Agent", Agent)
+
+    status = module.cmd_run(
+        SimpleNamespace(task="run a Cell", json=True, verbose=False)
+    )
+
+    assert status == 2
+    payload = __import__("json").loads(capsys.readouterr().out)
+    assert payload["code"] == "environment_not_ready"
+    assert payload["standard_profile_readiness"] == readiness
+    assert "python: numpy" in payload["error"]
+    assert "openai4s env apply python r --repair" in payload["error"]
+
+
+def test_flag_off_run_preserves_agent_execution_without_readiness_probe(
+    tmp_path, monkeypatch, capsys
+):
+    from openai4s import agent as agent_module
+    from openai4s.config import Config, LLMConfig
+
+    module = _cli_module()
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+    )
+    calls: list[tuple[str, object]] = []
+
+    class Agent:
+        def __init__(self, *, cfg, verbose):
+            calls.append(("construct", (cfg, verbose)))
+
+        def run(self, task):
+            calls.append(("run", task))
+            return {
+                "stop_reason": "submitted",
+                "submitted_output": None,
+                "final_message": "done",
+            }
+
+    def forbidden_readiness(**_kwargs):
+        raise AssertionError("flag-off CLI performed the Stage 1 readiness probe")
+
+    monkeypatch.setattr(module, "get_config", lambda: cfg)
+    monkeypatch.setattr(agent_module, "Agent", Agent)
+    monkeypatch.setattr(
+        "openai4s.kernel.readiness.standard_profile_readiness",
+        forbidden_readiness,
+    )
+
+    status = module.cmd_run(
+        SimpleNamespace(task="legacy task", json=False, verbose=True)
+    )
+
+    assert status == 0
+    assert calls == [("construct", (cfg, True)), ("run", "legacy task")]
+    assert "final: done" in capsys.readouterr().out
 
 
 def test_daemon_health_ignores_environment_proxies_for_a_wsl_nat_host(monkeypatch):
@@ -524,3 +677,62 @@ def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, 
     assert "model    : demo" in output
     assert "data_dir : /trusted/local-data" in output
     assert "/leaked" not in output
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGINT dispositions are POSIX")
+def test_ctrl_c_during_a_run_stops_this_agent_s_cell_and_still_exits():
+    """Both halves of what a terminal Ctrl-C used to do, restored.
+
+    The kernel worker now runs in its own session, so a group-wide SIGINT no
+    longer reaches it. That is the point -- a stray Ctrl-C must not end every
+    cell a daemon is running -- and it takes something real away from the CLI,
+    where `Agent.run` executes cells on this very thread: before, the signal
+    reached both this process (whose default handler raised KeyboardInterrupt
+    out of the run) and the worker (whose handler ended the cell). Restoring
+    one half without the other would be a behaviour change arriving through a
+    signal handler.
+    """
+
+    cli = _cli_module()
+    calls = []
+    agent = SimpleNamespace(
+        interrupt_foreground=lambda: (calls.append("interrupt"), True)[1]
+    )
+
+    before = signal.getsignal(signal.SIGINT)
+    with cli._foreground_cell_interrupt(agent):
+        handler = signal.getsignal(signal.SIGINT)
+        assert handler is not before, "no handler was installed"
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+
+    assert calls == ["interrupt"], "the running cell was not interrupted"
+    assert signal.getsignal(signal.SIGINT) is before, "the disposition leaked"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGINT dispositions are POSIX")
+@pytest.mark.parametrize(
+    "interrupt_foreground",
+    [
+        pytest.param(lambda: False, id="nothing_to_interrupt"),
+        pytest.param(
+            lambda: (_ for _ in ()).throw(RuntimeError("worker gone")),
+            id="interrupt_raises",
+        ),
+    ],
+)
+def test_ctrl_c_exits_even_when_the_cell_cannot_be_interrupted(interrupt_foreground):
+    """The exit is unconditional. A run that survived Ctrl-C because no worker
+    happened to be up, or because interrupting one raised, would be a new
+    behaviour nobody asked for -- and the user's second Ctrl-C would be their
+    only way out."""
+
+    cli = _cli_module()
+    agent = SimpleNamespace(interrupt_foreground=interrupt_foreground)
+
+    before = signal.getsignal(signal.SIGINT)
+    with cli._foreground_cell_interrupt(agent):
+        handler = signal.getsignal(signal.SIGINT)
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+    assert signal.getsignal(signal.SIGINT) is before

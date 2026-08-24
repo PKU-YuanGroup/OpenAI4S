@@ -17,3 +17,5 @@ Scenario inputs live here, one strict versioned JSON file each. A scenario names
 | [`baseline/`](baseline/) | The required offline `tier:pr` scenarios. They cover deterministic provider sequencing, terminal submission, and scheduled failure behavior. |
 
 Scenario JSON is input to the declared Harness fakes and nothing else; it is not permission to replay production side effects. Run a tier with `uv run python -m harness.cli run --tier pr --offline`.
+
+| [`orchestration/`](./orchestration/) | Twelve scenarios that drive the real `Reconciler` against a scripted backend (M4-4). Unlike the baseline family, these import production code on purpose — the reconciler's decision function has no live boundary a fake would stand in for, and its inputs are a workload row and an observation, both of which are data. Half of them declare a refusal, and a refusal scenario fails when the run succeeds. |

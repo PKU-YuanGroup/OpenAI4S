@@ -18,7 +18,29 @@ HTML/CSS/JavaScript served directly from the working tree.
   images, CSV/TSV tables, Markdown/text, HTML/PDF previews, and 3D molecular
   structures through vendored 3Dmol. Restore verifies a trusted immutable
   snapshot and appends a fresh version plus source→restored lineage; it never
-  moves the Artifact head back onto an old row.
+  moves the Artifact head back onto an old row. With
+  `OPENAI4S_STAGE1_TRUSTED_DELIVERY=1`, completion links name the exact
+  immutable version under `/api/v1/artifacts/versions/{version_id}`. Clicking, reloading,
+  and reopening therefore resolves the same checksummed bytes even after a
+  newer head exists. A repeated same-checksum capture does not fabricate a new
+  version; its new producing Cell and lineage remain in a separate durable
+  local capture observation. The scoped lineage view projects the latest
+  version's path-free producer frame, so delegated code/native outputs show the
+  real child frame without fabricating a root Notebook Cell or view-code link.
+- **Recoverable completion delivery (opt-in)** — Stage 1 freezes and verifies
+  each linked Artifact before the final assistant message and delivery manifest
+  commit together. The link-bearing WebSocket event is emitted only afterwards
+  and carries a stable `delivery_id`. If that event is lost, reopening reads the
+  already committed message through REST; Stage 1 records a queryable
+  `committed` durable message-and-manifest fact, while `published` is the
+  best-effort emit marker. The ledger does not re-emit the socket event
+  automatically. The ordinary bounded WS sequence buffer may
+  replay it while the turn is live; after terminal/restart, REST is
+  authoritative. A failed snapshot, checksum, scope, relation, or audit check fails
+  closed and publishes no success link. Capture observations are local-only in
+  Stage 1; Session packages, share snapshots, and Artifact ZIPs do not yet carry
+  a portable observation ledger. The UI's metadata export only mirrors the
+  current local lineage response.
 - **Read-only Notebook by default** — stable Cell IDs project Python/R source,
   stdout/stderr, errors, figures, files, and retry revisions. Failed older
   revisions remain collapsed and read-only; a running Cell is updated in place.
@@ -57,7 +79,20 @@ HTML/CSS/JavaScript served directly from the working tree.
   permissions/capabilities, and always opens `Ended · view only` in a durable
   quarantine. Conversation, Notebook and files remain readable, while every
   live mutation returns 423 until the user explicitly confirms `Restart fresh`;
-  package code, hooks and Kernel generations are never replayed.
+  package code, hooks and Kernel generations are never replayed. Exact-version
+  completion deliveries travel with the package, but their source ids and URLs
+  do not: import verifies the restored snapshots, builds local manifests/URLs,
+  and atomically rebinds each local message. A missing or inconsistent
+  message/ledger relation rejects the package rather than leaving a plausible
+  link that cannot reopen. Stage 2 also carries a closed, sanitized Auto Mode
+  audit graph. All run, candidate, audit, finding, repair, and decision
+  identities are remapped per owner; the effective selection is forced to
+  `off`/`user`, Verified claims become Unverified, and the original claimed
+  status/terminal reason remain diagnostic provenance across repeated exports.
+  Imported wall-clock timestamps record the import boundary rather than
+  trusting source clocks; event cursor order preserves chronology. Raw prompts,
+  hidden rationale, permission payloads, and reusable authorization never cross
+  the package boundary.
 - **Customize and research UX** — model profiles, Skills/Specialists,
   connectors (catalog, enable/disable, probe, and a secret-preserving launch
   configuration editor), compute, network, memory, permission rules, plan/explore modes,
@@ -67,6 +102,18 @@ HTML/CSS/JavaScript served directly from the working tree.
   portable runtime token that resolves against the current installation when
   spawned, so moving the data directory does not retain the old server's
   interpreter path.
+  connectors, compute, network, memory, permission rules, plan/explore modes,
+  voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN.
+- **Standard environment readiness (opt-in)** — with the Stage 1 flag enabled,
+  persistent dashboard and conversation banners show when the `standard`
+  Python/R pair is missing or cannot be verified. Customize → Compute lists all
+  missing environments and packages and offers copy-only `env plan`/`env apply`
+  repair commands; the browser never installs them. A normal task may still use
+  native control tools or structured finalization. If it routes a Code Cell,
+  that Cell is refused before a pending environment switch, identity/attempt,
+  or runtime exists; the terminal event opens the Compute repair card. Direct
+  Notebook Cells use the same boundary. Approved/resumed scientific plans are
+  refused before their status transition until the check is ready.
 - **Web sharing (off by default)** — the session menu can publish a read-only
   snapshot to `https://<share-id>.<domain>/` through a relay you run, without
   binding a public port. The recipient views the conversation/Notebook/artifacts,
@@ -97,7 +144,7 @@ product affordances remain intentionally partial:
 | Action Ledger and safe Timeline projection | Backend, redacted max-500 latest/older/newer REST windows, UI cards, and an explicit “load earlier actions” control are implemented. Completed recent history reloads from REST; there is no separate durable per-action WS backlog. |
 | Durable approval after daemon restart | Pending cards reload directly from SQLite without starting a kernel/runtime. A live decision resumes its exact blocked call; a post-restart approval never replays stored arguments, records the old action as unexecuted, and exposes an explicit “Continue and replan” control. Restart-only `once` grants are exact and expire after 15 minutes. |
 | Checkpoint / branch / revert preview | Content-addressed snapshots and public checkpoint/fork/activate/preview/apply/undo routes are implemented. Durable Cells and user messages best-effort capture exact cursor checkpoints; only records with a proven mapping advertise Fork, while old history returns 409. The UI exposes Cell Fork and collapses internal checkpoints. Activation restores workspace, Artifact heads, environment, capability/permission state and the checkpoint's full plan/review/memory snapshot, then rebuilds a branch-bound runtime. Legacy checkpoints without that sidecar report `Partial` and preserve live structured state. Revert/Undo project provider history, chat and Notebook from the same append-only cursors. |
-| Recovery Journal and verified recovery pipeline | Status/actions and `restore`/`retry`/`restart_fresh` mutations are implemented for the active branch. Candidate workers publish only after bootstrap, CAS/Artifact validation, replay-safety and state validation. Bootstrap v2 captures the actual worker's complete package set, locale, interpreter prefix and SDK/provenance/Host protocol versions; exact loaded Skill sidecar bytes/hashes never leak into ordinary Cell output. Arbitrary historical namespaces without a verified recipe still end Partial. |
+| Recovery Journal and verified recovery pipeline | Status/actions and `restore`/`retry`/`restart_fresh` mutations are implemented for the active branch. Candidate workers publish only after bootstrap, CAS/Artifact validation, replay-safety and state validation. Bootstrap v2 captures the actual worker's complete package set, locale, interpreter prefix and SDK/provenance/Host protocol versions. Skill-load diagnostics never leak into ordinary Cell output, but they share the untrusted Cell interpreter and therefore cannot authorize durable sidecar replay; observing one marks that generation unrecoverable. Arbitrary historical namespaces without a verified recipe still end Partial. |
 | Python/R `.ipynb` export | Deterministic language export/ZIP route and a stable bundle ZIP download in the Notebook header and provenance execution view are implemented. Separate Python/R single-notebook selectors remain API-only. |
 | Standalone Jupyter adapter | Optional `openai4s-python` / `openai4s-r` KernelSpecs and a lazy `ipykernel` wire bridge are available outside the daemon. They use independent namespaces and do not attach to Web-session Host RPC, artifacts, ledger, queue, or recovery. |
 | Scientific renderer registry | Safe catalog and version-bound descriptor routes are implemented and drive dedicated 2D chemistry, genome, sequence/MSA, and LaTeX UI components. Descriptors stay bound to immutable Artifact versions and provenance. |

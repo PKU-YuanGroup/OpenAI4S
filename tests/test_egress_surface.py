@@ -6,7 +6,7 @@ nothing in the repository recorded which modules can open an outbound
 connection. "Off by default, and not a single packet leaves the machine" is a
 claim about the whole tree, and it cannot be checked one file at a time.
 
-So the surface is frozen: eleven modules today, each with a stated reason. A new
+So the surface is frozen: thirteen modules today, each with a stated reason. A new
 one fails this test with its file and line, and the fix is to add it here with a
 justification a reviewer can weigh -- which is the point. Adding a line to this
 table is a decision; adding `urlopen` to a random module is a Tuesday.
@@ -23,6 +23,8 @@ which is why the sandbox and the kernel's own allowlisting exist.
 from __future__ import annotations
 
 import ast
+import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -98,10 +100,24 @@ _DECLARED: dict[str, str] = {
         "only for one bounded POST, enforces network and SSRF policy, refuses "
         "redirects, and never projects the outbound authorization header."
     ),
+    "openai4s/kernel/worker.py": (
+        "a worker placed on a compute node dialling back to the daemon that "
+        "asked for it (M3b-1). The worker is the client because a compute "
+        "node is usually reachable from nothing while the daemon usually is. "
+        "Off unless the scheduler set OPENAI4S_WORKER_CONNECT, refused "
+        "outright without a credential file, and the address it dials is the "
+        "one this daemon wrote -- it is never taken from a cell or a model."
+    ),
     "openai4s/http_deadline.py": (
         "the shared stdlib HTTP deadline transport. Its custom HTTP(S) "
         "connections register only the live socket so one wall-clock watchdog "
         "can interrupt connect, TLS, response headers, and body reads."
+    ),
+    "openai4s/benchmark/acceptance.py": (
+        "the Stage 0 Ketcher acceptance probe drives the public production "
+        "Gateway through one explicit 127.0.0.1 HTTP request in an isolated "
+        "child/data directory; its browser and benchmark contracts reject "
+        "external requests and record zero external network calls."
     ),
 }
 
@@ -166,9 +182,16 @@ def test_every_declaration_states_a_reason():
 
 
 def test_the_surface_is_small_enough_to_review():
-    """Eleven modules is reviewable. If this fails, the question is not how to
-    raise the bound -- it is why the surface grew."""
-    assert len(_DECLARED) <= 11
+    """Thirteen modules is reviewable. If this fails, the question is not how to
+    raise the bound -- it is why the surface grew.
+
+    It grew from eleven for two explicit reasons, recorded rather than left to
+    archaeology. `kernel/worker.py` dials back to the daemon when a scheduler
+    places it on a compute node (M3b-1). `benchmark/acceptance.py` makes one
+    literal-loopback request to an isolated production Gateway for the Stage 0
+    Ketcher route contract. Neither address comes from a cell or model, and the
+    latter's benchmark/browser contracts reject external network traffic."""
+    assert len(_DECLARED) <= 13
 
 
 def test_the_scan_finds_a_planted_call():
@@ -201,8 +224,8 @@ def test_listening_sockets_are_deliberately_out_of_scope():
 
 _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 
-#: Bundled skill sidecars that reach the network directly, and why each is
-#: still doing so. This table exists to *freeze* the set, not to bless it.
+#: Bundled skill recipes that can reach the network directly. This inventory
+#: exists to *freeze* the set, not to bless it.
 #:
 #: The scanner above has only ever looked at `openai4s/`, and its own docstring
 #: names the gap: it "cannot see egress from a subprocess -- a kernel cell
@@ -212,9 +235,8 @@ _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 #: variable. So these calls do not merely bypass the allowlist by convention --
 #: nothing in the analysis kernel enforces it on them at all.
 #:
-#: Removing an entry is the goal. Adding one needs a reason that survives
-#: someone asking why `host.web_fetch` would not do.
-#: Bundled skills allowed to reach the network directly, with why.
+#: Removing a hit is the goal. Adding one needs a review that asks why a
+#: guarded Host capability would not do.
 #:
 #: Three skills were here -- `literature-review` (DOI/OpenAlex lookups),
 #: `mineral_spectra_analysis` (the RRUFF archive) and `catalyst_sar_screening`
@@ -229,84 +251,122 @@ _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 #: `user_agent=`, and `host.web_download`), all guarded, and the skills moved
 #: onto them. A new entry here is a new hole and has to argue for itself.
 #:
-#: The two entries below are vendored bioSkills recipes (pinned upstream
-#: payloads, hash-verified by `scripts/import_bioskills.py`): rewriting them
-#: onto `host.web_fetch` would break the byte-exact provenance the collection's
-#: license and manifest depend on, and they load only when the agent explicitly
-#: loads the recipe. Keeping them declared here means a further recipe that
-#: reaches the network still fails this test until someone decides it.
-_SKILL_EGRESS: dict[str, str] = {
-    "skills/bioskills/bio-database-access-geo-data/scripts/search_geo.py": (
-        "vendored byte-exact bioSkills recipe (NCBI GEO access); rewriting it "
-        "onto host.web_fetch would break the pinned-import provenance"
+#: The imported bioSkills payload is byte-exact and cannot be silently
+#: rewritten. A single fingerprint over path + line + recognized client keeps
+#: its raw-network surface reviewable without pretending that dozens of
+#: identical vendored entries are individual policy grants. The plan crosswalk
+#: remains `open`: this is a detection gate, not runtime enforcement.
+_PINNED_SKILL_EGRESS_FINGERPRINT = (
+    "1aaf83d07b6fae72e507a725672b49457484f4bee9f4b4dc23e9acd4ffc9bad7"
+)
+
+_SKILL_EGRESS_PATTERNS = (
+    (
+        "stdlib-network",
+        re.compile(
+            r"\b(?:urllib\.request|urlopen\s*\(|urlretrieve\s*\(|"
+            r"http\.client|socket\.create_connection\s*\()"
+        ),
     ),
-    "skills/bioskills/bio-structural-biology-structure-io/scripts/download_structure.py": (
-        "vendored byte-exact bioSkills recipe (structure download); rewriting "
-        "it onto host.web_fetch would break the pinned-import provenance"
+    (
+        "python-http-client",
+        re.compile(
+            r"\b(?:requests|httpx|aiohttp|urllib3)\."
+            r"(?:get|post|put|delete|patch|head|request|stream|Session)\b"
+        ),
     ),
-}
+    ("biopython-entrez", re.compile(r"\bEntrez\.[A-Za-z_][A-Za-z0-9_]*\b")),
+    (
+        "shell-network-client",
+        re.compile(r"(?<![A-Za-z0-9_.-])(?:curl|wget)(?![A-Za-z0-9_.-])", re.I),
+    ),
+    (
+        "r-network-client",
+        re.compile(r"\bdownload\.file\s*\(|\b(?:httr2?|RCurl|curl)::"),
+    ),
+)
+
+
+def _scan_skill_source(text: str) -> list[tuple[int, str]]:
+    hits: set[tuple[int, str]] = set()
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for label, pattern in _SKILL_EGRESS_PATTERNS:
+            if pattern.search(line):
+                hits.add((lineno, label))
+    return sorted(hits)
 
 
 def _skill_egress_sites() -> dict[str, list[tuple[int, str]]]:
-    """The same AST scan, rooted at `skills/` instead of the package."""
+    """Conservatively inventory common clients in scripts and recipe prose.
+
+    This is deliberately broader than the package AST scan: vendored recipes
+    use third-party Python clients, Bio.Entrez, shell commands, and R helpers.
+    It is still not a runtime boundary or proof that every possible custom
+    client is recognized; that distinction is why the crosswalk row is open.
+    """
     sites: dict[str, list[tuple[int, str]]] = {}
     if not _SKILLS.is_dir():
         return sites
-    for path in sorted(_SKILLS.rglob("*.py")):
+    paths = (
+        path
+        for path in _SKILLS.rglob("*")
+        if path.is_file()
+        and (path.suffix in {".py", ".sh", ".R"} or path.name == "SKILL.md")
+    )
+    for path in sorted(paths):
         try:
-            tree = ast.parse(path.read_text("utf-8"))
-        except (OSError, SyntaxError):  # pragma: no cover - unreadable source
+            hits = _scan_skill_source(path.read_text("utf-8"))
+        except OSError:  # pragma: no cover - unreadable source
             continue
-        rel = path.relative_to(_SKILLS.parent).as_posix()
-        for node in ast.walk(tree):
-            name = None
-            if isinstance(node, ast.ImportFrom) and node.module in _EGRESS_MODULES:
-                for alias in node.names:
-                    if alias.name in _EGRESS_NAMES:
-                        sites.setdefault(rel, []).append((node.lineno, alias.name))
-                continue
-            if isinstance(node, ast.Attribute) and node.attr in _EGRESS_NAMES:
-                name = node.attr
-            elif isinstance(node, ast.Name) and node.id in {
-                "urlopen",
-                "create_connection",
-                "build_opener",
-            }:
-                name = node.id
-            if name:
-                sites.setdefault(rel, []).append((node.lineno, name))
+        if hits:
+            sites[path.relative_to(_SKILLS.parent).as_posix()] = hits
     return sites
 
 
-def test_no_undeclared_skill_reaches_the_network():
-    """A bundled skill that opens a socket must be named here.
+def _skill_egress_fingerprint(sites: dict[str, list[tuple[int, str]]]) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(sites):
+        for lineno, label in sites[path]:
+            digest.update(f"{path}\0{lineno}\0{label}\n".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def test_bundled_skill_raw_egress_surface_is_frozen():
+    """A change to recognized raw-network recipe code requires re-review.
 
     The frozen surface for `openai4s/` has existed for a while; `skills/` was
     entirely outside it, which is where the unenforced egress actually lives.
-    This does not stop the three below from doing it -- it stops a fourth from
-    appearing without anyone deciding to allow it.
+    This detects common clients across Python, shell, R, and SKILL.md. It does
+    not make those calls subject to the Host allowlist or SSRF guard.
     """
-    undeclared = {
-        module: sites
-        for module, sites in _skill_egress_sites().items()
-        if module not in _SKILL_EGRESS
-    }
-    assert undeclared == {}, (
-        "these bundled skills reach the network and are not declared in "
-        f"_SKILL_EGRESS: {undeclared}. Prefer `host.web_fetch`, which is "
-        "subject to the egress allowlist and the SSRF guard; if it genuinely "
-        "cannot serve, add an entry saying why."
+    sites = _skill_egress_sites()
+    observed = _skill_egress_fingerprint(sites)
+    assert observed == _PINNED_SKILL_EGRESS_FINGERPRINT, (
+        "the bundled Skill raw-egress inventory changed; review these sites "
+        "against guarded Host capabilities, then deliberately update the "
+        f"fingerprint. observed={observed}, sites={sites}"
     )
 
 
-def test_every_declared_skill_egress_entry_is_still_real():
-    """A declaration for a skill that no longer reaches the network reads as a
-    standing exemption for something already fixed."""
-    sites = _skill_egress_sites()
-    stale = sorted(module for module in _SKILL_EGRESS if module not in sites)
-    assert (
-        stale == []
-    ), f"these no longer reach the network; drop their _SKILL_EGRESS entry: {stale}"
+def test_skill_egress_scan_recognizes_each_supported_client_family():
+    source = "\n".join(
+        (
+            "urllib.request.urlopen(url)",
+            "requests.get(url)",
+            "Entrez.esearch(db='gene')",
+            "curl -fsS https://example.test",
+            "wget https://example.test/file",
+            "download.file(url, dest)",
+        )
+    )
+    labels = {label for _lineno, label in _scan_skill_source(source)}
+    assert labels == {
+        "stdlib-network",
+        "python-http-client",
+        "biopython-entrez",
+        "shell-network-client",
+        "r-network-client",
+    }
 
 
 #: The browser client's own egress surface, which the AST walk above cannot see:

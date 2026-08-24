@@ -14,6 +14,120 @@ minimal server (`openai4s/server/daemon.py`, `POST /run`) was removed rather
 than documented: nothing imported it and it had none of the gateway's Host,
 Origin, token or header defences.
 
+### Auto Mode API status after Stage 2
+
+Stage 2 implements the versioned storage/read/configuration surface:
+`GET/PATCH /api/v1/frames/{fid}/auto-mode` and
+`GET /api/v1/frames/{fid}/auto-audits?subject_kind=&before=&limit=`. There is no
+unversioned or alternate alias and no HTTP transition endpoint. In particular,
+these routes cannot invoke a Reviewer, Repair Agent, or Permission Guardian,
+resolve a permission, or resume imported execution.
+
+GET returns `{schema_version,feature_enabled,writable,disabled_reason,
+root_frame_id,branch_id,selection,deployment,budgets,run,last_event_id,
+last_event_ordinal}`. `budgets` are deployment hard ceilings and are read-only
+in Stage 2. PATCH accepts a CAS `revision` plus only `preset`,
+`result_review_mode`, and `approvals_reviewer`; all three null values clear the
+frame override. The Stage 2 flag defaults off: GET then says
+`feature_enabled:false`/`writable:false`, while PATCH returns
+`409 auto_mode_storage_disabled`. A quarantined import always projects
+`off`/`user`, is non-writable, and returns 423 to PATCH.
+
+The durable and post-commit WebSocket vocabulary is exactly
+`auto_run_started`, `candidate_ready`, `auto_audit_started`,
+`auto_audit_completed`, `repair_started`, `repair_completed`, and
+`auto_run_terminal`. SQLite, not the socket, is truth. A reconnect or lost hint
+uses GET and the event cursor; it never retries an already committed side
+effect. Checkpoint/fork/revert reads apply the branch's `auto_event_cursor`, so
+abandoned tails remain in physical audit storage but cannot mutate or appear in
+the active logical projection.
+
+`auto_audit_started` and `auto_audit_completed` are the sole wire and storage
+event names for both audit kinds. Their required `subject_kind` is
+`result_review` or `permission_review`; phrases such as “review started” and
+“Guardian completed” are domain descriptions, not additional event types or
+aliases. One durable event id names one committed transition, so an adapter
+must never duplicate it under a second name. The existing `permission_resolved`
+event remains canonical; Stage 7 attaches `resolution_actor` and `audit_id` to
+that event after the corresponding durable transaction rather than inventing a
+second permission-resolution event.
+
+The audit envelope also requires an orthogonal
+`subject_entity_kind`: `result_review` pairs only with
+`candidate_evidence_snapshot`, and `permission_review` pairs only with
+`approval_action`. Entity values must not be placed in `subject_kind` and do
+not create event aliases. A started/completed pair shares one `audit_id` and
+one `audit_request_digest`, which binds only the immutable request and subject.
+`auto_audit_completed` additionally carries the canonical assessment and a
+separate `assessment_digest` binding the request digest, subject fields,
+attempt, verdict/decision, findings, risk, authorization, outcome, rationale,
+failure, durability, and retry state. Request and assessment digests are not
+interchangeable; the server must fail closed on reuse, substitution, or an
+assessment hash mismatch.
+
+The existing per-frame `auto_review` preference still starts the legacy,
+single-call evidence Reviewer after the answer has already been finalized. Its
+ordinary `step`/`step_update` records do not promote or veto `frame_update`, and
+reopen/share/export must not reinterpret such a step as a new Auto Mode
+terminal fact. Legacy true migrates only to result `review_only`; it cannot
+enable repair or permission review.
+
+`OPENAI4S_STAGE3_SCIENTIFIC_REVIEW_SHADOW=1` adds a post-delivery shadow
+Scientific Reviewer V2 step (`kind=review`, `input.mode=shadow`). It does not
+change `frame_update`, does not emit a Verified badge, and does not add a new
+HTTP route. Plan turns are included. When Stage 2 storage is also enabled, the
+shadow review is persisted as a `result_review` audit on the current Auto Run
+and remains non-terminal.
+
+`OPENAI4S_STAGE4_REVIEW_COMPLETION_GATE=1` runs that review *before* promotion
+when `result_review_mode` is not `off`, and the turn is ordered candidate →
+frozen evidence → review → promotion.
+
+While the gate is armed the composed final answer is streamed as a `text_chunk`
+carrying `provisional: true`, `review_status: "candidate"`, `turn_id`, and
+`execution_id`; the marker applies to every prose chunk, not only the completion
+suffix. At the turn boundary the exact turn-wide candidate is committed once as
+a canonical assistant message with the same identities and Candidate metadata,
+before the Reviewer runs. A Stage 1 Artifact manifest is likewise committed but
+unpublished before its exact-version link is emitted. Live order is the early
+Candidate marker and provisional stream, durable canonical candidate, review
+events, one atomic promotion/terminal commit, `candidate_resolved`, then one
+terminal `frame_update` with `review_status`. A verified final therefore always
+arrives after a durable passing review and successful delivery, never before it.
+
+`candidate_resolved` is the promotion applied to what was actually delivered. It
+carries the exact `message_id`, `turn_id`, `execution_id`, `review_status`,
+`user_truth`, `durable`, `delivered`, `replaced`, `answer_repaired`, an optional
+`delivery_id`, and the canonical `text` after durable promotion. `replaced`
+means the provisional live rendering must be reconciled to those exact reviewed
+bytes; `answer_repaired` separately says Stage 5 changed the candidate's
+substance. The frontend upserts the identified stored/live row, so provider
+whitespace and incremental chunk separators cannot make live display differ
+from REST reopen, and the old claim cannot remain beside its correction.
+
+`GET /frames/{id}/messages` may include an optional `review_status` object
+(`status`, `unverified`, `user_truth`) reconstructed from message metadata,
+plus `turn_id` and `execution_id` for a gated row. Refreshing cannot promote a
+candidate to Verified without that durable stamp. A daemon lost mid-review
+leaves both the canonical row marked Candidate and the frozen/open review audit;
+it does not lose the answer and does not manufacture a verdict.
+
+Verified is stamped only on the exact bytes the passing review read. A
+mismatch, a repair the caller could not deliver, or a delivery that failed
+after the review all resolve to a non-verified terminal rather than a guess.
+Every rollout stage consumes only its own flag. The full truth and recovery
+rules are frozen in the [Auto Mode product contract](auto-mode.md).
+
+Any `blocked_by_guardian` projection requires a durable Guardian assessment
+of a deterministic `ask`. Sandbox, egress, secret/credential, biosecurity,
+cost, deterministic hard-deny, action-digest mismatch, and permission-audit
+persistence controls remain prior to Guardian; the API/UI must not claim
+Guardian made those decisions. Projection follows the committed reason:
+`policy_requires_explicit_setup`, `budget_exhausted`,
+`safe_rollback_unavailable`, `outcome_unknown`, `loop_detected`, or the
+hard/integrity `safety_boundary`, with the user truth frozen in the Auto Mode
+contract.
+
 ## 1. Transport and general behavior
 
 - Server: stdlib `http.server.BaseHTTPRequestHandler`, `HTTP/1.1`
@@ -185,13 +299,14 @@ or stored `Content-Type`:
 | --- | --- | --- |
 | `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/index.html`. |
 | `GET /static/<rel>` | file bytes | Path-traversal-guarded; 404/403 as JSON. |
-| `GET /api/artifacts/{ident}` | artifact bytes | `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
+| `GET /api/artifacts/{ident}` | artifact bytes | Compatibility route. `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
+| `GET /api/v1/artifacts/versions/{version_id}` | immutable artifact-version bytes | Stage 1 trusted completion links use this reserved canonical route only. The server helper rejects empty and dot-only identifiers and encodes slash, Unicode, and URL metacharacters into one path segment. The route resolves that exact version or 404 and never falls back to an Artifact id or filename, so a reopened link remains bound to the same bytes after the head changes. |
 | `GET /api/frames/{fid}/artifacts.zip` | ZIP bytes | Current Artifact versions for one session. |
 | `GET /api/projects/{pid}/artifacts.zip` | ZIP bytes | Current Artifact versions across one project. |
 | `GET /api/frames/{fid}/notebook/export?language=` | `.ipynb`, ZIP or Markdown bytes | `python`/`r` returns one Notebook; omitted/`bundle` returns both plus a manifest; `markdown` returns one `.md` with both languages in execution order. |
 | `GET /api/frames/{fid}/session/export` | Session ZIP bytes | Deterministic `application/vnd.openai4s.session+zip`; carries schema and SHA-256 headers. |
 | `GET /preview/{ident}` | artifact bytes | Same resolution, but `Content-Type` is **forced** to `text/html; charset=utf-8` (sandboxed iframe preview). Not under `/api`. |
-| `GET /ketcher` | HTML | Static placeholder page. |
+| `GET /ketcher` | HTML | Flag-off: historical placeholder. Stage 9: wrapper around vendored Ketcher 3.7.0 plus the `openai4s-artifact` save/load bridge. |
 
 **Wart:** when a raw-bytes route fails (artifact missing) it responds with a
 *JSON* body `404 {"error": "artifact not found"}` — a consumer streaming the
@@ -215,6 +330,10 @@ success response body. Serializer shapes are in §4.
 | `GET /health` (not under `/api`) | Minimal public projection `{"status":"ok","model"}`. Exempt from the token gate and deliberately omits host filesystem paths. |
 | `GET /me` | Hardcoded local identity: `{"user_id":"local-dev","email":null,"provider","has_api_key","shared_api_key":false,"auth_mode":"none"}`. |
 | `GET /auth/status` | `{"authenticated":true,"auth_mode":"none"}` (always). |
+| `POST /auth/login` · `POST /auth/logout` · `GET /auth/me` | Team mode (M1). HttpOnly `SameSite=Lax` cookie; only the token's sha256 is stored. Login is rate-limited per username+IP and the bucket is charged *before* the password hash, so the limit also bounds the hashing an attacker can provoke. Wrong password, unknown user and disabled account are one sentence — the difference is the attacker's question. |
+| `GET /auth/me/llm-key` | Whether this user has a key of their own, per provider: `{keys: [{provider, configured, created_at, updated_at}]}`. Never the value — a credential a screen can display is one a screenshot leaks — and never the reference either, which names a keychain slot. |
+| `PUT /auth/me/llm-key` | Body `{provider, api_key}` (M4-1, decision D7's second half). The key goes to the `SecretBroker`; the database keeps only a reference. A broker that cannot store it answers `503 secret_store` and **writes no row**: a row pointing at a slot that was never filled would make the next turn refuse with "configured but unreadable" for a key that was never accepted. The override is per provider, so a user with their own Anthropic account and no OpenAI key runs on theirs for one and the group's for the other. |
+| `DELETE /auth/me/llm-key` | Body `{provider}` → `{ok, removed, provider}`. `removed:false` when there was nothing to clear, which is not an error: the intent — "do not use my key" — is satisfied either way. Disabling an account clears every key it had, because a credential that outlives its account is one nobody is watching. |
 | `GET /csrf` | `{"csrf_token":"local"}` (a stub; the real CSRF defense is the Origin check). |
 | `GET|POST|PUT|PATCH /config/llm` | GET → `{provider,model,base_url,has_api_key}`. Write → persists `provider`/`model`/`base_url`; `api_key` only overwrites when non-empty; `clear_api_key:true` empties it. Changing provider without a replacement key also clears the old provider-bound credential so it cannot be reinterpreted or sent to the new provider → `{"ok":true,"has_api_key"}`. The raw key is never returned. |
 | `GET /search?q=` | `{sessions:[{id,project_id,name,task_summary}], artifacts:[{id,filename,content_type,root_frame_id,project_id}], datapro:[{query,dataset_type,json_pointer,content,artifact_id,root_frame_id,project_id}]}`; empty `q` → empty lists. `datapro` searches every recursively indexed key and scalar in successful DataPro content; each hit is a logical result occurrence, so equal records at different JSON pointers remain distinct. |
@@ -316,15 +435,38 @@ The bare `@name` spelling still works for one minor release. It resolves inside
 the calling session only, through the artifact's latest *version* rather than
 its live path, and says in the injected block that it is unpinned.
 
+With `stage1_trusted_delivery` enabled, ordinary messages remain routable while
+the standard profile is incomplete. This is required for native control-tool
+and sole `finalize_response` turns, neither of which needs a kernel. If routing
+selects a Code Cell, `needs_setup`/`needs_repair` fails it with
+`environment_not_ready`; an unreadable or ambiguous local inventory uses
+`environment_readiness_unavailable`. The refusal occurs before a pending
+environment switch, Cell identity/attempt, runtime start, or workspace side
+effect, and the terminal job/WebSocket projection carries the stable code. The
+complete structured gaps and copy-only repair commands come from
+`GET /environments/status`. Approved/resumed plans retain a synchronous
+pre-CAS check because their execution contract requires scientific Cells;
+`plan:true` drafting remains available.
+
+In team mode, project visibility grants the frame GET surfaces below, not
+write authority. Every mutating `/frames/{fid}` request is owner/admin-only;
+the D4 visibility toggle is stricter and remains owner-only, while the
+POST-shaped Revert preview is the explicit read-only exception. Mutating
+Artifact, annotation and share resource routes, plus body-addressed uploads,
+resolve their owning root and enforce the same rule.
+
 
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames?project_id=&limit=&cursor=` | `{"frames":[…],"next_cursor":…,"has_more":bool}`. Keyset pagination, newest first; `limit` 1–200 (default 100). `cursor` is opaque — parsing it would couple a client to the sort key. An unreadable cursor is a `400`, never a silent restart, which would loop a client on page one. `has_more` is observed by collecting one row beyond the page, not inferred from the page being full: hidden abandoned sessions are filtered *after* the read, so a full-looking page is not evidence of a next one. |
 | `POST /frames` | Body `{project_id?,model?}` → frame JSON for a new root frame. |
 | `GET /frames/{fid}` | Frame JSON, or `{}` when not found. |
+| `GET /frames/{fid}/auto-mode` | Durable Stage 2 logical-branch projection: feature/writable state, effective selection and precedence source, deployment metadata, read-only hard budget ceilings, sanitized current run, and last committed event identity/cursor. It never returns prompts, hidden rationale, permission payloads, or reusable authorization. |
+| `PATCH /frames/{fid}/auto-mode` | CAS selection update. Body requires `revision` and may set only `preset`, `result_review_mode`, and `approvals_reviewer`; setting all three to null clears the frame override. Disabled storage is 409, stale revision is 409, and imported quarantine is 423. It changes configuration only and starts no model or action. |
+| `GET /frames/{fid}/auto-audits?subject_kind=&before=&limit=` | Newest-first sanitized durable audit summaries for the active logical branch. `subject_kind` is `result_review` or `permission_review`; `before` is an event cursor/id and `limit` is 1–500 (default 100). The response contains no raw assessment prompt, hidden rationale, permission request, or authorization capability. |
 | `PATCH /frames/{fid}` | Updates `name`/`task_summary`, broadcasts `frame_update` → frame JSON. |
 | `DELETE /frames/{fid}` | `{"ok":true}`. |
-| `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id,artifact_refs,failure?}…]}`. `failure` is present only on a message that recorded one, and carries `{request_id,code,output_committed?}` — an allowlisted projection of the row's metadata, never the exception. It exists because reopening otherwise lost both the support id and the retry veto: the socket event is gone once the tab closes and the stored row is a sentence. `output_committed` appears only when true; absent is "no claim". Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. **Latest-first paging:** `?newest_first=1` returns the newest page and adds `next_before_seq` + `has_earlier`; `?before_seq=<seq>` walks backwards. Without either, the response is exactly what it always was — oldest-first from `from`, and no cursor keys. It mattered because a 640-message session returned messages 0–299: the *oldest* page, with the newest 340 absent. The cursor is a `seq` bound rather than an offset, because newest-first plus OFFSET shifts on every arriving message. `has_earlier` is observed, not inferred from a short page — the branch projection can hide rows, which a client cannot tell from the end of history. `before_seq` that is not an integer is `400 invalid_cursor`. |
+| `GET /frames/{fid}/messages?from=&limit=&branch_id=` | Branch-projected `{"messages":[{message_id,role,content,created_at,fork_checkpoint_id,artifact_refs,failure?,review_status?,turn_id?,execution_id?}…]}`. A gated assistant row exposes the allowlisted `review_status:{status,unverified,user_truth}` plus its turn/execution identity so REST and WS replay can upsert the same canonical candidate. `failure` is present only on a message that recorded one, and carries `{request_id,code,output_committed?}` — an allowlisted projection of the row's metadata, never the exception. It exists because reopening otherwise lost both the support id and the retry veto: the socket event is gone once the tab closes and the stored row is a sentence. `output_committed` appears only when true; absent is "no claim". Omitted `branch_id` selects the durable active branch; its inherited prefix and post-Revert continuation are included, while sibling/abandoned rows remain only in the audit source. `from` (default 0) and `limit` (default 300) are real slice parameters. **Latest-first paging:** `?newest_first=1` returns the newest page and adds `next_before_seq` + `has_earlier`; `?before_seq=<seq>` walks backwards. Without either, the response is exactly what it always was — oldest-first from `from`, and no cursor keys. It mattered because a 640-message session returned messages 0–299: the *oldest* page, with the newest 340 absent. The cursor is a `seq` bound rather than an offset, because newest-first plus OFFSET shifts on every arriving message. `has_earlier` is observed, not inferred from a short page — the branch projection can hide rows, which a client cannot tell from the end of history. `before_seq` that is not an integer is `400 invalid_cursor`. |
 | `GET /frames/{fid}/steps` | `{"steps":[…]}` (persisted semantic steps). |
 | `POST /frames/{fid}/message` | Starts a turn. Body `{request}` (or `{input_data:{request}}`), optional `model`, `plan`, `explore`, `annotation_ids`. With `wait:false` → `202 {"status":"accepted","frame_id","job_id","execution_id","owner":{"kind","id"},"queue_position","request_id"}`; `request_id` is the local id this turn will be named by everywhere else — the failure `frame_update`, the job result, the persisted assistant message and `GET /frames/{fid}/messages` all carry the same one, and a `wait:false` client has no other synchronous chance to learn it; default (`wait` omitted/true) blocks for the turn result.
 
@@ -347,6 +489,47 @@ When `annotation_ids` are sent, **both** branches additionally carry `annotation
 | `POST /frames/{fid}/plan/resume` | `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}` — runs only the plan's **unfinished** steps. `409 plan_not_paused` when the plan is any other status, refused synchronously: the `paused` → `executing` transition is a compare-and-swap performed *before* the 202, so of two concurrent resumes exactly one is accepted and the other is refused with the status it lost to, instead of both being handed a job that runs the same steps. A step counts as settled when it is `completed` or `failed`: `failed` is a decision the agent made and moved on from, while `in_progress` was interrupted with no record of how far it got, so it is re-run. The resume seed names the settled steps and instructs the agent not to redo them. A paused plan with nothing unfinished is marked `completed` without running a turn. |
 | `POST /frames/{fid}/plan/revise` | Body `{changes}` (or `{feedback}`); empty → `400 {"error":"changes required"}`; else `202 {"status":"accepted","frame_id","job_id","request_id","execution_id"}`. |
 | `POST /frames/{fid}/plan/discard` | Result of `runner.discard_plan` (synchronous). |
+
+Under the Stage 1 flag, `approve` and `resume` run the same standard-profile
+preflight **before** their draft/paused compare-and-swap. A readiness refusal
+therefore uses the 409/503 codes above and leaves the plan in its prior state;
+it cannot strand a plan as `executing` without an admitted job. Draft/revise
+remain non-executing authoring operations and are not readiness-gated.
+
+### Cluster batch jobs (orchestration)
+
+Long unattended work: submitted here, executed by whatever resource plane the daemon has (this machine by default, a scheduler when `cluster.toml` configures one). The API is deliberately backend-neutral — a response names an `allocation_id`, never the scheduler's job id, and a `profile` name, never a queue (INV-2, decision D5).
+
+Nothing here submits synchronously. A request writes a durable row; the reconciler loop does the talking on its next pass. That is what makes a cancel survive a daemon restart, and what keeps one submission from being attempted twice by a request thread that goes away mid-flight.
+
+| Method & path | Behavior |
+| --- | --- |
+| `POST /orchestration/jobs` | Body `{command: [...], profile?, backend?, workdir?, environment?, project_id?}`. `202 {id, phase, ...}` — accepted, not started; `201` would promise a resource that has not been granted. `command` **must** be a list: a string is refused with `400 invalid_command`, because splitting a command line is where quoting bugs become injection. Unknown profile → `400 unknown_profile`; unknown backend → `400 unknown_backend` with the available ones. In team mode both built-in backends are **admin only** (`403 admin_only`, with the refused `backend` named) — see below. |
+| `GET /orchestration/jobs` | `{jobs: [...]}`, filtered to the caller's own unless they are an admin. `project_id`, `limit` and `all=0` (hide terminal) narrow it. |
+| `GET /orchestration/jobs/{id}` | One job plus its `allocation` (the live attempt) and `allocations` (every epoch). Someone else's job is `404`, not `403` — which jobs exist is itself information about what a colleague is working on. |
+| `POST /orchestration/jobs/{id}/cancel` | Records the desire to stop and returns `{ok, reason}`; the reconciler runs the cancel barrier. `409 already_final` when the job has already ended. An admin cancelling another user's job is recorded as `ADMIN_CANCELLED` rather than `USER_CANCELLED`. |
+| `GET /orchestration/jobs/{id}/logs` | `{allocation_id, stdout, stderr}` — the tail (64 KiB) of what the job wrote. |
+| `GET /orchestration/profiles` | `{cluster, configured, profiles: [{name, cpus, memory_mb, gpus, walltime_s, nodes}]}`. The queue and service-class each profile maps to are **not** in this payload: they live in `cluster.toml` and nowhere else. |
+
+**Which backends a member may name.** Neither built-in backend is available to a member in team mode. `local` runs `Popen(argv)` as the **daemon's** uid, outside the kernel sandbox, with the daemon's filesystem access. `cluster` invokes the scheduler with the daemon's Unix identity and site credential; OpenAI4S has no authenticated mapping from a browser member to a scheduler account. Both therefore spend or expose instance resources and are admin only, by the same rule that makes `/compute/jobs` admin only.
+
+The check runs *after* the backend name is validated and *before* anything is written, so a misspelled backend still reads as `400 unknown_backend` rather than a permission problem, and a refused submission leaves no workload row and no audit entry behind.
+
+A single-user daemon is unaffected (INV-1): without team mode there is no member/operator distinction, because the person running the daemon is the operator.
+
+Note what this does **not** do: it does not put `LocalBackend` inside the kernel sandbox. That sandbox degrades visibly rather than failing closed on hosts that cannot give it namespaces, and a privilege boundary that is sometimes absent is worse than a refusal. Member-submitted local work wants a separate, fail-closed `local-sandboxed` backend designed as one.
+
+### Where a session runs (cluster sessions)
+
+A session's kernel is on the daemon by default. Asking for it to be on a granted resource instead is these three routes, and the answer they exist for is `readiness`: a cluster session is not one boolean but four conditions (INV-5), so the payload names the one that is outstanding. "Queued for a node", "waiting for the worker to dial in" and "starting the kernel" are three different waits with three different expected durations, and one spinner for all of them is how a user concludes the product is broken.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /sessions/{id}/compute` | `{session_id, location}` — `location:"local"` with `workload:null` when this session runs on the daemon, which is the default and is not an error. On a cluster session: `readiness:{ready, blocked_on, allocation_granted, worker_registered, workspace_ready, kernel_ready}`, `workload:{id, profile, phase, desired_state, reason, execution_epoch}`, `allocation:{allocation_id, epoch, phase, reason}`, `lease:{idle_ttl_s, max_lifetime_s, last_active_at, created_at, released_at}`, and `state_lost_epochs` — the epochs whose kernel memory was lost to a node failure. Someone else's session is `404`, not `403`. |
+| `POST /sessions/{id}/compute` | Body `{profile}`. `201` with the same status payload only when the selected backend explicitly provides verified per-allocation OS isolation. A backend without that optional capability returns `409 {ok:false, code:"remote_isolation_required", error, backend}` before any session-keyed workspace, workload, lease, allocation, or bootstrap credential is written. The built-in `LocalBackend` and Slurm backend do not claim the capability, so interactive `SESSION` placement through them currently fails closed; `BATCH` submission is unaffected. A shared Unix uid plus `0700`/`0600` modes is insufficient because a sibling allocation can still read the unused credential. A profile the operator has not configured is `400 unknown_profile` rather than a guess: guessing is how a session lands on resources its owner never chose. A daemon with no worker listener answers `409 not_configured` and says which variable turns one on — the listener is off by default because a listener on every laptop that will never run a cluster job is an attack surface, not a convenience. In team mode this request is also **admin only**: the scheduler is invoked with daemon-managed identity or credentials, not an authenticated account belonging to the browser member. |
+| `POST /sessions/{id}/compute/release` | Records the desire to stop and ends the lease; the reconciler runs the cancel barrier. `{ok, session_id}`. In team mode only the session owner or an admin may release it; project visibility alone does not confer control of another user's allocation. |
+
+`state_lost_epochs` is what the UI turns into a banner. When a node dies the kernel's memory dies with it — variables, imports, the seed somebody set three cells ago — and the session continues on a new epoch. Saying so is mandatory (INV-11): the results afterwards look exactly like results from the session that was lost.
 
 ### Permissions
 
@@ -378,14 +561,22 @@ The first Agent/user Cell starts only the selected language; a native-tool or
 | --- | --- |
 | `GET /frames/{fid}/execution-log` | `{"kernels":[id…],"entries":[cell…]}`; entries include stable `producing_cell_id`, `cell_index`, session-monotonic `state_revision`, attempt-derived `generation_id` (nullable for legacy rows or when no worker was acquired), `kernel_id`, `language`, `origin`, source/output/error, files/figures, usage, and immutable retry metadata when recorded. |
 | `POST /frames/{fid}/kernel/execute` | Body `{code,language?,execution_id?,wait?}` where language is `python` (default) or `r`; the shipped UI supplies a portable execution ID. Default/`wait:false` returns HTTP 202 `{status:"accepted",job_id,execution_id,owner,queue_position}` immediately, so a queued cell remains addressable. `wait:true` blocks for the completed FIFO-owned Cell result. Execution always appends and never edits history. |
-| `POST /frames/{fid}/kernel/restart` | → `{"ok":true,"status":"restarted","generation","generation_id","frame_id"}` + `kernel_status` WS event. |
-| `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. |
-| `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. |
-| `POST /frames/{fid}/kernel/interrupt` | Exact ticket stop. Body `{execution_id,owner:{kind,id}}` (or owner aliases) identifies one ticket: a queued ticket is cancelled without touching the active writer; an active ticket requests a signal only for its frozen lease. The result's `interrupted` flag says whether a lease was actually signalled. Missing identity returns HTTP 400; stale/wrong-owner requests return `ok:false`. The shipped Notebook Stop control selects only `user_repl` tickets. |
+| `POST /frames/{fid}/kernel/restart` | → `{"ok":true,"status":"restarted","generation","generation_id","frame_id"}` + `kernel_status` WS event. In team mode this is owner/admin only. |
+| `POST /frames/{fid}/kernel/stop` | → `{"ok":true,"state":"stopped"|"none","frame_id"}`. In team mode this is owner/admin only. |
+| `POST /frames/{fid}/kernel/start` | → `{"ok":true,"state":"running","generation","frame_id",…}`. In team mode this is owner/admin only. |
+| `POST /frames/{fid}/kernel/interrupt` | Exact ticket stop. Body `{execution_id,owner:{kind,id}}` (or owner aliases) identifies one ticket: a queued ticket is cancelled without touching the active writer; an active ticket requests a signal only for its frozen lease. The result's `interrupted` flag says whether a lease was actually signalled. Missing identity returns HTTP 400; stale/wrong-owner requests return `ok:false`. The shipped Notebook Stop control selects only `user_repl` tickets. In team mode this is owner/admin only. |
 | `GET /frames/{fid}/kernel` | Kernel status: `{frame_id,state("none"|"running"|"stopped"|"ended"),alive,generation,generation_id,generation_ordinal,last_activity_at,ended_reason,turn_running,cell_count,manual_stop,repl_enabled,env:{name,language,python_version,pending,kernel_id}}`. `repl_enabled` mirrors `OPENAI4S_NOTEBOOK_REPL`. |
-| `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). |
+| `POST /frames/{fid}/kernel/install` | Body `{packages:[…]}` or `{package}` (+`restart`, default true) → pip-install report (`{ok,installed,…,restarted}`). In team mode this is admin only, including when the caller owns the session, because the installation changes a shared runtime environment. |
 | `GET /frames/{fid}/environments` | `{"environments":[…],"current","default","pending"}`. |
-| `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. |
+| `POST /frames/{fid}/kernel/env` | Body `{env}` (or `{name}`) — switches the kernel to a prebuilt env (restart) → `{"ok":true,"state","env","generation","language","python_version","frame_id"}`. In team mode this is owner/admin only. |
+
+When Stage 1 trusted delivery is enabled, `kernel/execute` also performs the
+standard-profile admission before allocating a Cell id/index/state revision,
+execution attempt, or runtime. A not-ready/unavailable result carries the same
+stable readiness codes, so the Notebook does not manufacture a failed Cell
+merely to discover the first missing import. A queued request reports that
+failure through its job/terminal projection; a synchronous caller receives the
+corresponding refusal directly.
 
 **Notebook REPL gate:** the Notebook is a **read-only execution trace** by
 default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
@@ -393,6 +584,11 @@ default. The mutating `kernel/*` routes — `execute`, `env`, `restart`, `stop`,
 `OPENAI4S_NOTEBOOK_REPL` is set. `kernel/install` is intentionally not gated:
 it backs Customize → Compute rather than arbitrary Notebook execution. The
 read-only `GET /frames/{fid}/kernel` and `GET /frames/{fid}/execution-log` stay available.
+The REPL flag is not an authorization grant: project members may read a
+project-visible session, but only its owner or an admin may Stop, Restart,
+Start, interrupt an execution, or change its runtime environment. WebSocket
+execution cancellation follows the same owner/admin rule. Package installation
+remains admin only in team mode.
 `GET /frames/{fid}/kernel` reports the current state in `repl_enabled`. When
 enabled, the shipped UI provides multiline Python/R input and Shift+Enter;
 every submission appends a Cell through the same FIFO coordinator as Agent and
@@ -433,9 +629,14 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `POST /frames/{fid}/recovery/actions/{restore\|retry\|restart_fresh}` | Runs the advertised verified-recovery action under an exact recovery execution ticket. `restart_fresh` requires `{"confirm":true}` and never claims namespace restoration. |
 | `GET /frames/{fid}/kernel/variables?language=python|r` | Bounded idle-only Variable Inspector projection. It never starts a stopped language worker and returns explicit Busy/Restoring/Ended/Not Started states. |
 | `GET /frames/{fid}/notebook/export?language=` | Raw deterministic `.ipynb` for `python`/`r`; omitted or `bundle` returns a stable ZIP containing both plus a manifest. `markdown` returns a `text/markdown` rendering of the branch — both languages in execution order, because the interleaving is the record the split forms lose — with every cell's index, language and state revision in a citable heading, and failed cells kept and labelled. Anything else is 400. Includes `Content-Disposition` and `X-Content-SHA256`. |
-| `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. |
+| `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. Exact-version completion deliveries are included; import verifies their snapshots and remaps message, Artifact, version, manifest, and URL identities atomically. An orphaned or inconsistent delivery rejects the package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
+| `GET /artifacts/{aid}/table` | Stage 9 workbench. Bounded full-dataset sort/filter/page over CSV/TSV/Parquet. A snapshot above 32 MiB, or a table above 250,000 data rows, 256 columns, or 2,000,000 rectangularized cells → `413 {"code":"artifact_too_large"}`. Parquet additionally preflights at most 512 row groups and 64 MiB decoded bytes before reading columns. Flag-off → `403 {"code":"workbench_disabled"}`. |
+| `GET /artifacts/{aid}/diff` | Stage 9 workbench. Unified diff between two versions (default oldest→newest), bounded to 8 MiB and 50,000 lines per version; excess → `413 {"code":"artifact_too_large"}`. |
+| `POST /artifacts/{aid}/structure` | Stage 9 workbench. Save a Ketcher mol/SMILES payload as a new version, or `{unchanged:true}` when the checksum matches the head. |
+| `GET /artifacts/{aid}/pdf-text` | Stage 9 workbench. Page-quoted PDF text for locator comments; snapshots above 32 MiB → `413 artifact_too_large`. |
+| `GET /artifacts/{aid}/html-outline` | Stage 9 workbench. Element outline (`id`/`selector`/`text`) for HTML locator comments; snapshots above 32 MiB or excessive element/depth shapes → `413 artifact_too_large`. |
 
 The Timeline UI requests the latest 500 records first. When `has_earlier` is
 true it exposes an explicit control that requests
@@ -448,20 +649,45 @@ available through the query parameter.
 
 ### Artifacts
 
+Stage 1 trusted completion treats a version URL as a delivery claim, not as a
+generic Artifact lookup. Before the final message is visible, the server
+requires a frozen regular-file snapshot whose size and SHA-256 match the exact
+version and whose session/project scope matches the turn. The message and its
+path-free manifest commit in one SQLite transaction; a snapshot, checksum,
+scope, relation, or persistence failure emits no success link. The event then
+uses the canonical server helper's `/api/v1/artifacts/versions/{version_id}` URL.
+
+When a Cell captures bytes equal to the current head, the Stage 1 flag-on path
+keeps the version count unchanged and writes a durable per-producer capture
+observation instead. That row retains the new Cell, environment/source, and
+input-version lineage without rewriting the version's original producer. It is
+scoped local audit/delivery-delta data in this Stage. There is no standalone
+capture-observation route; the latest version's scope-checked observations and
+path-free producer frame are nested in the Artifact lineage projection so the
+Provenance UI can truthfully identify delegated producers. Session packages,
+share snapshots, and Artifact ZIPs do not yet serialize observations as
+portable durable records. A client-side metadata export merely mirrors the
+current lineage response and is not a portable observation ledger.
+
 | Method & path | Behavior |
 | --- | --- |
 | `GET /frames/{fid}/artifacts` | **Bare array** of artifact JSON. |
 | `GET /projects/{pid}/artifacts` | **Bare array** — every artifact across the project's conversations. |
 | `GET /frames/{fid}/artifacts.zip` | Raw ZIP of the session's current Artifact versions. |
 | `GET /projects/{pid}/artifacts.zip` | Raw ZIP of current Artifact versions across the project. |
-| `GET /artifacts/{aid}/lineage` | `{"artifact_id","filename","interactions":[{kind:"cell",…}|{kind:"save",at}],"dependency_mappings":{"inputs":[…]}}`. Unknown artifact → the same shape with nulls/empties, HTTP 200 (**not** 404). |
+| `GET /artifacts/{aid}/lineage` | `{"artifact_id","filename","interactions":[{kind:"cell",…}|{kind:"save",at}],"dependency_mappings":{"inputs":[…]},"producer"?:{kind:"cell"|"non_cell",frame_id,frame_kind,producing_cell_id?,cell_recorded},"capture_observations"?:[{observation_id,version_id,capture_kind,producing_cell_id,frame_id,frame_kind,cell_recorded,cell_index?,kernel_id?,language?,inputs,at}]}`. Producer/capture fields are path-free and refer only to the latest version; a delegated Cell without a root Notebook row keeps its real Cell/frame identity and `cell_recorded:false`, while a native writer remains `non_cell`. Unknown artifact → the base shape with nulls/empties and neither optional field, HTTP 200 (**not** 404). |
 | `GET /artifacts/{aid}/environment?version=` | Env snapshot captured for the producing run, `{"source":"captured",…}`; falls back to a live freeze `{"source":"live",…}` when none was recorded. |
 | `POST|PUT|PATCH /artifacts/{aid}/priority` | Body `{priority:int}` → `{"ok":true,"artifact":…|null}`. |
 | `GET /artifacts/{aid}/versions` | `{"versions":[{version_id,ordinal,is_latest,size_bytes,content_type,checksum?,producing_cell_id?,created_at}…]}`. |
 | `POST /artifacts/{aid}/versions/{vid}/restore` | Reverts the live file + latest pointer → `{"ok":true,"artifact":…}` or `404 {"error":…}`; broadcasts a *bare* `artifact_created` (see §3). |
 | `POST|PUT|PATCH /artifacts/{aid}/edit` | Body `{content}` (text). Non-text artifact → `415`; unknown → `404` (both via `GatewayError`) → `{"ok":true,"artifact_id","version_id","size_bytes"}`. |
 | `POST|PUT|PATCH /artifacts/{aid}/rename` | Body `{filename}`; missing → `400`; unknown → `404` → `{"ok":true,"artifact_id","filename"}`. |
-| `DELETE /artifacts/{aid}` | Deletes rows + snapshot files → `{"ok":true}`; broadcasts a *bare* `artifact_created`. |
+| `GET /artifacts/{aid}/table` | Stage 9: `{artifact_id,version_id,filename,columns,column_types,rows,total_rows,offset,limit,sorted_by,descending,filters}`. Flag-off → `403 workbench_disabled`. |
+| `GET /artifacts/{aid}/diff` | Stage 9: `{artifact_id,from_version_id,to_version_id,changed,diff}`. |
+| `POST /artifacts/{aid}/structure` | Stage 9: `{ok,artifact_id,version_id,unchanged,structure}`. Same-checksum save is a no-op. |
+| `GET /artifacts/{aid}/pdf-text` | Stage 9: `{artifact_id,version_id,pages:[{page,text}]}`. |
+| `GET /artifacts/{aid}/html-outline` | Stage 9: `{artifact_id,version_id,elements:[{id,selector,text,…}]}`. |
+| `DELETE /artifacts/{aid}` | Deletes rows + snapshot files → `{"ok":true}` and broadcasts a *bare* `artifact_created`. If an exact version is pinned by a completion delivery, returns `409`; delete the owning session instead so the message/manifest relation is removed atomically. |
 | `GET /artifacts/{ident}` | **Raw bytes** (see §1). |
 | `POST /uploads` | **Base64 JSON upload — not multipart.** Body `{filename?, content_base64` (or `content`, or `content_text`)`, frame_id?, project_id?}`. Supply **exactly one** content field; two is a `400`, because which one is authoritative cannot be guessed. `content_base64`/`content` are strict base64 — whitespace is stripped (line wrapping is transport formatting) and anything else outside the alphabet is a `400`. `content_text` uploads text as UTF-8. A rejected upload writes nothing. This used to decode without `validate=True`, silently discarding stray characters so a corrupted payload decoded to different bytes with no error, and to fall back to storing the raw string's UTF-8 bytes — so a `.npy` that lost one character became an artifact containing base64 text, versioned and checksummed. File lands in the session workspace (or `data_dir/uploads` without `frame_id`), is registered as a versioned artifact (`is_user_upload`), re-upload of the same name in the same frame creates a new version → `{"artifact_id","id","filename"}`. |
 
@@ -510,7 +736,7 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `POST /skills/{name}/rollback` | Body `{version_id}` atomically activates a retained personal version. |
 | `GET /projects/{project_id}/skills/catalog` | Project-owned Skill overlays only; personal fallbacks and bundled entries are omitted. |
 | `GET /projects/{project_id}/skills/{name}/versions` | Exact project-scoped immutable history. Unknown projects fail closed. |
-| `POST /projects/{project_id}/skills/{name}/rollback` | Body `{version_id}` activates a retained version in that project only. |
+| `POST /projects/{project_id}/skills/{name}/rollback` | Body `{version_id}` activates a retained version in that project only. In team mode a member may reactivate a recipe-only Web-authored version; versions containing `kernel.py` and un-attributed legacy Host versions require an administrator and otherwise return the route's established `409` envelope with `code: "skill_admin_required"`. |
 | `GET /agents` | Bare array of built-in agent descriptors (with `enabled`). |
 | `PUT|PATCH /agents/{name}/enabled` | `{"ok":true}`. This legacy built-in-agent roster toggle remains process-local; persisted Specialist capability policy is enforced in delegation separately. |
 | `GET /agents/{name}` | Agent descriptor or `404 {"error":"unknown agent"}`. |
@@ -597,11 +823,11 @@ reported as `failed` (which would blame the job's own command) or `cancelled`
 Output is bounded in bytes as it is read, not trimmed afterwards, so every row
 carries `seen_bytes`, `retained_bytes`, `dropped_bytes` and `truncated`. What is
 kept is the tail; `output` is prefixed with a notice when anything was dropped.
-| `GET /environments/status` | `{"environments":[{language,status,python_version,package_count,packages,preinstall}]}`. |
+| `GET /environments/status` | `{"environments":[{language,status,python_version,package_count,packages,preinstall}],"standard_profile_readiness":{…}}`. The additive readiness object is always present. Flag off returns `schema_version:1`, `enabled:false`, `profile:"standard"`, `state:"unavailable"`, `ready:false`, `reason:"feature_disabled"`, `checked_locally:false`, `network_contacted:false`, `mutation_performed:false`, `required_environments:["python","r"]`, empty missing/environment rows, null digest/remediation, and performs no discovery. Flag on returns the path-free local projection: `state` (`ready|needs_setup|needs_repair|unavailable`), `reason`, requirement digest, required/missing environments, `missing_packages`, per-environment `{name,state,present,required_package_count,installed_required_package_count,missing_packages,issue}`, and explicit managed `plan`/`apply` remediation commands when repairable. It never contacts the network or mutates an environment. |
 | `GET /environments` | Same shape as `GET /frames/{fid}/environments`, without a session. |
 | `GET /kernel/packages` | `{"packages":[…],"preinstall":{…}}`. |
 | `GET /kernel/environment` | Full env freeze for Provenance → Environment. |
-| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). |
+| `POST /kernel/install` | Body `{packages}` or `{package}` → install report (no kernel restart). Admin only in team mode because it mutates the shared runtime environment. |
 
 ### Memory / network / web-search config
 
@@ -654,6 +880,17 @@ Every event has `type` and (via the hub emitter) a `root_frame_id`; most also
 carry a redundant `frame_id`. The frontend keys off `m.root_frame_id ||
 m.frame_id`.
 
+For a Stage 1 trusted, Artifact-bearing completion, the final text event also
+carries `delivery_id`. Its assistant message and verified version manifest are
+already durable when that event is sent. If socket delivery is lost, reopening
+reads the committed message whose links still name exact versions. A
+`committed` ledger row and stable id remain queryable for explicit/future
+reconciliation, but the Stage 1 delivery ledger does not drive automatic
+re-emission or ask the client to deduplicate such a replay. The ordinary
+bounded WS sequence buffer may still replay the event while its turn is live;
+after terminal/restart, REST reopen is authoritative. Ordinary prose/tool
+chunks and flag-off completion chunks omit `delivery_id`.
+
 | Event `type` | Fields (beyond `root_frame_id`) | Meaning |
 | --- | --- | --- |
 | `notebook_cell_draft` | `frame_id`, `draft_id`, `revision`, `source`, `status`, `reason` | A Notebook cell the agent is composing, before it runs. Superseded revisions are collapsed in the resume buffer so a reconnect renders only the newest. Emitted by `server/agent_run.py`. |
@@ -664,7 +901,8 @@ m.frame_id`.
 | `delegation_child_event` | `event`, `at`, `child` (a snapshot), plus per-event extras | A sub-agent started, progressed, or finished. Carries no `frame_id` of its own; the hub's emitter attaches `root_frame_id`. Emitted by `agent/delegation.py`. |
 | `replay_begin` / `replay_end` | — | Bracket the buffered-event replay after `view_session` mid-turn. `replay_begin` carries `from_seq`, `to_seq`, the daemon run's `epoch`, and `gap`. |
 | `text_reset` | `frame_id` | Start of a fresh streamed assistant message (clears the live bubble). |
-| `text_chunk` | `frame_id`, `block_type` (`"text"` for prose, `"tool"` for code-cell echo/stdout/errors), `chunk`; a code-cell start also carries `cell_index`, canonical `kernel_id`, and `language` | Incremental stream. The frontend uses the start metadata directly so live Notebook grouping matches the persisted execution log without a status-cache race. |
+| `text_chunk` | `frame_id`, `block_type` (`"text"` for prose, `"tool"` for code-cell echo/stdout/errors), `chunk`; a code-cell start also carries `cell_index`, canonical `kernel_id`, and `language`; every Stage 4 gated prose chunk also carries `provisional: true`, `review_status: "candidate"`, `turn_id`, and `execution_id` | Incremental stream. The frontend uses the start metadata directly so live Notebook grouping matches the persisted execution log without a status-cache race. A gated chunk remains visibly provisional until exact durable resolution. |
+| `candidate_resolved` | `frame_id`, `message_id`, `turn_id`, `execution_id`, `review_status`, `user_truth`, `durable`, `delivered`, `replaced`, `answer_repaired`, `delivery_id?`, `text?` | Stage 4 promotion, emitted only after exact message/delivery promotion and terminal persistence. A successful resolution carries canonical `text` and `replaced:true` so the frontend reconciles incremental live chunks to the exact reviewed row; `answer_repaired` says whether Stage 5 changed the answer. `delivered:false` or `durable:false` cannot replace prose or upgrade its badge. |
 | `notebook_cell_start` | `frame_id`, `producing_cell_id`, `cell_index`, `state_revision`, `generation_id`, `kernel_id`, `language`, `origin`, `source`, `status` | Starts/upserts one immutable Cell identity using the exact attempt-bound runtime generation. |
 | `notebook_cell_chunk` | `frame_id`, `producing_cell_id`, `stream`, `chunk` | Appends output to that exact live Cell. Unknown/replayed fields are tolerated. |
 | `notebook_cell_finished` | start identity (including the unchanged `state_revision` and `generation_id`) plus complete source/output/error, figures/files and usage | Replaces the live projection with the authoritative finished revision. |
@@ -674,12 +912,13 @@ m.frame_id`.
 | `plan_progress` | `frame_id`, `plan_id`, `step_id`, `status`, `note` | A plan step ticked during auto-execution. |
 | `await_permission` | `frame_id`, `decision_id`, `tool`, `kind`, `title`, `input`, `target`, `suggested_patterns`, `scopes`, `sub_agent` | A tool call is blocked awaiting user approval (answer via `POST /api/frames/{fid}/decision`). Emitted from `openai4s/permissions.py`. |
 | `permission_resolved` | `frame_id`, `decision_id`, `allow`, `scope`, and after restart: `resolution_context`, `requires_continue`, `original_action_executed`, `continuation_expires_at`, `continuation_authorization` | The pending prompt was answered / timed out. An after-restart event explicitly says the old operation did not execute and whether the user must start a fresh continuation. |
-| `frame_update` | `frame_id`, `status`, `request_id`, `code` + `output_committed?` (terminal turn events), `task_summary` (only with `status:"titled"`) | Turn/session lifecycle. Emitted statuses: `processing`, `completed`, `failed`, `cancelled`, `success` (REPL cell), `updated` (rename/PATCH), and `titled` — the background auto-title thread's upgrade of the placeholder session title, which carries an extra `task_summary` field (the new title) that no other status has. Every turn event — `processing`, both terminal forms, and the outer handler's `text_reset`/`text_chunk` — also carries `execution_id`, and that is the field a client filters on. A request id cannot separate two turns: clients may reuse `X-Request-Id`, and the ordering that matters (`processing(A)`, `processing(B)`, `failed(A)` — A unwinding after B was promoted out of the queue) then looks like B's own terminal event. A terminal whose `execution_id` differs from the running turn's must not close it. When one side names no execution the pair falls back to `request_id`, and when neither names anything the event is treated as current: that is the pre-identity contract, and anything stricter strands every turn against an older daemon. The `processing` event carries `request_id` too, and it is the one a queued follow-up depends on: that turn's 202 resolved while an earlier turn still owned the screen, so `processing` — "your turn is running now" — is the first moment its id is current. Under an HTTP job it is the same string the 202 returned; a direct call (CLI, recovery replay) mints one rather than emitting an empty field. A terminal turn event also carries `request_id` — the same id the submit 202 returned — and, when the turn failed, a stable `code` (`max_turns` for turn-limit exhaustion; `llm_request_burst`, `llm_rate_limited`, or `llm_upstream_overloaded` for controlled LLM capacity failures; otherwise the projector's, defaulting to `turn_failed`). These local codes never expose the provider's raw error code or message. `output_committed:true` is added only when the failure happened after bytes were streamed or a tool ran: `llm/models.py` calls it the retry veto, because a transparent retry there duplicates visible output or re-fires a side effect however retryable the status looks. It is never emitted as `false` — absent is "no claim", and a `false` would assert a safety the projector cannot know. The frontend treats `completed|failed|cancelled|success|done` as terminal — note `done` is in the frontend's terminal set but is **never emitted** by the gateway as a `frame_update` status (it is only the *stored* frame status for a completed turn). |
+| `frame_update` | `frame_id`, `status`, `request_id`, `code` + `output_committed?` (terminal turn events), `task_summary` (only with `status:"titled"`) | Turn/session lifecycle. Emitted statuses: `processing`, `completed`, `failed`, `cancelled`, `success` (REPL cell), `updated` (rename/PATCH), and `titled` — the background auto-title thread's upgrade of the placeholder session title, which carries an extra `task_summary` field (the new title) that no other status has. Every turn event — `processing`, the single terminal form, and the turn's `text_reset`/`text_chunk` — also carries `execution_id`, and that is the field a client filters on. A request id cannot separate two turns: clients may reuse `X-Request-Id`, and the ordering that matters (`processing(A)`, `processing(B)`, `failed(A)` — A unwinding after B was promoted out of the queue) then looks like B's own terminal event. A terminal whose `execution_id` differs from the running turn's must not close it. When one side names no execution the pair falls back to `request_id`, and when neither names anything the event is treated as current: that is the pre-identity contract, and anything stricter strands every turn against an older daemon. The `processing` event carries `request_id` too, and it is the one a queued follow-up depends on: that turn's 202 resolved while an earlier turn still owned the screen, so `processing` — "your turn is running now" — is the first moment its id is current. Under an HTTP job it is the same string the 202 returned; a direct call (CLI, recovery replay) mints one rather than emitting an empty field. A terminal turn event also carries `request_id` — the same id the submit 202 returned — and, when the turn failed, a stable `code` (`max_turns` for turn-limit exhaustion; `llm_request_burst`, `llm_rate_limited`, or `llm_upstream_overloaded` for controlled LLM capacity failures; otherwise the projector's, defaulting to `turn_failed`). These local codes never expose the provider's raw error code or message. `output_committed:true` is added only when the failure happened after bytes were streamed or a tool ran: `llm/models.py` calls it the retry veto, because a transparent retry there duplicates visible output or re-fires a side effect however retryable the status looks. It is never emitted as `false` — absent is "no claim", and a `false` would assert a safety the projector cannot know. The frontend treats `completed|failed|cancelled|success|done` as terminal. A gated turn sends exactly one terminal frame event, after `candidate_resolved`, and includes `review_status` plus `user_truth`; the durable stored frame status remains `done` for a completed turn. |
 | `kernel_status` | `frame_id`, `status` ∈ `restarted|stopped|started|env_changed|packages_installed|ended`, plus per-status extras (`generation`, `env`, `installed`, `ok`, `state`, `ended_reason`, `requires_kernel_recovery`) | Kernel lifecycle changes. A successful branch revert emits `ended` after invalidating both language slots. |
 | `execution_state` | `frame_id`, `execution_id`, `owner:{kind,id}`, `status` (`queued|running|finalizing|completed|failed|cancelled`), `queue_position`, `reason` | One exact ticket changed state. |
 | `execution_queue` | authoritative snapshot fields from `GET /frames/{fid}/execution` | Queue/position projection; also sent immediately after `view_session`. |
 | `execution_owner` | `execution_id`, `owner`, previous identity, `reason` | Active writer changed. |
-| `execution_cancel_result` | scoped cancellation result | Direct reply to a WS cancellation request. |
+| `execution_cancel_result` | scoped cancellation result | Direct reply to a WS cancellation request. In team mode a cancellation aimed at a session the caller may not see answers `ok:false` with `reason:"session not found"` — the same sentence an unknown session gets, because which sessions exist is itself protected. |
+| `view_denied` | `frame_id`, `reason` | Team mode only: `view_session` named a session this login may not see (another member's, or one with no ownership row). Refused before subscription, so neither the replay buffer, pending `await_permission` prompts, nor the queue snapshot leak. The reason is always `"session not found"`. |
 | `checkpoint_created` | `branch_id`, `checkpoint_id`, `reason` | An immutable checkpoint committed. |
 | `branch_created` | `branch_id`, `from_checkpoint_id` | A checkpoint-backed branch committed. |
 | `branch_revert_conflict` | `branch_id`, `operation_id`, `target_checkpoint_id`, `reason` | Revert was recorded but not applied because the conflict check failed. |
@@ -764,6 +1003,13 @@ compatibility; keep both when touching these serializers.
   (idempotent deletes), or a nulls-filled 200 (`/artifacts/{aid}/lineage`).
 - Malformed JSON request bodies are rejected with `400 malformed_json`.
 - Raw-bytes artifact routes return JSON bodies on 404.
+- Stage 1 capture observations are durable and scope-filtered in the local
+  Store. There is no standalone observation route, but the latest version's
+  observations and path-free producer frame are projected by
+  `/artifacts/{aid}/lineage` for the Provenance UI. Session packages, share
+  snapshots, and Artifact ZIPs still do not carry a portable observation
+  ledger; do not infer portable observation provenance from an Artifact version
+  or a client-side metadata export alone.
 - Skill enable-disable state is durable; the legacy built-in-agent roster
   toggle is still process-local. Specialist runtime policy has separate
   persistent capability state.

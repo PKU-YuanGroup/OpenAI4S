@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "recovery.a_batch_workload_is_not_recovered",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "Recovery is for interactive sessions; a batch job that died has ended.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "submits": [
+        {
+          "result": "created"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "LOST",
+          "reason": "NODE_FAILED"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "LOST:NODE_FAILED",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submitted",
+      "workload_terminal",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

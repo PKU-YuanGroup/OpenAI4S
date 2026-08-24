@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from openai4s.execution.dependencies import (
@@ -17,6 +19,62 @@ from openai4s.execution.dependencies import (
     normalize_string_list,
 )
 from openai4s.storage.deletion import SessionDeletionRepository
+
+
+def visible_session_clause(
+    user_id: str, *, table: str = "frames", session_expr: str | None = None
+) -> tuple[str, list]:
+    """The one team-mode visibility rule, as SQL over a frames-shaped table.
+
+    Returns `(clause, params)` for a WHERE conjunct. One function because
+    `browse`, `search` and `frame_detail` must answer the same question:
+    three spellings of a visibility rule is three chances for one of them
+    to be wrong, and the two that had no rule at all were reachable from
+    `host.frames` with a colleague's frame id.
+
+    Three properties worth stating, because each was a defect:
+
+    **Scoped by the root session, not the frame.** Ownership is recorded
+    per session in `session_owners`; a child frame has no row of its own.
+    Matching on `frame_id` therefore hid every child frame from its own
+    owner while `frame_detail` — which takes any frame id — had no rule at
+    all. `COALESCE(root_frame_id, frame_id)` is the session a row belongs
+    to.
+
+    **A global guest never widens.** `session_visible_to` returns False for
+    any account whose *global* role is guest, before it consults
+    `project_members`. This clause omitted that, so an admin adding a guest
+    to a project with the default `member` row listed them every
+    project-visibility session — which they were then 404'd from opening.
+    A listing that names sessions the caller cannot open is the leak INV-13
+    describes, not a cosmetic inconsistency.
+
+    **A session with no owner row is admin-only.** Pre-team history and
+    demo seeds have none, and "we do not know whose this is" must not
+    resolve to "everyone's".
+
+    Filtered in SQL rather than after the read: keyset pagination reports
+    `has_more` from row counts, so a post-read filter turns a full page of
+    hidden rows into a phantom end-of-list — and for `search` and
+    `frame_detail` the rows carry cell code and stdout, which a post-read
+    filter would have already loaded.
+    """
+    # `session_expr` for a table that is not frames-shaped: `artifacts` has a
+    # `root_frame_id` and no `frame_id`, and the ⌘K search needs the same rule
+    # over it. Defaulted rather than required, so every existing caller keeps
+    # the frames spelling.
+    session = session_expr or f"COALESCE({table}.root_frame_id, {table}.frame_id)"
+    clause = (
+        "(NOT EXISTS (SELECT 1 FROM users gu WHERE gu.id = ? AND gu.role = 'guest')"
+        " AND EXISTS (SELECT 1 FROM session_owners so"
+        f" WHERE so.session_id = {session} AND ("
+        "so.user_id = ? OR ("
+        "so.visibility = 'project' AND so.project_id IS NOT NULL"
+        " AND EXISTS (SELECT 1 FROM project_members pm"
+        " WHERE pm.project_id = so.project_id AND pm.user_id = ?"
+        " AND pm.role = 'member')))))"
+    )
+    return clause, [user_id, user_id, user_id]
 
 
 class FrameRepository:
@@ -368,6 +426,185 @@ class FrameRepository:
             self._connection.commit()
         return current
 
+    def promote_candidate_message(
+        self,
+        *,
+        message_id: str,
+        root_frame_id: str,
+        branch_id: str,
+        frame_id: str | None,
+        expected_content: str,
+        content: str,
+        metadata: Mapping[str, Any],
+    ) -> dict:
+        """CAS-promote one exact provisional assistant message.
+
+        Stage 4 persists a canonical candidate before the reviewer runs.  A
+        repair may later replace its text, but it must never guess which
+        assistant row is newest.  Scope, role, candidate state, and the exact
+        previous bytes are therefore checked in the same write transaction.
+        """
+
+        if not isinstance(message_id, str) or not message_id.strip():
+            raise ValueError("message_id must be a non-empty string")
+        if not isinstance(root_frame_id, str) or not root_frame_id.strip():
+            raise ValueError("root_frame_id must be a non-empty string")
+        if not isinstance(branch_id, str) or not branch_id.strip():
+            raise ValueError("branch_id must be a non-empty string")
+        if frame_id is not None and (
+            not isinstance(frame_id, str) or not frame_id.strip()
+        ):
+            raise ValueError("frame_id must be a non-empty string")
+        if not isinstance(expected_content, str):
+            raise ValueError("candidate message expected content must be text")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("promoted candidate content must be non-empty")
+        if not isinstance(metadata, Mapping):
+            raise ValueError("candidate verdict metadata must be an object")
+        try:
+            metadata_json = json.dumps(
+                dict(metadata),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            verdict_metadata = json.loads(metadata_json)
+        except (TypeError, ValueError) as error:
+            raise ValueError("candidate verdict metadata must be JSON-safe") from error
+        if not isinstance(verdict_metadata, dict):  # pragma: no cover - round trip
+            raise ValueError("candidate verdict metadata must be an object")
+        verdict_digest_key = "candidate_verdict_metadata_sha256"
+        if (
+            "completion_delivery" in verdict_metadata
+            or verdict_digest_key in verdict_metadata
+        ):
+            raise ValueError("candidate verdict metadata contains a reserved key")
+        verdict = verdict_metadata.get("review_status")
+        if verdict not in {
+            "verified",
+            "completed_with_issues",
+            "review_unavailable",
+        }:
+            raise ValueError("candidate verdict metadata has no terminal review status")
+        candidate_sha256 = hashlib.sha256(expected_content.encode("utf-8")).hexdigest()
+        promoted_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if verdict_metadata.get("candidate_content_sha256") not in (
+            None,
+            candidate_sha256,
+        ):
+            raise ValueError("candidate verdict metadata digest changed")
+        if verdict_metadata.get("reviewed_content_sha256") not in (
+            None,
+            promoted_sha256,
+        ):
+            raise ValueError("reviewed candidate metadata digest changed")
+        verdict_metadata_sha256 = hashlib.sha256(
+            metadata_json.encode("utf-8")
+        ).hexdigest()
+
+        with self._lock:
+            if self._connection.in_transaction:
+                raise RuntimeError(
+                    "candidate promotion requires a clean SQLite transaction"
+                )
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT root_frame_id,branch_id,frame_id,role,content,metadata,"
+                    "created_at,seq FROM messages WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()
+                if (
+                    row is None
+                    or row["root_frame_id"] != root_frame_id
+                    or row["branch_id"] != branch_id
+                    or row["frame_id"] != frame_id
+                    or row["role"] != "assistant"
+                ):
+                    raise RuntimeError("candidate message scope changed")
+                try:
+                    current = json.loads(row["metadata"] or "{}")
+                except (TypeError, ValueError) as error:
+                    raise RuntimeError(
+                        "candidate message metadata is invalid"
+                    ) from error
+                if not isinstance(current, dict):
+                    raise RuntimeError("candidate message metadata is invalid")
+                if "completion_delivery" in current:
+                    raise RuntimeError(
+                        "completion delivery candidates require the delivery CAS"
+                    )
+
+                if current.get("review_status") == "candidate":
+                    if row["content"] != expected_content:
+                        raise RuntimeError("candidate message content changed")
+                    bound_candidate_sha256 = current.get("candidate_content_sha256")
+                    if bound_candidate_sha256 not in (None, candidate_sha256):
+                        raise RuntimeError("candidate message digest changed")
+                    if verdict_digest_key in current:
+                        raise RuntimeError("candidate verdict digest is invalid")
+                    promoted = dict(current)
+                    promoted.update(verdict_metadata)
+                    promoted["candidate_content_sha256"] = candidate_sha256
+                    promoted[verdict_digest_key] = verdict_metadata_sha256
+                    encoded = json.dumps(
+                        promoted,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                    cursor = self._connection.execute(
+                        "UPDATE messages SET content=?,metadata=? WHERE message_id=? "
+                        "AND root_frame_id=? AND branch_id=? AND frame_id IS ? "
+                        "AND role='assistant' AND content=? AND metadata IS ?",
+                        (
+                            content,
+                            encoded,
+                            message_id,
+                            root_frame_id,
+                            branch_id,
+                            frame_id,
+                            expected_content,
+                            row["metadata"],
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError("candidate message promotion lost its CAS")
+                    current = promoted
+                elif (
+                    row["content"] == content
+                    and current.get("candidate_content_sha256") == candidate_sha256
+                    and current.get(verdict_digest_key) == verdict_metadata_sha256
+                    and all(
+                        current.get(key) == value
+                        for key, value in verdict_metadata.items()
+                    )
+                ):
+                    # The exact retry of a promotion that already committed is
+                    # a read.  The durable candidate digest prevents another
+                    # caller laundering different expected bytes through it.
+                    pass
+                else:
+                    raise RuntimeError("candidate message is not provisional")
+                self._connection.commit()
+            except Exception:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                raise
+        return {
+            "message_id": message_id,
+            "root_frame_id": root_frame_id,
+            "branch_id": branch_id,
+            "frame_id": frame_id,
+            "seq": int(row["seq"]),
+            "role": "assistant",
+            "content": content,
+            "metadata": current,
+            "created_at": int(row["created_at"]),
+        }
+
     def list_messages(
         self,
         root_frame_id: str,
@@ -618,6 +855,7 @@ class FrameRepository:
         roots_only: bool = True,
         limit: int = 50,
         before: tuple[int, str] | None = None,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
         """Newest-first page of frames.
 
@@ -642,6 +880,10 @@ class FrameRepository:
             params.append(status)
         if roots_only:
             clauses.append("parent_id IS NULL")
+        if visible_to_user_id is not None:
+            clause, clause_params = visible_session_clause(visible_to_user_id)
+            clauses.append(clause)
+            params.extend(clause_params)
         if before is not None:
             before_created, before_id = before
             clauses.append("(created_at < ? OR (created_at = ? AND frame_id < ?))")
@@ -664,14 +906,27 @@ class FrameRepository:
         *,
         page: int = 0,
         page_size: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> dict | None:
-        """Return frame metadata, paged cells, and direct children."""
+        """Return frame metadata, paged cells, and direct children.
+
+        `visible_to_user_id` scopes by the same rule the listings use. It is
+        applied to the *first* query, so a frame this caller may not see
+        returns None before any cell code or stdout is read -- the rows this
+        method returns are the most sensitive in the database.
+        """
+        scope_clause = ""
+        scope_params: list = []
+        if visible_to_user_id is not None:
+            scope_clause, scope_params = visible_session_clause(visible_to_user_id)
+            scope_clause = " AND " + scope_clause
         with self._lock:
             frame = self._connection.execute(
-                "SELECT * FROM frames WHERE frame_id=?",
-                (frame_id,),
+                f"SELECT * FROM frames WHERE frame_id=?{scope_clause}",
+                (frame_id, *scope_params),
             ).fetchone()
             if frame is None:
+                # Indistinguishable from "no such frame", deliberately.
                 return None
             total = self._connection.execute(
                 "SELECT COUNT(*) AS n FROM execution_log WHERE frame_id=?",
@@ -706,13 +961,31 @@ class FrameRepository:
         *,
         project_id: str | None = "default",
         limit: int = 50,
+        visible_to_user_id: str | None = None,
     ) -> list[dict]:
-        """Regex-search frame names and cell code/stdout."""
+        """Regex-search frame names and cell code/stdout.
+
+        `visible_to_user_id` narrows the *outer* query, so the per-row
+        `SELECT code,stdout` below never runs for a session this caller may
+        not see. That ordering is the whole point here: this method reads
+        the code somebody wrote and the output it printed, and a filter
+        applied to the returned matches would have read them first.
+
+        Note `project_id="all"` drops the project clause entirely, which is
+        exactly how `host.frames(pattern=..., project_id="all")` became a
+        regex search over every tenant's cells.
+        """
         regex = re.compile(pattern, re.IGNORECASE)
         clauses, params = [], []
         if project_id and project_id != "all":
             clauses.append("f.project_id=?")
             params.append(project_id)
+        if visible_to_user_id is not None:
+            clause, clause_params = visible_session_clause(
+                visible_to_user_id, table="f"
+            )
+            clauses.append(clause)
+            params.extend(clause_params)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._lock:
             rows = self._connection.execute(

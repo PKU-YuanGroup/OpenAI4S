@@ -15,11 +15,14 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIN_CURATED_SKILLS = 20
 MIN_COLLECTION_SKILLS = 561
+MIN_BENCHMARK_WORKFLOWS = 11
+REQUIRED_BENCHMARK_WORKFLOW_IDS = frozenset({"tool-bringup"})
 
 
 def _require(path: Path, label: str) -> None:
@@ -61,6 +64,26 @@ def _check_discoverable_catalog(cfg: object, expected_count: int) -> None:
         raise RuntimeError(
             f"installed Skill loader found {len(discovered)} of "
             f"{expected_count} catalog entries"
+        )
+
+
+def _check_workflow_catalog(workflows: Iterable[object]) -> None:
+    """Reject a wheel whose benchmark catalog is too small or incomplete."""
+
+    catalog = tuple(workflows)
+    workflow_ids = {getattr(workflow, "id", None) for workflow in catalog}
+    missing = sorted(REQUIRED_BENCHMARK_WORKFLOW_IDS - workflow_ids)
+    problems = []
+    if len(catalog) < MIN_BENCHMARK_WORKFLOWS:
+        problems.append(
+            f"{len(catalog)} workflow(s) found; "
+            f"at least {MIN_BENCHMARK_WORKFLOWS} required"
+        )
+    if missing:
+        problems.append(f"required workflow ID(s) missing: {', '.join(missing)}")
+    if problems:
+        raise RuntimeError(
+            "installed benchmark manifests are incomplete: " + "; ".join(problems)
         )
 
 
@@ -112,12 +135,7 @@ def main() -> int:
         # benchmark` finds nothing and reports a green run over zero workflows.
         from openai4s.benchmark import load_workflows
 
-        workflows = load_workflows()
-        if len(workflows) < 10:
-            raise RuntimeError(
-                f"installed benchmark manifests are incomplete: "
-                f"{len(workflows)} workflow(s) found"
-            )
+        _check_workflow_catalog(load_workflows())
 
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)

@@ -1,0 +1,473 @@
+"""How a Kernel reaches its worker: pipes locally, a socket across a cluster.
+
+The manager's protocol discipline — one frame reader, id-routed
+`host_response`, the host-call transaction lock — is unchanged by this file
+and must stay that way. What moves here is only *how bytes get to the other
+end*, so that a worker running on a compute node is the same conversation
+over a different pipe.
+
+`PipeTransport` is the local path, moved rather than rewritten: the Popen
+call, the stderr drain thread and the shutdown sequence are the ones that
+were in `manager.py`, with their comments, because each of them records a
+failure that was paid for once already (a filled stderr pipe deadlocking a
+cell; a daemon thread parked in a buffered read turning a clean exit into
+SIGABRT; a restart leaking a zombie).
+
+`OutboundTcpTransport` is the remote path: the daemon listens, the worker
+dials in from wherever the scheduler put it, and the connection is accepted
+only after it proves it holds a credential this daemon issued. Two
+properties are deliberate:
+
+* **It listens, the worker dials.** A compute node is usually reachable from
+  nothing; the daemon usually is. Making the worker the client means no
+  inbound firewall rule on the cluster and no address for the daemon to
+  guess.
+* **An unauthenticated connection is closed, never served.** The socket
+  carries `host_call` traffic, which is arbitrary Host RPC. A transport that
+  accepted first and checked later would be a remote execution surface for
+  the duration of "later".
+
+Interrupt is the one operation that does not survive the move unchanged. A
+SIGINT to a local child is a signal to a pid this process owns; there is no
+such pid across a cluster, so the remote transport takes an explicit hook
+(the scheduler's own signal delivery) and reports honestly when it has none
+— rather than returning success for something that did not happen.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import socket
+import subprocess
+import threading
+from typing import Any, Callable, Protocol
+
+from openai4s.kernel.protocol import MAX_FRAME_BYTES
+
+#: How long to wait for a remote worker to dial in before giving up. A
+#: queued job may sit for hours, so this is not the queue wait — the caller
+#: does not construct the transport until the allocation is running.
+DEFAULT_CONNECT_TIMEOUT_S = 300.0
+
+#: Cap on one protocol line from a remote worker. This is an alias kept for
+#: callers that imported the transport-era name; the source of truth is the
+#: shared producer/receiver protocol ceiling. A socket has no producer-side
+#: courtesy of its own, so the bounded read remains a memory-exhaustion guard.
+MAX_LINE_BYTES = MAX_FRAME_BYTES
+
+
+class KernelTransport(Protocol):
+    """The bytes-and-liveness half of talking to a worker."""
+
+    def write_line(self, line: str) -> None: ...
+
+    def read_line(self) -> str:
+        """One line, or "" at end of stream."""
+        ...
+
+    def alive(self) -> bool: ...
+
+    def interrupt(self) -> bool:
+        """Deliver an interrupt. False = could not, so the caller must not
+        report success."""
+        ...
+
+    def kill(self) -> None: ...
+
+    def close(self, *, graceful: bool = True) -> None: ...
+
+    @property
+    def process(self) -> Any:
+        """The local child, when there is one. None for a remote worker —
+        and callers must treat it as optional rather than assume a pid."""
+        ...
+
+    @property
+    def stderr_tail(self) -> Any:
+        """Bounded tail of the worker's stderr, when this transport can see
+        it. None when it cannot, which is not the same as empty."""
+        ...
+
+
+class PipeTransport:
+    """The local worker: a child process over three pipes.
+
+    Owns the Popen so that `Kernel` does not have to know whether its worker
+    is local; `process` is still exposed because the local path's callers
+    (signals, pid, the sandbox) legitimately need the child itself.
+    """
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None,
+        env: dict[str, str],
+        stderr_tail_factory: Callable[[], Any] | None = None,
+        pass_fds: tuple[int, ...] = (),
+        process_started: Callable[[int], None] | None = None,
+    ) -> None:
+        options: dict[str, Any] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "bufsize": 1,
+            "cwd": cwd,
+            "env": env,
+        }
+        if pass_fds:
+            options["pass_fds"] = tuple(int(fd) for fd in pass_fds)
+        if os.name == "posix":
+            # The kernel worker gets its own session, so a signal aimed at the
+            # daemon's process group is not also aimed at every cell running
+            # under it. Linux + bubblewrap has had exactly this since the
+            # wrapped argv started carrying `--new-session`; without bwrap the
+            # worker sat in the daemon's group, so the two configurations had
+            # different signal semantics -- and the one nobody develops on was
+            # the isolated one. None of this product's own paths are
+            # group-scoped: every interrupt, kill, restart and abandon here
+            # targets exactly one pid.
+            #
+            # What this costs is the terminal's group-wide Ctrl-C, which was
+            # the kernel's only group-scoped cleanup. `cmd_run` now installs a
+            # SIGINT handler that calls `Agent.interrupt_foreground()` to
+            # replace it, and `kill()` below gains the group ladder every other
+            # long-lived child in this repository already has.
+            options["start_new_session"] = True
+        self._proc = subprocess.Popen(command, **options)
+        # Read at spawn, from the pid, not later from `os.getpgid`: once the
+        # leader is reaped the lookup fails, which is exactly when a surviving
+        # group most needs signalling (`execution/process_group.py` says the
+        # same thing, and `jobs.py`, `sdk/bash.py`, `mcp_client.py` and the
+        # local orchestration backend all follow this shape).
+        self._pgid: int | None = (
+            self._proc.pid
+            if os.name == "posix" and "start_new_session" in options
+            else None
+        )
+        try:
+            if process_started is not None:
+                process_started(int(self._proc.pid))
+        except BaseException:
+            # Adoption is part of establishing the sandbox boundary. If its
+            # bounded PID channel fails, the just-spawned wrapper must not keep
+            # running without a reliable interrupt identity.
+            try:
+                self._proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                self._proc.wait(timeout=2)
+            except Exception:  # noqa: BLE001 - best-effort reap after failure
+                pass
+            for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
+                try:
+                    stream and stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+        self._stderr_tail = (
+            stderr_tail_factory() if stderr_tail_factory is not None else None
+        )
+        if self._stderr_tail is not None:
+            self._start_stderr_drain()
+
+    def _start_stderr_drain(self) -> None:
+        # Drain stderr continuously into a bounded tail. Without this, a cell
+        # whose child processes write to inherited fd2 (R `system()`, an
+        # uncaptured subprocess in python) fills the 64KB pipe and deadlocks
+        # the cell forever — nothing used to read stderr until worker death.
+        # The tail keeps the death diagnostics the old blocking read provided.
+        #
+        # Bounded in BYTES, at the read: a line COUNT applied after the
+        # allocation is no bound at all when one producer emits a single
+        # enormous line, which is exactly what reaches here.
+        #
+        # `os.read` on the descriptor, not `BufferedReader.read`. Both give
+        # bytes, and only one of them is safe: this thread is a daemon, and a
+        # daemon parked inside a buffered read holds that buffer's lock when
+        # the interpreter finalises — a clean exit turned into SIGABRT by the
+        # drain alone. `os.read` also returns as soon as anything is
+        # available, which is what a drain wants.
+        try:
+            stderr_fd = self._proc.stderr.fileno()
+        except (AttributeError, OSError, ValueError):  # pragma: no cover
+            stderr_fd = -1
+        tail = self._stderr_tail
+
+        def _drain(fd: int = stderr_fd, sink=tail) -> None:
+            if fd < 0:
+                return
+            try:
+                while True:
+                    chunk = os.read(fd, 8192)
+                    if not chunk:
+                        return
+                    sink.feed(chunk)
+            except Exception:  # noqa: BLE001 — EOF/close ends the drain
+                pass
+
+        threading.Thread(target=_drain, name="os-kernel-stderr", daemon=True).start()
+
+    # --- protocol ---------------------------------------------------------
+
+    def write_line(self, line: str) -> None:
+        assert self._proc.stdin is not None
+        self._proc.stdin.write(line)
+        self._proc.stdin.flush()
+
+    def read_line(self) -> str:
+        assert self._proc.stdout is not None
+        return self._proc.stdout.readline()
+
+    # --- lifecycle --------------------------------------------------------
+
+    def alive(self) -> bool:
+        return self._proc.poll() is None
+
+    def interrupt(self) -> bool:
+        """Signals are the manager's business here: it owns the sandbox that
+        may need to redirect them. Reporting False keeps that decision there
+        rather than duplicating the sandbox check in two places."""
+        return False
+
+    def _stop_group_or_leader(self) -> None:
+        """Kill the worker AND whatever it started.
+
+        `proc.kill()` ends the leader alone. A cell's own subprocesses --
+        anything not routed through `host.bash`, which sets its own session --
+        used to sit in the daemon's group, so pointing a group stop at the
+        kernel would have pointed it at the daemon: this was the one long-lived
+        child in the repository with no group-scoped stop, and a watchdog kill
+        left the cell's grandchildren running. Session isolation is what makes
+        the ladder addressable, so it lands with it.
+
+        Guarded, not assumed: if `start_new_session` was not honoured, the pid
+        is not a group leader and the fallback is exactly the old behaviour.
+        """
+        proc = self._proc
+        pgid = getattr(self, "_pgid", None)
+        if pgid is not None:
+            try:
+                if os.getpgid(proc.pid) == proc.pid:
+                    from openai4s.execution.process_group import (
+                        await_group_exit,
+                        signal_group,
+                    )
+
+                    # SIGKILL, not the polite TERM-then-KILL ladder
+                    # `stop_process_group` runs. This is the watchdog's LAST
+                    # rung -- the interrupt above it has already failed -- and
+                    # a five-second TERM grace here would be five seconds added
+                    # to every hard recovery. The confirmation is kept: SIGKILL
+                    # cannot be caught, so the group empties promptly, and a
+                    # ceiling that is never reached costs nothing.
+                    signal_group(proc, pgid, signal.SIGKILL)
+                    await_group_exit(proc, pgid, 2.0)
+                    return
+            except (OSError, AttributeError, ImportError):
+                pass  # fall through to the leader-only kill
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+    def kill(self) -> None:
+        self._stop_group_or_leader()
+
+    def close(self, *, graceful: bool = True) -> None:
+        proc = self._proc
+        if graceful:
+            try:
+                proc.stdin and proc.stdin.write(json.dumps({"type": "shutdown"}) + "\n")
+                proc.stdin and proc.stdin.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                # A worker executing a cell never reaches its read loop, so it
+                # cannot see the shutdown frame written above. The terminal's
+                # group SIGINT used to end the cell first; with the worker in
+                # its own session it does not, so ask once, directly, before
+                # escalating -- the worker's own handler turns this into the
+                # cell's KeyboardInterrupt and the shutdown frame is then read
+                # immediately.
+                try:
+                    proc.send_signal(signal.SIGINT)
+                    proc.wait(timeout=2)
+                except Exception:  # noqa: BLE001
+                    try:
+                        self._stop_group_or_leader()
+                        # reap, so a restart does not leak a zombie each time
+                        proc.wait(timeout=2)
+                    except Exception:  # noqa: BLE001
+                        pass
+        # Close the pipe wrappers now: a dead worker's buffered stdin
+        # otherwise raises BrokenPipeError at GC-time flush.
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                stream and stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    @property
+    def process(self) -> Any:
+        return self._proc
+
+    @property
+    def stderr_tail(self) -> Any:
+        return self._stderr_tail
+
+
+class WorkerConnectionRefused(RuntimeError):
+    """A worker dialled in and did not prove it was ours."""
+
+
+class OutboundTcpTransport:
+    """A worker that dials in to this daemon from wherever it was placed.
+
+    Constructed around an already-accepted, already-authenticated socket:
+    admission is the listener's job (see `orchestration/worker_gateway.py`),
+    so this class cannot be handed an unverified peer by accident.
+    """
+
+    def __init__(
+        self,
+        sock: socket.socket,
+        *,
+        peer: str = "",
+        interrupt_hook: Callable[[], bool] | None = None,
+        remote_pid: int | None = None,
+    ) -> None:
+        self._sock = sock
+        self._peer = peer
+        self._interrupt_hook = interrupt_hook
+        self._remote_pid = remote_pid
+        self._alive = True
+        self._lock = threading.Lock()
+        # The reader is *binary* and the writer text. Both produce the same
+        # framing as the pipe path; the asymmetry is about `MAX_LINE_BYTES`
+        # meaning bytes. `TextIOWrapper.readline(size)` bounds **characters**,
+        # so a text reader let a peer spend 4 bytes per character and turn a
+        # 16 MiB cap into a 64 MiB allocation -- against a constant whose own
+        # comment calls the unbounded case "a memory exhaustion primitive".
+        # `BufferedReader.readline(size)` bounds bytes, which is what was
+        # meant.
+        self._reader = sock.makefile("rb")
+        self._writer = sock.makefile("w", encoding="utf-8", newline="\n", buffering=1)
+
+    def write_line(self, line: str) -> None:
+        with self._lock:
+            self._writer.write(line)
+            self._writer.flush()
+
+    def read_line(self) -> str:
+        raw = self._reader.readline(MAX_LINE_BYTES)
+        if not raw:
+            self._alive = False
+            return ""
+        if len(raw) >= MAX_LINE_BYTES and not raw.endswith(b"\n"):
+            # A peer that never sends a newline would otherwise be an
+            # unbounded allocation. Treat it as a dead connection rather
+            # than as a frame: a truncated frame is not a frame.
+            self._alive = False
+            raise WorkerConnectionRefused(
+                f"remote worker {self._peer} sent a line over {MAX_LINE_BYTES} bytes"
+            )
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # U+FFFD is legal inside a JSON string, so replacement decoding
+            # silently changed source code, paths and host responses while
+            # still producing a valid frame.  Protocol bytes are exact.
+            self._alive = False
+            raise WorkerConnectionRefused(
+                f"remote worker {self._peer} sent invalid UTF-8"
+            ) from exc
+
+    def alive(self) -> bool:
+        """Latched, and honest about being latched.
+
+        There is no `poll()` for a process on another machine, so this can
+        only report what the last read saw. Two things make the latch usable
+        rather than misleading: `SO_KEEPALIVE` on the accepted socket (see
+        `orchestration/worker_gateway.py`), which turns a vanished node into
+        an EOF the reader will actually reach, and the lease reclaimer, which
+        ends the allocation on its own clock.
+        """
+        return self._alive
+
+    def interrupt(self) -> bool:
+        """Only if somebody gave us a way. A remote worker has no pid here,
+        so an interrupt is the scheduler's to deliver; claiming success for
+        an interrupt that was never sent would leave a cell apparently
+        cancelled and actually running."""
+        if self._interrupt_hook is None:
+            return False
+        try:
+            return bool(self._interrupt_hook())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def kill(self) -> None:
+        """Dropping the connection is what we can do from here; the resource
+        itself is released by cancelling the allocation."""
+        self.close(graceful=False)
+
+    def close(self, *, graceful: bool = True) -> None:
+        if graceful and self._alive:
+            try:
+                self.write_line(json.dumps({"type": "shutdown"}) + "\n")
+            except Exception:  # noqa: BLE001
+                pass
+        self._alive = False
+        # A makefile reader may be blocked in ``readline`` on another thread.
+        # Closing that BufferedReader first can wait forever for the read to
+        # return; shutting down the socket is what wakes it.  Only then is it
+        # safe to close the wrappers and their shared descriptor.
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        for handle in (self._reader, self._writer):
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+    @property
+    def process(self) -> Any:
+        """None: there is no local child. Callers that want a pid must cope
+        — writing the remote pid into a column that means "a process on this
+        machine" would be a lie a later reader believes."""
+        return None
+
+    @property
+    def stderr_tail(self) -> Any:
+        """None, and deliberately not an empty tail: this transport cannot
+        see the worker's stderr, and "nothing was written" is a different
+        claim from "we were not looking"."""
+        return None
+
+    @property
+    def remote_pid(self) -> int | None:
+        return self._remote_pid
+
+
+__all__ = [
+    "DEFAULT_CONNECT_TIMEOUT_S",
+    "MAX_FRAME_BYTES",
+    "MAX_LINE_BYTES",
+    "KernelTransport",
+    "OutboundTcpTransport",
+    "PipeTransport",
+    "WorkerConnectionRefused",
+]

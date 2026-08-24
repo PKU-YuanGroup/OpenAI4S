@@ -164,6 +164,46 @@ def test_native_batch_returns_one_canonical_tool_message_per_call(monkeypatch):
     assert outcome.completion is None and outcome.stop_reason is None
 
 
+def test_writing_native_call_uses_delegated_capture_hooks(monkeypatch):
+    events = []
+
+    class Hooks:
+        def before_native(self, call):
+            events.append(("before", call.id))
+            return "snapshot-token"
+
+        def after_native(self, call, token, result):
+            events.append(("after", call.id, token, result))
+
+    monkeypatch.setattr(
+        runtime,
+        "execute_tool_call",
+        lambda dispatcher, call: ("wrote file", True),
+    )
+    executor = LocalActionExecutor(
+        FakeKernel(),
+        FakeDispatcher(),
+        lambda code, messages: None,
+        lambda code: {"stdout": "R", "error": None},
+        cell_hooks=Hooks(),
+    )
+    call = _native_call(
+        0,
+        name="write_file",
+        arguments={"path": "child.txt", "content": "child bytes"},
+    )
+
+    outcome = executor.execute(
+        NativeToolBatch((call,)), ModelReply(), RunState([{"role": "user"}])
+    )
+
+    assert outcome.history_messages[0]["is_error"] is False
+    assert events == [
+        ("before", "call_0"),
+        ("after", "call_0", "snapshot-token", ("wrote file", True)),
+    ]
+
+
 def test_native_parse_error_never_dispatches(monkeypatch):
     def unexpected_dispatch(*args):
         raise AssertionError(f"parse-error call was dispatched: {args!r}")

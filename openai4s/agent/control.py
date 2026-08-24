@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
@@ -186,6 +186,7 @@ def execute_native_batch(
 def tool_parallel_policy(
     call: NativeToolCall,
     catalog: Any = None,
+    metadata_resolver: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> tuple[bool, tuple[str, ...]] | None:
     """Resolve class-declared scheduling metadata for one native call."""
 
@@ -195,7 +196,11 @@ def tool_parallel_policy(
     tool = resolver(call.name)
     if tool is None:
         return None
-    return bool(tool.read_only), tuple(tool.resource_keys(call.arguments or {}))
+    metadata = metadata_resolver(call.name) if metadata_resolver is not None else {}
+    read_only = (
+        bool(metadata["read_only"]) if "read_only" in metadata else bool(tool.read_only)
+    )
+    return read_only, tuple(tool.resource_keys(call.arguments or {}))
 
 
 def _execute_read_only_waves(

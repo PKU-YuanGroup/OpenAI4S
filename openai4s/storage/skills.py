@@ -520,6 +520,33 @@ class SkillVersionRepository:
             ).fetchone()
         return row is not None
 
+    def activation_metadata_for_version(
+        self,
+        name: str,
+        version_id: str,
+        *,
+        scope: str = "personal",
+        scope_id: str | None = None,
+    ) -> list[dict]:
+        """Return trusted activation provenance for one owned version.
+
+        This is intentionally ownership-first.  A caller deciding whether an
+        old project version may be reactivated must not learn whether a guessed
+        cross-project version contains a sidecar or how it was authored.
+        """
+
+        installation = self.get_installation(name, scope=scope, scope_id=scope_id)
+        if installation is None:
+            return []
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT metadata FROM skill_installation_events "
+                "WHERE installation_id=? AND to_version_id=? "
+                "ORDER BY created_at,rowid",
+                (installation["installation_id"], str(version_id)),
+            ).fetchall()
+        return [json.loads(row["metadata"] or "{}") for row in rows]
+
     def list_active(
         self,
         *,

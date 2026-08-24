@@ -447,6 +447,30 @@ def test_code_action_executes_one_cell_and_warns_about_later_cells():
     )
 
 
+def test_cell_admission_precedes_pending_environment_and_execution():
+    order = []
+
+    def refuse(action):
+        order.append(("admit", action.language))
+        raise RuntimeError("environment not ready")
+
+    executor = _executor(
+        SimpleNamespace(last_output=None),
+        admit_cell=refuse,
+        apply_pending=lambda: order.append(("apply", None)),
+        execute_cell=lambda action: order.append(("execute", action.language)),
+    )
+
+    with pytest.raises(RuntimeError, match="environment not ready"):
+        executor.execute(
+            CodeCell("python", "print(42)\n"),
+            ModelReply(content="```python\nprint(42)\n```"),
+            RunState([]),
+        )
+
+    assert order == [("admit", "python")]
+
+
 def test_code_action_warns_when_a_complete_cell_has_an_incomplete_tail():
     executed = []
     executor = _executor(

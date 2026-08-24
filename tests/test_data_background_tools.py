@@ -213,6 +213,18 @@ def test_background_submit_is_gated_but_exact_interrupt_stays_available(tmp_path
     ]
 
 
+def test_team_dispatcher_refuses_bare_background_kernel_fallback(tmp_path):
+    cfg = Config(data_dir=tmp_path / "data")
+    cfg.team_mode = True
+    dispatcher = build_dispatcher(
+        cfg,
+        workspace=tmp_path / "data" / "agent-workspaces" / "session",
+    )
+
+    with pytest.raises(RuntimeError, match="session-scoped kernel factory"):
+        dispatcher._new_background_kernel()
+
+
 def test_tool_only_turn_background_kernel_shares_the_write_file_workspace(
     tmp_path, monkeypatch
 ):
@@ -268,7 +280,18 @@ def test_tool_only_turn_background_kernel_shares_the_write_file_workspace(
     )
     exec_id = launch["exec_id"]
     try:
-        deadline = time.monotonic() + 30
+        # A ceiling on a wait, not a measurement of anything. What it has to
+        # cover is a COLD kernel spawn -- a fresh interpreter importing
+        # openai4s, arming its guards and installing the host facade -- before
+        # a trivial cell runs at all, and this is a background kernel, so none
+        # of that has been paid for by an earlier cell in this test. Thirty
+        # seconds was enough on an idle machine and reproducibly was not with
+        # four xdist workers each spawning kernels of their own; the loop still
+        # breaks the instant `done` appears, so a larger ceiling costs nothing
+        # on the green path and the assertion still says exactly "this
+        # happened". Measured failing at 30s on this branch AND on e02c374,
+        # 2/2 each, with `-n 4 --dist loadfile` over four kernel-heavy files.
+        deadline = time.monotonic() + 240
         while True:
             peek = dispatcher("exec_peek", [exec_id])
             if peek.get("done"):

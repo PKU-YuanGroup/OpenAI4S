@@ -43,6 +43,19 @@ PendingProvider = Callable[[str], Iterable[Mapping[str, Any]]]
 ToolSchemaProvider = Callable[[Any | None], Iterable[Mapping[str, Any]]]
 
 
+def _unattended_posture() -> str:
+    """How an unanswered ask resolves right now, for the workbench banner."""
+
+    try:
+        from openai4s.server.guardian_enforce import feature_enabled
+
+        if feature_enabled():
+            return "guardian-allowlist"
+    except Exception:  # noqa: BLE001 — a banner never breaks the projection
+        pass
+    return "pending-or-deny"
+
+
 class SessionWorkbenchStateService:
     """Project current context composition and enforced security state."""
 
@@ -221,7 +234,10 @@ class SessionWorkbenchStateService:
             "permission": {
                 "mode": "durable-policy",
                 "pending_count": len(pending),
-                "unattended": "pending-or-deny",
+                # What an ask does when nobody is watching. Guardian
+                # enforcement changes that answer, so report the posture in
+                # force rather than a constant that predates it.
+                "unattended": _unattended_posture(),
             },
             "notebook": {
                 "interactive": bool(

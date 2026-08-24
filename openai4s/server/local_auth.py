@@ -22,7 +22,12 @@ import os
 import secrets
 from pathlib import Path
 
-from openai4s.security.permissions import FILE_MODE, harden_dir, harden_file
+from openai4s.security.permissions import (
+    FILE_MODE,
+    fsync_dir,
+    harden_dir,
+    harden_file,
+)
 
 #: Filename under the data dir. Not in the database: see the module docstring.
 TOKEN_FILENAME = "access-token"
@@ -51,28 +56,11 @@ def read_token(data_dir: Path | str) -> str | None:
     return value or None
 
 
-def _fsync_dir(directory: Path) -> None:
-    """Persist the directory entry, not just the bytes behind it.
-
-    Publishing the token is a change to the *directory*; fsyncing only the file
-    leaves a crash able to keep the content and lose the name. The next boot
-    would mint a second token and invalidate every cookie already issued --
-    the exact failure persisting the token was meant to end.
-
-    Best-effort by contract: not every filesystem lets a directory be opened
-    for fsync, and refusing to start the daemon over a durability nicety is
-    the worse trade.
-    """
-    try:
-        fd = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
+#: The shared implementation. Kept under the private name because this
+#: module's callers use it, and moved because `orchestration/bootstrap.py`
+#: publishes its signing secret with the same protocol and could not
+#: reach a module-private helper -- so it went without the step.
+_fsync_dir = fsync_dir
 
 
 def load_or_mint(data_dir: Path | str) -> str:

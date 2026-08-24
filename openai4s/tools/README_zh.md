@@ -10,6 +10,14 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 
 [`registry.py`](./registry.py) 是唯一实例化内置工具类的地方。[`catalog.py`](./catalog.py) 按 session 构建渐进披露视图，并在其上叠加隔离的动态代理，全局内置注册表不受影响。供应商 schema 只是生成时的提示；dispatch 之前，[`schema.py`](./schema.py) 会把所支持的契约再强制执行一遍。
 
+以工作区为后端的文件工具共用一条 capability 检查过的边界。在 POSIX
+上，它们用 `dir_fd`/openat 风格的操作和 `O_NOFOLLOW` 遍历固定的父目录，
+通过校验过的同一个描述符消费读内容，拒绝多硬链接的普通文件，并在该
+固定父目录内发布暂存写入。原生 Windows 缺少所需 capability，因此这些
+操作会 fail closed，而不会退回到路径名 `os.replace` 或 check-then-open。
+这抵御的是并发的用户态命名空间替换，不是已被攻陷的内核或任意内核
+文件系统语义变化。
+
 ## 文件
 
 | 文件 | 职责 |
@@ -27,13 +35,13 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 | [`dynamic.py`](./dynamic.py) | 校验 session 内编写的 Python 工具源码与 manifest，再把每一次冒烟测试、每一次调用都放进全新的 `python -I -S` worker 执行：环境严格无 secret，OS 沙箱强制启用。session/project/global 三级版本通过可信代理解析。 |
 | [`dynamic_control.py`](./dynamic_control.py) | Dynamic Tool 的人工治理生命周期：define、list、promote、version-list、activate、rollback。 |
 | [`dynamic_scopes.py`](./dynamic_scopes.py) | 保存内容寻址的 project/global Dynamic Tool manifest，以及只追加的激活历史。它不编译、也不执行模型编写的代码。 |
-| [`edit.py`](./edit.py) | 工作区内的精确字符串编辑，带一道静态 precheck：退化的编辑请求在申请审批之前就被挡掉。重写过程是流式的，每次只持有一个 chunk，写进旁边一个暂存文件——并在 chunk 边界上带过 `len(old_string) - 1` 个字符，跨边界的匹配才不会漏掉。决定这次编辑是否放行的匹配计数要到最后才知道，所以被拒或不唯一的编辑会丢弃暂存文件，原文件分毫未动。最后的换入用 `os.replace`，同一文件系统内是原子的。旧版 `edit_file` 的兼容查找仍然保留。 |
+| [`edit.py`](./edit.py) | 工作区内的精确字符串编辑，带一道静态 precheck：退化的编辑请求在申请审批之前就被挡掉。源文件从同一个已经校验、no-follow 的描述符读取；重写过程是流式的，每次只持有一个 chunk，写进旁边一个暂存文件——并在 chunk 边界上带过 `len(old_string) - 1` 个字符，跨边界的匹配才不会漏掉。决定这次编辑是否放行的匹配计数要到最后才知道，所以被拒或不唯一的编辑会丢弃暂存文件，原文件分毫未动。最后通过固定父目录内的描述符相对 rename 原子换入。旧版 `edit_file` 的兼容查找仍然保留。 |
 | [`env.py`](./env.py) | 环境 list/use/create 三个工具类和实例的兼容 facade。 |
 | [`env_create.py`](./env_create.py) | 通过内核 preinstall 服务安装依赖包。 |
 | [`env_list.py`](./env_list.py) | 发现预构建好的环境，并可选地对比它们的依赖包覆盖情况。 |
 | [`env_use.py`](./env_use.py) | 排队切换到指定的 Python 或 R 环境，在下一个科学 Cell 生效。 |
 | [`fs.py`](./fs.py) | 目录列表与文本文件读写工具的兼容 facade。 |
-| [`glob_files.py`](./glob_files.py) | 按 glob 在工作区里找文件，结果中会剔除形似 credential 的文件名。生成器逐条消费，只经由 `BoundedSelection` 保留最小的那一批，于是回答一个「一千条」的问题，不必为一个百万文件的目录留住一百万条路径；遍历本身也受条目数和秒数两个预算约束，而不只是约束留下来的东西。`count` 就是实际返回的数量——它以前是切片**之前**的总数，却印在切片后的列表旁边，而且和同一族里 `content_search` 的 `count` 含义相左；原先那份信息现在由 `total_count`、`dropped` 和 `truncated` 承担。 |
+| [`glob_files.py`](./glob_files.py) | 按 glob 在工作区里找文件，结果中会剔除形似 credential 的路径——文件名与 credential 目录一并剔除。生成器逐条消费，只经由 `BoundedSelection` 保留最小的那一批，于是回答一个「一千条」的问题，不必为一个百万文件的目录留住一百万条路径；遍历本身也受条目数和秒数两个预算约束，而不只是约束留下来的东西。`count` 就是实际返回的数量——它以前是切片**之前**的总数，却印在切片后的列表旁边，而且和同一族里 `content_search` 的 `count` 含义相左；原先那份信息现在由 `total_count`、`dropped` 和 `truncated` 承担。 |
 | [`list_directory.py`](./list_directory.py) | 列出一个工作区目录，且只限于这个目录之内——沿用 `glob_files` 的条目上限和同一套截断计数，于是两个工具在同一处截断、也用同一种方式说明。它原先根本没有上限，还要为每个条目付一次 `stat()` 和一个 dict。 |
 | [`mcp.py`](./mcp.py) | MCP 的 server/tool/resource/prompt 发现，以及工具调用和 resource/prompt 读取。外部服务器返回的内容不可信，统一在 Host 边界筛查。 |
 | [`native.py`](./native.py) | 把已声明的工具转成可移植、供应商中立的 `ToolSpec` 元数据，并校验函数名在每一个受支持的供应商上都合法。 |
@@ -54,7 +62,7 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 | [`web_download.py`](./web_download.py) | 把一个 URL 直接下载进会话工作区，用于 `web_fetch` 无法表示成文本的内容。两道闸在这里汇合：URL 这一侧沿用 `web_fetch` 的（必须开启网络、每一跳都过出网允许名单、私有/元数据地址一律拒绝），路径这一侧沿用 `write_file` 的（目标路径先相对工作区解析，越界在**发起请求之前**就被拒——这样被拒的路径不会顺带泄露那个 URL 是否可达）。字节上限在读取过程中生效。 |
 | [`web_fetch.py`](./web_fetch.py) | 标准化单个 URL 的抓取与资源身份，同时保留 Host 的软失败行为。 |
 | [`web_search.py`](./web_search.py) | 标准化实时 Web 搜索，同样保留 Host 的软失败行为。 |
-| [`write_file.py`](./write_file.py) | 在受限工作区里创建或覆盖一个 UTF-8 文件，并给这次写入打上标记，让 Web 控制工具边界能把它捕获成 Artifact。和 `edit.py` 一样，先写到目标旁边的暂存文件再 `os.replace`：`write_text` 是先截断后写入，中途被打断就会在原本完整的文件位置留下一个写了一半的文件。暂存文件会继承目标原有的权限位，否则一次覆盖会悄悄把权限收紧。 |
+| [`write_file.py`](./write_file.py) | 在受限工作区里创建或覆盖一个 UTF-8 文件，并给这次写入打上标记，让 Web 控制工具边界能把它捕获成 Artifact。它通过已经校验的父目录描述符创建同目录暂存文件，再用描述符相对 rename 原子发布：`write_text` 是先截断后写入，中途被打断曾会在原本完整的文件位置留下一个写了一半的文件。暂存文件会继承目标原有的权限位，否则一次覆盖会悄悄把权限收紧。 |
 
 ## 新增或修改工具
 

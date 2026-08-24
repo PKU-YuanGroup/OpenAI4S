@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "id": "alloc.backend_unavailable_is_not_a_state_change",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "A scheduler that cannot be reached must not become a dead workload.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "submits": [
+        {
+          "result": "created"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "PENDING",
+          "reason": "BACKEND_UNAVAILABLE"
+        },
+        {
+          "phase": "ACTIVE"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "ACTIVE",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submitted",
+      "backend_unavailable",
+      "workload_phase",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

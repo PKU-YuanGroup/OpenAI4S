@@ -21,6 +21,10 @@ The browser client lives here, and the stdlib gateway serves it at `/static/`. T
 | [`favicon.js`](favicon.js) | Animates the GIF favicon through WebCodecs when available, pauses in hidden tabs, and falls back to the static GIF. |
 | [`favicon_anim_64.gif`](favicon_anim_64.gif) | The packaged favicon source: the frames the animation decodes, and the static fallback icon. |
 | [`index.html`](index.html) | The accessible DOM shell for dashboard, conversation workspace, composer, right dock, dialogs, and settings. It applies the theme before first paint and references the static scripts and styles. |
+| [`login.html`](login.html) | The team-mode sign-in page (`OPENAI4S_TEAM_MODE`). Inline styles only — its script must be external because the CSP hashes only `index.html`'s inline scripts. Served at `/login` in both modes; the guard 303s unauthenticated browsers here. |
+| [`login.js`](login.js) | The sign-in page's script: POSTs `/api/v1/auth/login`, shows the one-sentence failure, and redirects home when already signed in or when team mode is off. |
+| [`replay.html`](replay.html) | The read-only replay viewer page (M2-3) — a guest's whole UI, and a member's quick look. Served at `/replay` behind the login guard; inline styles only, script external for the CSP. |
+| [`replay.js`](replay.js) | Fetches `GET /api/v1/sessions/{id}/replay` (the sanitized web-share view.json, built in place) and renders messages and scientific cells as a plain transcript. |
 | [`scientific_renderers.js`](scientific_renderers.js) | Dependency-free parsers and helpers for sequence/MSA, genome, Molfile/SMILES and LaTeX, plus renderer-descriptor validation. They return plain data and never HTML, so `app.js` builds the DOM from the records; a small UMD wrapper lets the Node contract test import the same file. General table/image/PDF/HTML/text presentation stays in `app.js`. |
 | [`style.css`](style.css) | The whole visual system: light/dark tokens, fonts, dashboard and workspace layout, activity and artifact components, dialogs, accessibility, and mobile breakpoints. |
 

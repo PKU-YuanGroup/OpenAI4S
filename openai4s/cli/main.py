@@ -271,6 +271,57 @@ def _sigterm_to_keyboard_interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
+def _foreground_cell_interrupt(agent):
+    """Restore what Ctrl-C did before the worker had its own session.
+
+    Until the kernel worker was moved into its own session, a terminal Ctrl-C
+    was delivered to the whole foreground process group -- so it reached both
+    this process, where the default handler raised KeyboardInterrupt out of
+    `Agent.run`, and the worker, whose handler ended the running cell. Session
+    isolation is deliberate (a stray Ctrl-C must not end every cell a daemon is
+    running) and it takes the second half away from the CLI, where `Agent.run`
+    executes cells on this very thread.
+
+    So this restores exactly that pair and invents nothing: interrupt this
+    Agent's own workers, then raise, which is what the two handlers did between
+    them. Returns a context manager; off the main thread, or where the
+    disposition cannot be set, it is a no-op and the old behaviour stands.
+    """
+
+    import contextlib
+    import threading
+
+    @contextlib.contextmanager
+    def _installed():
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        def _handler(signum, frame):  # noqa: ANN001, ARG001
+            try:
+                agent.interrupt_foreground()
+            finally:
+                # Unconditionally: the CLI has always exited on Ctrl-C, and a
+                # run that survived because no worker happened to be up would
+                # be a new behaviour arriving through a signal handler.
+                raise KeyboardInterrupt
+
+        try:
+            previous = signal.signal(signal.SIGINT, _handler)
+        except (ValueError, OSError):  # pragma: no cover - unsupported platform
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                signal.signal(signal.SIGINT, previous)
+            except (ValueError, OSError):  # pragma: no cover
+                pass
+
+    return _installed()
+
+
 def _bind_failure_message(exc: OSError, cfg) -> str | None:
     """One clear line naming the env var to fix, or ``None`` to re-raise.
 
@@ -532,6 +583,20 @@ def cmd_serve(args) -> int:
         raise
     print(f"openai4s listening at {_url(cfg)} (model={cfg.llm.model})")
     print("web UI ready. Ctrl-C to stop.")
+    if cfg.team_mode:
+        # First boot of team mode with no accounts: print the bootstrap
+        # command and start normally — never prompt, never block (M1-3).
+        try:
+            from openai4s.store import get_store
+
+            if get_store(cfg.db_path).team.count_users() == 0:
+                print(
+                    "team mode is ON but no users exist yet; create the "
+                    "first admin with:\n"
+                    "  openai4s user add <name> --role admin"
+                )
+        except Exception:
+            pass
     if not os.environ.get("OPENAI4S_NO_OPEN") and not getattr(args, "no_open", False):
 
         def _open():
@@ -730,9 +795,43 @@ def cmd_url(args) -> int:
 
 def cmd_run(args) -> int:
     from openai4s.agent import Agent
+    from openai4s.agent.loop import enable_auto_run_environment, review_cli_result
+    from openai4s.kernel.readiness import EnvironmentReadinessError
 
+    auto_applied: dict[str, str] = {}
+    if getattr(args, "auto", False):
+        # Before get_config(), which reads these at construction.
+        auto_applied = enable_auto_run_environment()
     cfg = get_config()
-    result = Agent(cfg=cfg, verbose=args.verbose).run(args.task)
+    agent = Agent(cfg=cfg, verbose=args.verbose)
+    try:
+        with _foreground_cell_interrupt(agent):
+            result = agent.run(args.task)
+    except EnvironmentReadinessError as error:
+        # A standard-profile refusal is raised only at the first Code Cell.
+        # Keeping this adapter typed lets native tools and structured
+        # finalization run with zero kernel while retaining the existing CLI
+        # JSON/text failure contract for a scientific execution attempt.
+        payload = {
+            "error": str(error),
+            "code": error.error_code,
+            "standard_profile_readiness": error.readiness,
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"error: {payload['error']}", file=sys.stderr)
+        return 2
+    if getattr(args, "auto", False):
+        # A machine-readable terminal is the point of --auto: CI needs to tell
+        # "ran and was verified" from "ran and nobody checked".
+        review = review_cli_result(args.task, result, cfg=cfg)
+        result = dict(result)
+        result["auto_mode"] = {
+            "preset": "autonomous",
+            "enabled_environment": auto_applied,
+            **review,
+        }
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -744,6 +843,14 @@ def cmd_run(args) -> int:
             )
         if result.get("final_message"):
             print("final:", result["final_message"])
+        auto = result.get("auto_mode")
+        if auto:
+            print(f"=== review: {auto['terminal']} — {auto['user_truth']} ===")
+            for item in auto.get("findings") or []:
+                print(
+                    f"  - {item.get('severity')} {item.get('category')}: "
+                    f"{str(item.get('claim_ref'))[:80]}"
+                )
     return 0
 
 
@@ -1085,17 +1192,24 @@ def _env_spec(name: str) -> Path:
     return _envs_dir() / f"{name}.yml"
 
 
-def _env_verify(prefix: Path) -> tuple[str, list[str]]:
-    """Prove the generation runs before anything points at it.
+def _env_verify(prefix: Path, *, name: str | None = None) -> tuple[str, list[str]]:
+    """Prove the generation runs and satisfies standard before it is current.
 
     A build that exits 0 having produced nothing usable is the false success
     this step exists to catch, and it is the same rule the compute manager
     applies to a job that exits 0 having written no outputs. The check used to
     stop at "a file exists at that path"; it now *starts the interpreter*, in
-    both languages, because a file is not an environment.
+    both languages, because a file is not an environment.  The standard Python
+    and R generations additionally require every direct package in their
+    shipped manifests; a runnable but partial prefix is not ready.
     """
-    from openai4s.kernel.env_generations import probe_interpreter
+    from openai4s.kernel.env_generations import (
+        probe_interpreter,
+        verify_standard_environment,
+    )
 
+    if name in ("python", "r"):
+        return verify_standard_environment(prefix, name)
     return probe_interpreter(prefix)
 
 
@@ -1103,7 +1217,15 @@ def cmd_env_plan(args) -> int:
     cfg = get_config()
     tool = _find_conda_tool() or "conda"
     store = _env_store(cfg)
-    plans = [store.plan(name, _env_spec(name), tool=tool) for name in args.names]
+    plans = [
+        store.plan(
+            name,
+            _env_spec(name),
+            tool=tool,
+            force_replace=bool(getattr(args, "repair", False)),
+        )
+        for name in args.names
+    ]
     if args.json:
         print(json.dumps([p.public() for p in plans], indent=2, sort_keys=True))
     else:
@@ -1124,7 +1246,12 @@ def cmd_env_apply(args) -> int:
     failed = 0
     for name in args.names:
         spec = _env_spec(name)
-        plan = store.plan(name, spec, tool=tool)
+        plan = store.plan(
+            name,
+            spec,
+            tool=tool,
+            force_replace=bool(getattr(args, "repair", False)),
+        )
         if args.dry_run:
             if plan.changes:
                 print(f"  [{name}] would {plan.action}: {plan.reason}")
@@ -1152,7 +1279,13 @@ def cmd_env_apply(args) -> int:
             ]
 
         try:
-            result = store.apply(plan, spec, tool=tool, build=build, verify=_env_verify)
+            result = store.apply(
+                plan,
+                spec,
+                tool=tool,
+                build=build,
+                verify=lambda prefix, _name=name: _env_verify(prefix, name=_name),
+            )
         except EnvironmentError_ as e:
             failed += 1
             print(f"  [{name}] FAILED: {e}", file=sys.stderr)
@@ -1228,7 +1361,40 @@ def cmd_env_recover(args) -> int:
 
 def cmd_benchmark(args) -> int:
     """Run the versioned workflow benchmark against the real subsystems."""
-    from openai4s.benchmark import load_workflows, run_all
+    from openai4s.benchmark import load_workflows, run_acceptance_pack, run_all
+
+    if getattr(args, "acceptance", False):
+        report = run_acceptance_pack()
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            for item in report["field_paths"]:
+                if not item["pass"]:
+                    mark = "FAIL"
+                elif item["claim"] == "capability":
+                    mark = "CAPABILITY"
+                else:
+                    mark = "BASELINE"
+                status = item["observed"].get("status", "unknown")
+                print(f"  [{mark:10}] {item['id']} — {status}")
+            for item in report["safety_actions"]:
+                mark = "ok" if item["pass"] else "FAIL"
+                decision = item["observed"].get("effective_decision", "unknown")
+                print(f"  [{mark:10}] safety:{item['id']} — {decision}")
+            summary = report["summary"]
+            print(
+                "\n"
+                f"{summary['capability_passes']} current capability path(s), "
+                f"{summary['baseline_observations_reproduced']} baseline gap/behavior "
+                "observation(s) reproduced, "
+                f"{summary['field_path_failures']} field failure(s), "
+                f"{summary['safety_action_failures']} safety failure(s)"
+            )
+            print(
+                "A BASELINE match reproduces current behavior; it does not claim "
+                "that an incomplete capability works."
+            )
+        return 0 if report["pass"] else 1
 
     if args.list:
         for workflow in load_workflows():
@@ -1520,6 +1686,196 @@ def cmd_relay_gen_token(args) -> int:
     return 0
 
 
+def cmd_cluster(args) -> int:
+    """`openai4s cluster …` — batch jobs, through the daemon.
+
+    Through the daemon rather than the store directly, unlike `user`: a
+    submission has to reach the reconciler that will act on it, and a second
+    process writing workload rows behind the daemon's back is how two
+    reconcilers end up disagreeing about one job.
+    """
+    cfg = get_config()
+    action = args.cluster_action
+    if not _require_daemon(cfg):
+        return 1
+    try:
+        if action == "submit":
+            body = {
+                "command": list(args.command),
+                "profile": args.profile,
+            }
+            if args.backend:
+                body["backend"] = args.backend
+            if args.workdir:
+                body["workdir"] = args.workdir
+            status, rec = _daemon_request(cfg, "POST", "/orchestration/jobs", body)
+        elif action == "list":
+            status, rec = _daemon_request(cfg, "GET", "/orchestration/jobs")
+        elif action == "cancel":
+            status, rec = _daemon_request(
+                cfg, "POST", f"/orchestration/jobs/{args.job_id}/cancel", {}
+            )
+        elif action == "logs":
+            status, rec = _daemon_request(
+                cfg, "GET", f"/orchestration/jobs/{args.job_id}/logs"
+            )
+        elif action == "profiles":
+            status, rec = _daemon_request(cfg, "GET", "/orchestration/profiles")
+        else:  # pragma: no cover - argparse enforces choices
+            return 2
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(rec, indent=2))
+    elif action == "list":
+        jobs = (rec or {}).get("jobs") or []
+        for job in jobs:
+            print(
+                f"{job['id']}  {job['phase']:<10} {job['profile']:<16} "
+                f"{' '.join(job['command'])[:48]}"
+            )
+        if not jobs:
+            print("no jobs")
+    elif action == "submit":
+        print(f"submitted {rec.get('id')} ({rec.get('phase')})")
+    elif action == "logs":
+        if rec.get("stdout"):
+            print(rec["stdout"], end="")
+        if rec.get("stderr"):
+            print(rec["stderr"], end="", file=sys.stderr)
+    elif action == "profiles":
+        for profile in (rec or {}).get("profiles") or []:
+            print(
+                f"{profile['name']:<20} cpus={profile['cpus']} "
+                f"gpus={profile['gpus']} walltime={profile['walltime_s']}s"
+            )
+        if not (rec or {}).get("configured"):
+            print("(no cluster.toml configured; local backend only)")
+    else:
+        print(json.dumps(rec))
+    return 0 if 200 <= int(status) < 300 else 2
+
+
+def _team_store():
+    """Direct-store access for offline account management on the server
+    (the same template as _onboarding_service: no daemon required)."""
+    from openai4s.store import get_store
+
+    cfg = get_config()
+    cfg.ensure_dirs()
+    return get_store(cfg.db_path)
+
+
+def _read_new_password(args) -> tuple[str, str | None]:
+    """(password, generated) per M1-3: --password-stdin reads one line from
+    stdin; otherwise a random password is generated and returned for a
+    single print. The password never appears in argv or logs."""
+    import secrets as _secrets
+
+    if getattr(args, "password_stdin", False):
+        # `\r\n` as well as `\n`: a CRLF pipe (a Windows-authored secrets
+        # file, a CI runner, `printf 'pw\r\n'`) otherwise stores the hash of
+        # `pw\r`, and the account is then permanently unloginnable with the
+        # password that was supplied -- behind a login error that is
+        # deliberately indistinguishable from a wrong one, so nothing points
+        # at the cause. Docker's own `--password-stdin` trims `\r` for the
+        # same reason.
+        pw = sys.stdin.readline().rstrip("\r\n")
+        if not pw:
+            raise ValueError("empty password on stdin")
+        return pw, None
+    generated = _secrets.token_urlsafe(12)
+    return generated, generated
+
+
+def cmd_user(args) -> int:
+    action = args.user_action
+    store = _team_store()
+    try:
+        if action == "add":
+            try:
+                password, generated = _read_new_password(args)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            user = store.team.create_user(
+                username=args.username,
+                password=password,
+                role=args.role,
+                display_name=args.display_name,
+            )
+            store.team.audit(
+                actor="cli", action="user_add", user_id=user["id"], target=args.username
+            )
+            print(f"created {user['role']} {user['username']} ({user['id']})")
+            if generated is not None:
+                # printed exactly once, never stored or logged
+                print(f"initial password: {generated}")
+        elif action == "list":
+            users = store.team.list_users()
+            if getattr(args, "json", False):
+                print(json.dumps(users, indent=2))
+            else:
+                for u in users:
+                    flag = " [disabled]" if u["disabled"] else ""
+                    print(f"{u['username']:<20} {u['role']:<7} {u['id']}{flag}")
+                if not users:
+                    print(
+                        "no users; create one with: openai4s user add <name> --role admin"
+                    )
+        elif action == "disable":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            store.team.set_disabled(user["id"], True)
+            # What the HTTP route does, on the path an operator uses when the
+            # daemon is down. Leaving the row behind made the credential
+            # unreachable *and* unrevocable: nothing in the product would
+            # ever name that keychain slot again, while a turn in one of this
+            # user's sessions still resolves it by owner and bills their
+            # personal provider key.
+            cleared = store.user_keys.delete_all_for_user(
+                user["id"], secrets=store.secrets
+            )
+            store.team.audit(
+                actor="cli",
+                action="user_disable",
+                user_id=user["id"],
+                target=args.username,
+            )
+            keys = f", {cleared} LLM key(s) cleared" if cleared else ""
+            print(f"disabled {args.username} (live sessions revoked{keys})")
+        elif action == "reset-password":
+            user = store.team.get_user_by_username(args.username)
+            if user is None:
+                print(f"error: no such user {args.username!r}", file=sys.stderr)
+                return 2
+            try:
+                password, generated = _read_new_password(args)
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            store.team.set_password(user["id"], password)
+            store.team.audit(
+                actor="cli",
+                action="user_reset_password",
+                user_id=user["id"],
+                target=args.username,
+            )
+            print(f"password reset for {args.username} (live sessions revoked)")
+            if generated is not None:
+                print(f"new password: {generated}")
+        else:  # pragma: no cover - argparse enforces choices
+            return 2
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1578,6 +1934,16 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    pr.add_argument(
+        "--auto",
+        action="store_true",
+        help=(
+            "autonomous Auto Mode: boundary actions go to the Guardian instead "
+            "of failing closed, and the result is reviewed before the run "
+            "reports a terminal. NOT full access -- the Guardian's active "
+            "surface is a read-only allowlist bound to a verified action digest"
+        ),
+    )
     pr.set_defaults(fn=cmd_run)
 
     pi = sub.add_parser("init", help="guided first-run model configuration")
@@ -1632,7 +1998,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="run the versioned workflow benchmark against the real subsystems",
     )
     pb.add_argument("--json", action="store_true", help="machine-readable report")
-    pb.add_argument("--list", action="store_true", help="list workflows and cases")
+    benchmark_mode = pb.add_mutually_exclusive_group()
+    benchmark_mode.add_argument(
+        "--list", action="store_true", help="list workflows and cases"
+    )
+    benchmark_mode.add_argument(
+        "--acceptance",
+        action="store_true",
+        help="replay the Stage 0 field-and-safety baseline pack",
+    )
     pb.set_defaults(fn=cmd_benchmark)
 
     pe = sub.add_parser(
@@ -1642,12 +2016,22 @@ def build_parser() -> argparse.ArgumentParser:
     esub = pe.add_subparsers(dest="env_action", required=True)
     ep = esub.add_parser("plan", help="what would change; touches nothing")
     ep.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ep.add_argument(
+        "--repair",
+        action="store_true",
+        help="plan a fresh verified generation even when the spec is unchanged",
+    )
     ep.add_argument("--json", action="store_true")
     ep.set_defaults(fn=cmd_env_plan)
     ea = esub.add_parser(
         "apply", help="build a new generation and switch to it if it verifies"
     )
     ea.add_argument("names", nargs="*", default=list(_DEFAULT_ENVS))
+    ea.add_argument(
+        "--repair",
+        action="store_true",
+        help="build a fresh verified generation even when the spec is unchanged",
+    )
     ea.add_argument("--dry-run", action="store_true")
     ea.set_defaults(fn=cmd_env_apply)
     el = esub.add_parser("list", help="generations, and which one is current")
@@ -1725,6 +2109,73 @@ def build_parser() -> argparse.ArgumentParser:
     _share_sub("disable", "disable sharing (keeps shares offline)")
     _share_sub("status", "show tunnel status")
     _share_sub("import", "import a shared session by URL").add_argument("url")
+
+    pcl = sub.add_parser("cluster", help="submit and manage batch jobs")
+    clsub = pcl.add_subparsers(dest="cluster_action", required=True)
+    cls = clsub.add_parser("submit", help="submit a batch job")
+    cls.add_argument(
+        "command",
+        nargs="+",
+        help="the command to run, as separate arguments (never one string: "
+        "splitting a command line is where quoting bugs become injection)",
+    )
+    cls.add_argument("--profile", default="cpu-interactive")
+    cls.add_argument("--backend", help="local | cluster (default: local)")
+    cls.add_argument("--workdir")
+    cls.add_argument("--json", action="store_true")
+    cls.set_defaults(fn=cmd_cluster)
+    cll = clsub.add_parser("list", help="list batch jobs")
+    cll.add_argument("--json", action="store_true")
+    cll.set_defaults(fn=cmd_cluster)
+    clc = clsub.add_parser("cancel", help="ask for a job to be cancelled")
+    clc.add_argument("job_id")
+    clc.add_argument("--json", action="store_true")
+    clc.set_defaults(fn=cmd_cluster)
+    clg = clsub.add_parser("logs", help="tail a job's output")
+    clg.add_argument("job_id")
+    clg.add_argument("--json", action="store_true")
+    clg.set_defaults(fn=cmd_cluster)
+    clp = clsub.add_parser("profiles", help="show the configured cluster profiles")
+    clp.add_argument("--json", action="store_true")
+    clp.set_defaults(fn=cmd_cluster)
+
+    puser = sub.add_parser(
+        "user",
+        help="manage team-mode accounts (direct database access, no daemon needed)",
+    )
+    usub = puser.add_subparsers(dest="user_action", required=True)
+    ua = usub.add_parser("add", help="create an account")
+    ua.add_argument("username")
+    ua.add_argument("--role", choices=("admin", "member", "guest"), default="member")
+    ua.add_argument("--display-name", dest="display_name")
+    ua.add_argument(
+        "--password-stdin",
+        dest="password_stdin",
+        action="store_true",
+        help="read the password from stdin; otherwise one is generated and "
+        "printed once (a password never goes on the command line)",
+    )
+    ua.set_defaults(fn=cmd_user)
+    ul = usub.add_parser("list", help="list accounts")
+    ul.add_argument("--json", action="store_true")
+    ul.set_defaults(fn=cmd_user)
+    ud = usub.add_parser(
+        "disable", help="disable an account and revoke its live sessions"
+    )
+    ud.add_argument("username")
+    ud.set_defaults(fn=cmd_user)
+    ur = usub.add_parser(
+        "reset-password", help="set a new password and revoke live sessions"
+    )
+    ur.add_argument("username")
+    ur.add_argument(
+        "--password-stdin",
+        dest="password_stdin",
+        action="store_true",
+        help="read the new password from stdin; otherwise one is generated "
+        "and printed once",
+    )
+    ur.set_defaults(fn=cmd_user)
 
     prelay = sub.add_parser("relay", help="run the public share relay (on a VPS)")
     rsub = prelay.add_subparsers(dest="relay_action", required=True)

@@ -51,6 +51,7 @@ class _BackgroundJob:
         "started_at",
         "ended_at",
         "interrupted",
+        "_lifetime",
     )
 
     def __init__(self, exec_id: str, code: str):
@@ -68,6 +69,7 @@ class _BackgroundJob:
         self.started_at = int(time.time() * 1000)
         self.ended_at: int | None = None
         self.interrupted = False
+        self._lifetime: Any = None
 
     def _on_chunk(self, text: str) -> None:
         if not text:
@@ -90,25 +92,39 @@ class _BackgroundJob:
 
     def peek(self) -> dict:
         """Non-blocking snapshot of the running cell."""
-        return {
-            "exec_id": self.exec_id,
-            "status": self.status,
-            "done": self.status != "running",
-            "stdout": self.stdout_so_far(),
-            "interrupted": self.interrupted,
-            "error": self.error,
-            "started_at": self.started_at,
-            "ended_at": self.ended_at,
-        }
+        with self._lock:
+            stdout = "".join(self._buf)
+            if self._buf_truncated:
+                stdout += _TRUNCATION_MARKER
+            return {
+                "exec_id": self.exec_id,
+                "status": self.status,
+                "done": self.status != "running",
+                "stdout": stdout,
+                "interrupted": self.interrupted,
+                "error": self.error,
+                "started_at": self.started_at,
+                "ended_at": self.ended_at,
+            }
 
 
 class BackgroundExecutor:
     """Registry of backgrounded cells, wired onto the dispatcher."""
 
-    def __init__(self, kernel_factory: Any, dispatcher: Any):
+    def __init__(
+        self,
+        kernel_factory: Any,
+        dispatcher: Any,
+        *,
+        lifetime_factory: Any = None,
+    ):
         # kernel_factory -> a fresh Kernel bound to `dispatcher`.
         self._kernel_factory = kernel_factory
         self._dispatcher = dispatcher
+        # Optional context-manager factory whose lease spans spawn through the
+        # worker thread's final shutdown.  Web Stage 1 uses it to make a
+        # background launch atomic against foreground Artifact capture.
+        self._lifetime_factory = lifetime_factory
         self._jobs: dict[str, _BackgroundJob] = {}
         self._lock = threading.Lock()
         self._closed = False
@@ -121,9 +137,35 @@ class BackgroundExecutor:
     #: ran out of pids or memory, and nothing on the path said no.
     MAX_ACTIVE_JOBS = 16
 
+    def _enter_lifetime(self) -> Any:
+        if self._lifetime_factory is None:
+            return None
+        lifetime = self._lifetime_factory()
+        enter = getattr(lifetime, "__enter__", None)
+        exit_ = getattr(lifetime, "__exit__", None)
+        if not callable(enter) or not callable(exit_):
+            raise RuntimeError("background execution admission is unavailable")
+        enter()
+        return lifetime
+
+    @staticmethod
+    def _exit_lifetime(job: _BackgroundJob) -> None:
+        lifetime = job._lifetime
+        job._lifetime = None
+        if lifetime is None:
+            return
+        exit_ = getattr(lifetime, "__exit__", None)
+        if not callable(exit_):
+            raise RuntimeError("background execution admission is unavailable")
+        exit_(None, None, None)
+
     def launch(self, code: str, origin: str = "agent") -> dict:
         exec_id = f"exec-{uuid.uuid4().hex[:12]}"
         job = _BackgroundJob(exec_id, code)
+        # Enter before claiming a process slot.  Foreground capture and this
+        # increment are decided under the coordinator's one short lock, so a
+        # background worker can never appear in the check/start gap.
+        job._lifetime = self._enter_lifetime()
         # Claim the slot BEFORE the kernel exists. The old order checked
         # `_closed`, released the lock, spawned, and registered afterwards --
         # so any number of concurrent launches passed the check together and
@@ -132,9 +174,11 @@ class BackgroundExecutor:
         # Registering first makes the slot count the thing being limited.
         with self._lock:
             if self._closed:
+                self._exit_lifetime(job)
                 raise RuntimeError("background executor is closed")
             active = sum(1 for j in self._jobs.values() if j.status == "running")
             if active >= self.MAX_ACTIVE_JOBS:
+                self._exit_lifetime(job)
                 raise RuntimeError(
                     f"{active} background cells are already running (limit "
                     f"{self.MAX_ACTIVE_JOBS}); interrupt one with "
@@ -149,6 +193,7 @@ class BackgroundExecutor:
             # that is now perfectly able to serve them.
             with self._lock:
                 self._jobs.pop(exec_id, None)
+            self._exit_lifetime(job)
             raise
         with self._lock:
             if self._closed:
@@ -159,32 +204,85 @@ class BackgroundExecutor:
                 try:
                     job._kernel.shutdown()
                 finally:
+                    self._exit_lifetime(job)
                     raise RuntimeError("background executor is closed")
 
         def _run() -> None:
+            terminal_status = "failed"
+            terminal_error: str | None = None
+            terminal_interrupted = False
+            terminal_result: dict | None = None
             try:
                 res = job._kernel.execute(code, origin=origin, on_chunk=job._on_chunk)
-                job.result = res
+                terminal_result = res
                 if res.get("interrupted"):
-                    job.status = "interrupted"
-                    job.interrupted = True
+                    terminal_status = "interrupted"
+                    terminal_interrupted = True
                 elif res.get("error"):
-                    job.status = "failed"
-                    job.error = res.get("error")
+                    terminal_status = "failed"
+                    terminal_error = res.get("error")
                 else:
-                    job.status = "done"
-            except Exception as e:  # noqa: BLE001
-                job.status = "failed"
-                job.error = str(e)
+                    terminal_status = "done"
+            except BaseException:  # a dead thread must never remain "running"
+                # This record is returned directly by exec_peek. Kernel and
+                # transport exceptions can contain worker stderr, absolute
+                # paths, or provider details, so expose one stable error while
+                # still converging KeyboardInterrupt/SystemExit fault paths to
+                # a terminal state that releases their process slot.
+                terminal_status = "failed"
+                terminal_error = "background execution failed"
             finally:
-                job.ended_at = int(time.time() * 1000)
                 try:
-                    job._kernel.shutdown()
-                except Exception:  # noqa: BLE001
-                    pass
+                    try:
+                        job._kernel.shutdown()
+                    except BaseException:
+                        # A cleanup KeyboardInterrupt/SystemExit happens on this
+                        # daemon-owned thread, not at the public interrupt API.
+                        # Converge it to a fixed terminal failure and,
+                        # critically, continue on to release the admission
+                        # lifetime.
+                        terminal_status = "failed"
+                        terminal_error = "background execution cleanup failed"
+                finally:
+                    try:
+                        self._exit_lifetime(job)
+                    except BaseException:
+                        # An admission-release failure means the lifecycle can
+                        # no longer be trusted. Keep the public record
+                        # fail-closed and fixed rather than exposing an
+                        # arbitrary exception.
+                        terminal_status = "failed"
+                        terminal_error = "background execution admission release failed"
+                # Until BOTH cleanup boundaries finish, public status remains
+                # running. Session shutdown therefore still sees and joins or
+                # exact-kills this thread instead of popping its SessionState
+                # while the background lifetime is live. Publish the complete
+                # terminal snapshot under the job lock, with status last.
+                with job._lock:
+                    job.result = terminal_result
+                    job.error = terminal_error
+                    job.interrupted = terminal_interrupted
+                    job.ended_at = int(time.time() * 1000)
+                    job.status = terminal_status
 
-        job._thread = threading.Thread(target=_run, daemon=True)
-        job._thread.start()
+        try:
+            thread = threading.Thread(target=_run, daemon=True)
+            # Close the last launch/shutdown window atomically.  If shutdown
+            # won before this lock, no worker starts after the executor closed;
+            # if start wins, shutdown observes a real thread it can join/kill.
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("background executor is closed")
+                job._thread = thread
+                thread.start()
+        except BaseException:
+            with self._lock:
+                self._jobs.pop(exec_id, None)
+            try:
+                job._kernel.shutdown()
+            finally:
+                self._exit_lifetime(job)
+            raise
         return {"exec_id": exec_id, "status": "running"}
 
     def _get(self, exec_id: str) -> _BackgroundJob:
@@ -202,11 +300,24 @@ class BackgroundExecutor:
         if job.status != "running":
             return job.peek()  # idempotent: already finished
         # ONE SIGINT — the worker's one-shot handler keeps the kernel alive.
-        job._kernel.interrupt()
+        delivery = job._kernel.interrupt()
         # give the interrupt a beat to unwind and produce the response frame.
         if job._thread is not None:
             job._thread.join(timeout=5.0)
-        return job.peek()
+        report = job.peek()
+        # `None` (a kernel double, or an older transport) means "no claim
+        # either way", not "not delivered" -- inventing a failure out of an
+        # absent answer is the same dishonesty pointed the other way.
+        if delivery is not None and not delivery:
+            # The stop reached nobody. `status` already says "running", but a
+            # caller reading that cannot tell "still unwinding" from "this
+            # request did nothing and repeating it will do nothing either" --
+            # and the sandbox's diagnosis of why went to stderr, where the
+            # agent that asked for the stop cannot see it.
+            report["interrupt_undelivered"] = (
+                delivery.reason or "the stop request did not reach the worker"
+            )
+        return report
 
     def list_jobs(self) -> list[dict]:
         with self._lock:

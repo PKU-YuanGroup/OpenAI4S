@@ -30,12 +30,13 @@ Two kinds of gate:
     records the exit code.
 `check_suite`
     Proven by GitHub's own check runs *at that exact SHA* rather than re-executed.
-    The browser matrix and the Python support matrix cost more than the rest of
-    the release combined and already ran on the push to `main` that the tag
-    points at, so re-running them would buy nothing but latency. What makes this
-    evidence rather than an assumption is that the attestation is pinned to
-    `head_sha`: a check run for a different commit does not count, and the
-    check-run and workflow-run IDs are recorded so a reader can go look.
+    The browser matrix, Python support matrix, and real Linux private-PID
+    interrupt smoke already ran on the push to `main` that the tag points at,
+    so re-running them would buy nothing but latency (and, for bubblewrap, a
+    different host). What makes this evidence rather than an assumption is that
+    the attestation is pinned to `head_sha`: a check run for a different commit
+    does not count, and the check-run and workflow-run IDs are recorded so a
+    reader can go look.
 
 Deliberately *not* a gate: the nightly macOS/Linux sandbox jobs. They only run on
 `schedule`/`workflow_dispatch`, so no check run for them exists at a release SHA
@@ -55,7 +56,7 @@ from typing import Any, Iterable, Mapping, Sequence
 #: Bumped whenever the receipt's shape or the gate list changes. The consumer
 #: requires an exact match rather than `>=`: an older producer cannot know about
 #: a gate added later, so accepting its receipt would silently drop that gate.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 RECEIPT_FORMAT = "openai4s-quality-receipt"
 
@@ -168,6 +169,11 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
         CHECK_SUITE_KIND,
         check_name="Browser workbench E2E (webkit)",
     ),
+    Gate(
+        "ci-linux-bwrap-kernel-interrupt",
+        CHECK_SUITE_KIND,
+        check_name="Linux bubblewrap Python/R persistent interrupt",
+    ),
 )
 
 GATES: tuple[Gate, ...] = LOCAL_GATES + CHECK_SUITE_GATES
@@ -182,28 +188,26 @@ PLATFORM_CHECK_COMMANDS: dict[str, tuple[str, ...]] = {
 #: omitted, because the two read identically in an evidence bundle and mean
 #: opposite things.
 #:
-#: `linux-sandbox` was in `PLATFORM_CHECK_COMMANDS` and ran on `ubuntu-latest`,
-#: which is the one runner where `harness.smoke.linux_sandbox` cannot pass: a
-#: GitHub-hosted runner confines unprivileged user namespaces, so bwrap creates
-#: its network namespace and then cannot bring up loopback inside it. ci.yml
-#: says so at length and deliberately has no such job. `build` declares
-#: `needs: platform-checks`, so requiring it made every publication unreachable
-#: -- the inverse of P0-0's exit criterion, which is that a *failing* gate
-#: blocks a release, not that an unpassable one blocks all of them.
+#: `linux-sandbox` was in `PLATFORM_CHECK_COMMANDS`, but its hosted run failed
+#: during network-namespace setup. The targeted CI gate now loads Ubuntu's
+#: restricted bwrap profile, which may change that old result, but deliberately
+#: allows raw networking and therefore does not prove the complete boundary.
+#: Until the full smoke is re-evaluated, `build` must not depend on an unproven
+#: platform leg: doing so made every publication unreachable rather than
+#: blocking only a bad release.
 #:
 #: Removing it silently would have been worse than leaving it red: an absent row
 #: reads as "checked, fine". The plan's rollback clause is explicit -- a platform
 #: whose evidence is missing is degraded to preview, never recorded as passed.
-#: Restoring it to CI needs a host that permits those namespaces (a self-hosted
-#: runner, or a suitably privileged container), at which point it moves back
-#: into `PLATFORM_CHECK_COMMANDS` and out of here.
+#: Once the full smoke is re-evaluated under a suitable enforced setup, it moves
+#: back into `PLATFORM_CHECK_COMMANDS` and out of here.
 PLATFORM_CHECKS_UNAVAILABLE: dict[str, str] = {
     "linux-sandbox": (
-        "harness.smoke.linux_sandbox requires a host that permits unprivileged "
-        "user namespaces; a GitHub-hosted runner does not, so bwrap fails with "
-        "'loopback: Failed RTM_NEWADDR: Operation not permitted'. The Linux "
-        "sandbox boundary is verified by hand on a permissive host and is not "
-        "proven by this release."
+        "harness.smoke.linux_sandbox is not currently a CI or release gate. "
+        "The targeted hosted check loads Ubuntu's restricted bwrap profile but "
+        "deliberately allows raw networking, so it does not prove the complete "
+        "Linux filesystem-and-egress boundary. That full smoke remains "
+        "verified by hand and must be re-evaluated separately."
     ),
 }
 

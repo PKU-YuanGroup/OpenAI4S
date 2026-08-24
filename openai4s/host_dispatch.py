@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -63,6 +63,45 @@ from openai4s.tools.registry import (
     format_tool_result,
     get_tool_by_host_method,
 )
+
+
+class _HeadlessArtifactWriterCoordinator:
+    """Always-on foreground/background exclusion for CLI composition."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._backgrounds = 0
+        self._mutation = False
+
+    @contextmanager
+    def background(self) -> Iterator[None]:
+        with self._lock:
+            if self._mutation:
+                raise RuntimeError(
+                    "background execution cannot start during an Artifact mutation"
+                )
+            self._backgrounds += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._backgrounds = max(0, self._backgrounds - 1)
+
+    @contextmanager
+    def foreground_mutation(self, *, execution_bound: bool) -> Iterator[None]:
+        if not execution_bound:
+            raise RuntimeError(
+                "Artifact mutation requires a foreground execution scope"
+            )
+        with self._lock:
+            if self._backgrounds or self._mutation:
+                raise RuntimeError("another Artifact writer is already running")
+            self._mutation = True
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._mutation = False
 
 
 # --------------------------------------------------------------------------- #
@@ -508,6 +547,87 @@ def _gate_target(method: str, args: list) -> str:
     return ""
 
 
+_GUARDIAN_FILE_PATH_KEYS = {
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "glob": "path",
+    "grep": "path",
+    "list_dir": "path",
+    "web_download": "path",
+    "save_artifact": "path",
+    "materialise_artifact": "filename",
+}
+_GUARDIAN_FILE_PATH_DEFAULTS = {
+    "glob": ".",
+    "grep": ".",
+    "list_dir": ".",
+}
+
+
+def _guardian_file_review(
+    method: str,
+    args: list,
+    files: WorkspaceFileService,
+    config: Config,
+    approvals_reviewer: str | None = None,
+) -> tuple[str | None, bool]:
+    """Resolve a stable target and wider alias verdict for auto-review.
+
+    Permission targets are sometimes patterns, domains, or version ids. The
+    actual file argument is resolved separately so a harmless alias cannot
+    hide an unattended-only basename such as ``config.json``. Resolution here
+    is advisory input to Guardian; the owning service still resolves again at
+    the sink and remains the confinement authority.
+    """
+    key = _GUARDIAN_FILE_PATH_KEYS.get(method)
+    try:
+        from openai4s.server.guardian_enforce import (
+            auto_review_requested,
+            feature_enabled,
+        )
+
+        if not feature_enabled(config) or not auto_review_requested(
+            config, approvals_reviewer
+        ):
+            return None, False
+    except Exception:  # noqa: BLE001 - an active broker will fail closed below
+        return None, True
+    spec = args[0] if args and isinstance(args[0], dict) else {}
+    value = spec.get(key) if key is not None else None
+    if value in (None, ""):
+        value = _GUARDIAN_FILE_PATH_DEFAULTS.get(method)
+    if value in (None, ""):
+        return None, False
+    try:
+        path = Path(str(value))
+        is_credential = files.resolved_credential_checker()(path)
+        target = (path if path.is_absolute() else files.workspace() / path).resolve()
+        relative = files.relative(target)
+        if relative is None:
+            return None, True
+        return relative, is_credential
+    except (OSError, RuntimeError, ValueError):
+        # The service will return the authoritative refusal. If automatic
+        # review is active, inability to establish the wider alias verdict is
+        # itself evidence that Guardian must not authorize the action.
+        return None, True
+
+
+def _secret_pre_gate_path(
+    target: str,
+    files: WorkspaceFileService,
+) -> str:
+    """Classify an absolute in-workspace target relative to the trusted root."""
+
+    path = Path(target)
+    if path.is_absolute():
+        confined = files.relative(path)
+        if confined is not None:
+            return confined
+    return target
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
@@ -748,6 +868,13 @@ class HostDispatcher:
         # parallel read-only native tools: each approval must point back to its
         # own provider tool call rather than merely to the surrounding turn.
         self._action_context_local = threading.local()
+        # A Web native writer binds its Artifact committer only for the exact
+        # dispatcher thread executing that action. A foreground Kernel Cell
+        # binds a separate thread-local receipt scope around its one protocol
+        # reader. Background and unrelated delegated workers have no such
+        # scope and therefore cannot leave receipts for a later Cell to drain.
+        self._native_artifact_local = threading.local()
+        self._artifact_receipt_local = threading.local()
         self._bash_authorization = BashAuthorizationService(
             workspace=lambda: self._files.workspace(),
             frame_id=lambda: self.frame_id,
@@ -761,6 +888,7 @@ class HostDispatcher:
             config=lambda: self.cfg,
             frame_id=lambda: self.frame_id,
             resolve_path=lambda path, **kwargs: self._resolve(path, **kwargs),
+            restore_artifact=self._restore_artifact_from_foreground,
         )
         # Steering hooks wired by the delegation layer.
         self.steer_fns: dict[str, Callable[..., Any]] = {}
@@ -820,6 +948,17 @@ class HostDispatcher:
         # Runtime adapter for independent background kernels. Gateway/CLI set
         # this dynamically so jobs inherit the foreground workspace and env.
         self.background_kernel_factory: Callable[[], Any] | None = None
+        # Optional execution-lifetime admission supplied by the Web session.
+        # Kept as a dynamic hook so an already-created BackgroundExecutor sees
+        # the current session coordinator rather than capturing stale state.
+        self._artifact_writer_coordinator = _HeadlessArtifactWriterCoordinator()
+        self._artifact_restore_backend: Callable[[str, str], dict] | None = None
+        self._artifact_mutation_lease: Callable[[bool], Any] = lambda bound: (
+            self._artifact_writer_coordinator.foreground_mutation(execution_bound=bound)
+        )
+        self.background_execution_lease: Callable[[], Any] | None = (
+            self._artifact_writer_coordinator.background
+        )
         # optional replay recorder: if set, every host_call is taped.
         self.recorder: Any | None = None
         # remote-compute transport, built lazily on first compute_* call.
@@ -860,6 +999,9 @@ class HostDispatcher:
             get_active_r_env=lambda: self.active_r_env,
             set_active_r_env=lambda value: setattr(self, "active_r_env", value),
             get_on_env_switch=lambda: self.on_env_switch,
+            get_stage10_enabled=lambda: bool(
+                self.cfg.roadmap_features.stage10_scientific_connectors
+            ),
             invoke_control=self._invoke_control_behavior,
             search_web=self._search_web,
         )
@@ -880,6 +1022,10 @@ class HostDispatcher:
             except Exception:  # noqa: BLE001 - fall back to the process cwd
                 workspace = None
             self._compute = ComputeManager(self.cfg, workspace=workspace)
+            from openai4s.compute.stage11 import official_stage11_enabled
+
+            if official_stage11_enabled(self.cfg):
+                self._compute.reconcile()
         return self._compute
 
     @property
@@ -965,6 +1111,89 @@ class HostDispatcher:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
 
+    @contextmanager
+    def bind_native_artifact_committer(
+        self,
+        commit: Callable[[tuple[dict[str, Any], ...]], list[dict[str, Any]]],
+    ) -> Iterator[None]:
+        """Bind the Web batch capture callback for one native writing action."""
+
+        marker = object()
+        previous = getattr(self._native_artifact_local, "commit", marker)
+        self._native_artifact_local.commit = commit
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del self._native_artifact_local.commit
+                except AttributeError:
+                    pass
+            else:
+                self._native_artifact_local.commit = previous
+
+    @contextmanager
+    def bind_artifact_receipt_scope(self) -> Iterator[list[dict[str, Any]]]:
+        """Collect receipts for exactly one foreground Cell/action thread."""
+
+        marker = object()
+        previous = getattr(self._artifact_receipt_local, "receipts", marker)
+        receipts: list[dict[str, Any]] = []
+        self._artifact_receipt_local.receipts = receipts
+        try:
+            yield receipts
+        finally:
+            if previous is marker:
+                try:
+                    del self._artifact_receipt_local.receipts
+                except AttributeError:
+                    pass
+            else:
+                self._artifact_receipt_local.receipts = previous
+
+    def _artifact_capture_bound(self) -> bool:
+        return callable(getattr(self._native_artifact_local, "commit", None)) or (
+            isinstance(getattr(self._artifact_receipt_local, "receipts", None), list)
+        )
+
+    def _artifact_scope_required(self, method: str) -> bool:
+        if method == "science_search":
+            return bool(
+                self.control_tool_execution_metadata("science_search").get(
+                    "writes_files"
+                )
+            )
+        if method == "compute_result":
+            return bool(self.cfg.roadmap_features.stage11_durable_remote_compute)
+        return False
+
+    def _commit_or_queue_artifact_receipt(self, result: Any) -> Any:
+        if not isinstance(result, dict):
+            return result
+        single = result.pop("_openai4s_artifact_capture", None)
+        multiple = result.pop("_openai4s_artifact_captures", None)
+        receipts: list[dict[str, Any]] = []
+        if isinstance(single, dict):
+            receipts.append(dict(single))
+        if isinstance(multiple, list):
+            receipts.extend(dict(item) for item in multiple if isinstance(item, dict))
+        if not receipts:
+            return result
+        commit = getattr(self._native_artifact_local, "commit", None)
+        if callable(commit):
+            committed = commit(tuple(receipts))
+            if isinstance(single, dict) and committed:
+                # Preserve Stage 10's existing public response contract.
+                result["artifact"] = committed[0]
+        else:
+            scoped = getattr(self._artifact_receipt_local, "receipts", None)
+            if not isinstance(scoped, list):
+                raise RuntimeError(
+                    "Artifact-producing Host call requires a foreground capture scope"
+                )
+            scoped.extend(receipts)
+        return result
+
     def _canonical_mcp_server(self, method: str, args: list) -> list:
         """Rewrite an MCP ``server`` argument to the connector's own id.
 
@@ -1009,6 +1238,39 @@ class HostDispatcher:
         """Attach the Web runtime's shared filesystem-aware session service."""
 
         self._session_service.set_domain(domain)
+
+    def set_artifact_restorer(
+        self,
+        restore: Callable[[str, str], dict] | None,
+        *,
+        mutation_lease: Callable[[bool], Any] | None = None,
+        materialise: Callable[..., dict] | None = None,
+        writer: Callable[[], Any] | None = None,
+    ) -> None:
+        """Bind Web Host restore to the session's canonical exact writer."""
+
+        self._artifact_restore_backend = restore
+        self._data_service.set_artifact_restorer(
+            self._restore_artifact_from_foreground,
+            materialise=materialise,
+            writer=writer,
+        )
+        if mutation_lease is not None:
+            self._artifact_mutation_lease = mutation_lease
+
+    def _restore_artifact_from_foreground(
+        self, artifact_id: str, version_id: str
+    ) -> dict:
+        """Refuse background/unbound restores before their first side effect."""
+
+        execution_bound = bool(self._current_action_context()) or (
+            self._artifact_capture_bound()
+        )
+        with self._artifact_mutation_lease(execution_bound):
+            backend = self._artifact_restore_backend
+            if backend is not None:
+                return backend(artifact_id, version_id)
+            return self._data_service.restore_artifact_exact(artifact_id, version_id)
 
     def set_child_execution_policy(self, policy: ChildExecutionPolicy | None) -> None:
         """Bind one additional fail-closed policy for a delegated child."""
@@ -1070,6 +1332,31 @@ class HostDispatcher:
             )
             self._session_tool_scope = identity
         return self._session_tool_catalog
+
+    def control_tool_execution_metadata(self, name: str) -> dict[str, Any]:
+        """Resolve flag-dependent execution declarations in one place."""
+
+        tool = self.tool_catalog().get(name)
+        if tool is None:
+            return {}
+        return {
+            "writes_files": bool(tool.writes_files_for(self._tool_context)),
+            "read_only": bool(tool.read_only_for(self._tool_context)),
+            "side_effect_class": str(tool.side_effect_class_for(self._tool_context)),
+        }
+
+    def control_tool_policy(self, name: str, arguments: Any) -> tuple[str, list[str]]:
+        """Return exact audit policy for the current feature configuration."""
+
+        tool = self.tool_catalog().get(name)
+        if tool is None:
+            return "unknown", [f"tool:{name or '<unnamed>'}"]
+        metadata = self.control_tool_execution_metadata(name)
+        try:
+            resources = list(tool.resource_keys(arguments or {}))
+        except Exception:  # noqa: BLE001 - audit metadata stays total
+            resources = [f"tool:{name}"]
+        return str(metadata.get("side_effect_class") or "unknown"), resources
 
     def set_capability_scope(self, frame_id: str | None = None) -> None:
         """Retarget Skill/Specialist policy to the frame's project + session."""
@@ -1176,7 +1463,12 @@ class HostDispatcher:
         except Exception:  # noqa: BLE001 - audit metadata stays total
             audit_resources = [f"host:{method}"]
         audit_side_effect = (
-            control_tool.side_effect_class
+            str(
+                self.control_tool_execution_metadata(control_tool.name).get(
+                    "side_effect_class"
+                )
+                or control_tool.side_effect_class
+            )
             if control_tool is not None
             else "runtime_mutation"
         )
@@ -1239,6 +1531,21 @@ class HostDispatcher:
                     }
                     ok = False
                     return result
+            if (
+                self._artifact_scope_required(method)
+                and not self._artifact_capture_bound()
+            ):
+                # The provider/search call writes into the workspace. Without
+                # an exact native-action or foreground-Cell capture scope,
+                # allowing it to proceed would either lose provenance or let
+                # a later unrelated Cell claim the receipt. Background workers
+                # are intentionally refused before the side effect.
+                result = {
+                    "error": "Artifact-producing Host call requires a foreground "
+                    "capture scope"
+                }
+                ok = False
+                return result
             # opencode-style permission gate: block on user approval for
             # risk-bearing tools. Covers this dispatcher (foreground + background
             # cells) and, via the process-wide broker keyed by root_frame_id,
@@ -1260,7 +1567,12 @@ class HostDispatcher:
                     else None
                 )
             )
-            if secret_target is not None and _is_secret_path(secret_target):
+            secret_check_target = (
+                _secret_pre_gate_path(secret_target, self._files)
+                if secret_target is not None
+                else None
+            )
+            if secret_check_target is not None and _is_secret_path(secret_check_target):
                 result = {
                     "error": "Permission denied: access to secret files "
                     f"(e.g. .env / keys) is blocked: {secret_target}"
@@ -1272,7 +1584,30 @@ class HostDispatcher:
                 target = _gate_target(permission_method, args)
                 from openai4s.permissions import broker
 
-                gate = broker().gate(
+                permission_broker = broker()
+                reviewer_for = getattr(
+                    permission_broker, "approvals_reviewer_for", None
+                )
+                try:
+                    approvals_reviewer = (
+                        reviewer_for(store=self.store, frame_id=self.frame_id)
+                        if callable(reviewer_for)
+                        else None
+                    )
+                except Exception:  # noqa: BLE001 - unreadable selection is not consent
+                    approvals_reviewer = "user"
+                (
+                    resolved_file_path,
+                    resolved_file_is_credential,
+                ) = _guardian_file_review(
+                    permission_method,
+                    args,
+                    self._files,
+                    self.cfg,
+                    approvals_reviewer,
+                )
+
+                gate = permission_broker.gate(
                     store=self.store,
                     frame_id=self.frame_id,
                     method=permission_method,
@@ -1284,6 +1619,11 @@ class HostDispatcher:
                     side_effect_class=audit_side_effect,
                     resource_keys=audit_resources,
                     dangerous=audit_dangerous,
+                    canonical_arguments=args,
+                    resolved_file_path=resolved_file_path,
+                    resolved_file_is_credential=resolved_file_is_credential,
+                    guardian_config=self.cfg,
+                    approvals_reviewer=approvals_reviewer,
                 )
                 permission_decision_id = gate.get("decision_id") or gate.get(
                     "continuation_decision_id"
@@ -1294,6 +1634,8 @@ class HostDispatcher:
                     ok = False
                     return result
             result = handler(*args)
+            if method in {"science_search", "compute_result"}:
+                result = self._commit_or_queue_artifact_receipt(result)
             if isinstance(result, dict) and set(result.keys()) == {"error"}:
                 ok = False  # soft-fail contract
             else:
@@ -1908,10 +2250,38 @@ class HostDispatcher:
                     "is in neither the compute host registry nor ~/.ssh/config",
                     "not_found",
                 )
+        trusted_version_paths: dict[str, str] = {}
+        inputs = kw.get("inputs") or []
+        if isinstance(inputs, (str, dict)):
+            inputs = [inputs]
+        for item in inputs:
+            if not isinstance(item, dict):
+                continue
+            version_id = str(item.get("version_id") or "").strip()
+            if version_id and version_id not in trusted_version_paths:
+                trusted_version_paths[version_id] = (
+                    self._data_service.artifact_snapshot_path(version_id)
+                )
+        if trusted_version_paths:
+            return self.compute.submit(
+                kw,
+                trusted_version_paths=trusted_version_paths,
+            )
         return self.compute.submit(kw)
 
     def _m_compute_result(self, kw: dict) -> Any:
-        return self._compute_guard(lambda: self.compute.result(kw))
+        result = self._compute_guard(lambda: self.compute.result(kw))
+        if not self.cfg.roadmap_features.stage11_durable_remote_compute:
+            return result
+        if not isinstance(result, dict) or set(result) == {"error"}:
+            return result
+        from openai4s.compute.stage11 import harvest_artifact_receipts
+
+        receipts = harvest_artifact_receipts(result, workspace=self._workspace())
+        if receipts:
+            result = dict(result)
+            result["_openai4s_artifact_captures"] = receipts
+        return result
 
     def _m_compute_cancel(self, kw: dict) -> Any:
         return self._compute_guard(lambda: self.compute.cancel(kw))
@@ -2111,6 +2481,15 @@ class HostDispatcher:
     def _new_background_kernel(self) -> Any:
         if self.background_kernel_factory is not None:
             return self.background_kernel_factory()
+        if self.cfg.team_mode:
+            # A team Cell needs the embedding to provide an OS read boundary
+            # scoped to its durable session owner.  The generic dispatcher
+            # cannot derive that ownership safely, so its historical bare
+            # Kernel fallback must not turn a first-turn native
+            # ``exec_background`` into an unsandboxed cross-session read path.
+            raise RuntimeError(
+                "team exec_background requires a session-scoped kernel factory"
+            )
         from openai4s.kernel import Kernel
 
         # ``background_kernel_factory`` is wired when a *foreground* kernel
@@ -2137,6 +2516,11 @@ class HostDispatcher:
             self._bg_executor = BackgroundExecutor(
                 kernel_factory=self._new_background_kernel,
                 dispatcher=self,
+                lifetime_factory=lambda: (
+                    self.background_execution_lease()
+                    if self.background_execution_lease is not None
+                    else nullcontext()
+                ),
             )
         return self._bg_executor
 

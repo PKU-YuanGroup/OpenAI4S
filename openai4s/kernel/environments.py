@@ -338,9 +338,13 @@ def _generation_root() -> Path | None:
     if override:
         return Path(override).expanduser()
     try:
-        from openai4s.config import get_config
+        from openai4s.config import Config
 
-        return Path(get_config().data_dir) / "environments"
+        # Constructing Config only resolves local values. ``get_config()`` also
+        # calls ``ensure_dirs()``, so a readiness *read* used to create the data
+        # directory and four children while claiming ``mutation_performed`` was
+        # false. Discovery must remain a read even in a fresh process.
+        return Path(Config().data_dir) / "environments"
     except Exception:  # noqa: BLE001 - discovery must not depend on config
         return None
 
@@ -361,31 +365,56 @@ def _generation_environments() -> list[Environment]:
     root = _generation_root()
     if root is None or not root.is_dir():
         return []
+    from openai4s.kernel.env_generations import (
+        READY,
+        SUPERSEDED,
+        EnvironmentStore,
+    )
+
+    store = EnvironmentStore(root)
+    try:
+        names = store.environments()
+    except OSError:
+        return []
     found: list[Environment] = []
-    for env_dir in sorted(root.iterdir()):
-        if not env_dir.is_dir() or env_dir.name.startswith("."):
+    for name in names:
+        env_dir = root / name
+        # Managed applies create a real directory. Refuse an environment tree
+        # symlink rather than letting a pointer and manifest outside the store
+        # inherit a trusted built-in name.
+        if env_dir.is_symlink():
             continue
-        pointer = env_dir / "current"
-        try:
-            generation_id = pointer.read_text(encoding="utf-8").strip()
-        except OSError:
+        generation = store.current(name)
+        if (
+            generation is None
+            or generation.state not in (READY, SUPERSEDED)
+            or not generation.prefix
+        ):
             continue
-        if not generation_id:
-            continue
-        prefix = env_dir / "generations" / generation_id / "prefix"
+        prefix = Path(generation.prefix)
         if not prefix.is_dir():
-            # A pointer at a generation that is not there is a fact worth not
-            # papering over, but discovery is not the place to raise: `env
-            # recover` reports it, and offering a prefix that does not exist
-            # would only move the failure into a kernel spawn.
             continue
         environment = _detect_env(prefix)
         if environment is None:
             continue
-        environment.name = env_dir.name
-        environment.generation_id = generation_id
+        environment.name = name
+        environment.generation_id = generation.id
         found.append(environment)
     return found
+
+
+def standard_generation_layout_is_safe() -> bool:
+    """Validate the managed ``python``/``r`` tree without creating it."""
+
+    root = _generation_root()
+    if root is None or not root.exists():
+        return True
+    if not root.is_dir():
+        return False
+    from openai4s.kernel.env_generations import EnvironmentStore
+
+    store = EnvironmentStore(root)
+    return all(store.layout_is_safe(name) for name in ("python", "r"))
 
 
 def _pointer_fingerprint() -> tuple:

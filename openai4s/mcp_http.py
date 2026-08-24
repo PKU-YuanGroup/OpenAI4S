@@ -17,7 +17,6 @@ import math
 import re
 import socket
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,7 +24,7 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from openai4s import egress, webtools
-from openai4s.http_deadline import HTTPExchangeDeadline, socket_timeout_setter
+from openai4s.http_deadline import HTTPExchangeDeadline, read_body_capped
 from openai4s.mcp_protocol import (
     MAX_FRAME_BYTES,
     MCPError,
@@ -333,40 +332,38 @@ class MCPHTTPConnection:
                 f"MCP HTTP request was blocked by network policy ({type(exc).__name__})"
             ) from None
 
-    def _read_body(self, response: Any, deadline: float) -> bytes:
-        raw_length = response.headers.get("Content-Length")
-        if raw_length:
-            try:
-                if int(raw_length) > _MAX_FRAME_BYTES:
-                    raise MCPOversizedResponse(
-                        "MCP HTTP response exceeded the 4 MiB limit"
-                    )
-            except ValueError:
-                pass
-        chunks: list[bytes] = []
-        total = 0
-        timeout_setter = socket_timeout_setter(response)
-        read_once = getattr(response, "read1", None)
-        if not callable(read_once):
-            read_once = response.read
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise MCPTimeout(f"MCP HTTP request exceeded {self._timeout:g}s")
-            if timeout_setter is not None:
-                timeout_setter(remaining)
-            # ``BufferedReader.read(n)`` may perform multiple raw reads while
-            # trying to fill ``n``.  A peer that drips one byte just before
-            # each relative socket timeout can therefore keep that one call
-            # alive indefinitely.  ``read1`` performs at most one raw read,
-            # returning here so the absolute remaining budget is recomputed.
-            chunk = read_once(min(65_536, _MAX_FRAME_BYTES + 1 - total))
-            if not chunk:
-                return b"".join(chunks)
-            total += len(chunk)
-            if total > _MAX_FRAME_BYTES:
-                raise MCPOversizedResponse("MCP HTTP response exceeded the 4 MiB limit")
-            chunks.append(chunk)
+    def _read_body(
+        self,
+        response: Any,
+        exchange: HTTPExchangeDeadline,
+    ) -> bytes:
+        """This transport's failure vocabulary over the shared bounded reader.
+
+        The loop itself lives in ``http_deadline`` so that the properties it
+        enforces -- one raw read per deadline check, the byte cap, stopping at
+        end-of-body, refusing a body cut short of its declared length, and
+        refusing to read one at all with no bound -- hold for every consumer
+        rather than for whichever copy last received the fix.
+        """
+
+        def _oversize() -> BaseException:
+            return MCPOversizedResponse("MCP HTTP response exceeded the 4 MiB limit")
+
+        return read_body_capped(
+            response,
+            limit=_MAX_FRAME_BYTES,
+            exchange=exchange,
+            on_timeout=lambda: MCPTimeout(
+                f"MCP HTTP request exceeded {self._timeout:g}s"
+            ),
+            on_oversize=_oversize,
+            on_truncated=lambda: MCPError(
+                "MCP HTTP response ended before its declared length"
+            ),
+            on_unbounded=lambda: MCPError(
+                "MCP HTTP response has no bounded read transport"
+            ),
+        )
 
     def _post(
         self,
@@ -427,7 +424,7 @@ class MCPHTTPConnection:
                     if session is not None:
                         self._session = _session_id(session)
                     content_type = response.headers.get("Content-Type", "")
-                    response_body = self._read_body(response, exchange.deadline)
+                    response_body = self._read_body(response, exchange)
                     if expected_id is None:
                         return None
         except urllib.error.HTTPError as exc:

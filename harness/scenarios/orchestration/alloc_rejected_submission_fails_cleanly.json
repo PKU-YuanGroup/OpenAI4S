@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "id": "alloc.rejected_submission_fails_cleanly",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "A backend that refuses gives the workload a terminal state and a reason.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 2,
+      "submits": [
+        {
+          "result": "rejected",
+          "reason": "INVALID_SPEC"
+        }
+      ],
+      "observations": []
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "FAILED:INVALID_SPEC",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "workload_terminal",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

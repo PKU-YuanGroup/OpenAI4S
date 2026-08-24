@@ -1,6 +1,6 @@
 """Each gate is its own job, so each can fail on its own.
 
-`CLAUDE.md` lists nine gates and says each "fails independently". Four of them
+`CLAUDE.md` lists the gates and says each "fails independently". Four of them
 were steps inside another job: `check_directory_readmes` came after
 `pre-commit` in `lint`, and the harness tier plus both response captures came
 after `pytest` in `test`. A GitHub Actions step only runs when every step before
@@ -49,6 +49,13 @@ GATES = {
     "response-schemas": ("scripts/capture_response_schemas.py --check", ()),
     "response-contract": ("scripts/capture_response_contract.py --check", ()),
     "container-image": ("scripts/container_smoke.sh", ()),
+    "linux-bwrap-interrupt": ("harness.smoke.linux_bwrap_interrupt", ()),
+    # The two npm-side gates. They are separate for the reason this whole file
+    # is about: "the installer behaves" and "the published package has anything
+    # in it" are different questions, and a red answer to one must not withhold
+    # the other.
+    "skills-installer": ("tools/skills-installer/selftest.mjs", ()),
+    "skills-package": ("tools/skills-installer/check_package.mjs", ()),
 }
 
 
@@ -116,6 +123,9 @@ def test_no_gate_sits_behind_another_command_that_can_fail_it(gate):
                     "npm ",
                     "npx ",
                     "python -m pip",
+                    "sudo apt-get",
+                    "sudo apparmor_parser",
+                    "/usr/bin/bwrap ",
                     "uv run python -m compileall",
                     "uv run pytest --collect-only",
                 )

@@ -89,6 +89,33 @@ EventSink = Callable[[dict], None]
 ReviewStoreProvider = Callable[[], ReviewStore]
 
 
+_LEGACY_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def legacy_auto_mode_selection(
+    store: ReviewStore,
+    root_frame_id: str,
+) -> dict[str, Any] | None:
+    """Map the old per-session Reviewer bool without widening its authority.
+
+    This is deliberately separate from :meth:`ReviewService.auto_enabled`.
+    The legacy manual/after-the-fact Reviewer still inherits the old global
+    setting byte-for-byte.  Auto Mode migration recognizes only the scoped
+    ``review:auto:<root>`` value, maps true to result ``review_only``, and
+    always leaves permission review with the user.
+    """
+
+    raw = store.get_setting(f"review:auto:{root_frame_id}")
+    if raw is None:
+        return None
+    enabled = str(raw or "").strip().lower() in _LEGACY_TRUE
+    return {
+        "preset": "off",
+        "result_review_mode": "review_only" if enabled else "off",
+        "approvals_reviewer": "user",
+    }
+
+
 @dataclass(frozen=True)
 class ReviewPorts:
     """Late-bound gateway providers used by :class:`ReviewService`."""
@@ -96,7 +123,11 @@ class ReviewPorts:
     state_for: Callable[[str, str], ReviewState]
     emitter_for: Callable[[str], EventSink]
     llm_config_for: Callable[[ReviewState], Any]
-    review_evidence: Callable[[dict, Any], dict]
+    # (evidence, llm_config, root_frame_id). The session id is not used by
+    # the reviewer itself: it is what lets the composition root apply the
+    # same team-mode LLM quota gate the turn loop applies, since this port
+    # reaches the provider without passing through ChatModel.
+    review_evidence: Callable[[dict, Any, str], dict]
     providers: Callable[[], Mapping[str, dict]]
     clean_api_key: Callable[[Any], str]
     # A profile's api_key field holds a broker reference once migrated.
@@ -400,6 +431,7 @@ class ReviewService:
                     review_box["result"] = self.ports.review_evidence(
                         evidence,
                         config,
+                        root_frame_id,
                     )
                 except Exception as review_error:  # noqa: BLE001
                     review_box["error"] = review_error
@@ -477,6 +509,14 @@ class ReviewService:
                 input_tokens=usage.get("input_tokens", 0) or 0,
                 output_tokens=usage.get("output_tokens", 0) or 0,
             )
+            # The governance ledger too (M2-5). The reviewer reaches the
+            # provider through its own port; the pre-call quota check was
+            # wired to it in the M2 hardening, but the *usage* was not, so
+            # the ledger that check reads never advanced -- a member could
+            # review forever against a limit that could not fill.
+            from openai4s.storage.governance import record_session_llm_usage
+
+            record_session_llm_usage(self.store, root_frame_id, usage)
             summary = result.get("summary") or "No issues found"
             self.store.update_step(
                 step_id,
@@ -671,4 +711,4 @@ class ReviewService:
         return job
 
 
-__all__ = ["ReviewPorts", "ReviewService"]
+__all__ = ["ReviewPorts", "ReviewService", "legacy_auto_mode_selection"]

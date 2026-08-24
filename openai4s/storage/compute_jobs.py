@@ -51,6 +51,7 @@ _FIELDS = (
     # in the prose, which is where it actually misleads.
     "receipt",
     "outputs",
+    "input_versions",
     # Which session/workspace owns this job. `_rehydrate` filters on it so a
     # restart does not hand one session's live jobs to another. NULL = CLI.
     "owner_key",
@@ -105,6 +106,7 @@ class ComputeJobRepository:
         status: str = "queued",
         idempotency_key: str | None = None,
         outputs: Any = None,
+        input_versions: Any = None,
         owner_key: str | None = None,
     ) -> dict:
         """Record a job before it is submitted.
@@ -118,14 +120,19 @@ class ComputeJobRepository:
             try:
                 self._connection.execute(
                     "INSERT INTO compute_jobs(job_id,idempotency_key,provider,"
-                    "status,outputs,owner_key,created_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
+                    "status,outputs,input_versions,owner_key,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
                     (
                         job_id,
                         idempotency_key,
                         provider,
                         status,
                         json.dumps(outputs) if outputs is not None else None,
+                        (
+                            json.dumps(input_versions)
+                            if input_versions is not None
+                            else None
+                        ),
                         owner_key,
                         now,
                         now,
@@ -165,7 +172,7 @@ class ComputeJobRepository:
         allowed = {k: v for k, v in fields.items() if k in _FIELDS and k != "job_id"}
         if not allowed:
             return self.get(job_id)
-        for column in ("outputs", "artifact_manifest"):
+        for column in ("outputs", "input_versions", "artifact_manifest"):
             if column in allowed and not isinstance(allowed[column], (str, type(None))):
                 allowed[column] = json.dumps(allowed[column])
         requested = str(allowed["status"]) if "status" in allowed else None
@@ -368,7 +375,7 @@ class ComputeJobRepository:
         if row is None:
             return None
         job = dict(zip(_FIELDS, row))
-        for column in ("outputs", "artifact_manifest"):
+        for column in ("outputs", "input_versions", "artifact_manifest"):
             if job.get(column):
                 try:
                     job[column] = json.loads(job[column])

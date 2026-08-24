@@ -25,6 +25,13 @@ the private process in [`SECURITY.md`](SECURITY.md).
 5. **External PRs never receive secrets.** CI for pull requests must run
    without API keys, tokens, or credentials of any kind, and must not run
    live LLM / network / GPU / SSH / lab jobs.
+6. **A deferred follow-up goes in [`TODO.md`](TODO.md), not in a comment.**
+   Anything this repository has decided to do and has not done — especially
+   when the blocker is outside the codebase, like a registry account or a
+   machine — belongs there with a "done when" line. A loose end recorded only
+   in a code comment or a merged PR description is a loose end nobody will find
+   again. Planned work with a status still lives in
+   [`docs/next-version-progress.md`](docs/next-version-progress.md).
 
 ## Harness invariants
 
@@ -93,7 +100,7 @@ Run locally and make sure everything is green:
 
 ```bash
 uv run pytest                       # full offline suite — no network, no keys
-uv run mypy                         # strict agent core + typed Host dispatcher
+uv run mypy                         # strict agent/Host + orchestration contracts
 uv run pre-commit run --all-files   # black · isort · ruff · mypy · hygiene
 ```
 

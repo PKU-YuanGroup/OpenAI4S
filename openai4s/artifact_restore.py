@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
-import uuid
+import stat
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -86,7 +85,13 @@ def trusted_snapshot_roots(data_dir: Path | str) -> tuple[Path, ...]:
 
 
 class ArtifactRestoreService:
-    """Restore immutable bytes through one append-only safety contract."""
+    """Verify immutable restore sources before the exact writer publishes them.
+
+    Filesystem mutation intentionally does not live here.  The old service used
+    pathname ``atomic_write`` for both the live file and rollback, creating a
+    second, raceable restore implementation beside the Artifact upload journal.
+    Callers now feed these verified bytes into that one pinned-parent writer.
+    """
 
     def __init__(
         self,
@@ -104,20 +109,6 @@ class ArtifactRestoreService:
         )
         self.resolve_live_path = resolve_live_path
 
-    @staticmethod
-    def atomic_write(path: Path, data: bytes) -> None:
-        """Write bytes through a same-directory temporary and atomic replace."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
-        try:
-            with temporary.open("xb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
-
     def verified_snapshot_bytes(self, version: dict) -> tuple[Path, bytes]:
         """Read one immutable snapshot only after root, hash, and size checks."""
         raw_path = version.get("snapshot_path")
@@ -127,17 +118,79 @@ class ArtifactRestoreService:
                 "immutable snapshot"
             )
         try:
-            path = Path(raw_path).expanduser().resolve(strict=True)
+            lexical = Path(os.path.abspath(Path(raw_path).expanduser()))
+            parent = lexical.parent.resolve(strict=True)
+            path = parent / lexical.name
         except OSError as error:
             # The path is deliberately not quoted: it is absolute, under the
             # data directory, and this message is shown to whoever asked for
             # the restore. `version_id` identifies the same row and is theirs.
             raise ArtifactRestoreRefused("artifact snapshot is unavailable") from error
-        if not any(path.is_relative_to(root) for root in self.trusted_snapshot_dirs):
+        if not any(parent.is_relative_to(root) for root in self.trusted_snapshot_dirs):
             raise ArtifactRestoreDenied("artifact snapshot is outside trusted storage")
-        if not path.is_file():
-            raise ArtifactRestoreRefused("artifact snapshot is not a regular file")
-        data = path.read_bytes()
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+            )
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or int(before.st_nlink) != 1:
+                raise ArtifactRestoreRefused(
+                    "artifact snapshot is not a private regular file"
+                )
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after = os.fstat(descriptor)
+            named = os.stat(path, follow_symlinks=False)
+            before_state = (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+                before.st_nlink,
+            )
+            after_state = (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+                after.st_nlink,
+            )
+            named_state = (
+                named.st_dev,
+                named.st_ino,
+                named.st_size,
+                named.st_mtime_ns,
+                named.st_ctime_ns,
+                named.st_nlink,
+            )
+            data = b"".join(chunks)
+            if (
+                before_state != after_state
+                or not os.path.samestat(after, named)
+                or after_state != named_state
+                or len(data) != int(after.st_size)
+            ):
+                raise ArtifactRestoreRefused(
+                    "artifact snapshot changed while it was verified"
+                )
+        except ArtifactRestoreRefused:
+            raise
+        except OSError as error:
+            raise ArtifactRestoreRefused("artifact snapshot is unavailable") from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
         expected_checksum = str(version.get("checksum") or "")
         if not expected_checksum:
             raise ArtifactRestoreRefused("artifact snapshot has no recorded checksum")
@@ -150,149 +203,6 @@ class ArtifactRestoreService:
         if expected_size is not None and len(data) != int(expected_size):
             raise ArtifactRestoreRefused("artifact snapshot size verification failed")
         return path, data
-
-    def _protect_current_version(
-        self,
-        current: dict,
-        live: Path,
-    ) -> tuple[bool, bytes | None]:
-        """Reject workspace drift and freeze the current head before overwrite."""
-        live_exists = live.exists()
-        if live_exists and not live.is_file():
-            raise ArtifactRestoreRefused(
-                "artifact workspace target is not a regular file"
-            )
-        live_data = live.read_bytes() if live_exists else None
-        expected_checksum = str(current.get("checksum") or "")
-        if not expected_checksum:
-            raise ArtifactRestoreRefused(
-                "current artifact version has no recorded checksum"
-            )
-        if live_data is not None:
-            if hashlib.sha256(live_data).hexdigest() != expected_checksum:
-                raise ArtifactRestoreRefused(
-                    "workspace file has unversioned changes; save them before restore"
-                )
-            expected_size = current.get("size_bytes")
-            if expected_size is not None and len(live_data) != int(expected_size):
-                raise ArtifactRestoreRefused(
-                    "workspace file size no longer matches current version"
-                )
-
-        if current.get("snapshot_path"):
-            self.verified_snapshot_bytes(current)
-        else:
-            if live_data is None:
-                raise ArtifactRestoreRefused(
-                    "current artifact bytes are unavailable; restore would lose history"
-                )
-            self.primary_snapshot_dir.mkdir(parents=True, exist_ok=True)
-            safe = re.sub(
-                r"[^A-Za-z0-9._-]+",
-                "_",
-                str(current.get("filename") or "artifact"),
-            )
-            snapshot = self.primary_snapshot_dir / (f"{current['version_id']}__{safe}")
-            if snapshot.exists():
-                raise ArtifactRestoreRefused(
-                    "refusing to overwrite an existing snapshot"
-                )
-            self.atomic_write(snapshot, live_data)
-            if hashlib.sha256(snapshot.read_bytes()).hexdigest() != expected_checksum:
-                snapshot.unlink(missing_ok=True)
-                raise ArtifactRestoreRefused(
-                    "failed to verify the protected current snapshot"
-                )
-            try:
-                self.store.set_version_snapshot(current["version_id"], str(snapshot))
-            except Exception:
-                snapshot.unlink(missing_ok=True)
-                raise
-        return live_exists, live_data
-
-    def restore(
-        self,
-        *,
-        artifact: dict,
-        source_version_id: str,
-        frame_id: str | None,
-    ) -> dict:
-        """Copy a historical snapshot into a fresh immutable Artifact version."""
-        artifact_id = str(artifact.get("artifact_id") or "")
-        current_version_id = str(artifact.get("latest_version_id") or "")
-        if source_version_id == current_version_id:
-            raise ArtifactRestoreRefused(
-                "restore requires a historical, non-current version"
-            )
-        source = self.store.version_meta(source_version_id)
-        if source is None or source.get("artifact_id") != artifact_id:
-            raise ArtifactRestoreRefused(
-                f"version {source_version_id!r} does not belong to artifact "
-                f"{artifact_id!r}"
-            )
-        _source_path, source_data = self.verified_snapshot_bytes(source)
-
-        current = self.store.version_meta(current_version_id)
-        if current is None or current.get("artifact_id") != artifact_id:
-            raise ArtifactRestoreRefused(
-                "artifact latest-version metadata is inconsistent"
-            )
-        live = Path(self.resolve_live_path(artifact, current)).expanduser().resolve()
-        live_existed, previous_data = self._protect_current_version(current, live)
-
-        new_version_id = f"v-{uuid.uuid4().hex[:12]}"
-        safe_filename = re.sub(
-            r"[^A-Za-z0-9._-]+",
-            "_",
-            str(source.get("filename") or artifact.get("filename") or "artifact"),
-        )
-        self.primary_snapshot_dir.mkdir(parents=True, exist_ok=True)
-        new_snapshot = self.primary_snapshot_dir / (
-            f"{new_version_id}__{safe_filename}"
-        )
-        if new_snapshot.exists():
-            raise ArtifactRestoreRefused("refusing to overwrite an existing snapshot")
-        self.atomic_write(new_snapshot, source_data)
-        checksum = hashlib.sha256(source_data).hexdigest()
-        if hashlib.sha256(new_snapshot.read_bytes()).hexdigest() != checksum:
-            new_snapshot.unlink(missing_ok=True)
-            raise ArtifactRestoreRefused(
-                "restored snapshot checksum verification failed"
-            )
-
-        try:
-            self.atomic_write(live, source_data)
-            record = self.store.record_artifact_restore(
-                artifact_id=artifact_id,
-                source_version_id=source_version_id,
-                expected_latest_version_id=current_version_id,
-                version_id=new_version_id,
-                path=str(live),
-                snapshot_path=str(new_snapshot),
-                size_bytes=len(source_data),
-                checksum=checksum,
-                frame_id=frame_id,
-                root_frame_id=artifact.get("root_frame_id"),
-                project_id=artifact.get("project_id"),
-            )
-        except Exception as error:
-            new_snapshot.unlink(missing_ok=True)
-            try:
-                if live_existed and previous_data is not None:
-                    self.atomic_write(live, previous_data)
-                else:
-                    live.unlink(missing_ok=True)
-            except OSError:
-                raise ArtifactRestoreRefused(
-                    "artifact restore failed and the workspace rollback also "
-                    "failed; the daemon diagnostics record why"
-                ) from error
-            raise
-        return {
-            "ok": True,
-            **record,
-            "snapshot_verified": True,
-        }
 
 
 __all__ = ["ArtifactRestoreService", "ArtifactRestoreStore"]

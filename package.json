@@ -1,0 +1,39 @@
+{
+  "name": "openai4s-skills",
+  "version": "0.1.0",
+  "description": "Install the OpenAI4S Skill library (602 scientific recipes) into Claude Code, OpenAI4S, or any directory.",
+  "keywords": [
+    "openai4s",
+    "skills",
+    "claude-code",
+    "bioinformatics",
+    "scientific-computing",
+    "agent"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/PKU-YuanGroup/OpenAI4S#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PKU-YuanGroup/OpenAI4S.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PKU-YuanGroup/OpenAI4S/issues"
+  },
+  "bin": {
+    "openai4s-skills": "tools/skills-installer/cli.mjs"
+  },
+  "files": [
+    "tools/skills-installer/",
+    "skills/",
+    "!skills/**/__pycache__",
+    "!skills/**/*.py[cod]",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node tools/skills-installer/selftest.mjs"
+  },
+  "dependencies": {}
+}

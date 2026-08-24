@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Iterable
-from urllib.parse import quote
 
 from openai4s.agent.actions import (
     Action,
@@ -13,6 +12,7 @@ from openai4s.agent.actions import (
     NativeToolBatch,
     is_completion_only_cell,
 )
+from openai4s.server.urls import completion_artifact_url
 
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _SUMMARY_KEYS = (
@@ -177,6 +177,7 @@ def completion_message(
     previous_text: str = "",
     language: str = "en",
     require_fallback: bool = True,
+    trusted_delivery: bool = False,
 ) -> str:
     """Render a submitted result into a durable, human-facing final message."""
     spec = completion if isinstance(completion, dict) else {}
@@ -214,7 +215,7 @@ def completion_message(
         heading = "完成内容：" if zh else "Completed work:"
         parts.append(heading + "\n" + "\n".join(f"- {item}" for item in fresh_bullets))
 
-    artifact_lines = _artifact_lines(artifacts)
+    artifact_lines = _artifact_lines(artifacts, trusted_delivery=trusted_delivery)
     if artifact_lines:
         heading = "产物：" if zh else "Artifacts:"
         parts.append(heading + "\n" + "\n".join(artifact_lines))
@@ -342,21 +343,33 @@ def _summary_already_visible(output: Any, summary: str, previous: str) -> bool:
     return False
 
 
-def _artifact_lines(artifacts: Iterable[dict]) -> list[str]:
+def _artifact_lines(
+    artifacts: Iterable[dict], *, trusted_delivery: bool = False
+) -> list[str]:
     lines: list[str] = []
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             continue
         name = str(artifact.get("filename") or "artifact")
+        version_id = artifact.get("version_id") or artifact.get("latest_version_id")
         ident = str(artifact.get("artifact_id") or artifact.get("id") or "")
-        key = (ident, name)
+        target = completion_artifact_url(
+            artifact_id=ident,
+            filename=name,
+            version_id=version_id,
+            trusted_delivery=trusted_delivery,
+        )
+        # Under trusted delivery a missing version id cannot degrade to the
+        # mutable Artifact head.  Flag-off keeps the pre-Stage-1 fallback.
+        if target is None:
+            continue
+        key = ((str(version_id) if trusted_delivery else ident), name)
         if key in seen:
             continue
         seen.add(key)
-        target = quote(ident or name, safe="")
         label = name.replace("[", "\\[").replace("]", "\\]")
-        lines.append(f"- [{label}](/api/artifacts/{target})")
+        lines.append(f"- [{label}]({target})")
     return lines
 
 

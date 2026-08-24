@@ -220,11 +220,23 @@ The release jobs in `.github/workflows/ci.yml` run on pull requests, pushes to
 - presence of Web UI, R, compute, Skills, environment, provider SDK, and worker
   runtime resources;
 - install with `pip --no-index --no-deps`, representative architecture imports,
-  installed-resource checks, and an isolated `python -m openai4s --help`.
+  installed-resource checks, and an isolated `python -m openai4s --help`;
+- real Linux bubblewrap Python and R kernels under team read isolation, with
+  private PID namespaces, the info-fd/procfs/pidfd command identity path,
+  SIGINT delivery, and same-generation execution after the interrupt.
 
-The normal CI browser smoke and nightly macOS Seatbelt smoke remain separate
-because they exercise runtime/browser and operating-system boundaries rather
-than archive integrity.
+The Linux interrupt check deliberately allows raw worker networking so its
+process-identity evidence is independent of private-network setup. It
+therefore attests only the private-PID interrupt and persistence contract. On
+Ubuntu 24.04 it loads the distribution's
+`bwrap-userns-restrict` AppArmor profile, which permits bwrap's namespace setup
+but strips capabilities from the worker; it does not turn off the host-wide
+unprivileged-userns restriction. That profile may change the historical
+hosted-runner loopback result, but the complete Linux filesystem-and-egress
+boundary has not yet been re-evaluated there and stays a separate manual
+smoke. The normal CI browser smoke and nightly macOS Seatbelt smoke likewise
+remain separate because they exercise runtime/browser and operating-system
+boundaries rather than archive integrity.
 
 ## Trusted publication
 

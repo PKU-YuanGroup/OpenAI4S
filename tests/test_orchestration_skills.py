@@ -34,9 +34,9 @@ def session(tmp_path, monkeypatch):
     cfg.ensure_dirs()
     disp = build_dispatcher(cfg=cfg)
     # Production is fail-closed without an attached approval channel.  This
-    # lifecycle test explicitly authorizes the two destructive transitions it
-    # intends to exercise.
-    for tool in ("skills_publish", "skills_delete"):
+    # lifecycle test explicitly authorizes the executable edit and two
+    # destructive transitions it intends to exercise.
+    for tool in ("skills_edit", "skills_publish", "skills_delete"):
         disp.store.set_permission_rule(
             scope="global",
             scope_id="",

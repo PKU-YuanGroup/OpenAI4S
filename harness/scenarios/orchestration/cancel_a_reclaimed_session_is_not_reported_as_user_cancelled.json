@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "id": "cancel.a_reclaimed_session_is_not_reported_as_user_cancelled",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "orchestration"
+  ],
+  "surface": "orchestration",
+  "task": "The plane can only say 'cancelled'; why we cancelled is ours to record.",
+  "fixtures": {
+    "orchestration": {
+      "ticks": 3,
+      "stop_at_tick": 1,
+      "stop_reason": "SESSION_IDLE_TIMEOUT",
+      "workload": {
+        "kind": "SESSION"
+      },
+      "submits": [
+        {
+          "result": "created"
+        }
+      ],
+      "observations": [
+        {
+          "phase": "ACTIVE"
+        },
+        {
+          "phase": "CANCELLED",
+          "reason": "USER_CANCELLED"
+        }
+      ]
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "unused",
+        "finish_reason": "stop",
+        "usage": {}
+      }
+    }
+  ],
+  "faults": [],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "CANCELLED:SESSION_IDLE_TIMEOUT",
+    "model_attempts": 0,
+    "event_kinds": [
+      "run_started",
+      "allocation_submitted",
+      "stop_requested",
+      "workload_releasing",
+      "allocation_draining",
+      "allocation_draining",
+      "workload_terminal",
+      "run_finished"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal"
+    ]
+  }
+}

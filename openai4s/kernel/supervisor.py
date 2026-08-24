@@ -10,8 +10,11 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Hashable
+
+from openai4s.kernel.errors import KernelInterruptUnavailable, KernelRestartFailed
 
 KernelFactory = Callable[[], Any]
 
@@ -59,12 +62,61 @@ class KernelSupervisor:
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self._slots: dict[str, _Slot] = {}
+        self._preparing: dict[str, tuple[str, Any]] = {}
         self._lock = threading.RLock()
         self._root_frame_id = root_frame_id
         self._branch_id = branch_id or root_frame_id
         self._generations = generations
         self._owner_instance_id = owner_instance_id
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+
+    @contextmanager
+    def publication_guard(self):
+        """Establish the supervisor-first lock order for cross-owner commits."""
+
+        with self._lock:
+            yield
+
+    @contextmanager
+    def preparing_candidate(self, language: str, kernel: Any):
+        """Expose an unpublished bootstrap candidate to exact cancellation.
+
+        The current slot remains untouched until validation succeeds, but a
+        Stop/cancel must still be able to interrupt a slow bootstrap.  A token
+        prevents an older context from removing a newer candidate.
+        """
+
+        token = str(uuid.uuid4())
+        with self._lock:
+            if language in self._preparing:
+                raise RuntimeError(
+                    f"a {language} kernel candidate is already preparing"
+                )
+            self._preparing[language] = (token, kernel)
+        try:
+            yield token
+        finally:
+            with self._lock:
+                current = self._preparing.get(language)
+                if current is not None and current[0] == token:
+                    self._preparing.pop(language, None)
+
+    def interrupt_preparing(self, language: str | None = None) -> int:
+        """Interrupt unpublished candidates without changing current leases."""
+
+        with self._lock:
+            names = [language] if language is not None else list(self._preparing)
+            interrupted = 0
+            for name in names:
+                entry = self._preparing.get(name)
+                if entry is None:
+                    continue
+                try:
+                    entry[1].interrupt()
+                except Exception:  # noqa: BLE001
+                    continue
+                interrupted += 1
+            return interrupted
 
     def ensure(
         self, language: str, key: Hashable | None, factory: KernelFactory
@@ -158,18 +210,36 @@ class KernelSupervisor:
 
     def interrupt(self, language: str | None = None) -> int:
         with self._lock:
-            names = [language] if language is not None else list(self._slots)
+            names = (
+                [language]
+                if language is not None
+                else sorted(set(self._slots) | set(self._preparing))
+            )
             count = 0
+            seen: set[int] = set()
             for name in names:
                 slot = self._slots.get(name)
-                if slot is None or slot.kernel is None:
-                    continue
-                count += 1
-                try:
-                    slot.kernel.interrupt()
-                    self._touch_slot(slot)
-                except Exception:  # noqa: BLE001 — interruption is best-effort
-                    pass
+                targets = []
+                if slot is not None and slot.kernel is not None:
+                    targets.append((slot.kernel, slot))
+                preparing = self._preparing.get(name)
+                if preparing is not None:
+                    targets.append((preparing[1], None))
+                for kernel, published_slot in targets:
+                    if id(kernel) in seen:
+                        continue
+                    seen.add(id(kernel))
+                    try:
+                        kernel.interrupt()
+                        if published_slot is not None:
+                            self._touch_slot(published_slot)
+                    except KernelInterruptUnavailable:
+                        # Not counted: the return value is "how many kernels
+                        # were interrupted", and this one had no signal path.
+                        continue
+                    except Exception:  # noqa: BLE001 — best-effort delivery
+                        continue
+                    count += 1
             return count
 
     def stop(
@@ -187,10 +257,13 @@ class KernelSupervisor:
                 self._slot(language)
                 names = [language]
             else:
-                names = list(self._slots)
+                names = sorted(set(self._slots) | set(self._preparing))
             kernels: list[Any] = []
             ended: list[str] = []
             for name in names:
+                preparing = self._preparing.pop(name, None)
+                if preparing is not None:
+                    kernels.append(preparing[1])
                 slot = self._slots.get(name)
                 if slot is None:
                     continue
@@ -207,7 +280,8 @@ class KernelSupervisor:
                     state="manually_stopped" if manual else "released",
                     reason=reason or ("manual_stop" if manual else "released"),
                 )
-        for kernel in kernels:
+        unique_kernels = {id(kernel): kernel for kernel in kernels}
+        for kernel in unique_kernels.values():
             self._shutdown(kernel)
         return len(kernels)
 
@@ -222,9 +296,33 @@ class KernelSupervisor:
                     raise RuntimeError(f"no {language} kernel factory configured")
                 slot.kernel = self._create_live(language, slot.factory)
             else:
-                slot.kernel.restart()
+                try:
+                    slot.kernel.restart()
+                except KernelRestartFailed:
+                    failed = slot.kernel
+                    slot.kernel = None
+                    slot.ended_reason = "restart_failed"
+                    self._finish_generation(
+                        old_generation_id,
+                        state="crashed",
+                        reason="restart_failed",
+                    )
+                    self._shutdown(failed)
+                    raise
                 if not self._alive(slot.kernel):
-                    raise RuntimeError(f"restarted {language} kernel is not alive")
+                    failed = slot.kernel
+                    slot.kernel = None
+                    slot.ended_reason = "restart_failed"
+                    self._finish_generation(
+                        old_generation_id,
+                        state="crashed",
+                        reason="restart_failed",
+                    )
+                    self._shutdown(failed)
+                    raise KernelRestartFailed(
+                        f"the restarted {language} kernel exited before its "
+                        "replacement generation could be recorded"
+                    )
             try:
                 identity = self._begin_generation(
                     language,
@@ -232,7 +330,7 @@ class KernelSupervisor:
                     slot.key,
                     parent_generation_id=old_generation_id,
                 )
-            except Exception:
+            except Exception as exc:
                 failed = slot.kernel
                 slot.kernel = None
                 slot.ended_reason = "generation_record_failed"
@@ -242,7 +340,10 @@ class KernelSupervisor:
                     reason="generation_record_failed",
                 )
                 self._shutdown(failed)
-                raise
+                raise KernelRestartFailed(
+                    f"the restarted {language} kernel could not record "
+                    "its replacement generation"
+                ) from exc
             if old_generation_id is not None:
                 self._finish_generation(
                     old_generation_id,
@@ -313,9 +414,33 @@ class KernelSupervisor:
             if not self._matches(slot, lease):
                 return None
             old_generation_id = slot.generation_id
-            slot.kernel.restart()
+            try:
+                slot.kernel.restart()
+            except KernelRestartFailed:
+                failed = slot.kernel
+                slot.kernel = None
+                slot.ended_reason = "watchdog_restart_failed"
+                self._finish_generation(
+                    old_generation_id,
+                    state="crashed",
+                    reason="watchdog_restart_failed",
+                )
+                self._shutdown(failed)
+                raise
             if not self._alive(slot.kernel):
-                raise RuntimeError(f"restarted {lease.language} kernel is not alive")
+                failed = slot.kernel
+                slot.kernel = None
+                slot.ended_reason = "watchdog_restart_failed"
+                self._finish_generation(
+                    old_generation_id,
+                    state="crashed",
+                    reason="watchdog_restart_failed",
+                )
+                self._shutdown(failed)
+                raise KernelRestartFailed(
+                    f"the restarted {lease.language} kernel exited before its "
+                    "replacement generation could be recorded"
+                )
             try:
                 identity = self._begin_generation(
                     lease.language,
@@ -323,7 +448,7 @@ class KernelSupervisor:
                     slot.key,
                     parent_generation_id=old_generation_id,
                 )
-            except Exception:
+            except Exception as exc:
                 failed = slot.kernel
                 slot.kernel = None
                 slot.ended_reason = "generation_record_failed"
@@ -333,7 +458,10 @@ class KernelSupervisor:
                     reason="generation_record_failed",
                 )
                 self._shutdown(failed)
-                raise
+                raise KernelRestartFailed(
+                    f"the restarted {lease.language} kernel could not record "
+                    "its replacement generation"
+                ) from exc
             self._finish_generation(
                 old_generation_id,
                 state="crashed",
@@ -370,10 +498,28 @@ class KernelSupervisor:
             if not self._matches(slot, lease):
                 return False
             try:
-                slot.kernel.interrupt()
+                delivery = slot.kernel.interrupt()
                 self._touch_slot(slot)
+                # `Kernel.interrupt` now answers whether a signal actually
+                # reached the worker. Six branches of the bubblewrap adapter
+                # own delivery and send nothing, and this method's own contract
+                # -- its caller reads True as "the interrupt was delivered" --
+                # was affirming all of them. `None` is a kernel double making
+                # no claim, and keeps the old answer.
+                if delivery is not None and not delivery:
+                    return False
+            except KernelInterruptUnavailable:
+                # Not best-effort, and not swallowable. A remote worker with
+                # no signal path cannot be interrupted at all, and reporting
+                # success meant the cancel API answered `interrupted: true`
+                # for a cell that was still running on the cluster -- exactly
+                # the silence `Kernel.interrupt` started raising to prevent.
+                return False
             except Exception:  # noqa: BLE001 — interruption is best-effort
-                pass
+                # Same reasoning as `interrupt()` above: the caller reads this
+                # as "the interrupt was delivered", so a delivery that raised
+                # is False rather than swallowed-and-affirmed.
+                return False
             return True
 
     def touch(
@@ -436,6 +582,7 @@ class KernelSupervisor:
         expected: KernelLease | None,
         recovered_from_generation_id: str | None = None,
         bootstrap: dict[str, Any] | None = None,
+        candidate_token: str | None = None,
     ) -> KernelLease:
         """Atomically adopt one already-live, already-validated worker.
 
@@ -457,6 +604,16 @@ class KernelSupervisor:
         if not self._alive(kernel):
             raise RuntimeError(f"{language} recovery candidate is not alive")
         with self._lock:
+            if candidate_token is not None:
+                preparing = self._preparing.get(language)
+                if preparing is None or preparing != (candidate_token, kernel):
+                    raise RuntimeError(
+                        f"{language} kernel candidate was cancelled before publish"
+                    )
+                # Consume the publication right while holding the same lock
+                # Stop uses to revoke it. A stopped candidate can therefore
+                # never be adopted after Stop returns.
+                self._preparing.pop(language, None)
             slot = self._slot(language)
             if kernel is slot.kernel:
                 raise ValueError("recovery candidate is already published")

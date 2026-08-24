@@ -53,8 +53,8 @@ class EnvUseTool(Tool):
             if runtime.on_env_switch is not None:
                 try:
                     runtime.on_env_switch(name)
-                except Exception:  # noqa: BLE001
-                    note = "R env switch failed to register"
+                except Exception as exc:  # noqa: BLE001
+                    return {"error": f"env switch refused: {exc}"}
             return {
                 "ok": True,
                 "env": {
@@ -72,8 +72,8 @@ class EnvUseTool(Tool):
                     f"switching to '{name}' before the next cell — put your "
                     "imports in a new cell"
                 )
-            except Exception:  # noqa: BLE001
-                note = "env switch failed to register"
+            except Exception as exc:  # noqa: BLE001
+                return {"error": f"env switch refused: {exc}"}
         else:
             note = "env switching is only available in the web session kernel"
         return {

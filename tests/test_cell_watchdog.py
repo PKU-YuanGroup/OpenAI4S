@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from openai4s.execution import WatchdogPolicy, execute_with_watchdog
-from openai4s.kernel import KernelSupervisor
+from openai4s.kernel import InterruptDelivery, KernelSupervisor
 
 
 class FakeKernel:
@@ -63,7 +63,14 @@ def test_policy_reads_timeout_dynamically_and_invalid_values_fall_back():
 
 def test_fast_result_and_original_exception_pass_through():
     supervisor, kernel, lease = _lease()
-    policy = WatchdogPolicy(timeout_s=1, poll_s=0.01)
+    # Ceilings, not measurements. Every budget in this file that is not
+    # deliberately tiny is a bound on how long a rendezvous may take before the
+    # test gives up, and on the green path `join`/`Event.wait` return the
+    # instant the other thread arrives -- so a generous ceiling costs nothing
+    # and a tight one is a bet on the runner. The deliberately tiny ones
+    # (`interrupt_grace_s=0.001`) are load-bearing: they force the escalation
+    # the test is about, and are left alone.
+    policy = WatchdogPolicy(timeout_s=60, poll_s=0.01)
 
     assert execute_with_watchdog(
         supervisor, lease, lambda worker: {"pid": id(worker)}, policy=policy
@@ -86,7 +93,7 @@ def test_permission_pause_freezes_timeout_budget():
     pause_calls = 0
 
     def run(worker):
-        assert release.wait(1)
+        assert release.wait(30)
         return "finished after approval"
 
     def paused() -> bool:
@@ -115,7 +122,7 @@ def test_sigint_can_finish_without_resetting_the_namespace():
     kernel.on_interrupt = release.set
 
     def run(worker):
-        assert release.wait(1)
+        assert release.wait(30)
         return {"interrupted": True}
 
     result = execute_with_watchdog(
@@ -125,8 +132,8 @@ def test_sigint_can_finish_without_resetting_the_namespace():
         policy=WatchdogPolicy(
             timeout_s=0.001,
             poll_s=0.001,
-            interrupt_grace_s=0.1,
-            kill_grace_s=0.1,
+            interrupt_grace_s=30.0,
+            kill_grace_s=30.0,
         ),
     )
 
@@ -142,7 +149,7 @@ def test_cancellation_cuts_through_permission_pause_with_one_interrupt():
     kernel.on_interrupt = release.set
 
     def run(worker):
-        assert release.wait(1)
+        assert release.wait(30)
         return {"interrupted": True}
 
     result = execute_with_watchdog(
@@ -152,8 +159,8 @@ def test_cancellation_cuts_through_permission_pause_with_one_interrupt():
         policy=WatchdogPolicy(
             timeout_s=10,
             poll_s=0.001,
-            interrupt_grace_s=0.1,
-            kill_grace_s=0.1,
+            interrupt_grace_s=30.0,
+            kill_grace_s=30.0,
         ),
         cancelled=lambda: True,
         paused=lambda: True,
@@ -164,6 +171,39 @@ def test_cancellation_cuts_through_permission_pause_with_one_interrupt():
     assert kernel.kill_calls == 0
 
 
+def test_cancellation_hard_stop_is_not_reported_as_a_timeout():
+    """A user cancellation can need the same recovery ladder as a deadline."""
+    from openai4s.execution.watchdog import KernelCancellation
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(30)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(
+        KernelCancellation, match="cancellation|required a hard stop"
+    ) as raised:
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=10,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=30.0,
+            ),
+            cancelled=lambda: True,
+        )
+
+    assert not isinstance(raised.value, TimeoutError)
+    assert "10s" not in str(raised.value)
+    assert kernel.interrupt_calls == kernel.kill_calls == kernel.restart_calls == 1
+
+
 def test_hard_kill_restarts_exact_lease_and_runs_bootstrap():
     supervisor, kernel, lease = _lease()
     release = threading.Event()
@@ -171,7 +211,7 @@ def test_hard_kill_restarts_exact_lease_and_runs_bootstrap():
     bootstrapped = []
 
     def run(worker):
-        assert release.wait(1)
+        assert release.wait(30)
         raise RuntimeError("worker pipe closed")
 
     with pytest.raises(TimeoutError, match="cell exceeded"):
@@ -183,7 +223,7 @@ def test_hard_kill_restarts_exact_lease_and_runs_bootstrap():
                 timeout_s=0.001,
                 poll_s=0.001,
                 interrupt_grace_s=0.001,
-                kill_grace_s=0.1,
+                kill_grace_s=30.0,
             ),
             after_restart=bootstrapped.append,
         )
@@ -200,7 +240,7 @@ def test_host_call_zombie_is_abandoned_without_touching_a_future_worker():
     release = threading.Event()
 
     def run(worker):
-        assert release.wait(1)
+        assert release.wait(30)
         return "late host response"
 
     with pytest.raises(TimeoutError, match="cell exceeded"):
@@ -228,18 +268,25 @@ def test_host_call_zombie_is_abandoned_without_touching_a_future_worker():
 
 
 def test_bootstrap_failure_detaches_the_restarted_generation():
+    from openai4s.execution.watchdog import (
+        KernelNotResetTimeout,
+        KernelResetUnavailableTimeout,
+    )
+
     supervisor, kernel, lease = _lease()
     release = threading.Event()
     kernel.on_kill = release.set
 
     def run(worker):
-        assert release.wait(1)
+        assert release.wait(30)
         raise RuntimeError("worker pipe closed")
 
     def broken_bootstrap(worker):
         raise RuntimeError("bootstrap failed")
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(
+        KernelResetUnavailableTimeout, match="replacement failed to initialize"
+    ) as raised:
         execute_with_watchdog(
             supervisor,
             lease,
@@ -248,10 +295,185 @@ def test_bootstrap_failure_detaches_the_restarted_generation():
                 timeout_s=0.001,
                 poll_s=0.001,
                 interrupt_grace_s=0.001,
-                kill_grace_s=0.1,
+                kill_grace_s=30.0,
             ),
             after_restart=broken_bootstrap,
         )
 
+    assert not isinstance(raised.value, KernelNotResetTimeout)
     assert supervisor.current("python") is None
     assert kernel.restart_calls == kernel.shutdown_calls == 1
+
+
+def test_local_respawn_failure_is_a_cleared_but_unavailable_namespace():
+    from openai4s.execution.watchdog import (
+        KernelNotResetTimeout,
+        KernelResetUnavailableTimeout,
+    )
+    from openai4s.kernel.errors import KernelRestartFailed
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(30)
+        raise RuntimeError("old worker pipe closed")
+
+    def failed_local_respawn():
+        kernel.restart_calls += 1
+        kernel.live = False
+        raise KernelRestartFailed("replacement process failed to start")
+
+    kernel.restart = failed_local_respawn
+    with pytest.raises(
+        KernelResetUnavailableTimeout, match="replacement failed to initialize"
+    ) as raised:
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=30.0,
+            ),
+        )
+
+    assert not isinstance(raised.value, KernelNotResetTimeout)
+    assert supervisor.current("python") is None
+    assert kernel.restart_calls == kernel.shutdown_calls == 1
+
+
+def test_a_worker_that_cannot_be_respawned_is_not_reported_as_reset():
+    """The ladder assumed its last rung always lands.
+
+    A kernel this daemon did not spawn cannot be respawned by it -- a cluster
+    session's worker dialled in from a compute node, so `restart()` refuses --
+    and the refusal was swallowed one line before a message that told the user
+    their kernel had been reset and their variables cleared. Neither was true:
+    the interpreter is untouched on the node and the cell may still be running
+    there, which is exactly when a user needs to be told to go look.
+    """
+    from openai4s.execution.watchdog import KernelNotResetTimeout
+
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def _refuse_restart():
+        kernel.restart_calls += 1
+        raise RuntimeError("this worker cannot be respawned in place")
+
+    kernel.restart = _refuse_restart
+
+    def run(worker):
+        assert release.wait(30)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(KernelNotResetTimeout, match="could not be reset"):
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=30.0,
+            ),
+        )
+    assert kernel.restart_calls == 1, "the ladder skipped the restart attempt"
+
+
+def test_a_real_reset_still_says_so():
+    """The positive control: the honest branch must not swallow the ordinary
+    case, or the reworded message becomes the only message."""
+    supervisor, kernel, lease = _lease()
+    release = threading.Event()
+    kernel.on_kill = release.set
+
+    def run(worker):
+        assert release.wait(30)
+        raise RuntimeError("worker pipe closed")
+
+    with pytest.raises(TimeoutError, match="the kernel was reset"):
+        execute_with_watchdog(
+            supervisor,
+            lease,
+            run,
+            policy=WatchdogPolicy(
+                timeout_s=0.001,
+                poll_s=0.001,
+                interrupt_grace_s=0.001,
+                kill_grace_s=30.0,
+            ),
+        )
+
+
+def test_an_undelivered_interrupt_does_not_buy_a_grace_period():
+    """The grace period is for a worker that is unwinding.
+
+    When the sandbox reports that the signal reached nobody, there is nothing
+    unwinding and the wait is pure latency: ten seconds, by default, of the
+    user's cell still running before the ladder reaches the rung that can
+    actually end it. Measured rather than asserted structurally, because the
+    only observable difference is how long the ladder takes.
+    """
+
+    import time
+
+    supervisor, kernel, lease = _lease()
+
+    kernel.interrupt = lambda: (  # the stop reaches nobody and says so
+        setattr(kernel, "interrupt_calls", kernel.interrupt_calls + 1),
+        InterruptDelivery(False, "sandbox", "no pinned command identity"),
+    )[1]
+
+    policy = WatchdogPolicy(
+        timeout_s=0.05, poll_s=0.01, interrupt_grace_s=5.0, kill_grace_s=0.1
+    )
+    started = time.monotonic()
+    with pytest.raises(Exception):
+        execute_with_watchdog(
+            supervisor, lease, lambda _worker: threading.Event().wait(30), policy=policy
+        )
+    elapsed = time.monotonic() - started
+
+    assert kernel.interrupt_calls == 1
+    assert kernel.kill_calls == 1, "the ladder must still reach the hard stop"
+    assert elapsed < 3.0, (
+        f"waited {elapsed:.2f}s on an interrupt that was never delivered; the "
+        "5s grace was spent on a worker with nothing to unwind"
+    )
+
+
+def test_a_delivered_interrupt_still_gets_its_grace_period():
+    """The other half: shortening the ladder must depend on the verdict, not
+    replace it. A worker that took the signal and is unwinding still gets the
+    full window before anything kills it."""
+
+    import time
+
+    supervisor, kernel, lease = _lease()
+    kernel.interrupt = lambda: (
+        setattr(kernel, "interrupt_calls", kernel.interrupt_calls + 1),
+        InterruptDelivery(True, "local-process"),
+    )[1]
+
+    policy = WatchdogPolicy(
+        timeout_s=0.05, poll_s=0.01, interrupt_grace_s=0.6, kill_grace_s=0.1
+    )
+    started = time.monotonic()
+    with pytest.raises(Exception):
+        execute_with_watchdog(
+            supervisor, lease, lambda _worker: threading.Event().wait(30), policy=policy
+        )
+    elapsed = time.monotonic() - started
+
+    assert kernel.interrupt_calls == 1
+    assert elapsed >= 0.6, (
+        f"the ladder took {elapsed:.2f}s; a delivered interrupt must keep its "
+        "grace window rather than being cut short with the undelivered case"
+    )

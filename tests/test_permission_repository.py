@@ -187,7 +187,7 @@ def test_scope_projection_and_default_seed_reset_semantics(tmp_path):
     assert grouped["global"]
 
 
-def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
+def test_seed_upgrade_adds_defaults_and_revokes_legacy_skill_edit_allow(tmp_path):
     store, repository = _repository(tmp_path)
     for tool, pattern, decision in DEFAULT_PERMISSION_RULES:
         if tool not in {"mcp_call", "science_search"}:
@@ -195,13 +195,15 @@ def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
                 scope="global",
                 tool=tool,
                 pattern=pattern,
-                decision=decision,
+                # v1-v3 shipped this executable mutation as a silent allow.
+                decision="allow" if tool == "skills_edit" else decision,
             )
     store.set_setting("perm_seeded", "1")
 
     repository.seed_defaults()
 
     assert repository.resolve(tool="science_search", pattern_input="uniprot") == "allow"
+    assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
     assert repository.resolve(tool="mcp_call", pattern_input="server/tool") == "ask"
     assert (
         repository.resolve(
@@ -218,7 +220,54 @@ def test_seed_upgrade_adds_only_new_defaults_to_existing_stores(tmp_path):
     assert [(rule["pattern"], rule["decision"]) for rule in mcp_rules] == [
         ("volcengine-datapro/dataPro_search", "allow")
     ]
-    assert store.get_setting("perm_seed_version") == "3"
+    assert store.get_setting("perm_seed_version") == "4"
+
+
+def test_seed_security_upgrade_revokes_markerless_legacy_skill_edit_allow(tmp_path):
+    """Recover the commit-before-marker crash window across seed versions."""
+
+    store, repository = _repository(tmp_path)
+    repository.set_rule(
+        scope="global",
+        tool="skills_edit",
+        pattern="*",
+        decision="allow",
+    )
+    assert store.get_setting("perm_seeded") is None
+
+    repository.seed_defaults()
+
+    assert repository.resolve(tool="skills_edit", pattern_input="QC") == "ask"
+    assert store.get_setting("perm_seeded") == "1"
+    assert store.get_setting("perm_seed_version") == "4"
+
+
+@pytest.mark.parametrize("decision", ["ask", "deny", None])
+def test_seed_security_upgrade_preserves_stricter_skill_edit_rules(tmp_path, decision):
+    store, repository = _repository(tmp_path)
+    if decision is not None:
+        repository.set_rule(
+            scope="global",
+            tool="skills_edit",
+            pattern="*",
+            decision=decision,
+        )
+    store.set_setting("perm_seeded", "1")
+    store.set_setting("perm_seed_version", "3")
+
+    repository.seed_defaults()
+
+    expected = decision or "ask"
+    assert repository.resolve(tool="skills_edit", pattern_input="QC") == expected
+    rules = [
+        rule
+        for rule in repository.get_rules(scope="global")
+        if rule["tool"] == "skills_edit" and rule["pattern"] == "*"
+    ]
+    assert [rule["decision"] for rule in rules] == (
+        [] if decision is None else [decision]
+    )
+    assert store.get_setting("perm_seed_version") == "4"
 
 
 def test_seed_rules_commit_before_marker_and_recover_after_marker_failure(tmp_path):
@@ -489,6 +538,7 @@ def test_permission_request_rolls_back_when_action_group_is_unknown(tmp_path):
 
 def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
     store = get_store(Config(data_dir=tmp_path).db_path)
+    exact_arguments = [{"server": "lab", "tool": "send", "payload": {"x": 1}}]
     store.create_permission_request(
         decision_id="perm-restart-once",
         root_frame_id="root-1",
@@ -497,6 +547,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
         tool="mcp_call",
         target="lab/send",
         payload={"type": "await_permission"},
+        canonical_arguments=exact_arguments,
     )
     store.resolve_permission_request(
         "perm-restart-once",
@@ -511,6 +562,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
             project_id="science",
             tool="mcp_call",
             target="lab/other",
+            canonical_arguments=exact_arguments,
         )
         is None
     )
@@ -527,6 +579,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
             project_id="science",
             tool="mcp_call",
             target="lab/send",
+            canonical_arguments=exact_arguments,
         )
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -546,6 +599,7 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
         tool="mcp_call",
         target="lab/expired",
         payload={},
+        canonical_arguments=[{"server": "lab", "tool": "expired"}],
     )
     store.resolve_permission_request(
         "perm-restart-expired",
@@ -560,12 +614,129 @@ def test_restart_once_grant_is_exact_and_consumed_atomically(tmp_path):
             project_id="science",
             tool="mcp_call",
             target="lab/expired",
+            canonical_arguments=[{"server": "lab", "tool": "expired"}],
             consumed_at=2,
         )
         is None
     )
     assert (
         store.get_permission_request("perm-restart-expired")["continuation_consumed_at"]
+        is None
+    )
+
+
+def test_restart_once_grant_hashes_the_complete_untruncated_arguments(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    common_prefix = "same-visible-prefix-" + ("x" * 20_000)
+    exact_arguments = [
+        {"server": "lab", "tool": "send", "payload": common_prefix + "A"}
+    ]
+    colliding_projection = [
+        {"server": "lab", "tool": "send", "payload": common_prefix + "B"}
+    ]
+    shared_ui_payload = {
+        "type": "await_permission",
+        "preview": common_prefix[:1024],
+        "truncated": True,
+    }
+    created = store.create_permission_request(
+        decision_id="perm-long-exact",
+        root_frame_id="root-long",
+        frame_id="root-long",
+        project_id="science",
+        tool="mcp_call",
+        target="lab/send",
+        payload=shared_ui_payload,
+        canonical_arguments=exact_arguments,
+    )
+    store.resolve_permission_request(
+        "perm-long-exact",
+        state="allowed",
+        scope="once",
+        resolution_context="after_restart",
+    )
+    store.activate_restart_permission_continuation(
+        "perm-long-exact", expires_at=9_999_999_999_999
+    )
+
+    assert (
+        store.consume_restart_permission_grant(
+            root_frame_id="root-long",
+            project_id="science",
+            tool="mcp_call",
+            target="lab/send",
+            canonical_arguments=colliding_projection,
+        )
+        is None
+    )
+    assert (
+        store.get_permission_request("perm-long-exact")["continuation_consumed_at"]
+        is None
+    )
+    consumed = store.consume_restart_permission_grant(
+        root_frame_id="root-long",
+        project_id="science",
+        tool="mcp_call",
+        target="lab/send",
+        canonical_arguments=exact_arguments,
+    )
+    assert consumed is not None
+    assert consumed["decision_id"] == created["decision_id"]
+
+
+def test_restart_once_grant_fails_closed_when_stored_action_hash_is_corrupt(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    exact_arguments = [{"path": "result.txt", "content": "exact bytes"}]
+    store.create_permission_request(
+        decision_id="perm-corrupt-envelope",
+        root_frame_id="root-corrupt",
+        frame_id="root-corrupt",
+        project_id="science",
+        tool="write_file",
+        target="result.txt",
+        side_effect_class="workspace_write",
+        resource_keys=["workspace:result.txt"],
+        payload={"type": "await_permission"},
+        canonical_arguments=exact_arguments,
+    )
+    store.resolve_permission_request(
+        "perm-corrupt-envelope",
+        state="allowed",
+        scope="once",
+        resolution_context="after_restart",
+    )
+    store.activate_restart_permission_continuation(
+        "perm-corrupt-envelope", expires_at=9_999_999_999_999
+    )
+
+    # Simulate storage corruption below the SQL immutability boundary. Normal
+    # application writes cannot perform this update because the trigger aborts.
+    store._conn.execute("DROP TRIGGER trg_permission_action_immutable")
+    store._conn.execute(
+        "UPDATE permission_requests SET canonical_arguments_sha256=? "
+        "WHERE decision_id='perm-corrupt-envelope'",
+        ("0" * 64,),
+    )
+    store._conn.commit()
+
+    with pytest.raises(ValueError, match="digest is invalid"):
+        store.permission_request_action_digest("perm-corrupt-envelope")
+    assert (
+        store.consume_restart_permission_grant(
+            root_frame_id="root-corrupt",
+            project_id="science",
+            tool="write_file",
+            target="result.txt",
+            side_effect_class="workspace_write",
+            resource_keys=["workspace:result.txt"],
+            canonical_arguments=exact_arguments,
+        )
+        is None
+    )
+    assert (
+        store.get_permission_request("perm-corrupt-envelope")[
+            "continuation_consumed_at"
+        ]
         is None
     )
 

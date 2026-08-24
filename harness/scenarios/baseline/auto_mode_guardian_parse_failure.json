@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "id": "auto_mode_guardian_parse_failure",
+  "tags": [
+    "offline",
+    "tier:pr",
+    "baseline",
+    "stage0",
+    "auto_mode_contract"
+  ],
+  "surface": "auto_mode_contract",
+  "task": "Prove two unparseable Guardian decisions open only the infrastructure breaker.",
+  "fixtures": {
+    "contract": "stage0_auto_mode_v3",
+    "digest_contract": "canonical-json-sha256-v1",
+    "lane": "permission_guardian",
+    "outcome": "deny",
+    "identity": {
+      "auto_run_id": "auto-run-stage0-guardian",
+      "root_frame_id": "frame-stage0-guardian",
+      "branch_id": "branch-main",
+      "turn_id": "turn-stage0-guardian",
+      "execution_id": "execution-stage0-guardian"
+    },
+    "audit_id": "audit-stage0-guardian",
+    "canonical_action": {
+      "schema_version": 1,
+      "action_kind": "file_write",
+      "target": {
+        "scope": "workspace",
+        "relative_path": "results/stage0-report.txt"
+      },
+      "parameters": {
+        "mode": "replace",
+        "content_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "risk": {
+        "irreversible": false,
+        "external_write": false
+      }
+    },
+    "policy_resolution": "ask",
+    "guardian_identity": {
+      "guardian_id": "permission-guardian",
+      "standing_allow_policy": "never"
+    }
+  },
+  "provider_script": [
+    {
+      "response": {
+        "content": "schema ballast; no model is called"
+      }
+    }
+  ],
+  "faults": [
+    {
+      "point": "permission_guardian.before_decision",
+      "occurrence": 1,
+      "kind": "parse_failure",
+      "message": "first Guardian decision could not be parsed",
+      "retryable": true
+    },
+    {
+      "point": "permission_guardian.before_decision",
+      "occurrence": 2,
+      "kind": "parse_failure",
+      "message": "second Guardian decision could not be parsed",
+      "retryable": true
+    }
+  ],
+  "permissions": {
+    "noninteractive": "rules_only"
+  },
+  "expect": {
+    "terminal_reason": "blocked_by_guardian",
+    "model_attempts": 0,
+    "event_kinds": [
+      "auto_run_started",
+      "auto_audit_started",
+      "fault_injected",
+      "auto_audit_completed",
+      "auto_audit_started",
+      "fault_injected",
+      "auto_audit_completed",
+      "auto_run_terminal"
+    ],
+    "invariants": [
+      "ordered_events",
+      "one_run_terminal",
+      "terminal_state_unique",
+      "identity_complete",
+      "retry_bounded",
+      "golden_payloads",
+      "fail_closed"
+    ]
+  }
+}

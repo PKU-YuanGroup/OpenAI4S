@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from openai4s.kernel import Kernel, KernelLease, KernelSupervisor
 from openai4s.kernel.recovery import BootstrapManifest, frozen_sidecar_bootstrap_code
+from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server.recovery_control import RecoveryActionPlan, RecoveryControlService
 from openai4s.server.recovery_execution import (
     RecoveryExecutionPorts,
@@ -83,16 +84,26 @@ class _RecoveryKernelCandidate:
             self.kernel.shutdown()
 
     def interrupt(self) -> bool:
-        self.kernel.interrupt()
-        return True
+        # Forward the kernel's verdict instead of asserting one. `True` here
+        # meant "we called interrupt", and the caller reads it as "the cell was
+        # stopped" -- the same gap `Kernel.interrupt` now closes underneath.
+        # `None` is a kernel double making no claim and keeps the old answer.
+        delivery = self.kernel.interrupt()
+        return delivery is None or bool(delivery)
 
 
 class SessionRecoveryRuntime:
     """Bind one session to the build-first verified recovery pipeline."""
 
-    def __init__(self, ports: RecoveryRuntimePorts) -> None:
+    def __init__(
+        self,
+        ports: RecoveryRuntimePorts,
+        *,
+        read_isolation: KernelReadIsolation | None = None,
+    ) -> None:
         self.ports = ports
         self.workspace = Path(ports.workspace).resolve()
+        self.read_isolation = read_isolation
 
     def fresh_manifests(self) -> tuple[BootstrapManifest, ...]:
         runtime = self.ports.python_runtime()
@@ -288,6 +299,7 @@ class SessionRecoveryRuntime:
                 "python": str(interpreter),
                 "env_root": str(env_root) if env_root else None,
                 "env_name": str(env_name) if env_name else None,
+                "read_isolation": self.read_isolation,
             }
 
             def factory() -> Kernel:
@@ -302,7 +314,11 @@ class SessionRecoveryRuntime:
             from openai4s.kernel.r_kernel import spawn_r_kernel
 
             def factory() -> Kernel:
-                return spawn_r_kernel(cwd=str(self.workspace), rscript=str(interpreter))
+                return spawn_r_kernel(
+                    cwd=str(self.workspace),
+                    rscript=str(interpreter),
+                    read_isolation=self.read_isolation,
+                )
 
             key = str(env_name) if env_name else None
         else:

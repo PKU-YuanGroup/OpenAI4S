@@ -13,6 +13,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, TypeVar
 
+from openai4s.execution.coordinator import ExecutionCancelled
+from openai4s.kernel.errors import KernelRestartFailed
 from openai4s.kernel.supervisor import KernelLease, KernelSupervisor
 
 T = TypeVar("T")
@@ -21,6 +23,36 @@ Flag = Callable[[], bool]
 
 def _never() -> bool:
     return False
+
+
+class KernelNotResetTimeout(TimeoutError):
+    """A cell was stopped, but its worker was not respawned.
+
+    A `TimeoutError` subclass so every existing `except TimeoutError` keeps
+    catching it; a distinct type so the surfaces that tell a user what
+    happened to their variables can tell the two apart.
+    """
+
+
+class KernelResetUnavailableTimeout(TimeoutError):
+    """The timed-out namespace was cleared, but its replacement is unusable.
+
+    This is distinct from :class:`KernelNotResetTimeout`: the old local worker
+    was destroyed, so no cluster allocation may still be running the cell, but
+    bootstrap failed and the replacement was detached rather than left ready.
+    """
+
+
+class KernelCancellation(ExecutionCancelled):
+    """Cancellation needed a hard stop and reset the local namespace."""
+
+
+class KernelNotResetCancellation(KernelCancellation):
+    """Cancellation stopped waiting here, but could not reset the worker."""
+
+
+class KernelResetUnavailableCancellation(KernelCancellation):
+    """Cancellation cleared the old namespace but replacement bootstrap failed."""
 
 
 @dataclass(frozen=True)
@@ -72,9 +104,10 @@ def execute_with_watchdog(
     """Run one exact lease and recover a worker that stops producing frames.
 
     ``paused`` freezes the timeout budget while a human permission decision is
-    pending. Cancellation still cuts through a pause. A hard recovery always
-    raises ``TimeoutError``; a successful SIGINT may return the cell's normal
-    interrupted result so the caller can persist it before observing cancel.
+    pending. Cancellation still cuts through a pause. A hard recovery raises a
+    timeout- or cancellation-specific exception according to what triggered
+    it; a successful SIGINT may return the cell's normal interrupted result so
+    the caller can persist it before observing cancel.
     """
     kernel = lease.kernel
     if not policy.enabled:
@@ -92,48 +125,124 @@ def execute_with_watchdog(
     worker.start()
     remaining = policy.timeout_s
     poll_s = max(0.001, policy.poll_s)
+    cancellation_triggered = False
     while remaining > 0:
         slice_s = min(remaining, poll_s)
         worker.join(slice_s)
         if not worker.is_alive():
             return _completed(box)
         if _flag(cancelled):
+            cancellation_triggered = True
             break
         if _flag(paused):
             continue
         remaining -= slice_s
 
-    supervisor.interrupt_if_current(lease)
-    worker.join(max(0.0, policy.interrupt_grace_s))
+    delivered = supervisor.interrupt_if_current(lease)
+    # The grace period exists for a worker that is unwinding. A stop that
+    # reached nobody has nothing to unwind, so waiting it out is ten seconds of
+    # the user's cell still running before the ladder reaches the rung that can
+    # actually end it. The return value said "delivered" for both cases until
+    # the sandbox's own verdict started reaching it.
+    worker.join(max(0.0, policy.interrupt_grace_s if delivered else 0.0))
     if not worker.is_alive():
         if "error" in box:
+            if cancellation_triggered:
+                raise KernelCancellation(
+                    "cell was cancelled and stopped during interrupt"
+                ) from box["error"]
             raise box["error"]
         if "result" in box:
             return box["result"]
         return {
             "stdout": "",
             "stderr": "",
-            "error": f"cell interrupted after exceeding {int(policy.timeout_s)}s",
+            "error": (
+                "cell interrupted after cancellation"
+                if cancellation_triggered
+                else f"cell interrupted after exceeding {int(policy.timeout_s)}s"
+            ),
         }
 
     supervisor.kill_if_current(lease)
     worker.join(max(0.0, policy.kill_grace_s))
+    # Whether the ladder actually finished. It was assumed, and the assumption
+    # is false for a worker this daemon did not spawn: `kill_if_current` drops
+    # a remote worker's *socket*, `restart()` refuses to respawn something that
+    # dialled in from elsewhere, and the refusal was swallowed one line below.
+    # The message then told the user their kernel had been reset and their
+    # variables cleared, while the interpreter was untouched on a compute node
+    # and the cell was very possibly still running there. Reporting a reset
+    # that did not happen is worse than reporting a timeout, because the user
+    # stops looking for the work.
+    was_reset = False
+    replacement_unavailable = False
     if worker.is_alive():
         supervisor.abandon_if_current(lease)
     else:
         try:
             restarted = supervisor.restart_if_current(lease)
+            was_reset = restarted is not None
             if restarted is not None and after_restart is not None:
                 try:
                     after_restart(restarted.kernel)
                 except Exception:
                     supervisor.shutdown_if_current(restarted)
-        except Exception:  # noqa: BLE001 — next ensure lazily recovers the slot
+                    replacement_unavailable = True
+        except KernelRestartFailed:
+            # Local restart tears down the old namespace before spawning its
+            # replacement. A spawn/generation failure is therefore a reset
+            # that left no usable worker, not the remote/no-reset case whose
+            # warning says cluster work may still be running.
+            supervisor.shutdown_if_current(
+                lease,
+                reason="watchdog_restart_failed",
+                terminal_state="crashed",
+            )
+            replacement_unavailable = True
+        except Exception:  # noqa: BLE001 — remote/no-reset stays distinguishable
             pass
-    raise TimeoutError(
-        f"cell exceeded {int(policy.timeout_s)}s with no result and was stopped; "
-        "the kernel was reset (variables from earlier cells were cleared). Break "
-        "the work into smaller steps, or raise OPENAI4S_CELL_TIMEOUT."
+    if replacement_unavailable:
+        if cancellation_triggered:
+            raise KernelResetUnavailableCancellation(
+                "cell cancellation required a hard stop; the old kernel was "
+                "reset and its variables were cleared, but the replacement "
+                "failed to initialize and is unavailable. Retry to start a "
+                "fresh kernel."
+            )
+        raise KernelResetUnavailableTimeout(
+            f"cell exceeded {int(policy.timeout_s)}s with no result and was "
+            "stopped; the old kernel was reset and its variables were cleared, "
+            "but the replacement failed to initialize and is unavailable. "
+            "Retry to start a fresh kernel, break the work into smaller steps, "
+            "or raise OPENAI4S_CELL_TIMEOUT."
+        )
+    if was_reset:
+        if cancellation_triggered:
+            raise KernelCancellation(
+                "cell cancellation required a hard stop; the kernel was reset "
+                "and variables from earlier cells were cleared."
+            )
+        raise TimeoutError(
+            f"cell exceeded {int(policy.timeout_s)}s with no result and was "
+            "stopped; the kernel was reset (variables from earlier cells were "
+            "cleared). Break the work into smaller steps, or raise "
+            "OPENAI4S_CELL_TIMEOUT."
+        )
+    if cancellation_triggered:
+        raise KernelNotResetCancellation(
+            "cell was cancelled and stopped here, but its worker could not be "
+            "reset from this daemon. If the session runs on a cluster the work "
+            "may still be running on its allocation; recover or release the "
+            "session rather than assuming it stopped."
+        )
+    raise KernelNotResetTimeout(
+        f"cell exceeded {int(policy.timeout_s)}s with no result and was stopped "
+        "here, but its worker could not be reset from this daemon. If the "
+        "session runs on a cluster the work may still be running on its "
+        "allocation; recover or release the session rather than assuming it "
+        "stopped. Break the work into smaller steps, or raise "
+        "OPENAI4S_CELL_TIMEOUT."
     )
 
 
@@ -150,4 +259,12 @@ def _flag(probe: Flag) -> bool:
         return False
 
 
-__all__ = ["WatchdogPolicy", "execute_with_watchdog"]
+__all__ = [
+    "KernelCancellation",
+    "KernelNotResetCancellation",
+    "KernelNotResetTimeout",
+    "KernelResetUnavailableCancellation",
+    "KernelResetUnavailableTimeout",
+    "WatchdogPolicy",
+    "execute_with_watchdog",
+]

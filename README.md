@@ -118,7 +118,7 @@ A capability map of the current tree — what is implemented and reachable, plan
 | **Data & retrieval** | seven normalized public-database connectors (UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex) whose records carry source and time · a nightly canary over three of them · Agent-Plan-keyed **Doubao Search Custom** as the primary web search · Tavily and keyless search as backups · managed DataPro professional-dataset search |
 | **Workbench** | live streaming · Action Timeline · read-only-by-default Notebook · branch fork/activate/revert · verified recovery with an explicit Partial/Failed state · `@file` references pinned to the version they name · 2D chemistry/genome/sequence/MSA/LaTeX renderers · Markdown and `.ipynb` export |
 | **Sharing & portability** | read-only session shares over an outbound relay you operate · quarantined portable Session packages · an optional Jupyter KernelSpec bridge onto the same kernels |
-| **Ops, safety & release** | `/api/v1` and a startup credential · Seatbelt/bubblewrap sandbox adapters with visible degraded and fail-closed modes · durable approvals that deny by default when unattended · redacted diagnostics · revocable telemetry · environments as a transaction · a 10-workflow/20-case benchmark against the real Store, kernels, and dispatcher · a staged release pipeline that verifies artifacts before anything becomes public |
+| **Ops, safety & release** | `/api/v1` and a startup credential · Seatbelt/bubblewrap sandbox adapters with visible degraded and fail-closed modes · durable approvals that deny by default when unattended · redacted diagnostics · revocable telemetry · environments as a transaction · an 11-workflow/34-case benchmark against the real Store, kernels, and dispatcher · a staged release pipeline that verifies artifacts before anything becomes public |
 
 ---
 
@@ -205,6 +205,22 @@ The image is built from this tree — Debian-slim CPython, the wheel, and the `s
 
 No image is published yet: build it from the checkout. Two things are worth knowing before you expose it. Binding `0.0.0.0` inside the container makes the access token mandatory and switches the DNS-rebind `Host` allowlist off, so the token becomes the only control in front of endpoints that execute code — which is why the compose file publishes to loopback and the Service is a `ClusterIP`. And an unprivileged container cannot give bubblewrap the namespaces it needs, so the kernel sandbox degrades visibly and the container becomes the boundary; that is a coarser one, and **[the container guide](docs/docker.md)** says exactly what it stops covering.
 
+### 🧩 Take the Skills anywhere (`npx`)
+
+The 602 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. One command copies them onto a machine, from this repository:
+
+```bash
+npx openai4s-skills install --all                  # the 41 curated Skills
+npx openai4s-skills install --collection bioskills # the 561 pinned bioinformatics recipes
+npx openai4s-skills install alphafold2 boltz --target claude
+npx openai4s-skills list
+npx openai4s-skills uninstall --all
+```
+
+`--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written, and `--dry-run` writes nothing at all. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited and an uninstall removes only files it wrote. To run it straight from this repository with nothing published in between: `npx github:PKU-YuanGroup/OpenAI4S install --all`.
+
+If you already run OpenAI4S, you already have all 602 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
+
 ---
 
 ## 📚 Documentation
@@ -247,8 +263,8 @@ The canonical bilingual documentation is published at **[openai4s.org/docs](http
 - [x] Read-only session sharing over an outbound relay you operate, with the
   daemon never binding a public port and residual secrets failing the publish
   closed.
-- [x] An **executable** benchmark of end-to-end scientific workflows — 10
-  workflows / 20 cases run against the real Store, kernel managers, host
+- [x] An **executable** benchmark of end-to-end scientific workflows — 11
+  workflows / 34 cases run against the real Store, kernel managers, host
   dispatcher, and compute manager, where a declared `failure` /
   `permission_denied` / `recovered` / `provenance` outcome fails when the run
   *succeeds*. Publishing comparable public results is still ahead.

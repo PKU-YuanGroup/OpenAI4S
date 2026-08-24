@@ -203,10 +203,11 @@ jobs:
           - platform: macos
             runner: macos-14
             module: harness.smoke.macos_sandbox
-          # No linux leg. `harness.smoke.linux_sandbox` cannot pass on a
-          # GitHub-hosted runner -- ci.yml explains why and deliberately has no
-          # such job -- and `build` needs this one, so requiring it made every
-          # release unreachable. It is declared unprovable in
+          # No linux leg. The former hosted `harness.smoke.linux_sandbox` run
+          # failed, and the complete boundary has not been re-evaluated with
+          # ci.yml's newer restricted bwrap profile. Because `build` needs this
+          # job, requiring an unproven leg made every release unreachable. It is
+          # declared unprovable in
           # `release_gates.PLATFORM_CHECKS_UNAVAILABLE`, which the evidence
           # bundle carries, rather than dropped. Adding it back here without
           # removing it there fails `test_the_release_declares_every_platform`.

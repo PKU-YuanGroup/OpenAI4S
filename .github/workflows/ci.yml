@@ -111,7 +111,7 @@ jobs:
           python-version: "3.12"
       - name: Install locked development dependencies
         run: uv sync --locked
-      - name: Check the strict agent core and typed Host dispatcher
+      - name: Check the strict agent, Host, and orchestration contracts
         run: uv run mypy
 
   source-security:
@@ -125,6 +125,33 @@ jobs:
           python-version: "3.12"
       - name: Scan tracked release sources without echoing matches
         run: python scripts/source_secret_scan.py
+
+  skills-installer:
+    name: Skills installer (npx)
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The installer is the only shipped surface with no Python in it, and the
+      # only one that writes into a directory the user already owns. Its own
+      # job because a red pytest must not be able to hide an extraction that
+      # escapes its target or an uninstall that deletes a file it did not write.
+      - name: Self-test the Skill installer
+        run: node tools/skills-installer/selftest.mjs
+
+  skills-package:
+    name: npm package carries the Skills
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Separate from the self-test above, and for the reason this whole file
+      # exists: "the installer behaves" and "the published package contains
+      # anything to install" are different questions. A `files` entry that
+      # stopped matching the tree would publish a working CLI with an empty
+      # Skill library, and a red self-test must not be what hides that.
+      - name: The npm package still carries the CLI and the Skill tree
+        run: node tools/skills-installer/check_package.mjs
 
   release-artifacts:
     name: Build and install wheel/sdist
@@ -424,7 +451,13 @@ jobs:
           daemon_pid=$!
           trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 40); do
-            if curl --fail --silent http://127.0.0.1:8760/ >/dev/null; then
+            # `/health`, not `/`. The token gate is on by default here too, so
+            # `--fail` read the 401 on `/` as "not ready" and this loop never
+            # broke -- forty quarter-second sleeps, then the harness ran
+            # anyway. It looked like a readiness check and was a fixed ten
+            # seconds, which is the failure `browser-team-mode` had already
+            # diagnosed and fixed one job below without the fix reaching here.
+            if curl --fail --silent http://127.0.0.1:8760/health >/dev/null; then
               break
             fi
             if ! kill -0 "$daemon_pid" 2>/dev/null; then
@@ -452,11 +485,181 @@ jobs:
             # a file this job does not invoke would reproduce that finding
             # exactly, with a green tick on top.
             node tests/browser_p1_controls.mjs
+            # Stage 1 trusted-delivery acceptance owns a second disposable
+            # daemon on a random loopback port. It drives the production
+            # completion and stored-message renderers through 100 immutable
+            # version links, verifies every downloaded checksum across reload
+            # and reopen, and proves same-head capture observations survive.
+            node tests/browser_stage1_trusted_delivery.mjs
           fi
           node tests/browser_matrix.mjs --browser=${{ matrix.engine }}
       - name: Show daemon log after a failure
         if: failure()
         run: cat "${RUNNER_TEMP}/openai4s-browser.log" || true
+
+  browser-stage0:
+    name: Stage 0 acceptance in a real browser
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    # Its own job for the same reason `browser-team-mode` is: it needs a daemon
+    # `browser-smoke` cannot provide. Stage 0's whole subject is a DISPOSABLE
+    # daemon -- it refuses port 8760, the default data directory, a non-loopback
+    # or credential-bearing URL, and an `OPENAI4S_TOKEN` override before it
+    # reads a token at all -- while the smoke daemon is on 8760 with
+    # `OPENAI4S_NOTEBOOK_REPL=1`, which Stage 0 exists to assert is off.
+    #
+    # It exists because `tests/browser_stage0_acceptance.mjs` was invoked by no
+    # job at all -- the finding the two comments in `browser-smoke` above
+    # already name twice, sitting unfixed one file away from where they name it.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Install the zero-dependency server
+        run: uv sync --locked
+      # Before the browser: the harness's own redaction, schema, binding and
+      # production-projection checks. No Playwright and no daemon -- but it is
+      # not free of Python: the production-projection check spawns
+      # `.venv/bin/python` to drive the real completion projector, which is the
+      # point of calling it a *production* check. Ordered after `uv sync` for
+      # that reason and before the browser download for the other one: it fails
+      # in seconds when the summary contract has drifted, instead of after a
+      # Chromium install and a daemon boot. (Run ahead of `uv sync` on the
+      # first attempt, where it reported `spawnSync <path> ENOENT` -- invisible
+      # locally, where a worktree already has its .venv.)
+      - name: Stage 0 harness self-check (no browser, no daemon)
+        run: OPENAI4S_STAGE0_SELF_TEST=1 node tests/browser_stage0_acceptance.mjs
+      - name: Install the browser driver
+        run: |
+          npm install --no-save --ignore-scripts playwright@1.54.1
+          npx playwright install --with-deps chromium
+      - name: Accept Stage 0 against a disposable daemon
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-stage0
+          OPENAI4S_KERNEL_SANDBOX: "off"
+          # Same reason as `browser-smoke`: a runner has no keychain, so `auto`
+          # correctly fails closed, and an ephemeral daemon holding no real
+          # credential is the one case where plaintext is the honest answer.
+          OPENAI4S_SECRET_STORE: plaintext
+          # The property under test. Stage 0's baseline is a read-only
+          # Notebook, so this must be off and the harness asserts it is.
+          OPENAI4S_NOTEBOOK_REPL: "0"
+          OPENAI4S_HOST: 127.0.0.1
+          # Deliberately not 8760: the harness refuses the default port before
+          # it will read a token, because a daemon on it is not disposable.
+          OPENAI4S_PORT: "8790"
+        run: |
+          mkdir -p "${OPENAI4S_DATA_DIR}"
+          uv run openai4s serve >"${RUNNER_TEMP}/openai4s-stage0.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 80); do
+            # `/health` is the one route reachable without a credential
+            # (gateway.py `_UNAUTHENTICATED_PATHS`). Probing `/` with `--fail`
+            # would read the token gate's 401 as "not ready" and spin out the
+            # whole loop against a daemon that had been serving all along.
+            if curl --fail --silent \
+              "http://127.0.0.1:${OPENAI4S_PORT}/health" >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null; then
+              cat "${RUNNER_TEMP}/openai4s-stage0.log"
+              exit 1
+            fi
+            sleep 0.25
+          done
+          # `env -u OPENAI4S_TOKEN`: the harness refuses to run when a token is
+          # supplied out of band, because then it would not be exercising the
+          # owner-only file hand-off it is there to prove.
+          env -u OPENAI4S_TOKEN \
+            OPENAI4S_BROWSER_DISPOSABLE=1 \
+            OPENAI4S_BROWSER_URL="http://127.0.0.1:${OPENAI4S_PORT}/" \
+            node tests/browser_stage0_acceptance.mjs
+      - name: Show daemon log after a failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/openai4s-stage0.log" || true
+
+  browser-team-mode:
+    name: Team mode in a real browser
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    # Its own job, not a step in `browser-smoke`, because it needs a daemon
+    # that job cannot provide: OPENAI4S_TEAM_MODE=1 plus two seeded accounts,
+    # where the smoke daemon is deliberately single-user and credential-less.
+    #
+    # It exists because `tests/browser_team_mode.mjs` was added, described in
+    # tests/README.md as "the only gate that needs its own daemon", and
+    # invoked by nothing -- which is the finding the comment in `browser-smoke`
+    # above already names: a browser file no gate invokes is not evidence of
+    # anything. This is the only end-to-end coverage of team mode as a person
+    # meets it: the login redirect, the identity chip, the admin governance
+    # panel, the guest's replay-only world, and the cross-user 404s.
+    #
+    # Chromium only: the value here is depth on one engine, not breadth. The
+    # engine matrix belongs to `browser_matrix.mjs`.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Install the zero-dependency server and browser driver
+        run: |
+          uv sync --locked
+          npm install --no-save --ignore-scripts playwright@1.54.1
+          npx playwright install --with-deps chromium
+      - name: Seed two accounts and run the team-mode walk
+        env:
+          OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-team-mode
+          OPENAI4S_TEAM_MODE: "1"
+          OPENAI4S_KERNEL_SANDBOX: "off"
+          OPENAI4S_SECRET_STORE: plaintext
+          OPENAI4S_HOST: 127.0.0.1
+          OPENAI4S_PORT: "8794"
+        run: |
+          # Generated here and passed by environment, never on argv: a
+          # password in a command line is readable from the process table,
+          # which is the same reason `user add` only takes --password-stdin.
+          admin_pw="$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')"
+          member_pw="$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')"
+
+          # Seed before the daemon starts: `user add` is direct database
+          # access and wants no daemon, and seeding first means the walk
+          # never races account creation.
+          printf '%s\n' "$admin_pw" \
+            | uv run openai4s user add erika --role admin --password-stdin
+          printf '%s\n' "$member_pw" \
+            | uv run openai4s user add mallory --password-stdin
+
+          uv run openai4s serve >"${RUNNER_TEMP}/openai4s-team-mode.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 40); do
+            # --fail treats the 401/303 of a team daemon as "not ready", so
+            # probe a path that answers before login instead.
+            if curl --fail --silent http://127.0.0.1:8794/health >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null; then
+              cat "${RUNNER_TEMP}/openai4s-team-mode.log"
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          OPENAI4S_TEAM_ADMIN_PW="$admin_pw" \
+          OPENAI4S_TEAM_MEMBER_PW="$member_pw" \
+          OPENAI4S_BROWSER_URL=http://127.0.0.1:8794 \
+            node tests/browser_team_mode.mjs
+      - name: Show daemon log after a failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/openai4s-team-mode.log" || true
 
   macos-sandbox-smoke:
     name: macOS sandbox enforcement (nightly)
@@ -475,16 +678,55 @@ jobs:
           OPENAI4S_KERNEL_SANDBOX: enforce
         run: uv run python -m harness.smoke.macos_sandbox
 
-  # There is deliberately no Linux bubblewrap job here. `harness.smoke.linux_sandbox`
-  # still exists and still passes on a Linux host that permits unprivileged user
-  # namespaces -- but not on a GitHub-hosted runner, where bwrap cannot bring up
-  # the loopback interface inside its new network namespace
-  # (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). That is the
-  # runner's confinement, not a defect in the sandbox, so the job failed every
-  # single night while telling us nothing about the code. A check that cannot
-  # pass is not evidence; docs/platforms.md now states what is and is not proven
-  # rather than pointing at a job that was always red. Run the smoke by hand on a
-  # permissive Linux host to re-establish the claim.
+  # This job proves the private-PID interrupt contract independently of the
+  # broader Linux sandbox smoke. The job deliberately allows raw worker
+  # networking so its process evidence is independent of network-namespace
+  # setup, and asserts that exception in the smoke. It therefore proves no
+  # egress claim. Team KernelReadIsolation, --unshare-pid, the real --info-fd +
+  # procfs + pidfd adoption path, Python/R SIGINT delivery, and post-interrupt
+  # persistence all remain mandatory and fail closed. Ubuntu 24.04 denies an
+  # unprofiled bwrap's user namespace, so this ephemeral runner loads Ubuntu's
+  # restricted bwrap profile; it does not disable the host-wide AppArmor
+  # user-namespace policy.
+  linux-bwrap-kernel-interrupt:
+    name: Linux bubblewrap Python/R persistent interrupt
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - name: Refresh Ubuntu package metadata
+        run: sudo apt-get update
+      - name: Install bubblewrap, its restricted AppArmor profile, and real R
+        run: >-
+          sudo apt-get install --yes --no-install-recommends
+          apparmor apparmor-profiles bubblewrap r-base-core r-cran-jsonlite
+      - name: Load Ubuntu's bwrap-only user-namespace policy
+        run: >-
+          sudo apparmor_parser --replace
+          /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+      - name: Prove bubblewrap can create the required private PID namespace
+        run: >-
+          /usr/bin/bwrap --die-with-parent --new-session --unshare-ipc --unshare-uts
+          --unshare-pid --ro-bind / / --dev /dev --proc /proc --
+          /usr/bin/python3 -c
+          'import os; raise SystemExit((os.getpid(), os.getppid()) != (2, 1))'
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Interrupt real private-PID Python and R kernels, then reuse them
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+          # Deliberate scope boundary. The smoke asserts raw_allowed and does
+          # not claim to prove Linux network isolation.
+          OPENAI4S_KERNEL_ALLOW_RAW_NETWORK: "1"
+        run: uv run python -m harness.smoke.linux_bwrap_interrupt
+
+  # The full Linux boundary smoke still does not run here. It includes network
+  # denial and has not yet been re-evaluated with the restricted bwrap profile
+  # loaded above. Keep that broader claim manual rather than interpreting the
+  # raw-network interrupt job as evidence for network confinement.
 
   linux-bundle-smoke:
     name: Linux app bundle builds and imports (nightly)
