@@ -72,6 +72,7 @@ from openai4s.llm import (
     llm_failure_code,
     provider_specs,
 )
+from openai4s.mcp_protocol import openai4s_python_module
 from openai4s.observability import (
     carry_context,
     correlation_id,
@@ -1680,20 +1681,31 @@ _REMOTE_GPU_CORE_CAPS = ("fold", "score_mutations")
 
 
 def _remote_gpu_runtime_context(user_text: str | None = None) -> str:
-    """Prompt fragment reflecting the current remote-GPU registry.
+    """Prompt fragment reflecting local hardware and the remote-GPU registry.
 
     Sessions can be created before the user adds a GPU in Settings, so this
     context is injected both into the initial system prompt and into later turns.
     """
+    try:
+        from openai4s.host.accelerators import LocalAcceleratorService
+
+        local = LocalAcceleratorService().status()
+    except Exception as error:  # noqa: BLE001
+        local = {
+            "available": False,
+            "gpu_count": 0,
+            "devices": [],
+            "container_runtimes": [],
+            "probe_error": f"{type(error).__name__}: {error}",
+        }
     try:
         from openai4s.compute import registry as _reg
 
         hosts_reg = _reg.list_hosts()
         default = _reg.default_host()
     except Exception:  # noqa: BLE001
-        return ""
-    if not hosts_reg:
-        return ""
+        hosts_reg = {}
+        default = None
 
     cap_names = set()
     host_lines = []
@@ -1763,19 +1775,45 @@ def _remote_gpu_runtime_context(user_text: str | None = None) -> str:
     if "proteinmpnn" in lower or "protein mpnn" in lower:
         requested_caps.add("proteinmpnn")
     task_needs_gpu = bool(user_text and _REMOTE_GPU_TASK_RE.search(user_text))
+    if not local.get("available") and not hosts_reg and not task_needs_gpu:
+        return ""
     if task_needs_gpu and not requested_caps:
         requested_caps.update(_REMOTE_GPU_CORE_CAPS)
     missing = sorted(c for c in requested_caps if c not in cap_names)
 
+    devices = local.get("devices") or []
+    local_text = (
+        f"{local.get('gpu_count', 0)} local GPU(s): "
+        + ", ".join(str(device.get("name") or "unknown") for device in devices)
+        if local.get("available")
+        else "no usable local GPU observed by the daemon"
+    )
+    runtimes = ", ".join(local.get("container_runtimes") or []) or "none detected"
     lines = [
-        "Remote GPU state for this turn:",
-        *host_lines,
-        "Use `host.remote_gpu_status()` for the machine-readable view.",
+        "Accelerator state for this turn:",
+        f"- Local execution: {local_text}; container runtimes: {runtimes}.",
+        *(
+            host_lines
+            if host_lines
+            else ["- SSH remote execution: no GPU hosts registered."]
+        ),
+        "Use `host.accelerator_status()` for the combined machine-readable view; "
+        "`host.remote_gpu_status()` describes SSH registrations only.",
+        "Do not infer that local GPUs are absent from an empty SSH registry, and do "
+        "not infer that a model backend is ready merely because hardware is visible.",
     ]
-    if task_needs_gpu and missing:
+    if task_needs_gpu and local.get("available"):
+        lines.append(
+            "A LOCAL GPU ROUTE IS AVAILABLE. Do not select it automatically when an "
+            "SSH route is also configured: present the execution targets and ask the "
+            "user to choose. After selection, inspect that route's tool/backend "
+            "readiness; absence of Docker alone is not absence of GPU compute."
+        )
+    if task_needs_gpu and hosts_reg and missing:
         lines.extend(
             [
-                "REMOTE GPU PROVISIONING REQUIRED: the user has provided a remote GPU "
+                "SSH REMOTE GPU PROVISIONING REQUIRED for the remote route: the user "
+                "has provided a remote GPU "
                 f"host, but these requested/core services are missing: {', '.join(missing)}.",
                 "Before saying the remote pipeline is not configured, delegate a "
                 "self-contained setup task with "
@@ -1905,9 +1943,14 @@ host itself never executes shell — only your python/R cells do).
 - `host.read_file / host.write_file / host.edit_file / host.glob / host.grep / \
 host.list_dir` — file tools scoped to your working directory (edit_file does an exact \
 string replace; grep/glob search your files).
-- `host.remote_gpu_status()` — inspect configured remote GPU hosts and which real \
-services are provisioned; `host.register_remote_capability(...)` — used by the remote \
+- `host.accelerator_status()` — inspect local GPUs and SSH GPU registrations without \
+conflating either with model readiness; `host.remote_gpu_status()` — inspect configured \
+SSH GPU hosts and which real services are provisioned; \
+`host.register_remote_capability(...)` — used by the remote \
 GPU provisioning specialist after verifying a service on the SSH host.
+- `host.stage_model_asset(path, asset_name=..., expected_sha256=...)` — after the user \
+supplies an existing local checkpoint path, import it into the confined session workspace \
+and hash it. A staged asset is not admitted until a real backend inference canary succeeds.
 - `host.delegate(request, name="SPECIALIST")` — hand a self-contained sub-task to a \
 specialist; `host.mcp.call(server, tool, args)` — call a connector (MCP) tool.
 `import requests`/`httpx` and raw Python are available too, but they do NOT replace \
@@ -1916,7 +1959,8 @@ render as activity cards, go through the network + provenance layer, and are wha
 user expects to SEE happen. For any external lookup, reach for `host.web_search` FIRST — \
 do not silently substitute a raw-Python script for the visible research step.
 
-Environment (this is a real, networked CPU kernel — NOT an offline sandbox):
+Environment (this is a real, networked execution kernel — NOT an offline sandbox; \
+inspect `host.accelerator_status()` before deciding whether local GPUs are visible):
 - Networking is AVAILABLE. Prefer REAL data, and do the lookup with the VISIBLE web \
 tools so the user sees it happen: `host.web_search("...")` to find papers/datasets/ \
 accessions/methods, then `host.web_fetch(url)` to READ a hit or an HTTP/JSON record from \
@@ -1935,9 +1979,14 @@ and `host.env.use(...)` the one that has it — real MAFFT / IQ-TREE / trimAl / 
 in the `phylo` env, biotite in `struct`, the full DS stack in `python`. Only if none has it, \
 `host.bash("pip install --break-system-packages <pkg>")` (a restart may be needed for a \
 clean import). Never claim a package is "unavailable" before checking the envs or installing.
-- REMOTE GPU SERVICES ARE DYNAMIC — do not assume folding/scoring services are already \
-provisioned just because a GPU host exists. Inspect `host.remote_gpu_status()` when a task \
-needs GPU-only protein models. If `fold` is registered, call `host.fold(sequence, \
+- ACCELERATOR ROUTES ARE DISTINCT — inspect `host.accelerator_status()` when a task needs \
+GPU models. It probes local first and then reports configured SSH routes. If more than one \
+candidate route exists, ask the user to choose `local` or `ssh:<alias>`; never choose on \
+their behalf. An empty SSH registry does not mean the local machine lacks GPUs; a visible \
+local GPU does not mean a model repository, checkpoint, environment, or canary is ready. \
+For the chosen local connector route, use its preflight/bring-up path and retry the original operation. \
+For SSH services, inspect `host.remote_gpu_status()`. If `fold` is registered, call \
+`host.fold(sequence, \
 name="...")`: it runs the real remote folder and returns `{pdb, plddt_csv, confidence, \
 mean_plddt, ptm, length}`. Write the model with `host.write_file("<name>_model.pdb", \
 result["pdb"])` so it opens in the 3D viewer, and plot per-residue pLDDT from \
@@ -7780,17 +7829,32 @@ _BUILTIN_AGENTS = [
     },
 ]
 
-# Connectors directory: ready-to-add MCP servers. The bundled "example" always
-# works (pure-stdlib, no deps); the npx-based official servers work when Node is
-# installed. Users can also add any custom stdio MCP server by command.
+# Connectors directory: MCP servers the operator may explicitly add. Bundled
+# adapters are importable with OpenAI4S, but an entry here is only a catalog
+# offer: it is not persisted, enabled, or spawned until the user adds it. The
+# connector manager then starts it lazily on first discovery/call.
+_PROTEIN_DESIGN_DESCRIPTION = (
+    "Nine auditable atomic tools for backbone generation, sequence design, "
+    "structure/complex prediction, Rosetta scoring and relaxation, ESM-2 "
+    "naturalness, and OpenMM minimization. Backends and checkpoints use an "
+    "explicit, canary-verified bring-up workflow when they are not already "
+    "available."
+)
+
 _CONNECTOR_DIRECTORY = [
     {
         "id": "example",
-        "name": "Example (bundled)",
+        "name": "Example",
         "description": "A local demo MCP server (echo / now / calc / random_int) — "
         "always available, no install needed.",
-        "command": [sys.executable, "-m", "openai4s.mcp_servers.example_server"],
+        "command": openai4s_python_module("openai4s.mcp_servers.example_server"),
         "always": True,
+    },
+    {
+        "id": "protein-design",
+        "name": "Protein Design",
+        "description": _PROTEIN_DESIGN_DESCRIPTION,
+        "command": openai4s_python_module("openai4s.mcp_servers.protein_design"),
     },
     {
         "id": "filesystem",
@@ -7898,44 +7962,9 @@ def _detect_gpu() -> dict:
     import shutil as _sh
     import subprocess as _sp
 
-    if _sh.which("nvidia-smi"):
-        try:
-            out = _sp.run(
-                [
-                    "nvidia-smi",
-                    "--query-gpu=name,memory.total,driver_version",
-                    "--format=csv,noheader",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=6,
-            )
-            if out.returncode == 0 and out.stdout.strip():
-                first = out.stdout.strip().splitlines()[0].split(",")
-                return {
-                    "available": True,
-                    "gpu_name": first[0].strip(),
-                    "gpu_count": len(out.stdout.strip().splitlines()),
-                    "cuda_version": (first[2].strip() if len(first) > 2 else None),
-                    # Present in both branches on purpose. A response whose *key
-                    # set* depends on the host is not a contract: with `note`
-                    # only on CPU-only hosts, the frozen shape said "guarantees
-                    # note" on the machine that captured it and every GPU host
-                    # then failed the gate with four breaking changes that had
-                    # nothing to do with the API. The two host-valued fields
-                    # (`gpu_name`, `cuda_version`) are recorded as machine state
-                    # instead; this one stays a plain string in both.
-                    "note": "GPU detected via nvidia-smi.",
-                }
-        except Exception:  # noqa: BLE001
-            pass
-    return {
-        "available": False,
-        "gpu_name": None,
-        "gpu_count": 0,
-        "cuda_version": None,
-        "note": "CPU-only host — GPU-only models run as labelled CPU proxies.",
-    }
+    from openai4s.host.accelerators import LocalAcceleratorService
+
+    return LocalAcceleratorService(which=_sh.which, run=_sp.run).legacy_web_status()
 
 
 _REMOTE_COMPUTE_CACHE: dict = {}
@@ -11764,6 +11793,60 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json(body, status)
                 return
             m = re.fullmatch(r"/connectors/([^/]+)", sub)
+            if m and method in ("PUT", "PATCH"):
+                connector_id = m.group(1)
+                if connector_id == datapro.CONNECTOR_ID:
+                    raise GatewayError(403, "DataPro is a managed connector")
+                current = store.get_connector(connector_id)
+                if not current:
+                    self._json({"error": "connector not found"}, 404)
+                    return
+                b = self._body()
+                name = b.get("name") if "name" in b else None
+                if name is not None:
+                    name = str(name).strip()
+                    if not name:
+                        raise GatewayError(400, "connector name cannot be empty")
+                command = b.get("command") if "command" in b else None
+                if command is not None and not (
+                    (isinstance(command, str) and command.strip())
+                    or (
+                        isinstance(command, list)
+                        and command
+                        and all(isinstance(part, str) and part for part in command)
+                    )
+                ):
+                    raise GatewayError(
+                        400, "connector command must be a string or string array"
+                    )
+                args = b.get("args") if "args" in b else None
+                if args is not None and (
+                    not isinstance(args, list)
+                    or any(not isinstance(part, str) for part in args)
+                ):
+                    raise GatewayError(400, "connector args must be a string array")
+                try:
+                    updated = store.patch_connector(
+                        connector_id,
+                        name=name,
+                        description=(
+                            b.get("description") if "description" in b else None
+                        ),
+                        command=command,
+                        args=args,
+                        enabled=b.get("enabled") if "enabled" in b else None,
+                        env_updates=(
+                            b.get("env_updates") if "env_updates" in b else None
+                        ),
+                        remove_env=(b.get("remove_env") if "remove_env" in b else None),
+                    )
+                except ValueError as error:
+                    raise GatewayError(400, str(error)) from error
+                from openai4s.mcp_client import manager
+
+                manager().disconnect(connector_id)
+                self._json(public_connector(updated or current))
+                return
             if m and method == "DELETE":
                 if m.group(1) == datapro.CONNECTOR_ID:
                     raise GatewayError(403, "DataPro is a managed connector")
@@ -13010,6 +13093,7 @@ def build_app_server(cfg: Config | None = None) -> ThreadingHTTPServer:
     try:
         _seed_example_project(cfg)
         _seed_example_connector(cfg)
+        _migrate_builtin_connector_commands(cfg)
         _seed_datapro_connector(cfg)
         handler = make_handler(cfg, hub, runner)
         httpd = _GatewayHTTPServer((cfg.host, cfg.port), handler, runner=runner)
@@ -13195,18 +13279,64 @@ def _seed_example_connector(cfg: Config) -> None:
     """Register the bundled example MCP server on first boot so Connectors is
     immediately usable (probe + call work with zero setup)."""
     store = get_store(cfg.db_path)
-    if store.get_connector("example"):
+    current = store.get_connector("example")
+    if current:
+        # Remove the old source qualifier from installations that still have
+        # the original default label, while preserving any user-authored name.
+        if current.get("name") == "Example (bundled)":
+            store.patch_connector("example", name="Example")
         return
     try:
         store.upsert_connector(
             connector_id="example",
-            name="Example (bundled)",
+            name="Example",
             description="Local demo MCP server: echo / now / calc / random_int.",
-            command=[sys.executable, "-m", "openai4s.mcp_servers.example_server"],
+            command=openai4s_python_module("openai4s.mcp_servers.example_server"),
             enabled=True,
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def _migrate_builtin_connector_commands(cfg: Config) -> None:
+    """Replace machine-bound bundled argv with the portable runtime token.
+
+    Older rows persisted the absolute ``sys.executable`` of the machine where
+    the connector was added.  Match only a bundled connector id plus its exact
+    module invocation, so arbitrary custom connector commands remain byte-for-
+    byte untouched.
+    """
+
+    store = get_store(cfg.db_path)
+    modules = {
+        "example": "openai4s.mcp_servers.example_server",
+        "protein-design": "openai4s.mcp_servers.protein_design",
+    }
+    for connector_id, module in modules.items():
+        connector = store.get_connector(connector_id)
+        if connector is None:
+            continue
+        portable = openai4s_python_module(module)
+        command = connector.get("command")
+        if command != portable and (
+            isinstance(command, list)
+            and len(command) == 3
+            and command[1:] == portable[1:]
+            and isinstance(command[0], str)
+        ):
+            store.patch_connector(connector_id, command=portable)
+        if connector_id == "protein-design":
+            updates = {}
+            if connector.get("name") == "Protein Design (bundled adapter)":
+                updates["name"] = "Protein Design"
+            description = str(connector.get("description") or "")
+            if (
+                "offline isolation must be configured separately" in description
+                or "bundled adapter" in description.lower()
+            ):
+                updates["description"] = _PROTEIN_DESIGN_DESCRIPTION
+            if updates:
+                store.patch_connector(connector_id, **updates)
 
 
 def _seed_datapro_connector(cfg: Config) -> None:

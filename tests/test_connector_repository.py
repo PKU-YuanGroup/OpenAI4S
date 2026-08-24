@@ -211,6 +211,51 @@ def test_enabled_toggle_delete_and_store_facade_feed_mcp_service(tmp_path):
         assert independent.execute("SELECT COUNT(*) FROM connectors").fetchone() == (0,)
 
 
+def test_patch_connector_preserves_unmentioned_env_and_retires_replaced_refs(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    store.upsert_connector(
+        connector_id="science",
+        name="Science MCP",
+        command=["python", "server.py"],
+        args=["--stdio"],
+        env={"KEEP": "keep-secret", "REPLACE": "old-secret", "REMOVE": "gone"},
+    )
+    before = dict(store.get_connector("science")["env"])
+
+    updated = store.patch_connector(
+        "science",
+        name="Science MCP v2",
+        env_updates={"REPLACE": "new-secret", "NEW": "fresh"},
+        remove_env=["REMOVE"],
+    )
+
+    assert updated is not None
+    assert updated["name"] == "Science MCP v2"
+    assert updated["command"] == ["python", "server.py"]
+    assert updated["args"] == ["--stdio"]
+    assert store.connector_env(updated) == {
+        "KEEP": "keep-secret",
+        "REPLACE": "new-secret",
+        "NEW": "fresh",
+    }
+    assert updated["env"]["KEEP"] == before["KEEP"]
+    # SecretBroker references are stable per connector/name, so replacement
+    # overwrites the value behind the same ref instead of minting a new one.
+    assert updated["env"]["REPLACE"] == before["REPLACE"]
+    assert store.secrets.get(before["REPLACE"]) == "new-secret"
+    assert store.secrets.get(before["REMOVE"]) is None
+
+
+def test_patch_connector_rejects_ambiguous_env_changes(tmp_path):
+    store = get_store(Config(data_dir=tmp_path).db_path)
+    store.upsert_connector(connector_id="science", name="Science", command=["x"])
+
+    with pytest.raises(ValueError, match="updated and removed"):
+        store.patch_connector(
+            "science", env_updates={"TOKEN": "new"}, remove_env=["TOKEN"]
+        )
+
+
 def test_datapro_connector_persists_no_key_or_headers_and_resolves_broker_late(
     tmp_path,
 ):

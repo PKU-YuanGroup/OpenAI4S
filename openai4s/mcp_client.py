@@ -28,9 +28,11 @@ from typing import Any, Callable
 
 from openai4s.mcp_protocol import (
     MAX_FRAME_BYTES,
+    OPENAI4S_PYTHON,
     MCPError,
     MCPOversizedResponse,
     MCPTimeout,
+    openai4s_python_module,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -53,6 +55,13 @@ MAX_TIMEOUT_S = 600.0
 #: that was not there. A documented control that does not exist is worse than an
 #: undocumented one, because someone sets it and believes the deadline moved.
 DEADLINE_ENV = "OPENAI4S_MCP_DEADLINE_S"
+
+_IN_TREE_PYTHON_MODULES = frozenset(
+    {
+        "openai4s.mcp_servers.example_server",
+        "openai4s.mcp_servers.protein_design",
+    }
+)
 
 
 def _deadline_default() -> float:
@@ -843,6 +852,11 @@ class MCPManager:
             argv = cmd.split() + list(args)
         else:
             raise MCPError("connector has no command")
+        in_tree_module = (
+            len(argv) >= 3 and argv[1] == "-m" and argv[2] in _IN_TREE_PYTHON_MODULES
+        )
+        if argv and (argv[0] == OPENAI4S_PYTHON or in_tree_module):
+            argv[0] = sys.executable
         return argv
 
     def _connect(self, config: dict) -> MCPConnection:
@@ -1178,3 +1192,21 @@ def disconnect_if_initialized(
 def example_server_config() -> dict:
     """Config for the bundled example server (always available)."""
     return {"command": [sys.executable, "-m", "openai4s.mcp_servers.example_server"]}
+
+
+def protein_design_server_config(root: str | None = None) -> dict:
+    """Config for the bundled atomic protein-design server.
+
+    Model environments and immutable revision/checkpoint settings remain
+    explicit connector configuration; importing this helper starts nothing.
+    """
+    config = {
+        "command": [
+            sys.executable,
+            "-m",
+            "openai4s.mcp_servers.protein_design",
+        ]
+    }
+    if root is not None:
+        config["env"] = {"OPENAI4S_PROTEIN_DESIGN_ROOT": str(root)}
+    return config

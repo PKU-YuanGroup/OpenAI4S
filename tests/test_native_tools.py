@@ -46,6 +46,7 @@ def test_specs_are_frozen_fresh_copies_of_the_existing_registry():
         "list_mcp_servers",
         "list_mcp_tools",
         "read_mcp_resource",
+        "accelerator_status",
         "remote_gpu_status",
         "compute_status",
         "compute_result",

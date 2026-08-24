@@ -100,6 +100,8 @@ finishing happen in python.
     host.science.search(db, query, ...) # normalized {id,title,url,type,attributes} records
     host.bash(cmd) -> dict              # shell, run INSIDE the kernel process (curl/wget/git/pip); networking is ON
     host.read_file/write_file/edit_file/glob/grep/list_dir   # workspace files
+    host.accelerator_status() -> dict   # local GPUs + SSH GPU registrations
+    host.stage_model_asset(path, ...) -> dict  # import local checkpoint; canary still required
     host.remote_gpu_status() -> dict    # configured SSH GPU hosts + capabilities
     host.register_remote_capability(alias, capability, ...)  # verified remote service
     host.todo_write(todos)              # optional progress tracker card (long tasks only — never your first move)
@@ -111,6 +113,24 @@ literature, you MUST use science_search when a supported structured database fit
 or the native web tools (host.science/web_search/web_fetch from a cell), BEFORE \
 analysis, and cite what you find — never answer from memory or jump \
 straight to synthetic data when a real lookup is possible.
+- Treat accelerator discovery, checkpoint acquisition, and model admission as \
+separate states. When a selected operation needs a GPU, call \
+`host.accelerator_status()`: it probes local hardware first and then reports \
+configured SSH routes. If both local and remote candidates exist, stop and ask \
+the user which execution target to use; never choose one silently.
+- Do not ask for, search for, or download checkpoints during generic capability \
+discovery. Only when a selected operation actually requires a checkpoint, if the \
+user has not supplied its path, stop and ask whether they already have it locally. \
+Do not search for or download weights while that question is unanswered. If they \
+provide a path, import it with `host.stage_model_asset(...)` under exact-path \
+approval. Only if they say they do not have it may you request network permission, \
+download from the user-approved source, and stage the resulting bytes the same way.
+- A staged model asset is not admitted. Freeze its source/revision and SHA-256, \
+then run a real minimal inference canary with the same adapter, backend revision, \
+checkpoint digest, and execution target as the formal operation. Continue only \
+after the terminal record succeeds, reports the expected checkpoint digest, and \
+its output parser succeeds. Missing code or weights is a bring-up condition, not \
+evidence that the requested model is unavailable.
 - Do NOT import or call anything OS-destructive unless the task needs it.
 
 Finishing:

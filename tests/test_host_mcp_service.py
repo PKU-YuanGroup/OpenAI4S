@@ -218,6 +218,48 @@ def test_tools_still_works_for_an_enabled_connector():
     ]
 
 
+def test_protein_design_process_is_partitioned_and_confined_to_current_workspace(
+    tmp_path,
+):
+    store = FakeStore([_connector("protein-design", "Protein Design", env={})])
+    manager = FakeManager()
+    workspace = tmp_path / "session-workspace"
+    service = MCPService(
+        store,
+        manager_factory=lambda: manager,
+        workspace=lambda: workspace,
+    )
+
+    assert service.tools("protein-design") == {"tools": [{"name": "search"}]}
+    config = manager.list_calls[0][1]
+    assert config["env"]["OPENAI4S_PROTEIN_DESIGN_ROOT"] == str(workspace)
+    assert config["env"]["OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION"] == "1"
+    assert config["cache_scope"] == f"protein-design-workspace:{workspace}"
+
+
+def test_explicit_protein_design_root_is_not_overridden(tmp_path):
+    explicit = str(tmp_path / "operator-root")
+    store = FakeStore(
+        [
+            _connector(
+                "protein-design",
+                "Protein Design",
+                env={"OPENAI4S_PROTEIN_DESIGN_ROOT": explicit},
+            )
+        ]
+    )
+    manager = FakeManager()
+    service = MCPService(
+        store,
+        manager_factory=lambda: manager,
+        workspace=lambda: tmp_path / "session-workspace",
+    )
+
+    service.tools("protein-design")
+
+    assert manager.list_calls[0][1]["env"]["OPENAI4S_PROTEIN_DESIGN_ROOT"] == explicit
+
+
 def test_tools_preserves_not_found_soft_failure_exception_text_and_keyerror():
     store = FakeStore([])
     manager = FakeManager()

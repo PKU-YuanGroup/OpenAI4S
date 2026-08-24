@@ -221,6 +221,20 @@ def test_datapro_card_keeps_credentials_ephemeral_and_authenticates_by_search():
     assert "Key 无效、额度不足，或者专业数据集 Harness 未开启。" in APP_JS
 
 
+def test_connector_editor_can_patch_but_never_reads_secret_values():
+    editor = _extract_js_function(APP_JS, "connectorEditor")
+    connectors = _extract_js_function(APP_JS, "custConnectors")
+
+    assert "k.env_keys" in editor
+    assert "k.env =" not in editor
+    assert "k.env[" not in editor
+    assert "env_updates" in editor
+    assert "remove_env" in editor
+    assert 'method: "PUT"' in editor
+    assert 'icon("pencil", 15)' in connectors
+    assert "k.command_display" not in connectors
+
+
 def test_doubao_search_is_the_primary_no_fallback_network_card():
     card = _extract_js_function(APP_JS, "doubaoSearchCard")
     result_text = _extract_js_function(APP_JS, "doubaoSearchResultText")

@@ -16,6 +16,16 @@ from typing import Any
 #: from both a subprocess pipe and an HTTP socket.
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 
+#: Persist this token instead of a machine-bound interpreter path. It is
+#: expanded only when an in-tree connector is spawned on the current server.
+OPENAI4S_PYTHON = "@openai4s/python"
+
+
+def openai4s_python_module(module: str) -> list[str]:
+    """Return a machine-independent argv prefix for an in-tree Python module."""
+
+    return [OPENAI4S_PYTHON, "-m", module]
+
 
 class MCPError(RuntimeError):
     """Base failure reported by an MCP transport or protocol operation."""
@@ -71,5 +81,7 @@ __all__ = [
     "MCPError",
     "MCPOversizedResponse",
     "MCPTimeout",
+    "OPENAI4S_PYTHON",
+    "openai4s_python_module",
     "redact_reflected_secret",
 ]

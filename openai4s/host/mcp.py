@@ -46,10 +46,12 @@ class MCPService:
         *,
         manager_factory: Callable[[], Any] | None = None,
         frame_id: Callable[[], str | None] | None = None,
+        workspace: Callable[[], Any] | None = None,
     ) -> None:
         self.store = store
         self._manager_factory = manager_factory
         self._frame_id = frame_id or (lambda: None)
+        self._workspace = workspace
         #: Tri-state connector allowlist: None inherits, [] denies everything,
         #: a list is exactly those. Armed by
         #: `HostDispatcher.set_child_execution_policy`, the choke point every
@@ -125,7 +127,23 @@ class MCPService:
         # config; only the fixed managed connector receives authenticated HTTP.
         from openai4s.datapro import connector_runtime_config
 
-        return connector_runtime_config(self.store, connector)
+        config = connector_runtime_config(self.store, connector)
+        if (
+            connector.get("connector_id") == "protein-design"
+            and self._workspace is not None
+        ):
+            # The bundled scientific server confines all user-provided paths
+            # to one root. Bind that root to the current session workspace,
+            # not the daemon's checkout/cwd, and partition the cached MCP
+            # process by the same identity so two sessions never share a path
+            # authority. An operator's explicit root remains authoritative.
+            workspace = str(self._workspace())
+            env = dict(config.get("env") or {})
+            env.setdefault("OPENAI4S_PROTEIN_DESIGN_ROOT", workspace)
+            env.setdefault("OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION", "1")
+            config["env"] = env
+            config["cache_scope"] = f"protein-design-workspace:{workspace}"
+        return config
 
     def list(self) -> list:
         """Return the public projection of enabled, permitted connectors only.

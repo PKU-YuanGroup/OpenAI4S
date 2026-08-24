@@ -382,7 +382,7 @@ def _gpu_body(*, present):
         with _patched(gateway_mod, "shutil", _FakeShutil(found=None)):
             return detect()
     completed = subprocess.CompletedProcess(
-        ["nvidia-smi"], 0, "NVIDIA A100, 81920 MiB, 550.54.15\n", ""
+        ["nvidia-smi"], 0, "0, NVIDIA A100, 81920 MiB, 550.54.15\n", ""
     )
     with _patched(gateway_mod, "shutil", _FakeShutil(found="/usr/bin/nvidia-smi")):
         with _patched(gateway_mod, "subprocess", _FakeSubprocess(completed)):

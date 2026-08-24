@@ -519,7 +519,8 @@ change published behaviour for no stated benefit. Branch on `code`.
 | `GET|PUT|PATCH|DELETE /specialists/{name}` | CRUD; GET 404s with `{"error":"not found"}`. |
 | `GET /connectors` | `{"connectors":[…]}` (MCP servers). |
 | `POST /connectors` | `{name,command}` required (400) → connector row. |
-| `GET /connectors/directory` | `{"directory":[…]}` — the curated install list. |
+| `GET /connectors/directory` | `{"directory":[…]}` — the curated install list. In-tree Python entries use the portable `@openai4s/python` command token; it is resolved to the current daemon interpreter only at spawn time, and matching legacy absolute-path rows are migrated on startup. |
+| `PUT|PATCH /connectors/{id}` | Edit generic connector metadata and launch configuration. Body fields are optional: `{name,description,command,args,enabled,env_updates,remove_env}`. Existing environment values are never returned to the browser; omitted names are retained, `env_updates` explicitly replaces selected values through SecretBroker, and `remove_env` explicitly deletes selected names. The cached process is disconnected after a successful edit so the next call lazily starts the new configuration. DataPro is managed and rejects this route. |
 | `PUT|PATCH /connectors/{id}/enabled` | `{"ok":true}`. |
 | `POST /connectors/{id}/probe` | Spawns the server, lists tools; unknown id → 404. |
 | `POST /connectors/{id}/call` | Body `{tool,args}` → tool result; a failing call answers `502` with `code: "connector_failed"` (the MCP server's own message is not echoed — it quotes the argv and env it was launched with). |

@@ -1,5 +1,9 @@
 """Host-side services used by the kernel RPC dispatcher."""
 
+from openai4s.host.accelerators import (
+    AcceleratorRoutingService,
+    LocalAcceleratorService,
+)
 from openai4s.host.completion import CompletionService
 from openai4s.host.credentials import CredentialService
 from openai4s.host.data import HostDataService
@@ -21,6 +25,8 @@ __all__ = [
     "DelegationService",
     "EndpointService",
     "LLMService",
+    "AcceleratorRoutingService",
+    "LocalAcceleratorService",
     "MCPService",
     "ProgressService",
     "RemoteCapabilityService",

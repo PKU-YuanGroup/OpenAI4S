@@ -42,6 +42,7 @@ Agent 用来编排工作、申请权限的那批供应商原生 JSON 工具都�
 | [`read_text_file.py`](./read_text_file.py) | 工作区内有界的 UTF-8 行窗口读取，包含读到二进制文件时的响应契约。两条界限，因为 `limit` 数的是行数，对每行有多长只字未提：文件按字节预算流式读取，而不是整个读进来再切；留下的窗口另有一个字符上限。任何一条生效时，返回结果还会报出扫过的字节数与文件的真实大小，这样 `total_lines` 在它不再是总数时不会被当成总数。 |
 | [`registry.py`](./registry.py) | 内置工具唯一的实例化处，按固定顺序创建。把一次调用解析到具体工具，做校验，按每轮上限有序执行一个批次，格式化结果，最后收束成一条有界的 observation。旧版的 fenced 工具 block 也在这里解析。 |
 | [`remote_capabilities.py`](./remote_capabilities.py) | 查看远程 GPU capability 的状态。注册一个 capability 必须先通过结构化 probe，再经人工审批。 |
+| [`model_assets.py`](./model_assets.py) | 在精确路径审批后，把用户已有的本地 checkpoint 导入受限的会话工作区，流式计算 SHA-256，并明确保持 staged、尚未 admitted；只有真实推理 canary 成功后才能正式使用。 |
 | [`remote_compute.py`](./remote_compute.py) | 供应商中立的远程任务生命周期控制：submit/status/result/cancel/close。原生控制面已经实现，但通用远程计算仍是 Prototype 子系统。 |
 | [`schema.py`](./schema.py) | 零依赖的 JSON Schema 子集，用于 definition 校验、参数强制、object schema 标准化和 provider-strict 检查。 |
 | [`science.py`](./science.py) | 对受支持的公共科学数据库做标准化的 catalog 与 search 访问。 |

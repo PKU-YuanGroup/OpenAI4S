@@ -604,7 +604,10 @@ def test_abandoned_ids_and_in_flight_requests_are_both_capped(tmp_path, monkeypa
     monkeypatch.setattr(mcp_client, "_MAX_PENDING", 2)
     config = _server(tmp_path, "wedged", body=_HANG)
 
-    connection = MCPConnection(config["command"], timeout=0.2)
+    connection = MCPConnection(config["command"], timeout=5.0)
+    # The cap is exercised by short request deadlines, not by requiring a
+    # freshly spawned Python process to initialize within 200 milliseconds.
+    connection._timeout = 0.2
     try:
         for _ in range(8):
             with pytest.raises(MCPTimeout):
@@ -1065,7 +1068,10 @@ def test_a_silent_connector_is_still_a_deadline(tmp_path):
     """The negative arm. A branch that swallowed the real timeout state would
     make every wedged connector look like an oversized one."""
     config = _server(tmp_path, "silent", body=_HANG)
-    connection = MCPConnection(config["command"], timeout=0.3)
+    connection = MCPConnection(config["command"], timeout=5.0)
+    # Keep environment-dependent process startup outside the deadline under
+    # test; the silent request itself must still time out after 300 ms.
+    connection._timeout = 0.3
     try:
         with pytest.raises(MCPTimeout) as caught:
             connection.list_tools()
@@ -1267,7 +1273,10 @@ def test_a_flood_of_late_answers_to_abandoned_ids_is_not_desynchronisation(
             "    continue\n"
         ),
     )
-    connection = MCPConnection(config["command"], timeout=0.3)
+    connection = MCPConnection(config["command"], timeout=5.0)
+    # Backlog semantics need short per-request deadlines, while subprocess
+    # initialization is unrelated setup and gets a stable startup budget.
+    connection._timeout = 0.3
     try:
         for _ in range(rounds - 1):
             with pytest.raises(MCPTimeout):

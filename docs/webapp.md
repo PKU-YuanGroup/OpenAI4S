@@ -59,8 +59,14 @@ HTML/CSS/JavaScript served directly from the working tree.
   live mutation returns 423 until the user explicitly confirms `Restart fresh`;
   package code, hooks and Kernel generations are never replayed.
 - **Customize and research UX** — model profiles, Skills/Specialists,
-  connectors, compute, network, memory, permission rules, plan/explore modes,
-  voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN.
+  connectors (catalog, enable/disable, probe, and a secret-preserving launch
+  configuration editor), compute, network, memory, permission rules, plan/explore modes,
+  voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN. The
+  connector list keeps launch commands in the editor instead of mixing local
+  filesystem paths into descriptions. In-tree Python connectors persist a
+  portable runtime token that resolves against the current installation when
+  spawned, so moving the data directory does not retain the old server's
+  interpreter path.
 - **Web sharing (off by default)** — the session menu can publish a read-only
   snapshot to `https://<share-id>.<domain>/` through a relay you run, without
   binding a public port. The recipient views the conversation/Notebook/artifacts,

@@ -370,7 +370,7 @@
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "97ca5d4083638b08192f12865440d28feb42a5082ea9a1db9384060b6f114004"
+      "evidence_digest": "7e3953ded024a0379e649d61889bbd8eeb1f2d0f386061ff615ef965d301830b"
     },
     {
       "source": "R4",
@@ -468,7 +468,7 @@
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "97ca5d4083638b08192f12865440d28feb42a5082ea9a1db9384060b6f114004"
+      "evidence_digest": "7e3953ded024a0379e649d61889bbd8eeb1f2d0f386061ff615ef965d301830b"
     },
     {
       "source": "R5",

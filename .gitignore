@@ -11,6 +11,7 @@ __pycache__/
 !.env.example
 *.egg-info/
 node_modules/
+*.log
 
 # macOS
 .DS_Store
@@ -40,3 +41,4 @@ epibench_eval/
 # per-directory README gate on a stray `git add -A`.
 paper/
 .openai4s-runtime/
+.claude/

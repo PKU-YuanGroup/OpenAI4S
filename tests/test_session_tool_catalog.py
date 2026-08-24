@@ -202,7 +202,8 @@ def test_progressive_specs_keep_core_dynamic_and_activate_relevant_groups(tmp_pa
     assert {"science_list_dbs", "science_search"} <= scientific
 
     catalog.activate_groups("remote")
-    assert "remote_gpu_status" in {spec.name for spec in catalog.specs_for([])}
+    remote_tools = {spec.name for spec in catalog.specs_for([])}
+    assert {"accelerator_status", "remote_gpu_status"} <= remote_tools
     groups = {item["id"]: item for item in catalog.group_metadata()}
     assert groups["core"]["always"] is True
     assert groups["remote"]["active"] is True

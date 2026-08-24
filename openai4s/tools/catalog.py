@@ -317,6 +317,8 @@ _TOOL_GROUP = {
     "get_mcp_prompt": "mcp",
     "call_mcp_tool": "mcp",
     "request_network_access": "network",
+    "stage_model_asset": "remote",
+    "accelerator_status": "remote",
     "remote_gpu_status": "remote",
     "register_remote_capability": "remote",
     "compute_submit": "remote",

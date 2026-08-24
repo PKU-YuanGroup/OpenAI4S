@@ -146,6 +146,7 @@ def test_control_tool_classes_own_their_security_policy():
         "mcp_prompt_get",
         "mcp_call",
         "request_network_access",
+        "stage_model_asset",
         "register_remote_capability",
         "compute_submit",
         "dynamic_tool_define",
