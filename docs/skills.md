@@ -132,3 +132,58 @@ Customize uses narrow HTTP routes. Personal history/rollback lives at
 state uses `/api/projects/<project_id>/skills/<name>/versions` and
 `.../rollback`. Project IDs are path-scoped and checked against the Store;
 bundled Skills never expose a rollback action.
+
+## Installing the Skill library elsewhere (`npx openai4s-skills`)
+
+A Skill is a recipe, not an OpenAI4S API object, so the library is useful to
+any agent that reads Markdown instructions. `tools/skills-installer/` is a
+zero-dependency Node CLI that copies it out of this repository:
+
+```bash
+npx openai4s-skills list
+npx openai4s-skills install --all                  # the 41 curated Skills
+npx openai4s-skills install --collection bioskills # the 561 pinned recipes
+npx openai4s-skills install alphafold2 --target claude
+npx openai4s-skills installed
+npx openai4s-skills uninstall --all
+npx github:PKU-YuanGroup/OpenAI4S install --all    # straight from the repo
+```
+
+**Targets.** `--target claude` → `~/.claude/skills`, `--target claude-project`
+→ `./.claude/skills`, `--target openai4s` → `<data_dir>/user-skills` (honouring
+`OPENAI4S_DATA_DIR`), or `--dir <path>` for anything else. Targets are
+repeatable. With none given the command picks `claude` when `~/.claude` exists
+and `openai4s` otherwise — detection, not preference — and prints the resolved
+absolute path before writing.
+
+**Discovery is the loader's rule, restated.** A directory is a Skill when it
+holds `SKILL.md`; a directory holding `COLLECTION.json` is a collection whose
+members sit one level below and are addressable by name like any other Skill.
+Neither side hardcodes a directory name, so a new bundled collection is
+installable the moment its marker exists.
+
+**Source.** The npm package carries `skills/` (about 6.4 MiB packed), so the
+common path needs no second download; `--remote`, `--repo`, or `--ref` fetch
+the source tarball from codeload.github.com instead, cached per ref under
+`~/.cache/openai4s-skills`. A download records the ref, the URL, and the
+SHA-256 of the tarball it actually received — not a commit SHA, because
+resolving a branch to a commit is a second request whose answer nothing checks
+against the archive that was unpacked. `--ref <commit-sha>` is the
+reproducible form.
+
+**What it will not do.** It will not overwrite a Skill whose files no longer
+match the SHA-256 the manifest recorded, will not remove a file it did not
+write, and will not extract an archive member whose path escapes the target —
+absolute paths, `..`, drive letters and NUL are rejected, and a link member
+aborts the extraction rather than being skipped.
+
+**For an OpenAI4S user this is mostly redundant.** The wheel already ships all
+602 Skills and a bundled Skill takes precedence over a same-named one in
+`<data_dir>/user-skills`. The command exists to put these recipes in front of
+an agent that is not OpenAI4S.
+
+Its gates are `node tools/skills-installer/selftest.mjs` (behaviour and
+extraction safety), `node tools/skills-installer/check_package.mjs` (the npm
+manifest still ships the CLI and the Skill tree), and
+`tests/test_skills_installer_contract.py` (the assumptions the CLI makes about
+`skills/` and `package.json`, asserted with no Node required).

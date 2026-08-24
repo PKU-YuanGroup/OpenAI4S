@@ -50,6 +50,12 @@ GATES = {
     "response-contract": ("scripts/capture_response_contract.py --check", ()),
     "container-image": ("scripts/container_smoke.sh", ()),
     "linux-bwrap-interrupt": ("harness.smoke.linux_bwrap_interrupt", ()),
+    # The two npm-side gates. They are separate for the reason this whole file
+    # is about: "the installer behaves" and "the published package has anything
+    # in it" are different questions, and a red answer to one must not withhold
+    # the other.
+    "skills-installer": ("tools/skills-installer/selftest.mjs", ()),
+    "skills-package": ("tools/skills-installer/check_package.mjs", ()),
 }
 
 

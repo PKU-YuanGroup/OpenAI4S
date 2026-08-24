@@ -138,8 +138,13 @@ def execute_with_watchdog(
             continue
         remaining -= slice_s
 
-    supervisor.interrupt_if_current(lease)
-    worker.join(max(0.0, policy.interrupt_grace_s))
+    delivered = supervisor.interrupt_if_current(lease)
+    # The grace period exists for a worker that is unwinding. A stop that
+    # reached nobody has nothing to unwind, so waiting it out is ten seconds of
+    # the user's cell still running before the ladder reaches the rung that can
+    # actually end it. The return value said "delivered" for both cases until
+    # the sandbox's own verdict started reaching it.
+    worker.join(max(0.0, policy.interrupt_grace_s if delivered else 0.0))
     if not worker.is_alive():
         if "error" in box:
             if cancellation_triggered:

@@ -662,10 +662,15 @@ class Agent:
                 continue
             seen.add(id(worker))
             try:
-                worker.interrupt()
-                delivered = True
+                delivery = worker.interrupt()
             except Exception:  # noqa: BLE001 - interruption is best effort
                 continue
+            # `Kernel.interrupt` reports whether a signal actually reached the
+            # worker; `None` is a kernel double making no claim and keeps the
+            # old answer. Counting a stop the sandbox says it dropped would
+            # make `stop_child` report a cancellation it did not perform.
+            if delivery is None or delivery:
+                delivered = True
         return delivered
 
     def _cancelled(self) -> bool:

@@ -519,7 +519,13 @@ def test_a_cancel_cannot_rewrite_a_timeout_published_while_it_stopped(
     manager = JobManager(tmp_path)
     try:
         job_id = manager.submit("sleep 30", deadline_s=60.0)["id"]
-        time.sleep(0.3)
+        # The premise of the whole test is that the worker thread has reached
+        # `Popen` -- `_claim_stop_locked` below is only interesting once there
+        # is a process to signal. A third of a second was a guess at how long
+        # that takes on the machine that wrote it. `_run` sets `status`, `_proc`
+        # and `_pgid` under one `job._lock` hold and `to_dict` takes the same
+        # lock, so observing "running" from outside proves all three.
+        assert _wait_for(lambda: manager.get(job_id)["status"] == "running")
         job = manager._jobs[job_id]
 
         # The deadline got there first: it claimed and signalled, and `_run`
@@ -538,7 +544,9 @@ def test_a_cancel_cannot_rewrite_a_timeout_published_while_it_stopped(
         monkeypatch.setattr(jobs_mod, "_stop_process_group", _stop_then_publish)
 
         result = manager.cancel(job_id)
-        time.sleep(0.3)
+        assert _wait_for(
+            lambda: manager.get(job_id)["status"] in {"timeout", "cancelled"}
+        )
 
         assert (
             manager.get(job_id)["status"] == "timeout"
@@ -559,10 +567,12 @@ def test_an_ordinary_cancel_is_still_cancelled(tmp_path):
     manager = JobManager(tmp_path)
     try:
         job_id = manager.submit("sleep 30", deadline_s=60.0)["id"]
-        time.sleep(0.3)
+        # "running" is what makes this a cancel of a live process rather than
+        # of a job that has not started, which is the path under test.
+        assert _wait_for(lambda: manager.get(job_id)["status"] == "running")
 
         result = manager.cancel(job_id)
-        time.sleep(0.4)
+        assert _wait_for(lambda: manager.get(job_id)["status"] == "cancelled")
 
         assert result["status"] == "cancelled"
         assert manager.get(job_id)["status"] == "cancelled"

@@ -182,14 +182,20 @@ def test_a_stalled_collector_does_not_turn_events_into_threads(store, monkeypatc
     opener.hold.clear()  # every send blocks until released
     monkeypatch.setattr(sender_mod.urllib.request, "build_opener", lambda *a: opener)
 
-    before = threading.active_count()
+    # Identity, not a count. `active_count()` is process-global, so a thread
+    # any other test in this worker happens to start or stop between the two
+    # reads lands in this delta -- as a spurious failure, or as headroom that
+    # hides a real one. The set difference names exactly the threads that
+    # appeared, which is also what the failure message needs to be useful.
+    before = set(threading.enumerate())
     for index in range(200):
         emit_mod.emit("turn_complete", store=store, outcome="ok", turns=index)
 
-    peak = threading.active_count() - before
+    appeared = set(threading.enumerate()) - before
+    peak = len(appeared)
     assert peak <= 2, (
         f"{peak} extra threads for 200 events — delivery must be a fixed "
-        f"worker, not a thread per flush"
+        f"worker, not a thread per flush: {sorted(t.name for t in appeared)}"
     )
     assert (
         gate_mod.pending() <= gate_mod.MAX_PENDING

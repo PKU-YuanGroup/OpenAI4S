@@ -604,8 +604,14 @@ def test_abandoned_ids_and_in_flight_requests_are_both_capped(tmp_path, monkeypa
     monkeypatch.setattr(mcp_client, "_MAX_PENDING", 2)
     config = _server(tmp_path, "wedged", body=_HANG)
 
-    connection = MCPConnection(config["command"], timeout=0.2)
+    connection = MCPConnection(config["command"], timeout=30.0)
     try:
+        # The construction timeout also governs the `initialize` handshake
+        # the constructor performs against a cold CPython subprocess. A
+        # short deadline set there is a bet on how fast a runner can start
+        # an interpreter; the deadline this test is about belongs to the
+        # request below, so it is set after the handshake has succeeded.
+        connection._timeout = 0.2
         for _ in range(8):
             with pytest.raises(MCPTimeout):
                 connection.list_tools()
@@ -1065,8 +1071,14 @@ def test_a_silent_connector_is_still_a_deadline(tmp_path):
     """The negative arm. A branch that swallowed the real timeout state would
     make every wedged connector look like an oversized one."""
     config = _server(tmp_path, "silent", body=_HANG)
-    connection = MCPConnection(config["command"], timeout=0.3)
+    connection = MCPConnection(config["command"], timeout=30.0)
     try:
+        # The construction timeout also governs the `initialize` handshake
+        # the constructor performs against a cold CPython subprocess. A
+        # short deadline set there is a bet on how fast a runner can start
+        # an interpreter; the deadline this test is about belongs to the
+        # request below, so it is set after the handshake has succeeded.
+        connection._timeout = 0.3
         with pytest.raises(MCPTimeout) as caught:
             connection.list_tools()
         assert not isinstance(caught.value, mcp_client.MCPOversizedResponse)
@@ -1214,14 +1226,30 @@ def test_an_abandoned_request_answered_late_does_not_count_against_the_budget(
         "        continue\n" + _answer()
     )
     config = _server(tmp_path, "lateid", body=body)
-    connection = MCPConnection(config["command"], timeout=0.4)
+    connection = MCPConnection(config["command"], timeout=30.0)
     try:
+        # The construction timeout also governs the `initialize` handshake
+        # the constructor performs against a cold CPython subprocess. A
+        # short deadline set there is a bet on how fast a runner can start
+        # an interpreter; the deadline this test is about belongs to the
+        # request below, so it is set after the handshake has succeeded.
+        connection._timeout = 0.4
         with pytest.raises(MCPTimeout):
             connection.list_tools()
         # id 1 was `initialize`; the timed-out call is the next one.
         assert list(connection._abandoned) == [2]
 
-        time.sleep(4)  # the late answer to id 1 arrives while nobody waits
+        # Wait for the observable, not for four seconds. The reader pops the
+        # abandoned id when the late reply finally lands (`mcp_client` drains
+        # it in the background), so the state this test needs is a fact it can
+        # watch rather than a duration it has to guess.
+        deadline = time.time() + 30.0
+        while time.time() < deadline and list(connection._abandoned) == [2]:
+            time.sleep(0.05)
+        assert list(connection._abandoned) != [2], (
+            "the late answer to id 1 never arrived, so the discard path this "
+            "test is about was never exercised"
+        )
 
         # The connection is still usable, and the late reply was discarded
         # rather than counted.
@@ -1267,8 +1295,14 @@ def test_a_flood_of_late_answers_to_abandoned_ids_is_not_desynchronisation(
             "    continue\n"
         ),
     )
-    connection = MCPConnection(config["command"], timeout=0.3)
+    connection = MCPConnection(config["command"], timeout=30.0)
     try:
+        # The construction timeout also governs the `initialize` handshake
+        # the constructor performs against a cold CPython subprocess. A
+        # short deadline set there is a bet on how fast a runner can start
+        # an interpreter; the deadline this test is about belongs to the
+        # request below, so it is set after the handshake has succeeded.
+        connection._timeout = 0.3
         for _ in range(rounds - 1):
             with pytest.raises(MCPTimeout):
                 connection.list_tools()

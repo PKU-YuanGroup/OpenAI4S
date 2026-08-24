@@ -961,6 +961,12 @@ class KernelSandbox:
         self._workspace = Path(status.workspace)
         self._closed = False
         self._interrupt_gap_reported = False
+        # The reason the MOST RECENT send_interrupt did not reach a worker, or
+        # None when it did. Separate from `_interrupt_gap_reported`, which
+        # rate-limits the operator-facing print to once per kernel: the print
+        # is for a human reading a terminal, this is for the caller that has to
+        # decide whether the cell it just asked to stop is still running.
+        self._interrupt_gap: str | None = None
         # Team bubblewrap uses a private PID namespace. Its command is not the
         # launcher's direct child, so the single-user procfs resolver cannot
         # identify the SIGINT target. ``--info-fd`` supplies bubblewrap's
@@ -1442,9 +1448,17 @@ class KernelSandbox:
         Python builds or kernels without pidfd support fail safe here.  The
         request becomes a best-effort no-op rather than falling back to the
         racy numeric child PID; the watchdog can still replace a stuck worker.
+
+        Six of the branches below return True having delivered nothing, which
+        is correct for what the return value *means* and useless to a caller
+        that has to tell a user whether their stop worked.  Each one now also
+        records why, and `take_interrupt_gap()` is how `Kernel.interrupt()`
+        reads it back.  Nothing here changes what this returns: its bool is a
+        question about ownership and always was.
         """
 
         launcher = int(launcher_pid)
+        self._interrupt_gap = None
         if not (
             launcher > 0
             and self.status.enforced
@@ -1469,8 +1483,10 @@ class KernelSandbox:
                 return True
             try:
                 pidfd_send_signal(self._bwrap_worker_pidfd, int(signum), None, 0)
-            except (OSError, ValueError):
-                pass
+            except (OSError, ValueError) as error:
+                self._report_interrupt_gap(
+                    f"the pinned worker did not accept the signal ({error})"
+                )
             return True
 
         pidfd_open = getattr(os, "pidfd_open", None)
@@ -1491,10 +1507,15 @@ class KernelSandbox:
             # direct child. If it exited, pidfd_send_signal would be safe too,
             # but there is no longer an intended worker to interrupt.
             if self.interrupt_target_pid(launcher, proc_root=proc_root) != child:
+                self._report_interrupt_gap(
+                    "the worker exited between being pinned and being signalled"
+                )
                 return True
             pidfd_send_signal(pidfd, int(signum), None, 0)
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as error:
+            self._report_interrupt_gap(
+                f"the pinned worker did not accept the signal ({error})"
+            )
         finally:
             if pidfd is not None:
                 try:
@@ -1511,6 +1532,10 @@ class KernelSandbox:
         while the cell keeps running until the watchdog replaces the worker.
         That trade is only acceptable when it is visible.
         """
+        # Recorded on every occurrence; printed once. A caller asking "did my
+        # stop land?" needs this call's answer, not whether some earlier call
+        # already used up the one print this kernel is allowed.
+        self._interrupt_gap = reason
         if self._interrupt_gap_reported:
             return
         self._interrupt_gap_reported = True
@@ -1520,6 +1545,16 @@ class KernelSandbox:
             "recovered by the watchdog instead",
             file=sys.stderr,
         )
+
+    def take_interrupt_gap(self) -> str | None:
+        """Why the last `send_interrupt` reached nobody, consumed once.
+
+        Consumed rather than read, so a stale reason cannot be reported against
+        a later stop that actually worked.
+        """
+        reason = self._interrupt_gap
+        self._interrupt_gap = None
+        return reason
 
     def close(self) -> None:
         if self._closed:
