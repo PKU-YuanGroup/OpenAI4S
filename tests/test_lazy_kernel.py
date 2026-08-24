@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from openai4s.kernel import InterruptDelivery
 from openai4s.kernel.lazy import LazyKernel
 
 
@@ -99,3 +100,49 @@ def test_bootstrap_failure_does_not_publish_a_broken_worker():
     assert lazy.spawned is False
     assert kernel.closed is True
     assert published == [kernel, None]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(InterruptDelivery(True, "local-process"), True, id="delivered"),
+        pytest.param(
+            InterruptDelivery(False, "sandbox", "no pinned command identity"),
+            False,
+            id="reached_nobody",
+        ),
+        pytest.param(None, True, id="no_claim_either_way"),
+    ],
+)
+def test_interrupt_reports_the_kernel_s_verdict_not_that_it_was_called(
+    verdict, expected
+):
+    """`return True` after `kernel.interrupt()` meant "we made the call".
+
+    Its caller — `Agent.interrupt_foreground`, and through it the CLI's Ctrl-C
+    and `stop_child` — reads it as "the cell was stopped". That is the same gap
+    `Kernel.interrupt` closes one layer down, and forwarding is what stops it
+    being reopened here. `None` is a kernel double making no claim, and keeps
+    the answer this method gave before there was a verdict to forward.
+    """
+
+    calls = []
+
+    class _Interruptible(_Kernel):
+        def interrupt(self):
+            calls.append("interrupt")
+            return verdict
+
+    lazy = LazyKernel(lambda: _Interruptible())
+    lazy.execute("x = 1", origin="agent")  # force the worker into existence
+
+    assert lazy.interrupt() is expected
+    assert calls == ["interrupt"]
+
+
+def test_interrupting_a_kernel_that_was_never_started_is_false():
+    """No worker, nothing stopped — and starting one to interrupt it would be
+    the opposite of what a lazy kernel is for."""
+
+    lazy = LazyKernel(lambda: pytest.fail("a stop must not spawn a worker"))
+    assert lazy.interrupt() is False

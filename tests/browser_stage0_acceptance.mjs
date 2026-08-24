@@ -425,10 +425,20 @@ function productionCompletionMessage(artifactId, filename) {
   });
   if (child.error) throw child.error;
   if (child.status !== 0) {
-    throw new Error("production completion_message child failed");
+    // The child's own stderr, redacted with this file's redactor. Without it
+    // the CI job's only evidence for "the production completion projector
+    // could not be imported" was that fixed sentence, and the traceback that
+    // said which import failed was thrown away one line before anyone read it.
+    throw new Error(
+      `production completion_message child failed (exit ${child.status}): ` +
+        sanitizeDiagnostic(child.stderr)
+    );
   }
   if (child.stderr !== "") {
-    throw new Error("production completion_message child emitted stderr");
+    throw new Error(
+      "production completion_message child emitted stderr: " +
+        sanitizeDiagnostic(child.stderr)
+    );
   }
   const parsed = JSON.parse(child.stdout);
   if (!parsed || typeof parsed.message !== "string" || !parsed.message) {

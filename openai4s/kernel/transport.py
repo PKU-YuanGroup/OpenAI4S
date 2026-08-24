@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -119,7 +120,34 @@ class PipeTransport:
         }
         if pass_fds:
             options["pass_fds"] = tuple(int(fd) for fd in pass_fds)
+        if os.name == "posix":
+            # The kernel worker gets its own session, so a signal aimed at the
+            # daemon's process group is not also aimed at every cell running
+            # under it. Linux + bubblewrap has had exactly this since the
+            # wrapped argv started carrying `--new-session`; without bwrap the
+            # worker sat in the daemon's group, so the two configurations had
+            # different signal semantics -- and the one nobody develops on was
+            # the isolated one. None of this product's own paths are
+            # group-scoped: every interrupt, kill, restart and abandon here
+            # targets exactly one pid.
+            #
+            # What this costs is the terminal's group-wide Ctrl-C, which was
+            # the kernel's only group-scoped cleanup. `cmd_run` now installs a
+            # SIGINT handler that calls `Agent.interrupt_foreground()` to
+            # replace it, and `kill()` below gains the group ladder every other
+            # long-lived child in this repository already has.
+            options["start_new_session"] = True
         self._proc = subprocess.Popen(command, **options)
+        # Read at spawn, from the pid, not later from `os.getpgid`: once the
+        # leader is reaped the lookup fails, which is exactly when a surviving
+        # group most needs signalling (`execution/process_group.py` says the
+        # same thing, and `jobs.py`, `sdk/bash.py`, `mcp_client.py` and the
+        # local orchestration backend all follow this shape).
+        self._pgid: int | None = (
+            self._proc.pid
+            if os.name == "posix" and "start_new_session" in options
+            else None
+        )
         try:
             if process_started is not None:
                 process_started(int(self._proc.pid))
@@ -206,11 +234,49 @@ class PipeTransport:
         rather than duplicating the sandbox check in two places."""
         return False
 
-    def kill(self) -> None:
+    def _stop_group_or_leader(self) -> None:
+        """Kill the worker AND whatever it started.
+
+        `proc.kill()` ends the leader alone. A cell's own subprocesses --
+        anything not routed through `host.bash`, which sets its own session --
+        used to sit in the daemon's group, so pointing a group stop at the
+        kernel would have pointed it at the daemon: this was the one long-lived
+        child in the repository with no group-scoped stop, and a watchdog kill
+        left the cell's grandchildren running. Session isolation is what makes
+        the ladder addressable, so it lands with it.
+
+        Guarded, not assumed: if `start_new_session` was not honoured, the pid
+        is not a group leader and the fallback is exactly the old behaviour.
+        """
+        proc = self._proc
+        pgid = getattr(self, "_pgid", None)
+        if pgid is not None:
+            try:
+                if os.getpgid(proc.pid) == proc.pid:
+                    from openai4s.execution.process_group import (
+                        await_group_exit,
+                        signal_group,
+                    )
+
+                    # SIGKILL, not the polite TERM-then-KILL ladder
+                    # `stop_process_group` runs. This is the watchdog's LAST
+                    # rung -- the interrupt above it has already failed -- and
+                    # a five-second TERM grace here would be five seconds added
+                    # to every hard recovery. The confirmation is kept: SIGKILL
+                    # cannot be caught, so the group empties promptly, and a
+                    # ceiling that is never reached costs nothing.
+                    signal_group(proc, pgid, signal.SIGKILL)
+                    await_group_exit(proc, pgid, 2.0)
+                    return
+            except (OSError, AttributeError, ImportError):
+                pass  # fall through to the leader-only kill
         try:
-            self._proc.kill()
+            proc.kill()
         except (ProcessLookupError, OSError):
             pass
+
+    def kill(self) -> None:
+        self._stop_group_or_leader()
 
     def close(self, *, graceful: bool = True) -> None:
         proc = self._proc
@@ -223,12 +289,23 @@ class PipeTransport:
             try:
                 proc.wait(timeout=3)
             except Exception:  # noqa: BLE001
+                # A worker executing a cell never reaches its read loop, so it
+                # cannot see the shutdown frame written above. The terminal's
+                # group SIGINT used to end the cell first; with the worker in
+                # its own session it does not, so ask once, directly, before
+                # escalating -- the worker's own handler turns this into the
+                # cell's KeyboardInterrupt and the shutdown frame is then read
+                # immediately.
                 try:
-                    proc.kill()
-                    # reap, so a restart does not leak a zombie each time
+                    proc.send_signal(signal.SIGINT)
                     proc.wait(timeout=2)
                 except Exception:  # noqa: BLE001
-                    pass
+                    try:
+                        self._stop_group_or_leader()
+                        # reap, so a restart does not leak a zombie each time
+                        proc.wait(timeout=2)
+                    except Exception:  # noqa: BLE001
+                        pass
         # Close the pipe wrappers now: a dead worker's buffered stdin
         # otherwise raises BrokenPipeError at GC-time flush.
         for stream in (proc.stdin, proc.stdout, proc.stderr):

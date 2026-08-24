@@ -84,8 +84,12 @@ class _RecoveryKernelCandidate:
             self.kernel.shutdown()
 
     def interrupt(self) -> bool:
-        self.kernel.interrupt()
-        return True
+        # Forward the kernel's verdict instead of asserting one. `True` here
+        # meant "we called interrupt", and the caller reads it as "the cell was
+        # stopped" -- the same gap `Kernel.interrupt` now closes underneath.
+        # `None` is a kernel double making no claim and keeps the old answer.
+        delivery = self.kernel.interrupt()
+        return delivery is None or bool(delivery)
 
 
 class SessionRecoveryRuntime:

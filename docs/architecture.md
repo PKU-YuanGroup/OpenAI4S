@@ -334,6 +334,31 @@ host.submit_output(...)                         # scientific-cell completion
 - **One scientific writer per session** — a FIFO execution coordinator exposes
   an exact owner, queue positions, and scoped cancellation; interrupts target an
   execution ID, owner, and frozen kernel lease rather than a session-global PID.
+- **An interrupt reports whether it was delivered.** One SIGINT ends one cell
+  and never the worker: a signal the worker cannot raise yet is latched and
+  paid at the first instruction of user code, and an idle worker swallows one.
+  What the host cannot promise is arrival — `KernelSandbox.send_interrupt`
+  returns True to mean "this adapter owns delivery", and six of its branches
+  own it while sending nothing (no pidfd support, no pinned bubblewrap
+  identity, a worker that exited between being pinned and being signalled).
+  `Kernel.interrupt()` therefore returns an `InterruptDelivery`, falsy when
+  nothing was delivered and carrying the sandbox's own diagnosis of why;
+  `host.exec_interrupt(...)` surfaces it as `interrupt_undelivered`. The
+  alternative is what it replaced: a cancel API answering the same silence for
+  "the cell stopped" and "nothing was sent, and repeating this will send
+  nothing again".
+- **The worker owns its session.** A local kernel spawns with
+  `start_new_session=True`, so a signal aimed at the daemon's process group is
+  not also aimed at every cell running under it — the isolation Linux +
+  bubblewrap already had from `--new-session`, which made signal semantics
+  depend on whether bwrap happened to be installed. None of this system's own
+  paths are group-scoped; every interrupt, kill, restart and abandon targets
+  one pid. What the session buys is the other direction: the worker's group is
+  captured at spawn, so `kill` can go through the same stop ladder as every
+  other long-lived child and reap the cell's own subprocesses. That was not
+  merely missing before, it was unaddressable — `os.getpgid(worker)` *was* the
+  daemon's group. `openai4s run` installs a SIGINT handler that does what the
+  terminal's group-wide Ctrl-C used to do, so the CLI loses nothing.
 
 The engine is **pure Python stdlib**: the kernel is a subprocess speaking a hardened JSON-per-line protocol, the LLM client speaks OpenAI Chat-compatible, OpenAI Responses, Anthropic, and Gemini wires over `urllib`, and the daemon is `http.server` + a hand-rolled WebSocket — no framework, no third-party dependency in the core. Provider identities and model-profile presets live in validated process-local catalogs above those four adapters, so a deployment can add an endpoint or model without adding a router branch; a genuinely new wire still requires a focused adapter.
 

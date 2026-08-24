@@ -300,11 +300,24 @@ class BackgroundExecutor:
         if job.status != "running":
             return job.peek()  # idempotent: already finished
         # ONE SIGINT — the worker's one-shot handler keeps the kernel alive.
-        job._kernel.interrupt()
+        delivery = job._kernel.interrupt()
         # give the interrupt a beat to unwind and produce the response frame.
         if job._thread is not None:
             job._thread.join(timeout=5.0)
-        return job.peek()
+        report = job.peek()
+        # `None` (a kernel double, or an older transport) means "no claim
+        # either way", not "not delivered" -- inventing a failure out of an
+        # absent answer is the same dishonesty pointed the other way.
+        if delivery is not None and not delivery:
+            # The stop reached nobody. `status` already says "running", but a
+            # caller reading that cannot tell "still unwinding" from "this
+            # request did nothing and repeating it will do nothing either" --
+            # and the sandbox's diagnosis of why went to stderr, where the
+            # agent that asked for the stop cannot see it.
+            report["interrupt_undelivered"] = (
+                delivery.reason or "the stop request did not reach the worker"
+            )
+        return report
 
     def list_jobs(self) -> list[dict]:
         with self._lock:

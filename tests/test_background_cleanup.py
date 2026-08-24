@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from openai4s.kernel import InterruptDelivery
 from openai4s.kernel import background as background_mod
 from openai4s.kernel.background import BackgroundExecutor
 from openai4s.server.errors import GatewayError
@@ -505,3 +506,80 @@ def test_a_background_cell_buffer_does_not_grow_without_bound():
     # Still one marker after further writes, not one per chunk.
     job._on_chunk("z" * 1000)
     assert job.stdout_so_far().count("...(truncated at") == 1
+
+
+class _UninterruptibleKernel(_HungKernel):
+    """A kernel whose stop request reaches nobody, and says so.
+
+    It releases the cell anyway, so the executor's five-second join returns at
+    once. What is under test is that the delivery verdict reaches the caller's
+    report, not how long a genuinely stuck cell keeps running.
+    """
+
+    def interrupt(self):
+        self.interrupt_calls += 1
+        self.release.set()
+        return InterruptDelivery(
+            False, "sandbox", "bubblewrap did not provide a pinned command identity"
+        )
+
+
+def test_a_stop_that_reached_nobody_is_reported_to_the_caller():
+    """`status` cannot carry this. "running" cannot distinguish "still
+    unwinding" from "that request did nothing and repeating it will do nothing
+    either", and a cell that then fails for its own reasons reports "failed"
+    with the dropped stop nowhere in the answer. The sandbox already knew which
+    it was and printed the diagnosis to stderr, where the agent that asked for
+    the stop cannot read it."""
+
+    kernel = _UninterruptibleKernel()
+    executor = BackgroundExecutor(lambda: kernel, dispatcher=None)
+    launched = executor.launch("hang()")
+    try:
+        assert kernel.entered.wait(1)
+        report = executor.interrupt(launched["exec_id"])
+        assert kernel.interrupt_calls == 1
+        assert "pinned command identity" in report["interrupt_undelivered"]
+    finally:
+        kernel.release.set()
+        executor.shutdown(timeout_per_job=1.0)
+
+
+def test_a_delivered_stop_adds_no_undelivered_note():
+    """The note must appear only when the stop really did not land, or it is
+    noise that trains its reader to ignore it."""
+
+    class _StoppableKernel(_HungKernel):
+        def interrupt(self):
+            self.interrupt_calls += 1
+            self.release.set()
+            return InterruptDelivery(True, "local-process")
+
+    kernel = _StoppableKernel()
+    executor = BackgroundExecutor(lambda: kernel, dispatcher=None)
+    launched = executor.launch("hang()")
+    try:
+        assert kernel.entered.wait(1)
+        report = executor.interrupt(launched["exec_id"])
+        assert "interrupt_undelivered" not in report
+    finally:
+        kernel.release.set()
+        executor.shutdown(timeout_per_job=1.0)
+
+
+def test_a_kernel_that_makes_no_delivery_claim_is_not_reported_as_failed():
+    """`None` is "no claim either way". Reading it as "not delivered" would
+    manufacture a failure out of an absent answer -- the same dishonesty this
+    change exists to remove, pointed the other way."""
+
+    kernel = _HungKernel()  # its interrupt() returns None
+    executor = BackgroundExecutor(lambda: kernel, dispatcher=None)
+    launched = executor.launch("hang()")
+    try:
+        assert kernel.entered.wait(1)
+        kernel.release.set()
+        report = executor.interrupt(launched["exec_id"])
+        assert "interrupt_undelivered" not in report
+    finally:
+        kernel.release.set()
+        executor.shutdown(timeout_per_job=1.0)
