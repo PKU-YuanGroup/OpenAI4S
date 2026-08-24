@@ -739,6 +739,83 @@ def test_sigint_interrupt_reports_interrupted_true_lineno_none():
         assert k.execute("print(marker)")["stdout"].strip() == "still-here"
 
 
+def test_interrupt_stops_a_cell_whose_helper_threads_could_eat_the_signal():
+    """A worker with unblocked helper threads must still stop promptly.
+
+    The worker is not single-threaded in practice: the guard phase's
+    matplotlib import starts OpenBLAS's pool, and those threads inherit an
+    empty signal mask. Linux may hand a process-directed SIGINT to any of
+    them; CPython's Python-level handler runs only on the main thread, and a
+    main thread blocked in `time.sleep` is never woken by a flag another
+    thread set. Observed on a CI runner (run 32735586388, round 15): every
+    thread with SigPnd 0, the main thread parked in hrtimer_nanosleep, and
+    the cell reporting interrupted=True only at wall=30.0005 -- the stop was
+    consumed by a BLAS thread and did nothing until the sleep ran out. The
+    interrupt path now aims tgkill at the main thread, which this asserts
+    with explicitly spawned stand-ins for the BLAS pool.
+    """
+    reached = threading.Event()
+
+    def dispatcher(method, args):
+        if method == "ping":
+            reached.set()
+        return _echo_dispatcher(method, args)
+
+    with Kernel(dispatcher=dispatcher) as k:
+        result = {}
+
+        def run():
+            result["r"] = k.execute(
+                "import threading, time\n"
+                "for _ in range(6):\n"
+                "    threading.Thread(target=time.sleep, args=(60,), "
+                "daemon=True).start()\n"
+                "host._call('ping', [])\n"
+                "time.sleep(60)"
+            )
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        assert reached.wait(60), "the cell never reached its host call"
+        k.interrupt()
+        # Well under the cell's own 60s sleep: a signal eaten by a helper
+        # thread leaves the sleep running and fails here, rather than being
+        # indistinguishable from a slow runner at the sleep's full length.
+        t.join(timeout=15)
+        assert not t.is_alive(), _interrupt_diagnosis(k)
+
+        r = result["r"]
+        assert r["interrupted"] is True
+        assert r["error"] == "Interrupted"
+
+
+def test_tgkill_helper_reaches_the_calling_threads_own_process():
+    """The syscall-number table and argument order, proven by delivery.
+
+    On Linux the helper signals THIS process's main thread with SIGUSR1 and
+    the installed handler must observe it -- a wrong syscall number or a
+    swapped tgid/tid argument fails here, not in a hung CI cell. Elsewhere
+    the helper must decline so the caller keeps the process-directed path.
+    """
+    import sys as _sys
+
+    if _sys.platform != "linux":
+        assert (
+            manager_mod._signal_worker_main_thread(os.getpid(), signal.SIGUSR1) is False
+        )
+        return
+
+    seen = threading.Event()
+    previous = signal.signal(signal.SIGUSR1, lambda s, f: seen.set())
+    try:
+        assert manager_mod._signal_worker_main_thread(
+            os.getpid(), signal.SIGUSR1
+        ), "tgkill failed on a platform whose syscall number is in the table"
+        assert seen.wait(5), "tgkill reported success but the signal never arrived"
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+
+
 def _interrupt_diagnosis(kernel) -> str:
     """What a failing interrupt looked like, instead of `assert not True`.
 
