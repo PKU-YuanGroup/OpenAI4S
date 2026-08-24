@@ -91,6 +91,36 @@ class KernelTransport(Protocol):
         ...
 
 
+def _reset_inherited_signal_dispositions() -> None:
+    """Runs in the forked child, between fork and exec (Popen preexec_fn).
+
+    A POSIX shell starts background jobs (`./start.sh &`, `nohup openai4s
+    serve`) with SIGINT and SIGQUIT set to SIG_IGN, and SIG_IGN — unlike a
+    handler — survives every exec in the chain: daemon → [bwrap] → sh →
+    Rscript. R follows the classic Unix idiom and installs its interrupt
+    handler only when the inherited disposition is not SIG_IGN, so a worker
+    descended from a backgrounded daemon is born uninterruptible:
+    `Kernel.interrupt()`'s SIGINT is discarded in the child (verified with
+    lldb — sigaction(SIGINT)=SIG_IGN, R_interrupts_pending stays 0) and the
+    cell runs to completion while the caller reports a delivered stop. The
+    python worker survives the same inheritance only because worker.py calls
+    `signal.signal()` unconditionally.
+
+    Resetting to SIG_DFL here makes every kernel worker start as if launched
+    from a foreground shell, without touching the daemon's own disposition —
+    an operator who backgrounded the daemon keeps its terminal semantics. The
+    reset cannot live in r_kernel's sh wrapper instead: POSIX forbids a
+    non-interactive shell from trapping or resetting a signal that was
+    ignored on entry, so `trap - INT` is a no-op exactly when it is needed.
+
+    `signal.signal` is legal in this child even when the Popen ran on a
+    daemon request thread: with a preexec_fn CPython runs
+    `PyOS_AfterFork_Child()` first, which re-mains the surviving thread.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+
+
 class PipeTransport:
     """The local worker: a child process over three pipes.
 
@@ -137,6 +167,12 @@ class PipeTransport:
             # replace it, and `kill()` below gains the group ladder every other
             # long-lived child in this repository already has.
             options["start_new_session"] = True
+            # And it starts with foreground signal dispositions, whatever the
+            # daemon's own launch mode left behind: an inherited SIG_IGN on
+            # SIGINT survives exec and R honours it, so without this reset a
+            # backgrounded daemon's R kernels silently drop every interrupt.
+            # See `_reset_inherited_signal_dispositions` for the full chain.
+            options["preexec_fn"] = _reset_inherited_signal_dispositions
         self._proc = subprocess.Popen(command, **options)
         # Read at spawn, from the pid, not later from `os.getpgid`: once the
         # leader is reaped the lookup fails, which is exactly when a surviving

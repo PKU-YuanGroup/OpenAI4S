@@ -845,6 +845,65 @@ def _interrupt_diagnosis(kernel) -> str:
     return "\n".join(lines)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signal dispositions")
+def test_kernel_children_start_with_default_sigint_even_when_spawner_ignores_it():
+    """The spawn boundary undoes an inherited SIG_IGN on SIGINT/SIGQUIT.
+
+    A shell backgrounds `./start.sh &` (and nohup) with both set to SIG_IGN,
+    which survives every exec: daemon → [bwrap] → sh → Rscript. R installs its
+    interrupt handler only when the inherited disposition is not SIG_IGN, so a
+    backgrounded daemon's R kernels silently dropped every Kernel.interrupt()
+    while the python worker — which calls signal.signal unconditionally —
+    kept working. PipeTransport is the one local spawn site for both, so the
+    probe here covers Python, R and the bwrap-wrapped argv alike.
+
+    The probe reads what CPython concluded from the inherited disposition:
+    `default_int_handler` installed means the child was born with SIGINT not
+    ignored (the reset worked); SIG_IGN means the legacy leaked through.
+
+    The second spawn runs on a non-main thread because that is where the
+    daemon actually spawns kernels — it pins that the preexec reset (which
+    calls `signal.signal` in the forked child) stays legal off-main-thread.
+    """
+    import sys
+
+    from openai4s.kernel.transport import PipeTransport
+
+    probe = (
+        "import signal, sys\n"
+        "sys.stdout.write('int_reset=%s quit_reset=%s\\n' % (\n"
+        "    signal.getsignal(signal.SIGINT) is signal.default_int_handler,\n"
+        "    signal.getsignal(signal.SIGQUIT) is signal.SIG_DFL))\n"
+    )
+    command = [sys.executable, "-c", probe]
+
+    def spawn_and_read() -> str:
+        transport = PipeTransport(command, cwd=None, env=dict(os.environ))
+        try:
+            line = transport.read_line()
+            transport.process.wait(timeout=10)
+        finally:
+            transport.close(graceful=False)
+        return line.strip()
+
+    old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    old_quit = signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+    try:
+        assert spawn_and_read() == "int_reset=True quit_reset=True"
+
+        box: dict[str, str] = {}
+        thread = threading.Thread(
+            target=lambda: box.update(line=spawn_and_read()), daemon=True
+        )
+        thread.start()
+        thread.join(30)
+        assert not thread.is_alive(), "off-main-thread spawn never finished"
+        assert box["line"] == "int_reset=True quit_reset=True"
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGQUIT, old_quit)
+
+
 def test_a_chunk_from_another_cell_is_not_this_cell_s_output(monkeypatch):
     """`on_chunk` and the assembled stdout belong to the cell that was asked
     for. A frame stamped with a different cell id used to satisfy both — so a

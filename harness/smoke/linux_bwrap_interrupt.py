@@ -306,6 +306,17 @@ def main() -> int:
     os.environ["OPENAI4S_KERNEL_SANDBOX"] = "enforce"
     os.environ["OPENAI4S_KERNEL_ALLOW_RAW_NETWORK"] = "1"
 
+    # Run the whole smoke with SIGINT ignored, the disposition a daemon
+    # launched as a shell background job (`./start.sh &`, nohup) actually has.
+    # SIG_IGN survives exec through bwrap and sh into Rscript, and R installs
+    # its interrupt handler only when the inherited disposition is not
+    # SIG_IGN — so before kernel/transport.py reset dispositions at the spawn
+    # boundary, this exact configuration silently dropped every R interrupt
+    # delivered over the pidfd path this smoke exists to prove. Spawning under
+    # SIG_IGN makes the smoke cover the backgrounded-daemon chain end to end;
+    # delivery itself is unaffected (pidfd_send_signal targets the worker).
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     home = Path.home().resolve()
     root = Path(tempfile.mkdtemp(prefix="openai4s-bwrap-interrupt-", dir=home))
     python_workspace = root / "agent-workspaces" / "python"

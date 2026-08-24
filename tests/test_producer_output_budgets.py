@@ -774,21 +774,13 @@ def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
     bumped, so the SIGINT is sent only when bytes have provably crossed the
     fifo while the writer still has ~4 GB left to produce.
     """
-    import signal
-
     from openai4s.kernel.r_kernel import spawn_r_kernel
 
-    if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
-        # A shell backgrounds `cmd &` with SIGINT ignored; SIG_IGN survives
-        # exec, and R honours an inherited ignore instead of installing its
-        # handler — so kernel.interrupt()'s SIGINT would be silently dropped
-        # and this test would "fail" by running the full 4 GB. Diagnosed with
-        # lldb: sigaction(SIGINT) in the child R was SIG_IGN, pending set
-        # empty. Nothing about the drain is wrong in that state; skip loudly.
-        pytest.skip(
-            "SIGINT is SIG_IGN in this process (backgrounded shell?); "
-            "no SIGINT can reach the R worker"
-        )
+    # This test once skipped when its own process had SIGINT set to SIG_IGN (a
+    # backgrounded `pytest &`): SIG_IGN survived exec into R, R honoured it,
+    # and no SIGINT could reach the worker. The spawn boundary in
+    # kernel/transport.py now resets the child's disposition, so the scenario
+    # runs instead of skipping — test_r_kernel.py pins that reset explicitly.
 
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
