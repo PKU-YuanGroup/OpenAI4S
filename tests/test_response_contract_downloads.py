@@ -440,3 +440,36 @@ def test_the_frozen_schemas_declare_every_seeded_success(driven):
     assert problems == {}, (
         "the committed response schemas do not describe these successes: " f"{problems}"
     )
+
+
+@pytest.mark.stubbed_backend
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("PUT", "/connectors/directory"),
+        ("PATCH", "/connectors/directory"),
+        ("PUT", "/connectors/no-such-connector"),
+        ("PATCH", "/connectors/no-such-connector"),
+    ],
+)
+def test_a_connector_write_verb_keeps_the_frozen_not_found_shape(server, method, path):
+    """`/connectors/directory` is a sibling route, not a connector id.
+
+    `([^/]+)` matches it too, so adding PUT/PATCH for connector rows captured
+    a path that used to fall through to the router's own not-found -- and
+    answered it with a body missing `method` and `path`. Both spellings reach
+    a 404 here, and both have to keep the shape clients already had, which is
+    the one every other not-found on this surface emits.
+    """
+    frozen = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "docs" / "response-schemas.json"
+        ).read_text(encoding="utf-8")
+    )["routes"]
+    _runner, client = server
+
+    status, body = client.request(method, path, {})
+
+    assert status == 404, body
+    key = f"{method} {path.replace('no-such-connector', '([^/]+)')} [error]"
+    assert set(frozen[key]["schema"]["required"]) <= set(body), sorted(body)

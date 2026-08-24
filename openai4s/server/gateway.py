@@ -11513,6 +11513,13 @@ _PROTEIN_DESIGN_DESCRIPTION = (
     "available."
 )
 
+#: Sibling routes under /connectors/ that are not connector ids. `([^/]+)`
+#: matches them too, so a verb handler added for connector rows would silently
+#: capture `/connectors/directory` and answer it as "no such connector" --
+#: changing a response clients already had. Verbs that existed before this
+#: distinction (GET, DELETE) keep their established behaviour.
+_CONNECTOR_SIBLINGS = frozenset({"directory"})
+
 #: Descriptions the product itself shipped and may therefore reclaim. Listed
 #: exactly rather than sniffed for, so an operator's own wording survives.
 _RETIRED_PROTEIN_DESCRIPTIONS = frozenset(
@@ -16482,16 +16489,25 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json(body, status)
                 return
             m = re.fullmatch(r"/connectors/([^/]+)", sub)
-            if m and method in ("PUT", "PATCH"):
+            if (
+                m
+                and method in ("PUT", "PATCH")
+                and m.group(1) not in _CONNECTOR_SIBLINGS
+            ):
                 connector_id = m.group(1)
                 if connector_id == datapro.CONNECTOR_ID:
                     raise GatewayError(403, "DataPro is a managed connector")
                 current = store.get_connector(connector_id)
                 if not current:
-                    # Structured, like every other error this route raises. A
-                    # bare body made one route answer with two incompatible
-                    # error shapes depending on which check failed.
-                    raise GatewayError(404, "connector not found")
+                    # The same not-found body the router's own fall-through
+                    # emits, diagnostic fields included. This route is reached
+                    # by a path that used to fall through, so a different shape
+                    # here is a breaking change to what clients already had.
+                    self._json(
+                        {"error": "connector not found", "path": sub, "method": method},
+                        404,
+                    )
+                    return
                 b = self._body()
                 name = b.get("name") if "name" in b else None
                 if name is not None:
