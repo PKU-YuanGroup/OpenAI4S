@@ -124,6 +124,8 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_egress.py`](test_egress.py) | 出站域名的允许名单。前面几个测试要仔细读：这个模式默认是关的，而关掉时它失败即放行。这是一个需要运维显式打开的控制项，而不是系统天然具备的性质。一旦打开，仿冒域名会被拒，运行时的授权可以经 broker 放宽，而一次拒绝会让围栏保持关闭。 |
 | [`test_environment_readiness.py`](test_environment_readiness.py) | Stage 1 针对精确 Python/R 直接依赖清单的本地只读 `standard` 预检：完整缺口、无路径 DTO、零网络／零变更／不启动解释器、持久 UI 投影，以及两条显式托管修复命令。只走 control/finalize 的 turn 仍可在不启动内核时路由；Code Cell 会在 pending Cell 状态或执行之前失败即关闭，已批准／恢复的科学 plan 则在 CAS 状态迁移前检查。未知 inventory 失败即关闭，绝不伪装成 ready。 |
 | [`test_environments.py`](test_environments.py) | conda 环境发现，跑在假的 conda 目录上，所以结果永远不取决于开发者本机装了什么。仅有 R 的环境会被发现，但绝不会作为可运行的 Python 提供出去。 |
+| [`test_env_setup_failure_projection.py`](test_env_setup_failure_projection.py) | 失败的 `host.env.create` 不得渲染成 "ready"。`preinstall.install` 用结构化的 `ok: false` 报告失败而不是单键软失败，而活动步骤投影只认后者——于是卡片在一次从未发生的安装上写着 "ready"。投影现在读取声明的标志，把真实原因（如 "No module named pip"）带上卡片，并把步骤终态标为 error；模型看到的结构化结果保持不变。 |
+| [`test_preinstall_uv_fallback.py`](test_preinstall_uv_fallback.py) | 在没有 pip 的 uv 虚拟环境里按需安装——包括 `setup.sh` 用 uv 构建的 daemon 自己的 `.venv`。`_pip_install` 先探测 pip 模块，缺失时回退 `uv pip install --python <sys.executable>`；两者都没有时报错并指出两种补救。只有工具*选择*会回退：pip 存在但安装失败时按原样报告，而不是换 uv 重试。 |
 | [`test_execution_coordinator.py`](test_execution_coordinator.py) | 单独看 FIFO 协调器。同一时刻一个会话只有一个写入方，不同会话互不阻塞；取消或中断必须报出确切的 ticket 与持有者——来自另一个协调器的 ticket 什么也释放不了。 |
 | [`test_execution_principal.py`](test_execution_principal.py) | 团队模式的执行身份必须明确且失败即拒绝：principal 缺失会被拒绝，成员不能浏览、搜索或打开其他成员的私有 Cell，owner/admin 保留应有可见性，执行结束后身份上下文会正确恢复。 |
 | [`test_execution_view_service.py`](test_execution_view_service.py) | Execution 日志与 Notebook 所依赖的那些 DTO。麻烦的是重试投影：连续的失败会折叠成一行且一条不丢，而这次折叠不许跨越运行时边界或非 Agent 的边界。 |
@@ -207,6 +209,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_mcp_client.py`](test_mcp_client.py) | 离线的 MCP：JSON-RPC 分帧、stdio 生命周期、请求配对、超时。真正要紧的边界是子进程环境——它按严格的允许名单重建，所以连一个 connector 也没法把 daemon 环境里的秘密顺手交给子进程。 |
 | [`test_mcp_control_tools.py`](test_mcp_control_tools.py) | MCP 的原生 Tool。列目录和读内容是两套策略；prompt 参数会被重新校验成字符串；从 connector 回来的内容在给 Agent 看之前先过注入筛查。 |
 | [`test_mcp_lifecycle.py`](test_mcp_lifecycle.py) | MCP 的生命周期与各种上限，全部用真实子进程 connector 来驱动，所以断言的是 pid 和进程本身，而不是「某个函数被调用了」。握手失败之后不留进程也不留读取线程；每一类故障只淘汰缓存里的那一个实例，下一次调用会以新的 pid 重连，而 JSON-RPC 错误不会；在途请求和已放弃 id 两个队列都有上限；8 MB 的 stderr 单行在读的过程中就被截断；终止能打到被包装的真实 server，而且不会把调用方挂死。 另外覆盖连接路径的加锁：`_connect` 会 spawn 子进程并跑 `initialize` 握手，而它此前是在管理器的**全局**锁内做这件事——那把锁是每个连接器的 `get`、`_evict`、`disconnect`、`shutdown` 都要的，于是一个挂到超时的服务器会拖住进程内所有其他连接器，包括那些已连上、只是被查一下的。断言落在墙钟时序而不是锁对象上，因为调用方感受到的是等待；另一例钉住同一 id 的两个调用方仍然只产生一个子进程。 |
+| [`test_mcp_tools_positional_server.py`](test_mcp_tools_positional_server.py) | 让 `mcp_tools` 走 `dispatcher.__call__`，用 kernel SDK 的位置字符串 server——正是该方法长出 control tool 之后以 `'str' object has no attribute 'get'` 崩掉的那种形态，而 `host.mcp.list()` 和 `host.mcp.call()` 一直正常。钉住 `execute`/`resource_keys` 的双形态契约、dict spec、本地应答的 `volcengine-datapro` 描述符，以及未知 server 的软错误。 |
 | [`test_memory_repository.py`](test_memory_repository.py) | 长期记忆：过滤条件跨 `Store` 边界保持不变、遗留的默认分类，以及删除 project 时级联删掉它的记忆。 |
 | [`test_metadata_repositories.py`](test_metadata_repositories.py) | 那几个小仓储——笔记、文件夹、动态 endpoint、compaction 归档。真正有牙的是 host call 日志：它在提交之前会做清洗、跳过和截断。 |
 | [`test_methodology_skills.py`](test_methodology_skills.py) | 关于纯方法学内置 Skill 的三个测试：以只读方式被发现、能被取回，其中一个还在 Agent 循环里被真正用了一次。 |

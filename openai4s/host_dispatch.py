@@ -632,14 +632,44 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
+def _declared_failure_reason(result: Any) -> str | None:
+    """The failure a handler result declares about itself, if any.
+
+    Handlers signal failure two ways: the single-key ``{"error"}`` soft-fail,
+    and a structured result carrying ``ok: False`` with the detail in
+    ``failed`` entries or a log tail (`preinstall.install`, `host.fold`). The
+    projection must read both — a failed ``env_setup`` whose result said
+    ``ok: false`` used to fall through to the success branch and render the
+    literal word "ready" over an install that never happened.
+    """
+    if not isinstance(result, dict):
+        return None
+    err = result.get("error")
+    if err:
+        return str(err)
+    if result.get("ok") is not False:
+        return None
+    failures = result.get("failed")
+    if isinstance(failures, list):
+        for row in failures:
+            if isinstance(row, dict) and row.get("error"):
+                return str(row["error"])
+            if isinstance(row, str) and row:
+                return row
+    log = result.get("log")
+    if isinstance(log, str) and log.strip():
+        return log.strip()[-600:]
+    return "reported ok=false"
+
+
 def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
-    if not ok or (isinstance(result, dict) and result.get("error")):
+    err = _declared_failure_reason(result)
+    if not ok or err is not None:
         # Carry the reason onto the card. This used to collapse every failure
         # to the bare word "failed", so a save_artifact that raised
         # "no such file: bar_chart.png" showed the user (and the reopened
         # Timeline) nothing to act on.
-        err = result.get("error") if isinstance(result, dict) else None
         reason = " ".join(str(err).split()) if err else ""
         summary = "failed" if not reason else f"failed: {reason[:160]}"
         return ({"error": str(err)[:600] if err else "failed"}, summary)
@@ -1678,11 +1708,15 @@ class HostDispatcher:
                     if step_result is None and raised_error is not None:
                         step_result = {"error": raised_error}
                     output, summary = _step_end(method, view[0], step_result, ok)
+                    # ``ok`` only tracks the soft-fail envelope; a structured
+                    # result that declares its own failure (``ok: False``) must
+                    # not render as a green "done" card either.
+                    step_ok = ok and _declared_failure_reason(step_result) is None
                     self.on_step(
                         {
                             "phase": "end",
                             "step_id": step_id,
-                            "status": ("done" if ok else "error"),
+                            "status": ("done" if step_ok else "error"),
                             "output": output,
                             "summary": summary,
                         }
