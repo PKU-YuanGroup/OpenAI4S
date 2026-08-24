@@ -739,6 +739,83 @@ def test_sigint_interrupt_reports_interrupted_true_lineno_none():
         assert k.execute("print(marker)")["stdout"].strip() == "still-here"
 
 
+def test_interrupt_stops_a_cell_whose_helper_threads_could_eat_the_signal():
+    """A worker with unblocked helper threads must still stop promptly.
+
+    The worker is not single-threaded in practice: the guard phase's
+    matplotlib import starts OpenBLAS's pool, and those threads inherit an
+    empty signal mask. Linux may hand a process-directed SIGINT to any of
+    them; CPython's Python-level handler runs only on the main thread, and a
+    main thread blocked in `time.sleep` is never woken by a flag another
+    thread set. Observed on a CI runner (run 32735586388, round 15): every
+    thread with SigPnd 0, the main thread parked in hrtimer_nanosleep, and
+    the cell reporting interrupted=True only at wall=30.0005 -- the stop was
+    consumed by a BLAS thread and did nothing until the sleep ran out. The
+    interrupt path now aims tgkill at the main thread, which this asserts
+    with explicitly spawned stand-ins for the BLAS pool.
+    """
+    reached = threading.Event()
+
+    def dispatcher(method, args):
+        if method == "ping":
+            reached.set()
+        return _echo_dispatcher(method, args)
+
+    with Kernel(dispatcher=dispatcher) as k:
+        result = {}
+
+        def run():
+            result["r"] = k.execute(
+                "import threading, time\n"
+                "for _ in range(6):\n"
+                "    threading.Thread(target=time.sleep, args=(60,), "
+                "daemon=True).start()\n"
+                "host._call('ping', [])\n"
+                "time.sleep(60)"
+            )
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        assert reached.wait(60), "the cell never reached its host call"
+        k.interrupt()
+        # Well under the cell's own 60s sleep: a signal eaten by a helper
+        # thread leaves the sleep running and fails here, rather than being
+        # indistinguishable from a slow runner at the sleep's full length.
+        t.join(timeout=15)
+        assert not t.is_alive(), _interrupt_diagnosis(k)
+
+        r = result["r"]
+        assert r["interrupted"] is True
+        assert r["error"] == "Interrupted"
+
+
+def test_tgkill_helper_reaches_the_calling_threads_own_process():
+    """The syscall-number table and argument order, proven by delivery.
+
+    On Linux the helper signals THIS process's main thread with SIGUSR1 and
+    the installed handler must observe it -- a wrong syscall number or a
+    swapped tgid/tid argument fails here, not in a hung CI cell. Elsewhere
+    the helper must decline so the caller keeps the process-directed path.
+    """
+    import sys as _sys
+
+    if _sys.platform != "linux":
+        assert (
+            manager_mod._signal_worker_main_thread(os.getpid(), signal.SIGUSR1) is False
+        )
+        return
+
+    seen = threading.Event()
+    previous = signal.signal(signal.SIGUSR1, lambda s, f: seen.set())
+    try:
+        assert manager_mod._signal_worker_main_thread(
+            os.getpid(), signal.SIGUSR1
+        ), "tgkill failed on a platform whose syscall number is in the table"
+        assert seen.wait(5), "tgkill reported success but the signal never arrived"
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+
+
 def _interrupt_diagnosis(kernel) -> str:
     """What a failing interrupt looked like, instead of `assert not True`.
 
@@ -766,6 +843,65 @@ def _interrupt_diagnosis(kernel) -> str:
                     lines.append(f"  {line.strip()}")
             lines.append("  (SIGINT is bit 1: mask 0x2 in the Sig* words)")
     return "\n".join(lines)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signal dispositions")
+def test_kernel_children_start_with_default_sigint_even_when_spawner_ignores_it():
+    """The spawn boundary undoes an inherited SIG_IGN on SIGINT/SIGQUIT.
+
+    A shell backgrounds `./start.sh &` (and nohup) with both set to SIG_IGN,
+    which survives every exec: daemon → [bwrap] → sh → Rscript. R installs its
+    interrupt handler only when the inherited disposition is not SIG_IGN, so a
+    backgrounded daemon's R kernels silently dropped every Kernel.interrupt()
+    while the python worker — which calls signal.signal unconditionally —
+    kept working. PipeTransport is the one local spawn site for both, so the
+    probe here covers Python, R and the bwrap-wrapped argv alike.
+
+    The probe reads what CPython concluded from the inherited disposition:
+    `default_int_handler` installed means the child was born with SIGINT not
+    ignored (the reset worked); SIG_IGN means the legacy leaked through.
+
+    The second spawn runs on a non-main thread because that is where the
+    daemon actually spawns kernels — it pins that the preexec reset (which
+    calls `signal.signal` in the forked child) stays legal off-main-thread.
+    """
+    import sys
+
+    from openai4s.kernel.transport import PipeTransport
+
+    probe = (
+        "import signal, sys\n"
+        "sys.stdout.write('int_reset=%s quit_reset=%s\\n' % (\n"
+        "    signal.getsignal(signal.SIGINT) is signal.default_int_handler,\n"
+        "    signal.getsignal(signal.SIGQUIT) is signal.SIG_DFL))\n"
+    )
+    command = [sys.executable, "-c", probe]
+
+    def spawn_and_read() -> str:
+        transport = PipeTransport(command, cwd=None, env=dict(os.environ))
+        try:
+            line = transport.read_line()
+            transport.process.wait(timeout=10)
+        finally:
+            transport.close(graceful=False)
+        return line.strip()
+
+    old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    old_quit = signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+    try:
+        assert spawn_and_read() == "int_reset=True quit_reset=True"
+
+        box: dict[str, str] = {}
+        thread = threading.Thread(
+            target=lambda: box.update(line=spawn_and_read()), daemon=True
+        )
+        thread.start()
+        thread.join(30)
+        assert not thread.is_alive(), "off-main-thread spawn never finished"
+        assert box["line"] == "int_reset=True quit_reset=True"
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+        signal.signal(signal.SIGQUIT, old_quit)
 
 
 def test_a_chunk_from_another_cell_is_not_this_cell_s_output(monkeypatch):

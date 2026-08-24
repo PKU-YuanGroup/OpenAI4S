@@ -16,7 +16,14 @@ aliased to stderr by the sh wrapper. Scripted behaviors, keyed on the cell code:
     FLOOD    -> writes 200KB to real stderr before responding (proves the
                 manager drains the stderr pipe: >64KB used to deadlock)
     DIE      -> exits 1 without responding (worker-death path)
-    SLEEP    -> sleeps 30s; SIGINT -> interrupted=True response
+    SLEEP    -> emits a "sleep-started" stdout_chunk frame, then sleeps 30s;
+                SIGINT -> interrupted=True response. The chunk lets a test arm
+                its interrupt from Kernel.execute's on_chunk (the pattern the
+                real-R interrupt tests use) instead of a tuned delay. Faithful
+                to R in the way that matters: CPython, like R, installs its
+                default SIGINT handler only when the inherited disposition is
+                not SIG_IGN, so a SLEEP spawned from a process that ignores
+                SIGINT reproduces the backgrounded-daemon interrupt drop.
     ENV:name -> stdout is the child environment value or "<missing>"
     anything -> stdout "ran:<code>"
 """
@@ -106,7 +113,17 @@ while True:
         respond(rid, stdout=str(counter))
         continue
     if code == "SLEEP":
+        # The whole branch sits inside the try: a SIGINT racing the window
+        # between the chunk's flush and the sleep must still produce the
+        # interrupted response, not kill the fake mid-loop.
         try:
+            out.write(
+                json.dumps(
+                    {"type": "stdout_chunk", "id": rid, "text": "sleep-started"}
+                )
+                + "\n"
+            )
+            out.flush()
             time.sleep(30)
             respond(rid, stdout="woke")
         except KeyboardInterrupt:

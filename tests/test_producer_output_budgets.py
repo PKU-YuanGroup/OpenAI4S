@@ -764,22 +764,41 @@ def test_an_interrupted_cell_reports_what_the_host_had_drained(tmp_path):
     what they had already taken is what the cell reports. Driving the frame
     parser instead would prove the protocol and say nothing about whether the
     drain survives its writer being killed.
-    """
-    import threading
 
+    The interrupt is armed by the first drained chunk, not by a timer: a conda
+    Rscript can take seconds to start, and a fixed delay that expires first
+    lands the SIGINT before the cell has streamed a byte — outside r_worker.R's
+    handler it halts the interpreter, inside it it interrupts a cell whose
+    `stdout_seen_bytes` is legitimately 0. Both are startup races, not the
+    mid-stream case. `on_chunk` fires on the drain thread after `seen` was
+    bumped, so the SIGINT is sent only when bytes have provably crossed the
+    fifo while the writer still has ~4 GB left to produce.
+    """
     from openai4s.kernel.r_kernel import spawn_r_kernel
+
+    # This test once skipped when its own process had SIGINT set to SIG_IGN (a
+    # backgrounded `pytest &`): SIG_IGN survived exec into R, R honoured it,
+    # and no SIGINT could reach the worker. The spawn boundary in
+    # kernel/transport.py now resets the child's disposition, so the scenario
+    # runs instead of skipping — test_r_kernel.py pins that reset explicitly.
 
     kernel = spawn_r_kernel(cwd=str(tmp_path), rscript=_REAL_R)
     try:
-        timer = threading.Timer(1.0, kernel.interrupt)
-        timer.start()
-        try:
-            result = kernel.execute(
-                "invisible(lapply(1:4000, function(i) cat(strrep('x', 1e6))))"
-            )
-        finally:
-            timer.cancel()
+        fired = threading.Event()
 
+        def interrupt_once_streaming(_text: str) -> None:
+            # Exactly one SIGINT: the drain can keep delivering chunks after
+            # the first, and a second signal could land between cells.
+            if not fired.is_set():
+                fired.set()
+                kernel.interrupt()
+
+        result = kernel.execute(
+            "invisible(lapply(1:4000, function(i) cat(strrep('x', 1e6))))",
+            on_chunk=interrupt_once_streaming,
+        )
+
+        assert fired.is_set(), "the cell finished without streaming a chunk"
         assert result.get("interrupted") is True, result
         usage = result["usage"]
         # The host drained real bytes before the interrupt landed, and the

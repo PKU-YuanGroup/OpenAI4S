@@ -180,6 +180,60 @@ class InterruptDelivery:
         return self.delivered
 
 
+# tgkill(2)'s syscall numbers, per architecture. Linux syscall numbers are
+# stable ABI -- these values cannot change -- and an architecture missing from
+# this table simply keeps the process-directed kill() below.
+_TGKILL_NR = {"x86_64": 234, "aarch64": 131}
+
+
+def _signal_worker_main_thread(pid: int, signum: int) -> bool:
+    """Deliver ``signum`` to the worker's MAIN thread on Linux, via tgkill(2).
+
+    A process-directed signal may be handed to ANY thread that has it
+    unblocked. The worker is not single-threaded in practice: the guard
+    phase's ``import matplotlib`` pulls in OpenBLAS, whose pool threads
+    inherit the main thread's empty signal mask. When one of those consumes
+    the SIGINT, CPython's C trampoline only sets a flag -- the Python-level
+    handler runs on the main thread alone -- and a main thread blocked in
+    ``clock_nanosleep`` (``time.sleep``) is never woken by a flag another
+    thread set. Observed on a CI runner as a cell that slept its remaining
+    30 s with ``SigPnd: 0`` on every thread and the main thread parked in
+    ``hrtimer_nanosleep``, then reported ``interrupted=True`` at wall=30.0005
+    -- the stop arrived, was consumed by a BLAS thread, and did nothing until
+    the sleep expired on its own.
+
+    tgkill directs the signal at one thread; the main thread's tid equals the
+    pid, so it is addressable without reading /proc. R workers ride the same
+    path: the ``sh -c 'exec ...'`` spawn keeps pid == R's main thread.
+
+    False means "not attempted or not delivered here" -- the caller falls
+    back to the process-directed ``Popen.send_signal`` it always used, so a
+    non-Linux host, an unlisted architecture, or a failed syscall keep
+    exactly the previous behaviour.
+    """
+    if sys.platform != "linux":
+        return False
+    try:
+        nr = _TGKILL_NR.get(os.uname().machine)
+    except (AttributeError, OSError):
+        return False
+    if nr is None:
+        return False
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        result = libc.syscall(
+            ctypes.c_long(nr),
+            ctypes.c_long(pid),
+            ctypes.c_long(pid),
+            ctypes.c_long(signum),
+        )
+    except (OSError, AttributeError, TypeError):
+        return False
+    return result == 0
+
+
 class Kernel:
     def __init__(
         self,
@@ -806,6 +860,14 @@ class Kernel:
             return InterruptDelivery(
                 False, "local-process", "the worker had already exited"
             )
+        # Aim at the MAIN thread first. A process-directed signal may be
+        # consumed by any helper thread (OpenBLAS's pool, spawned by the guard
+        # phase's matplotlib import, has SIGINT unblocked), and a main thread
+        # blocked in `time.sleep` is then never woken -- the cell runs its
+        # sleep out and only then reports the interrupt. tgkill removes the
+        # race instead of narrowing it; see _signal_worker_main_thread.
+        if _signal_worker_main_thread(proc.pid, int(signal.SIGINT)):
+            return InterruptDelivery(True, "local-process")
         try:
             # Popen owns the direct child identity and synchronizes its poll /
             # signal path. Bubblewrap's numeric grandchild never reaches here;
