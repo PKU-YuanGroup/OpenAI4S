@@ -59,6 +59,7 @@ from openai4s.execution.dependencies import (
     default_visibility,
 )
 from openai4s.security.permissions import harden_db, harden_dir
+from openai4s.security.secret_broker import is_ref
 from openai4s.storage.actions import ActionLedgerRepository
 from openai4s.storage.activation import SessionActivationRepository
 from openai4s.storage.agents import AgentProfileRepository
@@ -5191,6 +5192,90 @@ class Store:
             env=env,
             enabled=enabled,
         )
+
+    def patch_connector(
+        self,
+        connector_id: str,
+        *,
+        name=None,
+        description=None,
+        command=None,
+        args=None,
+        enabled=None,
+        env_updates=None,
+        remove_env=None,
+    ) -> dict | None:
+        """Update connector metadata without exposing or erasing env secrets.
+
+        Public connector projections contain env names but never values. A Web
+        editor therefore cannot round-trip a complete env mapping. Treat env as
+        an explicit patch: absent names retain their broker references, supplied
+        values replace one name, and ``remove_env`` deletes selected names.
+        """
+        current = self._connectors.get(connector_id)
+        if current is None:
+            return None
+        updates = env_updates if env_updates is not None else {}
+        removals = remove_env if remove_env is not None else []
+        if not isinstance(updates, dict):
+            raise ValueError("env_updates must be an object")
+        if any(
+            not isinstance(key, str) or not key or "=" in key or "\x00" in key
+            for key in updates
+        ):
+            raise ValueError("env_updates names must be valid environment names")
+        if any(value is None or "\x00" in str(value) for value in updates.values()):
+            raise ValueError("env_updates values cannot be null or contain NUL")
+        # A patch carries *new* values only -- absent names keep their existing
+        # references. So a value that already looks like a broker reference did
+        # not come from us: `broker_connector_env` passes `is_ref` text through
+        # untouched, which would let a caller who cannot read any secret paste
+        # another connector's reference into an env it also controls the
+        # command of, and have it resolved at spawn.
+        if any(is_ref(str(value)) for value in updates.values()):
+            raise ValueError(
+                "env_updates values must be literal values, not secret references"
+            )
+        if not isinstance(removals, list) or any(
+            not isinstance(item, str) or not item or "=" in item or "\x00" in item
+            for item in removals
+        ):
+            raise ValueError("remove_env must contain valid environment names")
+        if set(updates) & set(removals):
+            raise ValueError("an env name cannot be updated and removed together")
+
+        previous_env = current.get("env")
+        merged_env = dict(previous_env) if isinstance(previous_env, dict) else {}
+        brokered = broker_connector_env(self, connector_id, updates)
+        retired: list[str] = []
+        for key in removals:
+            old = merged_env.pop(key, None)
+            if isinstance(old, str) and old:
+                retired.append(old)
+        for key, value in brokered.items():
+            old = merged_env.get(key)
+            merged_env[key] = value
+            if isinstance(old, str) and old and old != value:
+                retired.append(old)
+
+        updated = self._connectors.upsert(
+            connector_id=connector_id,
+            name=current["name"] if name is None else name,
+            description=(
+                current.get("description", "") if description is None else description
+            ),
+            command=current.get("command") if command is None else command,
+            args=current.get("args") if args is None else args,
+            env=merged_env,
+            enabled=current.get("enabled", True) if enabled is None else bool(enabled),
+        )
+        for value in retired:
+            if is_ref(value) and value not in merged_env.values():
+                try:
+                    self.secrets.delete(value)
+                except Exception:  # noqa: BLE001 - the connector update succeeded
+                    pass
+        return updated
 
     def set_connector_enabled(self, connector_id: str, enabled: bool) -> None:
         self._connectors.set_enabled(connector_id, enabled)

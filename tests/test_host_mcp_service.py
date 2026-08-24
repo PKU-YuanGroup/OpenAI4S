@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from openai4s.host.mcp import MCPService
+from openai4s.mcp_client import MCPManager
 
 
 class FakeStore:
@@ -216,6 +217,122 @@ def test_tools_still_works_for_an_enabled_connector():
             },
         )
     ]
+
+
+def test_protein_design_process_is_partitioned_and_confined_to_current_workspace(
+    tmp_path,
+):
+    store = FakeStore([_connector("protein-design", "Protein Design", env={})])
+    manager = FakeManager()
+    workspace = tmp_path / "session-workspace"
+    service = MCPService(
+        store,
+        manager_factory=lambda: manager,
+        workspace=lambda: workspace,
+    )
+
+    assert service.tools("protein-design") == {"tools": [{"name": "search"}]}
+    config = manager.list_calls[0][1]
+    assert config["env"]["OPENAI4S_PROTEIN_DESIGN_ROOT"] == str(workspace)
+    assert config["env"]["OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION"] == "1"
+    # Distinguishing and stable, but bounded: `MCPManager._cache_scope`
+    # refuses a scope over 256 characters, which a workspace under a deep
+    # data dir reaches on its own -- and every call would then fail with
+    # "connector cache scope is invalid" rather than with anything about paths.
+    scope = config["cache_scope"]
+    assert scope.startswith("protein-design-workspace:")
+    assert len(scope) <= 256
+    assert str(workspace) not in scope
+
+    other = MCPManager._cache_scope(config)
+    assert other == scope
+    sibling = FakeManager()
+    MCPService(
+        store,
+        manager_factory=lambda: sibling,
+        workspace=lambda: tmp_path / "other-workspace",
+    ).tools("protein-design")
+    assert sibling.list_calls[0][1]["cache_scope"] != scope
+
+
+def test_explicit_protein_design_root_is_not_overridden(tmp_path):
+    explicit = str(tmp_path / "operator-root")
+    store = FakeStore(
+        [
+            _connector(
+                "protein-design",
+                "Protein Design",
+                env={"OPENAI4S_PROTEIN_DESIGN_ROOT": explicit},
+            )
+        ]
+    )
+    manager = FakeManager()
+    service = MCPService(
+        store,
+        manager_factory=lambda: manager,
+        workspace=lambda: tmp_path / "session-workspace",
+    )
+
+    service.tools("protein-design")
+
+    assert manager.list_calls[0][1]["env"]["OPENAI4S_PROTEIN_DESIGN_ROOT"] == explicit
+
+
+def test_the_transport_deadline_outlives_the_backend_it_is_waiting_on(tmp_path):
+    """Whichever bound expires first decides the failure mode.
+
+    A stdio connector took `_deadline_default()` -- 60 s, clamped to 600 s even
+    via the env var -- while this backend's own work is bounded in hours. The
+    client therefore hit its deadline first on every real run, evicted and
+    killed the server mid-execution, orphaned the compute child, and left an
+    attempt directory with no terminal record, which the partial-files check
+    then treats as a poisoned attempt_id forever. The backend expiring first is
+    an ordinary DesignToolError with a manifest.
+    """
+    store = FakeStore([_connector("protein-design", "Protein Design", env={})])
+    manager = FakeManager()
+    service = MCPService(
+        store,
+        manager_factory=lambda: manager,
+        workspace=lambda: tmp_path / "session-workspace",
+    )
+
+    service.tools("protein-design")
+    config = manager.list_calls[0][1]
+
+    # 7200 s is ProteinDesignService's own default budget.
+    assert config["timeout"] > 7200.0
+    assert MCPManager._argv(config)  # the deadline does not disturb argv
+
+    # An operator who shortens the backend's budget shortens this with it.
+    short = FakeStore(
+        [
+            _connector(
+                "protein-design",
+                "Protein Design",
+                env={"OPENAI4S_PROTEIN_DESIGN_TIMEOUT_S": "1800"},
+            )
+        ]
+    )
+    shortened = FakeManager()
+    MCPService(
+        short,
+        manager_factory=lambda: shortened,
+        workspace=lambda: tmp_path / "session-workspace",
+    ).tools("protein-design")
+    assert 1800.0 < shortened.list_calls[0][1]["timeout"] < 7200.0
+
+
+def test_an_unconfined_connector_keeps_the_default_transport_deadline(tmp_path):
+    store = FakeStore([_connector("filesystem", "Filesystem")])
+    manager = FakeManager()
+    MCPService(
+        store,
+        manager_factory=lambda: manager,
+        workspace=lambda: tmp_path / "session-workspace",
+    ).tools("filesystem")
+
+    assert "timeout" not in manager.list_calls[0][1]
 
 
 def test_tools_preserves_not_found_soft_failure_exception_text_and_keyerror():

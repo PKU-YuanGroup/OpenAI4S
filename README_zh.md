@@ -88,7 +88,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 - **🔌 一行切换多供应商** —— `ark`(doubao · glm · kimi · deepseek · minimax)加官方 `chatgpt · claude · gemini`,都由一个 `host.llm` 统一封装;在 UI 里即可切换。
 - **🖥️ 科研工作台** —— 实时流式事件、版本化 Artifact、溯源、Action Timeline，以及**默认只读的 Notebook**。只有显式开启开发标志后，才能对共享 Python/R 内核输入多行代码。
 - **🔐 分层本地执行防护** —— 严格子进程环境 allowlist、持久审批、与 generation 绑定的一次性 `host.bash` capability，以及 macOS Seatbelt/Linux bubblewrap 沙箱适配器；降级与 fail-closed 状态会显式呈现。
-- **🔬 602 个内置 Skill** —— 41 份由 OpenAI4S 筛选维护的 GPU/模型科学、科研工作流与平台操作配方，加上固定版本、MIT 许可的 GPTomics/bioSkills 全部 561 份配方。Skill 是**代码配方**,不是 JSON schema；大型第三方集合按需搜索，在常驻 prompt 中只占一行。用户自撰的 Skill 只落在数据目录里，无法顶替内置 Skill 的信任等级。
+- **🔬 603 个内置 Skill** —— 42 份由 OpenAI4S 筛选维护的 GPU/模型科学、科研工作流与平台操作配方，加上固定版本、MIT 许可的 GPTomics/bioSkills 全部 561 份配方。Skill 是**代码配方**,不是 JSON schema；大型第三方集合按需搜索，在常驻 prompt 中只占一行。用户自撰的 Skill 只落在数据目录里，无法顶替内置 Skill 的信任等级。
 - **☁️ BYOC 远程计算** —— 在 provider 已配置且可达时，可通过 `ssh:<alias>` 或内置 **NVIDIA NIM** 集成投送 GPU 作业。通用远程计算仍属 Prototype；`host.fold` 遵守严格的不伪造策略。
 - **🔗 只读会话共享** —— 把一个会话发布成快照，拿到链接的人可以查看并导入自己的本地实例，全程经由**你自己运行**的 relay。守护进程从不监听公网端口，只向外拨号。记忆、权限状态与 Key 一律不外流，残留密钥会让发布 fail closed。→ [Web 共享](docs/webshare.md)
 - **🔎 带来源的科学检索** —— 七个规范化的公共数据库连接器（UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex）。检索到的记录自带来源与时间，但不带取回它的 API Key。
@@ -103,7 +103,7 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 | 平面 | 已实现 |
 |---|---|
 | **控制与编排** | 基于类的原生 `Tool` · 追加式 Action Ledger · 带持久状态机的 plan/review · 会归档原始切片的上下文压缩 · 可中途叫停的并发子代理委派（fanout 48、depth 4）· 子代理无法自行放宽的 Specialist 白名单 · MCP 连接器 · 跨会话记忆 |
-| **科学执行** | 持久的 Python **与** R 内核 · cell 执行中途的同步 `host` RPC · 对象级数据血缘 · 版本化 Artifact · 按内核 *generation* 记录的环境溯源（绝不借用守护进程的）· 后台执行 · 602 个 Skill（41 个精选维护 + 561 个固定版本 bioSkills）· 带 ABA 安全看门狗恢复的 FIFO 执行协调器 |
+| **科学执行** | 持久的 Python **与** R 内核 · cell 执行中途的同步 `host` RPC · 对象级数据血缘 · 版本化 Artifact · 按内核 *generation* 记录的环境溯源（绝不借用守护进程的）· 后台执行 · 603 个 Skill（42 个精选维护 + 561 个固定版本 bioSkills）· 带 ABA 安全看门狗恢复的 FIFO 执行协调器 |
 | **数据与检索** | 七个规范化公共数据库连接器（UniProt · RCSB PDB · Ensembl · ChEMBL · PubChem · arXiv · OpenAlex），记录自带来源与时间 · 覆盖其中三个的每日金丝雀 · 以 Agent Plan Key 授权的**豆包搜索 Custom 版**作为联网搜索主选 · Tavily 与免密钥搜索作为备用 · 托管的 DataPro 专业数据集检索 |
 | **工作台** | 实时流式 · Action Timeline · 默认只读的 Notebook · 分支 fork/激活/revert · 带明确 Partial/Failed 状态的验证式恢复 · 锁定到所指版本的 `@file` 引用 · 2D 化学/基因组/序列/MSA/LaTeX 渲染器 · Markdown 与 `.ipynb` 导出 |
 | **共享与可移植** | 经由你自己运行的 relay 的只读会话共享 · 隔离的可移植 Session 包 · 可选的、接到同一批内核上的 Jupyter KernelSpec 桥 |
@@ -196,10 +196,10 @@ docker compose exec openai4s openai4s url   # 带令牌、可直接打开的 URL
 
 ### 🧩 把 Skills 带去任何地方（`npx`）
 
-内置的 602 个 Skill 是配方——文字、代码，以及跑通它们所需的操作知识——其中没有任何东西是 OpenAI4S 专属的。一条命令就能把它们从本仓库装到机器上：
+内置的 603 个 Skill 是配方——文字、代码，以及跑通它们所需的操作知识——其中没有任何东西是 OpenAI4S 专属的。一条命令就能把它们从本仓库装到机器上：
 
 ```bash
-npx openai4s-skills install --all                  # 41 个精选 Skill
+npx openai4s-skills install --all                  # 42 个精选 Skill
 npx openai4s-skills install --collection bioskills # 561 个固定版生信配方
 npx openai4s-skills install alphafold2 boltz --target claude
 npx openai4s-skills list
@@ -208,7 +208,7 @@ npx openai4s-skills uninstall --all
 
 `--target claude` 写入 `~/.claude/skills`，`--target openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写入你指定的任意位置；在写任何东西之前，解析出的绝对路径都会先打印出来，而 `--dry-run` 什么都不写。每个已安装文件的 SHA-256 都会记进 Skills 旁边的清单，因此重装会拒绝覆盖你改过的 Skill，卸载也只删它自己写下的文件。想中间不经任何发布、直接从本仓库运行：`npx github:PKU-YuanGroup/OpenAI4S install --all`。
 
-如果你本来就在跑 OpenAI4S，那 602 个你已经全有了——同名时自带 Skill 优先于数据目录里的那个。这条命令是为反方向准备的。
+如果你本来就在跑 OpenAI4S，那 603 个你已经全有了——同名时自带 Skill 优先于数据目录里的那个。这条命令是为反方向准备的。
 
 ---
 
@@ -221,7 +221,8 @@ npx openai4s-skills uninstall --all
 | [**上手指南**](docs/startup-guide.md) | macOS `.dmg` 全流程：安装、Gatekeeper、配置模型，以及用一个 Agent Plan Key 授权豆包搜索（Tavily/免密钥备用） |
 | [**架构**](docs/architecture.md) | 混合动作路由、Action Ledger、`host` RPC 与惰性内核 |
 | [**后端扩展指南**](docs/backend-extension-guide.md) | 新 Tool、Host service、repository 与 session 行为应归属的位置 |
-| [**Skills**](docs/skills.md) | 41 个精选 Skill + 561 个固定版本 bioSkills + 如何自撰 |
+| [**模型后端 bring-up**](docs/model-backend-bringup_zh.md) | 本地/远程 GPU 选择、checkpoint staging、真实推理 canary 准入与 connector 可移植性 |
+| [**Skills**](docs/skills.md) | 42 个精选 Skill + 561 个固定版本 bioSkills + 如何自撰 |
 | [**远程计算**](docs/compute.md) | BYOC GPU 作业、`host.fold`、自动预置 |
 | [**科学连接器**](docs/science-connectors.md) | 七个公共数据库、各自的过滤条件与检索溯源 |
 | [**Web 应用**](docs/webapp.md) | UI 功能、Action Timeline、只读 Notebook、Artifact 与实现状态 |

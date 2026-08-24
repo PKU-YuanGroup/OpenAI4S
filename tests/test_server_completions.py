@@ -172,6 +172,12 @@ def test_agent_prompt_never_claims_post_fence_prose_runs_after_submit():
     assert "1-4 completed" in SYSTEM_PROMPT
     assert "complete repair cell" in SYSTEM_PROMPT
     assert "only the tail" in SYSTEM_PROMPT
+    assert "probes local hardware first" in SYSTEM_PROMPT
+    assert "ask whether they already have it locally" in SYSTEM_PROMPT
+    assert "download weights while that question is unanswered" in SYSTEM_PROMPT
+    assert "A staged model asset is not admitted" in SYSTEM_PROMPT
+    assert "terminal record succeeds" in SYSTEM_PROMPT
+    assert "Missing code or weights is a bring-up condition" in SYSTEM_PROMPT
     assert all(
         key in SYSTEM_PROMPT
         for key in ("summary", "findings", "metrics", "limitations")

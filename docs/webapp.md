@@ -94,8 +94,14 @@ HTML/CSS/JavaScript served directly from the working tree.
   hidden rationale, permission payloads, and reusable authorization never cross
   the package boundary.
 - **Customize and research UX** — model profiles, Skills/Specialists,
-  connectors, compute, network, memory, permission rules, plan/explore modes,
-  voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN.
+  connectors (catalog, enable/disable, probe, and a secret-preserving launch
+  configuration editor), compute, network, memory, permission rules, plan/explore modes,
+  voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN. The
+  connector list keeps launch commands in the editor instead of mixing local
+  filesystem paths into descriptions. In-tree Python connectors persist a
+  portable runtime token that resolves against the current installation when
+  spawned, so moving the data directory does not retain the old server's
+  interpreter path.
 - **Standard environment readiness (opt-in)** — with the Stage 1 flag enabled,
   persistent dashboard and conversation banners show when the `standard`
   Python/R pair is missing or cannot be verified. Customize → Compute lists all

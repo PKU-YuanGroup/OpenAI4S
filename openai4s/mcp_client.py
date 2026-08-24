@@ -28,9 +28,11 @@ from typing import Any, Callable
 
 from openai4s.mcp_protocol import (
     MAX_FRAME_BYTES,
+    OPENAI4S_PYTHON,
     MCPError,
     MCPOversizedResponse,
     MCPTimeout,
+    openai4s_python_module,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -843,6 +845,15 @@ class MCPManager:
             argv = cmd.split() + list(args)
         else:
             raise MCPError("connector has no command")
+        # Only the portable token is ours to expand. Matching on the module
+        # name alone also captured a row an operator wrote by hand -- e.g. a
+        # conda interpreter chosen because it has the scientific stack -- and
+        # silently ran it under the daemon's own venv while the editor kept
+        # displaying the path they typed. A legacy row that literally holds
+        # this daemon's `sys.executable` is already what we would substitute,
+        # so it needs no rewrite at all.
+        if argv and argv[0] == OPENAI4S_PYTHON:
+            argv[0] = sys.executable
         return argv
 
     def _connect(self, config: dict) -> MCPConnection:
@@ -866,7 +877,20 @@ class MCPManager:
         if transport != "stdio":
             raise MCPError("unsupported MCP connector transport")
         env = _connector_environment(config.get("env"))
-        return MCPConnection(self._argv(config), env=env, cwd=config.get("cwd"))
+        # Honour a config deadline here the way the HTTP branch above already
+        # does. Without it a stdio connector was pinned to `_deadline_default()`
+        # -- 60 s, and clamped to 600 s even via the env var -- so a server
+        # whose own work is bounded in hours could never answer: the client
+        # timed out, evicted and killed it mid-run, orphaning the child and
+        # leaving an attempt directory with no terminal record. An explicit
+        # timeout is deliberately not re-clamped; the connector's own bound is
+        # what limits the work, and this only has to outlive it.
+        return MCPConnection(
+            self._argv(config),
+            env=env,
+            cwd=config.get("cwd"),
+            timeout=config.get("timeout"),
+        )
 
     def _evict(
         self,
@@ -1178,3 +1202,21 @@ def disconnect_if_initialized(
 def example_server_config() -> dict:
     """Config for the bundled example server (always available)."""
     return {"command": [sys.executable, "-m", "openai4s.mcp_servers.example_server"]}
+
+
+def protein_design_server_config(root: str | None = None) -> dict:
+    """Config for the bundled atomic protein-design server.
+
+    Model environments and immutable revision/checkpoint settings remain
+    explicit connector configuration; importing this helper starts nothing.
+    """
+    config = {
+        "command": [
+            sys.executable,
+            "-m",
+            "openai4s.mcp_servers.protein_design",
+        ]
+    }
+    if root is not None:
+        config["env"] = {"OPENAI4S_PROTEIN_DESIGN_ROOT": str(root)}
+    return config

@@ -106,7 +106,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_compute_nvidia.py`](test_compute_nvidia.py) | NVIDIA BYOC provider，每一次 `docker` 调用都被假的子进程层截住，所以不需要 Docker、GPU 或网络。安全的那一半是两阶段 secret 清洗：provider 的顶层代码在被 import 时，不能读到形似凭据、或带已知前缀的环境变量。 |
 | [`test_config.py`](test_config.py) | 分层配置，而且基本围着同一类 bug 转：从模板里抄来的占位 API key 绝不能被当成真 key，无论它是从环境变量来的还是显式传进来的，也不能挡住真正的按 provider 配置的 key。 |
 | [`test_container_deployment.py`](test_container_deployment.py) | `Dockerfile`、`compose.yaml` 与 Kubernetes 清单，被钉在赋予这些值意义的代码上：探针路径钉在网关自己的免鉴权集合上，端口钉在 `Config` 的默认值上，注入的 API key 变量则通过 `LLMConfig` 真正解析一遍而不是照名字信任它。配置自己不会失败——变量改名或路由挪位只会在以后、在别人身上停止工作。有两项是因为「一次看似合理的修改就会把它反过来」而被断言的：单副本（存储是 SQLite）与只发布到 loopback 的端口。它还覆盖了跨容器重启的单例问题：只看 pid 存活分不出陈旧 pidfile 与被复用的 pid，于是一个被杀掉的容器从此起不来。 |
-| [`test_connector_repository.py`](test_connector_repository.py) | MCP connector 的那些行：JSON 规范化、排序、启用与停用，以及把它们喂给 Host MCP 服务的 `Store` 门面。 |
+| [`test_connector_repository.py`](test_connector_repository.py) | MCP connector 的那些行：JSON 规范化、排序、启用与停用，以及把它们喂给 Host MCP 服务的 `Store` 门面。它还固定了不泄密的编辑语义：未提及的 env 保留，显式替换只更新 broker 后的值，显式删除会清理对应 secret。 |
 | [`test_context_policy_web.py`](test_context_policy_web.py) | 两个测试。超大的上下文输出会变成一个去过重的 Artifact 版本，而不是又一份拷贝；compaction 的 payload 会被链回会话历史，而不是被丢掉。 |
 | [`test_data_background_tools.py`](test_data_background_tools.py) | data 与 background 这两类 Tool。有两条策略是被断言出来的，而不是假定的：`query` 严格只读，没有任何能把它放宽的审批路径；提交后台任务要过闸门，中断它则始终可用。 |
 | [`test_datapro_index.py`](test_datapro_index.py) | 成功 DataPro 响应进入本地索引时的完整性边界：不靠字段白名单递归索引所有返回字段，大批量不截断，相同内容在不同 JSON pointer 上不合并，重复写入幂等，SQLite 在批次中途失败时会连同此前条目一起回滚。另钉住严格整数 code 准入、命令面板检索，以及 Artifact/会话/项目全生命周期清理。 |
@@ -131,7 +131,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_execution_view_service.py`](test_execution_view_service.py) | Execution 日志与 Notebook 所依赖的那些 DTO。麻烦的是重试投影：连续的失败会折叠成一行且一条不丢，而这次折叠不许跨越运行时边界或非 Agent 的边界。 |
 | [`test_frame_repository.py`](test_frame_repository.py) | project、frame、message、step 与 cell log。执行日志是只追加的，时间戳相同的行按状态修订号排序；删除 project 在单次 commit 里级联完成。 |
 | [`test_auth_exit_matrix.py`](test_auth_exit_matrix.py) | P0-1 的退出矩阵，跑在真实 socket 上。此前有三条腿被声称却无测试：**未认证的 WebSocket 升级**（所有 `/api/v1/ws` 测试都携带凭据，且都跑在合成 handler 上，分辨不出“被拒”与“对方已拿到一条能收 `cancel_execution` 的 socket”）；未认证 REST “矩阵”其实只有一条路由（现从 `contract.http_routes()` 全量扫，新增路由会自己进来）；以及把 cookie 重放给取代了签发者的那个 handler——旧证据断言的只是 token 文件稳定。另外把散落四处的“保留一个 minor release”从散文变成一个测试能打红的版本常量。 |
-| [`test_gateway.py`](test_gateway.py) | 这里最大的一个模块，波及面也最广。它从手写的 WebSocket 一路管上去——帧的编码与解掩码、续传缓冲及其字节预算——再到 keepalive 请求之间的 HTTP 请求体分帧、对跨源 API 写入与 WS 升级的双重拒绝、Artifact 与环境路由，以及必须扛过持久化的占位 key 过滤。 |
+| [`test_gateway.py`](test_gateway.py) | 这里最大的一个模块，波及面也最广。它从手写的 WebSocket 一路管上去——帧的编码与解掩码、续传缓冲及其字节预算——再到 keepalive 请求之间的 HTTP 请求体分帧、对跨源 API 写入与 WS 升级的双重拒绝、Artifact 与环境路由、通用 connector 编辑路由及其掩码 env 投影，以及必须扛过持久化的占位 key 过滤。 |
 | [`test_gateway_engine.py`](test_gateway_engine.py) | 基于 `AgentEngine` 的 Web runner，只测组合边界，内核保持离线。流式增量会藏住 fence，并且排在 Tool 事件与终止事件之前；对话式的 JSON fence 不许把它后面的公开散文截断掉。 |
 | [`test_gateway_host_allowlist.py`](test_gateway_host_allowlist.py) | DNS 重绑定的 Host 白名单（GHSA-fm3g-2c7x-8qj8），在真实连接上断言，而不是在人造 handler 上：真的 `ThreadingHTTPServer`、真的端口，直接对它讲裸 HTTP/1.1。它钉住了被打桩的 `_json` 表达不了的东西——拒绝是一行 403 状态行；Host 检查排在 token 门之前（伪造 Host 且不带凭证时按 Host 拒绝，而不是 401）；覆盖面包含 SPA 外壳、`/static/` 与免 token 的 `/health`，不只是 `/api/` 写入；以及 WS 升级是被拒绝而非切换协议。正向对照占一半分量：浏览器真正会发的每一种回环 Host，加上不带 Host 的 CLI 客户端，都必须照常被服务。 |
 | [`test_gateway_kernel_lifecycle.py`](test_gateway_kernel_lifecycle.py) | supervisor 之下的 Python 与 R slot，内容就是那些竞态。stop 的意图不许被一个新的 start 抢先，bootstrap 必须在 supervisor 锁之外跑，R 出问题也不许碰到 Python 的 worker。团队组合在首次使用前覆盖前台、后台、委派、R 与恢复 worker：整个 daemon 数据、data-root 个人命名空间、当前 Skill/Artifact 输入的精确例外，以及 symlink/重叠拒绝。 |
@@ -165,6 +165,9 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_guardian_enforce.py`](test_guardian_enforce.py) | Stage 7 无人值守 allow_once 与危险拒绝，以及 flag 关闭时走旧路径。 |
 | [`test_host_completion_service.py`](test_host_completion_service.py) | `host.submit_output`，Python Cell 唯一拥有的完成信号。schema 失败是软失败，且不得覆盖掉此前已有的完成；完成要点的过去式检查，除英文外也接受中日韩的表达。 |
 | [`test_host_contract.py`](test_host_contract.py) | worker 到 Host 的 wire：注入的门面、单键形式的软错误、camelCase 编解码。最后那个测试最有用——SDK 能调的每一个 `host.*` 方法都必须有对应的分发路由，这样新能力就不会接了一半就发出去。 |
+| [`test_host_accelerators.py`](test_host_accelerators.py) | 本地 GPU 探测与 SSH 注册、容器运行时及模型后端就绪状态彼此独立。 |
+| [`test_model_assets.py`](test_model_assets.py) | 用户提供的本地 checkpoint 经精确路径审批导入，限制在会话工作区内并流式校验 SHA-256；导入后仍是 staged，不能自行宣称 admitted。 |
+| [`test_model_admission.py`](test_model_admission.py) | connector 无关的 checkpoint 准入把已解析 canary 绑定到精确模型字节、backend revision 和执行路线，拒绝 digest 漂移，并在进程重启时重置。 |
 | [`test_host_credentials_service.py`](test_host_credentials_service.py) | 会话本地的 credential 引用。秘密本身从不返回；lease 绑定到单个动作并会过期；轮换一个 credential 会吊销挂在它上面的所有 lease；replay 排除了全部 credential 方法与取值。 |
 | [`test_host_data_service.py`](test_host_data_service.py) | `host.query` 以及它周边的数据查询。只读 SQL 在碰到 Store 之前就被强制住，血缘图有界，携带不可信 ID 的 Artifact 标记会被拒绝。 |
 | [`test_host_delegation_service.py`](test_host_delegation_service.py) | `host.delegate` 的 Host 这一侧。注入 profile 时不许改动调用方自己传进来的参数；delegate 与 steering 的来源是调用时解析的，而不是构造时就捕获死的。 |
@@ -234,6 +237,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_plan_resume_claim.py`](test_plan_resume_claim.py) | 恢复一个暂停的 plan：两个真实并发 POST 打向真跑起来的 `ThreadingHTTPServer` 抢同一次状态迁移。原来路由里只是读一下状态，真正的写在它派生的后台任务里且无条件覆盖，于是两个请求都被接受、同一批步骤跑了两遍——这里数的是真正跑了几次，而不是从状态码倒推。 |
 | [`test_plan_service.py`](test_plan_service.py) | plan 服务这一层边界。定稿会复用草稿那一行和它的 Artifact，而不是再造一个；Artifact 写失败时它也扛得住，不会把 plan 丢掉。 |
 | [`test_protein_mutation_enhancement_skill.py`](test_protein_mutation_enhancement_skill.py) | 蛋白突变 Skill 的纯 helper。枚举、排序与选择轮次都是确定性的；错误路径被明确检查：野生型残基对不上的突变、越界的位点、没有位点的变体，一律抛错，而不是被悄悄打了分。 |
+| [`test_protein_design_mcp.py`](test_protein_design_mcp.py) | 原子 protein-design MCP connector，使用真实 stdio 和临时 fake backend 子进程驱动。它固定内置 connector-directory 入口、九工具 catalog、RFdiffusion 的 `deterministic + design_startnum` seed 契约及 PDB/TRB 配对、ProteinMPNN 官方 chain/fixed-position 参数和独立 motif/target/map 校验、blind ColabFold 的断网 namespace 与冻结参数、失败终态记录、路径约束，以及修正后的 Rosetta unsatisfied-H-bond 字段。整个模块标为 `stubbed_backend`，伪造的科学响应不会进入 API schema capture。 |
 | [`test_prov_record_confinement.py`](test_prov_record_confinement.py) | 一个 cell 可以把哪些文件登记成本会话的 artifact。`provenance_record` 用 `Path(path).expanduser()` 解析路径、只检查文件是否存在，于是宿主上任意绝对路径都能登记——修复前实测：写在工作区之外的一把私钥拿到了 version id，并出现在所有展示 artifact 的界面上、可下载。约束机制并非缺失，而是没被用上：`self._resolve_path` 本来就注入进了这个 service，它的兄弟方法都在调。同一个函数还会把整个文件读进守护进程内存来算校验和，而其它 artifact 路径都是流式处理的。 |
 | [`test_provenance_identity.py`](test_provenance_identity.py) | 被打了标签的对象，还是不是当初被打标签的那个对象。侧表原先是 `id(obj) -> tags`，而 id 不是身份：CPython 会立刻复用已释放对象的地址，于是一个毫不相干的对象继承了它的血缘——**第一次分配**就能复现。这是在「结果可复现」这一核心主张所依赖的子系统里伪造了一条血缘边；而且侧表是主路径而非边角情况：`list` 和 `dict` 都走这里，而它们正是 `json.loads` 的返回类型。其中两条用例的存在要归功于变异测试打掉了第一版——干等真实地址复用无法证伪修复（钉住对象本身就杜绝了复用，于是测试落到了一条更弱的断言上），而用 `MAX_SIDE_TAGS` 来决定循环次数会让「上限被调大」表现为卡死而不是失败。 |
 | [`test_provenance_paths.py`](test_provenance_paths.py) | worker 内部的文件系统身份——溯源正是在这里悄悄断掉的。一个 Cell 若在打开文件和写入文件之间换了工作目录，仍然必须给出同一个规范路径；最后那个测试拿真实内核验证了这一点。 |
@@ -325,7 +329,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_variable_inspector_service.py`](test_variable_inspector_service.py) | 三个测试，把变量检查限制得很窄。它从不进入 Cell 状态；读任何东西之前先检查语言和 lease；协议出错时只给出笼统信息，而不是内核内部细节。 |
 | [`test_webtools.py`](test_webtools.py) | HTML 转 Markdown 与几个搜索后端，跑在离线 fixture 上。前三个测试是围着同一个 bug 织的回归网：arXiv 的摘要页，摘要、作者和标题被转换器整个丢掉了。 |
 | [`test_webtools_redirect_guard.py`](test_webtools_redirect_guard.py) | 重定向之后，SSRF 与 egress 检查还在不在。`_http_get` 的文档说它手动跟随重定向、好让每一跳都受检——但那只在可选的 `requests` 分支上成立。兜底分支调的是 `urllib.request.urlopen`，它在标准库内部自己跟随重定向；而零依赖安装走的永远是这条分支。修复前用本地 302 实测：取了两个 URL，只有一个过了检查。这些用例**故意不打** `network` 标记——那台服务器是进程内的 loopback socket，而 `addopts` 默认剔除 `network`，打上标记等于把三条安全测试从每次运行里悄悄拿掉、表面上却还在。 |
-| [`test_webui_static_contract.py`](test_webui_static_contract.py) | 把静态前端当源码读，不开浏览器也不起网关。它抓的是别处抓不到的东西——引用了却不存在的资源、重复的 DOM ID、有名字却没有 SVG 的图标——同时钉住 UI 自己作出的那些安全声明，比如提升后的 Markdown 只允许安全的位图 data 图片、Timeline 是一个按允许名单做的投影。它证明不了 UI 能用；那是 `browser_smoke.mjs` 的活。 |
+| [`test_webui_static_contract.py`](test_webui_static_contract.py) | 把静态前端当源码读，不开浏览器也不起网关。它抓的是别处抓不到的东西——引用了却不存在的资源、重复的 DOM ID、有名字却没有 SVG 的图标——同时钉住 UI 自己作出的安全声明，包括 connector 编辑器只读取掩码后的 env 名称而非 secret 值、提升后的 Markdown 只允许安全的位图 data 图片、Timeline 是一个按允许名单做的投影。它证明不了 UI 能用；那是 `browser_smoke.mjs` 的活。 |
 | [`test_ws_frames.py`](test_ws_frames.py) | 加固过的 RFC 6455 编解码：长度阶梯、客户端掩码往返、掩码方向强制、截断/RSV/分片/未知 opcode/超大控制帧/非 canonical 长度的拒绝、载荷上限、严格模式 UTF-8，以及 RFC 的 accept 示例。 |
 | [`test_workbench_state_service.py`](test_workbench_state_service.py) | Context 与 Security 两个面板。安全投影是刻意往小了说的：worker 还没启动时，它绝不宣称沙箱是生效的；Python 与 R 的说法不一致时，它报两者中更弱的那个。 |
 | [`test_worker_runtime_alias.py`](test_worker_runtime_alias.py) | 六个测试，证明 `openai4s_worker_runtime` 只是一次 re-export：`__all__` 相同、两个名字下是同一批对象、没有影子子模块，也没有自己的入口点。 |

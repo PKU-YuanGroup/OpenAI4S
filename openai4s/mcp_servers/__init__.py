@@ -1,2 +1,5 @@
-"""Bundled example MCP servers (stdio, pure-stdlib) used to demonstrate and
-test the Connectors feature out of the box."""
+"""Bundled pure-stdlib stdio MCP servers.
+
+The namespace contains an end-to-end fixture and a deployable protein-design
+backend adapter whose scientific dependencies remain in external environments.
+"""

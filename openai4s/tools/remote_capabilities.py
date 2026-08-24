@@ -20,6 +20,23 @@ class RemoteGPUStatusTool(Tool):
         return runtime.invoke(self.host_method, {})
 
 
+class AcceleratorStatusTool(Tool):
+    name = "accelerator_status"
+    host_method = "accelerator_status"
+    description = (
+        "Inspect local GPUs separately from configured SSH GPU hosts and model "
+        "backend readiness."
+    )
+    parameters = {"properties": {}, "required": []}
+    requires_approval = False
+    resource_key_prefix = "accelerator"
+    resource_target_default = "catalog"
+
+    def execute(self, runtime: ControlToolContext, arguments: dict) -> dict:
+        del arguments
+        return runtime.invoke(self.host_method, {})
+
+
 class RegisterRemoteCapabilityTool(Tool):
     name = "register_remote_capability"
     host_method = "register_remote_capability"
@@ -60,4 +77,8 @@ class RegisterRemoteCapabilityTool(Tool):
         return runtime.invoke(self.host_method, dict(arguments))
 
 
-__all__ = ["RegisterRemoteCapabilityTool", "RemoteGPUStatusTool"]
+__all__ = [
+    "AcceleratorStatusTool",
+    "RegisterRemoteCapabilityTool",
+    "RemoteGPUStatusTool",
+]

@@ -408,6 +408,18 @@ Object.assign(I18N.zh, {
   "cust.compute.preinstalledDetail": "已预装 {0} 个科学/联网包：{1}",
   "cust.compute.title": "计算",
   "cust.connectors.cmdPlaceholder": "启动命令，如 npx -y @modelcontextprotocol/server-filesystem .",
+  "cust.connectors.editTitle": "编辑连接器 — {0}",
+  "cust.connectors.commandLabel": "启动命令（JSON 字符串或字符串数组）",
+  "cust.connectors.argsLabel": "附加参数（JSON 数组）",
+  "cust.connectors.envConfigured": "已配置的环境变量：{0}",
+  "cust.connectors.envNone": "尚未配置环境变量",
+  "cust.connectors.envUpdatesLabel": "新增或替换环境变量",
+  "cust.connectors.envUpdatesPlaceholder": "每行 NAME=value；留空表示保留现有值",
+  "cust.connectors.envRemoveLabel": "删除环境变量",
+  "cust.connectors.envRemovePlaceholder": "每行一个 NAME；只有列出的变量会被删除",
+  "cust.connectors.invalidJson": "命令或参数不是有效的 JSON",
+  "cust.connectors.invalidEnv": "环境变量更新必须使用 NAME=value 格式",
+  "cust.connectors.saved": "已保存连接器 {0}",
   "cust.connectors.customAddName": "添加自定义（命令行 MCP 服务器）",
   "cust.connectors.deleteConfirm": "删除连接器 {0}？",
   "cust.connectors.desc": "MCP 工具服务器：连接外部工具，智能体用 host.mcp.call(id, tool, args) 调用",
@@ -1512,6 +1524,18 @@ Object.assign(I18N.en, {
   "cust.compute.preinstalledDetail": "{0} scientific/networking packages preinstalled: {1}",
   "cust.compute.title": "Compute",
   "cust.connectors.cmdPlaceholder": "Launch command, e.g. npx -y @modelcontextprotocol/server-filesystem .",
+  "cust.connectors.editTitle": "Edit connector — {0}",
+  "cust.connectors.commandLabel": "Launch command (JSON string or string array)",
+  "cust.connectors.argsLabel": "Additional arguments (JSON array)",
+  "cust.connectors.envConfigured": "Configured environment variables: {0}",
+  "cust.connectors.envNone": "No environment variables configured",
+  "cust.connectors.envUpdatesLabel": "Add or replace environment variables",
+  "cust.connectors.envUpdatesPlaceholder": "One NAME=value per line; blank keeps existing values",
+  "cust.connectors.envRemoveLabel": "Remove environment variables",
+  "cust.connectors.envRemovePlaceholder": "One NAME per line; only listed variables are removed",
+  "cust.connectors.invalidJson": "Command or arguments are not valid JSON",
+  "cust.connectors.invalidEnv": "Environment updates must use NAME=value lines",
+  "cust.connectors.saved": "Saved connector {0}",
   "cust.connectors.customAddName": "Add custom (command-line MCP server)",
   "cust.connectors.deleteConfirm": "Delete connector {0}?",
   "cust.connectors.desc": "MCP tool servers: connect external tools, the agent calls them with host.mcp.call(id, tool, args)",
@@ -11104,18 +11128,46 @@ function dataproCard(config, configError) {
   query.onkeydown = event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); search.click(); } };
   return card;
 }
+function connectorEditor(k) {
+  S._modalMode = "connector:" + k.connector_id;
+  $("#modal-title").textContent = t("cust.connectors.editTitle", k.name);
+  $("#modal-download").style.display = "none";
+  const body = $("#modal-body"); body.innerHTML = ""; const form = el("div", "skill-form");
+  const nameIn = el("input", "cust-input"); nameIn.value = k.name || "";
+  const descIn = el("textarea", "connector-edit-area"); descIn.rows = 3; descIn.value = k.description || "";
+  const cmdIn = el("textarea", "connector-edit-area connector-json"); cmdIn.rows = 3; cmdIn.spellcheck = false; cmdIn.value = JSON.stringify(k.command || [], null, 2);
+  const argsIn = el("textarea", "connector-edit-area connector-json"); argsIn.rows = 2; argsIn.spellcheck = false; argsIn.value = JSON.stringify(k.args || [], null, 2);
+  const keys = Array.isArray(k.env_keys) ? k.env_keys : [];
+  const configured = el("div", "connector-env-state", keys.length ? t("cust.connectors.envConfigured", keys.join(", ")) : t("cust.connectors.envNone"));
+  const envIn = el("textarea", "connector-edit-area connector-json"); envIn.rows = 4; envIn.spellcheck = false; envIn.placeholder = t("cust.connectors.envUpdatesPlaceholder");
+  const removeIn = el("textarea", "connector-edit-area connector-json"); removeIn.rows = 3; removeIn.spellcheck = false; removeIn.placeholder = t("cust.connectors.envRemovePlaceholder");
+  [["cust.connectors.namePlaceholder", nameIn], ["skill.label.desc", descIn], ["cust.connectors.commandLabel", cmdIn], ["cust.connectors.argsLabel", argsIn]].forEach(([label, input]) => { form.appendChild(el("label", "skill-lbl", t(label))); form.appendChild(input); });
+  form.appendChild(configured); form.appendChild(el("label", "skill-lbl", t("cust.connectors.envUpdatesLabel"))); form.appendChild(envIn); form.appendChild(el("label", "skill-lbl", t("cust.connectors.envRemoveLabel"))); form.appendChild(removeIn);
+  const save = el("button", "solid-btn", t("common.save")); save.onclick = async () => {
+    let command, args; try { command = JSON.parse(cmdIn.value); args = JSON.parse(argsIn.value || "[]"); } catch { hint(t("cust.connectors.invalidJson"), true); return; }
+    if ((!Array.isArray(command) && typeof command !== "string") || !command.length || !Array.isArray(args)) { hint(t("cust.connectors.invalidJson"), true); return; }
+    const envUpdates = {}; for (const raw of envIn.value.split(/\r?\n/)) { if (!raw.trim()) continue; const at = raw.indexOf("="); if (at <= 0) { hint(t("cust.connectors.invalidEnv"), true); return; } envUpdates[raw.slice(0, at).trim()] = raw.slice(at + 1); }
+    const removeEnv = removeIn.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+    if (removeEnv.some(name => Object.prototype.hasOwnProperty.call(envUpdates, name))) { hint(t("cust.connectors.invalidEnv"), true); return; }
+    save.disabled = true; save.textContent = t("common.saving");
+    try { await api(`/connectors/${encodeURIComponent(k.connector_id)}`, { method: "PUT", body: JSON.stringify({ name: nameIn.value.trim(), description: descIn.value, command, args, env_updates: envUpdates, remove_env: removeEnv }) }); closeModalEl($("#modal")); hint(t("cust.connectors.saved", nameIn.value.trim())); custTab("connectors"); }
+    catch (e) { save.disabled = false; save.textContent = t("common.save"); hint(t("artifact.save.err", apiErrorText(e)), true); }
+  };
+  const actions = el("div", "form-actions"); actions.appendChild(save); form.appendChild(actions); body.appendChild(form); openModalEl($("#modal"));
+}
 async function custConnectors(c) { try {
   const [d, datapro] = await Promise.all([api("/connectors"), api("/datapro/config").then(config => ({ config })).catch(error => ({ config: {}, error }))]); const conns = (d && d.connectors) || [];
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.connectors"), t("cust.connectors.desc")));
   c.appendChild(dataproCard(datapro.config, datapro.error));
-  conns.filter(k => k.connector_id !== DATAPRO_CONNECTOR_ID).forEach(k => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, k.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", k.connector_id)); info.appendChild(nm); info.appendChild(el("div", "ds", (k.description || "") + "  ·  " + (k.command_display || ""))); row.appendChild(info);
+  conns.filter(k => k.connector_id !== DATAPRO_CONNECTOR_ID).forEach(k => { const row = el("div", "cust-row"); const info = el("div", "info"); const nm = el("div", "nm"); nm.appendChild(el("span", null, k.name)); nm.appendChild(document.createTextNode(" ")); nm.appendChild(el("span", "pill", k.connector_id)); info.appendChild(nm); info.appendChild(el("div", "ds", k.description || "")); row.appendChild(info);
+    const eb = el("button", "icon-ghost"); eb.title = t("common.edit"); eb.innerHTML = icon("pencil", 15); eb.onclick = () => connectorEditor(k); row.appendChild(eb);
     const pb = el("button", "outline-btn small", t("cust.connectors.test")); pb.onclick = async () => { pb.disabled = true; pb.textContent = t("cust.connectors.testing"); try { const r = await api(`/connectors/${k.connector_id}/probe`, { method: "POST" }); hint(r.ok ? (t("toast.connectors.probeOk", (r.tools || []).map(t => t.name).join("、"))) : (t("toast.failed", (r.error || "")))); } catch (e) { hint(t("toast.connectors.testFailed", apiErrorText(e)), true); } pb.disabled = false; pb.textContent = t("cust.connectors.test"); }; row.appendChild(pb);
     const tg = el("button", "toggle" + (k.enabled ? " on" : "")); tg.onclick = async () => { const on = tg.classList.toggle("on"); try { await api(`/connectors/${k.connector_id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled: on }) }); } catch {} }; row.appendChild(tg);
     const db = el("button", "icon-ghost"); db.title = t("common.delete"); db.innerHTML = icon("trash-2", 15); db.onclick = async () => { if (!confirm(t("cust.connectors.deleteConfirm", k.name))) return; try { await api(`/connectors/${k.connector_id}`, { method: "DELETE" }); custTab("connectors"); } catch {} }; row.appendChild(db); c.appendChild(row); });
   // directory (one-click add)
   c.appendChild(el("div", "cust-subhead", t("cust.connectors.fromDirectory")));
   let dir = { directory: [] }; try { dir = await api("/connectors/directory"); } catch {}
-  (dir.directory || []).forEach(item => { if (item.id === DATAPRO_CONNECTOR_ID || conns.some(k => k.connector_id === item.id)) return; const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", item.name)); info.appendChild(el("div", "ds", item.description || "")); row.appendChild(info); const add = el("button", "outline-btn small", t("common.add")); add.onclick = async () => { try { await api("/connectors", { method: "POST", body: JSON.stringify({ connector_id: item.id, name: item.name, description: item.description, command: item.command }) }); hint(t("toast.connectors.added", item.name)); custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; row.appendChild(add); c.appendChild(row); });
+  (dir.directory || []).forEach(item => { if (item.id === DATAPRO_CONNECTOR_ID || conns.some(k => k.connector_id === item.id)) return; const row = el("div", "cust-row"); const info = el("div", "info"); info.appendChild(el("div", "nm", item.name)); info.appendChild(el("div", "ds", item.description || "")); row.appendChild(info); const add = el("button", "outline-btn small", t("common.add")); add.onclick = async () => { try { const request = { connector_id: item.id, name: item.name, description: item.description, command: item.command }; if (item.args) request.args = item.args; if (item.env) request.env = item.env; await api("/connectors", { method: "POST", body: JSON.stringify(request) }); hint(t("toast.connectors.added", item.name)); custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; row.appendChild(add); c.appendChild(row); });
   // custom add
   const add = el("div", "cust-row"); const ai = el("div", "info"); ai.appendChild(el("div", "nm", t("cust.connectors.customAddName"))); const ad = el("div", "job-submit"); const nameIn = el("input", "cust-input"); nameIn.placeholder = t("cust.connectors.namePlaceholder"); nameIn.style.flex = "0 0 120px"; const cmdIn = el("input", "cust-input"); cmdIn.placeholder = t("cust.connectors.cmdPlaceholder"); const go = el("button", "solid-btn small", t("common.add")); go.onclick = async () => { const nm = nameIn.value.trim(); const cmd = cmdIn.value.trim(); if (!nm || !cmd) return; try { await api("/connectors", { method: "POST", body: JSON.stringify({ name: nm, command: cmd.split(/\s+/) }) }); nameIn.value = cmdIn.value = ""; custTab("connectors"); } catch (e) { hint(t("toast.addFailed", apiErrorText(e)), true); } }; ad.appendChild(nameIn); ad.appendChild(cmdIn); ad.appendChild(go); ai.appendChild(ad); add.appendChild(ai); c.appendChild(add);
 } catch (e) { c.textContent = t("versions.load.err", e.message); } }

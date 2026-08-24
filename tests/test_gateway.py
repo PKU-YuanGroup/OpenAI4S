@@ -1177,6 +1177,98 @@ def _cfg(tmp_path):
     )
 
 
+def test_example_connector_seed_removes_only_the_old_default_qualifier(tmp_path):
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    store.upsert_connector(
+        connector_id="example",
+        name="Example (bundled)",
+        command=["example-server"],
+    )
+
+    gateway_mod._seed_example_connector(cfg)
+
+    assert store.get_connector("example")["name"] == "Example"
+    store.patch_connector("example", name="My example connector")
+    gateway_mod._seed_example_connector(cfg)
+    assert store.get_connector("example")["name"] == "My example connector"
+
+
+def test_builtin_connector_commands_migrate_across_servers(tmp_path):
+    from openai4s.mcp_client import OPENAI4S_PYTHON
+
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    store.upsert_connector(
+        connector_id="example",
+        name="Example",
+        command=[
+            "/server-a/openai4s/.venv/bin/python3",
+            "-m",
+            "openai4s.mcp_servers.example_server",
+        ],
+    )
+    store.upsert_connector(
+        connector_id="protein-design",
+        name="Protein Design (bundled adapter)",
+        description=(
+            "Protein design bundled adapter; offline isolation must be "
+            "configured separately."
+        ),
+        command=[
+            "/server-a/openai4s/.venv/bin/python3",
+            "-m",
+            "openai4s.mcp_servers.protein_design",
+        ],
+    )
+    store.upsert_connector(
+        connector_id="custom",
+        name="Custom",
+        command=["/server-a/custom-python", "custom_server.py"],
+    )
+
+    gateway_mod._migrate_builtin_connector_commands(cfg)
+
+    assert store.get_connector("example")["command"] == [
+        OPENAI4S_PYTHON,
+        "-m",
+        "openai4s.mcp_servers.example_server",
+    ]
+    assert store.get_connector("protein-design")["command"] == [
+        OPENAI4S_PYTHON,
+        "-m",
+        "openai4s.mcp_servers.protein_design",
+    ]
+    assert store.get_connector("protein-design")["name"] == "Protein Design"
+    assert (
+        store.get_connector("protein-design")["description"]
+        == gateway_mod._PROTEIN_DESIGN_DESCRIPTION
+    )
+    assert store.get_connector("custom")["command"] == [
+        "/server-a/custom-python",
+        "custom_server.py",
+    ]
+
+
+def test_protein_connector_migration_preserves_operator_metadata(tmp_path):
+    from openai4s.mcp_client import openai4s_python_module
+
+    cfg = _cfg(tmp_path)
+    store = get_store(cfg.db_path)
+    store.upsert_connector(
+        connector_id="protein-design",
+        name="Lab protein tools",
+        description="Runs our reviewed local adapters.",
+        command=openai4s_python_module("openai4s.mcp_servers.protein_design"),
+    )
+
+    gateway_mod._migrate_builtin_connector_commands(cfg)
+
+    connector = store.get_connector("protein-design")
+    assert connector["name"] == "Lab protein tools"
+    assert connector["description"] == "Runs our reviewed local adapters."
+
+
 def _stage1_cfg(tmp_path):
     return Config(
         data_dir=tmp_path,
@@ -3755,6 +3847,64 @@ def test_disabling_datapro_disconnects_only_the_current_store_scope(
             (datapro.CONNECTOR_ID, datapro.runtime_cache_scope(store))
         ]
         assert store.get_connector(datapro.CONNECTOR_ID)["enabled"] is False
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_connector_editor_patch_preserves_masked_env_and_disconnects_old_process(
+    tmp_path, monkeypatch
+):
+    from openai4s import mcp_client
+
+    class _Manager:
+        def __init__(self):
+            self.disconnects = []
+
+        def disconnect(self, connector_id, cache_scope=None):
+            self.disconnects.append((connector_id, cache_scope))
+
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    store = get_store(cfg.db_path)
+    store.upsert_connector(
+        connector_id="protein-design",
+        name="Protein Design",
+        command=["old", "server"],
+        env={"KEEP": "keep-canary", "REMOVE": "remove-canary"},
+    )
+    removed_ref = store.get_connector("protein-design")["env"]["REMOVE"]
+    manager = _Manager()
+    monkeypatch.setattr(mcp_client, "manager", lambda: manager)
+    try:
+        handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
+        handler = object.__new__(handler_cls)
+        handler._query = lambda: {}
+        handler._body = lambda: {
+            "name": "Protein Design MCP",
+            "command": ["new", "server"],
+            "args": ["--stdio"],
+            "env_updates": {"NEW": "new-canary"},
+            "remove_env": ["REMOVE"],
+        }
+        replies = []
+        handler._json = lambda obj, code=200: replies.append((obj, code))
+
+        handler._api("PUT", "/connectors/protein-design")
+
+        assert replies[0][1] == 200
+        assert replies[0][0]["env_keys"] == ["KEEP", "NEW"]
+        assert "keep-canary" not in json.dumps(replies[0][0])
+        assert "new-canary" not in json.dumps(replies[0][0])
+        connector = store.get_connector("protein-design")
+        assert connector["command"] == ["new", "server"]
+        assert connector["args"] == ["--stdio"]
+        assert store.connector_env(connector) == {
+            "KEEP": "keep-canary",
+            "NEW": "new-canary",
+        }
+        assert store.secrets.get(removed_ref) is None
+        assert manager.disconnects == [("protein-design", None)]
     finally:
         runner.close()
 

@@ -605,6 +605,9 @@ def test_abandoned_ids_and_in_flight_requests_are_both_capped(tmp_path, monkeypa
     config = _server(tmp_path, "wedged", body=_HANG)
 
     connection = MCPConnection(config["command"], timeout=30.0)
+    # The cap is exercised by short request deadlines, not by requiring a
+    # freshly spawned Python process to initialize within 200 milliseconds.
+    connection._timeout = 0.2
     try:
         # The construction timeout also governs the `initialize` handshake
         # the constructor performs against a cold CPython subprocess. A
@@ -1072,6 +1075,9 @@ def test_a_silent_connector_is_still_a_deadline(tmp_path):
     make every wedged connector look like an oversized one."""
     config = _server(tmp_path, "silent", body=_HANG)
     connection = MCPConnection(config["command"], timeout=30.0)
+    # Keep environment-dependent process startup outside the deadline under
+    # test; the silent request itself must still time out after 300 ms.
+    connection._timeout = 0.3
     try:
         # The construction timeout also governs the `initialize` handshake
         # the constructor performs against a cold CPython subprocess. A
@@ -1296,6 +1302,9 @@ def test_a_flood_of_late_answers_to_abandoned_ids_is_not_desynchronisation(
         ),
     )
     connection = MCPConnection(config["command"], timeout=30.0)
+    # Backlog semantics need short per-request deadlines, while subprocess
+    # initialization is unrelated setup and gets a stable startup budget.
+    connection._timeout = 0.3
     try:
         # The construction timeout also governs the `initialize` handshake
         # the constructor performs against a cold CPython subprocess. A

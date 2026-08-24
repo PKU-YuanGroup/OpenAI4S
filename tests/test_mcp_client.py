@@ -24,11 +24,11 @@ from openai4s.http_deadline import (
     _DeadlineHTTPSConnection,
 )
 from openai4s.mcp_client import (
+    OPENAI4S_PYTHON,
     MCPConnection,
     MCPError,
     MCPManager,
     _connector_environment,
-    example_server_config,
 )
 from openai4s.mcp_http import MCPHTTPConnection
 from openai4s.mcp_protocol import MCPOversizedResponse, MCPTimeout
@@ -42,6 +42,38 @@ class _HTTPHeaders(dict):
             (value for name, value in self.items() if str(name).casefold() == wanted),
             default,
         )
+
+
+def test_portable_openai4s_python_is_resolved_only_at_spawn_time():
+    stored = [OPENAI4S_PYTHON, "-m", "openai4s.mcp_servers.example_server"]
+
+    argv = MCPManager._argv({"command": stored, "args": ["--stdio"]})
+
+    assert stored[0] == OPENAI4S_PYTHON
+    assert argv == [
+        sys.executable,
+        "-m",
+        "openai4s.mcp_servers.example_server",
+        "--stdio",
+    ]
+
+
+def test_an_explicit_interpreter_for_an_in_tree_module_is_not_overridden():
+    """Only our own token is ours to expand.
+
+    Matching on the module name alone also captured a row an operator wrote by
+    hand -- a conda interpreter chosen because it carries the scientific stack
+    -- and ran it under the daemon's venv while the connector editor kept
+    displaying the path they typed. The configuration shown and the one
+    executed have to be the same configuration.
+    """
+    operator_choice = [
+        "/opt/conda/envs/protein/bin/python",
+        "-m",
+        "openai4s.mcp_servers.protein_design",
+    ]
+
+    assert MCPManager._argv({"command": list(operator_choice)}) == operator_choice
 
 
 class _BoundedTransport:
@@ -721,8 +753,8 @@ def test_manager_connect_never_passes_ambient_secrets_to_popen(monkeypatch):
     captured = {}
 
     class CapturingConnection:
-        def __init__(self, command, env=None, cwd=None):
-            captured.update(command=command, env=env, cwd=cwd)
+        def __init__(self, command, env=None, cwd=None, *, timeout=None):
+            captured.update(command=command, env=env, cwd=cwd, timeout=timeout)
 
     monkeypatch.setenv("OPENAI4S_LLM_API_KEY", "ambient-secret")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ambient-cloud-secret")
@@ -778,7 +810,13 @@ def test_connection_uses_standard_resource_and_prompt_method_shapes():
 
 def test_bundled_server_supports_resources_and_prompts_end_to_end():
     manager = MCPManager()
-    config = example_server_config()
+    config = {
+        "command": [
+            OPENAI4S_PYTHON,
+            "-m",
+            "openai4s.mcp_servers.example_server",
+        ]
+    }
     try:
         resources = manager.list_resources("example", config)
         assert resources["resources"][0]["uri"] == RESOURCE_URI
@@ -866,8 +904,11 @@ def test_a_late_reply_is_discarded_rather_than_read_as_the_next_answer(tmp_path)
     silently and with the right JSON shape.
     """
     connection = MCPConnection(
-        _silent_server_config(tmp_path, behaviour="late")["command"], timeout=0.3
+        _silent_server_config(tmp_path, behaviour="late")["command"], timeout=5.0
     )
+    # Process startup is not the latency claim in this test. Keep the request
+    # deadline short only after the real subprocess has completed its handshake.
+    connection._timeout = 0.3
     try:
         with pytest.raises(MCPError):
             connection.list_tools()  # abandons id 2; the server answers it later

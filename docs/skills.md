@@ -10,9 +10,9 @@ skills/example_stats/
 
 Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel bootstrap finder binds each permitted Skill package to its exact discovered directory, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (602)
+## Bundled Skills (603)
 
-The catalog has two maintenance tiers: 41 curated OpenAI4S Skills and a pinned,
+The catalog has two maintenance tiers: 42 curated OpenAI4S Skills and a pinned,
 read-only import of all 561 MIT-licensed
 [GPTomics/bioSkills](../skills/bioskills/) recipes. Every imported recipe is
 individually searchable and loadable, but the system prompt represents the
@@ -32,13 +32,13 @@ source commit, conversion rules, license, complete inventory, and per-file
 hashes live at its linked boundary; importing it installs no scientific
 packages and does not imply that every optional tool is ready locally.
 
-### Curated OpenAI4S Skills (41)
+### Curated OpenAI4S Skills (42)
 
 | category | Skills |
 |---|---|
 | **Structure prediction** (GPU) | `alphafold2` · `openfold3` · `boltz` · `chai1` · `esmfold2` |
 | **Sequence / omics / docking** (GPU) | `fair-esm2` · `evo2` · `borzoi` · `scgpt` · `scvi-tools` · `diffdock` |
-| **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` |
+| **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` · `protein-design-mcp` |
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
 | **Reaction chemistry** | `reaction-atom-mapping` · `reaction-condition-recommendation` · `reaction-forward-prediction` · `reaction-yield-estimation` · `single-step-retrosynthesis` |
 | **Research workflow** | `literature-review` · `pdf-explore` · `paper-narrative` · `figure-composer` · `figure-style` · `indication-dossier` · `evidence-walkthrough` · `retrosynthesis_planning` · `mineral_spectra_analysis` · `admet_genetic` · `protein-mutation-enhancement` |
@@ -141,7 +141,7 @@ zero-dependency Node CLI that copies it out of this repository:
 
 ```bash
 npx openai4s-skills list
-npx openai4s-skills install --all                  # the 41 curated Skills
+npx openai4s-skills install --all                  # the 42 curated Skills
 npx openai4s-skills install --collection bioskills # the 561 pinned recipes
 npx openai4s-skills install alphafold2 --target claude
 npx openai4s-skills installed
@@ -178,7 +178,7 @@ absolute paths, `..`, drive letters and NUL are rejected, and a link member
 aborts the extraction rather than being skipped.
 
 **For an OpenAI4S user this is mostly redundant.** The wheel already ships all
-602 Skills and a bundled Skill takes precedence over a same-named one in
+603 Skills and a bundled Skill takes precedence over a same-named one in
 `<data_dir>/user-skills`. The command exists to put these recipes in front of
 an agent that is not OpenAI4S.
 

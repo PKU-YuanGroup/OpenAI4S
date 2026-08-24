@@ -332,6 +332,14 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
         )
     if method == "remote_gpu_status":
         return ("compute", "Inspecting remote GPU setup", {})
+    if method == "accelerator_status":
+        return ("compute", "Inspecting local and remote accelerators", {})
+    if method == "stage_model_asset":
+        return (
+            "compute",
+            "Staging a local model asset",
+            {"source_path": a.get("source_path"), "asset_name": a.get("asset_name")},
+        )
     if method == "register_remote_capability":
         cap = a.get("capability") or a.get("cap") or "service"
         alias = a.get("alias") or "remote GPU"
@@ -933,10 +941,24 @@ class HostDispatcher:
             ),
             fingerprint=lambda *fields: _endpoint_fingerprint(*fields),
         )
-        self._mcp_service = MCPService(self.store, frame_id=lambda: self.frame_id)
+        self._mcp_service = MCPService(
+            self.store,
+            frame_id=lambda: self.frame_id,
+            workspace=lambda: self._files.workspace(),
+        )
         self._doubao_search_service = DoubaoSearchService(self.store)
         self._remote_capability_service = RemoteCapabilityService(
             normalize_probe=lambda spec: _normalize_remote_capability_probe(spec),
+        )
+        from openai4s.host.accelerators import (
+            AcceleratorRoutingService,
+            LocalAcceleratorService,
+        )
+
+        self._local_accelerator_service = LocalAcceleratorService()
+        self._accelerator_routing_service = AcceleratorRoutingService(
+            local_status=self._local_accelerator_service.status,
+            remote_status=self._remote_gpu_status_payload,
         )
         self._remote_science_service = RemoteScienceService(
             provenance_recorder=lambda *args: self._record_remote_prov(*args),
@@ -1865,6 +1887,12 @@ class HostDispatcher:
     def _remote_gpu_status_payload(self) -> dict:
         return self._remote_capability_service.status()
 
+    def _accelerator_status_payload(self) -> dict:
+        return self._accelerator_routing_service.status()
+
+    def _m_accelerator_status(self, _spec: dict | None = None) -> dict:
+        return self._accelerator_status_payload()
+
     def _m_remote_gpu_status(self, _spec: dict | None = None) -> dict:
         """Return configured remote GPU hosts and registered services."""
         return self._remote_gpu_status_payload()
@@ -1966,6 +1994,7 @@ class HostDispatcher:
             "app_tiles": True,
             "compute": self._compute_available(),
             "remote_gpu": self._remote_gpu_status_payload(),
+            "accelerators": self._accelerator_status_payload(),
             "r_kernel": self._r_kernel_available(),
             # opencode-parity harness tools
             "bash": True,

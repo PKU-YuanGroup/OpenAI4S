@@ -27,6 +27,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -109,9 +110,22 @@ def _node() -> str:
 
 
 def _run(script: str, *args: str) -> dict:
-    result = subprocess.run(
-        [_node(), "-e", script, *args], capture_output=True, text=True, timeout=60
-    )
+    # The harnesses inline both I18N dictionaries, so the script grows with
+    # every translated string. `node -e` carries it as one argv entry, and
+    # Linux caps a single argument at MAX_ARG_STRLEN (128 KiB): crossing that
+    # turns every test here into `OSError: [Errno 7] Argument list too long`,
+    # which reads as a broken harness rather than "one more phrase was
+    # translated". A file has no such ceiling. `-e` still runs the require, so
+    # process.argv keeps starting at the first test argument.
+    with tempfile.TemporaryDirectory() as directory:
+        harness = Path(directory) / "harness.js"
+        harness.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [_node(), "-e", f"require({json.dumps(str(harness))})", *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

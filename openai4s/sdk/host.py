@@ -1005,6 +1005,33 @@ class _Host:
         """
         return self._call("remote_gpu_status", [{}])
 
+    def accelerator_status(self) -> dict:
+        """Inspect local GPUs and SSH-remote GPU registrations separately.
+
+        Hardware visibility does not imply that a model repository,
+        environment, checkpoint, or canary has been admitted.
+        """
+        return self._call("accelerator_status", [{}])
+
+    def stage_model_asset(
+        self,
+        source_path: str,
+        *,
+        asset_name: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> dict:
+        """Import a user-supplied local checkpoint, without admitting it."""
+        return self._call(
+            "stage_model_asset",
+            [
+                {
+                    "source_path": source_path,
+                    "asset_name": asset_name,
+                    "expected_sha256": expected_sha256,
+                }
+            ],
+        )
+
     def register_remote_capability(
         self,
         alias: str,

@@ -1,7 +1,7 @@
 {
   "name": "openai4s-skills",
   "version": "0.1.0",
-  "description": "Install the OpenAI4S Skill library (602 scientific recipes) into Claude Code, OpenAI4S, or any directory.",
+  "description": "Install the OpenAI4S Skill library (603 scientific recipes) into Claude Code, OpenAI4S, or any directory.",
   "keywords": [
     "openai4s",
     "skills",

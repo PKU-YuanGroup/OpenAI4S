@@ -22,6 +22,8 @@ and the internal plans in this directory are not published by that site.
 | `configuration.md` | How the provider, environment, daemon, kernel, and data directory are configured. |
 | `docker.md` | Bilingual container guide: the image, `compose.yaml`, the Kubernetes manifests, and what a wildcard bind actually changes. It states the trade a container makes with the kernel sandbox rather than implying the container replaces it, names the derived `OPENAI4S_SECRET_<SCOPE>_<NAME>` variables the image expects, and lists the limitations that are real today — no R, no IPv6, no access logs, and a credential-bearing startup line. |
 | `jupyter.md` | The optional Jupyter adapter: what it exposes, the execution boundaries it keeps, and the compatibility notes. |
+| `model-backend-bringup.md` | Framework-level accelerator routing, checkpoint staging, real-inference canary admission, connector portability, and the extension contract for checkpoint-backed model tools. |
+| `model-backend-bringup_zh.md` | Chinese counterpart of the model backend bring-up and admission guide. |
 | `package-architecture.md` | Historical package/ownership inventory used during decomposition work. |
 | `platforms.md` | The supported-platform matrix the code enforces: macOS stable, Linux beta, Windows **refused** rather than warned about. Names the gates not yet met (Developer ID signing and notarization) instead of implying they are, and explains why the tiers differ — not the code, but what has been proven. Also the separate question of what actually ships per platform, including why a Windows download and a refused Windows platform are not a contradiction. |
 | `plan-corecoder-refactor.md` | Internal historical refactor plan; excluded from public website content. |

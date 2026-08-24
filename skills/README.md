@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This tree exposes 602 bundled Skills: 41 curated OpenAI4S recipes plus the 561
+This tree exposes 603 bundled Skills: 42 curated OpenAI4S recipes plus the 561
 recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
 plus the operational knowledge needed to run it—not a provider JSON Tool.
 Disclosure is progressive: curated Skills receive one summary line each, while
@@ -41,6 +41,7 @@ search or exact loading. Only a selected Skill's `SKILL.md` and optional
 | [`pdf-explore/`](pdf-explore/) | Parse a PDF once in the kernel and keep the page text, then work from an outline, relevance search, per-page extraction, and figure crops. Built for answers that draw on several places at once, or on every page. For a single lookup of one to four pages you will quote immediately, skip it and read the pages directly. |
 | [`plan-ml-experiment/`](plan-ml-experiment/) | What gets written down before training starts: hypothesis, baseline, metric, decision rule, and a split boundary that survives grouped or chronological structure. Reproducibility is mechanical here, resting on config fingerprints, dataset checksums, recorded seeds, and artifact manifests. Determinism does not prove validity, and repeating one biased split does not repair it. |
 | [`protein-mutation-enhancement/`](protein-mutation-enhancement/) | An orchestration layer, not a model. It builds deterministic mutant libraries with stable IDs such as `A12V+G47D`, merges sequence, structure, property, and assay scores into one ranking, and decides whether a gain-of-function round stops or expands. The heavy model calls are delegated to `fair-esm2` and `esmfold2`. |
+| [`protein-design-mcp/`](protein-design-mcp/) | Composes the bundled atomic MCP tools for general protein design, constrained sequence design, structure validation, refinement and reproducible candidate comparison. |
 | [`proteinmpnn/`](proteinmpnn/) | The default inverse-folding step when the design surface is protein only: backbone geometry in, sequence out, small enough to run on CPU for a handful of designs. It writes sequences and nothing else, so use the `ligandmpnn` runner if you need threaded PDBs, and switch skills as soon as a cofactor or soluble expression is in play. |
 | [`reaction-atom-mapping/`](reaction-atom-mapping/) | RXNMapper atom correspondence and changed-bond extraction for a complete reaction. It requires both reaction sides and must not be used as a target-only retrosynthesis model or feasibility test. |
 | [`reaction-condition-recommendation/`](reaction-condition-recommendation/) | Parrot condition hypotheses for a fixed reaction, preserving checkpoint-specific label vocabularies and temperature support while separating model output from literature or ELN evidence. |
