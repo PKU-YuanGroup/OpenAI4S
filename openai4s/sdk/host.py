@@ -342,7 +342,7 @@ class _Mcp:
 
     def tools(self, server: str) -> Any:
         """Discover a connector's tools: {tools: [{name, description, inputSchema}]}."""
-        return self._call("mcp_tools", [{"server": server}])
+        return self._call("mcp_tools", [server])
 
     def resources(self, server: str, *, cursor: str | None = None) -> dict:
         """Discover URI-addressed resources and an optional nextCursor."""

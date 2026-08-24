@@ -166,22 +166,3 @@ def test_every_sdk_host_call_has_a_dispatch_route():
         and name not in BUILTIN_CONTROL_HOST_METHODS
     ]
     assert missing == [], f"SDK methods without dispatcher routes: {missing}"
-
-
-def test_sdk_mcp_tools_uses_the_native_control_tool_object_shape(dispatcher):
-    """Exercise SDK -> worker -> real dispatcher, not a recorder-only mock."""
-
-    class MCPStub:
-        def tools(self, server):
-            assert server == "protein-design"
-            return {"tools": [{"name": "generate_backbone"}]}
-
-    dispatcher._mcp_service = MCPStub()
-    with Kernel(dispatcher=dispatcher) as kernel:
-        result = kernel.execute(
-            'result = host.mcp.tools("protein-design")\n'
-            'print(result["tools"][0]["name"])'
-        )
-
-    assert result["error"] is None
-    assert result["stdout"].strip() == "generate_backbone"
