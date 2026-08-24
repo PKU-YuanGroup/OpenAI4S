@@ -4,4 +4,4 @@ A pure-Python agent whose action space is Turing-complete code running in a
 persistent kernel. Linux daemon form-factor.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
