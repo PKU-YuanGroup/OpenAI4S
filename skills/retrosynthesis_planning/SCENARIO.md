@@ -290,11 +290,11 @@ closed loops remain database, rule, experiment, process, and decision problems.
 | Problem | Offline interface test | Live inference | Scientific benchmark | Status |
 | --- | --- | --- | --- | --- |
 | P1 | yes | RetroChimera env/weights | public benchmark required | integrated; no default-CI weight download |
-| P2 | yes | AiZynthFinder assets/stock | frozen search benchmark | integrated; live search optional |
-| P3 | Skill discovery | RXNMapper env | mapping benchmark | recipe complete |
-| P4 | Skill discovery | ReactionT5v2 weights | forward benchmark | recipe complete |
-| P5 | Skill discovery | Parrot env plus pre-download terms decision | fixed condition set | conditional recipe; manifest allow required before inference |
-| P6 | Skill discovery | ReactionT5v2 weights | deployment held-out set | recipe complete; bounded interpretation |
+| P2 | worker contract pass | reviewed AiZynthFinder assets/stock | frozen search benchmark | direct route-search backend implemented; artifact terms review pending |
+| P3 | worker contract + real smoke pass | pinned RXNMapper env | mapping benchmark | deployable |
+| P4 | worker contract + real canary pass | pinned ReactionT5v2 weights | forward benchmark | deployable as a bounded validation signal |
+| P5 | worker/CSV contract pass | Parrot checkpoint terms review | fixed condition set | source pinned; manifest allow required before checkpoint inference |
+| P6 | worker contract; released canary fails | pinned ReactionT5v2 weights | deployment held-out set | quarantined from quantitative use |
 
 ## Scenario-wide hard constraints
 

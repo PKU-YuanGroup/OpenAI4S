@@ -177,11 +177,23 @@ def _route_feature_set(route: Mapping[str, Any]) -> set[str]:
     return features
 
 
+def route_feature_set(route: Mapping[str, Any]) -> frozenset[str]:
+    """Return the stable public feature set used for route comparison."""
+
+    return frozenset(_route_feature_set(route))
+
+
 def _jaccard(left: set[str], right: set[str]) -> float:
     if not left and not right:
         return 1.0
     union = left | right
     return len(left & right) / len(union) if union else 0.0
+
+
+def route_similarity(left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
+    """Compare routes by reaction, product, precursor, and terminal features."""
+
+    return _jaccard(set(route_feature_set(left)), set(route_feature_set(right)))
 
 
 def select_diverse_routes(

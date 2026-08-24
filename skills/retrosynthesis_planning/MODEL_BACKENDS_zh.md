@@ -4,17 +4,44 @@
 
 本文说明逆合成规划 Skill 的可选外部模型边界。OpenAI4S 一侧继续保持标准库优先；重型模型包、checkpoint、CUDA 库和模型专属依赖留在独立的 Python 或 conda 环境中，通过一次版本化 JSON 请求和一次 JSON 响应与 OpenAI4S 通信。
 
-首个实现支持 RetroChimera 以及 Syntheseus 暴露的模型 wrapper 做单步逆合成推理。它不替代 AiZynthFinder 的多步规划，也不会把模型分数解释成实验成功概率。
+首个实现支持 RetroChimera 以及 Syntheseus 暴露的模型 wrapper 做单步逆合成推理。现在同一隔离边界还通过 `reaction_model_backends.py` 与 `reaction_model_worker.py` 支持 AiZynthFinder、RXNMapper、ReactionT5v2-forward、ReactionT5v2-yield 和 Parrot；它不会把任何模型分数解释成实验成功概率。
+
+`reaction_model_deployment.py` 是这些环境和 artifact 身份的权威注册表：固定包版本及上游 revision，生成供人工审阅的安装/下载命令，对每个 artifact 文件制作快照，并在推理前验证。网络命令只输出，不会隐式执行。
+
+| 能力 | 冻结身份 | 必需外部 artifact |
+| --- | --- | --- |
+| AiZynthFinder | 4.4.1 / release commit `9859f5b…` | 完整 `download_public_data` policy/template/filter/stock/config 快照 |
+| RXNMapper | 0.4.3 / tag commit `640d9dd…` | 已审阅 PyPI wheel 与内置模型，wheel SHA 已登记 |
+| ReactionT5v2 forward | HF revision `9331140…` | 完整本地 HF 快照，推理强制 `local_files_only` |
+| ReactionT5v2 yield | HF revision `f0658bf…` | 完整本地 HF 快照，推理强制 `local_files_only` |
+| Parrot | repository commit `0fb2325…` | 完成条款审计后的仓库、配置、标签词表与 checkpoint 快照 |
+
+Parrot 与 AiZynthFinder public-data artifact 在单独下载文件及条款完成审计前保持 `review-required`。代码许可证不能自动覆盖数据集或 checkpoint。
+
+## 已验证的部署状态
+
+| 后端 | 工程状态 | 科学使用状态 |
+| --- | --- | --- |
+| AiZynthFinder 4.4.1 | 已实现直接 `plan_routes` worker 和 Scenario 2 转换，并通过协议测试；隔离环境位于 git 仓库外。 | 实际搜索仍需经过批准并做完整哈希的 policy/template/filter/stock 快照；上游称其为 public data，但下载器没有声明统一的 artifact 许可证。 |
+| RXNMapper 0.4.3 | 固定隔离环境、wheel 哈希、manifest 和真实 mapping smoke test 均通过。 | 在常规域检查前提下可用于 mapping benchmark。 |
+| ReactionT5v2-forward | 固定 HF 快照 `9331140...`，真实 CPU model-card 产物 canary 通过。 | 可作为有边界的正向/round-trip 信号，不能作为可行性证明。 |
+| ReactionT5v2-yield | 固定 HF 快照可加载，并复现上游预处理；公开 canary 期望约 19.1666，实测 65.924858。 | 已隔离：问题解决并独立验证前，只允许协议测试。 |
+| Parrot | 源码固定在 `0fb2325...`；官方 CSV beam adapter 已通过协议测试。 | 官方下载器中的 Google Drive artifact 没有单独明确条款，因此 checkpoint 推理仍被阻塞。 |
 
 ## 适用范围
 
-外部后端主要用于三类场景：
+外部后端用于以下有明确边界的场景：
 
 - 生成额外的单步前体候选；
+- 在声明的库存上搜索多步路线；
+- 做原子映射并提取反应中心证据；
+- 做正向产物预测与 round-trip 诊断；
+- 在 artifact 获批后适配完整 Parrot condition beam；
+- 当前收率 checkpoint 隔离期间仅测试其 wire protocol；
 - 比较具有不同归纳偏置的模型是否给出一致建议；
 - 在候选进入路线审阅之前记录模型和 checkpoint provenance。
 
-多步 Syntheseus 搜索、正向模型校验、模型共识排序和交互式子树重规划是后续独立功能，不会隐藏在第一版 adapter 里。
+多步 Syntheseus 搜索、模型共识排序和交互式子树重规划仍是独立功能，不会隐藏在单个 adapter 中。
 
 ## 架构
 
@@ -23,11 +50,11 @@ OpenAI4S retrosynthesis Skill
         |
         | stdin 上的一次版本化 JSON 请求
         v
-隔离的 syntheseus_worker.py 进程
+隔离的 syntheseus_worker.py 或 reaction_model_worker.py
         |
         | 可选依赖导入与模型推理
         v
-RetroChimera 或 Syntheseus 模型环境
+经审阅的模型专属环境及本地 artifact
         |
         | stdout 上的一次版本化 JSON 响应
         v
@@ -40,7 +67,7 @@ stdout 只允许输出一个 JSON 对象。worker 在处理请求前会把文件
 
 Host 不使用 `shell=True`，限制请求和响应大小，设置超时，核对响应中的 `request_id`，并拒绝未知响应字段。
 
-## 支持的模型类别
+## 支持的单步 Syntheseus 模型类别
 
 | 类别 | Worker 接受的模型名 | 主要用途 | 依赖说明 |
 | --- | --- | --- | --- |
@@ -281,7 +308,6 @@ RetroChimera 和其他学习式逆合成模型可能产生化学上不合理或�
 后续兼容层包括：
 
 - 规范化 multi-backend candidate bundle 和 reciprocal-rank consensus；
-- forward-model round-trip 与立体化学感知校验；
 - 不同路线之间的 weakest-step 和 shared-failure 分析；
 - PaRoutes 风格离线路线 benchmark 与 opt-in model canary；
 - 展示 model vote、reaction center、evidence grade 和 review action 的交互式 route DAG；

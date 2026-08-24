@@ -4,6 +4,8 @@
 
 该 Scenario 面向完整前体侧已知、产物未知的反应结果预测。Harness 获得匿名反应物和试剂字段，在固定 Top-K 预算内预测主要产物。它既可独立评价 forward model，也可作为逆合成提案的 round-trip 诊断；但主 Benchmark 不把逆合成模型生成的前体混入测试集，以免同时测量两个模型的错误。
 
+与已知 intended product、只检查 round-trip 是否恢复目标的基础用法相比，本场景在生成和排序期间完全隐藏产物，并冻结 reactant/reagent 角色。模型必须在可能的骨架、区域选择性和立体结果之间完成真正的 outcome prediction；不能利用 intended product 做 beam reranking，也不能把逆合成模型的错误混入 forward accuracy。
+
 默认数据使用 Molecular Transformer 官方 USPTO_MIT 的 separated test split，默认模型为 ReactionT5v2-forward。产品标签在 Harness 执行期间完全隐藏。由于专利记录通常只列报告主产物，Top-K exact match 衡量对记录结果的恢复，不代表未记录副产物一定错误，也不代表预测命中即可在实验中实现。
 
 立体化学是本场景的重要组成。主指标保留 isomeric SMILES；另行报告忽略立体化学的 connectivity accuracy，用于区分骨架错误和立体错误，不能用后者替代主指标。
@@ -185,6 +187,8 @@ reference_repository/
 ## 评估自动化实现难度
 
 全流程可离线自动化：角色校验 ✓ → checkpoint/泄漏审计 ✓ → Top-K 生成 ✓ → 两级产品规范化 ✓ → 私有标签评价 ✓。正式发布的主要阻塞项是 USPTO 派生数据许可记录与 checkpoint 训练去重证明。
+
+仓库已提供 `retrosynthesis_planning.forward_benchmark`：严格分离 reactants/reagents，保留 invalid、empty、duplicate 与 unused beam，私有 evaluator 同时计算 isomeric 和 connectivity Top-K，并单列立体化学错误。模型 checkpoint 与受许可约束的数据仍需外部冻结。
 
 ## 评测指标
 

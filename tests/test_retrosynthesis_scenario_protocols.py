@@ -1,0 +1,452 @@
+"""Offline contracts for the six independent retrosynthesis science scenarios."""
+
+import json
+import os
+import sys
+
+import pytest
+
+from openai4s.config import get_config
+
+sys.path.insert(0, str(get_config().skills_dir))
+
+from retrosynthesis_planning.atom_mapping_benchmark import (  # noqa: E402
+    BenchmarkProtocolError,
+    evaluate_mappings,
+    validate_public_reactions,
+)
+from retrosynthesis_planning.benchmark_common import (  # noqa: E402
+    build_intermediate_artifact,
+)
+from retrosynthesis_planning.condition_benchmark import (  # noqa: E402
+    SLOTS,
+    evaluate_condition_predictions,
+    normalize_condition_outputs,
+    validate_condition_inputs,
+)
+from retrosynthesis_planning.forward_benchmark import (  # noqa: E402
+    evaluate_forward_predictions,
+    normalize_forward_outputs,
+    validate_forward_inputs,
+)
+from retrosynthesis_planning.multistep_benchmark import (  # noqa: E402
+    evaluate_routes,
+    normalize_planner_outputs,
+    normalize_stock,
+    validate_targets,
+)
+from retrosynthesis_planning.reaction_model_backends import (  # noqa: E402
+    ReactionModelBackend,
+)
+from retrosynthesis_planning.reaction_model_deployment import (  # noqa: E402
+    ENVIRONMENTS,
+    model_manifest,
+    snapshot_artifacts,
+    verify_artifact_snapshot,
+)
+from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402
+    main as scenario_cli_main,
+)
+from retrosynthesis_planning.yield_benchmark import (  # noqa: E402
+    SPLITS,
+    evaluate_yield_predictions,
+    normalize_yield_outputs,
+    validate_yield_inputs,
+)
+
+
+def _identity(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("invalid")
+    return value
+
+
+def _connectivity(value):
+    return _identity(value).replace("@", "")
+
+
+def test_multistep_requires_every_and_leaf_to_be_in_stock():
+    targets = validate_targets(
+        [{"target_id": "t1", "target_smiles": "T"}], canonicalizer=_identity
+    )
+    stock = normalize_stock(["A"], canonicalizer=_identity)
+    route = {
+        "tree": {
+            "type": "molecule",
+            "smiles": "T",
+            "children": [
+                {
+                    "type": "reaction",
+                    "children": [
+                        {"type": "molecule", "smiles": "A", "children": []},
+                        {"type": "molecule", "smiles": "B", "children": []},
+                    ],
+                }
+            ],
+        },
+        "solved": True,
+    }
+    normalized = normalize_planner_outputs(
+        targets,
+        [
+            {
+                "target_id": "t1",
+                "routes": [route],
+                "termination_reason": "exhausted",
+                "search_stats": {"expansions": 2},
+            }
+        ],
+        stock=stock,
+        max_routes=3,
+        budget={"expansions": 4},
+        canonicalizer=_identity,
+    )
+    assert normalized[0]["routes"][0]["verification"]["verified_solved"] is False
+    metrics = evaluate_routes(normalized, [{"target_id": "t1", "routes": [route]}])
+    assert metrics["solved_target_rate"] == 0.0
+
+
+def test_atom_mapping_public_input_rejects_hidden_map_numbers():
+    with pytest.raises(BenchmarkProtocolError, match="must not contain atom maps"):
+        validate_public_reactions(
+            [{"reaction_id": "r1", "reaction_smiles": "[CH3:1]O>>CO"}]
+        )
+
+
+def test_atom_mapping_evaluator_accepts_symmetry_equivalent_correspondence():
+    prediction = {
+        "reaction_id": "r1",
+        "correspondence": ["r0:a0=>p0:a1"],
+        "bond_changes": ["formed:x"],
+        "valid": True,
+    }
+    reference = {
+        "reaction_id": "r1",
+        "equivalent_correspondences": [
+            [{"reactant_atom": "r0:a0", "product_atom": "p0:a1"}]
+        ],
+        "bond_changes": ["formed:x"],
+        "ambiguous": False,
+    }
+    metrics = evaluate_mappings([prediction], [reference])
+    assert metrics["whole_reaction_exact_mapping_rate"] == 1.0
+    assert metrics["mean_bond_change_f1"] == 1.0
+
+
+def test_forward_prediction_reports_stereochemistry_only_error():
+    inputs = validate_forward_inputs(
+        [{"reaction_id": "r1", "reactants": "A", "reagents": ""}],
+        canonicalizer=_identity,
+    )
+    predictions = normalize_forward_outputs(
+        inputs,
+        [
+            {
+                "reaction_id": "r1",
+                "predictions": [{"rank": 1, "product_smiles": "C@", "score": 1.0}],
+                "error": None,
+            }
+        ],
+        top_k=3,
+        isomeric_canonicalizer=_identity,
+        connectivity_canonicalizer=_connectivity,
+    )
+    metrics = evaluate_forward_predictions(
+        predictions,
+        [{"reaction_id": "r1", "products": ["C@@"]}],
+        top_k=3,
+        isomeric_canonicalizer=_identity,
+        connectivity_canonicalizer=_connectivity,
+    )
+    assert metrics["isomeric_top_k_accuracy"]["1"] == 0.0
+    assert metrics["connectivity_top_k_accuracy"]["1"] == 1.0
+    assert metrics["stereochemistry_only_error_rate"] == 1.0
+
+
+def test_condition_protocol_scores_complete_tuple_not_marginal_cartesian_product():
+    inputs = validate_condition_inputs(
+        [{"reaction_id": "r1", "reactants": "A", "product": "P"}],
+        canonicalizer=_identity,
+    )
+    vocabulary = {slot: [f"{slot}_a", f"{slot}_b"] for slot in SLOTS}
+    wrong = {slot: f"{slot}_a" for slot in SLOTS}
+    right = {slot: f"{slot}_b" for slot in SLOTS}
+    predictions = normalize_condition_outputs(
+        inputs,
+        [
+            {
+                "reaction_id": "r1",
+                "predictions": [
+                    {"rank": 1, "score": 0.9, "conditions": wrong},
+                    {"rank": 2, "score": 0.8, "conditions": right},
+                ],
+                "error": None,
+            }
+        ],
+        vocabulary=vocabulary,
+        top_k=3,
+    )
+    metrics = evaluate_condition_predictions(
+        predictions, [{"reaction_id": "r1", "condition_sets": [right]}], top_k=3
+    )
+    assert metrics["exact_tuple_top_k_accuracy"]["1"] == 0.0
+    assert metrics["exact_tuple_top_k_accuracy"]["3"] == 1.0
+
+
+def test_yield_protocol_preserves_raw_predictions_and_reports_worst_group():
+    rows = [
+        {
+            "reaction_id": f"r{index}",
+            "split": split,
+            "reactants": f"A{index}",
+            "reagents": "",
+            "product": f"P{index}",
+        }
+        for index, split in enumerate(SPLITS)
+    ]
+    inputs = validate_yield_inputs(rows, canonicalizer=_identity)
+    raw = [
+        {
+            "reaction_id": row["reaction_id"],
+            "predicted_yield_percent": 120.0 if row["split"] == "mff_test4" else 50.0,
+            "interval_lower": None,
+            "interval_upper": None,
+            "domain_status": (
+                "out_of_domain" if row["split"].startswith("mff") else "matched"
+            ),
+        }
+        for row in inputs
+    ]
+    predictions = normalize_yield_outputs(inputs, raw)
+    refs = [
+        {"reaction_id": row["reaction_id"], "yield_percent": 50.0} for row in inputs
+    ]
+    metrics = evaluate_yield_predictions(predictions, refs)
+    assert predictions[-1]["predicted_yield_percent"] == 120.0
+    assert metrics["by_split"]["mff_test4"]["mae"] == 70.0
+    assert metrics["worst_group_mae"] == 70.0
+
+
+def test_unified_cli_evaluates_hashed_condition_artifact(tmp_path):
+    conditions = {slot: f"{slot}_a" for slot in SLOTS}
+    artifact = build_intermediate_artifact(
+        "reaction_condition_tuple_closed_vocab_v1",
+        [
+            {
+                "reaction_id": "r1",
+                "predictions": [
+                    {
+                        "rank": 1,
+                        "condition_signature": list(conditions.values()),
+                        "oov_slots": [],
+                        "duplicate_of_rank": None,
+                        "valid": True,
+                    }
+                ],
+            }
+        ],
+        metadata={"top_k": 1},
+    )
+    references = [{"reaction_id": "r1", "condition_sets": [conditions]}]
+    artifact_path = tmp_path / "intermediate.json"
+    reference_path = tmp_path / "private.json"
+    output_path = tmp_path / "metrics.json"
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+    reference_path.write_text(json.dumps(references), encoding="utf-8")
+    assert (
+        scenario_cli_main(
+            [
+                "evaluate",
+                "conditions",
+                "--predictions",
+                str(artifact_path),
+                "--references",
+                str(reference_path),
+                "--output",
+                str(output_path),
+                "--top-k",
+                "1",
+            ]
+        )
+        == 0
+    )
+    assert (
+        json.loads(output_path.read_text(encoding="utf-8"))[
+            "exact_tuple_top_k_accuracy"
+        ]["1"]
+        == 1.0
+    )
+
+
+def test_reaction_model_environment_plan_stays_under_explicit_external_root(tmp_path):
+    root = tmp_path / "whaleywang-models"
+    plan = ENVIRONMENTS["rxnmapper-0.4.3"].to_dict(root)
+    assert plan["environment_prefix"].startswith(str(root.resolve()))
+    assert plan["cache_dir"].startswith(str(root.resolve()))
+    assert "rxnmapper[rdkit]==0.4.3" in plan["packages"]
+    assert plan["source_revision"] == "640d9ddd304d28eb338482f4e9c2dd6b1a25de7c"
+
+
+def test_external_artifact_snapshot_detects_changed_checkpoint(tmp_path):
+    checkpoint = tmp_path / "models" / "weights.bin"
+    checkpoint.parent.mkdir()
+    checkpoint.write_bytes(b"reviewed")
+    manifest = snapshot_artifacts([checkpoint], base=tmp_path)
+    assert verify_artifact_snapshot(manifest, base=tmp_path)["ok"] is True
+    checkpoint.write_bytes(b"changed")
+    result = verify_artifact_snapshot(manifest, base=tmp_path)
+    assert result["ok"] is False
+    assert result["failures"] == ["changed:models/weights.bin"]
+
+
+def test_reaction_model_worker_capabilities_round_trip_without_heavy_imports():
+    manifest = model_manifest(
+        "rxnmapper-0.4.3",
+        checkpoint_id="rxnmapper-wheel-and-embedded-model",
+        checkpoint_sha256="a" * 64,
+    )
+    backend = ReactionModelBackend("rxnmapper", manifest=manifest)
+    response = backend.capabilities()
+    assert response["ok"] is True
+    assert response["result"]["operations"] == ["capabilities", "map_reactions"]
+    assert response["provenance_status"] == "complete"
+
+
+def test_aizynth_worker_converts_search_to_scenario_payload(tmp_path):
+    package = tmp_path / "aizynthfinder"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "aizynthfinder.py").write_text(
+        """
+class Collection:
+    def __init__(self, items):
+        self.items = items
+        self.selected = None
+    def select(self, value):
+        self.selected = value
+    def select_all(self):
+        self.selected = list(self.items)
+
+class Routes:
+    def compute_scores(self, *objects):
+        return None
+    def dict_with_extra(self, include_metadata=False, include_scores=False):
+        return [{
+            "type": "mol", "smiles": "CCO",
+            "metadata": {"is_solved": True},
+            "scores": {"state score": 0.8},
+            "children": [{
+                "type": "reaction", "children": [
+                    {"type": "mol", "smiles": "CC", "children": []},
+                    {"type": "mol", "smiles": "O", "children": []},
+                ],
+            }],
+        }]
+
+class Scorers:
+    def objects(self):
+        return []
+
+class AiZynthFinder:
+    def __init__(self, configfile):
+        self.stock = Collection(["zinc"])
+        self.expansion_policy = Collection(["uspto"])
+        self.filter_policy = Collection(["filter"])
+        self.scorers = Scorers()
+        self.routes = Routes()
+        self.target_smiles = None
+    def prepare_tree(self):
+        return None
+    def tree_search(self, show_progress=False):
+        if self.target_smiles == "FAIL":
+            raise ValueError("target search failed")
+        return 0.1
+    def build_routes(self):
+        return None
+    def extract_statistics(self):
+        return {"is_solved": True, "number_of_nodes": 3, "iterations": 2}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.yml"
+    config.write_text("stock: stub\n", encoding="utf-8")
+    manifest = model_manifest(
+        "aizynthfinder-4.4.1",
+        checkpoint_id="stub-public-assets",
+        checkpoint_sha256="a" * 64,
+    )
+    backend = ReactionModelBackend(
+        "aizynthfinder",
+        manifest=manifest,
+        env={"PYTHONPATH": os.pathsep.join((str(tmp_path), *sys.path))},
+    )
+    response = backend.plan_routes(
+        [
+            {"target_id": "target-bad", "target_smiles": "FAIL"},
+            {"target_id": "target-1", "target_smiles": "CCO"},
+        ],
+        config_path=str(config),
+        max_routes=3,
+    )
+    failed, record = response["result"]["records"]
+    assert failed["target_id"] == "target-bad"
+    assert failed["termination_reason"] == "backend_error"
+    assert failed["routes"] == []
+    assert failed["search_stats"]["error"] == "ValueError: target search failed"
+    assert record["target_id"] == "target-1"
+    assert record["termination_reason"] == "solved"
+    assert record["search_stats"]["number_of_nodes"] == 3
+    assert record["routes"][0]["solved"] is True
+    assert record["routes"][0]["tree"]["scores"]["state score"] == 0.8
+
+
+def test_parrot_worker_parses_all_ranked_condition_beams(tmp_path):
+    repository = tmp_path / "Parrot"
+    repository.mkdir()
+    (repository / "inference.py").write_text(
+        """
+import argparse
+import csv
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config_path")
+parser.add_argument("--input_path")
+parser.add_argument("--output_path")
+parser.add_argument("--num_workers")
+parser.add_argument("--inference_batch_size")
+parser.add_argument("--gpu")
+args = parser.parse_args()
+reaction = open(args.input_path, encoding="utf-8").read().strip()
+with open(args.output_path, "w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=[
+        "rxn_smiles", "top-k", "catalyst1", "solvent1", "solvent2",
+        "reagent1", "reagent2", "scores",
+    ])
+    writer.writeheader()
+    writer.writerow({"rxn_smiles": reaction, "top-k": "top-1", "catalyst1": "Pd", "solvent1": "THF", "reagent1": "base", "scores": "0.9"})
+    writer.writerow({"rxn_smiles": "", "top-k": "top-2", "catalyst1": "Ni", "solvent1": "DMF", "reagent1": "base2", "scores": "0.7"})
+""".lstrip(),
+        encoding="utf-8",
+    )
+    config = repository / "config.yml"
+    config.write_text("model: stub\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manifest = model_manifest(
+        "parrot-0fb2325",
+        checkpoint_id="stub-parrot-checkpoint",
+        checkpoint_sha256="b" * 64,
+        checkpoint_license="MIT",
+    )
+    backend = ReactionModelBackend(
+        "parrot", manifest=manifest, repository_dir=repository
+    )
+    response = backend.recommend_conditions(
+        [{"reaction_id": "reaction-1", "reaction_smiles": "CCO>>CC=O"}],
+        config_path=str(config),
+        workspace_dir=str(workspace),
+    )
+    predictions = response["result"]["records"][0]["predictions"]
+    assert [item["rank"] for item in predictions] == [1, 2]
+    assert predictions[0]["conditions"]["catalyst1"] == "Pd"
+    assert predictions[1]["conditions"]["solvent1"] == "DMF"

@@ -28,10 +28,10 @@ commercial service, or cannot identify the checkpoint that produced a result.
 | --- | --- | --- | --- | --- |
 | Atom mapping and reaction-centre extraction | complete reactant/product reaction SMILES | atom-mapped reaction, mapping confidence, changed bonds | **RXNMapper** | Mature local package, MIT, pretrained model, CPU/GPU. It cannot map a target-only query because the product and reactant sides must both be known. |
 | Single-step precursor generation | one product SMILES | ranked precursor sets for one disconnection | **RetroChimera 1** | Preferred proposal model: MIT code and checkpoints, public Pistachio/USPTO checkpoints, direct Python/Syntheseus API. Keep only 5–10 candidates and never interpret its probability as experimental success. |
-| Multi-step route search | target SMILES, expansion policy, stock | solved/unsolved route trees | **AiZynthFinder** | Mature MIT planner with downloadable public policies and stock. This is search guided by learned expansion/filter policies, not one end-to-end neural model. |
+| Multi-step route search | target SMILES, expansion policy, stock | solved/unsolved route trees | **AiZynthFinder** | Mature MIT planner with downloadable public policies and stock. The code license does not by itself settle the separately downloaded artifact terms. This is search guided by learned expansion/filter policies, not one end-to-end neural model. |
 | Forward outcome and round-trip validation | reactants plus reagents | ranked product SMILES | **ReactionT5v2-forward** | 2025 peer-reviewed model, MIT 0.2B safetensors on Hugging Face, direct Transformers inference. RetroChimera's released forward checkpoint is a useful same-dataset alternative, not independent evidence. |
 | Reaction-condition recommendation | full reaction SMILES | ranked catalyst/reagent/solvent classes and, for the appropriate checkpoint, temperature | **Parrot (conditional candidate; not a default)** | MIT code, an official checkpoint downloader, and a CPU-capable CLI. The external checkpoint archives have no separately declared machine-readable license, so the exact checkpoint's terms must be reviewed and an explicit allow/deny decision recorded in the model manifest before any checkpoint download or inference. Outputs are dataset label classes; temperature support and vocabulary depend on the checkpoint. |
-| Reaction-yield estimation | reactants, reagents, and product | predicted isolated yield percentage | **ReactionT5v2-yield** | 2025 MIT checkpoint with direct local inference. Use for in-domain risk ranking or fine-tuning, not as a calibrated route success probability. |
+| Reaction-yield estimation | reactants, reagents, and product | predicted isolated yield percentage | **ReactionT5v2-yield (quarantined release)** | The 2025 MIT checkpoint loads locally, but the pinned release failed its published canary after upstream preprocessing was reproduced (about 19.1666 expected, 65.924858 observed). Keep it protocol-only until independently resolved and validated. |
 
 These six tasks form a useful model-backed planning and review surface, but
 Parrot remains a conditional candidate. Do not download or run a Parrot
@@ -75,7 +75,9 @@ regression error have different meanings.
   start from the archived Python 3.7 stack.
 - **Yield-BERT** is reproducible for its reported HTE datasets, but its official
   environment starts at Python 3.6 and its own documentation warns that patent
-  yield data is noisy. ReactionT5v2 is the more maintainable default.
+  yield data is noisy. ReactionT5v2 has the more maintainable runtime, but the
+  pinned release cannot become the default until its canary discrepancy is
+  resolved.
 
 ## Primary sources checked
 

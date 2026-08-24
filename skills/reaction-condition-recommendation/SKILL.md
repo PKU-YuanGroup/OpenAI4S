@@ -61,6 +61,13 @@ conda env create -n parrot -f "$PARROT_ROOT/source/envs_cpu.yaml"
 The final assertion must remain empty; if a reused checkout has modified or
 untracked files, stop instead of executing it as reviewed source.
 
+That source revision has been cloned and verified in the external deployment
+root used for this implementation, and the OpenAI4S adapter has been tested
+against Parrot's multi-row CSV beam layout. This validates the source identity
+and adapter protocol, not checkpoint inference. Invoke an approved snapshot
+through `ReactionModelBackend("parrot", ...)`; temporary inference files must
+use an explicit external `workspace_dir`.
+
 Do not execute the official `download_data.py` directly. At the reviewed
 revision it constructs an unquoted `shell=True` extraction command and does not
 propagate extraction failure, so a workspace path containing spaces can fail
@@ -73,6 +80,12 @@ a shell while rejecting traversal and links. Place only the verified dataset,
 label dictionaries, and checkpoint at the repository-relative paths named by
 the reviewed configuration, and add the acquisition receipts to the manifest
 before inference.
+
+The current deployment intentionally stops before acquiring those Google Drive
+files because their separate terms have not been approved. A manifest with
+`checkpoint_license` equal to `review-required` is incomplete and cannot
+support a release or live-inference claim. Do not substitute the MIT source-code
+license for the missing artifact decision.
 
 Write one complete reaction SMILES per line. Parrot's configuration contains
 repository-relative model and dataset paths, so keep its repository as the
@@ -96,6 +109,15 @@ The USPTO checkpoint recommends categorical condition components. Use the
 Reaxys configuration only when its separately obtained data/checkpoint terms
 have been reviewed and temperature prediction is required. Never imply that all
 Parrot checkpoints predict temperature.
+
+## Scenario 5 benchmark contract
+
+Use `../retrosynthesis_planning/condition_benchmark.py` with the checkpoint's
+frozen label dictionaries. Submit ranked complete five-slot tuples
+(`catalyst1`, two solvents, and two reagents), preserving explicit empty slots.
+Do not form an unscored Cartesian product from independent marginal labels.
+The evaluator scores multi-reference exact tuples, Top-1 slot recall, OOV
+tuples, duplicates, and unused Top-K budget.
 
 ## Interpret the result
 

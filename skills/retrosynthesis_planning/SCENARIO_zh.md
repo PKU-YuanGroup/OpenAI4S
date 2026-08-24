@@ -22,11 +22,11 @@
 | ID | 独立详细规范 | 当前成熟度 |
 | --- | --- | --- |
 | P1 | [`scenarios/01_single_step_retrosynthesis.md`](scenarios/01_single_step_retrosynthesis.md) | 设计完成；发布前需冻结 USPTO 派生数据许可与 checkpoint split 审计 |
-| P2 | [`scenarios/02_multistep_route_planning.md`](scenarios/02_multistep_route_planning.md) | 设计完成；PaRoutes 数据与自动指标明确，可优先实现 |
+| P2 | [`scenarios/02_multistep_route_planning.md`](scenarios/02_multistep_route_planning.md) | 设计与直接搜索 worker 已完成；实际 policy/stock artifact 条款待审计 |
 | P3 | [`scenarios/03_atom_mapping.md`](scenarios/03_atom_mapping.md) | 设计完成；正式 Ground Truth 的独立人工核验与许可仍是阻塞项 |
-| P4 | [`scenarios/04_forward_prediction.md`](scenarios/04_forward_prediction.md) | 设计完成；需冻结 USPTO_MIT 快照与 checkpoint 去重证明 |
-| P5 | [`scenarios/05_condition_recommendation.md`](scenarios/05_condition_recommendation.md) | 设计完成；v1 限于类别条件，数据许可待审计；任何 checkpoint 下载或推理前须审核其条款并在 manifest 记录允许/拒绝决定 |
-| P6 | [`scenarios/06_yield_estimation.md`](scenarios/06_yield_estimation.md) | 设计完成；以 Buchwald–Hartwig OOD split 为主，需冻结数据许可与去重清单 |
+| P4 | [`scenarios/04_forward_prediction.md`](scenarios/04_forward_prediction.md) | 设计与真实 model-card canary 已完成；仍需冻结 USPTO_MIT benchmark 快照与去重证明 |
+| P5 | [`scenarios/05_condition_recommendation.md`](scenarios/05_condition_recommendation.md) | 设计、源码固定与 CSV adapter 已完成；任何 checkpoint 推理前须在 manifest 记录条款允许决定 |
+| P6 | [`scenarios/06_yield_estimation.md`](scenarios/06_yield_estimation.md) | 设计完成；固定 checkpoint 的公开 canary 不一致，定量使用已隔离 |
 
 ## 科学问题之间的关系
 

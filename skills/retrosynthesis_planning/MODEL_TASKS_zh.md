@@ -25,10 +25,10 @@
 | --- | --- | --- | --- | --- |
 | 原子映射与反应中心提取 | 完整的反应物/产物 reaction SMILES | 原子映射反应、映射置信度、变化键 | **RXNMapper** | 成熟的本地包，MIT，含预训练模型，可用 CPU/GPU。它不能处理只有目标产物的查询，因为反应两侧都必须已知。 |
 | 单步前体生成 | 一个产物 SMILES | 一次断键的有序前体集合 | **RetroChimera 1** | 首选提案模型：MIT 代码与权重，公开 Pistachio/USPTO checkpoints，有直接 Python/Syntheseus API。只保留 5–10 个候选，概率不得解释为实验成功率。 |
-| 多步路线搜索 | 目标 SMILES、扩展策略、库存 | 已解/未解路线树 | **AiZynthFinder** | 成熟的 MIT planner，可下载公共策略和库存。它是由学习到的扩展/过滤策略引导的搜索，不是一个端到端神经网络。 |
+| 多步路线搜索 | 目标 SMILES、扩展策略、库存 | 已解/未解路线树 | **AiZynthFinder** | 成熟的 MIT planner，可下载公共策略和库存；代码许可证本身不能覆盖单独下载的 artifact 条款。它是由学习到的扩展/过滤策略引导的搜索，不是一个端到端神经网络。 |
 | 正向产物与 round-trip 验证 | 反应物和试剂 | 有序产物 SMILES | **ReactionT5v2-forward** | 2025 年同行评议模型，Hugging Face 上有 MIT 0.2B safetensors，可直接 Transformers 推理。RetroChimera 的公开 forward checkpoint 可作同数据源替代，但不算独立证据。 |
 | 反应条件推荐 | 完整 reaction SMILES | 催化剂/试剂/溶剂类别，以及合适 checkpoint 下的温度 | **Parrot（有条件候选；非默认实现）** | MIT 代码，有官方 checkpoint 下载器和支持 CPU 的 CLI；但外部 checkpoint 压缩包没有单独声明的机器可读许可证，因此在任何 checkpoint 下载或推理前，必须审核所选 checkpoint 的条款，并在模型 manifest 中记录明确的允许/拒绝决定。输出是数据集标签类别；温度支持和词表取决于 checkpoint。 |
-| 反应收率估计 | 反应物、试剂和产物 | 预测的分离收率百分比 | **ReactionT5v2-yield** | 2025 MIT checkpoint，可直接本地推理。只用于域内风险排序或微调，不得当作校准过的路线成功概率。 |
+| 反应收率估计 | 反应物、试剂和产物 | 预测的分离收率百分比 | **ReactionT5v2-yield（当前 release 已隔离）** | 2025 MIT checkpoint 可本地加载，但固定 release 在复现上游预处理后仍未通过公开 canary（期望约 19.1666，实测 65.924858）。独立解决并验证前只允许协议测试。 |
 
 这六项构成了实用的模型化规划与评审界面，但 Parrot 仍是有条件候选。只有完成
 checkpoint 条款审核且模型 manifest 记录了允许决定后，才可下载或运行对应
@@ -60,7 +60,8 @@ checkpoint；记录缺失或决定为拒绝时必须停止。这些任务也不�
 - **Chemformer** 仍有科学价值，但原仓库已在 2026 年归档并由
   `aizynthmodels` 取代；新部署不应从旧 Python 3.7 栈开始。
 - **Yield-BERT** 能复现其 HTE 结果，但官方环境从 Python 3.6 起步，且其文档
-  自己指出专利收率噪声很大。ReactionT5v2 是更易维护的默认选择。
+  自己指出专利收率噪声很大。ReactionT5v2 的运行栈更易维护，但固定 release
+  的 canary 差异解决前不能成为默认选择。
 
 ## 已核验的第一方来源
 

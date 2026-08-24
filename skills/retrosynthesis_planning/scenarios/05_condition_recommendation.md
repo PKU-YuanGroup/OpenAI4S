@@ -4,6 +4,8 @@
 
 该 Scenario 面向反应物和目标产物均已确定、但实验条件未知的反应执行准备。Harness 获得固定 reaction SMILES，在有限 Top-K 预算内推荐离散的催化剂、溶剂和试剂组合，并说明模型覆盖范围与不确定性。
 
+与让模型自由生成一段条件文本的基础任务相比，本场景冻结五个类别槽位、联合组合预算和 train-derived vocabulary。难点是生成内部一致的 condition tuple，并在 test-only 类别或训练域外反应上明确 OOV/abstention；不能把五个独立 Top-K 列表任意做笛卡尔积，也不能用不可评分的温度叙述掩盖类别恢复失败。
+
 默认模型 Parrot 在 USPTO-Condition 上预测类别型条件槽位。该公开数据不可靠地支持连续温度评测，因此本场景 v1 只评价 `catalyst1, solvent1, solvent2, reagent1, reagent2`；温度、时间、浓度、加料顺序和气氛不在本场景 Ground Truth 中。若模型或报告生成温度，只能作为未评分假设，不能混入条件 exact-match。
 
 专利条件并非唯一最优条件：一条记录只证明某组条件被报告过，未命中不等于建议不可行。因此主指标称“记录条件恢复”，并辅以槽位命中、组合 Top-K、多样性和覆盖率；不把模型推荐称为实验验证方案。
@@ -189,6 +191,8 @@ reference_repository/
 ## 评估自动化实现难度
 
 类别型场景可离线自动化：schema 校验 ✓ → 去重/泄漏审计 ✓ → public validation ✓ → Top-K 组合生成 ✓ → OOV/域诊断 ✓ → private evaluation ✓。发布阻塞是数据与 checkpoint 的再分发许可和 checkpoint split provenance；连续温度不属于 v1 自动化范围。
+
+仓库已提供 `retrosynthesis_planning.condition_benchmark`：冻结五个条件槽位及各自闭集词表，只接受模型实际发出的完整条件元组，禁止边际标签笛卡尔积；私有 evaluator 计算多参考 exact-tuple Top-K、slot recall、OOV、重复和预算利用率。
 
 ## 评测指标
 
