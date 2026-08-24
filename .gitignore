@@ -42,3 +42,7 @@ epibench_eval/
 paper/
 .openai4s-runtime/
 .claude/
+# GROMACS outputs
+*.xvg
+# Emacs auto-save lock files
+\#*\#
