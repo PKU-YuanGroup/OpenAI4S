@@ -26,6 +26,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from openai4s import __version__
 from openai4s.config import get_config
 from openai4s.execution.process_group import TERM_GRACE_S
 
@@ -1878,6 +1879,12 @@ def cmd_user(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="openai4s", description="openai4s CLI")
+    p.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     ps = sub.add_parser("serve", help="start the daemon")

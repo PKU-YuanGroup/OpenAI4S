@@ -1,6 +1,6 @@
 [project]
 name = "openai4s"
-version = "0.1.0"
+version = "0.2.0"
 description = "A pure-stdlib hybrid Code-as-Action scientific research agent."
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "MIT"

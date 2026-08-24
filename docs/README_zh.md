@@ -39,6 +39,8 @@
 | `response-contract.json` | 有哪些 route，以及每条 route 给出的是**哪一类**答案——调用方据以分支的状态码与 content type。它和上面那份一样是抓取出来的、不是手写的，只是方法不同：[`scripts/capture_response_contract.py`](../scripts/capture_response_contract.py) 不带任何参数地把每条已知 route 打到真实 handler 上，所以大多数条目记录的是调用方写错时拿到的那个 4xx，而不是成功响应体。这也是它无需重跑整个套件、因而足够便宜的原因。当某条可路由的 route 在这里根本没有条目时，`--check` 判定失败——一条驱动不到的 route 是测试的缺口，不是可以容忍的缺席。两份文件里它更粗：这份说的是「route 会应答，以及以什么形式」，`response-schemas.json` 说的是「里面那个 JSON 长什么样」。 |
 | `plan-crosswalk.json` | 综合报告中 56 条原始提案各自的真实去向，以可机器校验的数据形式存在，而不是散文里的一张表。每个 `(source, original_id)` 一行，记录整合去向、来自受限词汇表的状态、证明它的测试，以及——对任何未验证项——缺失的那次运行。`tests/test_plan_crosswalk.py` 强制 56 个唯一 key 各出现一次，因此重复行、丢失行，或者一个指不到任何现存测试的 `closed`，都会失败而不是被忽略。状态来自一次只读的生产调用链审计，不继承 [`next-version-progress.md`](next-version-progress.md)。 |
 | `v02-decisions.md` | nextgen 改进提案第 8 节里那些待定决策的所有者签署答复，2026-07-20 冻结。依赖其中任何一条的工作，在答案被记录到一个 reviewer 查得到的地方之前不得启动。每一行还写明这个选择放弃了什么——代价看不见的决策，后来会被悄悄推翻。|
+| `v020-linux-release-prep.md` | v0.2.0 Linux 半边的维护者材料：发布说明草稿，以及产出桌面 tarball、wheel、sdist 所需的系统软件包与完整命令。它不发布。中文对应文件是 `v020-linux-release-prep_zh.md`。 |
+| `v020-linux-release-prep_zh.md` | v0.2.0 Linux 桌面发布准备材料的中文对应文件。 |
 | `v03-decisions.md` | v0.3 的所有者签署答复，2026-07-26 冻结，包含推翻 v0.2「每个 Phase 一个大 PR」的那一条，以及本版本据以衡量的验收口径。它还用一张表列出所有无法从工作副本验证的事项——GitHub Actions 的真实执行、Developer ID 证书、公证、PyPI OIDC、实机浏览器、Linux CI——好让它们不出现在「已验证」一栏是有意为之，而不是疏漏。|
 | `next-version-progress.md` | v0.3 的逐项事实记录：什么落地了、在哪个提交、以及那一列真正承重的内容——为证明每个新测试确实会失败，把什么缺陷放了回去。不会失败的测试什么也没测，而存在一个同名的类不构成完成证据。凡是证明所需的那次运行需要本仓库没有的机器，一律标 `Implemented but unverified` 并写明缺的是哪一次运行。|
 | `webapp.md` | Web workbench 的概念、投影、状态与面向运维的行为。 |
