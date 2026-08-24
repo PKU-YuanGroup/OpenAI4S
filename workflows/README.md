@@ -31,8 +31,6 @@ about the half of the system whose job is to refuse.
 | [`science-retrieval/`](science-retrieval/README.md) | Scientific retrieval with source evidence |
 | [`telemetry-identity/`](telemetry-identity/README.md) | Revoking telemetry destroys the identity with it |
 | [`tool-bringup/`](tool-bringup/README.md) | Tool bring-up: build, weights, canary, admission, frozen record |
-<<<<<<< HEAD
-=======
 
 Replay the strict Stage 0 pack, with a JSON report suitable for a gate, using
 `openai4s benchmark --acceptance --json`. A matching baseline gap is printed as
@@ -42,4 +40,3 @@ canonical content digest under one `pack_version`; a semantic edit without a
 reviewed version/digest is rejected rather than silently changing the baseline.
 The current `2026-08-16.2` manifest requires the Reviewer observation to prove
 that the formal workspace fingerprint remained unchanged.
->>>>>>> origin/main

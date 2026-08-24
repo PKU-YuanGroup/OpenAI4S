@@ -23,8 +23,6 @@ JSON 都声明「这次运行应该做什么、做到什么才算做到」。根
 | [`science-retrieval/`](science-retrieval/README_zh.md) | 科学数据检索与来源证据 |
 | [`telemetry-identity/`](telemetry-identity/README_zh.md) | 遥测身份随撤销一同销毁 |
 | [`tool-bringup/`](tool-bringup/README_zh.md) | 工具 bring-up：构建、权重、canary、准入、冻结记录 |
-<<<<<<< HEAD
-=======
 
 使用 `openai4s benchmark --acceptance --json` 一键重放 Stage 0 严格验收包并
 生成可直接用作 gate 的 JSON。匹配当前缺口只会标为 `BASELINE`，不会算作
@@ -33,4 +31,3 @@ execution mode、断言键、期望值和规范化内容 digest；未经评审�
 更新就做语义改动，会被拒绝而不是悄悄改变基线。
 当前 `2026-08-16.2` manifest 强制要求 Reviewer 观察证明正式 workspace
 fingerprint 没有变化。
->>>>>>> origin/main

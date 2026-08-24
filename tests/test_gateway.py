@@ -1505,8 +1505,7 @@ def _write_standard_generation_fixture(
             encoding="utf-8",
         )
         (environment_root / "current").write_text(
-            generation_id + "
-", encoding="utf-8"
+            generation_id + "\n", encoding="utf-8"
         )
 
 
