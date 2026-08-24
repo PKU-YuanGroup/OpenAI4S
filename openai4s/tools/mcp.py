@@ -39,8 +39,27 @@ class ListMCPToolsTool(Tool):
     resource_key_prefix = "mcp"
     resource_target_key = "server"
 
-    def execute(self, runtime: ControlToolContext, arguments: dict) -> Any:
-        return runtime.invoke(self.host_method, arguments.get("server", ""))
+    # `mcp_tools` predates this control tool: the kernel SDK's
+    # `host.mcp.tools(server)` sends a bare positional string, and the
+    # dispatcher hands that straight to `execute`/`resource_keys` as the
+    # arguments. Same dual-shape contract as LineageGetTool.
+    def resource_keys(self, arguments: Any) -> tuple[str, ...]:
+        server = (
+            arguments if isinstance(arguments, str) else (arguments or {}).get("server")
+        )
+        return (resource_key("mcp", server or "*"),)
+
+    def execute(
+        self,
+        runtime: ControlToolContext,
+        arguments: dict | str,
+    ) -> Any:
+        server = (
+            arguments
+            if isinstance(arguments, str)
+            else (arguments or {}).get("server", "")
+        )
+        return runtime.invoke(self.host_method, server)
 
 
 class CallMCPTool(Tool):
