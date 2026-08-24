@@ -56,13 +56,6 @@ MAX_TIMEOUT_S = 600.0
 #: undocumented one, because someone sets it and believes the deadline moved.
 DEADLINE_ENV = "OPENAI4S_MCP_DEADLINE_S"
 
-_IN_TREE_PYTHON_MODULES = frozenset(
-    {
-        "openai4s.mcp_servers.example_server",
-        "openai4s.mcp_servers.protein_design",
-    }
-)
-
 
 def _deadline_default() -> float:
     """The per-request deadline, from the environment, clamped.
@@ -852,10 +845,14 @@ class MCPManager:
             argv = cmd.split() + list(args)
         else:
             raise MCPError("connector has no command")
-        in_tree_module = (
-            len(argv) >= 3 and argv[1] == "-m" and argv[2] in _IN_TREE_PYTHON_MODULES
-        )
-        if argv and (argv[0] == OPENAI4S_PYTHON or in_tree_module):
+        # Only the portable token is ours to expand. Matching on the module
+        # name alone also captured a row an operator wrote by hand -- e.g. a
+        # conda interpreter chosen because it has the scientific stack -- and
+        # silently ran it under the daemon's own venv while the editor kept
+        # displaying the path they typed. A legacy row that literally holds
+        # this daemon's `sys.executable` is already what we would substitute,
+        # so it needs no rewrite at all.
+        if argv and argv[0] == OPENAI4S_PYTHON:
             argv[0] = sys.executable
         return argv
 
@@ -880,7 +877,20 @@ class MCPManager:
         if transport != "stdio":
             raise MCPError("unsupported MCP connector transport")
         env = _connector_environment(config.get("env"))
-        return MCPConnection(self._argv(config), env=env, cwd=config.get("cwd"))
+        # Honour a config deadline here the way the HTTP branch above already
+        # does. Without it a stdio connector was pinned to `_deadline_default()`
+        # -- 60 s, and clamped to 600 s even via the env var -- so a server
+        # whose own work is bounded in hours could never answer: the client
+        # timed out, evicted and killed it mid-run, orphaning the child and
+        # leaving an attempt directory with no terminal record. An explicit
+        # timeout is deliberately not re-clamped; the connector's own bound is
+        # what limits the work, and this only has to outlive it.
+        return MCPConnection(
+            self._argv(config),
+            env=env,
+            cwd=config.get("cwd"),
+            timeout=config.get("timeout"),
+        )
 
     def _evict(
         self,

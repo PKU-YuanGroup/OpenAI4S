@@ -7,12 +7,17 @@ import os
 import sys
 from typing import Any
 
+from openai4s.mcp_protocol import MAX_FRAME_BYTES
+
 from .schemas import TOOLS
 from .service import ProteinDesignService
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_VERSION = "1.0.0"
-_MAX_FRAME_BYTES = 4 * 1024 * 1024
+#: The client applies this same cap when reading our replies. Re-declaring the
+#: number here let the two halves drift into an asymmetric limit, which shows
+#: up as a connector that silently drops requests rather than as a stale copy.
+_MAX_FRAME_BYTES = MAX_FRAME_BYTES
 
 
 def _send(message: dict[str, Any]) -> None:
@@ -86,7 +91,26 @@ def main() -> None:
                 continue
         except (UnicodeDecodeError, json.JSONDecodeError):
             continue
-        reply = handle(message, service)
+        try:
+            reply = handle(message, service)
+        except Exception as error:  # noqa: BLE001
+            # `ProteinDesignService.call` writes its terminal manifest after
+            # its own except block, so a full disk or a read-only mount
+            # escapes it. Unguarded, that unwinds the whole stdin loop: the
+            # server exits with a traceback, the client never receives an
+            # error frame and blocks until its deadline, and the restarted
+            # process has an empty admission ledger. Answer the request.
+            message_id = message.get("id")
+            if message_id is None:
+                continue
+            reply = {
+                "jsonrpc": "2.0",
+                "id": message_id,
+                "error": {
+                    "code": -32603,
+                    "message": f"{type(error).__name__}: {error}",
+                },
+            }
         if reply is not None:
             _send(reply)
 

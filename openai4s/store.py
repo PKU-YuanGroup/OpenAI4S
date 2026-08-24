@@ -5226,6 +5226,16 @@ class Store:
             raise ValueError("env_updates names must be valid environment names")
         if any(value is None or "\x00" in str(value) for value in updates.values()):
             raise ValueError("env_updates values cannot be null or contain NUL")
+        # A patch carries *new* values only -- absent names keep their existing
+        # references. So a value that already looks like a broker reference did
+        # not come from us: `broker_connector_env` passes `is_ref` text through
+        # untouched, which would let a caller who cannot read any secret paste
+        # another connector's reference into an env it also controls the
+        # command of, and have it resolved at spawn.
+        if any(is_ref(str(value)) for value in updates.values()):
+            raise ValueError(
+                "env_updates values must be literal values, not secret references"
+            )
         if not isinstance(removals, list) or any(
             not isinstance(item, str) or not item or "=" in item or "\x00" in item
             for item in removals

@@ -56,19 +56,24 @@ def test_portable_openai4s_python_is_resolved_only_at_spawn_time():
         "openai4s.mcp_servers.example_server",
         "--stdio",
     ]
-    assert MCPManager._argv(
-        {
-            "command": [
-                "/server-a/openai4s/.venv/bin/python3",
-                "-m",
-                "openai4s.mcp_servers.example_server",
-            ]
-        }
-    ) == [
-        sys.executable,
+
+
+def test_an_explicit_interpreter_for_an_in_tree_module_is_not_overridden():
+    """Only our own token is ours to expand.
+
+    Matching on the module name alone also captured a row an operator wrote by
+    hand -- a conda interpreter chosen because it carries the scientific stack
+    -- and ran it under the daemon's venv while the connector editor kept
+    displaying the path they typed. The configuration shown and the one
+    executed have to be the same configuration.
+    """
+    operator_choice = [
+        "/opt/conda/envs/protein/bin/python",
         "-m",
-        "openai4s.mcp_servers.example_server",
+        "openai4s.mcp_servers.protein_design",
     ]
+
+    assert MCPManager._argv({"command": list(operator_choice)}) == operator_choice
 
 
 class _BoundedTransport:
@@ -748,8 +753,8 @@ def test_manager_connect_never_passes_ambient_secrets_to_popen(monkeypatch):
     captured = {}
 
     class CapturingConnection:
-        def __init__(self, command, env=None, cwd=None):
-            captured.update(command=command, env=env, cwd=cwd)
+        def __init__(self, command, env=None, cwd=None, *, timeout=None):
+            captured.update(command=command, env=env, cwd=cwd, timeout=timeout)
 
     monkeypatch.setenv("OPENAI4S_LLM_API_KEY", "ambient-secret")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ambient-cloud-secret")

@@ -57,7 +57,13 @@ class LocalAcceleratorService:
                 text=True,
                 timeout=6,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except Exception as error:  # noqa: BLE001
+            # `GET /compute/gpu` and `host.capabilities()` both read this, and
+            # neither wraps it. Narrowing to OSError/TimeoutExpired turned a
+            # `text=True` UnicodeDecodeError on a localized driver banner into
+            # a 500 and an empty capabilities reply, where the route it
+            # replaced could not fail at all. A probe that cannot answer
+            # reports that it could not answer.
             base["probe_error"] = f"{type(error).__name__}: {error}"
             base["note"] = "The local GPU probe could not be completed."
             return base
@@ -79,7 +85,12 @@ class LocalAcceleratorService:
             match = _MEMORY_MIB.fullmatch(raw_memory)
             devices.append(
                 {
-                    "index": int(fields[0]) if fields[0].isdigit() else fields[0],
+                    # Always a string. The route this replaced was rewritten
+                    # precisely because a field whose *shape* depended on the
+                    # host is not a contract; an int here would have been the
+                    # same defect one level down, since a MIG instance reports
+                    # `0:1` and some vGPU drivers report `[N/A]`.
+                    "index": fields[0],
                     "name": fields[1],
                     "memory_total_mib": float(match.group(1)) if match else None,
                     "driver_version": fields[3],

@@ -141,7 +141,7 @@ zero-dependency Node CLI that copies it out of this repository:
 
 ```bash
 npx openai4s-skills list
-npx openai4s-skills install --all                  # the 41 curated Skills
+npx openai4s-skills install --all                  # the 42 curated Skills
 npx openai4s-skills install --collection bioskills # the 561 pinned recipes
 npx openai4s-skills install alphafold2 --target claude
 npx openai4s-skills installed
@@ -178,7 +178,7 @@ absolute paths, `..`, drive letters and NUL are rejected, and a link member
 aborts the extraction rather than being skipped.
 
 **For an OpenAI4S user this is mostly redundant.** The wheel already ships all
-602 Skills and a bundled Skill takes precedence over a same-named one in
+603 Skills and a bundled Skill takes precedence over a same-named one in
 `<data_dir>/user-skills`. The command exists to put these recipes in front of
 an agent that is not OpenAI4S.
 

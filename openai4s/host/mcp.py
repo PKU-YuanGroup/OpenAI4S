@@ -7,7 +7,84 @@ screening remains outside this class.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Callable, Protocol
+
+#: Bundled stdio servers that confine every user-supplied path to one root and
+#: gate formal model calls behind a live-process canary. Both properties are
+#: launch-time environment, so they have to be applied by whoever builds the
+#: launch config -- see :func:`confine_bundled_connector`.
+_CONFINED_BUNDLED_CONNECTORS = frozenset({"protein-design"})
+
+
+def is_confined_connector(connector: dict) -> bool:
+    """Whether this row names a bundled server that must be confined."""
+    return str(connector.get("connector_id") or "") in _CONFINED_BUNDLED_CONNECTORS
+
+
+def confine_bundled_connector(
+    config: dict, connector: dict, *, workspace: str | None
+) -> dict:
+    """Apply a bundled scientific server's path root and admission requirement.
+
+    Every spawn path must call this. The gate lives in the child's environment,
+    so a caller that builds a launch config without it starts the same server
+    with `os.getcwd()` as its path authority and `require_admission` off -- one
+    connector serving two security postures depending on which code path
+    reached it. An operator's explicit values stay authoritative.
+    """
+    if not is_confined_connector(connector):
+        return config
+    env = dict(config.get("env") or {})
+    # An *empty* stored value must not count as the operator having chosen
+    # one. The connector editor writes `""` for a bare `NAME=` line, and
+    # `setdefault` would treat that as present -- silently turning the
+    # admission gate off and dropping the root back to the daemon's cwd.
+    if not str(env.get("OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION") or "").strip():
+        env["OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION"] = "1"
+    if workspace:
+        # Bind the root to the caller's workspace rather than the daemon's
+        # checkout/cwd, and partition the cached MCP process by the same
+        # identity so two sessions never share one path authority. The scope is
+        # digested because `MCPManager._cache_scope` refuses one over 256
+        # characters, which a deep data-dir path reaches on its own.
+        if not str(env.get("OPENAI4S_PROTEIN_DESIGN_ROOT") or "").strip():
+            env["OPENAI4S_PROTEIN_DESIGN_ROOT"] = workspace
+        digest = hashlib.sha256(workspace.encode("utf-8")).hexdigest()[:32]
+        config["cache_scope"] = f"protein-design-workspace:{digest}"
+    config["env"] = env
+    if config.get("timeout") is None:
+        config["timeout"] = _backend_request_deadline(env)
+    return config
+
+
+#: The backend's own bound when the operator has not set one, mirroring
+#: `ProteinDesignService`'s default. Structure prediction and backbone
+#: generation are minutes-to-hours of GPU work.
+_PROTEIN_DESIGN_BACKEND_BUDGET_S = 7200.0
+#: Headroom for spawn, checkpoint hashing and the terminal-record write, so the
+#: transport outlives the backend rather than racing it.
+_BACKEND_DEADLINE_MARGIN_S = 300.0
+
+
+def _backend_request_deadline(env: dict) -> float:
+    """A transport deadline that outlives the backend's own timeout.
+
+    The two bounds have to be ordered, not merely both present: whichever
+    expires first decides the failure mode. The backend expiring first is a
+    `DesignToolError` with a terminal record; the transport expiring first
+    kills the server mid-run, orphans the compute child, writes no terminal
+    record, and loses the process-scoped admission ledger with it.
+    """
+    raw = str(env.get("OPENAI4S_PROTEIN_DESIGN_TIMEOUT_S") or "").strip()
+    budget = _PROTEIN_DESIGN_BACKEND_BUDGET_S
+    try:
+        parsed = float(raw)
+    except ValueError:
+        parsed = 0.0
+    if parsed > 0 and parsed != float("inf"):
+        budget = parsed
+    return budget + _BACKEND_DEADLINE_MARGIN_S
 
 
 class MCPStore(Protocol):
@@ -128,22 +205,8 @@ class MCPService:
         from openai4s.datapro import connector_runtime_config
 
         config = connector_runtime_config(self.store, connector)
-        if (
-            connector.get("connector_id") == "protein-design"
-            and self._workspace is not None
-        ):
-            # The bundled scientific server confines all user-provided paths
-            # to one root. Bind that root to the current session workspace,
-            # not the daemon's checkout/cwd, and partition the cached MCP
-            # process by the same identity so two sessions never share a path
-            # authority. An operator's explicit root remains authoritative.
-            workspace = str(self._workspace())
-            env = dict(config.get("env") or {})
-            env.setdefault("OPENAI4S_PROTEIN_DESIGN_ROOT", workspace)
-            env.setdefault("OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION", "1")
-            config["env"] = env
-            config["cache_scope"] = f"protein-design-workspace:{workspace}"
-        return config
+        workspace = str(self._workspace()) if self._workspace is not None else None
+        return confine_bundled_connector(config, connector, workspace=workspace)
 
     def list(self) -> list:
         """Return the public projection of enabled, permitted connectors only.

@@ -4,12 +4,30 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from openai4s.tools.base import Tool
 from openai4s.tools.contexts import WorkspaceToolContext
+
+_PORTABLE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _canonical_source(raw: str) -> str:
+    """The absolute path the copy will actually read, or ``""`` if unknowable.
+
+    Total by construction: the permission and secret gates run before any
+    validation, so this must never raise on a malformed or missing path.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(Path(os.path.expanduser(text)).resolve())
+    except (OSError, ValueError, RuntimeError):
+        return ""
 
 
 class StageModelAssetTool(Tool):
@@ -54,7 +72,12 @@ class StageModelAssetTool(Tool):
     def permission_target(self, arguments: Any) -> str:
         if not isinstance(arguments, dict):
             return ""
-        return str(arguments.get("source_path") or "")
+        raw = str(arguments.get("source_path") or "")
+        # Approve the bytes that will actually be read, not the spelling used
+        # to reach them. A durable approval recorded against `~/models/x` must
+        # not keep authorizing whatever that name points at once it becomes a
+        # symlink into a credential directory.
+        return _canonical_source(raw) or raw
 
     def secret_path(self, arguments: Any) -> str | None:
         # The caller names a *source*, while the destination is derived. Keep
@@ -62,23 +85,42 @@ class StageModelAssetTool(Tool):
         # where the copy is written.
         if not isinstance(arguments, dict):
             return None
-        source = str(arguments.get("source_path") or "")
+        raw = str(arguments.get("source_path") or "")
         from openai4s.host.files import is_secret_path
 
-        return source if is_secret_path(source) else None
+        # `is_secret_path` is a lexical, directory-aware denylist, so it can
+        # only classify the segments it is given. A parent symlink launders a
+        # credential path past it -- `/tmp/models -> ~/.ssh` makes
+        # `/tmp/models/config` look like neither a secret basename nor a
+        # secret directory. Classify the resolved destination as well.
+        for candidate in (raw, _canonical_source(raw)):
+            if candidate and is_secret_path(candidate):
+                return candidate
+        return None
 
     def execute(self, workspace: WorkspaceToolContext, arguments: dict) -> dict:
         raw_source = str(arguments.get("source_path") or "").strip()
         unresolved = Path(os.path.expanduser(raw_source))
+        if not unresolved.is_absolute():
+            unresolved = Path(os.path.abspath(unresolved))
         if unresolved.is_symlink():
             return {"error": f"model asset must not be a symlink: {raw_source}"}
         source = unresolved.resolve()
+        from openai4s.host.files import is_secret_path
+
+        # `is_symlink()` speaks only for the final component, and the denylist
+        # is lexical, so a symlinked *parent* launders a credential path past
+        # both: `/tmp/models -> ~/.ssh` makes `/tmp/models/config` look like
+        # neither a secret basename nor a secret directory. Classify where the
+        # read actually lands. (Refusing symlinked ancestors outright would
+        # instead reject every path under `/tmp` on macOS, where `/tmp` and
+        # `/var` are themselves OS-level symlinks.)
+        if is_secret_path(str(source)):
+            return {"error": f"model asset resolves onto a secret path: {raw_source}"}
         if not source.is_file():
             return {"error": f"model asset is not a regular file: {raw_source}"}
         name = str(arguments.get("asset_name") or source.name)
-        import re
-
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name):
+        if not _PORTABLE_NAME.fullmatch(name):
             return {"error": "asset_name must be a portable filename"}
         destination = workspace.resolve(f"model-assets/{name}")
         destination.parent.mkdir(parents=True, exist_ok=True)

@@ -207,6 +207,46 @@ def _parse_json_array_env(name: str) -> list[str]:
     return value
 
 
+def _mpnn_chain_order(header: str) -> list[str] | None:
+    """The '/'-separated chain order a ProteinMPNN header declares, if any.
+
+    Returns ``None`` when the header carries no mapping at all, which is the
+    normal shape of a sampled record, and raises only when a mapping is
+    present but unreadable.
+    """
+    match_designed = re.search(r"designed_chains=(\[[^\]]*\])", header)
+    match_fixed = re.search(r"fixed_chains=(\[[^\]]*\])", header)
+    if not match_designed or not match_fixed:
+        return None
+    try:
+        return list(ast.literal_eval(match_designed.group(1))) + list(
+            ast.literal_eval(match_fixed.group(1))
+        )
+    except (ValueError, SyntaxError, TypeError) as error:
+        raise DesignToolError("ProteinMPNN FASTA chain mapping is invalid") from error
+
+
+def _tail_text(path: Path, limit: int) -> str:
+    """The last ``limit`` characters of a log, bounded at the read.
+
+    Backends write progress lines without a TTY, so these logs reach gigabytes.
+    Slicing after `read_text()` applies the bound only once the whole file (and
+    its decoded copy) is already resident, which turns reporting a backend's
+    exit status into a `MemoryError` of our own.
+    """
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            # 4 bytes per character is the UTF-8 worst case, so this window
+            # cannot cut short of `limit` characters.
+            handle.seek(max(0, size - limit * 4))
+            raw = handle.read()
+    except OSError:
+        return ""
+    return raw.decode("utf-8", errors="replace")[-limit:].strip()
+
+
 def _network_isolation_prefix() -> list[str]:
     """Accept only command prefixes that visibly request a separate net namespace."""
     prefix = _parse_json_array_env("OPENAI4S_PROTEIN_DESIGN_OFFLINE_PREFIX")
@@ -237,6 +277,28 @@ def _network_isolation_prefix() -> list[str]:
         raise DesignToolError(
             "OPENAI4S_PROTEIN_DESIGN_OFFLINE_PREFIX must visibly request an "
             "isolated network namespace (for example bwrap --unshare-net)"
+        )
+    # Presence of the isolating token is not the same as the token being in
+    # effect: bwrap applies options in order and docker takes the last
+    # --network, so a prefix can name both and end up fully networked. The
+    # terminal record publishes `network_isolation_enforced: true` off the back
+    # of this function, so a claim it cannot substantiate must fail closed.
+    rejoining = {
+        "--share-net",
+        "--net=host",
+        "--network=host",
+        "--net=bridge",
+        "--network=bridge",
+    }
+    contradicted = sorted(flags & rejoining)
+    for index in range(1, len(prefix) - 1):
+        if prefix[index] in {"--network", "--net"} and prefix[index + 1] != "none":
+            contradicted.append(f"{prefix[index]} {prefix[index + 1]}")
+    if contradicted:
+        raise DesignToolError(
+            "OPENAI4S_PROTEIN_DESIGN_OFFLINE_PREFIX also re-enables networking "
+            f"({', '.join(sorted(set(contradicted)))}); the isolated namespace "
+            "it requests would not be in effect"
         )
     return prefix
 
@@ -329,6 +391,22 @@ class ProteinDesignService:
         output = output_root / attempt
         output.mkdir(parents=True, exist_ok=True)
         return attempt, seed, output, time.monotonic(), _utc_now()
+
+    def _operator_path(self, variable: str, default: str) -> Path:
+        """Resolve an operator-configured backend location.
+
+        Deliberately *not* `_path`: that confinement exists to keep an
+        agent-supplied path inside the session root, and an operator's model
+        checkout legitimately lives at `/opt/RFdiffusion`. Routing config
+        through the agent's fence rejected every correct install with
+        "path escapes configured protein-design root" -- a refusal aimed at
+        the wrong party, and one that named neither the variable nor the root.
+        """
+        raw = os.environ.get(variable) or default
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = self.root / candidate
+        return candidate.resolve()
 
     def _admission_key(self, name: str, args: dict[str, Any]) -> str | None:
         return self._admission.key(
@@ -511,6 +589,12 @@ class ProteinDesignService:
                     command,
                     cwd=str(cwd or self.root),
                     env=env,
+                    # This process reads MCP protocol frames from fd 0. An
+                    # inherited stdin lets a backend that reads it consume
+                    # requests the server still needed, desynchronising the
+                    # stream for the rest of the process lifetime, or block on
+                    # a pipe nobody will write until the timeout.
+                    stdin=subprocess.DEVNULL,
                     stdout=stdout,
                     stderr=stderr,
                     timeout=self.timeout,
@@ -526,19 +610,34 @@ class ProteinDesignService:
                 ) from error
         runtime = time.monotonic() - started
         if completed.returncode != 0:
-            tail = stderr_path.read_text(encoding="utf-8", errors="replace")[
-                -2000:
-            ].strip()
+            tail = _tail_text(stderr_path, 2000)
             suffix = f": {tail}" if tail else ""
             raise DesignToolError(
                 f"backend exited with code {completed.returncode}{suffix}"
             )
         return {
             "returncode": completed.returncode,
-            "runtime_seconds": round(runtime, 6),
+            # Distinct from the record's own `runtime_seconds`, which times the
+            # whole attempt. One name for two spans made a succeeded record and
+            # a failed record report different quantities under one key, and
+            # silently dropped checkpoint hashing time from the successful one.
+            "backend_runtime_seconds": round(runtime, 6),
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
         }
+
+    #: Fields the host computes about the attempt itself. A handler's payload
+    #: may add to a terminal record, never restate its identity.
+    _AUDIT_IDENTITY_KEYS = (
+        "schema_version",
+        "tool",
+        "attempt_id",
+        "seed",
+        "backend_revision",
+        "started_at",
+        "runtime_seconds",
+        "config_digest",
+    )
 
     def _base_record(
         self,
@@ -549,7 +648,9 @@ class ProteinDesignService:
         started_at: str,
         start: float,
     ) -> dict[str, Any]:
-        redacted = dict(args)
+        # Named `redacted` while redacting nothing, which is worse than no name
+        # at all: the next author to add a credential-shaped tool field would
+        # read it and assume the digest already excludes the value.
         return {
             "schema_version": _SCHEMA_VERSION,
             "tool": name,
@@ -559,7 +660,7 @@ class ProteinDesignService:
             "started_at": started_at,
             "finished_at": _utc_now(),
             "runtime_seconds": round(time.monotonic() - start, 6),
-            "config_digest": _digest_json(redacted),
+            "config_digest": _digest_json(args),
         }
 
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -604,6 +705,30 @@ class ProteinDesignService:
                     and existing.get("config_digest") == requested_digest
                 ):
                     existing["manifest_path"] = str(manifest)
+                    # A stored record outlives the process that earned it, so
+                    # replaying one must not re-assert live-process admission
+                    # the ledger no longer holds -- that is exactly what a
+                    # restart is supposed to revoke. Re-derive it here, and say
+                    # plainly that nothing ran, so a caller cannot read a
+                    # replayed failure as a fresh one.
+                    existing["replayed"] = True
+                    replay_key = self._admission_key(name, args)
+                    live_admission = self._admission.get(replay_key)
+                    if live_admission is not None:
+                        existing["bringup_admission"] = live_admission
+                    else:
+                        existing.pop("bringup_admission", None)
+                    if (
+                        self.require_admission
+                        and existing.get("run_mode") == "formal"
+                        and replay_key is not None
+                        and live_admission is None
+                    ):
+                        raise DesignToolError(
+                            "a stored formal record cannot be replayed in a process "
+                            "that has not been admitted; run a real inference with "
+                            "run_mode=canary and retry with a new attempt_id"
+                        )
                     return existing
                 return {
                     "schema_version": _SCHEMA_VERSION,
@@ -644,7 +769,18 @@ class ProteinDesignService:
             handler = getattr(self, f"_tool_{name}")
             payload = handler(args, output)
             record = self._base_record(name, args, attempt, seed, started_at, start)
+            base_identity = {
+                key: record[key] for key in self._AUDIT_IDENTITY_KEYS if key in record
+            }
             record.update({"status": "succeeded", **payload})
+            # `payload` carries `**result`, read back from a separately
+            # installed worker process. Spreading it last let the least
+            # trusted component rewrite the attempt's own audit header --
+            # `runtime_seconds` already means the backend's wall time on
+            # success and the whole attempt's on failure, and a result key
+            # named `config_digest` would break the replay comparison above.
+            record.update(base_identity)
+            record["status"] = "succeeded"
             record["run_mode"] = run_mode
             record["execution_target"] = args.get("execution_target", "local")
             if admission_key is not None and run_mode == "canary":
@@ -698,8 +834,8 @@ class ProteinDesignService:
             )
         target = self._path(args.get("target_pdb"), existing=True)
         checkpoint, checkpoint_digest = self._verify_checkpoint(args)
-        repository = self._path(
-            os.environ.get("OPENAI4S_RFDIFFUSION_PATH", "vendor/RFdiffusion")
+        repository = self._operator_path(
+            "OPENAI4S_RFDIFFUSION_PATH", "vendor/RFdiffusion"
         )
         self._verify_revision("rfdiffusion", args["backend_revision"], repository)
         chains = _read_pdb_residues(target)
@@ -824,8 +960,8 @@ class ProteinDesignService:
     ) -> dict[str, Any]:
         backbone = self._path(args.get("backbone_pdb"), existing=True)
         checkpoint, checkpoint_digest = self._verify_checkpoint(args)
-        repository = self._path(
-            os.environ.get("OPENAI4S_PROTEINMPNN_PATH", "vendor/ProteinMPNN")
+        repository = self._operator_path(
+            "OPENAI4S_PROTEINMPNN_PATH", "vendor/ProteinMPNN"
         )
         self._verify_revision("proteinmpnn", args["backend_revision"], repository)
         model_name = args.get("model_name", "v_48_020")
@@ -1013,23 +1149,20 @@ class ProteinDesignService:
             raise DesignToolError(
                 "ProteinMPNN FASTA must contain one native record plus exactly the requested designs"
             )
+        # ProteinMPNN declares the chain mapping once, in the native record's
+        # header; every sampled record carries only T/sample/score/
+        # global_score/seq_recovery. Requiring it per design rejected every
+        # genuine run, so read the order from the native header and let a
+        # design header override it only where a fork does emit one.
+        native_order = _mpnn_chain_order(records[0][0])
         validated: list[dict[str, Any]] = []
         for index, (header, combined) in enumerate(records[1 : expected + 1]):
             pieces = combined.split("/")
-            match_designed = re.search(r"designed_chains=(\[[^\]]*\])", header)
-            match_fixed = re.search(r"fixed_chains=(\[[^\]]*\])", header)
-            if not match_designed or not match_fixed:
+            order = _mpnn_chain_order(header) or native_order
+            if order is None:
                 raise DesignToolError(
                     "ProteinMPNN FASTA header lacks designed/fixed chain mapping"
                 )
-            try:
-                order = list(ast.literal_eval(match_designed.group(1))) + list(
-                    ast.literal_eval(match_fixed.group(1))
-                )
-            except (ValueError, SyntaxError, TypeError) as error:
-                raise DesignToolError(
-                    "ProteinMPNN FASTA chain mapping is invalid"
-                ) from error
             if (
                 set(order) != set(source)
                 or len(order) != len(source)

@@ -25,7 +25,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "fec549e06ae523cd7a2adc054c1245dc5074f33a21831df3daf27de5db381a73"
+      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
     },
     {
       "source": "R1",
@@ -135,7 +135,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "fec549e06ae523cd7a2adc054c1245dc5074f33a21831df3daf27de5db381a73"
+      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
     },
     {
       "source": "R2",
@@ -369,7 +369,7 @@
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "dcdd7b190837e9b35d329c8e16fe1c172cc84f7461d99b5f486e6997286acf71"
+      "evidence_digest": "93e535b97691298da945bb9ce49727213adcf6830629e7ac16c92d9cd2ec803f"
     },
     {
       "source": "R4",
@@ -467,7 +467,7 @@
       "tests": "tests/test_mcp_lifecycle.py,tests/test_kernel_oversized_frame.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "dcdd7b190837e9b35d329c8e16fe1c172cc84f7461d99b5f486e6997286acf71"
+      "evidence_digest": "93e535b97691298da945bb9ce49727213adcf6830629e7ac16c92d9cd2ec803f"
     },
     {
       "source": "R5",
@@ -731,7 +731,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "fec549e06ae523cd7a2adc054c1245dc5074f33a21831df3daf27de5db381a73"
+      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
     },
     {
       "source": "R7",

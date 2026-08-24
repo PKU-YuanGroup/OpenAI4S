@@ -302,8 +302,8 @@ out = pathlib.Path(value('--out_folder'))
 stem = pathlib.Path(value('--pdb_path')).stem
 (out / 'seqs').mkdir(parents=True, exist_ok=True)
 (out / 'seqs' / (stem + '.fa')).write_text(
-    ">native, designed_chains=['B'], fixed_chains=['A']\\nGSY/AC\\n"
-    ">design, score=1.0, designed_chains=['B'], fixed_chains=['A']\\n{designed_b}/AC\\n"
+    ">native, score=1.0, fixed_chains=['A'], designed_chains=['B'], model_name=v_48_020\\nGSY/AC\\n"
+    ">T=0.1, sample=1, score=1.0, global_score=1.0, seq_recovery=0.5\\n{designed_b}/AC\\n"
 )
 (out / 'fake_argv.json').write_text(json.dumps(args))
 """,

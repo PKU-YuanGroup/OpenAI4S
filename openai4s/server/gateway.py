@@ -1999,24 +1999,49 @@ _REMOTE_GPU_TASK_RE = re.compile(
 _REMOTE_GPU_CORE_CAPS = ("fold", "score_mutations")
 
 
-def _remote_gpu_runtime_context(user_text: str | None = None) -> str:
-    """Prompt fragment reflecting local hardware and the remote-GPU registry.
+_LOCAL_ACCELERATOR_SNAPSHOT: dict = {}
+_LOCAL_ACCELERATOR_LOCK = threading.Lock()
+#: Local GPU inventory is daemon-lifetime-stable, so re-probing per turn buys
+#: nothing. The ceiling matters more than the freshness: `nvidia-smi` blocks
+#: for seconds while a driver is busy and up to 6 on a wedged one, and this
+#: runs on the request thread before the LLM call is even assembled.
+_LOCAL_ACCELERATOR_TTL_S = 300.0
 
-    Sessions can be created before the user adds a GPU in Settings, so this
-    context is injected both into the initial system prompt and into later turns.
-    """
+
+def _local_accelerator_snapshot() -> dict:
+    """The local GPU probe, memoized, and total for prompt assembly."""
+    now = time.monotonic()
+    with _LOCAL_ACCELERATOR_LOCK:
+        cached = _LOCAL_ACCELERATOR_SNAPSHOT.get("value")
+        if cached is not None and now - _LOCAL_ACCELERATOR_SNAPSHOT["at"] < (
+            _LOCAL_ACCELERATOR_TTL_S
+        ):
+            return cached
     try:
         from openai4s.host.accelerators import LocalAcceleratorService
 
-        local = LocalAcceleratorService().status()
+        status = LocalAcceleratorService().status()
     except Exception as error:  # noqa: BLE001
-        local = {
+        status = {
             "available": False,
             "gpu_count": 0,
             "devices": [],
             "container_runtimes": [],
             "probe_error": f"{type(error).__name__}: {error}",
         }
+    with _LOCAL_ACCELERATOR_LOCK:
+        _LOCAL_ACCELERATOR_SNAPSHOT["value"] = status
+        _LOCAL_ACCELERATOR_SNAPSHOT["at"] = time.monotonic()
+    return status
+
+
+def _remote_gpu_runtime_context(user_text: str | None = None) -> str:
+    """Prompt fragment reflecting local hardware and the remote-GPU registry.
+
+    Sessions can be created before the user adds a GPU in Settings, so this
+    context is injected both into the initial system prompt and into later turns.
+    """
+    local = _local_accelerator_snapshot()
     try:
         from openai4s.compute import registry as _reg
 
@@ -2101,12 +2126,20 @@ def _remote_gpu_runtime_context(user_text: str | None = None) -> str:
     missing = sorted(c for c in requested_caps if c not in cap_names)
 
     devices = local.get("devices") or []
-    local_text = (
-        f"{local.get('gpu_count', 0)} local GPU(s): "
-        + ", ".join(str(device.get("name") or "unknown") for device in devices)
-        if local.get("available")
-        else "no usable local GPU observed by the daemon"
-    )
+    if local.get("available"):
+        local_text = f"{local.get('gpu_count', 0)} local GPU(s): " + ", ".join(
+            str(device.get("name") or "unknown") for device in devices
+        )
+    elif local.get("probe_error"):
+        # A probe that timed out or crashed knows nothing about the hardware.
+        # Reporting it as "no GPU" is a wrong claim rather than an absent one,
+        # and this module's own docstring warns against exactly that inversion.
+        local_text = (
+            "the local GPU probe did not complete "
+            f"({local.get('probe_error')}); local hardware is UNKNOWN, not absent"
+        )
+    else:
+        local_text = "no usable local GPU observed by the daemon"
     runtimes = ", ".join(local.get("container_runtimes") or []) or "none detected"
     lines = [
         "Accelerator state for this turn:",
@@ -11480,6 +11513,15 @@ _PROTEIN_DESIGN_DESCRIPTION = (
     "available."
 )
 
+#: Descriptions the product itself shipped and may therefore reclaim. Listed
+#: exactly rather than sniffed for, so an operator's own wording survives.
+_RETIRED_PROTEIN_DESCRIPTIONS = frozenset(
+    {
+        "Protein design bundled adapter; offline isolation must be "
+        "configured separately.",
+    }
+)
+
 _CONNECTOR_DIRECTORY = [
     {
         "id": "example",
@@ -11594,6 +11636,29 @@ def _read_user_skill(loader, name: str) -> dict:
 
 def _delete_user_skill(loader, name: str) -> dict:
     return SkillCustomizationService(loader).delete(name)
+
+
+def _connector_launch_config(cfg: Config, store, connector: dict) -> dict:
+    """The launch config for a Web-driven connector call.
+
+    The Web routes have no session workspace, but a bundled server's admission
+    gate is not workspace-dependent -- so route the config through the same
+    confinement the Agent path uses and give it a stable daemon-owned root
+    instead of letting the child fall back to the daemon's launch directory.
+    """
+    from openai4s.host.mcp import confine_bundled_connector, is_confined_connector
+
+    config = datapro.connector_runtime_config(store, connector)
+    if not is_confined_connector(connector):
+        return config
+    connector_id = str(connector.get("connector_id") or "")
+    root = cfg.data_dir / "connector-workspaces" / re.sub(r"[^\w.-]", "_", connector_id)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Still apply the admission requirement; only the root is unavailable.
+        return confine_bundled_connector(config, connector, workspace=None)
+    return confine_bundled_connector(config, connector, workspace=str(root))
 
 
 def _detect_gpu() -> dict:
@@ -16342,7 +16407,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     return
                 from openai4s.mcp_client import manager
 
-                mcfg = datapro.connector_runtime_config(store, c)
+                mcfg = _connector_launch_config(cfg, store, c)
                 self._json(manager().probe(mcfg))
                 return
             m = re.fullmatch(r"/connectors/([^/]+)/call", sub)
@@ -16375,7 +16440,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         call_args = {"query": datapro.validate_query(args.get("query"))}
                     except ValueError as error:
                         raise GatewayError(400, str(error)) from error
-                mcfg = datapro.connector_runtime_config(store, c)
+                mcfg = _connector_launch_config(cfg, store, c)
                 try:
                     secret_before = ""
                     if c["connector_id"] == datapro.CONNECTOR_ID:
@@ -16423,14 +16488,23 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     raise GatewayError(403, "DataPro is a managed connector")
                 current = store.get_connector(connector_id)
                 if not current:
-                    self._json({"error": "connector not found"}, 404)
-                    return
+                    # Structured, like every other error this route raises. A
+                    # bare body made one route answer with two incompatible
+                    # error shapes depending on which check failed.
+                    raise GatewayError(404, "connector not found")
                 b = self._body()
                 name = b.get("name") if "name" in b else None
                 if name is not None:
                     name = str(name).strip()
                     if not name:
                         raise GatewayError(400, "connector name cannot be empty")
+                description = b.get("description") if "description" in b else None
+                if description is not None and not isinstance(description, str):
+                    # Unvalidated, this reached sqlite3 as a bound parameter and
+                    # came back as a 500 from an InterfaceError -- a client
+                    # mistake answered as a server fault, on a route whose
+                    # frozen contract records only [200, 404].
+                    raise GatewayError(400, "connector description must be a string")
                 command = b.get("command") if "command" in b else None
                 if command is not None and not (
                     (isinstance(command, str) and command.strip())
@@ -16453,9 +16527,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     updated = store.patch_connector(
                         connector_id,
                         name=name,
-                        description=(
-                            b.get("description") if "description" in b else None
-                        ),
+                        description=description,
                         command=command,
                         args=args,
                         enabled=b.get("enabled") if "enabled" in b else None,
@@ -18142,9 +18214,11 @@ def _migrate_builtin_connector_commands(cfg: Config) -> None:
     """Replace machine-bound bundled argv with the portable runtime token.
 
     Older rows persisted the absolute ``sys.executable`` of the machine where
-    the connector was added.  Match only a bundled connector id plus its exact
-    module invocation, so arbitrary custom connector commands remain byte-for-
-    byte untouched.
+    the connector was added.  Match a bundled connector id, its exact module
+    invocation, *and* an interpreter that no longer exists -- an operator who
+    deliberately points a bundled server at a live interpreter (a conda env
+    carrying the scientific stack) chose that, and rewriting it would run
+    different code than the row they can see says.
     """
 
     store = get_store(cfg.db_path)
@@ -18158,22 +18232,23 @@ def _migrate_builtin_connector_commands(cfg: Config) -> None:
             continue
         portable = openai4s_python_module(module)
         command = connector.get("command")
-        if command != portable and (
-            isinstance(command, list)
+        if (
+            command != portable
+            and isinstance(command, list)
             and len(command) == 3
             and command[1:] == portable[1:]
             and isinstance(command[0], str)
+            and (command[0] == sys.executable or not os.path.exists(command[0]))
         ):
             store.patch_connector(connector_id, command=portable)
         if connector_id == "protein-design":
             updates = {}
             if connector.get("name") == "Protein Design (bundled adapter)":
                 updates["name"] = "Protein Design"
-            description = str(connector.get("description") or "")
-            if (
-                "offline isolation must be configured separately" in description
-                or "bundled adapter" in description.lower()
-            ):
+            # Exact matches only. A substring test reclaims any description an
+            # operator wrote that happens to mention the old wording -- and the
+            # connector editor this PR ships exists so they can write one.
+            if str(connector.get("description") or "") in _RETIRED_PROTEIN_DESCRIPTIONS:
                 updates["description"] = _PROTEIN_DESIGN_DESCRIPTION
             if updates:
                 store.patch_connector(connector_id, **updates)

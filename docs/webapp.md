@@ -102,8 +102,6 @@ HTML/CSS/JavaScript served directly from the working tree.
   portable runtime token that resolves against the current installation when
   spawned, so moving the data directory does not retain the old server's
   interpreter path.
-  connectors, compute, network, memory, permission rules, plan/explore modes,
-  voice dictation, uploads/paste/drag-drop, annotations, and bilingual 中文/EN.
 - **Standard environment readiness (opt-in)** — with the Stage 1 flag enabled,
   persistent dashboard and conversation banners show when the `standard`
   Python/R pair is missing or cannot be verified. Customize → Compute lists all
