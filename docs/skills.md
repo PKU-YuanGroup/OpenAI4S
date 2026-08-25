@@ -38,6 +38,7 @@ packages and does not imply that every optional tool is ready locally.
 |---|---|
 | **Structure prediction** (GPU) | `alphafold2` · `openfold3` · `boltz` · `chai1` · `esmfold2` |
 | **Sequence / omics / docking** (GPU) | `fair-esm2` · `evo2` · `borzoi` · `scgpt` · `scvi-tools` · `diffdock` |
+| **Single-cell analysis** (CPU) | `single-cell-rna-analysis` |
 | **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` · `protein-design-mcp` |
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
 | **Reaction chemistry** | `reaction-atom-mapping` · `reaction-condition-recommendation` · `reaction-forward-prediction` · `reaction-yield-estimation` · `single-step-retrosynthesis` |

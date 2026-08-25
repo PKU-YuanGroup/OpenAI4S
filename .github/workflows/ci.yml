@@ -309,6 +309,22 @@ jobs:
       - name: Assert the science stack actually installed
         run: uv run python -c "import matplotlib, pandas"
 
+  singlecell-skill:
+    name: Single-cell workflow (Python 3.11)
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.11"
+      - name: Install the locked CPU single-cell stack
+        run: uv sync --locked --extra singlecell
+      - name: Verify pinned scientific imports
+        run: uv run python -c "import harmonypy, pertpy, pydeseq2, scanpy, skmisc"
+      - name: Run deterministic offline single-cell contracts
+        run: uv run python -m pytest tests/test_single_cell_rna_analysis_skill.py -m "not network"
+
   # Three gates that used to be steps in `test`, after `pytest`. A step can only
   # run when every step before it passed, so all three were unreachable whenever
   # one unrelated test was red — and a run that reported "tests failed" was

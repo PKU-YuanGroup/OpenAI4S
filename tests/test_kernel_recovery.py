@@ -421,7 +421,7 @@ def test_bundled_sidecar_recovery_compatibility_is_explicit():
         except ValueError as error:
             rejected[path.parent.name] = str(error)
 
-    assert len(sidecars) == 16
+    assert len(sidecars) == 17
     # These packages intentionally read mutable package resources. Their
     # runtime import remains supported, but recovery must be marked partial
     # until those dependent resources are frozen alongside kernel.py.
