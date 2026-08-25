@@ -74,8 +74,8 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 ## 📣 更新
 
-- **`2026-08-24`** 🚀 **`v0.2.0` —— 多平台发布** —— 一个 release，三个桌面安装包：Apple Silicon **`.dmg`**、内嵌同一套 Python 与科学栈的可移动 **Linux `x86_64` tarball**，以及 **Windows zip**——它的启动器把与 Linux 包逐字节相同的载荷装进 WSL2。底层新增：带 Guardian 审查边界的 **Auto Mode**、诚实的**完成证据对账**（崩溃的 cell 不再可能渲染成干净的成功）、**MCP Streamable HTTP** 传输（含火山引擎 DataPro 连接器与豆包联网搜索）、**Anthropic Messages SSE 流式**、锁定的 **561 个 bioSkills 配方集合**（共 603 个 Skill，可用 `npx` 装到任何地方）、工作台的轨迹账本视图、Docker/Kubernetes 部署、`openai4s --version`，以及让运行中的 R cell 在每个平台都能可靠中断的信号修复系列。
-- **`2026-08-04`** 🔭 **`main` —— 通往 `v0.2.0` 的路上** —— **只读会话共享**（经出站 relay 隧道，`openai4s share` / `openai4s relay`）、**七个规范化的公共数据库连接器**（检索结果自带来源与时间）、带版本的 **`/api/v1`** 接口（keyset 分页、统一错误信封、可续传的 WebSocket 游标）、**环境即事务**（`openai4s env plan|apply|rollback`）、脱敏的 `doctor` / `diagnostics` 支持包、默认关闭且可撤销的遥测、逆合成规划 Skill，以及一套 **10 workflow / 20 case 的基准**——它跑在真实的 Store、内核与 dispatcher 上。Linux 与 Windows 桌面包在此构建并验证，随上面的 `v0.2.0` 一并发布。
+- **`2026-08-24`** 🚀 **`v0.2.0` —— 多平台发布** —— 一个 release，两个桌面安装包：Apple Silicon **`.dmg`** 与内嵌同一套 Python 与科学栈的可移动 **Linux `x86_64` tarball**（Windows/WSL2 zip 已构建、正在稳定化，将随后续版本发布）。底层新增：带 Guardian 审查边界的 **Auto Mode**、诚实的**完成证据对账**（崩溃的 cell 不再可能渲染成干净的成功）、**MCP Streamable HTTP** 传输（含火山引擎 DataPro 连接器与豆包联网搜索）、**Anthropic Messages SSE 流式**、锁定的 **561 个 bioSkills 配方集合**（共 603 个 Skill，可用 `npx` 装到任何地方）、工作台的轨迹账本视图、Docker/Kubernetes 部署、`openai4s --version`，以及让运行中的 R cell 在每个平台都能可靠中断的信号修复系列。
+- **`2026-08-04`** 🔭 **`main` —— 通往 `v0.2.0` 的路上** —— **只读会话共享**（经出站 relay 隧道，`openai4s share` / `openai4s relay`）、**七个规范化的公共数据库连接器**（检索结果自带来源与时间）、带版本的 **`/api/v1`** 接口（keyset 分页、统一错误信封、可续传的 WebSocket 游标）、**环境即事务**（`openai4s env plan|apply|rollback`）、脱敏的 `doctor` / `diagnostics` 支持包、默认关闭且可撤销的遥测、逆合成规划 Skill，以及一套 **10 workflow / 20 case 的基准**——它跑在真实的 Store、内核与 dispatcher 上。Linux 与 Windows 桌面包在此构建并验证——Linux 包随上面的 `v0.2.0` 发布，Windows 包将随后续版本发布。
 - **`2026-07-15`** 🍎 **`v0.1.0` —— macOS 应用** —— 一键、免工具链的 Apple Silicon `.dmg`，内嵌 Python 与完整默认内核科学栈（rdkit · scanpy · 单细胞栈），并支持 PyPI 安装（`pip install openai4s`）与自动化发布。**第一次用？→ [上手指南](docs/startup-guide.md)。**
 - **`2026-07-06`** 🎉 **代码开源** —— 纯标准库 Code-as-Action 引擎、科研 Web 应用、24 个科学 Skill、BYOC 远程计算。
 
@@ -166,7 +166,7 @@ R 内核未被打包（它需要一个 conda 环境）。Intel Mac 请改用 PyP
 ### Linux 应用（无需任何工具链）
 
 > [!NOTE]
-> 这两个安装包自 `v0.2.0` 起随每个 release 发布。更早的版本（`v0.1.0` 只带 macOS 镜像）请用上面的源码方式，或 `pip install openai4s`。
+> Linux 安装包自 `v0.2.0` 起随每个 release 发布。Windows/WSL2 安装包仍在稳定化，将随后续版本发布——下方 Windows 一节描述的是它发布后的形态；在此之前，可在 WSL2 里 `pip install openai4s`，或把 Linux tarball 解包到 WSL2 中使用。更早的版本（`v0.1.0` 只带 macOS 镜像）请用上面的源码方式，或 `pip install openai4s`。
 
 从 [最新 Release](https://github.com/PKU-YuanGroup/OpenAI4S/releases/latest) 下载 `OpenAI4S-<version>-linux-x86_64.tar.gz`，解包到任意位置直接运行。内嵌的 Python 和预装科学栈与 macOS 镜像完全一致，只是形态换成了一个可任意移动的目录：
 
