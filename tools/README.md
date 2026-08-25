@@ -23,6 +23,14 @@ alongside `skills/`. Placing the manifest at the root is what makes
 `npx github:PKU-YuanGroup/OpenAI4S` work without anything being published
 first, which is the shortest path from "our address" to a working install.
 
-Nothing here is imported by the daemon, the kernel, or any test in `tests/`.
-The installer's own gate is `node tools/skills-installer/selftest.mjs`, run as
-its own CI job.
+Nothing here is imported by the daemon, the kernel, or any Python test — the
+language boundary makes that impossible in both directions. The installer's own
+gates are `node tools/skills-installer/selftest.mjs` and
+`node tools/skills-installer/check_package.mjs`, each its own CI job so that a
+red one cannot hide the other: "the installer behaves" and "the published
+package contains anything to install" are different questions. The half of the
+contract that lives on the Python side — the shape of
+`skills/` and the `package.json` manifest the published package is cut from —
+is asserted in `tests/test_skills_installer_contract.py`, which deliberately
+never shells out to `node`: a test that skips on a machine without Node reports
+success for the wrong reason.

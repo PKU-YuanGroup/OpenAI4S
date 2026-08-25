@@ -38,8 +38,8 @@ GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，�
 | [`paper-narrative/`](paper-narrative/) | 配图三层里的最外层，而且它的起点比你以为的更靠前：它读整篇 manuscript 和整套配图，然后由一位「责任编辑」式的评审回答一个问题——就凭 Figure 1，这篇稿子会不会被送外审。产出包括叙事主线、放错了图的 panel、还缺哪些分析、哪些该砍掉。它从你的 manuscript 里推导出的 brief 是模型生成的，动手之前先自己过一遍。 |
 | [`pdf-explore/`](pdf-explore/) | 在内核里把 PDF 解析一次并留住每页文本，之后靠大纲、相关性检索、逐页抽取和图片裁剪来干活。它是为那种要同时用到文档多处、甚至要扫遍每一页的问题准备的。如果只是查一到四页、并且下一条回复就要引用，那就跳过它，直接读页面。 |
 | [`plan-ml-experiment/`](plan-ml-experiment/) | 训练开始之前要先写下来的东西：假设、baseline、指标、决策规则，以及一条能扛住分组结构或时间结构的划分边界。这里的可复现性是机械落实的，靠配置指纹、数据集校验和、记录在案的 seed 和 Artifact manifest。确定性并不等于结论成立，把一个有偏的划分重复一遍也修不好它。 |
+| [`protein-design-mcp/`](protein-design-mcp/) | 它组合的是内置蛋白设计 MCP 工具，而不是去驱动某一个模型：靶点条件下的 binder 骨架、带约束的序列设计、单体与复合物预测、物理打分与 relaxation、序列自然度打分、能量最小化，以及可复现的候选比较。它自己写明了边界——背后的 RFdiffusion 工具要求给出靶点 hotspot，不表达 epitope-free、motif scaffolding、无条件或膜蛋白感知的生成——并且不附带任何权重或 GPU 环境；connector 及其外部后端需要另行配置。 |
 | [`protein-mutation-enhancement/`](protein-mutation-enhancement/) | 它是编排层，不是模型。它构建确定性的突变体库并给出像 `A12V+G47D` 这样稳定的 ID，把序列、结构、性质和实验/代理打分合并成一个排序，并决定 gain-of-function 的这一轮是收手还是继续扩库。重量级的模型调用交给 `fair-esm2` 和 `esmfold2`。 |
-| [`protein-design-mcp/`](protein-design-mcp/) | 组合使用内置原子 MCP 工具，完成通用蛋白质设计、带约束序列设计、结构验证、refinement 和可复现候选比较。 |
 | [`proteinmpnn/`](proteinmpnn/) | 设计面只有蛋白时的默认反向折叠步骤：输入 backbone 几何，输出序列，模型小到在 CPU 上跑几条设计就是几秒钟的事。它只写序列，不写别的，所以需要穿好序列的 PDB 时要用 `ligandmpnn` 的 runner；一旦涉及辅因子或可溶表达，就该换 Skill。 |
 | [`reaction-atom-mapping/`](reaction-atom-mapping/) | 使用 RXNMapper 对完整反应做原子对应和变化键提取。它要求反应两侧都已知，不能当作 target-only 逆合成模型或可行性测试。 |
 | [`reaction-condition-recommendation/`](reaction-condition-recommendation/) | 对固定反应用 Parrot 生成条件假设，保留 checkpoint 特定的标签词表与温度支持，并区分模型输出和文献/ELN 证据。 |
@@ -60,6 +60,9 @@ GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，�
 
 - `openai4s/skills_loader/` 负责发现这些目录。可写的 user Skill 若声明了内置 Skill
   已经占用的名字，名字仍归内置 Skill。
+- 含有 `COLLECTION.json` 的目录算作目录清单里的一个条目，而不是 N 个平级 Skill，它的
+  成员位于下一层。这个标记文件就是全部规则：loader 里没有硬编码任何目录名或检索策略；
+  可写包同样不得占用集合成员的目录名。
 - 这里的东西都是只读的应用资源。用户自己写的 Skill 放在配置的数据目录下，替换不了
   同名的内置 Skill。
 - `kernel.py` sidecar 只放定义。它在使用前会先过一遍 compile check，然后注入科学
