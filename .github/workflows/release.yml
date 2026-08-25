@@ -480,6 +480,13 @@ jobs:
         with:
           name: linux-app-bundle
           path: dist/
+      # The receipt step below runs `uv run --locked`, and this job never
+      # installed uv — which nothing noticed for as long as the pipeline was
+      # unreachable, and the first complete dispatch (v0.2.0 pypi_only, run
+      # 32831018097) died here with `uv: command not found` after every build
+      # had succeeded.
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Build the .zip
         run: bash scripts/build_windows_zip.sh
       - name: Verify the package
