@@ -19,9 +19,13 @@ connector manager used for other custom MCP servers.
 It is not a bundled model runtime. Merely placing this package in the source
 tree does not install RFdiffusion, ProteinMPNN, ColabFold, PyRosetta, ESM-2,
 OpenMM, checkpoints or GPU drivers. Register it in **Customize → Connectors**
-and bring up the backend settings below. Agent-facing calls bind the default
-path root to the current session workspace, so target files and staged assets
-are not interpreted relative to the daemon checkout. The
+and bring up the backend settings below. Every path that spawns this server —
+an Agent tool call and the connector probe/call endpoints alike — applies the
+same confinement step, so the default path root is the caller's session
+workspace rather than the daemon checkout and the bring-up admission gate is
+on. Explicit operator values stay authoritative, but an empty stored value does
+not count as one: the connector editor writes `""` for a bare `NAME=` line, and
+treating that as a choice would silently turn the gate off. The
 offline default tests exercise the real MCP process and command construction
 against fake scientific executables; successful execution against each real
 GPU backend remains an operator deployment acceptance check.
@@ -38,9 +42,25 @@ interpreter from the OpenAI4S installation followed by:
 -m openai4s.mcp_servers.protein_design
 ```
 
-Agent path binds `OPENAI4S_PROTEIN_DESIGN_ROOT` to the current session
-workspace. An operator may explicitly set another root in connector settings.
-All user-supplied paths are resolved under that root and escapes are rejected.
+Confinement binds `OPENAI4S_PROTEIN_DESIGN_ROOT` to the caller's session
+workspace and partitions the cached MCP process by that root, so two sessions
+never share one path authority. An operator may explicitly set another root in
+connector settings. Every path a call supplies is resolved under that root and
+an escape is rejected. An operator-configured backend location is not: a model
+checkout legitimately lives outside any session workspace, so
+`OPENAI4S_RFDIFFUSION_PATH=/opt/RFdiffusion` resolves without the agent fence
+that would otherwise reject a correct install.
+
+Two more variables belong to the server itself rather than to a backend:
+
+- `OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION` — the canary-before-formal gate
+  described below, turned on by confinement on every spawn path;
+- `OPENAI4S_PROTEIN_DESIGN_TIMEOUT_S` — the backend's own budget, defaulting to
+  two hours. The connector's transport deadline is derived from it with
+  headroom, because the two bounds have to be ordered rather than merely both
+  present: the backend expiring first is a terminal record, while the transport
+  expiring first kills the server mid-run, orphans the compute child, writes no
+  record, and loses the process-scoped admission ledger with it.
 
 Configure immutable backend revisions with these variables:
 
@@ -65,7 +85,11 @@ Blind complex prediction additionally requires
 `OPENAI4S_PROTEIN_DESIGN_OFFLINE_PREFIX`, a JSON array that visibly creates a
 networkless execution boundary, such as a configured bubblewrap prefix with
 `--unshare-net`. Environment-only offline flags are not accepted as proof of
-network isolation.
+network isolation, and neither is a prefix that names an isolating option and
+then re-enables networking anyway (`--share-net`, `--network=host`, a later
+`--net` that is not `none`): the terminal record publishes
+`network_isolation_enforced` off this check, so a claim it cannot substantiate
+is refused instead.
 
 RFdiffusion, ProteinMPNN and ESM-2 calls supply a checkpoint path and expected
 SHA-256. If no path was supplied, the Agent first asks whether the user already
@@ -74,7 +98,13 @@ without the file goes through the normal approved download path. The connector
 never silently downloads weights inside a scientific call. The bundled Agent
 runtime admits a `run_mode=formal` call only after the same live MCP process
 successfully ran `run_mode=canary` with the same tool, backend revision,
-checkpoint digest and execution target. ColabFold prediction instead accepts
+checkpoint digest and execution target. Admission lives in that process's
+ledger, so a restart revokes it. Re-issuing an `attempt_id` whose terminal
+record already exists with the same configuration returns that record marked
+`replayed`, with admission re-derived from the live ledger rather than restated
+from the file — and a stored `formal` record cannot be replayed at all in a
+process that has not been admitted, because a replay reports what once ran, not
+that anything ran now. ColabFold prediction instead accepts
 a JSON bundle manifest whose relative `data_dir` and `files` list contain every
 model-data path plus SHA-256; the server rejects symlinks and unlisted files,
 then verifies the manifest and complete model-data tree before startup.

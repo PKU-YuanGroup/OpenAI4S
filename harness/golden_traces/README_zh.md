@@ -14,6 +14,6 @@
 
 | 目录 | 职责 |
 | --- | --- |
-| [`v1/`](v1/) | schema 版本 1 的经审阅 trace 资产。目前只有 r5 pre-change 生产 characterization 这一份。 |
+| [`v1/`](v1/) | schema 版本 1 的经审阅 trace 资产。目前包括 r5 pre-change 生产 characterization，以及独立审阅的 Stage 0 Auto Mode 契约预期和非 Guardian 终态契约预期。 |
 
-更新 golden 永远是有意为之的动作：先运行 `uv run python -m harness.cli characterize --write`，再把字节 diff 和它改动的 `current_behavior`、`desired_contract`、`known_bug` 字段放在一起审阅。
+更新 golden 永远是有意为之的动作。对 characterization golden，先运行 `uv run python -m harness.cli characterize --write`，再把字节 diff 和它改动的 `current_behavior`、`desired_contract`、`known_bug` 字段放在一起审阅。Auto Mode 契约预期则根本没有 `--write` 路径：它们只能手工编辑、当作数据来审阅——正是为了让场景无法自行重新生成用来比对自己的那份东西。

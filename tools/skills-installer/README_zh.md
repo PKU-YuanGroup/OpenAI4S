@@ -7,7 +7,7 @@
 
 ```bash
 npx openai4s-skills list
-npx openai4s-skills install --all                 # 41 个精选 Skill
+npx openai4s-skills install --all                 # 42 个精选 Skill
 npx openai4s-skills install --collection bioskills # 561 个固定版第三方配方
 npx openai4s-skills install alphafold2 boltz --target claude
 npx openai4s-skills installed
@@ -21,8 +21,8 @@ npx openai4s-skills uninstall --all
 
 | 文件 | 职责 |
 | --- | --- |
-| `cli.mjs` | 参数解析与四个子命令。唯一带 shebang 的文件，也是根 `package.json` 中 `bin` 的指向。 |
-| `catalog.mjs` | 发现与 frontmatter。它复述 Python loader 的规则——目录含 `SKILL.md` 即为一个 Skill，含 `COLLECTION.json` 则为一个集合、成员在其下一层——因此两侧都没有硬编码目录名。 |
+| `cli.mjs` | 参数解析与四个子命令。唯一带 shebang 的文件，也是根 `package.json` 中 `bin` 的指向。`--quiet` 去掉的是过程噪音，永远不是答案——列表本身、以及 `--dry-run` 给出的计划，都是这条命令的交付物而非闲话。 |
+| `catalog.mjs` | 发现与 frontmatter。它复述 Python loader 的规则——目录含 `SKILL.md` 即为一个 Skill，含 `COLLECTION.json` 则为一个集合、成员在其下一层——因此两侧都没有硬编码目录名。请求的名字会同时在「frontmatter 声明名」和「目录名」两个命名空间里查找，两者相撞时目录名胜出：只有目录名保证唯一，所以你在磁盘上看得见的目录名必须选中它自己那个目录，而不是碰巧把它当作 frontmatter 名字的另一个条目。 |
 | `source.mjs` | Skill 树的来源：已经含有 `skills/` 的 checkout，或 codeload.github.com 上的源码 tarball，按 ref 缓存。 |
 | `targz.mjs` | 零依赖的 gzip + POSIX tar 读取器，包含那段防止远程归档写出解压根目录的路径校验。 |
 | `install.mjs` | 目标目录、复制、`.openai4s-skills.json` 清单，以及卸载。 |
@@ -52,6 +52,6 @@ tarball 的 SHA-256——不是 commit SHA，因为把分支解析成 commit 是
 
 ## 它处在什么位置
 
-对 OpenAI4S 用户来说这个命令基本是多余的：wheel 已经带上了全部 602 个 Skill，
+对 OpenAI4S 用户来说这个命令基本是多余的：wheel 已经带上了全部 603 个 Skill，
 而 `openai4s/skills_loader/loader.py` 让自带 Skill 优先于 `<data_dir>/user-skills`
 中的同名者。它存在的理由是反方向——把这些配方送到不是 OpenAI4S 的 agent 面前。

@@ -25,7 +25,6 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`endpoint_identity.py`](./endpoint_identity.py) | LLM endpoint 的唯一写法，以及剥离其中 secret 的唯一位置。`base_url` 原本按用户输入原样存储、由 `GET /model-profiles` 发布、并冻结进不可变 revision——所以带 userinfo 或 query token 的 URL 会把凭据同时留在这三处，这是 7.2「secret 不进 snapshot」被 endpoint 字段而非 key 字段绕过。在存储处就归一，意味着后续任何界面都不必记得去脱敏。 |
 | [`execution_principal.py`](./execution_principal.py) | 一段工作*以谁的身份*在跑，随执行一起用 `ContextVar` 携带，方式与 correlation id 相同。团队模式在 HTTP 边界回答了「这个请求是谁」然后就把答案丢了，于是 `host.frames` 读到了所有租户的行。三条性质让它成为一道边界而不是一个便利：缺失即拒绝（团队模式下 `resolve()` 抛错）、`None` 永远不是管理员（单用户 daemon 与 loopback CLI 各带显式 principal）、并且它不存放在任何被复用的对象上——一个 `HostDispatcher` 服务该会话的每一个 turn，把身份挂在它上面就成了这一个 turn 去回答另一个 turn 的授权问题。 |
 | [`egress.py`](./egress.py) | Host 持有的出站域名允许名单。Web 与 shell 的策略边界会查它，但它要显式打开才生效：除非 `OPENAI4S_EGRESS` 被设成生效值（`allowlist`、`on`、`1`、`enforce` 等），模式就是 `off`，出站调用不做任何允许名单检查，一律放行。真正打开时，它是 OS 沙箱的补充，不是替代。 |
-| [`execution_principal.py`](./execution_principal.py) | 通过 `ContextVar` 把明确的单用户、服务或团队身份随执行一起传递。团队模式下缺失 principal 会成为权限失败，而不是退回不受限访问，因此 Host 数据读取不能静默跨越租户边界。 |
 | [`host_dispatch.py`](./host_dispatch.py) | 内核 `host_call` RPC 的兼容与组合 facade。一次调用要先过权限、审批、审计、回放、筛查和步骤事件策略，才会落到具体的 Host 服务上。 |
 | [`http_deadline.py`](./http_deadline.py) | 鉴权 HTTP exchange 共用的纯标准库绝对截止机制。定制 HTTP(S) connection 只把当前 live socket 交给短时 watchdog，使 TCP connect、proxy CONNECT、TLS、响应状态/Header 与 body 读取共用一份墙钟预算；每条退出路径都会取消并 join timer。系统 DNS 解析仍是明确记录的标准库不可取消边界。 |
 | [`jobs.py`](./jobs.py) | 在本进程内运行后台计算任务，限制同时活跃的任务数，并按字节、在二进制读取上限制输出缓冲——按字符设上限、又读的是文本管道，那道上限只在 `readline` 已经把任务在下一个换行符之前打印的全部内容分配出来*之后*才做裁剪。终态由唯一一处判定，且判定之后不再被覆盖；停止一个任务走的是与内核 shell 执行器同一套进程组逻辑，因为真正要紧的场景恰恰是 shell 退出了、它拉起的活儿没退。注册表在内存里，但每个任务还会在数据目录下留下一份原子写入的回执：以前重启一次，一个跑了四小时的任务就直接从 Jobs 面板上消失，所以现在未完成的任务会以终态 `abandoned` 被重新收编——不复活，也刻意既不叫 `failed`（那是在指责命令本身）也不叫 `cancelled`（那是在声称有人想停它）。 |
@@ -55,7 +54,7 @@ OpenAI4S 有两个嵌套循环。[`agent/`](./agent/) 里的外层循环在每�
 | [`host/`](./host/) | `HostDispatcher` 组合 facade 背后的聚焦服务。 |
 | [`kernel/`](./kernel/) | 常驻 Python/R worker 的所在地。语言无关的 manager 协议也在这里，还有环境选择、沙箱集成和 Cell 内的 Host RPC。 |
 | [`llm/`](./llm/) | 供应商中立的 LLM 客户端。capabilities、标准化的消息与工具，以及标准库 transport，都架在每家供应商各自的 wire 适配器之上。 |
-| [`mcp_servers/`](./mcp_servers/) | 用于演示和测试的内置纯标准库 MCP 示例服务器。 |
+| [`mcp_servers/`](./mcp_servers/) | 内置的纯标准库 stdio MCP 服务器：既有用于演示和测试的示例 fixture `example_server.py`，也有可部署的 `protein_design/` 后端适配器——其重型模型依赖始终留在核心之外。 |
 | [`orchestration/`](./orchestration/) | 集群控制平面：被请求的工作是什么、为其中一次尝试授予了什么资源，以及任何资源平面都要呈现的 backend Protocol。它的定义性特征在于它**不**包含什么——一条被检查的规则（INV-2）把调度器的每一个词都挡在核心的源码与 import 图之外，好让做策略的代码长不出带调度器形状的假设。 |
 | [`sdk/`](./sdk/) | 注入 Python Cell 的兼容 `host` facade 和远程计算命名空间。 |
 | [`security/`](./security/) | 沙箱和子进程环境隔离。它也筛查代码与内容、检查注入，并提供这些层要用的策略辅助模块。每一层都是独立的，其中有几层会失败即放行。 |

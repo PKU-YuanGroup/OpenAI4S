@@ -7,7 +7,7 @@ an OpenAI4S data directory, or into any directory named on the command line.
 
 ```bash
 npx openai4s-skills list
-npx openai4s-skills install --all                 # the 41 curated Skills
+npx openai4s-skills install --all                 # the 42 curated Skills
 npx openai4s-skills install --collection bioskills # the 561 pinned recipes
 npx openai4s-skills install alphafold2 boltz --target claude
 npx openai4s-skills installed
@@ -21,8 +21,8 @@ the repository, with no npm publication involved.
 
 | File | Responsibility |
 | --- | --- |
-| `cli.mjs` | Argument parsing and the four commands. The only file with a shebang, and the target of the root `package.json`'s `bin`. |
-| `catalog.mjs` | Discovery and frontmatter. Restates the Python loader's rule — a directory is a Skill when it holds `SKILL.md`, and a collection when it holds `COLLECTION.json` with its members one level below — so no directory name is hardcoded on either side. |
+| `cli.mjs` | Argument parsing and the four commands. The only file with a shebang, and the target of the root `package.json`'s `bin`. `--quiet` drops progress chatter and never the answer — the listing, and a `--dry-run` plan, are the deliverable rather than chatter. |
+| `catalog.mjs` | Discovery and frontmatter. Restates the Python loader's rule — a directory is a Skill when it holds `SKILL.md`, and a collection when it holds `COLLECTION.json` with its members one level below — so no directory name is hardcoded on either side. A requested name is matched against both the declared frontmatter names and the directory names, and where the two collide the directory wins: only directory names are guaranteed unique, and a name you can see on disk must select its own directory rather than whichever entry happened to claim it as a frontmatter name. |
 | `source.mjs` | Where the Skill tree comes from: a checkout that already has `skills/`, or the source tarball at codeload.github.com, cached per ref. |
 | `targz.mjs` | A gzip + POSIX-tar reader with no dependencies, including the path validation that keeps a remote archive from writing outside the extraction root. |
 | `install.mjs` | Targets, copying, the `.openai4s-skills.json` manifest, and uninstall. |
@@ -57,7 +57,7 @@ whose answer nothing here checks against the archive it unpacked. Pass
 ## Where this fits
 
 For an OpenAI4S user this command is mostly redundant: the wheel already ships
-all 602 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
+all 603 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
 precedence over a same-named one in `<data_dir>/user-skills`. Its reason to
 exist is the other direction — putting these recipes in front of an agent that
 is not OpenAI4S.

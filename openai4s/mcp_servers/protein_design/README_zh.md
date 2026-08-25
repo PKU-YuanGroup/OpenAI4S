@@ -15,8 +15,12 @@ connector manager 启动它。
 
 它不是内置模型 runtime。仅把本包放在源码树中，不会安装 RFdiffusion、ProteinMPNN、
 ColabFold、PyRosetta、ESM-2、OpenMM、checkpoint 或 GPU driver。需要在
-**Customize → Connectors** 中注册，并 bring up 下述 backend 配置。Agent 调用默认把
-路径 root 绑定到当前会话工作区，不会相对 daemon 的源码 checkout 解释 target 和资产。默认离线
+**Customize → Connectors** 中注册，并 bring up 下述 backend 配置。凡是会拉起这个
+server 的路径——Agent 的工具调用，以及 connector 的 probe/call 接口——都走同一道
+confinement：默认路径 root 是调用方的会话工作区而不是 daemon 的源码 checkout，
+bring-up 准入闸门也处于开启状态。operator 显式给出的值仍然优先，但空值不算一次选择：
+connector 编辑器会把一行光秃秃的 `NAME=` 写成 `""`，若把它当成已配置，闸门就被悄悄
+关掉了。默认离线
 测试使用真实 MCP 进程和 fake scientific executable 验证命令构造；每个真实 GPU backend
 是否成功执行，仍属于 operator 部署验收。
 
@@ -31,9 +35,21 @@ OpenAI4S 安装环境的 Python 解释器，参数为：
 -m openai4s.mcp_servers.protein_design
 ```
 
-Agent 路径会把 `OPENAI4S_PROTEIN_DESIGN_ROOT` 绑定为当前会话工作区；operator 也可
-在 connector 设置中显式指定其他 root。所有输入路径都会在这个 root 下解析，越界
-路径会被拒绝。
+confinement 会把 `OPENAI4S_PROTEIN_DESIGN_ROOT` 绑定为调用方的会话工作区，并按这个
+root 划分被缓存的 MCP 进程，使两个会话不会共用同一个路径权威；operator 也可
+在 connector 设置中显式指定其他 root。调用传入的所有路径都会在这个 root 下解析，越界
+路径会被拒绝。operator 配置的 backend 位置则不在此列：模型 checkout 本来就可能不在
+任何会话工作区里，因此 `OPENAI4S_RFDIFFUSION_PATH=/opt/RFdiffusion` 不会经过那道
+面向 Agent 的路径围栏——否则每一个正确的安装都会被判为路径越界。
+
+还有两个变量属于 server 自身，而不属于某个 backend：
+
+- `OPENAI4S_PROTEIN_DESIGN_REQUIRE_ADMISSION`——下文那道 canary 先于 formal 的闸门，
+  由 confinement 在每条启动路径上开启；
+- `OPENAI4S_PROTEIN_DESIGN_TIMEOUT_S`——backend 自身的预算，默认两小时。connector 的
+  传输截止时间由它加上余量推导而来，因为这两个界限必须有先后，而不是各有一个就行：
+  backend 先到期得到的是一份终态记录，传输先到期则会在运行中途杀掉 server、把计算子
+  进程变成孤儿、不写任何记录，并连带丢掉进程级的准入台账。
 
 分别用以下环境变量冻结 backend revision：
 
@@ -56,13 +72,20 @@ Agent 路径会把 `OPENAI4S_PROTEIN_DESIGN_ROOT` 绑定为当前会话工作区
 
 Blind complex prediction 还要求设置 `OPENAI4S_PROTEIN_DESIGN_OFFLINE_PREFIX`：
 这个 JSON 数组必须明确创建无网络执行边界，例如包含 `--unshare-net` 的 bubblewrap
-前缀。仅设置 offline 环境变量不能被当作网络隔离证明。
+前缀。仅设置 offline 环境变量不能被当作网络隔离证明；一个先声明隔离、又把网络放回来的
+前缀同样会被拒绝（`--share-net`、`--network=host`，或后面又出现一个不为 `none` 的
+`--net`）：终态记录里的 `network_isolation_enforced` 正是由这道检查得出的，因此它
+证明不了的结论，宁可直接拒绝。
 
 RFdiffusion、ProteinMPNN 和 ESM-2 调用都提供 checkpoint 路径与预期 SHA-256。未给
 路径时，Agent 先询问用户是否已有该文件；`stage_model_asset` 可导入经审批的本地路径，
 用户没有文件时才走常规审批下载路径。connector 不会在科学调用里暗中下载权重。
 内置 Agent runtime 只在同一 MCP 进程用同一 tool、backend revision、checkpoint digest
-和 execution target 成功执行 `run_mode=canary` 后，才放行 `run_mode=formal`。
+和 execution target 成功执行 `run_mode=canary` 后，才放行 `run_mode=formal`。准入记录在
+该进程的台账里，因此重启会将其撤销。若某个 `attempt_id` 已有配置一致的终态记录，
+再次调用会把那份记录标上 `replayed` 返回，准入状态按当前台账重新推导，而不是照抄
+文件里的旧值；已存的 `formal` 记录在一个尚未获得准入的进程里则根本不允许重放——重放
+说明的是「当时跑过」，不是「现在跑了」。
 ColabFold prediction 改用 JSON bundle manifest，其中相对 `data_dir`
 与 `files` 要列出完整模型数据树及 SHA-256；server 会拒绝 symlink 和未列出的文件，
 并在启动前验证全部内容。

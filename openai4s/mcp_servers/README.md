@@ -9,7 +9,7 @@ environments.
 
 ## Where this fits
 
-The server runs as an external child process, never inside a scientific kernel. [`../mcp_client.py`](../mcp_client.py) spawns it and owns the Host-side connection; [`../tools/mcp.py`](../tools/mcp.py) is what the model sees, exposing connector discovery, resource reads, and tool calls to the native control plane under the usual permission, audit, and untrusted-output policy.
+The server runs as an external child process, never inside a scientific kernel. [`../mcp_client.py`](../mcp_client.py) spawns it and owns the Host-side connection; [`../tools/mcp.py`](../tools/mcp.py) is what the model sees, exposing connector discovery, resource reads, and tool calls to the native control plane under the usual permission, audit, and untrusted-output policy. Both servers here are stdio only: the client's Streamable HTTP transport exists for remote connectors and is never how anything in this package is reached.
 
 ## Files
 

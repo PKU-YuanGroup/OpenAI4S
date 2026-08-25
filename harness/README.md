@@ -11,13 +11,14 @@ lands differently from a failure on the first.
 
 Everything here is versioned, stdlib-only, and outside the production import
 graph. The generic runner validates the Harness's own schema/event/fault loop
-and deliberately does not import the production runtime. Three files are the
+and deliberately does not import the production runtime. Four files are the
 current exceptions, and they are exceptions in two different ways:
 `characterize.py` drives selected production entry points from behind stdlib
 `unittest.mock` fakes, while the action-routing and retrosynthesis-backend
-evals call a production function on recorded input — the router in
-`openai4s/agent/actions.py`, the response normalizer in the bundled
-retrosynthesis Skill — which needs no fake because there is no live boundary to
+evals and the orchestration runner call a production function on recorded
+input — the router in `openai4s/agent/actions.py`, the response normalizer in
+the bundled retrosynthesis Skill, the `Reconciler` decision loop in
+`orchestration.py` — which needs no fake because there is no live boundary to
 stand in for.
 
 `auto_mode_contract.py` is also production-independent. It is the frozen Stage
@@ -94,7 +95,7 @@ Rule of thumb:
 
 | Directory | Intended contents |
 | --- | --- |
-| [`scenarios/`](scenarios/) | One JSON file per scenario: the prompt, the scripted provider steps to reply with, the faults to inject, the tags that place it in a tier, and the outcome to expect. Fixture and permission metadata is validated but not yet executed, so these are still not end-to-end Agent/Gateway runs. |
+| [`scenarios/`](scenarios/) | One JSON file per scenario: the prompt, the scripted provider steps to reply with, the faults to inject, the tags that place it in a tier, and the outcome to expect. For the generic runner, fixture and permission metadata is validated but not executed; the orchestration family is the exception, whose `fixtures.orchestration` block scripts the backend the real `Reconciler` is driven against. None of these are end-to-end Agent/Gateway runs. |
 | [`providers/`](providers/) | Offline stand-ins for the platform boundaries a run would otherwise cross: model, compute, endpoint, lab. |
 | [`golden_traces/`](golden_traces/) | Reviewed reference trajectories, kept for exact comparison and for reviewing drift that turns out to be intentional. They are data to read, not replay to run. |
 | [`evals/`](evals/) | Offline eval fixtures and the code that scores them: the deterministic action-routing quality and contract evaluation, and the retrosynthesis backend replay, which scores recorded external-model responses through the production normalizer without loading a model weight. |
@@ -111,10 +112,10 @@ markers registered in `pyproject.toml`.
 
 No production code lives here either. The runtime implementation stays in
 `openai4s/` and `openai4s_compute_provider/`, and the generic and Auto Mode
-contract runners stay self-contained. Only the named characterization and eval
-adapters may import selected public production entry points, and only from
-behind deterministic fakes. Nor may a Harness helper push a hard third-party
-import into the core packages.
+contract runners stay self-contained. Only the named characterization, eval,
+and orchestration adapters may import selected public production entry points,
+and only against deterministic fakes and scripted data. Nor may a Harness
+helper push a hard third-party import into the core packages.
 
 Two rules protect the record itself. Normalization can replace a volatile
 value, but it must not sort an event list: a concurrent scenario
