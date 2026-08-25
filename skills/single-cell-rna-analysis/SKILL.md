@@ -2,11 +2,11 @@
 name: single-cell-rna-analysis
 description: >
   Reproducible Scanpy workflow for human or mouse 10x scRNA-seq and snRNA-seq
-  count matrices: preflight validation, sample-aware QC and Scrublet, optional
-  explicitly requested Harmony, resolution-sweep clustering, evidence-assisted
-  annotation, donor-aware pseudobulk DE and Milo DA, checkpoints, resume, and a
-  checksummed analysis bundle. Use for cell-called GEX matrices, not FASTQ,
-  CITE-seq, ATAC, Multiome, spatial, trajectory, communication, or CNV analysis.
+  count matrices: single-sample descriptive QC, clustering and annotation, or
+  comparative donor-aware pseudobulk DE and Milo DA; plus preflight validation,
+  optional explicitly requested Harmony, checkpoints, resume, and a checksummed
+  analysis bundle. Use for cell-called GEX matrices, not FASTQ, CITE-seq, ATAC,
+  Multiome, spatial, trajectory, communication, or CNV analysis.
 origin: openai4s
 category: workflow
 ---
@@ -20,8 +20,9 @@ confirms them.
 
 ## Before running
 
-1. Read [the input contract](references/input-contract.md) and resolve every
-   path plus the single requested contrast.
+1. Read [the input contract](references/input-contract.md), select exactly one
+   `analysis_mode`, and resolve every input path. Use `descriptive` only for a
+   single h5ad without a valid condition contrast; otherwise use `comparative`.
 2. Run `preflight(config)`. Do not proceed when `status` is `invalid`.
 3. Show the user warnings about ambient RNA, confounding, annotation evidence,
    or insufficient donor replication before interpreting results.
@@ -38,6 +39,7 @@ import importlib
 single_cell = importlib.import_module("single-cell-rna-analysis.kernel")
 config = {
     "schema_version": 1,
+    "analysis_mode": "comparative",
     "organism": "human",
     "modality": "scrna",
     "input": {"mode": "sample_sheet", "path": "samples.csv"},
@@ -60,6 +62,34 @@ config = {
 check = single_cell.preflight(config)
 result = single_cell.run(config, "single-cell-run")
 ```
+
+For a single h5ad with no donor or condition metadata, use descriptive mode:
+
+```python
+config = {
+    "schema_version": 1,
+    "analysis_mode": "descriptive",
+    "organism": "human",
+    "modality": "scrna",
+    "input": {
+        "mode": "h5ad",
+        "path": "pbmc3k.h5ad",
+        "counts_layer": "X",
+        "sample_id": "pbmc3k",
+    },
+    "reference": {
+        "gene_id_type": "symbol",
+        "genome_build": "hg19",
+        "annotation_release": "GENCODE 19",
+    },
+    "integration": {"method": "none", "batch_keys": []},
+}
+```
+
+Descriptive mode never invents donor/condition labels, performs integration,
+or emits inferential DE/DA. It runs raw-count validation, within-sample QC,
+embedding, resolution-sweep clustering, descriptive markers and optional
+evidence-assisted annotation.
 
 `run()` and `resume()` return `status`, `run_dir`, `featured_files`, `warnings`,
 `annotation_status`, `statistics_status`, and `manifest`. Save every featured
@@ -99,6 +129,7 @@ inputs.
 - Multiple samples do not imply that integration is appropriate.
 - UMAP appearance does not establish an optimal clustering resolution.
 - Cluster markers are descriptive and are not condition DE.
+- Descriptive mode cannot support condition, donor, treatment or causal claims.
 - Cells are not biological replicates. Inferential DE/DA requires at least
   three independent donors in each contrast level.
 - Candidate labels, including reference transfer, are not ground truth.

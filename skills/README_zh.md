@@ -50,7 +50,7 @@ GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，�
 | [`remote-compute-ssh/`](remote-compute-ssh/) | 在用户自己的 SSH 或 SLURM 主机上跑任务时的编排部分：分区、环境激活、作业脚本、文件暂存、结果回收、恢复。科学内容不归它管。每一次提交都会在用户面前弹出审批框，并且花掉他们的机时，所以一次好的运行应该是：先读已经记下来的主机信息，缺的一次问清，把第一次提交落地，再把学到的东西写下来。 |
 | [`retrosynthesis_planning/`](retrosynthesis_planning/) | 多步科学问题：AiZynthFinder 从目标搜索到声明的库存，然后对路线做规范化、去重、排序、结构审计和化学家评审渲染。单步、正向、映射、条件和收率问题各有自己的 Skill。 |
 | [`scgpt/`](scgpt/) | 面向单细胞数据的 transformer 基础模型：用于聚类的细胞 embedding、零样本或微调的细胞类型注释，以及可用于扰动或 GRN 分析的基因表示。checkpoint 是裸目录，不是 HuggingFace repo。代码是 MIT，但没有任何来源说明权重的许可证。 |
-| [`single-cell-rna-analysis/`](single-cell-rna-analysis/) | 面向人/鼠已完成 cell calling 的 10x scRNA-seq 与 snRNA-seq counts 的 CPU Scanpy 工作流：分样本 QC、仅显式请求时使用 Harmony、聚类、证据辅助注释、donor-aware pseudobulk DE/Milo DA、检查点与带校验和的结果包。 |
+| [`single-cell-rna-analysis/`](single-cell-rna-analysis/) | 面向人/鼠已完成 cell calling 的 10x scRNA-seq 与 snRNA-seq counts 的 CPU Scanpy 工作流：支持单样本描述性 QC/聚类或 donor-aware 对比推断、仅显式请求时使用 Harmony、证据辅助注释、检查点与带校验和的结果包。 |
 | [`scvi-tools/`](scvi-tools/) | `scgpt` 的概率式对应物：scVI 给出批次校正后的隐空间，scANVI 从部分标注的参考集迁移标签，还有贝叶斯差异表达。它需要的是原始整数 UMI counts。要做空间解卷积或映射，请改用 cell2location、DestVI 或 Tangram。 |
 | [`solublempnn/`](solublempnn/) | ProteinMPNN 的同一套架构，在可溶 PDB 子集上重训，使输出偏离全 PDB 模型乐于放置的表面疏水残基。设计出来的蛋白老是聚集、进包涵体时，用它。代价是牺牲几个百分点的原生序列回收率；而且仅凭序列的先验并不是一次可溶性测量。 |
 | [`single-step-retrosynthesis/`](single-step-retrosynthesis/) | 通过已有的隔离、manifest 校验 Syntheseus adapter 调用 RetroChimera，生成一步前体提案，并有意在库存搜索或递归规划前停止。 |

@@ -50,6 +50,29 @@ def _base_config(path: Path, mode: str = "sample_sheet") -> dict:
     }
 
 
+def _descriptive_config(path: Path) -> dict:
+    return {
+        "schema_version": 1,
+        "analysis_mode": "descriptive",
+        "organism": "human",
+        "modality": "scrna",
+        "input": {
+            "mode": "h5ad",
+            "path": str(path),
+            "counts_layer": "X",
+            "sample_id": "pbmc3k",
+        },
+        "reference": {
+            "gene_id_type": "symbol",
+            "genome_build": "hg19",
+            "annotation_release": "GENCODE 19",
+        },
+        "integration": {"method": "none", "batch_keys": []},
+        "qc": {"doublet_detection": False, "ambient_correction": "upstream"},
+        "seed": 13,
+    }
+
+
 def _write_sheet(path: Path, rows: list[dict]) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
@@ -132,6 +155,50 @@ def test_preflight_rejects_confounded_harmony_and_reference_mismatch(tmp_path, k
     assert any("genome_build" in error for error in result["errors"])
 
 
+def test_descriptive_preflight_accepts_single_h5ad_without_design_metadata(
+    tmp_path, kernel, monkeypatch
+):
+    path = tmp_path / "pbmc3k.h5ad"
+    path.write_bytes(b"synthetic-h5ad-placeholder")
+    monkeypatch.setattr(kernel, "_inspect_h5ad", lambda *args, **kwargs: ([], []))
+
+    result = kernel.preflight(_descriptive_config(path))
+
+    assert result["status"] == "valid"
+    assert result["sample_count"] == 1
+    assert result["resolved_config"]["analysis_mode"] == "descriptive"
+    assert result["resolved_config"]["design"] == {"sample_key": "sample_id"}
+    assert result["resolved_config"]["statistics"] == {"de": False, "da": False}
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        ({"analysis_mode": "unsupported"}, "analysis_mode"),
+        ({"input": {"mode": "sample_sheet"}}, "requires input.mode=h5ad"),
+        ({"integration": {"method": "harmony"}}, "does not support integration"),
+        ({"statistics": {"de": True}}, "statistics.de=false"),
+        ({"design": {"tested": "stim"}}, "does not accept"),
+    ],
+)
+def test_descriptive_preflight_rejects_inferential_configuration(
+    tmp_path, kernel, update, message
+):
+    path = tmp_path / "pbmc3k.h5ad"
+    path.write_bytes(b"synthetic-h5ad-placeholder")
+    config = _descriptive_config(path)
+    for key, value in update.items():
+        if isinstance(value, dict):
+            config.setdefault(key, {}).update(value)
+        else:
+            config[key] = value
+
+    result = kernel.preflight(config)
+
+    assert result["status"] == "invalid"
+    assert any(message in error for error in result["errors"])
+
+
 def test_raw_count_and_replication_gates_are_explicit(kernel):
     np = pytest.importorskip("numpy")
     pd = pytest.importorskip("pandas")
@@ -148,6 +215,94 @@ def test_raw_count_and_replication_gates_are_explicit(kernel):
     enough, counts = kernel._replication_status(metadata, _base_config(Path("unused")))
     assert enough is False
     assert counts == {"control": 2, "stim": 2}
+
+
+def test_descriptive_load_assigns_only_technical_sample_id(tmp_path, kernel):
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+
+    class FakeAdata:
+        def __init__(self):
+            self.X = np.array([[1, 0], [0, 2]], dtype=np.int32)
+            self.obs = pd.DataFrame(index=["cell-1", "cell-2"])
+            self.obs_names = self.obs.index
+            self.layers = {}
+
+        def obs_names_make_unique(self, join="-"):
+            self.obs_names = self.obs_names.astype(str)
+
+    class FakeScanpy:
+        @staticmethod
+        def read_h5ad(path):
+            return FakeAdata()
+
+    path = tmp_path / "pbmc3k.h5ad"
+    path.write_bytes(b"synthetic-h5ad-placeholder")
+    config = kernel._resolved_config(_descriptive_config(path))
+
+    adata, warnings = kernel._load_data(config, np, pd, FakeScanpy(), None)
+
+    assert warnings == []
+    assert set(adata.obs.columns) == {"sample_id"}
+    assert set(adata.obs["sample_id"]) == {"pbmc3k"}
+    assert np.array_equal(adata.layers["counts"], adata.X)
+
+
+def test_descriptive_load_normalizes_existing_sample_ids(tmp_path, kernel):
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+
+    class FakeAdata:
+        def __init__(self):
+            self.X = np.array([[1, 0], [0, 2]], dtype=np.int32)
+            self.obs = pd.DataFrame(
+                {"sample_id": ["s1", " s1 "]}, index=["cell-1", "cell-2"]
+            )
+            self.obs_names = self.obs.index
+            self.layers = {}
+
+        def obs_names_make_unique(self, join="-"):
+            self.obs_names = self.obs_names.astype(str)
+
+    class FakeScanpy:
+        @staticmethod
+        def read_h5ad(path):
+            return FakeAdata()
+
+    path = tmp_path / "single-sample.h5ad"
+    path.write_bytes(b"synthetic-h5ad-placeholder")
+    config = kernel._resolved_config(_descriptive_config(path))
+
+    adata, warnings = kernel._load_data(config, np, pd, FakeScanpy(), None)
+
+    assert warnings == []
+    assert list(adata.obs["sample_id"]) == ["s1", "s1"]
+
+
+def test_descriptive_cleanup_and_delivery_exclude_inferential_outputs(tmp_path, kernel):
+    output = tmp_path / "reused-run"
+    for relative in kernel.INFERENTIAL_OUTPUTS:
+        path = output / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stale comparative result", encoding="utf-8")
+    analysis = output / "analysis.h5ad"
+    analysis.write_bytes(b"descriptive-analysis")
+
+    kernel._remove_inferential_outputs(output)
+
+    assert all(
+        not (output / relative).exists() for relative in kernel.INFERENTIAL_OUTPUTS
+    )
+    assert analysis.is_file()
+
+    stale = output / "tables" / "differential_expression.csv"
+    stale.write_text("externally restored stale result", encoding="utf-8")
+    assert str(stale.resolve()) not in kernel._featured(output, "descriptive")
+    assert str(stale.resolve()) in kernel._featured(output, "comparative")
+    manifest = kernel._finalize_manifest(output, {"analysis_mode": "descriptive"})
+    assert "tables/differential_expression.csv" not in {
+        item["path"] for item in manifest["files"]
+    }
 
 
 def _synthetic_h5ad(tmp_path: Path):
@@ -267,6 +422,54 @@ def test_paired_pydeseq2_uses_donor_and_preserves_effect_direction(tmp_path, ker
     results = pd.read_csv(output)
     g0 = results.loc[results["gene"] == "G0"].iloc[0]
     assert g0["log2FoldChange"] > 0
+
+
+@pytest.mark.slow
+def test_descriptive_synthetic_run_omits_inferential_outputs(tmp_path, kernel):
+    ad = pytest.importorskip("anndata")
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("scanpy")
+    pytest.importorskip("skmisc")
+    source = ad.read_h5ad(_synthetic_h5ad(tmp_path))
+    source.obs = pd.DataFrame(index=source.obs_names.copy())
+    path = tmp_path / "descriptive.h5ad"
+    source.write_h5ad(path)
+
+    config = _descriptive_config(path)
+    config["clustering"] = {
+        "resolutions": [0.2, 0.5],
+        "selected_resolution": 0.5,
+        "n_neighbors": 8,
+        "n_pcs": 12,
+    }
+    run_dir = tmp_path / "descriptive-run"
+    for relative in kernel.INFERENTIAL_OUTPUTS:
+        stale = run_dir / relative
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("stale comparative result", encoding="utf-8")
+
+    result = kernel.run(config, run_dir)
+
+    assert result["status"] == "completed", json.loads(
+        (run_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert result["analysis_mode"] == "descriptive"
+    assert result["statistics_status"] == {
+        "de": "not_applicable_descriptive",
+        "da": "not_applicable_descriptive",
+    }
+    analyzed = ad.read_h5ad(run_dir / "analysis.h5ad")
+    assert set(analyzed.obs["sample_id"]) == {"pbmc3k"}
+    assert "donor_id" not in analyzed.obs
+    assert "condition" not in analyzed.obs
+    raw = analyzed.layers["counts"]
+    values = raw.toarray() if hasattr(raw, "toarray") else np.asarray(raw)
+    assert (values >= 0).all()
+    assert (values == values.astype(int)).all()
+    assert all(
+        not (run_dir / relative).exists() for relative in kernel.INFERENTIAL_OUTPUTS
+    )
 
 
 @pytest.mark.slow

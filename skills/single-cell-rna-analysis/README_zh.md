@@ -1,8 +1,9 @@
 # 单细胞 RNA 分析 Skill
 
 这是 OpenAI4S 自维护的人/鼠、已完成 cell calling 的 10x GEX scRNA-seq 与
-snRNA-seq 工作流。它提供版本化配置契约、可执行的 Scanpy 流程、保守的科学门控、
-可恢复的检查点和可审计的结果包；不会修改或复制仓库中固定版本的 `bioSkills` 集合。
+snRNA-seq 工作流。它提供版本化配置契约、支持单样本描述性或 donor-aware 对比分析的
+Scanpy 流程、保守的科学门控、可恢复的检查点和可审计的结果包；不会修改或复制仓库中
+固定版本的 `bioSkills` 集合。
 
 ## 文件
 

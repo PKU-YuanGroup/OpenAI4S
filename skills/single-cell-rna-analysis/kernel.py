@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 SCHEMA_VERSION = 1
+ANALYSIS_MODES = {"comparative", "descriptive"}
 DEFAULT_RESOLUTIONS = [0.2, 0.4, 0.5, 0.6, 0.8, 1.0]
 REQUIRED_SAMPLE_COLUMNS = {
     "sample_id",
@@ -37,6 +38,18 @@ STAGE_FILES = {
     "clustering": "03_clustering.h5ad",
     "annotation": "04_annotation.h5ad",
 }
+INFERENTIAL_OUTPUTS = frozenset(
+    {
+        "tables/pseudobulk_counts.csv",
+        "tables/pseudobulk_metadata.csv",
+        "tables/differential_expression.csv",
+        "tables/differential_expression.error.txt",
+        "tables/differential_abundance.csv",
+        "tables/differential_abundance.error.txt",
+        "figures/differential_expression.pdf",
+        "figures/differential_abundance.pdf",
+    }
+)
 
 
 def _utc_now() -> str:
@@ -80,6 +93,7 @@ def _resolved_config(
     raw, base = _load_config(config)
     resolved = dict(raw)
     resolved.setdefault("schema_version", SCHEMA_VERSION)
+    resolved.setdefault("analysis_mode", "comparative")
     resolved.setdefault("seed", 0)
     resolved.setdefault("qc", {})
     resolved.setdefault("clustering", {})
@@ -110,9 +124,10 @@ def _resolved_config(
         "minimum_margin": 0.1,
         **dict(resolved.get("annotation") or {}),
     }
+    descriptive = resolved["analysis_mode"] == "descriptive"
     resolved["statistics"] = {
-        "de": True,
-        "da": True,
+        "de": not descriptive,
+        "da": not descriptive,
         **dict(resolved.get("statistics") or {}),
     }
     resolved["integration"] = {
@@ -121,18 +136,26 @@ def _resolved_config(
         **dict(resolved.get("integration") or {}),
     }
     resolved.setdefault("design", {})
+    design_defaults: dict[str, Any] = {"sample_key": "sample_id"}
+    if not descriptive:
+        design_defaults.update(
+            {
+                "donor_key": "donor_id",
+                "condition_key": "condition",
+                "covariates": [],
+                "paired": False,
+            }
+        )
     resolved["design"] = {
-        "sample_key": "sample_id",
-        "donor_key": "donor_id",
-        "condition_key": "condition",
-        "covariates": [],
-        "paired": False,
+        **design_defaults,
         **dict(resolved.get("design") or {}),
     }
 
     input_config = dict(resolved.get("input") or {})
     if input_config.get("path"):
         input_config["path"] = _path(input_config["path"], base)
+        if descriptive and input_config.get("mode") == "h5ad":
+            input_config.setdefault("sample_id", Path(input_config["path"]).stem)
     input_config.setdefault("counts_layer", "counts")
     resolved["input"] = input_config
 
@@ -148,6 +171,9 @@ def _config_errors(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
     if config.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"schema_version must be {SCHEMA_VERSION}")
+    analysis_mode = config.get("analysis_mode")
+    if analysis_mode not in ANALYSIS_MODES:
+        errors.append("analysis_mode must be comparative or descriptive")
     if config.get("organism") not in {"human", "mouse"}:
         errors.append("organism must be human or mouse")
     if config.get("modality") not in {"scrna", "snrna"}:
@@ -182,16 +208,26 @@ def _config_errors(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         )
 
     design = config.get("design") or {}
-    for key in ("tested", "reference", "condition_key", "donor_key"):
-        if design.get(key) in (None, ""):
-            errors.append(f"design.{key} is required")
-    if (
-        design.get("tested") == design.get("reference")
-        and design.get("tested") is not None
-    ):
-        errors.append("design.tested and design.reference must differ")
-    if not isinstance(design.get("covariates", []), list):
-        errors.append("design.covariates must be a list")
+    if analysis_mode == "descriptive":
+        if input_config.get("mode") != "h5ad":
+            errors.append("descriptive analysis currently requires input.mode=h5ad")
+        if not str(input_config.get("sample_id", "")).strip():
+            errors.append("input.sample_id is required for descriptive analysis")
+        if any(design.get(key) not in (None, "") for key in ("tested", "reference")):
+            errors.append(
+                "descriptive analysis does not accept a tested-versus-reference contrast"
+            )
+    else:
+        for key in ("tested", "reference", "condition_key", "donor_key"):
+            if design.get(key) in (None, ""):
+                errors.append(f"design.{key} is required")
+        if (
+            design.get("tested") == design.get("reference")
+            and design.get("tested") is not None
+        ):
+            errors.append("design.tested and design.reference must differ")
+        if not isinstance(design.get("covariates", []), list):
+            errors.append("design.covariates must be a list")
 
     integration = config.get("integration") or {}
     if integration.get("method") not in {"none", "harmony"}:
@@ -201,6 +237,14 @@ def _config_errors(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         errors.append("integration.batch_keys must be a list")
     elif integration.get("method") == "harmony" and not batch_keys:
         errors.append("Harmony requires explicit integration.batch_keys")
+    if analysis_mode == "descriptive" and integration.get("method") != "none":
+        errors.append("descriptive analysis does not support integration")
+
+    statistics = config.get("statistics") or {}
+    if analysis_mode == "descriptive" and any(
+        statistics.get(key) for key in ("de", "da")
+    ):
+        errors.append("descriptive analysis requires statistics.de=false and da=false")
 
     clustering = config.get("clustering") or {}
     resolutions = clustering.get("resolutions", [])
@@ -480,23 +524,43 @@ def _inspect_h5ad(
                 errors.append(f"{path}: {reason}")
         if inspect_metadata:
             design = config["design"]
-            metadata_keys = {
-                str(design.get("sample_key", "sample_id")),
-                str(design["donor_key"]),
-                str(design["condition_key"]),
-                *[str(value) for value in design.get("covariates", [])],
-                *[str(value) for value in config["integration"].get("batch_keys", [])],
-            }
-            missing = sorted(metadata_keys - set(adata.obs.columns))
-            if missing:
-                errors.append(
-                    f"{path}: h5ad obs lacks configured metadata: {', '.join(missing)}"
-                )
+            sample_key = str(design.get("sample_key", "sample_id"))
+            if config["analysis_mode"] == "descriptive":
+                if sample_key in adata.obs.columns:
+                    if bool(adata.obs[sample_key].isna().any()):
+                        errors.append(f"{path}: sample identifiers must be nonempty")
+                    sample_values = {
+                        str(value).strip() for value in adata.obs[sample_key]
+                    }
+                    if "" in sample_values:
+                        errors.append(f"{path}: sample identifiers must be nonempty")
+                    if len(sample_values - {""}) != 1:
+                        errors.append(
+                            f"{path}: descriptive analysis requires exactly one sample"
+                        )
             else:
-                records = adata.obs[list(metadata_keys)].astype(str).to_dict("records")
-                design_errors, design_warnings, _ = _design_checks(records, config)
-                errors.extend(f"{path}: {value}" for value in design_errors)
-                warnings.extend(f"{path}: {value}" for value in design_warnings)
+                metadata_keys = {
+                    sample_key,
+                    str(design["donor_key"]),
+                    str(design["condition_key"]),
+                    *[str(value) for value in design.get("covariates", [])],
+                    *[
+                        str(value)
+                        for value in config["integration"].get("batch_keys", [])
+                    ],
+                }
+                missing = sorted(metadata_keys - set(adata.obs.columns))
+                if missing:
+                    errors.append(
+                        f"{path}: h5ad obs lacks configured metadata: {', '.join(missing)}"
+                    )
+                else:
+                    records = (
+                        adata.obs[list(metadata_keys)].astype(str).to_dict("records")
+                    )
+                    design_errors, design_warnings, _ = _design_checks(records, config)
+                    errors.extend(f"{path}: {value}" for value in design_errors)
+                    warnings.extend(f"{path}: {value}" for value in design_warnings)
     except (OSError, ValueError) as exc:
         errors.append(f"cannot inspect h5ad {path}: {exc}")
     return errors, warnings
@@ -553,6 +617,7 @@ def _stage_hashes(
     hashes["preflight"] = digest(
         {
             "input_fingerprint": input_fingerprint,
+            "analysis_mode": config.get("analysis_mode"),
             "input": config.get("input"),
             "organism": config.get("organism"),
             "modality": config.get("modality"),
@@ -563,6 +628,7 @@ def _stage_hashes(
         {
             "upstream": hashes["preflight"],
             "qc": config.get("qc"),
+            "analysis_mode": config.get("analysis_mode"),
             "sample_key": (config.get("design") or {}).get("sample_key"),
             "seed": config.get("seed"),
         }
@@ -639,7 +705,17 @@ def preflight(config: Mapping[str, Any] | str | os.PathLike[str]) -> dict[str, A
             "resolved_config": resolved,
             "input_fingerprint": fingerprint,
             "inputs": inputs,
-            "sample_count": len(samples) if samples else None,
+            "sample_count": (
+                len(samples)
+                if samples
+                else (
+                    1
+                    if not errors
+                    and resolved["analysis_mode"] == "descriptive"
+                    and resolved["input"]["mode"] == "h5ad"
+                    else None
+                )
+            ),
         }
     except Exception as exc:  # public validation must return a structured failure
         return {
@@ -712,31 +788,50 @@ def _load_data(
     warnings: list[str] = []
     input_config = config["input"]
     design = config["design"]
-    metadata_keys = {
-        str(design.get("sample_key", "sample_id")),
-        str(design["donor_key"]),
-        str(design["condition_key"]),
-        *[str(key) for key in design.get("covariates", [])],
-        *[str(key) for key in config["integration"].get("batch_keys", [])],
-    }
+    descriptive = config["analysis_mode"] == "descriptive"
+    sample_key = str(design.get("sample_key", "sample_id"))
+    metadata_keys = {sample_key}
+    if not descriptive:
+        metadata_keys.update(
+            {
+                str(design["donor_key"]),
+                str(design["condition_key"]),
+                *[str(key) for key in design.get("covariates", [])],
+                *[str(key) for key in config["integration"].get("batch_keys", [])],
+            }
+        )
     if input_config["mode"] == "h5ad":
         adata = _read_one(
             input_config["path"], "h5ad", input_config["counts_layer"], sc
         )
+        if descriptive and sample_key not in adata.obs.columns:
+            adata.obs[sample_key] = str(input_config["sample_id"]).strip()
         missing = sorted(metadata_keys - set(adata.obs.columns))
         if missing:
             raise ValueError(
                 f"h5ad obs lacks configured metadata: {', '.join(missing)}"
             )
+        if descriptive:
+            if bool(adata.obs[sample_key].isna().any()):
+                raise ValueError("sample identifiers must be nonempty")
+            sample_values = {str(value).strip() for value in adata.obs[sample_key]}
+            if "" in sample_values:
+                raise ValueError("sample identifiers must be nonempty")
+            if len(sample_values - {""}) != 1:
+                raise ValueError("descriptive analysis requires exactly one sample")
+            adata.obs[sample_key] = [
+                str(value).strip() for value in adata.obs[sample_key]
+            ]
         ok, reason = _is_raw_counts(adata.X, np)
         if not ok:
             raise ValueError(reason)
         if not adata.obs_names.is_unique:
             raise ValueError("h5ad cell IDs are not unique")
-        records = adata.obs[list(metadata_keys)].astype(str).to_dict("records")
-        confounding = _confounding_errors(records, config)
-        if confounding:
-            raise ValueError("; ".join(confounding))
+        if not descriptive:
+            records = adata.obs[list(metadata_keys)].astype(str).to_dict("records")
+            confounding = _confounding_errors(records, config)
+            if confounding:
+                raise ValueError("; ".join(confounding))
     else:
         sheet_path = Path(input_config["path"])
         rows = _read_sample_sheet(sheet_path)
@@ -1425,7 +1520,15 @@ def _package_versions() -> dict[str, str | None]:
     return versions
 
 
-def _featured(output_dir: Path) -> list[str]:
+def _remove_inferential_outputs(output_dir: Path) -> None:
+    """Remove comparative-only files before publishing a descriptive run."""
+    for relative in INFERENTIAL_OUTPUTS:
+        path = output_dir / relative
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+
+
+def _featured(output_dir: Path, analysis_mode: str = "comparative") -> list[str]:
     candidates = [
         output_dir / "analysis.h5ad",
         output_dir / "report.md",
@@ -1448,16 +1551,24 @@ def _featured(output_dir: Path) -> list[str]:
         output_dir / "figures" / "differential_expression.pdf",
         output_dir / "figures" / "differential_abundance.pdf",
     ]
-    return [str(path.resolve()) for path in candidates if path.exists()]
+    if analysis_mode == "descriptive":
+        candidates = [
+            path
+            for path in candidates
+            if path.relative_to(output_dir).as_posix() not in INFERENTIAL_OUTPUTS
+        ]
+    return [str(path.resolve()) for path in candidates if path.is_file()]
 
 
 def _write_report(output_dir: Path, manifest: Mapping[str, Any]) -> None:
     statistics = manifest["statistics_status"]
     warnings = manifest.get("warnings", [])
+    analysis_mode = manifest.get("analysis_mode", "comparative")
     lines = [
         "# Single-cell RNA analysis report",
         "",
         f"- Status: `{manifest['status']}`",
+        f"- Analysis mode: `{analysis_mode}`",
         f"- Annotation: `{manifest['annotation_status']}`",
         f"- Differential expression: `{statistics['de']}`",
         f"- Differential abundance: `{statistics['da']}`",
@@ -1465,9 +1576,15 @@ def _write_report(output_dir: Path, manifest: Mapping[str, Any]) -> None:
         "",
         "## Interpretation boundaries",
         "",
-        "Cluster markers are descriptive, condition DE uses pseudobulk raw counts, "
-        "and candidate annotations are not ground truth. Harmony, when requested, "
-        "changes the neighbor embedding only.",
+        (
+            "This is a descriptive single-sample analysis. Cluster markers describe "
+            "within-sample structure; no condition effect, differential expression, "
+            "or differential abundance inference was attempted."
+            if analysis_mode == "descriptive"
+            else "Cluster markers are descriptive, condition DE uses pseudobulk raw "
+            "counts, and candidate annotations are not ground truth. Harmony, when "
+            "requested, changes the neighbor embedding only."
+        ),
         "",
         "## Warnings",
         "",
@@ -1495,6 +1612,10 @@ def _finalize_manifest(output_dir: Path, manifest: dict[str, Any]) -> dict[str, 
         if item.is_file()
         and item != manifest_path
         and ".invalidated" not in item.relative_to(output_dir).parts
+        and not (
+            manifest.get("analysis_mode") == "descriptive"
+            and item.relative_to(output_dir).as_posix() in INFERENTIAL_OUTPUTS
+        )
     ):
         manifest["files"].append(
             {
@@ -1510,8 +1631,11 @@ def _finalize_manifest(output_dir: Path, manifest: dict[str, Any]) -> dict[str, 
 def _result(output_dir: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "status": manifest["status"],
+        "analysis_mode": manifest.get("analysis_mode", "comparative"),
         "run_dir": str(output_dir.resolve()),
-        "featured_files": _featured(output_dir),
+        "featured_files": _featured(
+            output_dir, str(manifest.get("analysis_mode", "comparative"))
+        ),
         "warnings": list(manifest.get("warnings", [])),
         "annotation_status": manifest.get("annotation_status", "not_started"),
         "statistics_status": dict(
@@ -1538,6 +1662,7 @@ def _run(
     resolved = check.get("resolved_config")
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "analysis_mode": (resolved or {}).get("analysis_mode", "comparative"),
         "created_at": _utc_now(),
         "status": "running",
         "seed": (resolved or {}).get("seed", 0),
@@ -1595,6 +1720,8 @@ def _run(
     manifest["stages"]["preflight"] = "completed"
 
     try:
+        if resolved["analysis_mode"] == "descriptive":
+            _remove_inferential_outputs(output)
         ad, np, pd, sc = _science_imports()
         if resume_index <= stage_order.index("qc"):
             adata, load_warnings = _load_data(resolved, np, pd, sc, ad)
@@ -1666,42 +1793,49 @@ def _run(
             )
         manifest["annotation_status"] = annotation_status
 
-        pseudobulk, metadata, group_key = _pseudobulk(annotated, resolved, pd, np)
-        pseudobulk.to_csv(tables / "pseudobulk_counts.csv", index=False)
-        metadata.to_csv(tables / "pseudobulk_metadata.csv", index=False)
-        enough, donor_counts = _replication_status(metadata, resolved)
-        manifest["replication"] = donor_counts
-        manifest["statistics_group_key"] = group_key
-        if enough:
-            try:
-                de_status = _run_deseq(
-                    pseudobulk,
-                    metadata,
-                    resolved,
-                    tables / "differential_expression.csv",
-                    pd,
-                )
-            except Exception as exc:
-                de_status = "failed"
-                manifest["warnings"].append(f"Pseudobulk DE failed: {exc}")
-            da_status = _run_milo(
-                annotated, resolved, tables / "differential_abundance.csv"
-            )
-            if da_status == "failed":
-                manifest["warnings"].append(
-                    "Milo DA failed; see the adjacent error file."
-                )
+        if resolved["analysis_mode"] == "descriptive":
+            de_status = "not_applicable_descriptive"
+            da_status = "not_applicable_descriptive"
+            manifest["replication"] = {}
+            manifest["statistics_group_key"] = None
         else:
-            de_status = "skipped_insufficient_replicates"
-            da_status = "skipped_insufficient_replicates"
-            manifest["warnings"].append(
-                "DE/DA skipped: each contrast level requires at least three independent donors."
-            )
+            pseudobulk, metadata, group_key = _pseudobulk(annotated, resolved, pd, np)
+            pseudobulk.to_csv(tables / "pseudobulk_counts.csv", index=False)
+            metadata.to_csv(tables / "pseudobulk_metadata.csv", index=False)
+            enough, donor_counts = _replication_status(metadata, resolved)
+            manifest["replication"] = donor_counts
+            manifest["statistics_group_key"] = group_key
+            if enough:
+                try:
+                    de_status = _run_deseq(
+                        pseudobulk,
+                        metadata,
+                        resolved,
+                        tables / "differential_expression.csv",
+                        pd,
+                    )
+                except Exception as exc:
+                    de_status = "failed"
+                    manifest["warnings"].append(f"Pseudobulk DE failed: {exc}")
+                da_status = _run_milo(
+                    annotated, resolved, tables / "differential_abundance.csv"
+                )
+                if da_status == "failed":
+                    manifest["warnings"].append(
+                        "Milo DA failed; see the adjacent error file."
+                    )
+            else:
+                de_status = "skipped_insufficient_replicates"
+                da_status = "skipped_insufficient_replicates"
+                manifest["warnings"].append(
+                    "DE/DA skipped: each contrast level requires at least three independent donors."
+                )
         manifest["statistics_status"] = {"de": de_status, "da": da_status}
         manifest["stages"]["statistics"] = "completed"
 
         annotated.uns["openai4s"] = {
             "schema_version": SCHEMA_VERSION,
+            "analysis_mode": resolved["analysis_mode"],
             "config_sha256": manifest["config_sha256"],
             "input_fingerprint": manifest["input_fingerprint"],
             "annotation_status": annotation_status,

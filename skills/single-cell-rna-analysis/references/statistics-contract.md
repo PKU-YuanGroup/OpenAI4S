@@ -1,5 +1,10 @@
 # Statistical analysis contract
 
+This contract applies only to `analysis_mode: comparative`. In descriptive
+mode, pseudobulk construction, DE and DA are not run; both structured statuses
+are `not_applicable_descriptive`, and no inferential tables or figures are
+emitted.
+
 ## Unit of replication
 
 Build integer pseudobulk counts from `layers["counts"]` for each

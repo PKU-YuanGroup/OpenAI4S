@@ -2,9 +2,10 @@
 
 An OpenAI4S-maintained workflow for human or mouse, cell-called 10x GEX
 scRNA-seq and snRNA-seq matrices. It provides a versioned configuration
-contract, an executable Scanpy pipeline, conservative scientific gates,
-restartable checkpoints, and an auditable output bundle. It does not modify or
-vendor the pinned `bioSkills` collection.
+contract, an executable Scanpy pipeline for either single-sample descriptive or
+donor-aware comparative analysis, conservative scientific gates, restartable
+checkpoints, and an auditable output bundle. It does not modify or vendor the
+pinned `bioSkills` collection.
 
 ## Files
 

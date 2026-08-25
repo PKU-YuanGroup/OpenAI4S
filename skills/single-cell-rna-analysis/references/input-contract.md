@@ -4,14 +4,17 @@
 
 The workflow accepts human or mouse, cell-called 10x GEX scRNA-seq/snRNA-seq
 counts. It does not accept FASTQ, CITE-seq, scATAC-seq, Multiome or spatial
-objects. One run represents one tested-versus-reference contrast.
+objects. One run is either a single-sample descriptive analysis or one
+tested-versus-reference comparative analysis.
 
 ## Version 1 configuration
 
 Required top-level fields are `schema_version: 1`, `organism` (`human` or
-`mouse`), `modality` (`scrna` or `snrna`), `input`, `reference`, `design`, and
-`integration`. Relative paths are resolved against the configuration's current
-working directory by `preflight()` and persisted as absolute paths in
+`mouse`), `modality` (`scrna` or `snrna`), `input`, `reference`, and
+`integration`. `analysis_mode` is `descriptive` or `comparative`; omitting it
+preserves the version-1 default of `comparative`. `design` is required only for
+comparative mode. Relative paths are resolved against the configuration's
+current working directory by `preflight()` and persisted as absolute paths in
 `config.resolved.json`.
 
 `reference` must name `gene_id_type`, `genome_build`, and
@@ -32,6 +35,26 @@ For h5ad, `input.counts_layer` defaults to `counts`; set it to `X` only if `.X`
 itself contains raw counts. Sample h5ad rows use the same rule. Nonnegative,
 finite integer counts are mandatory; normalized-only input is rejected.
 
+## Single-sample descriptive mode
+
+Set `analysis_mode: descriptive` for one h5ad without a real experimental
+contrast. This mode:
+
+- requires `input.mode: h5ad` and a nonempty technical `input.sample_id`;
+- accepts an h5ad whose `obs` has no sample, donor, or condition columns;
+- writes `input.sample_id` into the configured `design.sample_key` only when
+  that technical sample column is absent;
+- trims surrounding whitespace from an existing technical sample column after
+  confirming that its normalized values identify exactly one sample;
+- rejects an h5ad containing more than one value in the sample column;
+- requires `integration.method: none` and `statistics.de/da: false`; and
+- rejects `design.tested` or `design.reference` instead of silently ignoring a
+  copied contrast.
+
+If `input.sample_id` is omitted, it defaults to the h5ad filename stem. This is
+a technical object identifier, not inferred biological metadata. The workflow
+never synthesizes donor, condition, treatment, batch, or replicate labels.
+
 Sample and donor identifiers must be nonempty. Sample IDs must be unique in a
 sample sheet; cell IDs become globally unique by prefixing `sample_id:`. All
 samples must use the declared organism, genome build, annotation release and
@@ -40,7 +63,7 @@ hard failure.
 
 ## Design and integration gates
 
-`design` declares `tested`, `reference`, `condition_key`, `donor_key`, optional
+In comparative mode, `design` declares `tested`, `reference`, `condition_key`, `donor_key`, optional
 `sample_key`, `covariates`, and `paired`. Both levels must occur. A paired
 design requires donors represented in both levels. The workflow checks design
 rank after cells have been loaded.

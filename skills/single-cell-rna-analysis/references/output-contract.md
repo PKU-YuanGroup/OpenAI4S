@@ -20,6 +20,7 @@ All public calls use JSON-friendly values. `run()` and `resume()` return:
 - `run_dir` and `manifest` as absolute paths;
 - `featured_files`: existing files for Artifact registration;
 - `warnings`;
+- `analysis_mode`;
 - `annotation_status`;
 - `statistics_status`, with independent `de` and `da` values.
 
@@ -30,6 +31,13 @@ The complete run includes `analysis.h5ad`, `config.resolved.json`,
 and generated QC/UMAP/resolution/marker/DE/DA figures when applicable. The
 manifest records input summaries, package versions, seed, thresholds, stage
 status, warnings and SHA-256 for every delivered file.
+
+Descriptive runs include the base h5ad, QC, embedding, clustering, annotation,
+marker tables and figures. They intentionally omit pseudobulk, DE and DA files;
+the manifest records both statistics as `not_applicable_descriptive`. When an
+output directory is reused, the workflow removes known comparative-only tables,
+error files and figures before publishing the descriptive bundle; delivery and
+manifest generation also exclude those paths defensively.
 
 The Agent calls `host.save_artifact(path)` once for every returned
 `featured_files` entry, then submits the structured result. Missing optional

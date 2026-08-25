@@ -16,6 +16,10 @@ SoupX and CellBender are out of scope. Record `qc.ambient_correction` as
 `none`, `upstream`, or a specific upstream method; an uncorrected input creates
 a limitation in the report.
 
+In descriptive mode, a missing sample column is populated only with the
+declared technical `input.sample_id`, so the same within-sample QC machinery can
+run. No donor, condition, batch or replicate value is created or inferred.
+
 ## Data-space isolation
 
 Immediately copy validated raw counts to `layers["counts"]` and never mutate
@@ -39,3 +43,7 @@ resolution optimal from UMAP geometry.
 Rank cluster markers on log-normalized values for description only. Export
 gene, score, log-fold change and adjusted p-value where Scanpy supplies them.
 Never reuse these values as tested-versus-reference condition DE.
+
+For descriptive mode, these markers and embeddings are the terminal scientific
+results. They describe within-sample structure only and cannot support condition
+effects or population-level inference.
