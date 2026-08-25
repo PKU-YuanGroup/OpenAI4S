@@ -1562,7 +1562,7 @@ def test_environment_status_route_captures_ready_production_metadata(
     assert readiness["missing_environments"] == []
     assert readiness["missing_packages"] == {}
     assert [row["required_package_count"] for row in readiness["environments"]] == [
-        32,
+        35,
         8,
     ]
 
