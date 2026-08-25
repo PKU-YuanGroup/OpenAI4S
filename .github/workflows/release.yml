@@ -695,6 +695,16 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+      - name: Keep only index-distributable files
+        # The artifact also carries build-receipt-dist.json — staging consumes
+        # it, but the publish action hands twine the whole directory and twine
+        # refuses anything that is not a wheel or an sdist (first complete
+        # dispatch, run 32835188788: `InvalidDistribution: Unknown
+        # distribution format: 'build-receipt-dist.json'`). Deleting here, in
+        # this job's own workspace, leaves the artifact and every other
+        # consumer of it untouched.
+        run: |
+          find dist -type f ! -name '*.whl' ! -name '*.tar.gz' -print -delete
       - name: Publish package distributions
         # NOT SHA-pinned, unlike every other action here: this one is a Docker
         # container action whose generated Dockerfile does
