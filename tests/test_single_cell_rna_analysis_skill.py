@@ -205,6 +205,8 @@ def test_raw_count_and_replication_gates_are_explicit(kernel):
     assert kernel._is_raw_counts(np.array([[0, 1], [2, 3]]), np) == (True, None)
     assert kernel._is_raw_counts(np.array([[0.0, 0.5]]), np)[0] is False
     assert kernel._is_raw_counts(np.array([[0, -1]]), np)[0] is False
+    # Large magnitudes must not relax the integer gate (rtol must be zero).
+    assert kernel._is_raw_counts(np.array([[50000.4]]), np)[0] is False
 
     metadata = pd.DataFrame(
         {
@@ -226,6 +228,7 @@ def test_descriptive_load_assigns_only_technical_sample_id(tmp_path, kernel):
             self.X = np.array([[1, 0], [0, 2]], dtype=np.int32)
             self.obs = pd.DataFrame(index=["cell-1", "cell-2"])
             self.obs_names = self.obs.index
+            self.var_names = pd.Index(["G1", "G2"])
             self.layers = {}
 
         def obs_names_make_unique(self, join="-"):
@@ -259,6 +262,7 @@ def test_descriptive_load_normalizes_existing_sample_ids(tmp_path, kernel):
                 {"sample_id": ["s1", " s1 "]}, index=["cell-1", "cell-2"]
             )
             self.obs_names = self.obs.index
+            self.var_names = pd.Index(["G1", "G2"])
             self.layers = {}
 
         def obs_names_make_unique(self, join="-"):
@@ -303,6 +307,92 @@ def test_descriptive_cleanup_and_delivery_exclude_inferential_outputs(tmp_path, 
     assert "tables/differential_expression.csv" not in {
         item["path"] for item in manifest["files"]
     }
+
+
+def test_boolean_config_fields_reject_truthy_strings(tmp_path, kernel):
+    matrix = tmp_path / "matrix"
+    matrix.mkdir()
+    sheet = tmp_path / "samples.csv"
+    _write_sheet(
+        sheet,
+        [
+            {
+                "sample_id": "s1",
+                "donor_id": "d1",
+                "condition": "control",
+                "matrix_path": "matrix",
+                "matrix_format": "10x_mtx",
+            },
+            {
+                "sample_id": "s2",
+                "donor_id": "d1",
+                "condition": "stim",
+                "matrix_path": "matrix",
+                "matrix_format": "10x_mtx",
+            },
+        ],
+    )
+    config = _base_config(sheet)
+    config["design"]["paired"] = "false"
+    config["statistics"]["de"] = "false"
+    result = kernel.preflight(config)
+    assert result["status"] == "invalid"
+    assert any("design.paired must be a JSON boolean" in e for e in result["errors"])
+    assert any("statistics.de must be a JSON boolean" in e for e in result["errors"])
+
+
+def test_paired_design_rejects_covariates(tmp_path, kernel):
+    config = _base_config(tmp_path / "unused.csv")
+    config["design"]["covariates"] = ["sex"]
+    result = kernel.preflight(config)
+    assert result["status"] == "invalid"
+    assert any("covariates are not supported" in e for e in result["errors"])
+
+
+def test_ragged_sample_sheet_rows_are_rejected(tmp_path, kernel):
+    sheet = tmp_path / "samples.csv"
+    sheet.write_text(
+        "sample_id,donor_id,condition,matrix_path,matrix_format\n" "s1,d1,control\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing or extra fields"):
+        kernel._read_sample_sheet(sheet)
+
+
+def test_resume_with_invalid_preflight_leaves_deliverables_untouched(tmp_path, kernel):
+    run_dir = tmp_path / "completed-run"
+    run_dir.mkdir()
+    config = _base_config(tmp_path / "gone.csv")
+    kernel._write_json(run_dir / "config.resolved.json", config)
+    kernel._write_json(run_dir / "run_manifest.json", {"status": "completed"})
+    analysis = run_dir / "analysis.h5ad"
+    analysis.write_bytes(b"finished-deliverable")
+
+    result = kernel.resume(run_dir)
+
+    assert result["status"] == "failed"
+    assert result["errors"]
+    assert analysis.read_bytes() == b"finished-deliverable"
+    assert not (run_dir / ".invalidated").exists()
+    assert json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8")) == {
+        "status": "completed"
+    }
+
+
+def test_annotation_stage_hash_tracks_side_input_content(tmp_path, kernel):
+    panel = tmp_path / "markers.csv"
+    panel.write_text("cell_type,gene,direction,weight\nT,CD3D,positive,1\n")
+    config = _base_config(tmp_path / "unused.csv")
+    config["annotation"] = {"marker_panel": str(panel)}
+    resolved = kernel._resolved_config(config)
+    before = kernel._stage_hashes(resolved, "fingerprint")
+
+    panel.write_text("cell_type,gene,direction,weight\nNK,NKG7,positive,1\n")
+    after = kernel._stage_hashes(resolved, "fingerprint")
+
+    assert before["clustering"] == after["clustering"]
+    assert before["annotation"] != after["annotation"]
+    assert before["statistics"] != after["statistics"]
 
 
 def _synthetic_h5ad(tmp_path: Path):
@@ -411,7 +501,7 @@ def test_paired_pydeseq2_uses_donor_and_preserves_effect_direction(tmp_path, ker
     output = tmp_path / "de.csv"
     config = _base_config(Path("unused"))
     config["statistics"]["de"] = True
-    status = kernel._run_deseq(
+    status, notes = kernel._run_deseq(
         pd.DataFrame(count_rows),
         pd.DataFrame(metadata_rows),
         config,
@@ -419,6 +509,7 @@ def test_paired_pydeseq2_uses_donor_and_preserves_effect_direction(tmp_path, ker
         pd,
     )
     assert status == "completed"
+    assert notes == []
     results = pd.read_csv(output)
     g0 = results.loc[results["gene"] == "G0"].iloc[0]
     assert g0["log2FoldChange"] > 0

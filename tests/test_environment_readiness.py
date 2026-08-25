@@ -22,7 +22,6 @@ from openai4s.kernel.readiness import (
 
 PYTHON_REQUIREMENTS = (
     "python",
-    "scanpy",
     "anndata",
     "leidenalg",
     "python-igraph",
@@ -52,6 +51,10 @@ PYTHON_REQUIREMENTS = (
     "networkx",
     "pip",
     "fair-esm",
+    "scanpy",
+    "mudata",
+    "pertpy",
+    "pydeseq2",
     "pypdfium2",
 )
 R_REQUIREMENTS = (
@@ -150,24 +153,27 @@ def _write_managed_generation(
     return generation
 
 
-def test_shipped_manifests_are_the_authoritative_32_and_8_package_lists():
+def test_shipped_manifests_are_the_authoritative_35_and_8_package_lists():
     requirements = load_standard_profile_requirements()
 
     assert requirements == {
         "python": PYTHON_REQUIREMENTS,
         "r": R_REQUIREMENTS,
     }
-    assert len(requirements["python"]) == 32
+    assert len(requirements["python"]) == 35
     assert len(requirements["r"]) == 8
-    # Both conda and pip constraints are gone before matching package metadata.
+    # Both conda and pip constraints are gone before matching package metadata,
+    # and pip extras are stripped down to the distribution name.
     assert "python=3.11" not in requirements["python"]
     assert "pandas<3" not in requirements["python"]
     assert "fair-esm==2.0.0" not in requirements["python"]
-    assert requirements["python"][-2:] == ("fair-esm", "pypdfium2")
+    assert "scanpy[harmony,skmisc]==1.11.5" not in requirements["python"]
+    assert "pertpy[de]==1.0.3" not in requirements["python"]
+    assert requirements["python"][-2:] == ("pydeseq2", "pypdfium2")
 
     projection = standard_profile_readiness(enabled=True, discover=lambda: [])
     assert projection["requirements_digest"] == (
-        "sha256:f327b2f66a771f285b43b838e65839dad2f163b53b163f7f7c16bdada81be038"
+        "sha256:e85f126bdcf81afcceff3ec19144e5535d5a733e0eca8671994c0cf269512430"
     )
 
 
@@ -188,7 +194,7 @@ def test_complete_standard_profile_is_ready_using_local_package_metadata(tmp_pat
     assert result["missing_packages"] == {}
     assert result["remediation"] is None
     assert [row["required_package_count"] for row in result["environments"]] == [
-        32,
+        35,
         8,
     ]
     assert all(row["state"] == READY for row in result["environments"])

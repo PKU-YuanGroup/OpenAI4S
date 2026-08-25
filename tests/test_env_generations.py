@@ -354,7 +354,7 @@ def test_a_verify_that_refuses_fails_the_apply(tmp_path):
 
 @pytest.mark.parametrize(
     ("name", "language", "required_count"),
-    (("python", "python", 32), ("r", "r", 8)),
+    (("python", "python", 35), ("r", "r", 8)),
 )
 def test_standard_verification_requires_the_complete_shipped_package_set(
     tmp_path, monkeypatch, name, language, required_count

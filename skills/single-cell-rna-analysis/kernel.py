@@ -38,6 +38,17 @@ STAGE_FILES = {
     "clustering": "03_clustering.h5ad",
     "annotation": "04_annotation.h5ad",
 }
+_PIPELINE_OBS_COLUMNS = frozenset(
+    {
+        "qc_fail",
+        "qc_filter_reason",
+        "doublet_score",
+        "predicted_doublet",
+        "cluster",
+        "candidate_cell_type",
+        "confirmed_cell_type",
+    }
+)
 INFERENTIAL_OUTPUTS = frozenset(
     {
         "tables/pseudobulk_counts.csv",
@@ -65,10 +76,14 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, value: Any) -> None:
+    # Atomic: resume() trusts these files, and a truncated half-write from an
+    # interrupted run must never shadow a readable prior state.
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
         json.dump(value, handle, indent=2, sort_keys=True, ensure_ascii=False)
         handle.write("\n")
+    os.replace(temporary, path)
 
 
 def _load_config(
@@ -228,6 +243,11 @@ def _config_errors(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
             errors.append("design.tested and design.reference must differ")
         if not isinstance(design.get("covariates", []), list):
             errors.append("design.covariates must be a list")
+        if design.get("paired") and design.get("covariates"):
+            errors.append(
+                "paired designs fit ~ donor + condition; covariates are not "
+                "supported with design.paired=true"
+            )
 
     integration = config.get("integration") or {}
     if integration.get("method") not in {"none", "harmony"}:
@@ -245,6 +265,17 @@ def _config_errors(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         statistics.get(key) for key in ("de", "da")
     ):
         errors.append("descriptive analysis requires statistics.de=false and da=false")
+    # Consumers use bare truthiness, and JSON strings like "false" are truthy:
+    # a value that is not a real boolean would silently invert behaviour.
+    for section, key in (
+        ("design", "paired"),
+        ("statistics", "de"),
+        ("statistics", "da"),
+        ("qc", "doublet_detection"),
+    ):
+        value = (config.get(section) or {}).get(key)
+        if value is not None and not isinstance(value, bool):
+            errors.append(f"{section}.{key} must be a JSON boolean")
 
     clustering = config.get("clustering") or {}
     resolutions = clustering.get("resolutions", [])
@@ -280,7 +311,15 @@ def _read_sample_sheet(path: Path) -> list[dict[str, str]]:
         missing = sorted(REQUIRED_SAMPLE_COLUMNS - columns)
         if missing:
             raise ValueError(f"sample sheet missing columns: {', '.join(missing)}")
-        rows = [{str(k): str(v).strip() for k, v in row.items()} for row in reader]
+        rows = []
+        for row in reader:
+            # DictReader fills short rows with None and str(None) is the
+            # truthy string "None", which would pass every nonempty gate.
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError(
+                    f"sample sheet row {reader.line_num} has missing or " "extra fields"
+                )
+            rows.append({str(k): str(v).strip() for k, v in row.items()})
     if not rows:
         raise ValueError("sample sheet contains no samples")
     return rows
@@ -555,6 +594,11 @@ def _inspect_h5ad(
                         f"{path}: h5ad obs lacks configured metadata: {', '.join(missing)}"
                     )
                 else:
+                    if bool(adata.obs[list(metadata_keys)].isna().any().any()):
+                        errors.append(
+                            f"{path}: configured metadata columns contain "
+                            "missing values"
+                        )
                     records = (
                         adata.obs[list(metadata_keys)].astype(str).to_dict("records")
                     )
@@ -624,12 +668,27 @@ def _stage_hashes(
             "reference": config.get("reference"),
         }
     )
+    # Every metadata key that _load_data bakes into the checkpoint's obs must
+    # invalidate the qc stage: a downstream-only hash would resume from a
+    # checkpoint that lacks the newly configured column.
+    design = config.get("design") or {}
+    integration = config.get("integration") or {}
+    metadata_keys = {str(design.get("sample_key", "sample_id"))}
+    if config.get("analysis_mode") != "descriptive":
+        metadata_keys.update(
+            {
+                str(design.get("donor_key")),
+                str(design.get("condition_key")),
+                *[str(value) for value in design.get("covariates", []) or []],
+                *[str(value) for value in integration.get("batch_keys", []) or []],
+            }
+        )
     hashes["qc"] = digest(
         {
             "upstream": hashes["preflight"],
             "qc": config.get("qc"),
             "analysis_mode": config.get("analysis_mode"),
-            "sample_key": (config.get("design") or {}).get("sample_key"),
+            "metadata_keys": sorted(metadata_keys),
             "seed": config.get("seed"),
         }
     )
@@ -652,8 +711,21 @@ def _stage_hashes(
             "seed": config.get("seed"),
         }
     )
+    # The annotation side inputs are files the config names by path only, so
+    # their contents must be fingerprinted here or an in-place edit followed
+    # by resume() would silently return the stale prior labels.
+    side_inputs: dict[str, str | None] = {}
+    for key in ("marker_panel", "reference_h5ad", "confirmed_mapping"):
+        value = (config.get("annotation") or {}).get(key)
+        if value:
+            candidate = Path(str(value))
+            side_inputs[key] = _sha256_path(candidate) if candidate.exists() else None
     hashes["annotation"] = digest(
-        {"upstream": hashes["clustering"], "annotation": config.get("annotation")}
+        {
+            "upstream": hashes["clustering"],
+            "annotation": config.get("annotation"),
+            "side_input_sha256": side_inputs,
+        }
     )
     hashes["statistics"] = digest(
         {
@@ -756,7 +828,9 @@ def _is_raw_counts(matrix: Any, np: Any) -> tuple[bool, str | None]:
         return False, "counts contain non-finite values"
     if np.any(values < 0):
         return False, "counts contain negative values"
-    if not np.allclose(values, np.rint(values), atol=1e-8):
+    # rtol must be zero: numpy's default 1e-5 would auto-accept any value
+    # above ~5e4 as "integer" regardless of its fractional part.
+    if not np.allclose(values, np.rint(values), rtol=0, atol=1e-8):
         return False, "counts are not integer-valued raw counts"
     return True, None
 
@@ -827,8 +901,18 @@ def _load_data(
             raise ValueError(reason)
         if not adata.obs_names.is_unique:
             raise ValueError("h5ad cell IDs are not unique")
+        if not adata.var_names.is_unique:
+            duplicates = (
+                adata.var_names[adata.var_names.duplicated()].unique().tolist()[:5]
+            )
+            raise ValueError(f"h5ad has duplicate gene IDs: {duplicates}")
         if not descriptive:
-            records = adata.obs[list(metadata_keys)].astype(str).to_dict("records")
+            metadata_frame = adata.obs[sorted(metadata_keys)]
+            # astype(str) would turn NaN into the truthy level "nan", which
+            # passes every nonempty gate and inflates donor counts.
+            if bool(metadata_frame.isna().any().any()):
+                raise ValueError("configured metadata columns contain missing values")
+            records = metadata_frame.astype(str).to_dict("records")
             confounding = _confounding_errors(records, config)
             if confounding:
                 raise ValueError("; ".join(confounding))
@@ -880,6 +964,21 @@ def _load_data(
     ok, reason = _is_raw_counts(adata.X, np)
     if not ok:
         raise ValueError(reason)
+    # Input obs columns that collide with pipeline outputs must not survive:
+    # a foreign confirmed_cell_type would become the DE grouping and foreign
+    # leiden_* columns would be exported as this run's assignments.
+    reserved = [
+        column
+        for column in adata.obs.columns
+        if column not in metadata_keys
+        and (column in _PIPELINE_OBS_COLUMNS or str(column).startswith("leiden_"))
+    ]
+    if reserved:
+        adata.obs = adata.obs.drop(columns=reserved)
+        warnings.append(
+            "Dropped input metadata columns reserved for pipeline outputs: "
+            + ", ".join(sorted(str(column) for column in reserved))
+        )
     adata.layers["counts"] = adata.X.copy()
     adata.obs_names_make_unique(join="-")
     return adata, warnings
@@ -1290,21 +1389,26 @@ def _replication_status(
 
 def _run_deseq(
     pseudobulk: Any, metadata: Any, config: Mapping[str, Any], output: Path, pd: Any
-) -> str:
+) -> tuple[str, list[str]]:
+    notes: list[str] = []
     if not config["statistics"].get("de", True):
-        return "not_requested"
+        return "not_requested", notes
     try:
         from pydeseq2.dds import DeseqDataSet
         from pydeseq2.ds import DeseqStats
     except ImportError:
-        return "failed_missing_dependency"
+        return "failed_missing_dependency", notes
     design = config["design"]
     condition = str(design["condition_key"])
     donor = str(design["donor_key"])
+    tested = str(design["tested"])
+    reference = str(design["reference"])
     covariates = [str(value) for value in design.get("covariates", [])]
     formula_terms = [donor] if design.get("paired") else covariates
     formula = "~ " + " + ".join([*formula_terms, condition])
     result_frames = []
+    skipped_groups: list[str] = []
+    failed_groups: list[str] = []
     gene_columns = [
         column
         for column in pseudobulk.columns
@@ -1312,6 +1416,17 @@ def _run_deseq(
     ]
     for group in sorted(metadata["analysis_group"].unique()):
         meta = metadata.loc[metadata["analysis_group"] == group].copy()
+        # The replication contract holds per fitted model, not just globally:
+        # every group must carry both contrast levels with three independent
+        # donors each, or its fit would be underpowered pseudoreplication
+        # (and a single-level group would abort the whole loop).
+        donors_by_level = {
+            level: int(meta.loc[meta[condition].astype(str) == level, donor].nunique())
+            for level in (reference, tested)
+        }
+        if any(count < 3 for count in donors_by_level.values()):
+            skipped_groups.append(str(group))
+            continue
         counts = pseudobulk.loc[
             pseudobulk["analysis_group"] == group, gene_columns
         ].copy()
@@ -1320,26 +1435,50 @@ def _run_deseq(
         keep = counts.sum(axis=0) > 0
         counts = counts.loc[:, keep].astype(int)
         if counts.shape[1] < 2:
+            skipped_groups.append(str(group))
             continue
-        dds = DeseqDataSet(
-            counts=counts, metadata=meta, design=formula, refit_cooks=True, n_cpus=1
-        )
-        dds.deseq2()
-        stats = DeseqStats(
-            dds,
-            contrast=[condition, str(design["tested"]), str(design["reference"])],
-            n_cpus=1,
-        )
-        stats.summary()
+        try:
+            dds = DeseqDataSet(
+                counts=counts,
+                metadata=meta,
+                design=formula,
+                refit_cooks=True,
+                n_cpus=1,
+            )
+            dds.deseq2()
+            stats = DeseqStats(
+                dds,
+                contrast=[condition, tested, reference],
+                n_cpus=1,
+            )
+            stats.summary()
+        except Exception as exc:  # one degenerate group must not abort the rest
+            failed_groups.append(f"{group}: {exc}")
+            continue
         frame = stats.results_df.reset_index().rename(columns={"index": "gene"})
         frame.insert(0, "analysis_group", group)
-        frame.insert(1, "tested", str(design["tested"]))
-        frame.insert(2, "reference", str(design["reference"]))
+        frame.insert(1, "tested", tested)
+        frame.insert(2, "reference", reference)
         result_frames.append(frame)
+    if skipped_groups:
+        notes.append(
+            "Pseudobulk DE skipped for groups without three donors per "
+            "contrast level or enough expressed genes: " + ", ".join(skipped_groups)
+        )
+    if failed_groups:
+        output.with_suffix(".error.txt").write_text(
+            "\n".join(failed_groups) + "\n", encoding="utf-8"
+        )
+        notes.append(
+            "Pseudobulk DE failed for groups: "
+            + ", ".join(item.split(":", 1)[0] for item in failed_groups)
+            + "; see the adjacent error file."
+        )
     if not result_frames:
-        return "skipped_no_testable_groups"
+        status = "failed" if failed_groups else "skipped_no_testable_groups"
+        return status, notes
     pd.concat(result_frames, ignore_index=True).to_csv(output, index=False)
-    return "completed"
+    return "completed", notes
 
 
 def _run_milo(adata: Any, config: Mapping[str, Any], output: Path) -> str:
@@ -1719,9 +1858,18 @@ def _run(
         return _result(output, manifest)
     manifest["stages"]["preflight"] = "completed"
 
+    def _checkpoint_manifest() -> None:
+        # Persist progress after every completed stage so an interrupted run
+        # can resume from the last durable stage instead of recomputing
+        # everything; the file inventory is finalized only at the end.
+        _write_json(output / "run_manifest.json", manifest)
+
+    _checkpoint_manifest()
     try:
-        if resolved["analysis_mode"] == "descriptive":
-            _remove_inferential_outputs(output)
+        # The statistics stage always re-runs, so inferential outputs from a
+        # previous run in this directory must never survive into this run's
+        # manifest, featured files, or figures — in either analysis mode.
+        _remove_inferential_outputs(output)
         ad, np, pd, sc = _science_imports()
         if resume_index <= stage_order.index("qc"):
             adata, load_warnings = _load_data(resolved, np, pd, sc, ad)
@@ -1734,6 +1882,7 @@ def _run(
             cell_qc.to_csv(tables / "cell_qc.csv", index=False)
             qc_adata.write_h5ad(output / STAGE_FILES["qc"], compression="gzip")
             manifest["stages"]["qc"] = "completed"
+            _checkpoint_manifest()
         else:
             qc_adata = sc.read_h5ad(output / STAGE_FILES["qc"])
             qc_summary = pd.read_csv(tables / "qc_summary.csv")
@@ -1742,13 +1891,13 @@ def _run(
             embedded = _run_embedding(qc_adata, resolved, sc)
             embedded.write_h5ad(output / STAGE_FILES["embedding"], compression="gzip")
             manifest["stages"]["embedding"] = "completed"
+            _checkpoint_manifest()
         else:
             embedded = sc.read_h5ad(output / STAGE_FILES["embedding"])
 
         if resume_index <= stage_order.index("clustering"):
             clustered = _run_clustering(embedded, resolved, sc)
             clustered.write_h5ad(output / STAGE_FILES["clustering"], compression="gzip")
-            manifest["stages"]["clustering"] = "completed"
             cluster_columns = [
                 column
                 for column in clustered.obs.columns
@@ -1758,6 +1907,11 @@ def _run(
             cluster_assignments.insert(0, "cell_id", clustered.obs_names.astype(str))
             cluster_assignments.to_csv(tables / "cluster_assignments.csv", index=False)
             _write_markers(clustered, tables / "cluster_markers.csv", pd, sc)
+            # Only durable once every clustering output exists: marking the
+            # stage completed before its tables would let a resume treat a
+            # markerless run as finished.
+            manifest["stages"]["clustering"] = "completed"
+            _checkpoint_manifest()
         else:
             clustered = sc.read_h5ad(output / STAGE_FILES["clustering"])
 
@@ -1766,8 +1920,12 @@ def _run(
                 clustered, resolved, pd, np
             )
             manifest["warnings"].extend(annotation_warnings)
+            evidence_path = tables / "annotation_evidence.csv"
+            # Remove first: a prior run's evidence table must not survive a
+            # rerun that computes no evidence.
+            evidence_path.unlink(missing_ok=True)
             if not evidence.empty:
-                evidence.to_csv(tables / "annotation_evidence.csv", index=False)
+                evidence.to_csv(evidence_path, index=False)
             annotation_columns = [
                 column
                 for column in (
@@ -1786,6 +1944,7 @@ def _run(
             annotated.uns["openai4s_annotation_status"] = annotation_status
             annotated.write_h5ad(output / STAGE_FILES["annotation"], compression="gzip")
             manifest["stages"]["annotation"] = "completed"
+            _checkpoint_manifest()
         else:
             annotated = sc.read_h5ad(output / STAGE_FILES["annotation"])
             annotation_status = str(
@@ -1807,13 +1966,14 @@ def _run(
             manifest["statistics_group_key"] = group_key
             if enough:
                 try:
-                    de_status = _run_deseq(
+                    de_status, de_notes = _run_deseq(
                         pseudobulk,
                         metadata,
                         resolved,
                         tables / "differential_expression.csv",
                         pd,
                     )
+                    manifest["warnings"].extend(de_notes)
                 except Exception as exc:
                     de_status = "failed"
                     manifest["warnings"].append(f"Pseudobulk DE failed: {exc}")
@@ -1831,6 +1991,17 @@ def _run(
                     "DE/DA skipped: each contrast level requires at least three independent donors."
                 )
         manifest["statistics_status"] = {"de": de_status, "da": da_status}
+        # A failed or dependency-missing inferential step must be visible in
+        # the run status, not only in a structured field nobody reads.
+        for kind, label in (
+            ("de", "differential expression"),
+            ("da", "differential abundance"),
+        ):
+            status = str(manifest["statistics_status"][kind])
+            if status.startswith("failed"):
+                manifest["warnings"].append(
+                    f"Requested {label} did not complete: {status}."
+                )
         manifest["stages"]["statistics"] = "completed"
 
         annotated.uns["openai4s"] = {
@@ -1878,16 +2049,45 @@ def resume(run_dir: str | os.PathLike[str]) -> dict[str, Any]:
         raise ValueError(f"missing resolved configuration: {config_path}")
     config = _read_json(config_path)
     check = preflight(config)
+    if check["status"] != "valid":
+        # A run that cannot be validated right now (missing input, transient
+        # mount failure, revoked path) must not be dismantled: report the
+        # failure without touching any deliverable on disk.
+        return {
+            "status": "failed",
+            "analysis_mode": (check.get("resolved_config") or {}).get(
+                "analysis_mode", "comparative"
+            ),
+            "run_dir": str(output),
+            "featured_files": [],
+            "warnings": list(check.get("warnings", [])),
+            "errors": list(check.get("errors", [])),
+            "annotation_status": "not_started",
+            "statistics_status": {"de": "not_started", "da": "not_started"},
+            "manifest": str(output / "run_manifest.json"),
+        }
+    current_hashes = _stage_hashes(
+        check["resolved_config"], check.get("input_fingerprint")
+    )
     manifest_path = output / "run_manifest.json"
     prior_manifest: dict[str, Any] | None = None
-    if manifest_path.exists() and check["status"] == "valid":
-        prior_manifest = _read_json(manifest_path)
+    if manifest_path.exists():
+        try:
+            prior_manifest = _read_json(manifest_path)
+        except ValueError:
+            # A torn or tampered manifest means the prior state cannot be
+            # trusted; rebuild instead of crashing.
+            prior_manifest = None
+    if prior_manifest is not None:
         same_config = prior_manifest.get("config_sha256") == _config_sha(
             check["resolved_config"]
         )
         same_input = prior_manifest.get("input_fingerprint") == check.get(
             "input_fingerprint"
         )
+        # Stage hashes cover what config_sha/input_fingerprint cannot: the
+        # contents of annotation side-input files named by path.
+        same_stages = (prior_manifest.get("stage_hashes") or {}) == current_hashes
         deliverables_intact = all(
             path.exists()
             for path in (
@@ -1902,6 +2102,7 @@ def resume(run_dir: str | os.PathLike[str]) -> dict[str, Any]:
         if (
             same_config
             and same_input
+            and same_stages
             and deliverables_intact
             and prior_manifest.get("status")
             in {
@@ -1919,11 +2120,6 @@ def resume(run_dir: str | os.PathLike[str]) -> dict[str, Any]:
         "annotation",
         "statistics",
     ]
-    current_hashes = (
-        _stage_hashes(check["resolved_config"], check.get("input_fingerprint"))
-        if check["status"] == "valid"
-        else {}
-    )
     earliest = "preflight"
     if prior_manifest and current_hashes:
         prior_hashes = prior_manifest.get("stage_hashes") or {}

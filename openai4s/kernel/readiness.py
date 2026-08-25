@@ -47,7 +47,11 @@ _APPLY_REPAIR_COMMAND = (
     *STANDARD_ENVIRONMENTS,
     "--repair",
 )
-_DEPENDENCY_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\s*(?:[<>=!~].*)?)$")
+_DEPENDENCY_NAME = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9._-]*)"
+    r"(?:\[[A-Za-z0-9._,\s-]+\])?"  # pip extras, e.g. scanpy[harmony,skmisc]
+    r"(?:\s*(?:[<>=!~].*)?)$"
+)
 
 
 class _ManifestError(ValueError):
