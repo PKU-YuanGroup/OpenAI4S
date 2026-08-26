@@ -9999,7 +9999,12 @@ function notebookExportHref(frameId, option) {
    A read-only surface over /frames/{fid}/execution-sources (the frame tree +
    cell metadata) and each frame's own /execution-log (the code text). It is
    the execution HISTORY — failures included — and deliberately distinct from
-   Artifacts/deliverables; the note in the header says so in both languages. */
+   Artifacts/deliverables; the note in the header says so in both languages.
+   The navigator's counts come from execution-sources (the raw history,
+   protocol-only completion cells included), while the per-frame body renders
+   /execution-log (the Notebook's curated view, which hides those), so a
+   frame's count may exceed its rendered cells — intentional, documented on
+   both routes in docs/webapp-api.md. */
 function execSourcesState() {
   if (!S.execSources) S.execSources = { open: false, data: null, selected: null, cells: {}, loading: false, error: "", request: 0 };
   return S.execSources;

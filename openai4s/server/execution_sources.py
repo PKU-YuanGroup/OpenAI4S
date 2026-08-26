@@ -25,6 +25,13 @@ and interrupted cells are included and marked — dropping them would make the
 archive describe a run that went smoothly, which is the one thing a reader
 must not conclude.
 
+Both surfaces are deliberately the RAW execution history: rows the
+read-only Notebook projection hides (protocol-only ``host.submit_output``
+completion cells, non-scientific unpinned cells) are counted, listed, and
+exported here.  Per-frame ``counts`` can therefore exceed the entries the
+frame's own ``/execution-log`` route renders — that route is the Notebook's
+curated view; this one is the audit trail.
+
 Determinism: fixed ZIP timestamps, sorted entries, canonical JSON, and a
 ``generated_at`` DERIVED from the newest stored ``created_at`` rather than
 from the wall clock, so exporting the same durable history twice — including
