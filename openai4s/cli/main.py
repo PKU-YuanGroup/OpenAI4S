@@ -1941,16 +1941,19 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    from openai4s.agent.task_modes import TaskMode
+
     pr.add_argument(
         "--mode",
-        choices=["analysis_run", "reusable_pipeline", "codebase_change"],
+        choices=[mode.value for mode in TaskMode],
         default=None,
         help=(
             "task mode. Omitted, it is detected conservatively from the task "
-            "text and defaults to analysis_run. reusable_pipeline and "
-            "codebase_change require the run to save source files, keep a thin "
-            "entry point, and back its completion with verified source/entry-"
-            "point/test evidence"
+            "text (guidance only — detection never gates completion) and "
+            "defaults to analysis_run. Selecting reusable_pipeline or "
+            "codebase_change explicitly requires the run to save source "
+            "files, keep a thin entry point, and back its completion with "
+            "verified source/entry-point/test evidence"
         ),
     )
     pr.add_argument(

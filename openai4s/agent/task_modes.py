@@ -16,16 +16,23 @@ Three modes:
     The deliverable is saved source code in an existing project, plus the
     evidence that it still works.
 
-Selection has two doors. An **explicit** selection always wins — the Web body
-field ``task_mode`` and the CLI ``--mode`` flag — and an unrecognised explicit
-value raises rather than falling through to detection, so the door cannot
-degrade into a suggestion. Otherwise the request text is classified by a
-deliberately conservative rule set: a mode needs a *target* signal (the thing
-being engineered) AND an *action* signal (the request to engineer it), both
-matched on word boundaries. One signal alone is a topic word, not a request,
-and stays ``analysis_run`` — a false pipeline/codebase mode imposes required
-source/entry-point/test evidence on a turn that has none of it, which refuses
-an honest completion. The bias is documented, tested, and one-directional.
+Selection has two doors, and only one of them is binding. An **explicit**
+selection always wins — the Web body field ``task_mode`` and the CLI
+``--mode`` flag — and an unrecognised explicit value raises rather than
+falling through to detection, so the door cannot degrade into a suggestion.
+Otherwise the request text is classified by a deliberately conservative rule
+set: a mode needs a *target* signal (the thing being engineered) AND an
+*action* signal (the request to engineer it), both matched on word boundaries.
+One signal alone is a topic word, not a request, and stays ``analysis_run``.
+
+A **detected** mode only guides: it selects the prompt fragment (with an
+honest advisory note appended — see :func:`task_mode_prompt`) and never arms
+the required, Host-verified completion evidence. Words like ``code`` and
+``rerun`` are common in this product's own domain, so any classifier over
+prose has false positives — and each false positive that armed the
+requirement refused an honest completion (advice-only answers included).
+Owning loops therefore stamp the dispatcher's binding mode only for an
+explicit selection.
 """
 
 from __future__ import annotations
@@ -178,11 +185,21 @@ def resolve_task_mode(
     return TaskMode.ANALYSIS_RUN
 
 
-def task_mode_prompt(mode: str | TaskMode) -> str:
-    """The per-turn prompt fragment for ``mode`` (``""`` for the default)."""
+def task_mode_prompt(mode: str | TaskMode, *, explicit: bool = True) -> str:
+    """The per-turn prompt fragment for ``mode`` (``""`` for the default).
+
+    ``explicit=False`` marks a mode that was *detected* rather than selected:
+    the same fragment is returned with an honest advisory note appended,
+    because on such a turn the Host does not verify (or require) the code
+    evidence and the fragment must not promise that it will. The default keeps
+    the registry fragment byte for byte.
+    """
 
     resolved = _coerce(mode)
     name = TASK_MODE_PROMPT_NAMES.get(resolved.value)
     if name is None:
         return ""
-    return prompts.build(name)
+    body = prompts.build(name)
+    if explicit:
+        return body
+    return body + "\n\n" + prompts.TASK_MODE_DETECTED_NOTE

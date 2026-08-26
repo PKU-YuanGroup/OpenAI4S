@@ -234,6 +234,23 @@ How to work:
 {_TASK_MODE_SHARED_COMPLETION}"""
 
 
+#: Appended to a mode fragment when the mode was DETECTED from the request
+#: text rather than selected explicitly. Detection guides; it must never make
+#: required, Host-verified evidence out of a turn nobody asked to be strict
+#: about — a two-signal classifier over prose has false positives, and each
+#: one would refuse an honest completion. So on a detected turn the fragment
+#: tells the truth: the declarations stay advisory, and a misread never gates
+#: the answer.
+TASK_MODE_DETECTED_NOTE = """\
+(This mode was inferred from the request text, not selected explicitly. The
+structure guidance above applies, but the completion declarations stay
+advisory on this turn: declare the fields when you actually produced source
+code, and if the inference misread the request, simply answer it — an
+inferred mode never blocks completion. The declarations become required and
+Host-verified only when the mode is selected explicitly, via the Web
+`task_mode` field or `openai4s run --mode`.)"""
+
+
 _REGISTRY: dict[str, str] = {
     "summary_fork": SUMMARY_FORK,
     "conclusion_gate": CONCLUSION_GATE,

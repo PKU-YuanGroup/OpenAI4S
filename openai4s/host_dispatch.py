@@ -1439,12 +1439,17 @@ class HostDispatcher:
         self.workspace_path = Path(path).resolve()
 
     def set_task_mode(self, mode: str | None) -> None:
-        """Bind the current turn's task mode for the completion contract.
+        """Bind the current turn's BINDING task mode for the completion contract.
 
         Plain string on purpose: the vocabulary is owned by
         ``openai4s.agent.task_modes`` and the *requirement* by
         ``openai4s.host.code_evidence``; the Host layer only carries the value
-        so ``CompletionService`` can read which turn it is validating.
+        so ``CompletionService`` can read which turn it is validating. Owning
+        loops stamp a mode here only when it was selected EXPLICITLY (CLI
+        ``--mode``, the Web ``task_mode`` body field); a mode detected from
+        request text stays advisory — prompt guidance only — and stamps
+        ``None``, so a classifier false positive can never make required
+        evidence out of a turn nobody asked to be strict about.
         """
         self._task_mode = str(mode) if mode else None
 

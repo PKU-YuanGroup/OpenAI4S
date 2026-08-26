@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
+from openai4s.agent.cell_record import DelegatedCellRecorder
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
@@ -33,6 +34,7 @@ from openai4s.agent.runtime import (
 )
 from openai4s.agent.task_modes import resolve_task_mode, task_mode_prompt
 from openai4s.config import Config, get_config
+from openai4s.host.code_evidence import EVIDENCE_REQUIRED_MODES
 from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel
 from openai4s.kernel.lazy import LazyKernel
@@ -530,6 +532,29 @@ class Agent:
         if readiness.get("ready") is not True:
             raise EnvironmentReadinessError(readiness)
 
+    def _install_cell_recorder(self) -> None:
+        """Give this Agent durable ``execution_log`` recording for its cells.
+
+        Delegated children get a recorder from the delegation runner; a root
+        CLI Agent historically recorded nothing, which made an explicit
+        code-mode completion contract unsatisfiable (its ``test_evidence``
+        must name a stored cell row). Idempotent: hooks handed in by an
+        embedder — or installed by a previous ``run`` — are left alone, and
+        the rows are keyed under this Agent's own frame with the same
+        ``origin="agent"`` the Web path records.
+        """
+
+        if self.cell_execution_hooks is not None or not self.frame_id:
+            return
+        store = getattr(self.dispatcher, "store", None)
+        if store is None:
+            return
+        recorder = DelegatedCellRecorder(
+            store, str(self.frame_id), origin="agent", log=self._log
+        )
+        recorder.bind_generation_source(self.current_kernel_generation_id)
+        self.cell_execution_hooks = recorder
+
     def run(self, task: str) -> dict:
         """Run one task through the shared engine and local runtime adapters."""
         assert self.dispatcher is not None
@@ -542,14 +567,28 @@ class Agent:
             return self._finish([], None, "cancelled")
         # The per-turn seam the Web path already had and this one did not: the
         # mode fragment rides on the USER message, never on the system prompt
-        # (which a delegated child and a reused Agent both compose once), and
-        # the resolved mode is handed to the dispatcher so the completion
-        # contract knows which evidence it must verify.
+        # (which a delegated child and a reused Agent both compose once).
+        # Only an EXPLICIT selection (`openai4s run --mode`, or an embedder
+        # setting `task_mode`) arms the completion contract; a detected mode
+        # guides the prompt and stamps no binding mode, because a classifier
+        # over prose has false positives and each one that armed the
+        # requirement refused an honest completion. Delegated children run
+        # through this same path with task_mode=None, so a child whose request
+        # text trips a signal inherits only the guidance, never the gate.
+        explicit = bool(self.task_mode is not None and str(self.task_mode).strip())
         mode = resolve_task_mode(task, explicit=self.task_mode)
         set_mode = getattr(self.dispatcher, "set_task_mode", None)
         if callable(set_mode):
-            set_mode(mode.value)
-        fragment = task_mode_prompt(mode)
+            set_mode(mode.value if explicit else None)
+        if explicit and mode.value in EVIDENCE_REQUIRED_MODES:
+            # The armed contract demands test_evidence naming real
+            # execution_log rows, and a root CLI Agent historically recorded
+            # none — which made the requirement unsatisfiable and the refusal
+            # ("this run never executed that cell") actively false. Recording
+            # rides the explicit contract only, so every other CLI run keeps
+            # its historical no-rows behaviour.
+            self._install_cell_recorder()
+        fragment = task_mode_prompt(mode, explicit=explicit)
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt()},
             {

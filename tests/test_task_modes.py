@@ -289,7 +289,13 @@ def test_web_turn_appends_the_detected_fragment_to_the_user_message_only(
 ):
     """Same seam `_EXPLORE_PROTOCOL` uses: the in-conversation user message
     carries the fragment, the durable message row stays exactly what was typed
-    (mode is a per-turn decision, and the system prompt is seeded once)."""
+    (mode is a per-turn decision, and the system prompt is seeded once).
+
+    A DETECTED mode guides and never arms: the dispatcher is stamped with no
+    binding mode, so the completion contract stays exactly analysis_run. A
+    two-signal classifier over prose is not consent to refuse an honest
+    completion — `rerun the pipeline` and `restructure the plot code` are
+    ordinary requests in this product's own domain."""
     text = "Refactor the repository so the loaders live in their own module"
     store, fid, calls, modes = _drive_web_turn(monkeypatch, tmp_path, text)
 
@@ -297,7 +303,7 @@ def test_web_turn_appends_the_detected_fragment_to_the_user_message_only(
     assert "[TASK MODE: codebase_change]" in sent
     assert sent.startswith(text)
     assert store.list_messages(fid)[0]["content"] == text
-    assert modes and modes[-1] == "codebase_change"
+    assert modes and modes[-1] is None
 
 
 def test_web_turn_on_an_analysis_request_injects_nothing(monkeypatch, tmp_path):
@@ -306,7 +312,25 @@ def test_web_turn_on_an_analysis_request_injects_nothing(monkeypatch, tmp_path):
 
     assert calls[0][-1]["content"] == text
     assert "[TASK MODE" not in calls[0][-1]["content"]
-    assert modes and modes[-1] == "analysis_run"
+    assert modes and modes[-1] is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Realistic phrasings that DO trip the two-signal detector. The
+        # completion contract must stay unarmed for every one of them,
+        # because none of these users asked for verified code evidence.
+        "rerun the pipeline with the new seeds",
+        "Please refactor my plotting code so the figure is cleaner "
+        "and split the helpers into their own module",
+    ],
+)
+def test_a_detection_false_positive_never_arms_the_web_completion_contract(
+    monkeypatch, tmp_path, text
+):
+    _store, _fid, _calls, modes = _drive_web_turn(monkeypatch, tmp_path, text)
+    assert modes and modes[-1] is None
 
 
 def test_web_body_task_mode_overrides_detection(monkeypatch, tmp_path):
@@ -405,8 +429,10 @@ def test_the_cli_agent_augments_its_own_user_message(monkeypatch, tmp_path):
     user = [m for m in conversation if m.get("role") == "user"]
     assert "[TASK MODE: reusable_pipeline]" in user[0]["content"]
     assert "[TASK MODE: codebase_change]" not in user[0]["content"]
-    # and the dispatcher heard the same resolution the prompt got
-    assert agent.dispatcher._task_mode == "reusable_pipeline"
+    # Detected, not selected: the fragment guides, the completion contract
+    # stays unarmed. Nothing about this run's text is consent to refuse an
+    # honest completion for missing source/entry-point/test evidence.
+    assert agent.dispatcher._task_mode is None
 
 
 def test_an_explicit_cli_mode_beats_the_agents_own_detection(monkeypatch, tmp_path):
@@ -429,3 +455,289 @@ def test_the_cli_run_subcommand_exposes_the_flag():
     assert parser.parse_args(["run", "do a thing"]).mode is None
     with pytest.raises(SystemExit):
         parser.parse_args(["run", "x", "--mode", "nonsense"])
+
+
+def test_the_cli_mode_choices_are_derived_from_the_enum():
+    """A fourth mode must reach the CLI surface without anyone remembering a
+    hardcoded list."""
+    import argparse
+
+    from openai4s.cli.main import build_parser
+
+    parser = build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    run_sub = subparsers.choices["run"]
+    mode_action = next(a for a in run_sub._actions if a.dest == "mode")
+    assert list(mode_action.choices) == [m.value for m in TaskMode]
+
+
+# --------------------------------------------------------------------------
+# detection guides; only explicit selection arms the completion contract
+# --------------------------------------------------------------------------
+
+
+def test_a_detected_code_mode_guides_but_never_arms_the_completion_contract(
+    monkeypatch, tmp_path
+):
+    """The regression that made ordinary turns uncompletable: a request whose
+    prose trips the detector must still be able to finish with a plain
+    analysis-shaped completion, on BOTH doors."""
+    seen: list = []
+    agent = _cli_agent(monkeypatch, tmp_path, seen)
+    agent.run("Refactor the parsing module so the helpers live in their own file.")
+
+    assert agent.dispatcher._task_mode is None
+    # submit_output door: an advice-only completion is accepted.
+    result = agent.dispatcher._completion_service.submit(
+        {
+            "output": {"summary": "Move the helpers into parsing/helpers.py."},
+            "completion_bullets": ["Explained the refactor"],
+        }
+    )
+    assert result == {"status": "ok"}
+    # finalize door: the shared verifier demands nothing either.
+    assert agent.dispatcher.verify_code_evidence({"summary": "advice"}) is None
+
+
+def test_an_explicit_code_mode_arms_the_contract_on_both_doors(monkeypatch, tmp_path):
+    seen: list = []
+    agent = _cli_agent(monkeypatch, tmp_path, seen, task_mode="codebase_change")
+    agent.run("tidy this up")
+
+    assert agent.dispatcher._task_mode == "codebase_change"
+    refusal = agent.dispatcher.verify_code_evidence({"summary": "done"})
+    assert refusal is not None
+    for field in ("source_files", "entry_points", "test_evidence"):
+        assert field in refusal
+    result = agent.dispatcher._completion_service.submit(
+        {"output": {"summary": "done"}, "completion_bullets": ["Tidied the code"]}
+    )
+    assert "error" in result and "source_files" in result["error"]
+
+
+def test_the_detected_fragment_carries_an_advisory_note_and_the_explicit_one_does_not():
+    """The fragment must not promise Host verification the turn will not run.
+    An explicit selection gets the verified-contract wording (and the registry
+    pin above stays byte-for-byte); a detected one is told, honestly, that the
+    declarations stay advisory and a misread never blocks completion."""
+    explicit = task_mode_prompt(TaskMode.CODEBASE_CHANGE)
+    detected = task_mode_prompt(TaskMode.CODEBASE_CHANGE, explicit=False)
+    assert explicit == prompts.build("task_mode_codebase_change")
+    assert detected.startswith(explicit)
+    note = detected[len(explicit) :]
+    assert "inferred" in note
+    assert "advisory" in note
+    assert "never blocks" in note
+    assert task_mode_prompt(TaskMode.ANALYSIS_RUN, explicit=False) == ""
+
+
+# --------------------------------------------------------------------------
+# an explicit code-mode CLI run records its cells — and can therefore finish
+# --------------------------------------------------------------------------
+
+
+def _recording_cli_agent(monkeypatch, tmp_path, replies, kernel_results, **kwargs):
+    """A real `Agent`/dispatcher/store; scripted provider; a kernel double
+    whose per-cell results (with stable ids) we control."""
+    from openai4s.agent import loop as loop_mod
+
+    queue = list(kernel_results)
+
+    class _Kernel:
+        def __init__(self, *a, **k):
+            pass
+
+        def execute(self, *a, **k):
+            return dict(queue.pop(0)) if queue else {"stdout": "", "error": None}
+
+        def shutdown(self):
+            pass
+
+    calls = {"n": 0}
+
+    def scripted_chat(messages, cfg, **kw):
+        del messages, cfg, kw
+        index = min(calls["n"], len(replies) - 1)
+        calls["n"] += 1
+        return {"content": replies[index], "usage": {}}
+
+    monkeypatch.setattr(loop_mod, "Kernel", _Kernel)
+    monkeypatch.setattr(loop_mod, "chat", scripted_chat)
+    return loop_mod.Agent(
+        cfg=_web_cfg(tmp_path),
+        max_turns=2,
+        use_skills=False,
+        allow_delegate=False,
+        workspace=str(tmp_path),
+        **kwargs,
+    )
+
+
+def test_an_explicit_code_mode_run_records_cells_under_the_agents_frame(
+    monkeypatch, tmp_path
+):
+    """The blocking defect: a root CLI Agent wrote no execution_log rows, so
+    `test_evidence` could NEVER verify and `openai4s run --mode codebase_change`
+    was a flag that could not succeed."""
+    agent = _recording_cli_agent(
+        monkeypatch,
+        tmp_path,
+        replies=["```python\nprint('3 passed')\n```", "done."],
+        kernel_results=[
+            {"id": "cell-known-1", "stdout": "3 passed in 0.01s\n", "error": None}
+        ],
+        task_mode="codebase_change",
+    )
+    agent.run("tidy the helpers into a module")
+
+    row = agent.dispatcher.store.cell_detail("cell-known-1")
+    assert row is not None
+    assert row["status"] == "ok"
+    assert row["root_frame_id"] == agent.frame_id
+    assert row["origin"] == "agent"
+    assert row["stdout"] == "3 passed in 0.01s\n"
+
+
+def test_a_detected_mode_run_stays_unrecorded_like_every_cli_run_before_it(
+    monkeypatch, tmp_path
+):
+    """Recording rides the explicit contract only — an ordinary CLI run keeps
+    its historical no-rows behaviour byte for byte."""
+    agent = _recording_cli_agent(
+        monkeypatch,
+        tmp_path,
+        replies=["```python\nprint('x')\n```", "done."],
+        kernel_results=[{"id": "cell-unrec-1", "stdout": "x\n", "error": None}],
+    )
+    agent.run("refactor the parsing module so the helpers live in their own file")
+    assert agent.dispatcher.store.cell_detail("cell-unrec-1") is None
+
+
+def test_the_recorded_cell_backs_a_full_circle_codebase_completion(
+    monkeypatch, tmp_path
+):
+    import hashlib
+
+    agent = _recording_cli_agent(
+        monkeypatch,
+        tmp_path,
+        replies=["```python\nprint('2 passed')\n```", "done."],
+        kernel_results=[
+            {"id": "cell-tests-1", "stdout": "2 passed in 0.02s\n", "error": None}
+        ],
+        task_mode="codebase_change",
+    )
+    agent.run("move the helpers into their own module")
+
+    source = tmp_path / "helpers.py"
+    source.write_text("def helper(x):\n    return x + 1\n", encoding="utf-8")
+    agent.dispatcher.store.save_artifact(
+        path=str(source),
+        filename="helpers.py",
+        content_type="text/x-python",
+        size_bytes=source.stat().st_size,
+        checksum=hashlib.sha256(source.read_bytes()).hexdigest(),
+        frame_id=agent.frame_id,
+        root_frame_id=agent.frame_id,
+        project_id="default",
+    )
+    result = agent.dispatcher(
+        "submit_output",
+        [
+            {
+                "output": {"summary": "helpers.py owns the shared helpers."},
+                "completion_bullets": ["Wrote helpers.py and ran its tests"],
+                "source_files": [{"path": "helpers.py"}],
+                "entry_points": ["helpers.py"],
+                "architecture_summary": "helpers.py owns the shared helpers.",
+                "test_evidence": [
+                    {
+                        "command": "python -m pytest tests/",
+                        "producing_cell_id": "cell-tests-1",
+                    }
+                ],
+            }
+        ],
+    )
+    assert result == {"status": "ok"}
+    assert agent.dispatcher.last_output is not None
+    assert agent.dispatcher.last_output["entry_points"] == ["helpers.py"]
+
+
+def test_a_codebase_change_run_completes_end_to_end_with_a_real_kernel(
+    monkeypatch, tmp_path
+):
+    """The reviewer's exact scenario, now green: a run that writes the module,
+    saves the artifact, runs the test in a real recorded cell, and submits
+    naming that cell's REAL id must be accepted — not told the cell it just
+    ran never executed."""
+    from openai4s.agent import loop as loop_mod
+
+    reply_write = (
+        "```python\n"
+        "from pathlib import Path\n"
+        "Path('convert.py').write_text(\n"
+        "    'def convert(value):\\n    return int(value) * 2\\n',\n"
+        "    encoding='utf-8',\n"
+        ")\n"
+        "host.save_artifact('convert.py', 'convert.py')\n"
+        "import importlib.util\n"
+        "spec = importlib.util.spec_from_file_location('convert', 'convert.py')\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "assert module.convert('3') == 6\n"
+        "print('convert smoke: 1 test passed')\n"
+        "```"
+    )
+    reply_submit = (
+        "```python\n"
+        "rows = host.query(\n"
+        '    "SELECT producing_cell_id FROM my_execution_log '
+        "WHERE status='ok' ORDER BY cell_seq DESC LIMIT 1\"\n"
+        ")\n"
+        "cell_id = rows[0]['producing_cell_id']\n"
+        "host.submit_output(\n"
+        "    {'summary': 'convert.py owns the conversion helper; "
+        "its smoke test ran in a recorded cell.'},\n"
+        "    ['Wrote convert.py and ran its smoke test'],\n"
+        "    source_files=[{'path': 'convert.py'}],\n"
+        "    entry_points=['convert.py'],\n"
+        "    architecture_summary='convert.py owns the numeric conversion helper.',\n"
+        "    test_evidence=[{'command': 'python convert smoke test', "
+        "'producing_cell_id': cell_id}],\n"
+        ")\n"
+        "```"
+    )
+    replies = [reply_write, reply_submit]
+    calls = {"n": 0}
+
+    def scripted_chat(messages, cfg, **kw):
+        del messages, cfg, kw
+        index = min(calls["n"], len(replies) - 1)
+        calls["n"] += 1
+        return {"content": replies[index], "usage": {}}
+
+    monkeypatch.setattr(loop_mod, "chat", scripted_chat)
+    agent = loop_mod.Agent(
+        cfg=_web_cfg(tmp_path),
+        max_turns=3,
+        use_skills=False,
+        allow_delegate=False,
+        workspace=str(tmp_path),
+        task_mode="codebase_change",
+    )
+    result = agent.run("Refactor the conversion helper into its own module file.")
+
+    assert result["stop_reason"] == "submitted", result
+    submitted = result["submitted_output"]
+    assert submitted["output"]["summary"].startswith("convert.py owns")
+    assert submitted["source_files"] == [{"path": "convert.py"}]
+    # and the evidence really is durable: the named cell is a stored row
+    cell_id = submitted["test_evidence"][0]["producing_cell_id"]
+    row = agent.dispatcher.store.cell_detail(cell_id)
+    assert row is not None and row["status"] == "ok"
+    assert "1 test passed" in (row["stdout"] or "")

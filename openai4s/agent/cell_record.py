@@ -43,11 +43,17 @@ class DelegatedCellRecorder:
         *,
         generation_id_for: Callable[[str], str | None] | None = None,
         log: Callable[[str], None] | None = None,
+        origin: str = "delegate",
     ) -> None:
+        # ``origin`` defaults to the delegated-child stamp this recorder was
+        # built for; a root CLI Agent reuses the same recorder with
+        # ``origin="agent"`` (the log_cell default the Web path records), so
+        # an explicit code-mode run's test_evidence can name real rows.
         self._store = store
         self._frame_id = str(frame_id)
         self._generation_id_for = generation_id_for
         self._log = log
+        self._origin = str(origin)
         self._lock = threading.Lock()
         self._ordinal: int | None = None
         self._project_id: str | None = None
@@ -104,7 +110,7 @@ class DelegatedCellRecorder:
                 project_id=self._project_locked(),
                 code=code,
                 result=row_result,
-                origin="delegate",
+                origin=self._origin,
                 cell_seq=ordinal,
                 cell_index=ordinal,
                 kernel_id=("r" if language == "r" else "python"),

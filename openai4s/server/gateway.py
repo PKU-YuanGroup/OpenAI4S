@@ -1787,8 +1787,14 @@ class SessionState:
         # Which KIND of task this turn is. Resolved per turn (explicit body
         # field first, else a conservative classification of the user's text)
         # and re-stamped on every turn, because a session's second request can
-        # be a different kind of work from its first.
+        # be a different kind of work from its first. `task_mode_binding`
+        # records whether the mode was SELECTED rather than detected: only a
+        # selected mode arms the required, Host-verified completion evidence —
+        # a detected one drives the (advisory) prompt fragment and nothing
+        # else, because a classifier false positive must never refuse an
+        # honest completion.
         self.task_mode: str = TaskMode.ANALYSIS_RUN.value
+        self.task_mode_binding: bool = False
         self.last_model_prose: str = ""
         self.last_engine_completion = None
         # Set only around one AgentEngine CodeCell dispatch so the compatible
@@ -8983,6 +8989,7 @@ class SessionRunner:
         # different kind of work. An invalid explicit selection is a 400 at
         # `submit_message`; a direct caller gets the same ValueError shape.
         st.task_mode = resolve_task_mode(user_text, explicit=task_mode).value
+        st.task_mode_binding = bool(task_mode is not None and str(task_mode).strip())
         # Frozen above the `processing` event rather than in the failure
         # handler, because that event is how a *queued* turn announces itself:
         # its 202 resolved while an earlier turn still owned the screen, so the
@@ -9011,9 +9018,12 @@ class SessionRunner:
             # After the runtime exists: the completion contract reads the mode
             # off the dispatcher to decide whether source/entry-point/test
             # evidence is required and verified for this turn's submission.
+            # Only an EXPLICIT selection is stamped; a detected mode guides
+            # the prompt fragment below and arms nothing (None also clears a
+            # previous turn's explicit stamp from this session's dispatcher).
             set_mode = getattr(st.dispatcher, "set_task_mode", None)
             if callable(set_mode):
-                set_mode(st.task_mode)
+                set_mode(st.task_mode if st.task_mode_binding else None)
             self._seed_messages(st)
             self.store.update_frame(root_frame_id, status="processing")
             emit(
@@ -9085,7 +9095,9 @@ class SessionRunner:
                 )
             if st.explore:
                 resolved = resolved + "\n\n" + _EXPLORE_PROTOCOL
-            mode_fragment = task_mode_prompt(st.task_mode)
+            mode_fragment = task_mode_prompt(
+                st.task_mode, explicit=st.task_mode_binding
+            )
             if mode_fragment:
                 resolved = resolved + "\n\n" + mode_fragment
             # attach the pinned figure(s) with the pin marker drawn on, so a

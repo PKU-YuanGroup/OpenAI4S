@@ -337,6 +337,39 @@ def test_a_forged_cell_id_is_refused(tree):
     assert error and "never executed" in error
 
 
+def test_an_empty_execution_log_is_named_instead_of_a_phantom_cell(tree):
+    """The refusal used to say the named cell 'this run never executed' even
+    when the runtime simply recorded no cells at all — actively false when the
+    cell DID run, and it sent the model into a repair loop chasing a phantom.
+    An empty log is its own, honest, refusal."""
+    context = CodeEvidenceContext(
+        search_roots=(tree,),
+        artifact_names=_context(tree).artifact_names,
+        cell_lookup=_Cells({}),
+        frame_id="frame-1",
+        has_cells=lambda: False,
+    )
+    error = verify_code_evidence(
+        _payload(tree), task_mode="codebase_change", context=context
+    )
+    assert error and "recorded no cells" in error
+    assert "never executed" not in error
+
+
+def test_a_missing_cell_in_a_recorded_runtime_keeps_the_phantom_wording(tree):
+    context = CodeEvidenceContext(
+        search_roots=(tree,),
+        artifact_names=_context(tree).artifact_names,
+        cell_lookup=_Cells({}),
+        frame_id="frame-1",
+        has_cells=lambda: True,
+    )
+    error = verify_code_evidence(
+        _payload(tree), task_mode="codebase_change", context=context
+    )
+    assert error and "never executed" in error
+
+
 def test_a_failed_cell_cannot_back_a_passing_claim(tree):
     cells = {
         "cell-7": {
@@ -605,4 +638,25 @@ def test_the_context_reads_artifact_names_and_the_execution_log_from_the_store(
         verify_code_evidence(payload, task_mode="codebase_change", context=context)
         is None
     )
+    store.close()
+
+
+def test_the_gathered_context_knows_whether_the_runtime_recorded_any_cells(
+    tmp_path,
+):
+    from openai4s.store import get_store
+
+    store = get_store(tmp_path / "cells.db")
+    frame = store.new_frame(kind="turn", project_id="default", status="ready")
+    empty = gather_code_evidence_context(store, frame, (tmp_path,))
+    assert empty.has_cells is not None and empty.has_cells() is False
+
+    store.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="print('x')",
+        result={"id": "cell-any", "status": "ok", "stdout": "x\n"},
+    )
+    recorded = gather_code_evidence_context(store, frame, (tmp_path,))
+    assert recorded.has_cells is not None and recorded.has_cells() is True
     store.close()

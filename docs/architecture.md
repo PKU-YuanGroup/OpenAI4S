@@ -429,15 +429,24 @@ and the fragment carries a scoped override of the "working directory holds only
 deliverables" clause, because in these modes the source files *are* the
 deliverable.
 
-The mode also changes what completion means. `host.submit_output(...)` and
-`finalize_response` both accept `source_files`, `entry_points`,
-`architecture_summary`, and `test_evidence`; in the two code modes they are
-required and verified by `host/code_evidence.py` before either door commits.
-Files must resolve inside the run's evidence roots, match a declared sha256,
-and be registered artifacts; a Python entry point must `compile()` from its own
-bytes and is never executed; and each test command names the cell that ran it,
-whose stored status and recorded stdout — never the model's description of them
-— decide whether it passed. An `analysis_run` completion is unchanged.
+Only an **explicit** selection changes what completion means; a detected mode
+is advisory (its fragment says so) and never gates completion, because words
+like `code` and `rerun` are common in this product's own domain and a
+classifier false positive that armed the requirement would refuse an honest
+completion — advice-only answers included. When a code mode is selected
+explicitly, `host.submit_output(...)` and `finalize_response` both accept
+`source_files`, `entry_points`, `architecture_summary`, and `test_evidence`,
+and `host/code_evidence.py` requires and verifies them before either door
+commits. Files must resolve inside the run's evidence roots, match a declared
+sha256, and be registered artifacts; a Python entry point must `compile()`
+from its own bytes and is never executed; and each test command names the cell
+that ran it, whose stored status and recorded stdout — never the model's
+description of them — decide whether it passed. So that this contract is
+satisfiable outside the Web gateway (which records every cell itself), a root
+CLI `Agent` running an explicit code mode installs the same cell recorder
+delegated children get, writing its cells to `execution_log` under its own
+frame with `origin="agent"`; every other CLI run keeps its historical no-rows
+behaviour. An `analysis_run` completion is unchanged.
 
 Scientific database breadth does not expand the model's tool count. The
 registry exposes only `science_list_dbs` and `science_search`; a connector

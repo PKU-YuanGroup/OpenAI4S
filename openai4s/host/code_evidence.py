@@ -7,7 +7,14 @@ imports, whether it was ever captured, or whether any test ran against it.
 
 For ``reusable_pipeline`` and ``codebase_change`` (see
 :mod:`openai4s.agent.task_modes`) the completion payload must therefore carry
-four fields, and each is verified against something the run cannot author:
+four fields, and each is verified against something the run cannot author.
+The owning loops stamp the dispatcher's binding mode only when the mode was
+selected EXPLICITLY (the Web ``task_mode`` body field, ``openai4s run
+--mode``); a mode merely detected from the request text drives the prompt
+fragment and never reaches this module, so a classifier false positive cannot
+refuse an honest completion. Fields volunteered on an unarmed turn ride the
+completion envelope as ordinary, unverified output. The four fields, and what
+each is verified against:
 
 ``source_files``
     Every file resolves inside an evidence root, exists, matches its declared
@@ -83,12 +90,19 @@ class CodeEvidenceContext:
     lowercased artifact filenames, ids and version ids. ``cell_lookup`` reads
     one ``execution_log`` row by producing cell id, and ``frame_id`` scopes it:
     a real row from someone else's session is not this run's evidence.
+
+    ``has_cells`` is a lazy probe — "did this runtime record ANY cell for this
+    run?" — consulted only when a named cell is missing, so the refusal can
+    honestly distinguish "this run never executed that cell" from "this
+    runtime records no cells at all". ``None`` means unknown and keeps the
+    former wording.
     """
 
     search_roots: tuple[Path, ...] = ()
     artifact_names: frozenset[str] = frozenset()
     cell_lookup: Callable[[str], Mapping[str, Any] | None] | None = None
     frame_id: str | None = None
+    has_cells: Callable[[], bool] | None = None
 
 
 def gather_code_evidence_context(
@@ -107,11 +121,15 @@ def gather_code_evidence_context(
     for row in store.list_artifact_names() or []:
         for key in ("filename", "artifact_id", "latest_version_id"):
             _add_name(names, row.get(key))
+    frame = str(frame_id) if frame_id else None
     return CodeEvidenceContext(
         search_roots=tuple(search_roots),
         artifact_names=frozenset(names),
         cell_lookup=store.cell_detail,
-        frame_id=str(frame_id) if frame_id else None,
+        frame_id=frame,
+        # Lazy on purpose: paid only on the refusal path, where the answer
+        # decides between two very different messages.
+        has_cells=(lambda: bool(store.list_cells(frame))) if frame else None,
     )
 
 
@@ -315,10 +333,29 @@ def _check_test_evidence(
         except Exception:  # noqa: BLE001 - an unreadable log is not a pass
             row = None
         if not isinstance(row, Mapping):
-            problems.append(
-                f"test evidence for {command!r} names cell {cell_id!r}, which "
-                "this run never executed"
-            )
+            recorded_any: bool | None = None
+            if context.has_cells is not None:
+                try:
+                    recorded_any = bool(context.has_cells())
+                except Exception:  # noqa: BLE001 - an unreadable log is unknown
+                    recorded_any = None
+            if recorded_any is False:
+                # A different failure with a different repair: the cell may
+                # well have run, but this runtime recorded no cells at all, so
+                # NO id could ever verify here. Saying "this run never
+                # executed it" would be actively false and send the model
+                # chasing a phantom.
+                problems.append(
+                    f"test evidence for {command!r} names cell {cell_id!r}, "
+                    "but this runtime recorded no cells at all for this run — "
+                    "its execution log is empty, so no cell id can back the "
+                    "claim"
+                )
+            else:
+                problems.append(
+                    f"test evidence for {command!r} names cell {cell_id!r}, "
+                    "which this run never executed"
+                )
             continue
         if context.frame_id and str(row.get("root_frame_id") or "") != context.frame_id:
             problems.append(
