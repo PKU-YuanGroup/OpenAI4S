@@ -10395,12 +10395,16 @@ function renderProvReview(body, a, lin) {
   captures.filter(capture => capture && (capture.capture_kind === "head_checksum_reused" || !cell)).forEach(capture => {
     const captureCard = el("div", "prov-card");
     const identity = publicText(capture.producing_cell_id || "unknown Cell", 96);
-    captureCard.appendChild(el("div", "prov-h", capture.cell_index != null ? t("prov.review.producedBy", capture.cell_index) : t("prov.review.producedByIdentity", identity)));
+    // A delegated capture's cell_index orders the CHILD frame's own log; a
+    // root-Notebook heading or view-code link for it would point at a root
+    // cell that does not exist.
+    const captureInRootNotebook = capture.cell_index != null && capture.frame_kind !== "delegate";
+    captureCard.appendChild(el("div", "prov-h", captureInRootNotebook ? t("prov.review.producedBy", capture.cell_index) : t("prov.review.producedByIdentity", identity)));
     const captureKind = capture.capture_kind === "head_checksum_reused" ? t("prov.review.sameBytesCapture") : t("prov.review.versionCapture");
     const frameMeta = capture.frame_id ? (" · " + t("prov.review.producerFrame", publicText(capture.frame_kind || "unknown", 32), publicText(capture.frame_id, 96))) : "";
     captureCard.appendChild(el("div", "prov-meta", captureKind + " · " + identity + frameMeta));
     if (Array.isArray(capture.inputs) && capture.inputs.length) captureCard.appendChild(provRow("reads / inputs", capture.inputs));
-    if (capture.cell_index != null) {
+    if (captureInRootNotebook) {
       const link = el("a", "prov-link"); link.appendChild(iconEl("arrow-left", 14)); link.appendChild(el("span", null, t("prov.review.viewCode"))); link.onclick = () => { S.provMode = false; setActiveTab("notebook"); scrollToCell(capture.cell_index, capture.kernel_id); }; captureCard.appendChild(link);
     }
     body.appendChild(captureCard);

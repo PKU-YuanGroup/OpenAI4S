@@ -275,6 +275,19 @@ def test_delegated_child_write_is_never_recaptured_as_parent_production(
         assert len(observations) == 1
         assert {row["frame_id"] for row in observations} == {child_frame_id}
         assert "parent-cell" not in {row["producing_cell_id"] for row in observations}
+        # The child Cell is durably recorded under its own delegate frame:
+        # frame_id = root_frame_id = child, origin "delegate" — reachable via
+        # cell_detail/frame_detail, never via the parent Notebook.
+        recorded = runner.store.cell_detail(version["producing_cell_id"])
+        assert recorded is not None, "the delegated child Cell was not recorded"
+        assert recorded["frame_id"] == child_frame_id
+        assert recorded["root_frame_id"] == child_frame_id
+        assert recorded["origin"] == "delegate"
+        assert recorded["status"] == "ok"
+        assert "delegated.txt" in recorded["code"]
+        assert (
+            runner.store.list_cells(frame_id) == []
+        ), "a child cell flattened into the parent session's Notebook log"
         lineage = ExecutionViewService(
             store=runner.store,
             format_timestamp=lambda value: str(value) if value is not None else None,
@@ -284,11 +297,16 @@ def test_delegated_child_write_is_never_recaptured_as_parent_production(
             "frame_id": child_frame_id,
             "frame_kind": "delegate",
             "producing_cell_id": version["producing_cell_id"],
-            "cell_recorded": False,
+            "cell_recorded": True,
         }
+        # No root-Notebook "cell" interaction is fabricated for a delegated
+        # producer — the UI would link it to a root cell that does not exist.
+        assert [item["kind"] for item in lineage["interactions"]] == ["save"]
         assert lineage["capture_observations"][0]["frame_id"] == child_frame_id
         assert lineage["capture_observations"][0]["frame_kind"] == "delegate"
-        assert lineage["capture_observations"][0]["cell_recorded"] is False
+        assert lineage["capture_observations"][0]["cell_recorded"] is True
+        assert lineage["capture_observations"][0]["cell_index"] == 1
+        assert lineage["capture_observations"][0]["language"] == "python"
     finally:
         runner.close()
 
@@ -384,6 +402,9 @@ def test_delegated_native_write_is_captured_under_the_child_frame(
             store=runner.store,
             format_timestamp=lambda value: str(value) if value is not None else None,
         ).artifact_lineage(artifact["artifact_id"])
+        # A native writer has no Cell identity, so there is nothing to record
+        # and cell_recorded stays honestly false even now that delegated
+        # Cells are recorded.
         assert lineage["producer"] == {
             "kind": "non_cell",
             "frame_id": child_frame_id,
@@ -392,6 +413,9 @@ def test_delegated_native_write_is_captured_under_the_child_frame(
             "cell_recorded": False,
         }
         assert "capture_observations" not in lineage
+        assert (
+            runner.store.list_cells(child_frame_id) == []
+        ), "a native-only child fabricated a phantom execution_log row"
     finally:
         runner.close()
 

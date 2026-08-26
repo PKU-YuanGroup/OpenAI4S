@@ -332,6 +332,11 @@ class KernelGenerationRecorder:
             self._open[language] = (generation_id, key)
         return generation_id
 
+    def current(self, language: str = "python") -> str | None:
+        """The open durable generation id for ``language``, if any."""
+        open_row = self._open.get(language)
+        return open_row[0] if open_row is not None else None
+
     def close(
         self, *, language: str | None = None, reason: str = "run_finished"
     ) -> None:

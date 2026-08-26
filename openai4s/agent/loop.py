@@ -787,6 +787,18 @@ class Agent:
             except Exception:  # noqa: BLE001
                 pass
 
+    def current_kernel_generation_id(self, language: str = "python") -> str | None:
+        """Durable generation id of this Agent's live worker, if registered.
+
+        The delegated-cell recorder reads this at each Cell boundary — the
+        same seam that registers the row — so a recorded child cell names the
+        exact worker generation that ran it.
+        """
+        recorder = self._generation_recorder
+        if recorder is None:
+            return None
+        return recorder.current(language)
+
     def interrupt_foreground(self) -> bool:
         """Interrupt only this Agent's current Python/R worker(s).
 

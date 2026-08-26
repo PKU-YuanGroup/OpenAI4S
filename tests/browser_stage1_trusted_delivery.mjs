@@ -725,7 +725,12 @@ async function runAcceptance() {
     const codeLineage = await requestApi(`/api/v1/artifacts/${encodeURIComponent(codeProducer.artifact_id)}/lineage`);
     const nativeLineage = await requestApi(`/api/v1/artifacts/${encodeURIComponent(nativeProducer.artifact_id)}/lineage`);
     assertion(codeLineage.status === 200, "delegated code lineage route failed");
-    assertion(codeLineage.body?.producer?.kind === "cell" && codeLineage.body.producer.frame_id === codeProducer.frame_id && codeLineage.body.producer.frame_kind === "delegate" && codeLineage.body.producer.producing_cell_id === codeProducer.producing_cell_id && codeLineage.body.producer.cell_recorded === false, "delegated code producer projection is untrue");
+    // Delegated child Cells are recorded in execution_log under their own
+    // delegate frame, so the producer projection now reports the durable
+    // record — while the interactions list stays save-only (no fabricated
+    // root-Notebook cell entry for a child frame's cell).
+    assertion(codeLineage.body?.producer?.kind === "cell" && codeLineage.body.producer.frame_id === codeProducer.frame_id && codeLineage.body.producer.frame_kind === "delegate" && codeLineage.body.producer.producing_cell_id === codeProducer.producing_cell_id && codeLineage.body.producer.cell_recorded === true, "delegated code producer projection is untrue");
+    assertion(Array.isArray(codeLineage.body?.interactions) && codeLineage.body.interactions.every((item) => item.kind !== "cell"), "delegated code producer fabricated a root-Notebook cell interaction");
     assertion(codeLineage.body?.capture_observations?.length === 1 && codeLineage.body.capture_observations[0].frame_id === codeProducer.frame_id && codeLineage.body.capture_observations[0].frame_kind === "delegate", "delegated code capture lost its child frame");
     assertion(nativeLineage.status === 200, "delegated native lineage route failed");
     assertion(nativeLineage.body?.producer?.kind === "non_cell" && nativeLineage.body.producer.frame_id === nativeProducer.frame_id && nativeLineage.body.producer.frame_kind === "delegate" && nativeLineage.body.producer.producing_cell_id == null, "delegated native producer projection fabricated a Cell");

@@ -326,7 +326,22 @@ class ExecutionViewService:
             if filename and filename not in all_known_reads:
                 all_known_reads.append(filename)
         inputs = [filename for filename in all_known_reads if filename not in outputs]
-        if cell:
+        # A recorded delegated Cell keys its execution_log row under its own
+        # delegate frame.  The interactions "cell" entry is the root
+        # Notebook's projection — the UI links it to a root cell index — so
+        # only a cell recorded under the artifact's own session may produce
+        # one; a delegated producer keeps its truthful Cell/frame identity in
+        # the producer and capture-observation DTOs instead of flattening
+        # into the parent Notebook.  Rows or artifacts without session keys
+        # (legacy/lightweight stores) keep the historical projection.
+        cell_session = (cell or {}).get("root_frame_id") or (cell or {}).get("frame_id")
+        artifact_session = artifact.get("root_frame_id")
+        cell_in_session = cell is not None and (
+            not cell_session
+            or not artifact_session
+            or str(cell_session) == str(artifact_session)
+        )
+        if cell_in_session:
             interactions.append(
                 {
                     "kind": "cell",

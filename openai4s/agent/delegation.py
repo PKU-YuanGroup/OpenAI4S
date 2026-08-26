@@ -27,6 +27,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from openai4s.agent.cell_record import DelegatedCellRecorder, compose_cell_hooks
 from openai4s.agent.models import KernelEnvSpec
 from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
@@ -946,6 +947,21 @@ class DelegationRunner:
                 f"leaf={child.depth >= MAX_DEPTH}"
             )
 
+        # Recording is unconditional whenever the child has a durable frame;
+        # the stage-1 Artifact capture hooks stay optional (their flag
+        # defaults off) and compose after the recorder so a capture failure
+        # can never lose the execution record.
+        recorder = (
+            DelegatedCellRecorder(self.store, child_frame_id)
+            if self.store is not None and child_frame_id
+            else None
+        )
+        capture_hooks = (
+            self.cell_hooks_factory(child_frame_id)
+            if self.cell_hooks_factory is not None and child_frame_id
+            else None
+        )
+
         token = _ACTIVE_DELEGATION.set((self._tree, child.child_id))
         agent: Any | None = None
         try:
@@ -969,11 +985,7 @@ class DelegationRunner:
                 context_policy=_SteeringContextPolicy(child_cfg, child, self._tree),
                 workspace=self.workspace,
                 read_isolation=self.read_isolation,
-                cell_execution_hooks=(
-                    self.cell_hooks_factory(child_frame_id)
-                    if self.cell_hooks_factory is not None and child_frame_id
-                    else None
-                ),
+                cell_execution_hooks=compose_cell_hooks(recorder, capture_hooks),
                 delegated_cell_hooks_factory=self.cell_hooks_factory,
                 env=self.env,
                 # Child kernel lifetimes become durable generation rows under
@@ -982,6 +994,10 @@ class DelegationRunner:
                 generations=self.store,
             )
             agent.dispatcher.set_child_execution_policy(execution_policy)
+            if recorder is not None:
+                # The Agent creates its generation registrar inside run(), so
+                # the reader is bound late and resolved per cell.
+                recorder.bind_generation_source(agent.current_kernel_generation_id)
             if child.attach_agent(agent):
                 return child.stopped_result()
             result = agent.run(_spec_to_task(spec))
