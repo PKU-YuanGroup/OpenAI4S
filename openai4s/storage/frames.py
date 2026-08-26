@@ -952,8 +952,11 @@ class FrameRepository:
                 (frame_id, page_size, page * page_size),
             ).fetchall()
             children = self._connection.execute(
+                # frame_id breaks created_at ties so same-millisecond delegate
+                # siblings keep one stable order (child export ordinals rely
+                # on this being deterministic across store generations).
                 "SELECT frame_id,kind,name,status,depth FROM frames "
-                "WHERE parent_id=? ORDER BY created_at ASC",
+                "WHERE parent_id=? ORDER BY created_at ASC, frame_id ASC",
                 (frame_id,),
             ).fetchall()
         page_count = max(1, (total + page_size - 1) // page_size)

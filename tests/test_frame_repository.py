@@ -456,6 +456,34 @@ def test_execution_log_status_json_fallback_append_only_and_clock(tmp_path):
         )
 
 
+def test_frame_detail_orders_same_instant_children_deterministically(tmp_path):
+    """Same-millisecond delegate siblings must keep one stable order.
+
+    ``ORDER BY created_at ASC`` alone leaves equal timestamps in unspecified
+    SQL order (in practice insertion rowid), so a rebuilt table could reorder
+    child ordinals and break the sources.zip byte-determinism promise;
+    ``frame_id`` is the tiebreaker.
+    """
+    store, repository, _clock = _repository(tmp_path)
+    parent = repository.new_frame(project_id="science")
+    first = repository.new_frame(parent_id=parent, kind="delegate", depth=1)
+    second = repository.new_frame(parent_id=parent, kind="delegate", depth=1)
+    # Rename so insertion (rowid) order z->a disagrees with id order, and
+    # give both the same created_at millisecond.
+    with store._lock:
+        store._conn.execute(
+            "UPDATE frames SET frame_id='z-child', created_at=5000 " "WHERE frame_id=?",
+            (first,),
+        )
+        store._conn.execute(
+            "UPDATE frames SET frame_id='a-child', created_at=5000 " "WHERE frame_id=?",
+            (second,),
+        )
+        store._conn.commit()
+    children = repository.frame_detail(parent)["children"]
+    assert [child["frame_id"] for child in children] == ["a-child", "z-child"]
+
+
 def test_list_cells_projects_the_stored_interrupted_flag(tmp_path):
     """``list_cells`` must surface the stored ``interrupted`` column as a bool.
 
