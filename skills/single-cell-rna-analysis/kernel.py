@@ -538,9 +538,10 @@ def _inspect_h5ad(
     counts_layer: str,
     config: Mapping[str, Any],
     inspect_metadata: bool = True,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], int | None]:
     errors: list[str] = []
     warnings: list[str] = []
+    sample_count: int | None = None
     try:
         import anndata as ad
         import numpy as np
@@ -548,7 +549,7 @@ def _inspect_h5ad(
         warnings.append(
             f"Raw-count and cell-metadata inspection deferred until run because anndata is unavailable: {path}"
         )
-        return errors, warnings
+        return errors, warnings, sample_count
     try:
         adata = ad.read_h5ad(path)
         if not adata.obs_names.is_unique:
@@ -565,6 +566,18 @@ def _inspect_h5ad(
             design = config["design"]
             sample_key = str(design.get("sample_key", "sample_id"))
             if config["analysis_mode"] == "descriptive":
+                leftovers = sorted(
+                    column
+                    for column in ("donor_id", "condition")
+                    if column in adata.obs.columns
+                )
+                if leftovers:
+                    errors.append(
+                        f"{path}: descriptive analysis input must not carry "
+                        "donor/condition metadata columns ("
+                        + ", ".join(leftovers)
+                        + "); remove them or run a comparative analysis"
+                    )
                 if sample_key in adata.obs.columns:
                     if bool(adata.obs[sample_key].isna().any()):
                         errors.append(f"{path}: sample identifiers must be nonempty")
@@ -599,6 +612,7 @@ def _inspect_h5ad(
                             f"{path}: configured metadata columns contain "
                             "missing values"
                         )
+                    sample_count = int(adata.obs[sample_key].astype(str).nunique())
                     records = (
                         adata.obs[list(metadata_keys)].astype(str).to_dict("records")
                     )
@@ -607,7 +621,7 @@ def _inspect_h5ad(
                     warnings.extend(f"{path}: {value}" for value in design_warnings)
     except (OSError, ValueError) as exc:
         errors.append(f"cannot inspect h5ad {path}: {exc}")
-    return errors, warnings
+    return errors, warnings, sample_count
 
 
 def _sha256_file(path: Path) -> str:
@@ -743,6 +757,7 @@ def preflight(config: Mapping[str, Any] | str | os.PathLike[str]) -> dict[str, A
         resolved = _resolved_config(config)
         errors, warnings = _config_errors(resolved)
         samples: list[dict] = []
+        inspected_count: int | None = None
         if not errors and resolved["input"]["mode"] == "sample_sheet":
             sample_errors, sample_warnings, samples = _sample_sheet_errors(resolved)
             errors.extend(sample_errors)
@@ -750,7 +765,7 @@ def preflight(config: Mapping[str, Any] | str | os.PathLike[str]) -> dict[str, A
             if not errors:
                 for row in samples:
                     if row["matrix_format"] == "h5ad":
-                        inspect_errors, inspect_warnings = _inspect_h5ad(
+                        inspect_errors, inspect_warnings, _ = _inspect_h5ad(
                             Path(row["matrix_path"]),
                             resolved["input"]["counts_layer"],
                             resolved,
@@ -759,7 +774,7 @@ def preflight(config: Mapping[str, Any] | str | os.PathLike[str]) -> dict[str, A
                         errors.extend(inspect_errors)
                         warnings.extend(inspect_warnings)
         elif not errors and resolved["input"]["mode"] == "h5ad":
-            inspect_errors, inspect_warnings = _inspect_h5ad(
+            inspect_errors, inspect_warnings, inspected_count = _inspect_h5ad(
                 Path(resolved["input"]["path"]),
                 resolved["input"]["counts_layer"],
                 resolved,
@@ -781,10 +796,12 @@ def preflight(config: Mapping[str, Any] | str | os.PathLike[str]) -> dict[str, A
                 len(samples)
                 if samples
                 else (
-                    1
-                    if not errors
-                    and resolved["analysis_mode"] == "descriptive"
-                    and resolved["input"]["mode"] == "h5ad"
+                    (
+                        1
+                        if resolved["analysis_mode"] == "descriptive"
+                        else inspected_count
+                    )
+                    if not errors and resolved["input"]["mode"] == "h5ad"
                     else None
                 )
             ),
@@ -889,6 +906,20 @@ def _load_data(
                 f"h5ad obs lacks configured metadata: {', '.join(missing)}"
             )
         if descriptive:
+            # The documented descriptive boundary is an object without design
+            # metadata; leftover donor/condition columns riding into outputs
+            # would imply inference this mode must never support.
+            leftovers = sorted(
+                column
+                for column in ("donor_id", "condition")
+                if column in adata.obs.columns
+            )
+            if leftovers:
+                raise ValueError(
+                    "descriptive analysis input must not carry donor/condition "
+                    "metadata columns (" + ", ".join(leftovers) + "); remove "
+                    "them or run a comparative analysis"
+                )
             if bool(adata.obs[sample_key].isna().any()):
                 raise ValueError("sample identifiers must be nonempty")
             sample_values = {str(value).strip() for value in adata.obs[sample_key]}
@@ -1309,10 +1340,12 @@ def _annotate(
             overlap = adata.var_names.intersection(reference.var_names)
             if len(overlap) < max(20, min(adata.n_vars, reference.n_vars) // 5):
                 raise ValueError("reference gene-space overlap is insufficient")
+            # Screening only: no label transfer is implemented, so the status
+            # must not claim reference-derived evidence that was never used.
             warnings.append(
-                "Reference h5ad passed compatibility screening; its labels remain candidate evidence."
+                "Reference h5ad passed compatibility screening only; no label "
+                "transfer was performed and its labels were not used."
             )
-            status = "candidate_labels_with_reference"
         except Exception as exc:
             warnings.append(f"Reference label-transfer evidence was not used: {exc}")
 
@@ -1344,6 +1377,15 @@ def _pseudobulk(
     group_key = (
         "confirmed_cell_type" if "confirmed_cell_type" in adata.obs else "cluster"
     )
+    if group_key == "confirmed_cell_type":
+        # Unmapped clusters stay Unknown, but they are distinct unconfirmed
+        # populations: pooling them into one pseudobulk unit would mix cell
+        # types inside the very unit DESeq2 treats as homogeneous.
+        labels = adata.obs["confirmed_cell_type"].astype(str)
+        clusters = adata.obs["cluster"].astype(str)
+        group_series = labels.where(labels != "Unknown", "Unknown:cluster_" + clusters)
+    else:
+        group_series = adata.obs[group_key].astype(str)
     metadata_keys = [
         sample_key,
         design["donor_key"],
@@ -1354,7 +1396,7 @@ def _pseudobulk(
     count_rows = []
     metadata_rows = []
     for (sample, group), indices in adata.obs.groupby(
-        [sample_key, group_key], observed=True
+        [sample_key, group_series], observed=True
     ).indices.items():
         summed = np.asarray(matrix[indices].sum(axis=0)).ravel().astype(int)
         row = {"sample_id": str(sample), "analysis_group": str(group)}

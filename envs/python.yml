@@ -49,12 +49,11 @@ dependencies:
   - pip
   - pip:
       - fair-esm==2.0.0
-      # Workflow-pinned CPU single-cell analysis stack. Scientific imports are
-      # lazy in the Skill. Pertpy 1.0.3 is the latest release compatible with
-      # this Python 3.11 environment and the pinned Scanpy 1.11.5.
+      # Workflow-pinned CPU single-cell core. Pertpy (Milo DA) stays OUT of
+      # the default env and the desktop bundle: its core hard-requires the
+      # Flax/NumPyro/ott-jax stack. Install it via the optional `singlecell`
+      # uv extra; the Skill degrades DA to failed_missing_dependency without it.
       - scanpy[harmony,skmisc]==1.11.5
-      - mudata<0.4
-      - pertpy[de]==1.0.3
       - pydeseq2==0.5.4
       # from PyPI so pip selects the bundled PDFium wheel matching this platform.
       - pypdfium2==5.9.0

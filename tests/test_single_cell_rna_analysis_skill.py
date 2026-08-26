@@ -160,7 +160,7 @@ def test_descriptive_preflight_accepts_single_h5ad_without_design_metadata(
 ):
     path = tmp_path / "pbmc3k.h5ad"
     path.write_bytes(b"synthetic-h5ad-placeholder")
-    monkeypatch.setattr(kernel, "_inspect_h5ad", lambda *args, **kwargs: ([], []))
+    monkeypatch.setattr(kernel, "_inspect_h5ad", lambda *args, **kwargs: ([], [], None))
 
     result = kernel.preflight(_descriptive_config(path))
 
@@ -393,6 +393,103 @@ def test_annotation_stage_hash_tracks_side_input_content(tmp_path, kernel):
     assert before["clustering"] == after["clustering"]
     assert before["annotation"] != after["annotation"]
     assert before["statistics"] != after["statistics"]
+
+
+def test_partial_confirmed_mapping_never_pools_unknown_clusters(kernel):
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+
+    class FakeAdata:
+        pass
+
+    adata = FakeAdata()
+    adata.obs = pd.DataFrame(
+        {
+            "sample_id": ["s1", "s1", "s1", "s1"],
+            "donor_id": ["d1", "d1", "d1", "d1"],
+            "condition": ["control", "control", "control", "control"],
+            "cluster": ["0", "1", "2", "2"],
+            "confirmed_cell_type": ["T", "Unknown", "Unknown", "Unknown"],
+        },
+        index=["c1", "c2", "c3", "c4"],
+    )
+    adata.layers = {"counts": np.eye(4, 2, dtype=np.int64)}
+    adata.var_names = pd.Index(["G1", "G2"])
+    config = kernel._resolved_config(_base_config(Path("unused")))
+
+    _, metadata, group_key = kernel._pseudobulk(adata, config, pd, np)
+
+    assert group_key == "confirmed_cell_type"
+    groups = set(metadata["analysis_group"])
+    # Clusters 1 and 2 are both unmapped but must stay separate units.
+    assert groups == {"T", "Unknown:cluster_1", "Unknown:cluster_2"}
+
+
+def test_descriptive_load_rejects_leftover_design_columns(tmp_path, kernel):
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+
+    class FakeAdata:
+        def __init__(self):
+            self.X = np.array([[1, 0], [0, 2]], dtype=np.int32)
+            self.obs = pd.DataFrame(
+                {"condition": ["stim", "stim"]}, index=["cell-1", "cell-2"]
+            )
+            self.obs_names = self.obs.index
+            self.var_names = pd.Index(["G1", "G2"])
+            self.layers = {}
+
+        def obs_names_make_unique(self, join="-"):
+            self.obs_names = self.obs_names.astype(str)
+
+    class FakeScanpy:
+        @staticmethod
+        def read_h5ad(path):
+            return FakeAdata()
+
+    path = tmp_path / "leftover.h5ad"
+    path.write_bytes(b"synthetic-h5ad-placeholder")
+    config = kernel._resolved_config(_descriptive_config(path))
+
+    with pytest.raises(ValueError, match="must not carry donor/condition"):
+        kernel._load_data(config, np, pd, FakeScanpy(), None)
+
+
+def test_reference_screening_does_not_claim_transfer(tmp_path, kernel):
+    ad = pytest.importorskip("anndata")
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("scanpy")
+    genes = [f"G{i}" for i in range(30)]
+    adata = ad.AnnData(
+        np.ones((2, 30)),
+        obs=pd.DataFrame({"cluster": pd.Categorical(["0", "1"])}),
+        var=pd.DataFrame(index=genes),
+    )
+    reference = ad.AnnData(
+        np.ones((2, 30)),
+        obs=pd.DataFrame({"cell_type": ["T", "NK"]}),
+        var=pd.DataFrame(index=genes),
+    )
+    reference_path = tmp_path / "reference.h5ad"
+    reference.write_h5ad(reference_path)
+    config = _base_config(Path("unused"))
+    config["annotation"] = {"reference_h5ad": str(reference_path)}
+    resolved = kernel._resolved_config(config)
+
+    _, status, warnings, _ = kernel._annotate(adata, resolved, pd, np)
+
+    # Screening alone must not elevate the status to a reference claim.
+    assert status == "not_requested"
+    assert any("no label transfer was performed" in warning for warning in warnings)
+
+
+def test_comparative_h5ad_preflight_reports_sample_count(tmp_path, kernel):
+    pytest.importorskip("anndata")
+    path = _synthetic_h5ad(tmp_path)
+    result = kernel.preflight(_base_config(path, mode="h5ad"))
+    assert result["status"] == "valid"
+    assert result["sample_count"] == 6
 
 
 def _synthetic_h5ad(tmp_path: Path):

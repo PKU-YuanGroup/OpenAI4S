@@ -52,8 +52,6 @@ def test_python_manifest_covers_claude_science_portable_baseline():
         "  - rdkit",
         "  - pip",
         "      - scanpy[harmony,skmisc]==1.11.5",
-        "      - mudata<0.4",
-        "      - pertpy[de]==1.0.3",
         "      - pydeseq2==0.5.4",
         "      - pypdfium2==5.9.0",
     }

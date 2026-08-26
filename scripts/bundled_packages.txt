@@ -48,8 +48,6 @@ scanpy[harmony,skmisc]==1.11.5 scanpy
 anndata          anndata
 leidenalg        leidenalg
 igraph           igraph
-mudata<0.4       mudata
-pertpy[de]==1.0.3 pertpy
 pydeseq2==0.5.4 pydeseq2
 
 # --- bio / IO / storage ---

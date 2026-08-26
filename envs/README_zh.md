@@ -9,7 +9,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `python.yml` | 默认的内核环境：Python 3.11，用于常规数据分析与绘图。带上了单细胞栈（scanpy、anndata、leidenalg、umap-learn）、scikit-learn 和常用数值库。rdkit 走 conda-forge，有意不用 pip 的 `rdkit-pypi` wheel——那个项目停在 2022.9.5，是对着 NumPy 1.x 的 C ABI 构建的，在本规格解析出的 NumPy 2.x 下会让内核 worker 段错误。只有 fair-esm 和 pypdfium2 由 pip 装入。 |
+| `python.yml` | 默认的内核环境：Python 3.11，用于常规数据分析与绘图。带上了单细胞栈（scanpy、anndata、leidenalg、umap-learn）、scikit-learn 和常用数值库。rdkit 走 conda-forge，有意不用 pip 的 `rdkit-pypi` wheel——那个项目停在 2022.9.5，是对着 NumPy 1.x 的 C ABI 构建的，在本规格解析出的 NumPy 2.x 下会让内核 worker 段错误。fair-esm、锁定版本的 scanpy[harmony,skmisc] 与 pydeseq2、以及 pypdfium2 由 pip 装入；pertpy（Milo DA）有意不进此环境——其核心会拖入 Flax/NumPyro/ott-jax 栈——改由可选的 `singlecell` uv extra 安装。 |
 | `phylo.yml` | Python 3.11，面向系统发育与生物信息学。除 biopython、dendropy、ete3 外，还装了建树流程要用的命令行工具：mafft、iqtree、fasttree、trimal。 |
 | `r.yml` | R 4.5.3，以及独立 R 内核通道所需的包：tidyverse、data.table、ggplot2、knitr/rmarkdown、jsonlite。只用 conda-forge，不引入 bioconda。 |
 | `struct.yml` | Python 3.13，面向结构生物学与蛋白质语言模型。biotite、biotraj、Biopython、FreeSASA 与 DSSP 来自 conda，覆盖 PDB/mmCIF 处理、溶剂可及表面积和二级结构指派；torch 与 fair-esm 走 pip，有意选可移植的 CPU 构建。想要 GPU 加速就换成 conda 的 pytorch 构建。这里有意不安装 RFdiffusion：其上游 Python 3.9 与 CUDA 专用旧版 PyTorch/DGL 组合应放在固定版本的独立环境或容器中，不能污染这个共享环境。 |

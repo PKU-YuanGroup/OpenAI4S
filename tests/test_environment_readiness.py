@@ -52,8 +52,6 @@ PYTHON_REQUIREMENTS = (
     "pip",
     "fair-esm",
     "scanpy",
-    "mudata",
-    "pertpy",
     "pydeseq2",
     "pypdfium2",
 )
@@ -153,14 +151,14 @@ def _write_managed_generation(
     return generation
 
 
-def test_shipped_manifests_are_the_authoritative_35_and_8_package_lists():
+def test_shipped_manifests_are_the_authoritative_33_and_8_package_lists():
     requirements = load_standard_profile_requirements()
 
     assert requirements == {
         "python": PYTHON_REQUIREMENTS,
         "r": R_REQUIREMENTS,
     }
-    assert len(requirements["python"]) == 35
+    assert len(requirements["python"]) == 33
     assert len(requirements["r"]) == 8
     # Both conda and pip constraints are gone before matching package metadata,
     # and pip extras are stripped down to the distribution name.
@@ -168,12 +166,12 @@ def test_shipped_manifests_are_the_authoritative_35_and_8_package_lists():
     assert "pandas<3" not in requirements["python"]
     assert "fair-esm==2.0.0" not in requirements["python"]
     assert "scanpy[harmony,skmisc]==1.11.5" not in requirements["python"]
-    assert "pertpy[de]==1.0.3" not in requirements["python"]
+    assert "pertpy" not in requirements["python"]  # extra-only: its core needs JAX
     assert requirements["python"][-2:] == ("pydeseq2", "pypdfium2")
 
     projection = standard_profile_readiness(enabled=True, discover=lambda: [])
     assert projection["requirements_digest"] == (
-        "sha256:e85f126bdcf81afcceff3ec19144e5535d5a733e0eca8671994c0cf269512430"
+        "sha256:80c9ab912a275ffb0d41205019faca4c40124951ff630bf6cc3da0921a7c3928"
     )
 
 
@@ -194,7 +192,7 @@ def test_complete_standard_profile_is_ready_using_local_package_metadata(tmp_pat
     assert result["missing_packages"] == {}
     assert result["remediation"] is None
     assert [row["required_package_count"] for row in result["environments"]] == [
-        35,
+        33,
         8,
     ]
     assert all(row["state"] == READY for row in result["environments"])

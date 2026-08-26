@@ -44,7 +44,9 @@ science = [
 # that floor and Scanpy 1.11.5; Pertpy 1.1.1 requires Python 3.12 and imports a
 # Scanpy symbol that 1.11.5 removed. Keep the group separate from `science`:
 # the OpenAI4S core still supports Python 3.10 and remains dependency-free.
-# Install with: uv sync --extra singlecell
+# Pertpy's core hard-requires the Flax/NumPyro/ott-jax stack, so pertpy and
+# its mudata pin live ONLY here — never in envs/python.yml or the desktop
+# bundle. Install with: uv sync --extra singlecell
 singlecell = [
     "scanpy[harmony,skmisc]==1.11.5; python_version >= '3.11'",
     "igraph>=0.11; python_version >= '3.11'",

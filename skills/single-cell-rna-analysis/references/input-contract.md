@@ -41,7 +41,9 @@ Set `analysis_mode: descriptive` for one h5ad without a real experimental
 contrast. This mode:
 
 - requires `input.mode: h5ad` and a nonempty technical `input.sample_id`;
-- accepts an h5ad whose `obs` has no sample, donor, or condition columns;
+- accepts an h5ad whose `obs` has no sample, donor, or condition columns,
+  and rejects one that still carries `donor_id` or `condition` columns
+  (remove them or run a comparative analysis);
 - writes `input.sample_id` into the configured `design.sample_key` only when
   that technical sample column is absent;
 - trims surrounding whitespace from an existing technical sample column after
