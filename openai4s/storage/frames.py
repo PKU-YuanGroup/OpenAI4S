@@ -1178,6 +1178,7 @@ class FrameRepository:
                 "e.code_hash,e.visibility,e.pin,e.replay_policy,"
                 "e.variable_reads,e.variable_writes,e.variable_deletes,"
                 "e.mutation_uncertain,e.stderr,e.error,e.figures,e.files_read,e.files_written,"
+                "e.interrupted,"
                 "e.cpu_s,e.peak_rss_kb,e.created_at,COALESCE((SELECT a.generation_id "
                 "FROM execution_attempts AS a WHERE a.producing_cell_id="
                 "e.producing_cell_id AND a.generation_id IS NOT NULL "
@@ -1211,6 +1212,7 @@ class FrameRepository:
                 cell[key] = list(normalize_string_list(cell.get(key)))
             cell["pin"] = bool(cell.get("pin"))
             cell["mutation_uncertain"] = bool(cell.get("mutation_uncertain"))
+            cell["interrupted"] = bool(cell.get("interrupted"))
             if cell.get("state_revision") is None:
                 cell["state_revision"] = cell.get("cell_index")
             cells.append(cell)

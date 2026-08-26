@@ -456,6 +456,37 @@ def test_execution_log_status_json_fallback_append_only_and_clock(tmp_path):
         )
 
 
+def test_list_cells_projects_the_stored_interrupted_flag(tmp_path):
+    """``list_cells`` must surface the stored ``interrupted`` column as a bool.
+
+    The writer stored the flag (and derived ``status`` from it), but the list
+    projection never SELECTed the column — so a reader trusting
+    ``row["interrupted"]`` got ``False`` for the very cell whose status said
+    "interrupted": two answers for one stored fact.
+    """
+    store, repository, _clock = _repository(tmp_path)
+    frame = repository.new_frame(project_id="science")
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="run_forever()",
+        result={"id": "cell-int", "interrupted": True},
+        cell_index=1,
+    )
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="print('fine')",
+        result={"id": "cell-ok", "stdout": "fine"},
+        cell_index=2,
+    )
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-int"]["status"] == "interrupted"
+    assert listed["cell-int"]["interrupted"] is True
+    assert listed["cell-ok"]["status"] == "ok"
+    assert listed["cell-ok"]["interrupted"] is False
+
+
 def test_cell_projection_metadata_is_validated_and_round_trips(tmp_path):
     _store, repository, _clock = _repository(tmp_path)
     frame = repository.new_frame(project_id="science")

@@ -260,6 +260,55 @@ def test_sources_projection_links_artifact_versions(tmp_path):
     assert cells[1]["artifacts"] == [version_id]
 
 
+def test_interrupted_cells_carry_the_stored_interrupted_flag():
+    """The ``interrupted`` field must agree with the stored row, not default.
+
+    Regression: ``list_cells`` did not project the ``interrupted`` column, so
+    the projection and the manifest asserted ``interrupted: false`` for a
+    cell whose own ``status`` said "interrupted" — wrong provenance, not
+    absent provenance.
+    """
+
+    store = _store()
+    root = store.new_frame(kind="turn", status="ready")
+    _log_root_cell(
+        store, root, "cell-int-1", "while True: pass", index=1, interrupted=True
+    )
+    child = store.new_frame(parent_id=root, kind="delegate", name="slow-child", depth=1)
+    rec = _Recorded(store, child)
+    rec.cell("cell-int-2", "sleep_forever()", interrupted=True)
+    rec.cell("cell-int-3", "print('fine')")
+
+    service = ExecutionSourcesService(store)
+    payload = service.projection(root)
+
+    top = _frame_by_id(payload, root)
+    assert top["counts"] == {"cells": 1, "ok": 0, "error": 0, "interrupted": 1}
+    assert top["cells"][0]["status"] == "interrupted"
+    assert top["cells"][0]["interrupted"] is True
+
+    mid = _frame_by_id(payload, child)
+    assert mid["counts"] == {"cells": 2, "ok": 1, "error": 0, "interrupted": 1}
+    stopped, fine = mid["cells"]
+    assert stopped["status"] == "interrupted"
+    assert stopped["interrupted"] is True
+    assert fine["interrupted"] is False
+
+    exported = service.export(root)
+    names = _zip_names(exported["data"])
+    child_dir = f"children/1_slow-child_{child[:8]}"
+    assert "root/cell_0001_interrupted.py" in names
+    assert f"{child_dir}/cell_0001_interrupted.py" in names
+
+    manifest = _manifest(exported["data"])
+    row = next(c for c in manifest["cells"] if c["id"] == "cell-int-2")
+    assert row["status"] == "interrupted"
+    assert row["interrupted"] is True
+    assert row["path"] == f"{child_dir}/cell_0001_interrupted.py"
+    untouched = next(c for c in manifest["cells"] if c["id"] == "cell-int-3")
+    assert untouched["interrupted"] is False
+
+
 def test_legacy_session_projects_root_only_without_error():
     store = _store()
     root = store.new_frame(kind="turn", status="ready")
