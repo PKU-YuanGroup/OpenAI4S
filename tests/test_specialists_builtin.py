@@ -207,6 +207,50 @@ def test_general_and_scientist_get_persona_without_restrictions():
         assert "unrestricted" not in spec
 
 
+def test_builtin_policy_is_armed_on_the_real_child_dispatcher(monkeypatch):
+    """End to end through the existing choke point: DelegationService injects
+    the EXPLORE profile into the spec, `_run_one` derives the policy and arms
+    it via set_child_execution_policy, and the child's own dispatcher then
+    refuses a write."""
+    import openai4s.agent.loop as loop_mod
+    from openai4s.agent.delegation import DelegationRunner
+    from openai4s.config import get_config
+
+    observed = {}
+
+    def probing_run(self, task):
+        policy = self.dispatcher._child_execution_policy
+        observed["restricted"] = policy.restricted if policy else None
+        observed["write_allowed"] = policy.allows("write_file") if policy else None
+        observed["read_allowed"] = policy.allows("read_file") if policy else None
+        observed["persona_in_task"] = "read-only scout" in task
+        return {
+            "stop_reason": "submitted",
+            "submitted_output": {
+                "output": {"ok": True},
+                "completion_bullets": ["Completed the scouting"],
+            },
+            "final_message": None,
+            "turns": 1,
+        }
+
+    monkeypatch.setattr(loop_mod.Agent, "run", probing_run)
+    runner = DelegationRunner(get_config(), child_max_turns=3)
+    service = DelegationService(delegate=runner, steering={}, store=_EmptyStore())
+    try:
+        result = service.delegate({"request": "map the repo", "name": "EXPLORE"})
+    finally:
+        runner.close()
+
+    assert result["task_status"] == "completed"
+    assert observed == {
+        "restricted": True,
+        "write_allowed": False,
+        "read_allowed": True,
+        "persona_in_task": True,
+    }
+
+
 def test_remote_gpu_provisioner_prompt_moved_without_rewording():
     prompt = BUILTIN_SPECIALIST_PROMPTS["REMOTE_GPU_PROVISIONER"]
     assert "remote-GPU provisioning specialist" in prompt
