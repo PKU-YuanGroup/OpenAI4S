@@ -35549,6 +35549,31 @@
         "type": "object"
       }
     },
+    "POST /volcengine/configure [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /volcengine/connection [error]": {
       "schema": {
         "properties": {
