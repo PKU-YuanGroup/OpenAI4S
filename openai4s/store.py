@@ -546,7 +546,7 @@ CREATE TABLE IF NOT EXISTS frame_steps (
     summary       TEXT,               -- one-line result summary (shown as meta)
     input         TEXT,               -- JSON
     output        TEXT,               -- JSON
-    status        TEXT,               -- running|done|error
+    status        TEXT,               -- running|done|warning|error
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );

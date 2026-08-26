@@ -3156,6 +3156,12 @@ class SessionPackageService:
             # recovery input. A confirmed fresh restart can later unlock the
             # session without replaying any package-authored Cell.
             policy = "never"
+            # The exported cell carries its resolved kernel-generation id
+            # (attempt-derived for Web cells, row-stamped for delegated/CLI
+            # cells). Replayed attempts are allocated with generation_id=None,
+            # so the stamp must ride the execution_log row or the round trip
+            # silently drops the environment provenance.
+            generation_id = item.get("generation_id")
             self.store.log_cell(
                 frame_id=new_root,
                 root_frame_id=new_root,
@@ -3184,6 +3190,7 @@ class SessionPackageService:
                     for path in item.get("files_written") or []
                     if isinstance(path, str) and not _is_secret_path(path)
                 ],
+                generation_id=(str(generation_id) if generation_id else None),
             )
         return mapping, revision_map
 

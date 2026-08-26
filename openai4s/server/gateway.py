@@ -15445,7 +15445,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 r"recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|"
                 r"branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|"
                 r"checkpoints|revert/(?:preview|apply|undo|operations)|"
-                r"notebook/export|session/export|kernel/variables|execution)",
+                r"notebook/export|session/export|kernel/variables|"
+                r"execution-sources(?:/export)?|execution)",
                 sub,
             )
             if workbench and store.get_frame(workbench.group(1)) is None:
@@ -15740,6 +15741,28 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 exported = runner.session_domain.notebook_export(
                     m.group(1), language=language
                 )
+                self._send(
+                    200,
+                    exported["data"],
+                    exported["content_type"],
+                    {
+                        "Content-Disposition": (
+                            f'attachment; filename="{exported["filename"]}"'
+                        ),
+                        "X-Content-SHA256": exported["sha256"],
+                    },
+                )
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/execution-sources", sub)
+            if m and method == "GET":
+                # The executed-code hierarchy: root + every delegated child
+                # frame, cell metadata only (the per-frame /execution-log
+                # route serves the code text itself).
+                self._json(runner.session_domain.execution_sources(m.group(1)))
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/execution-sources/export", sub)
+            if m and method == "GET":
+                exported = runner.session_domain.execution_sources_export(m.group(1))
                 self._send(
                     200,
                     exported["data"],

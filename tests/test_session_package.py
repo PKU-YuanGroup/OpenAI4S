@@ -830,6 +830,44 @@ def test_session_package_is_deterministic_and_round_trips_durable_state(tmp_path
         store.close()
 
 
+def test_import_replay_keeps_the_execution_log_generation_stamp(tmp_path):
+    """An export/import round trip keeps a cell's kernel-generation identity.
+
+    Delegated-child and CLI cells carry their generation on the
+    ``execution_log`` row itself (no execution attempt to re-derive it from),
+    and the import replay allocates attempts with ``generation_id=None`` — so
+    unless the replay threads the exported stamp through ``log_cell``, the
+    imported row silently loses the provenance the original recorded.
+    """
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    try:
+        store.log_cell(
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project["project_id"],
+            code="stamped = True",
+            result={"id": "cell-stamped", "stdout": "", "stderr": "", "error": None},
+            cell_index=2,
+            state_revision=2,
+            origin="delegate",
+            generation_id="generation-stamp-1",
+        )
+        exported = domain.session_export(root)
+        imported = domain.session_import(exported["data"])
+        new_root = imported["root_frame_id"]
+
+        cells = store.list_cells(new_root)
+        stamped = next(c for c in cells if c["code"] == "stamped = True")
+        assert stamped["generation_id"] == "generation-stamp-1"
+        detail = store.cell_detail(stamped["producing_cell_id"])
+        assert detail["generation_id"] == "generation-stamp-1"
+        # The pre-existing cell without a stamp stays honestly unstamped.
+        plain = next(c for c in cells if c["code"] == "score = 0.93")
+        assert plain["generation_id"] is None
+    finally:
+        store.close()
+
+
 def test_session_package_v1_carries_sanitized_inert_auto_mode_history(
     tmp_path, monkeypatch
 ):
