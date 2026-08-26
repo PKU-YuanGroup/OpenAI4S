@@ -1147,8 +1147,17 @@ Object.assign(I18N.zh, {
   "prov.exec.downloadPython": "只下载 Python Notebook (.ipynb)",
   "prov.exec.downloadR": "只下载 R Notebook (.ipynb)",
   "prov.exec.downloadMarkdown": "下载 Markdown 记录 (.md)",
+  "prov.exec.downloadSources": "下载已执行代码（sources.zip，含子代理）",
   "prov.exec.downloadMore": "其他导出格式",
   "prov.exec.noRecords": "暂无执行记录。",
+  "nb.exec.toggle": "已执行代码",
+  "nb.exec.title": "已执行代码（执行历史）",
+  "nb.exec.note": "这是主会话与被委派子代理实际执行过的代码——含失败与中断的单元。它是执行历史，不是 Artifacts / 交付物。",
+  "nb.exec.root": "主会话",
+  "nb.exec.empty": "该 frame 尚无已执行代码。",
+  "nb.exec.loadFailed": "无法加载已执行代码：{0}",
+  "nb.exec.cellCount": "{0} 个单元",
+  "nb.exec.failCount": "{0} 个失败",
   "prov.msg.loadFailed": "无法加载对话：{0}",
   "prov.msg.loading": "加载对话…",
   "prov.msg.noRecords": "暂无对话记录。",
@@ -2277,8 +2286,17 @@ Object.assign(I18N.en, {
   "prov.exec.downloadPython": "Python notebook only (.ipynb)",
   "prov.exec.downloadR": "R notebook only (.ipynb)",
   "prov.exec.downloadMarkdown": "Markdown record (.md)",
+  "prov.exec.downloadSources": "Executed code sources (zip, incl. sub-agents)",
   "prov.exec.downloadMore": "Other export formats",
   "prov.exec.noRecords": "No execution records yet.",
+  "nb.exec.toggle": "Executed code",
+  "nb.exec.title": "Executed code (execution history)",
+  "nb.exec.note": "Code actually run by this session and its delegated sub-agents — failed and interrupted cells included. This is execution history, not Artifacts / deliverables.",
+  "nb.exec.root": "Root session",
+  "nb.exec.empty": "No executed code recorded for this frame yet.",
+  "nb.exec.loadFailed": "Failed to load executed code: {0}",
+  "nb.exec.cellCount": "{0} cells",
+  "nb.exec.failCount": "{0} failed",
   "prov.msg.loadFailed": "Failed to load conversation: {0}",
   "prov.msg.loading": "Loading conversation…",
   "prov.msg.noRecords": "No conversation records yet.",
@@ -6980,6 +6998,7 @@ async function openConversation(fid, pid) {
   S.cells = []; S.kernels = []; S.liveCells = []; S._liveCell = null; S.dockArtifact = null; S.kernelFilter = null;
   destroyActionTimelineView(); S.actionTimeline = null; S.actionTimelineSelectedGroupId = null; S.actionTimelineSelectedBranchId = null;
   S.executionQueue = null; S.executionIdentity = null; S.recoveryState = null; S.recoveryActions = null; S.delegationState = null;
+  S.execSources = null;  // the executed-code surface is per-session state
   S.branchState = null; S.branchUndo = null; S.contextState = null; S.securityState = null;
   S.workbenchErrors = {}; S._timelineHistoryReq = (S._timelineHistoryReq || 0) + 1; S._timelineHistoryLoading = null;
   S._recoveryActionLoading = null; S._branchActionLoading = null; S._timelineRestoreFocusGroupId = null;
@@ -9965,7 +9984,98 @@ const NOTEBOOK_EXPORTS = [
   // for pasting it into an issue or a methods section, with both languages in
   // execution order because the interleaving is the record.
   { language: "markdown", key: "prov.exec.downloadMarkdown", suffix: "md" },
+  // The whole execution hierarchy as source files: root + every delegated
+  // child frame recursively, failed cells included and marked, with a
+  // manifest. A different route from the notebook export — `path` overrides
+  // the language-based URL builder.
+  { path: "/execution-sources/export", key: "prov.exec.downloadSources", suffix: "sources.zip" },
 ];
+function notebookExportHref(frameId, option) {
+  const base = `${API}/frames/${encodeURIComponent(frameId)}`;
+  return option.path ? `${base}${option.path}` : `${base}/notebook/export?language=${option.language}`;
+}
+
+/* ---------- Executed code (execution history: root + delegated frames) ----
+   A read-only surface over /frames/{fid}/execution-sources (the frame tree +
+   cell metadata) and each frame's own /execution-log (the code text). It is
+   the execution HISTORY — failures included — and deliberately distinct from
+   Artifacts/deliverables; the note in the header says so in both languages. */
+function execSourcesState() {
+  if (!S.execSources) S.execSources = { open: false, data: null, selected: null, cells: {}, loading: false, error: "", request: 0 };
+  return S.execSources;
+}
+function toggleExecutedCode() {
+  const st = execSourcesState();
+  st.open = !st.open;
+  if (st.open && !st.data && !st.loading) loadExecutionSources();
+  renderNotebook();
+}
+async function loadExecutionSources() {
+  const id = S.currentId; if (!id) return;
+  const st = execSourcesState();
+  const request = st.request = (st.request || 0) + 1;
+  st.loading = true; st.error = "";
+  try {
+    const d = await api(`/frames/${encodeURIComponent(id)}/execution-sources`);
+    if (id !== S.currentId || S.execSources !== st || request !== st.request) return;
+    st.data = d;
+    if (!st.selected) st.selected = (d && d.frames && d.frames[0] && d.frames[0].frame_id) || id;
+  } catch (e) {
+    if (id === S.currentId && S.execSources === st) st.error = publicText(e && e.message, 240);
+  } finally {
+    if (id === S.currentId && S.execSources === st) { st.loading = false; renderNotebook(); }
+  }
+  if (S.execSources === st && st.data && st.selected) selectExecFrame(st.selected);
+}
+async function selectExecFrame(frameId) {
+  const st = execSourcesState();
+  st.selected = frameId;
+  renderNotebook();
+  if (st.cells[frameId]) return;
+  try {
+    const d = await api(`/frames/${encodeURIComponent(frameId)}/execution-log`);
+    st.cells[frameId] = (d && d.entries) || [];
+  } catch (e) {
+    st.cells[frameId] = [];
+    st.error = t("nb.exec.loadFailed", publicText(e && e.message, 200));
+  }
+  if (S.execSources === st && st.open) renderNotebook();
+}
+function buildExecutedCodeView(st) {
+  const wrap = el("div", "nb-exec");
+  const head = el("div", "nb-exec-head");
+  head.appendChild(el("span", "nb-exec-title", t("nb.exec.title")));
+  head.appendChild(el("span", "nb-exec-note", t("nb.exec.note")));
+  wrap.appendChild(head);
+  if (st.error) wrap.appendChild(el("div", "timeline-error", publicText(st.error, 240)));
+  if (!st.data) {
+    if (!st.error) wrap.appendChild(el("div", "dock-empty", t("common.loading")));
+    return wrap;
+  }
+  const frames = (st.data.frames || []);
+  const selected = st.selected || (frames[0] && frames[0].frame_id) || null;
+  const nav = el("div", "nb-exec-frames");
+  frames.forEach(f => {
+    const isRoot = !f.parent_id;
+    const btn = el("button", "nb-exec-frame" + (selected === f.frame_id ? " on" : ""));
+    btn.setAttribute("data-frame", publicText(f.frame_id, 96));
+    btn.style.setProperty("--exec-indent", (Math.min(Math.max(Number(f.depth) || 0, 0), 8) * 14) + "px");
+    btn.appendChild(el("span", "nb-exec-frame-name", isRoot ? t("nb.exec.root") : (publicText(f.name, 80) || publicText(f.frame_id, 24))));
+    const counts = f.counts || {};
+    btn.appendChild(el("span", "nb-exec-frame-count", t("nb.exec.cellCount", Number(counts.cells) || 0)));
+    if (Number(counts.error) > 0) btn.appendChild(el("span", "nb-exec-frame-fail", t("nb.exec.failCount", Number(counts.error))));
+    btn.onclick = () => selectExecFrame(f.frame_id);
+    nav.appendChild(btn);
+  });
+  wrap.appendChild(nav);
+  const body = el("div", "nb-exec-cells");
+  const cells = selected != null ? st.cells[selected] : null;
+  if (!cells) body.appendChild(el("div", "dock-empty", t("common.loading")));
+  else if (!cells.length) body.appendChild(el("div", "dock-empty", t("nb.exec.empty")));
+  else cells.forEach(e => body.appendChild(cellNode(e)));
+  wrap.appendChild(body);
+  return wrap;
+}
 function notebookExportLink(frameId) {
   const wrap = el("div", "prov-dl");
   // The default action stays exactly what it was, so the common path is one
@@ -9974,7 +10084,7 @@ function notebookExportLink(frameId) {
   const dl = el("a", "prov-dlbtn");
   dl.appendChild(iconEl("download", 14));
   dl.appendChild(el("span", null, t(primary.key)));
-  dl.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=${primary.language}`;
+  dl.href = notebookExportHref(frameId, primary);
   dl.setAttribute("download", `${frameId}.${primary.suffix}`);
   wrap.appendChild(dl);
 
@@ -9986,7 +10096,7 @@ function notebookExportLink(frameId) {
   NOTEBOOK_EXPORTS.slice(1).forEach(option => {
     const item = el("a", "prov-dlitem");
     item.appendChild(el("span", null, t(option.key)));
-    item.href = `${API}/frames/${encodeURIComponent(frameId)}/notebook/export?language=${option.language}`;
+    item.href = notebookExportHref(frameId, option);
     item.setAttribute("download", `${frameId}.${option.suffix}`);
     // A download navigates; the menu should not stay open behind it.
     item.onclick = () => { menu.classList.add("hidden"); toggle.setAttribute("aria-expanded", "false"); };
@@ -10103,8 +10213,22 @@ function renderNotebook() {
   const badge = el("div", "nb-live-badge " + badgeMode); badge.appendChild(el("span", "ld"));
   const badgeLabel = el("span", null, t("runtime.status." + badgeMode)); badge.appendChild(badgeLabel); badge.appendChild(iconEl("chevron-down", 14)); chips.appendChild(badge);
   if (S.currentId) chips.appendChild(notebookExportLink(S.currentId));
+  if (S.currentId) {
+    const execToggle = el("button", "kchip nb-exec-toggle" + (S.execSources && S.execSources.open ? " on" : ""));
+    execToggle.appendChild(iconEl("terminal", 13));
+    execToggle.appendChild(el("span", null, t("nb.exec.toggle")));
+    execToggle.onclick = toggleExecutedCode;
+    chips.appendChild(execToggle);
+  }
   const badgeEls = { root: badge, label: badgeLabel };
   nb.appendChild(chips);
+  // The Executed-code surface replaces the Notebook body while open: it is a
+  // read-only view of execution HISTORY (root + delegated child frames), not
+  // of the live session's deliverables.
+  if (S.execSources && S.execSources.open) {
+    nb.appendChild(buildExecutedCodeView(S.execSources));
+    return;
+  }
   let shown = entries; if (S.kernelFilter) shown = entries.filter(e => (e.kernel_id || "python") === S.kernelFilter);
   if (!shown.length) nb.appendChild(el("div", "dock-empty", t("nb.empty")));
   else shown.forEach(e => nb.appendChild(cellNode(e)));

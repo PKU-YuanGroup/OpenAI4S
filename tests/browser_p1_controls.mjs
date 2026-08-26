@@ -490,6 +490,107 @@ try {
     "onEvent does not route delegation_child_event through the live merge",
   );
 
+  // ---- D10: the Executed code surface (execution history, root + children)
+  // Render-level, injected state, through the real build/render functions: the
+  // navigator must show child frames, the per-frame cell list must render a
+  // failed cell in true order, and the surface must label itself as execution
+  // history distinct from Artifacts/deliverables.
+  const executedCode = await page.evaluate(() => {
+    const state = {
+      open: true, loading: false, error: "", request: 1,
+      data: {
+        root_frame_id: "f-exec-root", truncated: false,
+        frames: [
+          { frame_id: "f-exec-root", parent_id: null, root_frame_id: "f-exec-root", name: "analysis", kind: "turn", depth: 0, status: "ready", order: 0, counts: { cells: 1, ok: 1, error: 0, interrupted: 0 }, cells: [] },
+          { frame_id: "f-exec-child", parent_id: "f-exec-root", root_frame_id: "f-exec-root", name: "assay-reader", kind: "delegate", depth: 1, status: "done", order: 1, counts: { cells: 2, ok: 1, error: 1, interrupted: 0 }, cells: [] },
+        ],
+      },
+      selected: "f-exec-child",
+      cells: {
+        "f-exec-child": [
+          { producing_cell_id: "cell-c1", cell_index: 1, state_revision: 1, kernel_id: "python", language: "python", origin: "delegate", source: "data = load('assay.csv')", stdout: "", stderr: "", error: "", status: "ok", figures: [], files_written: [], files_read: [] },
+          { producing_cell_id: "cell-c2", cell_index: 2, state_revision: 2, kernel_id: "python", language: "python", origin: "delegate", source: "raise ValueError('bad assay')", stdout: "", stderr: "", error: "ValueError: bad assay", status: "error", figures: [], files_written: [], files_read: [] },
+        ],
+      },
+    };
+    const view = buildExecutedCodeView(state);
+    const frames = [...view.querySelectorAll(".nb-exec-frame")];
+    const cellsRendered = [...view.querySelectorAll(".notebook-cell")];
+    const failed = cellsRendered[1] || null;
+    return {
+      frameRows: frames.length,
+      frameNames: frames.map((f) => f.textContent),
+      frameIds: frames.map((f) => f.getAttribute("data-frame")),
+      indents: frames.map((f) => f.style.getPropertyValue("--exec-indent")),
+      selectedIsChild: frames[1] ? frames[1].className.includes("on") : false,
+      cellCount: cellsRendered.length,
+      cellOrder: cellsRendered.map((c) => c.getAttribute("data-producing-cell")),
+      failedHasError: failed ? !!failed.querySelector(".nbc-error") : false,
+      failedText: failed ? failed.textContent : "",
+      title: (view.querySelector(".nb-exec-title") || {}).textContent || "",
+      note: (view.querySelector(".nb-exec-note") || {}).textContent || "",
+      artifactsTabLabel: t("dock.files.heading"),
+    };
+  });
+  check("executed-code navigator shows root and child frames", executedCode.frameRows === 2, `${executedCode.frameRows} rows`);
+  check(
+    "the child frame is listed by name and the root by its label",
+    executedCode.frameNames[1].includes("assay-reader") && executedCode.frameIds[0] === "f-exec-root",
+    JSON.stringify(executedCode.frameNames),
+  );
+  check(
+    "child depth is drawn as indentation",
+    executedCode.indents[0] === "0px" && executedCode.indents[1] === "14px",
+    JSON.stringify(executedCode.indents),
+  );
+  check("the selected child frame is marked", executedCode.selectedIsChild, "child row lacks .on");
+  check(
+    "the child cell list renders both cells in true order",
+    executedCode.cellCount === 2 && executedCode.cellOrder[0] === "cell-c1" && executedCode.cellOrder[1] === "cell-c2",
+    JSON.stringify(executedCode.cellOrder),
+  );
+  check(
+    "the failed cell renders with its error, not dropped",
+    executedCode.failedHasError && executedCode.failedText.includes("bad assay"),
+    executedCode.failedText.slice(0, 160),
+  );
+  check(
+    "the surface labels itself as execution history",
+    executedCode.title.length > 0 && executedCode.note.length > 0,
+    `${executedCode.title} / ${executedCode.note.slice(0, 80)}`,
+  );
+  check(
+    "the label is distinct from the Artifacts surface and says so",
+    executedCode.title !== executedCode.artifactsTabLabel && /Artifacts/i.test(executedCode.note),
+    executedCode.note.slice(0, 160),
+  );
+
+  // The download split-button must carry the sources.zip entry, pointing at
+  // the execution-sources export route (not the notebook export).
+  const exportMenu = await page.evaluate(() => {
+    const link = notebookExportLink("f-exec-root");
+    const items = [...link.querySelectorAll(".prov-dlitem")];
+    const sources = items.find((a) => (a.getAttribute("href") || "").includes("/execution-sources/export"));
+    return {
+      items: items.length,
+      hasSources: !!sources,
+      href: sources ? sources.getAttribute("href") : "",
+      downloadName: sources ? sources.getAttribute("download") : "",
+      label: sources ? sources.textContent : "",
+    };
+  });
+  check("the download menu carries the sources.zip entry", exportMenu.hasSources, `${exportMenu.items} items`);
+  check(
+    "the sources entry targets the execution-sources export route",
+    exportMenu.href.includes("/frames/f-exec-root/execution-sources/export"),
+    exportMenu.href,
+  );
+  check(
+    "the sources entry downloads as sources.zip with its own label",
+    exportMenu.downloadName.endsWith("sources.zip") && exportMenu.label.length > 0,
+    `${exportMenu.downloadName} / ${exportMenu.label}`,
+  );
+
   // ---- P1-A: model profiles, and P1-B: memory -- both Customize panels ----
   // Driven through the tray a user actually clicks, not by calling the render
   // function: these two are reached by a tab id, and a tab that stopped
