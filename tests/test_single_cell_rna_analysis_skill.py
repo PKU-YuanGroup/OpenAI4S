@@ -425,6 +425,35 @@ def test_partial_confirmed_mapping_never_pools_unknown_clusters(kernel):
     assert groups == {"T", "Unknown:cluster_1", "Unknown:cluster_2"}
 
 
+def test_10x_h5_reader_deduplicates_gene_symbols(kernel):
+    pd = pytest.importorskip("pandas")
+
+    class FakeAdata:
+        def __init__(self):
+            self.var_names = pd.Index(["TBCE", "TBCE", "CD3D"])
+
+        def var_names_make_unique(self, join="-"):
+            counts: dict[str, int] = {}
+            names = []
+            for name in self.var_names:
+                seen = counts.get(name, 0)
+                names.append(name if seen == 0 else f"{name}{join}{seen}")
+                counts[name] = seen + 1
+            self.var_names = pd.Index(names)
+
+    class FakeScanpy:
+        @staticmethod
+        def read_10x_h5(path):
+            return FakeAdata()
+
+    adata = kernel._read_one("matrix.h5", "10x_h5", "counts", FakeScanpy())
+
+    # Stock CellRanger references carry duplicate symbols; the reader must
+    # hand back unique names or the sample-sheet gate rejects every real file.
+    assert adata.var_names.is_unique
+    assert list(adata.var_names) == ["TBCE", "TBCE-1", "CD3D"]
+
+
 def test_descriptive_load_rejects_leftover_design_columns(tmp_path, kernel):
     np = pytest.importorskip("numpy")
     pd = pytest.importorskip("pandas")

@@ -867,7 +867,10 @@ def _read_one(path: str, matrix_format: str, counts_layer: str, sc: Any) -> Any:
         # trip the duplicate-gene rejection downstream.
         adata = sc.read_10x_mtx(path, var_names="gene_symbols", make_unique=True)
     elif matrix_format == "10x_h5":
+        # Same reason as 10x_mtx: read_10x_h5 names genes by symbol and has
+        # no make_unique parameter, so de-duplicate after reading.
         adata = sc.read_10x_h5(path)
+        adata.var_names_make_unique()
     elif matrix_format == "h5ad":
         adata = sc.read_h5ad(path)
         adata.X = _extract_counts(adata, counts_layer).copy()
