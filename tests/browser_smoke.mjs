@@ -408,10 +408,9 @@ try {
   const resolvedCards = page.locator(".perm-card.resolved");
   const resolvedBefore = await resolvedCards.count();
   await permissionCard.locator(".perm-allow").click();
-  await page.waitForFunction(
-    (expected) => document.querySelectorAll(".perm-card.resolved").length >= expected,
-    resolvedBefore + 1,
-  );
+  // Locator-only (the workbench CSP has no unsafe-eval, so waitForFunction
+  // is refused): nth(n) attaches exactly when at least n+1 cards resolved.
+  await resolvedCards.nth(resolvedBefore).waitFor({ state: "attached" });
   await waitUntil("permission-resumed REPL completion", async () => {
     const snapshot = await api(`/frames/${encodeURIComponent(frameId)}/execution-queue`);
     return !queueTickets(snapshot).some((ticket) => ticket.execution_id === permissionExecutionId);
@@ -443,14 +442,24 @@ try {
 
   // Version restore is append-only. Historical bytes stay immutable while a
   // restored copy becomes a fresh latest version and invalidates UI caches.
-  const upload = await api("/uploads", {
-    method: "POST",
-    data: {
-      frame_id: frameId,
-      project_id: projectId,
-      filename: "browser-versioned.txt",
-      content_base64: Buffer.from("VERSION-ONE", "utf8").toString("base64"),
-    },
+  // The permission block above left a short-lived background execution
+  // behind, and external workspace mutation is refused while one is running.
+  // Retry the busy admission instead of racing the background job's exit.
+  const upload = await waitUntil("workspace capture idle for artifact upload", async () => {
+    try {
+      return await api("/uploads", {
+        method: "POST",
+        data: {
+          frame_id: frameId,
+          project_id: projectId,
+          filename: "browser-versioned.txt",
+          content_base64: Buffer.from("VERSION-ONE", "utf8").toString("base64"),
+        },
+      });
+    } catch (error) {
+      if (String(error).includes("trusted_capture_busy")) return null;
+      throw error;
+    }
   });
   if (!upload.artifact_id) throw new Error("artifact upload did not return an id");
   await api(`/artifacts/${encodeURIComponent(upload.artifact_id)}/edit`, {
