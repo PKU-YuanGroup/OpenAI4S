@@ -6415,6 +6415,23 @@ class SessionRunner:
             capture_lease = (
                 trusted_capture_lease if self.stage1_trusted_delivery else None
             )
+
+            # D8: live child events reach the parent Timeline. The emitter
+            # stamps root_frame_id; the normalizer owns the output exclusion
+            # (single owner — the client sanitizer stays as belt), and child
+            # steps persist root-keyed through the same sink the root
+            # dispatcher uses.
+            from openai4s.server.workbench_state import delegation_event_projection
+
+            emit_event = self.hub.emitter(st.root_frame_id)
+
+            def child_event_sink(payload):
+                try:
+                    emit_event(delegation_event_projection(payload))
+                except Exception:  # noqa: BLE001 — telemetry must not strand a child
+                    pass
+
+            child_step_sink = self._make_step_sink(st)
             runner = st.delegation_runner
             if runner is None:
                 runner = DelegationRunner(
@@ -6423,6 +6440,8 @@ class SessionRunner:
                     parent_frame_id=st.root_frame_id,
                     store=self.store,
                     owner_instance_id=self._owner_instance_id,
+                    event_sink=child_event_sink,
+                    child_step_sink=child_step_sink,
                     # Without this, a delegated child falls back to
                     # os.getcwd() — the daemon's launch directory — so its
                     # kernels and relative writes pollute the checkout and
@@ -6452,6 +6471,10 @@ class SessionRunner:
                 runner.cell_hooks_factory = cell_hooks_factory
                 runner.set_trusted_capture_admission(capture_admission)
                 runner.set_trusted_capture_lease(capture_lease)
+                # Future children keep emitting into the live session hub even
+                # when the runner predates this turn's rewiring.
+                runner.set_event_sink(child_event_sink)
+                runner.set_child_step_sink(child_step_sink)
             disp._delegate_fn = runner
             disp.steer_fns = {
                 "children": runner.children,

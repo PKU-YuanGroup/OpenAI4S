@@ -587,6 +587,137 @@ class _Child:
         self.budget.release()
 
 
+#: Child step kinds that are worth relaying into the parent Timeline: skill
+#: loads, environment switches/installs, artifact saves, nested delegation.
+#: Everything else (searches, fetches, reads…) is dropped unless it ends in an
+#: error — never per-chunk output.
+_CHILD_STEP_KINDS = frozenset({"skill", "env", "artifact", "delegate"})
+
+#: Per-child relay budget. A 48-way fan-out must not evict the turn's own
+#: prose and cards from the bounded WS replay buffer, so after this many
+#: forwarded steps the rest collapse into one "N more steps elided" marker.
+_CHILD_STEP_CAP = 200
+
+#: Bound on begin-events stashed for possible error escalation.
+_CHILD_STEP_STASH_CAP = 32
+
+
+class _ChildStepForwarder:
+    """Bounded relay of one child's meaningful semantic steps.
+
+    Installed as the child dispatcher's ``on_step`` by ``_run_one`` whenever
+    the tree carries a session step sink (Web only — the CLI has no sink and
+    is unchanged). Each begin event is decorated with the child identity under
+    ``input["delegation"]`` so the UI and the durable root-keyed
+    ``frame_steps`` rows can attribute it; end events ride the same step_id.
+    Steps of non-meaningful kinds are stashed and relayed only when they end
+    in an error, so failures stay visible without per-chunk noise.
+    """
+
+    def __init__(
+        self,
+        sink: Callable[[dict[str, Any]], None],
+        *,
+        child_id: str,
+        frame_id: str | None,
+        name: str | None,
+        depth: int,
+    ) -> None:
+        self._sink = sink
+        self._decoration = {
+            "delegation_child_id": child_id,
+            "child_frame_id": frame_id,
+            "child_name": name,
+            "depth": depth,
+        }
+        self._lock = threading.Lock()
+        self._forwarded_ids: set[str] = set()
+        self._pending_begin: dict[str, dict[str, Any]] = {}
+        self._forwarded = 0
+        self._elided = 0
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        try:
+            self._relay(event)
+        except Exception:  # noqa: BLE001 - observability must not break a child
+            pass
+
+    def _decorated(self, event: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(event)
+        base = payload.get("input")
+        merged = dict(base) if isinstance(base, dict) else {}
+        merged["delegation"] = dict(self._decoration)
+        payload["input"] = merged
+        return payload
+
+    def _emit_begin_locked(self, event: dict[str, Any]) -> bool:
+        if self._forwarded >= _CHILD_STEP_CAP:
+            self._elided += 1
+            return False
+        self._forwarded += 1
+        self._sink(self._decorated(event))
+        return True
+
+    def _relay(self, event: dict[str, Any]) -> None:
+        step_id = str(event.get("step_id") or "")
+        phase = event.get("phase")
+        if not step_id:
+            return
+        with self._lock:
+            if phase == "begin":
+                if event.get("kind") in _CHILD_STEP_KINDS:
+                    if self._emit_begin_locked(event):
+                        self._forwarded_ids.add(step_id)
+                elif len(self._pending_begin) < _CHILD_STEP_STASH_CAP:
+                    self._pending_begin[step_id] = dict(event)
+                return
+            if step_id in self._forwarded_ids:
+                self._forwarded_ids.discard(step_id)
+                self._sink(dict(event))
+                return
+            stashed = self._pending_begin.pop(step_id, None)
+            if stashed is not None and event.get("status") == "error":
+                # Errors are meaningful whatever their kind: relay the stashed
+                # begin so the end has a card to land on.
+                if self._emit_begin_locked(stashed):
+                    self._sink(dict(event))
+
+    def flush(self) -> None:
+        """Emit the single elision marker once the child run is over."""
+        with self._lock:
+            elided = self._elided
+            self._elided = 0
+            name = self._decoration.get("child_name") or self._decoration.get(
+                "delegation_child_id"
+            )
+        if not elided:
+            return
+        step_id = f"s-elide-{uuid.uuid4().hex[:12]}"
+        try:
+            self._sink(
+                self._decorated(
+                    {
+                        "phase": "begin",
+                        "step_id": step_id,
+                        "kind": "delegate",
+                        "title": f"{name}: further steps elided",
+                        "input": {},
+                    }
+                )
+            )
+            self._sink(
+                {
+                    "phase": "end",
+                    "step_id": step_id,
+                    "status": "done",
+                    "output": {"elided": elided},
+                    "summary": f"{elided} more steps elided",
+                }
+            )
+        except Exception:  # noqa: BLE001 - the marker is best effort
+            pass
+
+
 class _DelegationTree:
     """Shared identities, budget, lineage, and event projection for one tree."""
 
@@ -595,6 +726,7 @@ class _DelegationTree:
         *,
         budget: DelegationBudget | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        child_step_sink: Callable[[dict[str, Any]], None] | None = None,
         persistence_sink: Callable[[_Child], None] | None = None,
         trusted_capture_admission: Callable[[], str | None] | None = None,
         trusted_capture_lease: Callable[[], Any] | None = None,
@@ -611,6 +743,11 @@ class _DelegationTree:
         self.message_sequence = 0
         self.children: dict[str, _Child] = {}
         self.event_sink = event_sink
+        # The session step sink child dispatchers forward their meaningful
+        # steps into (root-keyed on the Web). Lives on the tree so nested
+        # runners — which adopt the tree through the contextvar — inherit it
+        # without per-level threading.
+        self.child_step_sink = child_step_sink
         self.persistence_sink = persistence_sink
         self.trusted_capture_admission = trusted_capture_admission
         self.trusted_capture_lease = trusted_capture_lease
@@ -798,6 +935,7 @@ class DelegationRunner:
         store: Any | None = None,
         *,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        child_step_sink: Callable[[dict[str, Any]], None] | None = None,
         budget: DelegationBudget | None = None,
         delegation_tree: _DelegationTree | None = None,
         parent_child_id: str | None = None,
@@ -900,6 +1038,7 @@ class DelegationRunner:
         self._tree = delegation_tree or _DelegationTree(
             budget=(budget or DelegationBudget(parent_frame_id)),
             event_sink=event_sink,
+            child_step_sink=child_step_sink,
             persistence_sink=persistence_sink,
             trusted_capture_admission=trusted_capture_admission,
             trusted_capture_lease=trusted_capture_lease,
@@ -911,6 +1050,8 @@ class DelegationRunner:
         self.budget = self._tree.budget
         if event_sink is not None and self._tree.event_sink is None:
             self._tree.event_sink = event_sink
+        if child_step_sink is not None and self._tree.child_step_sink is None:
+            self._tree.child_step_sink = child_step_sink
         self._lock = self._tree.lock
         self._children: dict[str, _Child] = {}
         if restored is not None:
@@ -993,6 +1134,7 @@ class DelegationRunner:
 
         token = _ACTIVE_DELEGATION.set((self._tree, child.child_id))
         agent: Any | None = None
+        step_forwarder: _ChildStepForwarder | None = None
         try:
             from openai4s.agent.loop import Agent
 
@@ -1023,6 +1165,20 @@ class DelegationRunner:
                 generations=self.store,
             )
             agent.dispatcher.set_child_execution_policy(execution_policy)
+            step_sink = self._tree.child_step_sink
+            if step_sink is not None:
+                # D8: relay the child's meaningful semantic steps (bounded,
+                # decorated with the child identity) into the parent session's
+                # step sink. Lives on the tree, so nested descendants forward
+                # too; the CLI has no sink and stays silent.
+                step_forwarder = _ChildStepForwarder(
+                    step_sink,
+                    child_id=child.child_id,
+                    frame_id=child_frame_id,
+                    name=child.name or spec.get("name"),
+                    depth=child.depth,
+                )
+                agent.dispatcher.on_step = step_forwarder
             if recorder is not None:
                 # The Agent creates its generation registrar inside run(), so
                 # the reader is bound late and resolved per cell.
@@ -1058,6 +1214,8 @@ class DelegationRunner:
         finally:
             if agent is not None:
                 child.detach_agent(agent)
+            if step_forwarder is not None:
+                step_forwarder.flush()
             _ACTIVE_DELEGATION.reset(token)
 
         # Cancellation wins every race, including a late host.submit_output.
@@ -1399,6 +1557,18 @@ class DelegationRunner:
         with self._tree.lock:
             direct = list(self._children.values())
         return [child.snapshot() for child in direct]
+
+    def set_event_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
+        """(Re)point the shared tree's live delegation event sink."""
+
+        self._tree.event_sink = sink
+
+    def set_child_step_sink(
+        self, sink: Callable[[dict[str, Any]], None] | None
+    ) -> None:
+        """(Re)point the shared tree's child step relay target."""
+
+        self._tree.child_step_sink = sink
 
     def set_trusted_capture_admission(
         self, admission: Callable[[], str | None] | None

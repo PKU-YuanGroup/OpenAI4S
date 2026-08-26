@@ -2325,3 +2325,95 @@ def test_conversational_json_fence_does_not_cut_off_later_public_prose(
     assert "I will now verify the values." in visible
     assert '"summary": "..."' not in visible
     assert "Unverified trailing claim." not in visible
+
+
+def test_wire_delegation_installs_live_event_and_child_step_sinks(tmp_path):
+    """The Web composition wires both D8 sinks: the delegation_child_event
+    normalizer (child ``output`` excluded server-side) and the root-keyed
+    child step sink."""
+
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(_cfg(tmp_path), hub)
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    state = runner._state(frame_id, "default")
+    runner._ensure_runtime(state)
+    delegated = state.delegation_runner
+    assert delegated is not None
+    tree = delegated._tree
+    assert callable(tree.event_sink), "no delegation event sink wired"
+    assert callable(tree.child_step_sink), "no child step sink wired"
+
+    tree.event_sink(
+        {
+            "type": "delegation_child_event",
+            "event": "done",
+            "at": 123.0,
+            "child": {
+                "child_id": "c-1",
+                "name": "helper",
+                "status": "done",
+                "task_status": "partial",
+                "output": {"body": "child result body must not reach the socket"},
+                "error": None,
+                "depth": 1,
+                "parent_child_id": None,
+                "parent_frame_id": frame_id,
+                "frame_id": "f-child",
+                "created_at": 1.0,
+                "started_at": 2.0,
+                "finished_at": 3.0,
+                "progress": {
+                    "turn_boundary": 2,
+                    "max_turns": 8,
+                    "last_progress_at": 2.5,
+                },
+                "steering": {
+                    "queued": 0,
+                    "delivered": 1,
+                    "discarded": 0,
+                    "messages": [{"message_id": "m-1", "status": "delivered"}],
+                },
+                "overrides": {
+                    "model": "deepseek-chat",
+                    "steps": None,
+                    "permissions": ["read"],
+                    "capabilities": [],
+                },
+            },
+        }
+    )
+
+    event = next(ev for ev in hub.events if ev.get("type") == "delegation_child_event")
+    assert event["root_frame_id"] == frame_id
+    child = event["child"]
+    assert "output" not in child
+    assert "messages" not in (child.get("steering") or {})
+    assert child["task_status"] == "partial"
+    assert child["frame_id"] == "f-child"
+    assert child["steering"]["delivered"] == 1
+    assert child["overrides"]["permission_count"] == 1
+
+    tree.child_step_sink(
+        {
+            "phase": "begin",
+            "step_id": "s-child-1",
+            "kind": "skill",
+            "title": "Loading a skill",
+            "input": {
+                "name": "x",
+                "delegation": {
+                    "delegation_child_id": "c-1",
+                    "child_frame_id": "f-child",
+                    "child_name": "helper",
+                    "depth": 1,
+                },
+            },
+        }
+    )
+    steps = runner.store.list_steps(frame_id)
+    assert any(
+        step["step_id"] == "s-child-1" for step in steps
+    ), "child steps must persist root-keyed in frame_steps"
+    step_event = next(ev for ev in hub.events if ev.get("type") == "step")
+    assert step_event["step_id"] == "s-child-1"
+    assert step_event["input"]["delegation"]["child_name"] == "helper"

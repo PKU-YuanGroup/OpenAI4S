@@ -662,8 +662,155 @@ def _declared_failure_reason(result: Any) -> str | None:
     return "reported ok=false"
 
 
+#: Delegate step status by the envelope's machine-readable task_status.
+#: Green ("done") is reserved for a child that declared completion and had it
+#: upheld by machine checks; everything not-done-but-not-broken is "warning".
+_DELEGATE_STEP_STATUS: dict[str, str] = {
+    "completed": "done",
+    "partial": "warning",
+    "blocked": "warning",
+    "failed": "error",
+}
+_DELEGATE_STEP_SEVERITY: dict[str, int] = {"done": 0, "warning": 1, "error": 2}
+
+
+def _delegate_result_status(result: Any) -> str:
+    """done/warning/error for one child result (envelope or async handle)."""
+    if not isinstance(result, dict):
+        return "error"  # malformed: no declared outcome at all
+    task_status = result.get("task_status")
+    if isinstance(task_status, str):
+        return _DELEGATE_STEP_STATUS.get(task_status, "error")
+    if result.get("stop_reason") in ("stopped", "cancelled", "max_turns"):
+        return "warning"
+    if result.get("error"):
+        return "error"
+    if result.get("status") in ("pending", "running"):
+        # wait=false handle: the spawn succeeded; the verdict is tracked in
+        # the delegation panel, not on this card.
+        return "done"
+    return "error"
+
+
+def _delegate_result_word(result: Any) -> str:
+    """The one-line summary word — the task_status itself, never 'done'."""
+    if not isinstance(result, dict):
+        return "malformed result"
+    task_status = result.get("task_status")
+    if isinstance(task_status, str):
+        return task_status
+    if result.get("stop_reason") in ("stopped", "cancelled"):
+        return "stopped"
+    if result.get("status") in ("pending", "running"):
+        return "started"
+    if result.get("error"):
+        return "failed"
+    return "malformed result"
+
+
+def _delegate_summary_text(result: dict) -> str:
+    """A bounded human-readable line from the child's own completion."""
+    final = result.get("final_message")
+    if isinstance(final, str) and final.strip():
+        return " ".join(final.split())[:500]
+    output = result.get("output")
+    if isinstance(output, str) and output.strip():
+        return " ".join(output.split())[:500]
+    if isinstance(output, dict):
+        for key in ("summary", "text", "message"):
+            value = output.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())[:500]
+    return ""
+
+
+def _delegate_child_view(result: dict) -> dict:
+    """Bounded structured projection of one child result for the step card."""
+    environment = result.get("environment")
+    limitations = result.get("limitations")
+    artifacts = result.get("artifacts")
+    view: dict = {
+        "name": result.get("name"),
+        "child_id": result.get("child_id"),
+        "frame_id": result.get("frame_id"),
+        "task_status": result.get("task_status"),
+        "stop_reason": result.get("stop_reason"),
+        "status": result.get("status"),
+        "turns": result.get("turns"),
+        "max_turns": result.get("max_turns"),
+        "environment": environment if isinstance(environment, dict) else None,
+        "summary": _delegate_summary_text(result),
+        "limitations": (
+            [str(item)[:300] for item in limitations[:8] if str(item).strip()]
+            if isinstance(limitations, list)
+            else []
+        ),
+        "artifacts": (
+            [str(item)[:200] for item in artifacts[:50]]
+            if isinstance(artifacts, list)
+            else []
+        ),
+    }
+    if result.get("error"):
+        view["error"] = str(result["error"])[:600]
+    missing = result.get("missing_artifacts")
+    if isinstance(missing, list) and missing:
+        view["missing_artifacts"] = [str(item)[:200] for item in missing[:50]]
+    return view
+
+
+def _delegate_step_projection(result: Any, ok: bool) -> tuple[dict, str, str]:
+    """(output, summary, status) for a delegate step card.
+
+    Replaces the old flattening (``{"result": _short(result, 2000)}``, "done"):
+    the summary word reflects the envelope's ``task_status`` — never a
+    hardcoded "done" — the default body is the structured projection, and the
+    bounded raw string sits behind it for the details reveal. Fan-out lists
+    project every child and the worst child's status wins. The generic
+    ``_declared_failure_reason`` contract stays untouched for everyone else.
+    """
+    if not ok:
+        err = result.get("error") if isinstance(result, dict) else None
+        reason = " ".join(str(err).split()) if err else ""
+        summary = "failed" if not reason else f"failed: {reason[:160]}"
+        return ({"error": str(err)[:600] if err else "failed"}, summary, "error")
+    if isinstance(result, list):
+        children = [
+            (
+                _delegate_child_view(item)
+                if isinstance(item, dict)
+                else {"summary": str(_short(item, 200))}
+            )
+            for item in result[:48]
+        ]
+        worst = "done"
+        counts: dict[str, int] = {}
+        for item in result:
+            status = _delegate_result_status(item)
+            if _DELEGATE_STEP_SEVERITY[status] > _DELEGATE_STEP_SEVERITY[worst]:
+                worst = status
+            word = _delegate_result_word(item)
+            counts[word] = counts.get(word, 0) + 1
+        breakdown = ", ".join(f"{n} {word}" for word, n in counts.items())
+        summary = (
+            f"{len(result)} children: {breakdown}"[:200] if result else "0 children"
+        )
+        return ({"children": children, "raw": _short(result, 2000)}, summary, worst)
+    if isinstance(result, dict):
+        view = _delegate_child_view(result)
+        view["raw"] = _short(result, 2000)
+        return (view, _delegate_result_word(result), _delegate_result_status(result))
+    return ({"raw": _short(result, 2000)}, "malformed result", "error")
+
+
 def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
+    if kind == "delegate":
+        # Before the generic declared-failure read: a max_turns envelope
+        # carries a top-level ``error`` beside its structured fields, and the
+        # card must keep the structure rather than collapse to the error.
+        output, summary, _status = _delegate_step_projection(result, ok)
+        return (output, summary)
     err = _declared_failure_reason(result)
     if not ok or err is not None:
         # Carry the reason onto the card. This used to collapse every failure
@@ -811,7 +958,7 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
             {"filename": r.get("filename"), "version_id": r.get("version_id")},
             "saved",
         )
-    if kind in ("delegate", "mcp"):
+    if kind == "mcp":
         return ({"result": _short(result, 2000)}, "done")
     if kind == "fold":
         n_plddt = len((r.get("plddt_csv") or "").splitlines())
@@ -1708,15 +1855,25 @@ class HostDispatcher:
                     if step_result is None and raised_error is not None:
                         step_result = {"error": raised_error}
                     output, summary = _step_end(method, view[0], step_result, ok)
-                    # ``ok`` only tracks the soft-fail envelope; a structured
-                    # result that declares its own failure (``ok: False``) must
-                    # not render as a green "done" card either.
-                    step_ok = ok and _declared_failure_reason(step_result) is None
+                    if view[0] == "delegate":
+                        # Delegate-specific status read at the decision site:
+                        # the envelope's task_status is authoritative, and the
+                        # vocabulary grows "warning" for not-done-not-broken
+                        # (partial/blocked/stopped/max_turns). The generic
+                        # _declared_failure_reason contract is untouched.
+                        step_status = _delegate_step_projection(step_result, ok)[2]
+                    else:
+                        # ``ok`` only tracks the soft-fail envelope; a
+                        # structured result that declares its own failure
+                        # (``ok: False``) must not render as a green "done"
+                        # card either.
+                        step_ok = ok and _declared_failure_reason(step_result) is None
+                        step_status = "done" if step_ok else "error"
                     self.on_step(
                         {
                             "phase": "end",
                             "step_id": step_id,
-                            "status": ("done" if step_ok else "error"),
+                            "status": step_status,
                             "output": output,
                             "summary": summary,
                         }

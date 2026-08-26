@@ -365,3 +365,55 @@ def test_an_unknown_child_status_never_takes_down_the_projection(client):
     assert body["stats"]["done"] == 0
     assert body["stats"]["paused"] == 1
     assert body["children"][0]["status"] == "paused"
+
+
+# --------------------------------------------------------------------------
+# the real projection route carries the machine-readable task_status
+# --------------------------------------------------------------------------
+
+
+def test_the_delegations_route_carries_task_status(client):
+    """GET /frames/{fid}/delegations must surface the completion contract so
+    the workbench panel can color a child by what its task actually reached,
+    not only by its transport lifecycle."""
+
+    client.store.restore_delegation_tree(
+        root_frame_id=client.frame_id,
+        owner_instance_id="owner-1",
+        runner_instance_id="runner-1",
+        budget_limit=48,
+    )
+    reserved = client.store.reserve_delegation_children(
+        root_frame_id=client.frame_id,
+        owner_instance_id="owner-1",
+        runner_instance_id="runner-1",
+        count=1,
+        depth=1,
+        parent_child_id=None,
+    )
+    child_id = (reserved.get("child_ids") or [None])[0]
+    assert child_id
+    client.store.persist_delegation_child(
+        root_frame_id=client.frame_id,
+        owner_instance_id="owner-1",
+        runner_instance_id="runner-1",
+        child={
+            "child_id": child_id,
+            "name": "worker",
+            "status": "done",
+            "depth": 1,
+            "parent_child_id": None,
+            "frame_id": "f-child",
+            "stop_reason": "submitted",
+            "task_status": "partial",
+        },
+        messages=[],
+    )
+
+    status, body = client.get(f"/frames/{client.frame_id}/delegations")
+
+    assert status == 200
+    child = next(c for c in body["children"] if c["child_id"] == child_id)
+    assert child["task_status"] == "partial"
+    assert child["stop_reason"] == "submitted"
+    assert child["status"] == "done"
