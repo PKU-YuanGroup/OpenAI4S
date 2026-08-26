@@ -946,6 +946,7 @@ Object.assign(I18N.zh, {
   "delegation.active": "活动 {0}",
   "delegation.turns": "边界 {0}/{1}",
   "delegation.steering": "消息：{0} 待投递 · {1} 已投递",
+  "delegation.childFrame": "帧 {0}",
   "branch.current": "当前",
   "branch.viewOnly": "未激活 · 仅查看",
   "branch.currentSummary": "当前分支：{0}",
@@ -1246,6 +1247,19 @@ Object.assign(I18N.zh, {
   "step.artifact.openArtifact": "打开产物",
   "step.artifact.showOutput": "显示输出",
   "step.card.defaultTitle": "步骤",
+  "step.delegate.artifacts": "产物",
+  "step.delegate.children": "{0} 个子任务",
+  "step.delegate.hideDetails": "隐藏详情",
+  "step.delegate.limitations": "局限",
+  "step.delegate.missingArtifacts": "缺少必需产物",
+  "step.delegate.showDetails": "显示详情",
+  "step.delegate.status.blocked": "受阻",
+  "step.delegate.status.completed": "已完成",
+  "step.delegate.status.failed": "失败",
+  "step.delegate.status.partial": "部分完成",
+  "step.delegate.status.pending": "已启动",
+  "step.delegate.status.stopped": "已停止",
+  "step.delegate.turns": "轮次 {0}/{1}",
   "step.env.installed": "已安装：{0}",
   "step.env.missing": "缺少：{0}",
   "step.env.ready": "就绪",
@@ -2062,6 +2076,7 @@ Object.assign(I18N.en, {
   "delegation.active": "Active {0}",
   "delegation.turns": "Boundary {0}/{1}",
   "delegation.steering": "Messages: {0} queued · {1} delivered",
+  "delegation.childFrame": "frame {0}",
   "branch.current": "current",
   "branch.viewOnly": "inactive · view only",
   "branch.currentSummary": "Current branch: {0}",
@@ -2362,6 +2377,19 @@ Object.assign(I18N.en, {
   "step.artifact.openArtifact": "Open artifact",
   "step.artifact.showOutput": "Show output",
   "step.card.defaultTitle": "step",
+  "step.delegate.artifacts": "artifacts",
+  "step.delegate.children": "{0} sub-tasks",
+  "step.delegate.hideDetails": "Hide details",
+  "step.delegate.limitations": "limitations",
+  "step.delegate.missingArtifacts": "missing required artifacts",
+  "step.delegate.showDetails": "Show details",
+  "step.delegate.status.blocked": "blocked",
+  "step.delegate.status.completed": "completed",
+  "step.delegate.status.failed": "failed",
+  "step.delegate.status.partial": "partial",
+  "step.delegate.status.pending": "started",
+  "step.delegate.status.stopped": "stopped",
+  "step.delegate.turns": "turns {0}/{1}",
   "step.env.installed": "installed: {0}",
   "step.env.missing": "missing: {0}",
   "step.env.ready": "ready",
@@ -3067,6 +3095,7 @@ function sanitizeDelegations(payload) {
       child_id: publicText(item.child_id, 96), parent_child_id: publicText(item.parent_child_id, 96),
       frame_id: publicText(item.frame_id, 96), name: publicText(item.name, 160),
       status: publicText(item.status, 32), depth: Math.min(count(item.depth), 16),
+      task_status: publicText(item.task_status, 32),
       stop_reason: publicText(item.stop_reason, 160), error: publicText(item.error, 240),
       created_at: item.created_at, started_at: item.started_at, finished_at: item.finished_at,
       progress: { turn_boundary: count(progress.turn_boundary), max_turns: count(progress.max_turns) || null },
@@ -3086,6 +3115,28 @@ function sanitizeDelegations(payload) {
     } : { total: children.length, pending: 0, running: 0, done: 0, failed: 0, stopped: 0 },
     children,
   };
+}
+function mergeDelegationChildEvent(m) {
+  // Live upsert of one child row from the server-side delegation_child_event
+  // projection: the panel updates as soon as the child moves, while the REST
+  // refresh scheduled by the caller stays the durable truth. The raw child
+  // rides through sanitizeDelegations, so the browser-side exclusion belt
+  // (no output, no steering text) applies here exactly as it does on load.
+  const child = m && m.child && typeof m.child === "object" ? m.child : null;
+  if (!child || !child.child_id) return;
+  const clean = sanitizeDelegations({ children: [child] }).children[0];
+  if (!clean) return;
+  const state = S.delegationState && typeof S.delegationState === "object" && Array.isArray(S.delegationState.children)
+    ? S.delegationState
+    : { root_frame_id: publicText(m.root_frame_id, 96), initialized: true, budget: null,
+      stats: { total: 0, pending: 0, running: 0, done: 0, failed: 0, stopped: 0 }, children: [] };
+  const at = state.children.findIndex(item => item.child_id === clean.child_id);
+  if (at >= 0) state.children[at] = Object.assign({}, state.children[at], clean);
+  else state.children.push(clean);
+  const stats = { total: state.children.length, pending: 0, running: 0, done: 0, failed: 0, stopped: 0 };
+  state.children.forEach(item => { const key = String(item.status || ""); if (stats[key] !== undefined) stats[key] += 1; });
+  state.stats = stats;
+  S.delegationState = state;
 }
 async function optionalApi(paths) {
   for (const path of paths) { try { return await api(path); } catch {} }
@@ -4824,6 +4875,10 @@ function renderDelegationPanel() {
     row.style.setProperty("--delegation-indent", Math.min(child.depth || 0, 4) * 10 + "px");
     const head = el("div", "delegation-child-head");
     head.appendChild(el("span", "delegation-child-name", child.name || shortRuntime(child.child_id)));
+    // Two truths, two chips: the lifecycle status (pending/running/done/…)
+    // and, once terminal, the machine-readable task_status — green only for
+    // completed, so a child that merely *finished* cannot read as success.
+    if (child.task_status) head.appendChild(delegateTaskChip(child));
     head.appendChild(el("span", "timeline-status " + String(child.status || "unknown").toLowerCase(), child.status || "unknown"));
     row.appendChild(head);
     const details = el("div", "delegation-child-details");
@@ -4831,6 +4886,7 @@ function renderDelegationPanel() {
     if (child.overrides && child.overrides.model) details.appendChild(el("span", "timeline-pill", child.overrides.model));
     if (child.overrides && child.overrides.steps) details.appendChild(el("span", "timeline-pill", "steps " + child.overrides.steps));
     if (child.steering && (child.steering.queued || child.steering.delivered)) details.appendChild(el("span", "timeline-pill", t("delegation.steering", child.steering.queued || 0, child.steering.delivered || 0)));
+    if (child.frame_id) { const ref = el("span", "timeline-pill dlg-frame-ref", t("delegation.childFrame", shortRuntime(child.frame_id))); ref.title = child.frame_id; details.appendChild(ref); }
     row.appendChild(details);
     if (child.error || child.stop_reason) row.appendChild(el("div", "delegation-child-message", child.error || child.stop_reason));
     // Only a child that is actually going can be stopped or steered. Offering
@@ -5045,6 +5101,11 @@ function onEvent(m) {
     if (S.activeTab === "timeline") renderActionTimeline(); if (S.activeTab === "notebook") renderNotebook();
   } }
   else if (["delegation_child_event", "delegation_state", "delegation_progress", "delegation_steering"].includes(m.type)) { if (mine(fid)) {
+    // Nested live rendering: upsert the projected child into the panel state
+    // now; the debounced REST refresh below remains the durable truth. Child
+    // cells stay owned by the child frame — nothing here touches S.cells, so
+    // they can never render as root Notebook cells.
+    if (m.type === "delegation_child_event") mergeDelegationChildEvent(m);
     scheduleWorkbenchRefresh(60); if (S.activeTab === "timeline") renderActionTimeline();
   } }
   else if (["sandbox", "sandbox_status", "security_status"].includes(m.type)) { if (mine(fid)) { S.securityState = sanitizeSecurity(m); if (S.activeTab === "timeline") renderActionTimeline(); } }
@@ -5939,9 +6000,74 @@ function searchResultHttpUrl(value) {
   if (lower.startsWith("http://")) return "http://" + raw.slice(7);
   return "";
 }
+function delegateTaskChip(view) {
+  // Green is reserved for a child that declared completion and had it upheld;
+  // amber for every not-done-but-not-broken shape; red for failed.
+  const ts = view && view.task_status;
+  let cls = "neutral", key = null;
+  if (ts === "completed") { cls = "completed"; key = "step.delegate.status.completed"; }
+  else if (ts === "partial") { cls = "warning"; key = "step.delegate.status.partial"; }
+  else if (ts === "blocked") { cls = "warning"; key = "step.delegate.status.blocked"; }
+  else if (ts === "failed") { cls = "failed"; key = "step.delegate.status.failed"; }
+  else if (view && ["stopped", "cancelled"].includes(view.stop_reason)) { cls = "warning"; key = "step.delegate.status.stopped"; }
+  else if (view && ["pending", "running"].includes(view.status)) { key = "step.delegate.status.pending"; }
+  return el("span", "dlg-chip " + cls, key ? t(key) : publicText(ts || (view && view.status) || "?", 32));
+}
+function delegateResultRow(view, compact) {
+  const row = el("div", "dlg-child" + (compact ? " compact" : ""));
+  const head = el("div", "dlg-head");
+  head.appendChild(delegateTaskChip(view));
+  if (view.name || view.child_id) head.appendChild(el("span", "dlg-name", publicText(view.name || view.child_id, 120)));
+  if (view.turns != null && view.max_turns) head.appendChild(el("span", "dlg-pill", t("step.delegate.turns", view.turns, view.max_turns)));
+  const envName = view.environment && (view.environment.env_name || view.environment.python);
+  if (envName) head.appendChild(el("span", "dlg-pill", publicText(envName, 80)));
+  if (view.frame_id) { const ref = el("span", "dlg-pill dlg-frame-ref", shortRuntime(view.frame_id)); ref.title = publicText(view.frame_id, 96); head.appendChild(ref); }
+  row.appendChild(head);
+  if (view.summary) row.appendChild(el("div", "dlg-summary", publicText(view.summary, 600)));
+  if (view.error) row.appendChild(el("div", "dlg-error", publicText(view.error, 400)));
+  if (Array.isArray(view.artifacts) && view.artifacts.length) {
+    row.appendChild(el("div", "dlg-meta", t("step.delegate.artifacts") + ": " + publicList(view.artifacts, 20, 120).join(", ")));
+  }
+  if (Array.isArray(view.missing_artifacts) && view.missing_artifacts.length) {
+    row.appendChild(el("div", "dlg-error", t("step.delegate.missingArtifacts") + ": " + publicList(view.missing_artifacts, 10, 120).join(", ")));
+  }
+  if (Array.isArray(view.limitations) && view.limitations.length) {
+    const lim = el("div", "dlg-limits");
+    lim.appendChild(el("div", "dlg-meta", t("step.delegate.limitations") + ":"));
+    publicList(view.limitations, 8, 300).forEach(item => lim.appendChild(el("div", "dlg-limit", "· " + item)));
+    row.appendChild(lim);
+  }
+  return row;
+}
+function delegateStepBody(inp, out) {
+  // The default card is human-readable structure only; raw JSON lives behind
+  // an explicit collapsed reveal (same .s-out-tgl pattern as artifact steps).
+  const wrap = el("div", "dlg-card");
+  if (Array.isArray(out.children)) {
+    wrap.appendChild(el("div", "dlg-meta", t("step.delegate.children", out.children.length)));
+    out.children.forEach(child => wrap.appendChild(delegateResultRow(child && typeof child === "object" ? child : {}, true)));
+  } else {
+    wrap.appendChild(delegateResultRow(out, false));
+  }
+  const raw = typeof out.raw === "string" && out.raw ? out.raw : JSON.stringify(out, null, 2);
+  const details = el("div", "s-out");
+  const tgl = el("button", "s-out-tgl", t("step.delegate.showDetails"));
+  const json = el("div", "s-json"); json.textContent = raw; json.style.display = "none";
+  tgl.onclick = () => { const show = json.style.display === "none"; json.style.display = show ? "block" : "none"; tgl.textContent = show ? t("step.delegate.hideDetails") : t("step.delegate.showDetails"); };
+  details.appendChild(tgl); details.appendChild(json); wrap.appendChild(details);
+  return wrap;
+}
 function stepBody(step) {
   const k = step.kind, inp = step.input || {}, out = step.output || {};
   const box = el("div", "s-inner");
+  // The structured delegate card comes before the generic error dump: a
+  // max_turns envelope carries an error field beside its structured status
+  // and must still render as the truthful card, not a bare red blob.
+  if (k === "delegate" && out && typeof out === "object" && ("task_status" in out || Array.isArray(out.children))) {
+    if (inp.request) box.appendChild(clipPre(inp.request, "s-cmd"));
+    box.appendChild(delegateStepBody(inp, out));
+    return box;
+  }
   if (out.error) { box.appendChild(clipPre(out.error, "d-del")); return box; }
   if (k === "review") {
     const issues = Array.isArray(out.issues) ? out.issues : [];
@@ -6099,8 +6225,17 @@ function stepBody(step) {
 }
 function buildStepCard(step) {
   const card = el("div", "step step-" + (step.kind || "code"));
+  // A step forwarded from a delegated child carries its identity under
+  // input.delegation (set server-side): render it nested — indented, tagged
+  // with the child's name — so child activity never masquerades as the root's.
+  const dlg = step.input && step.input.delegation && typeof step.input.delegation === "object" ? step.input.delegation : null;
+  if (dlg) {
+    card.classList.add("step-child");
+    card.style.setProperty("--step-child-indent", Math.min(+dlg.depth || 1, 4) * 12 + "px");
+  }
   const h = el("div", "s-head");
   const ic = el("span", "s-ic"); h.appendChild(ic);
+  if (dlg) h.appendChild(el("span", "s-child-tag", publicText(dlg.child_name || shortRuntime(dlg.delegation_child_id), 60)));
   h.appendChild(el("span", "s-lbl", step.title || step.kind || t("step.card.defaultTitle")));
   const meta = el("span", "s-meta", ""); h.appendChild(meta);
   const chev = el("span", "s-chev"); chev.innerHTML = icon("chevron-down", 13); h.appendChild(chev);
@@ -6115,8 +6250,9 @@ function applyStepState(handle) {
   const status = step.status || "running";
   card.classList.toggle("running", status === "running");
   card.classList.toggle("err", status === "error");
+  card.classList.toggle("warn", status === "warning");
   if (status === "running") { ic.innerHTML = icon("loader", 14, "spin"); meta.textContent = step.kind === "review" ? "Reviewing" : ""; }
-  else { ic.innerHTML = icon(status === "error" ? "x" : stepIcon(step.kind), 14); meta.textContent = step.summary || (step.output && step.output.error ? t("step.status.failed") : ""); }
+  else { ic.innerHTML = icon(status === "error" ? "x" : (status === "warning" ? "alert-triangle" : stepIcon(step.kind)), 14); meta.textContent = step.summary || (step.output && step.output.error ? t("step.status.failed") : ""); }
   body.innerHTML = ""; body.appendChild(stepBody(step));
   if ((step.kind === "plan" || step.kind === "artifact") && status !== "running") card.classList.add("open");
   if (step.kind === "review") {
