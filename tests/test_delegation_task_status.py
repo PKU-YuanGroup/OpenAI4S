@@ -196,6 +196,8 @@ def test_missing_required_artifacts_downgrade_a_completed_claim(monkeypatch):
 
     assert result["task_status"] == "partial"
     assert result["missing_artifacts"] == ["results.csv"]
+    # The option is a public override, visible on the child projection.
+    assert runner.children()[0]["overrides"]["require_artifacts"] == ["results.csv"]
 
 
 def test_present_required_artifacts_keep_the_declared_status(monkeypatch):
@@ -416,9 +418,13 @@ def test_retries_rerun_a_failed_child_with_limitations_appended(monkeypatch):
         assert len(tasks) == 2
         assert "missing dependency X" in tasks[1]
         assert "task_status=blocked" in tasks[1]
-        # Each retry consumes budget normally: two spawned children.
+        # Each retry consumes budget normally: two spawned children. The
+        # original child advertises the option in its public overrides; the
+        # retry child's spec has it popped (the loop owns the budget).
         assert runner.delegation_stats()["spawned_session"] == 2
-        assert len(runner.children()) == 2
+        children = runner.children()
+        assert len(children) == 2
+        assert [child["overrides"].get("retries") for child in children] == [1, None]
     finally:
         runner.close()
 
