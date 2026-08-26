@@ -1595,6 +1595,24 @@ class ArtifactRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def artifact_names_for_frame(self, frame_id: str) -> list[str]:
+        """Distinct artifact filenames whose versions this frame produced.
+
+        The delegation envelope's ``artifacts`` field and the
+        ``require_artifacts`` boundary check read this instead of trusting the
+        child's claims: ``artifact_versions.frame_id`` is stamped by the
+        capture/save paths, so a name appears here only when the store really
+        attributed a version to the frame.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT DISTINCT a.filename FROM artifact_versions v "
+                "JOIN artifacts a ON v.artifact_id=a.artifact_id "
+                "WHERE v.frame_id=? ORDER BY a.filename",
+                (frame_id,),
+            ).fetchall()
+        return [row["filename"] for row in rows]
+
     def resolve_artifact_path(self, ident: str) -> str | None:
         with self._lock:
             row = self._connection.execute(

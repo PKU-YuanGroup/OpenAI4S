@@ -112,6 +112,14 @@ finishing happen in python.
     host.env.list/use/create, host.load_skill(name)          # prebuilt envs + recipes
 - `host` is already injected into every python kernel. NEVER `import host` or \
 `from host import ...`; use the injected singleton directly.
+- `host.delegate(...)` and `host.collect(...)` results carry a machine-readable \
+`task_status` (completed | partial | blocked | failed) plus the child's \
+`limitations` and its store-verified `artifacts`. Read `task_status` — never \
+parse the child's prose for success: anything other than `completed` means \
+that child's task is NOT done; inspect its `limitations`/`error`, then rerun, \
+adjust, or report the gap honestly. When you are the delegated child, declare \
+your own honest status with `host.submit_output(..., task_status="partial")` \
+(or "blocked"/"failed") instead of dressing an incomplete result as done.
 - For ANY task touching external facts, datasets, accession numbers, sequences, or \
 literature, you MUST use science_search when a supported structured database fits, \
 or the native web tools (host.science/web_search/web_fetch from a cell), BEFORE \
@@ -649,6 +657,7 @@ class Agent:
             final_reply,
             result.stop_reason,
             completion=result.completion,
+            turns=result.turns,
         )
 
     def _action_ledger(
@@ -842,6 +851,7 @@ class Agent:
         reason: str,
         *,
         completion: Any = None,
+        turns: int = 0,
     ) -> dict:
         assert self.dispatcher is not None
         return {
@@ -850,6 +860,7 @@ class Agent:
             "submitted_output": (
                 completion if completion is not None else self.dispatcher.last_output
             ),
+            "turns": turns,
             "transcript": [{"role": t.role, "content": t.content} for t in transcript],
         }
 

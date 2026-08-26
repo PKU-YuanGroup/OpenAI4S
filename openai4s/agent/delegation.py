@@ -43,6 +43,20 @@ DELEGATION_PROCESS_INSTANCE_ID = f"delegation-{uuid.uuid4()}"
 
 _TERMINAL = frozenset({"done", "failed", "stopped"})
 
+#: Severity order for the machine-readable completion contract. A child's
+#: declaration is input to the envelope build, never the record: machine
+#: checks may move the status DOWN this ranking, never up.
+_TASK_STATUS_RANK = {"completed": 0, "partial": 1, "blocked": 2, "failed": 3}
+
+#: task_status values that mean "the task is not done" — the bounded retry
+#: option re-runs a child exactly when its envelope lands on one of these.
+_RETRYABLE_STATUS = frozenset({"partial", "blocked", "failed"})
+
+#: Alias keys under which a structured completion carries its limitations
+#: (mirrors the projection aliases in openai4s/server/completions.py without
+#: importing the server layer into the delegation core).
+_LIMITATION_ALIASES = ("limitations", "caveats", "限制", "局限性")
+
 
 class DelegationError(RuntimeError):
     pass
@@ -412,6 +426,7 @@ class _Child:
                 "child_id": self.child_id,
                 "name": self.name,
                 "status": self.status,
+                "task_status": (self.result or {}).get("task_status"),
                 "output": output,
                 "error": self.error,
                 "depth": self.depth,
@@ -454,9 +469,15 @@ class _Child:
                 "overrides": _public_overrides(self.spec),
                 "result": self.result,
                 "error": self.error,
+                # Every terminal persists its stop_reason: the stopped reason
+                # text for stopped children (unchanged), the engine's
+                # stop_reason (submitted/max_turns/error) for the rest.
                 "stop_reason": (
-                    self._stop_reason if self.status == "stopped" else None
+                    self._stop_reason
+                    if self.status == "stopped"
+                    else (self.result or {}).get("stop_reason")
                 ),
+                "task_status": (self.result or {}).get("task_status"),
             }
 
     @classmethod
@@ -532,6 +553,9 @@ class _Child:
         self.status = "stopped"
         self.error = None
         self.finished_at = self.finished_at or self._clock()
+        # Deliberately no task_status: a stopped child's task was neither
+        # completed nor judged — the daemon-restart repair path leaves the
+        # column NULL for the same reason.
         self.result = {
             "child_id": self.child_id,
             "name": self.name,
@@ -541,6 +565,11 @@ class _Child:
             "error": None,
             "reason": reason,
             "frame_id": self.frame_id,
+            "turns": self.turn_boundary or None,
+            "max_turns": self.max_turns,
+            "environment": None,
+            "limitations": [],
+            "artifacts": [],
         }
         self._discard_queued_locked()
         if not was_terminal:
@@ -1011,10 +1040,16 @@ class DelegationRunner:
                 "child_id": child.child_id,
                 "name": child.name,
                 "stop_reason": "error",
+                "task_status": "failed",
                 "output": None,
                 "completion_bullets": [],
                 "error": detail,
                 "frame_id": child_frame_id,
+                "turns": None,
+                "max_turns": max_turns,
+                "environment": self._child_environment(child_frame_id),
+                "limitations": [],
+                "artifacts": self._child_artifacts(child_frame_id),
             }
             child.finish_failed(detail, failed)
             self._persist_status(child, "failed")
@@ -1041,6 +1076,11 @@ class DelegationRunner:
             "completion_bullets": submitted.get("completion_bullets", []),
             "final_message": result.get("final_message"),
             "frame_id": child_frame_id,
+            "turns": result.get("turns"),
+            "max_turns": max_turns,
+            "environment": self._child_environment(child_frame_id),
+            "limitations": _completion_limitations(submitted.get("output")),
+            "artifacts": self._child_artifacts(child_frame_id),
         }
         schema = spec.get("output_schema")
         if schema is not None:
@@ -1050,10 +1090,34 @@ class DelegationRunner:
             if violation:
                 error = f"output_schema violation: {violation}"
                 out["error"] = error
+                out["task_status"] = "failed"
                 child.finish_failed(error, out)
                 self._persist_status(child, "failed")
                 self._tree.emit("failed", child)
                 return out
+
+        # Single-writer task_status derivation: the child's declaration is
+        # input; require_artifacts is verified against the store and can only
+        # downgrade the claim.
+        missing = _missing_required_artifacts(
+            _validated_require_artifacts(spec), out["artifacts"]
+        )
+        if missing is not None:
+            out["missing_artifacts"] = missing
+        out["task_status"] = _derive_task_status(
+            result.get("stop_reason"), submitted, result.get("final_message"), missing
+        )
+
+        if result.get("stop_reason") == "max_turns":
+            # A child that exhausted its turn budget did not finish its task;
+            # 'done' would launder exhaustion into success. The envelope keeps
+            # the raw stop_reason; the durable lifecycle records failure.
+            error = "max_turns exhausted before completion"
+            out["error"] = error
+            child.finish_failed(error, out)
+            self._persist_status(child, "failed")
+            self._tree.emit("failed", child)
+            return out
 
         # A stop arriving between schema validation and publication still wins.
         if not child.finish_done(out):
@@ -1063,6 +1127,104 @@ class DelegationRunner:
         self._persist_status(child, "done")
         self._tree.emit("done", child)
         return out
+
+    def _child_environment(self, child_frame_id: str | None) -> dict[str, Any]:
+        """The environment actually in effect for one child, honestly sourced.
+
+        The configured :class:`KernelEnvSpec` is the baseline; when the child
+        worker really spawned it registered a durable kernel generation under
+        the child frame, and that row (which also reflects a mid-run
+        ``env_use`` switch) overrides the configuration.
+        """
+        env = self.env
+        info: dict[str, Any] = {
+            "python": env.python if env is not None else None,
+            "env_name": env.env_name if env is not None else None,
+            "env_root": env.env_root if env is not None else None,
+            "r_env": env.r_env if env is not None else None,
+            "generation_id": None,
+        }
+        if self.store is None or not child_frame_id:
+            return info
+        reader = getattr(self.store, "latest_kernel_generation", None)
+        if not callable(reader):
+            return info
+        try:
+            row = reader(child_frame_id, "python")
+        except Exception:  # noqa: BLE001 - provenance must not fail the child
+            row = None
+        if isinstance(row, Mapping):
+            info["generation_id"] = row.get("generation_id")
+            environment = row.get("environment")
+            if isinstance(environment, Mapping):
+                if environment.get("interpreter"):
+                    info["python"] = environment["interpreter"]
+                if environment.get("environment_name") is not None:
+                    info["env_name"] = environment["environment_name"]
+                if environment.get("environment_root") is not None:
+                    info["env_root"] = environment["environment_root"]
+        return info
+
+    def _child_artifacts(self, child_frame_id: str | None) -> list[str]:
+        """Artifact names the store attributes to the child frame — never
+        the child's own claims."""
+        if self.store is None or not child_frame_id:
+            return []
+        reader = getattr(self.store, "artifact_names_for_frame", None)
+        if not callable(reader):
+            return []
+        try:
+            names = reader(child_frame_id)
+        except Exception:  # noqa: BLE001 - evidence lookup must not fail the child
+            return []
+        return [str(name) for name in names or ()]
+
+    def _run_with_retries(self, child: _Child) -> dict[str, Any]:
+        """Run one child, then apply its bounded ``retries`` option.
+
+        Each retry is a NEW child (a terminal delegation row is immutable and
+        every attempt consumes session budget normally), re-run with the
+        previous attempt's limitations appended to the request. The final
+        attempt's envelope is what the caller sees. There is no other
+        automatic retry anywhere in the delegation runtime.
+        """
+        result = self._run_one(child)
+        budget = _retry_budget(child.spec)
+        attempt = 0
+        while (
+            attempt < budget
+            and result.get("task_status") in _RETRYABLE_STATUS
+            and result.get("stop_reason") != "stopped"
+            and not child.stop_event.is_set()
+        ):
+            attempt += 1
+            retry_spec = _retry_spec(child.spec, result, attempt)
+            try:
+                child_ids = self._tree.allocate(
+                    parent_child_id=self.parent_child_id,
+                    depth=self.depth,
+                    count=1,
+                )
+            except DelegationError:
+                # Budget exhausted: the honest last result stands.
+                break
+            retry_child = _Child(
+                child_ids[0],
+                retry_spec.get("name"),
+                retry_spec,
+                depth=self.depth + 1,
+                parent_child_id=self.parent_child_id,
+                parent_frame_id=self.parent_frame_id,
+                store=self.store,
+                budget=self.budget,
+                clock=self._tree.clock,
+            )
+            with self._tree.lock:
+                self._children[retry_child.child_id] = retry_child
+            self._tree.register(retry_child)
+            child = retry_child
+            result = self._run_one(retry_child)
+        return result
 
     def __call__(self, spec: dict[str, Any]) -> Any:
         if self.depth >= MAX_DEPTH:
@@ -1174,6 +1336,14 @@ class DelegationRunner:
                 raise DelegationError(
                     f"invalid child execution policy: {error}"
                 ) from error
+            _validated_require_artifacts(child_spec)
+            if _retry_budget(child_spec) > 0 and not wait:
+                # An asynchronous child is collected once through its own
+                # handle; a retry's replacement result would be unobservable.
+                raise DelegationError(
+                    "retries requires wait: true — collect an asynchronous "
+                    "child and re-delegate explicitly instead"
+                )
         child_ids = self._reserve(len(items))
 
         children: list[_Child] = []
@@ -1214,10 +1384,10 @@ class DelegationRunner:
 
         if len(children) == 1:
             # On the caller's own thread, which already has the context.
-            results = [self._run_one(children[0])]
+            results = [self._run_with_retries(children[0])]
         else:
             futures = [
-                self._pool.submit(carry_context(self._run_one), child)
+                self._pool.submit(carry_context(self._run_with_retries), child)
                 for child in children
             ]
             for child, future in zip(children, futures):
@@ -1269,6 +1439,7 @@ class DelegationRunner:
                     failed = {
                         "child_id": child.child_id,
                         "stop_reason": "error",
+                        "task_status": "failed",
                         "output": None,
                         "error": detail,
                     }
@@ -1378,6 +1549,154 @@ class DelegationRunner:
             pass
 
 
+def _derive_task_status(
+    stop_reason: Any,
+    submitted: Mapping[str, Any],
+    final_message: Any,
+    missing_artifacts: list[str] | None,
+) -> str:
+    """The single authoritative task_status derivation for one child envelope.
+
+    The child's declaration (``submit_output``'s top-level ``task_status`` or
+    ``finalize_response``'s property, which lands inside ``output``) is input;
+    machine checks can only DOWNGRADE it. ``max_turns`` is at best partial —
+    failed when the child produced literally nothing. A terminated child that
+    never submitted is failed regardless of what its transport said.
+    """
+    if stop_reason == "max_turns":
+        return "partial" if (submitted or final_message) else "failed"
+    if not submitted and stop_reason != "submitted":
+        return "failed"
+    declared = submitted.get("task_status")
+    if declared is None:
+        output = submitted.get("output")
+        if isinstance(output, Mapping):
+            declared = output.get("task_status")
+    if not isinstance(declared, str) or declared not in _TASK_STATUS_RANK:
+        declared = "completed"
+    status = declared
+    if missing_artifacts:
+        # Required artifacts the store cannot attribute to this child cap the
+        # status at partial; a declared blocked/failed already ranks lower.
+        if _TASK_STATUS_RANK[status] < _TASK_STATUS_RANK["partial"]:
+            status = "partial"
+    return status
+
+
+def _completion_limitations(output: Any) -> list[str]:
+    """The child's own structured limitations, normalized to a string list."""
+    if not isinstance(output, Mapping):
+        return []
+    for key in _LIMITATION_ALIASES:
+        value = output.get(key)
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        if isinstance(value, (list, tuple)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+            if items:
+                return items
+    return []
+
+
+def _validated_require_artifacts(spec: Mapping[str, Any]) -> list[str] | None:
+    """Parse ``require_artifacts``: exact names or trailing-star globs only."""
+    raw = spec.get("require_artifacts")
+    if raw is None:
+        return None
+    if isinstance(raw, str) or not isinstance(raw, Sequence):
+        raise DelegationError(
+            "require_artifacts must be a list of artifact filenames "
+            "(exact names or trailing-star globs)"
+        )
+    patterns: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if not name:
+            raise DelegationError(
+                "require_artifacts must contain only non-empty filenames"
+            )
+        if "*" in name[:-1]:
+            raise DelegationError(
+                f"require_artifacts pattern {name!r} is invalid: '*' is only "
+                "supported as a trailing glob"
+            )
+        patterns.append(name)
+    return patterns
+
+
+def _missing_required_artifacts(
+    patterns: list[str] | None, produced: list[str]
+) -> list[str] | None:
+    """Which required names/globs no store-attributed artifact satisfies."""
+    if patterns is None:
+        return None
+    missing: list[str] = []
+    for pattern in patterns:
+        if pattern.endswith("*"):
+            prefix = pattern[:-1]
+            if not any(name.startswith(prefix) for name in produced):
+                missing.append(pattern)
+        elif pattern not in produced:
+            missing.append(pattern)
+    return missing
+
+
+def _retry_budget(spec: Mapping[str, Any]) -> int:
+    """The clamped 0..2 bounded-retry option; malformed values are refused."""
+    raw = spec.get("retries")
+    if raw is None:
+        return 0
+    if isinstance(raw, bool):
+        raise DelegationError("retries must be an integer (clamped to 0-2)")
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        raise DelegationError("retries must be an integer (clamped to 0-2)") from None
+    return max(0, min(2, parsed))
+
+
+def _retry_spec(
+    spec: Mapping[str, Any], previous: Mapping[str, Any], attempt: int
+) -> dict[str, Any]:
+    """The re-run spec: same task, previous limitations appended as context."""
+    retry = dict(spec)
+    # The retry loop owns the budget; a nested reading of the option must not
+    # multiply it.
+    retry.pop("retries", None)
+    lines = [
+        f"[Retry {attempt}] The previous attempt ended with "
+        f"task_status={previous.get('task_status')}."
+    ]
+    if previous.get("error"):
+        lines.append(f"Previous error: {previous['error']}")
+    limitations = previous.get("limitations") or []
+    if limitations:
+        lines.append("Previous limitations:")
+        lines.extend(f"- {item}" for item in limitations)
+    if previous.get("missing_artifacts"):
+        lines.append(
+            "Missing required artifacts: "
+            + ", ".join(str(item) for item in previous["missing_artifacts"])
+        )
+    note = "\n".join(lines)
+    request = retry.get("request")
+    if isinstance(request, str):
+        retry["request"] = request + "\n\n" + note
+    elif isinstance(request, Mapping):
+        inner = dict(request)
+        for key in ("task", "prompt"):
+            if inner.get(key):
+                inner[key] = f"{inner[key]}\n\n{note}"
+                break
+        else:
+            inner["task"] = note
+        retry["request"] = inner
+    else:
+        summary = str(retry.get("context_summary") or "")
+        retry["context_summary"] = (summary + "\n\n" + note).strip()
+    return retry
+
+
 def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
     inherited = {
         key: value
@@ -1396,12 +1715,19 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
             "skill_names",
             "connectors",
             "unrestricted",
+            "require_artifacts",
+            "retries",
         )
         if (value := parent_spec.get(key)) is not None
     }
     if isinstance(item, str):
         return {"request": item, **inherited}
     if isinstance(item, dict):
+        # Explicit null == absent == default, on the nested door too: the
+        # top-level wire codec already drops None values, so a None inside a
+        # fan-out item must inherit rather than clobber the inherited value
+        # (or crash the turn-budget parser on a present-but-None steps).
+        item = {key: value for key, value in item.items() if value is not None}
         normalized = dict(inherited)
         normalized.update(item)
         # `update` lets a child REPLACE what it inherited, which for a resource
@@ -1578,6 +1904,8 @@ def _public_overrides(spec: Mapping[str, Any]) -> dict[str, Any]:
             "skill_names",
             "connectors",
             "unrestricted",
+            "require_artifacts",
+            "retries",
         )
         if key in spec
     }

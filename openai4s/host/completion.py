@@ -47,6 +47,12 @@ PAST_TENSE_STARTERS = frozenset(
 )
 _CJK_START = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
+#: The machine-readable completion vocabulary shared by ``host.submit_output``,
+#: ``finalize_response``, and the delegation envelope. A submission may
+#: declare one; omission means ``completed``. Anything else is a validation
+#: error \u2014 free-text statuses would put NL parsing back into the parent.
+TASK_STATUS_VALUES = ("completed", "partial", "blocked", "failed")
+
 
 def first_english_word(bullet: Any) -> str | None:
     """The lowercased first word of an English bullet, or ``None``.
@@ -649,6 +655,16 @@ class CompletionService:
         if error:
             return {"error": error}
 
+        task_status = spec.get("task_status")
+        if task_status is not None and (
+            not isinstance(task_status, str) or task_status not in TASK_STATUS_VALUES
+        ):
+            return {
+                "error": "task_status must be one of "
+                + ", ".join(TASK_STATUS_VALUES)
+                + " (omit it for a fully completed task)"
+            }
+
         schema = spec.get("output_schema")
         if schema is not None:
             error = validate_output_schema(spec.get("output"), schema)
@@ -684,6 +700,12 @@ class CompletionService:
             "output": spec.get("output"),
             "completion_bullets": bullets,
         }
+        if task_status is not None:
+            # Additive: the two-key CompletionRecord shape is preserved when
+            # no status is declared, so every existing consumer keeps its
+            # contract; a declared status rides alongside for the delegation
+            # envelope's single-writer derivation.
+            self.last_output["task_status"] = task_status
         return {"status": "ok"}
 
     def clear(self) -> None:
@@ -694,6 +716,7 @@ __all__ = [
     "CompletionService",
     "EvidenceStore",
     "PAST_TENSE_STARTERS",
+    "TASK_STATUS_VALUES",
     "SubmissionEvidence",
     "check_summary_metrics",
     "collect_file_claims",

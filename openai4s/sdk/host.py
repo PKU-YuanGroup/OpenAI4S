@@ -750,6 +750,8 @@ class _Host:
         permissions: dict[str, str] | None = None,
         capabilities: list[str] | None = None,
         unrestricted: bool | None = None,
+        require_artifacts: list[str] | None = None,
+        retries: int | None = None,
         wait: bool = True,
     ) -> Any:
         """Spawn sub-agent(s). str/dict -> single; list -> list of results.
@@ -757,6 +759,11 @@ class _Host:
         wait=True (default) blocks for the result(s); wait=False returns child
         handle(s) immediately for later host.collect. output_schema, when
         given, forces each child to submit_output matching that schema.
+        require_artifacts names artifact files (exact names or trailing-star
+        globs) the child must have produced — missing ones downgrade its
+        task_status to at most partial. retries (0-2, clamped; wait=True only)
+        re-runs a partial/blocked/failed child with its previous limitations
+        appended to the request.
         """
         return self._call(
             "delegate",
@@ -773,6 +780,8 @@ class _Host:
                     "permissions": permissions,
                     "capabilities": capabilities,
                     "unrestricted": unrestricted,
+                    "require_artifacts": require_artifacts,
+                    "retries": retries,
                     "wait": wait,
                 }
             ],
@@ -809,14 +818,18 @@ class _Host:
         completion_bullets: list[str],
         *,
         output_schema: dict | None = None,
+        task_status: str | None = None,
     ) -> dict:
         """Submit the task's structured result + human-facing completion bullets.
 
         completion_bullets must be 1-4 completed-action strings. English uses
         past-tense, verb-first wording; CJK verb phrases are accepted without
         English tense morphology. If output_schema is given, `output` is
-        validated against it. A validation failure returns {"error":...} so
-        the model can retry.
+        validated against it. task_status optionally declares an honest
+        machine-readable status (completed|partial|blocked|failed; omitted
+        means completed) — a delegated parent reads it instead of parsing
+        prose. A validation failure returns {"error":...} so the model can
+        retry.
         """
         return self._call(
             "submit_output",
@@ -825,6 +838,7 @@ class _Host:
                     "output": output,
                     "completion_bullets": completion_bullets,
                     "output_schema": output_schema,
+                    "task_status": task_status,
                 }
             ],
         )

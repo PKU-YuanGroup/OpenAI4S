@@ -155,6 +155,16 @@ def test_code_only_success_has_honest_running_and_actual_output_status():
     )
 
 
+def test_agent_prompt_documents_the_delegation_task_status_contract():
+    """D5 parent-side guidance: the prompt tells the parent to read the
+    machine-readable task_status instead of parsing child prose — additive
+    fragment, the pinned literals around it survive verbatim."""
+    assert "`task_status` (completed | partial | blocked | failed)" in SYSTEM_PROMPT
+    assert "parse the child's prose" in SYSTEM_PROMPT
+    assert "anything other than `completed`" in SYSTEM_PROMPT
+    assert 'task_status="partial"' in SYSTEM_PROMPT
+
+
 def test_agent_prompt_never_claims_post_fence_prose_runs_after_submit():
     assert "After it succeeds you may add" not in SYSTEM_PROMPT
     assert "Only prose BEFORE the action fence is user-visible" in SYSTEM_PROMPT

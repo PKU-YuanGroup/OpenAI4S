@@ -210,6 +210,15 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
             "maxItems": 4,
             "description": "One to four completed-action phrases.",
         },
+        "task_status": {
+            "type": "string",
+            "enum": ["completed", "partial", "blocked", "failed"],
+            "description": (
+                "Optional honest machine-readable completion status; omitted "
+                "means completed. Declare partial/blocked/failed instead of "
+                "dressing an incomplete task as done."
+            ),
+        },
     },
     "required": ["summary", "completion_bullets"],
     "additionalProperties": False,

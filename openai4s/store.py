@@ -4003,6 +4003,9 @@ class Store:
     def list_artifact_names(self) -> list[dict]:
         return self._artifacts.list_artifact_names()
 
+    def artifact_names_for_frame(self, frame_id: str) -> list[str]:
+        return self._artifacts.artifact_names_for_frame(frame_id)
+
     def resolve_artifact_path(self, ident: str) -> str | None:
         return self._artifacts.resolve_artifact_path(ident)
 
