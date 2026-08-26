@@ -430,7 +430,9 @@ class LocalActionExecutor:
     ) -> ExecutionOutcome:
         if isinstance(action, FinalizeAction):
             return execute_finalize_action(
-                action, evidence=execution_evidence(state.metadata)
+                action,
+                evidence=execution_evidence(state.metadata),
+                code_evidence=getattr(self.dispatcher, "verify_code_evidence", None),
             )
         if isinstance(action, NativeToolBatch):
             return self._execute_native(action, state)

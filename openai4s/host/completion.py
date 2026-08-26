@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Protocol
 
+from openai4s.host.code_evidence import (
+    CODE_EVIDENCE_KEYS,
+    CodeEvidenceContext,
+    requires_code_evidence,
+    verify_code_evidence,
+)
+
 PAST_TENSE_STARTERS = frozenset(
     {
         "built",
@@ -644,10 +651,38 @@ class CompletionService:
     """
 
     def __init__(
-        self, evidence: Callable[[], SubmissionEvidence] | None = None
+        self,
+        evidence: Callable[[], SubmissionEvidence] | None = None,
+        *,
+        task_mode: Callable[[], str | None] | None = None,
+        code_evidence: Callable[[], CodeEvidenceContext] | None = None,
     ) -> None:
         self.last_output: dict | None = None
         self._evidence = evidence
+        self._task_mode = task_mode
+        self._code_evidence = code_evidence
+
+    def verify_code_claims(self, payload: dict) -> str | None:
+        """Refuse a code-mode completion whose evidence does not check out.
+
+        Shared by both completion doors: ``host.submit_output`` calls it below
+        and the Engine's ``finalize_response`` calls it through the dispatcher,
+        so a mode's requirements cannot be true on one door and absent on the
+        other. Unlike the produce-file evidence provider, a broken context is
+        **not** degraded to an accept: "cannot verify" is a refusal here, since
+        the whole point of these fields is that the claim is checkable.
+        """
+
+        mode = self._task_mode() if self._task_mode is not None else None
+        if not requires_code_evidence(mode):
+            return None
+        context: CodeEvidenceContext | None = None
+        if self._code_evidence is not None:
+            try:
+                context = self._code_evidence()
+            except Exception:  # noqa: BLE001 - an unreadable store is not a pass
+                context = None
+        return verify_code_evidence(payload, task_mode=mode, context=context)
 
     def submit(self, spec: dict) -> dict:
         bullets = spec.get("completion_bullets") or []
@@ -670,6 +705,10 @@ class CompletionService:
             error = validate_output_schema(spec.get("output"), schema)
             if error:
                 return {"error": error}
+
+        code_error = self.verify_code_claims(spec)
+        if code_error:
+            return {"error": code_error}
 
         if self._evidence is not None:
             # The provider is consulted only when the output actually names
@@ -706,6 +745,13 @@ class CompletionService:
             # contract; a declared status rides alongside for the delegation
             # envelope's single-writer derivation.
             self.last_output["task_status"] = task_status
+        for key in CODE_EVIDENCE_KEYS:
+            # Same additive rule: a code-mode submission carries its verified
+            # source/entry-point/architecture/test declarations forward so the
+            # completion projection and the reviewer see what was checked,
+            # while an analysis submission's envelope is unchanged.
+            if spec.get(key) is not None:
+                self.last_output[key] = spec[key]
         return {"status": "ok"}
 
     def clear(self) -> None:

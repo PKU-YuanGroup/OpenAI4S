@@ -22,11 +22,12 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 from openai4s.config import Config, get_config
 from openai4s.doubao_search import DoubaoSearchService
 from openai4s.host.bash import BashAuthorizationService, redact_shell_text
+from openai4s.host.code_evidence import gather_code_evidence_context
 from openai4s.host.completion import CompletionService, gather_submission_evidence
 from openai4s.host.credentials import CredentialService
 from openai4s.host.data import HostDataService
@@ -1035,7 +1036,13 @@ class HostDispatcher:
                 get_store(self.cfg.db_path),
                 self.frame_id,
                 search_roots=(self._files.workspace(), Path.cwd()),
-            )
+            ),
+            task_mode=lambda: self._task_mode,
+            code_evidence=lambda: gather_code_evidence_context(
+                get_store(self.cfg.db_path),
+                self.frame_id,
+                search_roots=(self._files.workspace(), Path.cwd()),
+            ),
         )
         # Lifecycle owners may stamp the supervisor's persistent generation
         # here.  Until then the capability still binds the worker's per-process
@@ -1423,6 +1430,16 @@ class HostDispatcher:
         so ``CompletionService`` can read which turn it is validating.
         """
         self._task_mode = str(mode) if mode else None
+
+    def verify_code_evidence(self, payload: Mapping[str, Any]) -> str | None:
+        """The code-mode completion check, shared by both completion doors.
+
+        ``host.submit_output`` reaches it inside ``CompletionService.submit``;
+        the Engine's ``finalize_response`` reaches it here, bound by the
+        executor. One implementation, so a mode's requirements cannot hold on
+        one door and be absent on the other.
+        """
+        return self._completion_service.verify_code_claims(dict(payload))
 
     def set_session_domain(self, domain: Any | None) -> None:
         """Attach the Web runtime's shared filesystem-aware session service."""

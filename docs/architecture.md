@@ -415,6 +415,30 @@ The old fenced `tool`-block parser remains a
 silent compatibility path for saved prompts and older clients, but it is no
 longer advertised to the refactored agent.
 
+## Task modes and code-deliverable evidence
+
+A turn carries one of three task modes — `analysis_run` (the default and the
+historical behaviour), `reusable_pipeline`, or `codebase_change`. The mode is
+selected explicitly (the Web `task_mode` body field, `openai4s run --mode`) or,
+absent a selection, classified conservatively from the request text by
+`agent/task_modes.py`: a mode needs both a target and an action signal, so one
+topic word never leaves the default. A non-default mode appends its own prompt
+fragment to that turn's user message — the same per-turn seam explore mode
+uses, so the seeded system prompt and the durable message row are untouched —
+and the fragment carries a scoped override of the "working directory holds only
+deliverables" clause, because in these modes the source files *are* the
+deliverable.
+
+The mode also changes what completion means. `host.submit_output(...)` and
+`finalize_response` both accept `source_files`, `entry_points`,
+`architecture_summary`, and `test_evidence`; in the two code modes they are
+required and verified by `host/code_evidence.py` before either door commits.
+Files must resolve inside the run's evidence roots, match a declared sha256,
+and be registered artifacts; a Python entry point must `compile()` from its own
+bytes and is never executed; and each test command names the cell that ran it,
+whose stored status and recorded stdout — never the model's description of them
+— decide whether it passed. An `analysis_run` completion is unchanged.
+
 Scientific database breadth does not expand the model's tool count. The
 registry exposes only `science_list_dbs` and `science_search`; a connector
 service normalizes UniProt, RCSB PDB, Ensembl, ChEMBL, PubChem, arXiv, and
