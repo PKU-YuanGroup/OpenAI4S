@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "3b3766bc60156281468ff13e34fce251e8e34a9b0103f559e17748a890d1dbad"
+      "evidence_digest": "1b20fe73057e671f0f15988dac96866ef587188b13f5ae9c6e4c4c36684dbee7"
     },
     {
       "source": "R1",
@@ -648,7 +648,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_queued_followups.py,tests/test_specialist_connector_allowlist.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "bd6a2f93d36938b8bdb2c01aa0961db8ab8a51b9cfe2071719c23a30d7d43db8"
+      "evidence_digest": "b99eb4a88f32b2bdc2e639dbd043c69d033632965191ebb41b4a2052a8ef19fd"
     },
     {
       "source": "R6",
