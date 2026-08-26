@@ -1,9 +1,9 @@
 """The benchmark, run — not merely present.
 
-The proposal is explicit about what would make eleven workflows and thirty-four
-cases worthless: a directory of fixtures nobody executes, or cases that pass
-because the thing they exercise is a mock. So this file runs every case
-against the real subsystems and asserts the outcome each case declared.
+The proposal is explicit about what would make thirteen workflows and
+forty-six cases worthless: a directory of fixtures nobody executes, or cases
+that pass because the thing they exercise is a mock. So this file runs every
+case against the real subsystems and asserts the outcome each case declared.
 
 The declared outcome is the point. A case that says `failure` and completes
 cleanly has failed exactly as much as one that says `success` and raises — a
