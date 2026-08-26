@@ -31,6 +31,7 @@ from openai4s.agent.runtime import (
     TranscriptTurn,
     format_observation,
 )
+from openai4s.agent.task_modes import resolve_task_mode, task_mode_prompt
 from openai4s.config import Config, get_config
 from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel
@@ -275,6 +276,11 @@ class Agent:
     # children inherit the parent session's selection through the delegation
     # runner; None preserves the historical contract (sys.executable, no env).
     env: KernelEnvSpec | None = None
+    # Explicit task-mode selection (``openai4s run --mode``). None lets the run
+    # classify its own task text conservatively; the result decides which
+    # per-turn prompt fragment is appended and whether the Host demands
+    # verified source/entry-point/test evidence at completion.
+    task_mode: str | None = None
     # Durable kernel-generation store handle (duck-typed Store). When set (or
     # defaulted from the dispatcher's store), each worker lifetime writes a
     # kernel_generations row under this Agent's frame so artifact environment
@@ -534,9 +540,22 @@ class Agent:
         if self._cancelled():
             self._close_run()
             return self._finish([], None, "cancelled")
+        # The per-turn seam the Web path already had and this one did not: the
+        # mode fragment rides on the USER message, never on the system prompt
+        # (which a delegated child and a reused Agent both compose once), and
+        # the resolved mode is handed to the dispatcher so the completion
+        # contract knows which evidence it must verify.
+        mode = resolve_task_mode(task, explicit=self.task_mode)
+        set_mode = getattr(self.dispatcher, "set_task_mode", None)
+        if callable(set_mode):
+            set_mode(mode.value)
+        fragment = task_mode_prompt(mode)
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt()},
-            {"role": "user", "content": task},
+            {
+                "role": "user",
+                "content": (task + "\n\n" + fragment) if fragment else task,
+            },
         ]
         transcript: list[Turn] = []
         run_cwd = str(self.workspace) if self.workspace else os.getcwd()

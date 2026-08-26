@@ -55,6 +55,7 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
+from openai4s.agent.task_modes import TaskMode, resolve_task_mode, task_mode_prompt
 from openai4s.config import (
     DATA_ROOT_USERS_DIR,
     Config,
@@ -1783,6 +1784,11 @@ class SessionState:
         # Explore mode: autonomous deep exploration — larger turn budget and the
         # turn only ends via host.submit_output (prose-only replies are nudged).
         self.explore: bool = False
+        # Which KIND of task this turn is. Resolved per turn (explicit body
+        # field first, else a conservative classification of the user's text)
+        # and re-stamped on every turn, because a session's second request can
+        # be a different kind of work from its first.
+        self.task_mode: str = TaskMode.ANALYSIS_RUN.value
         self.last_model_prose: str = ""
         self.last_engine_completion = None
         # Set only around one AgentEngine CodeCell dispatch so the compatible
@@ -7505,6 +7511,7 @@ class SessionRunner:
         plan: bool = False,
         annos: list | None = None,
         explore: bool = False,
+        task_mode: str | None = None,
         on_admitted: Callable[[MessageJob], None] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
@@ -7526,6 +7533,15 @@ class SessionRunner:
         #    session is bricked, and compaction cannot rescue it because
         #    summarising the message means sending it. Refusing costs the user
         #    one paste; accepting costs them the session.
+        # An explicit task mode is validated here, synchronously, before a
+        # ticket exists: a bad value is the caller's mistake and must be a 400
+        # on the submit, not a ValueError inside a background turn thread.
+        if task_mode is not None and str(task_mode).strip():
+            try:
+                resolve_task_mode(None, explicit=task_mode)
+            except ValueError as error:
+                raise GatewayError(400, str(error), "invalid_task_mode") from error
+
         text = str(user_text or "")
         if len(text) > MAX_MESSAGE_CHARS:
             raise GatewayError(
@@ -7646,6 +7662,7 @@ class SessionRunner:
                                 if job.model_profile_id
                                 else None
                             ),
+                            task_mode=task_mode,
                         )
                         result.setdefault("job_id", job.job_id)
                         result.setdefault("execution_id", ticket.execution_id)
@@ -8941,6 +8958,7 @@ class SessionRunner:
         annos: list | None = None,
         explore: bool = False,
         frozen_binding: tuple[str, int] | None = None,
+        task_mode: str | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
         if frozen_binding:
@@ -8961,6 +8979,10 @@ class SessionRunner:
         st.plan = bool(plan)
         # plan mode wins: a plan turn never executes, so explore is meaningless
         st.explore = bool(explore) and not st.plan
+        # Per turn, not per session: the same session's next request can be a
+        # different kind of work. An invalid explicit selection is a 400 at
+        # `submit_message`; a direct caller gets the same ValueError shape.
+        st.task_mode = resolve_task_mode(user_text, explicit=task_mode).value
         # Frozen above the `processing` event rather than in the failure
         # handler, because that event is how a *queued* turn announces itself:
         # its 202 resolved while an earlier turn still owned the screen, so the
@@ -8986,6 +9008,12 @@ class SessionRunner:
             # history, not a scientific worker.  A CodeCell acquires its kernel
             # later through CellExecutionService.prepare_language.
             self._ensure_runtime(st)
+            # After the runtime exists: the completion contract reads the mode
+            # off the dispatcher to decide whether source/entry-point/test
+            # evidence is required and verified for this turn's submission.
+            set_mode = getattr(st.dispatcher, "set_task_mode", None)
+            if callable(set_mode):
+                set_mode(st.task_mode)
             self._seed_messages(st)
             self.store.update_frame(root_frame_id, status="processing")
             emit(
@@ -9057,6 +9085,9 @@ class SessionRunner:
                 )
             if st.explore:
                 resolved = resolved + "\n\n" + _EXPLORE_PROTOCOL
+            mode_fragment = task_mode_prompt(st.task_mode)
+            if mode_fragment:
+                resolved = resolved + "\n\n" + mode_fragment
             # attach the pinned figure(s) with the pin marker drawn on, so a
             # vision model SEES what the user pointed at (not an x%/y% guess)
             content = (
@@ -14630,6 +14661,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         plan=bool(b.get("plan")),
                         annos=annos,
                         explore=bool(b.get("explore")),
+                        task_mode=b.get("task_mode"),
                         on_admitted=_persist_correlation,
                     )
                 except BaseException:

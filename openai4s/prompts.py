@@ -147,6 +147,87 @@ blast radius and prefer the reversible path. Do not include model names, ids, or
 internal codenames in anything sent to a third-party service."""
 
 
+# --- task modes ----------------------------------------------------------
+# Contract: per-turn fragments appended to the USER message (never to the
+# seeded system prompt, which is composed once per session). Each one is
+# selected by `openai4s.agent.task_modes.resolve_task_mode`, and each carries
+# its OWN scoped override of the deliverable/working-directory clauses so it
+# augments the base guidance instead of silently contradicting it. The default
+# mode (`analysis_run`) has no fragment: today's behaviour is the default.
+
+_TASK_MODE_SHARED_STRUCTURE = """\
+- Save the implementation to source files with `host.write_file` /
+  `host.edit_file`. Code cells are for exploration and verification; a pipeline
+  that exists only in the kernel namespace is not a deliverable, and neither is
+  one pasted into a cell whose output nobody can re-run.
+- Keep every entry point THIN: argument parsing and wiring, with the real work
+  in importable functions someone else can call.
+- Separate responsibilities into different source files only where they
+  genuinely differ — orchestration, domain logic, I/O, configuration,
+  reporting, CLI, tests. There is no file-count or line-count target. A task
+  that is honestly one file stays one file, and creating an empty or
+  placeholder module to look structured is worse than a single file because it
+  is a lie about the design. "Keep cells small and incremental" is a rule about
+  execution steps; it says nothing about how many source files the deliverable
+  has.
+- Reuse the structure and conventions that already exist rather than growing a
+  parallel one beside them.
+- Verify before finishing, in cells: an import smoke of each entry point,
+  targeted unit tests over the domain functions, and one minimal seeded
+  end-to-end run. The tests are part of the deliverable, not scaffolding."""
+
+_TASK_MODE_SHARED_COMPLETION = """\
+Finish by declaring, in `host.submit_output(...)` or `finalize_response`:
+`source_files` (every source file you wrote), `entry_points`,
+`architecture_summary` (one short paragraph naming what each module owns), and
+`test_evidence` (each entry names the command and the id of the cell that
+actually ran it). The Host verifies these against the filesystem, the artifact
+store, and the recorded cell output before accepting the completion — an
+unbacked claim is refused, not published."""
+
+TASK_MODE_REUSABLE_PIPELINE = f"""\
+[TASK MODE: reusable_pipeline]
+This request asks for something that RUNS AGAIN — not a one-off conclusion. The
+deliverable is code someone can re-run tomorrow on new inputs, plus the results
+of running it once here.
+
+Scoped override for this mode: the working directory still holds only final
+deliverables, and in this mode the source modules, their configuration, and
+their tests ARE final deliverables — write them there. This is not permission
+to leave a cloned repository, downloaded weights, or scratch files behind.
+
+How to work:
+- Open with a SHORT module-responsibility plan (a few lines: which file owns
+  what, and why). "Start instantly, never open with a plan" belongs to a plain
+  analysis run; this mode plans briefly, then implements immediately.
+{_TASK_MODE_SHARED_STRUCTURE}
+
+{_TASK_MODE_SHARED_COMPLETION}"""
+
+TASK_MODE_CODEBASE_CHANGE = f"""\
+[TASK MODE: codebase_change]
+This request changes a codebase. The deliverable is saved source code plus the
+evidence that it still works — not a transcript of edits inside cells.
+
+Scoped override for this mode: the working directory still holds only final
+deliverables, and in this mode the source files you write or change ARE final
+deliverables. This is not permission to leave scratch files, build output, or a
+cloned repository behind.
+
+How to work:
+- Inspect FIRST, read-only: walk the tree and read the existing code before
+  changing anything. Read `AGENTS.md` / `CLAUDE.md`, the `README`, and
+  `pyproject.toml` (or the equivalent project manifest) and follow the
+  conventions you find there rather than importing your own.
+- Then open with a SHORT module-responsibility plan for the change (a few
+  lines: which files move, which are new, what each owns). "Start instantly,
+  never open with a plan" belongs to a plain analysis run; this mode plans
+  briefly, then implements immediately.
+{_TASK_MODE_SHARED_STRUCTURE}
+
+{_TASK_MODE_SHARED_COMPLETION}"""
+
+
 _REGISTRY: dict[str, str] = {
     "summary_fork": SUMMARY_FORK,
     "conclusion_gate": CONCLUSION_GATE,
@@ -155,6 +236,8 @@ _REGISTRY: dict[str, str] = {
     "exact_extraction": EXACT_EXTRACTION,
     "document_editor": DOCUMENT_EDITOR,
     "security_general": SECURITY_GENERAL,
+    "task_mode_reusable_pipeline": TASK_MODE_REUSABLE_PIPELINE,
+    "task_mode_codebase_change": TASK_MODE_CODEBASE_CHANGE,
 }
 
 

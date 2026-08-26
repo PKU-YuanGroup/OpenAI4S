@@ -33,6 +33,7 @@
 | [`loop.py`](./loop.py) | 向后兼容的本地 `Agent` facade，也是本地进程生命周期的归属地。它把 Engine 接到模型、dispatcher、ledger、委派，以及只在某个回合真的要跑代码时才启动的常驻内核上。当 Web gateway 把它作为被委派的子 Agent 嵌入时，它还接受父 session 的工作区、一份 OS 读隔离策略和 Cell 捕获钩子；不设置时各自保持 CLI 契约——进程 cwd、历史读行为、不做捕获。 |
 | [`models.py`](./models.py) | 在 Engine 里流转、与 provider 无关的那些值：标准化后的模型回复、可变的运行状态、一次执行的 outcome，以及最终结果。 |
 | [`ports.py`](./ports.py) | Engine 依赖的一组 protocol，每个都配一个不做任何事的默认实现。正是它们让 `engine.py` 不必 import 具体的模型、存储、内核和 UI 代码。 |
+| [`task_modes.py`](./task_modes.py) | 这一轮是哪一类任务——`analysis_run`（默认，也是历史行为）、`reusable_pipeline`、`codebase_change`——以及随之注入的 per-turn prompt 片段。显式选择（Web 请求体的 `task_mode`、`openai4s run --mode`）永远优先，无法识别的值直接抛错而不是悄悄退回自动判定，否则这道门就退化成了建议。自动判定刻意保守：一个模式需要同时命中*目标*信号与*动作*信号，中英双语、全部按词边界匹配；只命中一个只是话题词而非工程化请求，仍留在 `analysis_run`——误判成代码类模式会向本来没有源码证据的一轮索要 source/entry-point/test 证据，把诚实的完成挡回去。片段挂在 user message 上（system prompt 每个会话只播种一次），并自带一段作用域限定的覆盖说明来接管“工作目录只放交付物”那条规则，因为在这两个模式里源码文件本身就是交付物。 |
 | [`runtime.py`](./runtime.py) | 这些 port 在本地的那一侧。阻塞式 LLM 客户端、上下文压缩、原生工具、Python/R Cell 执行、CLI transcript 投影，以及把完成信号读回来——每样一个适配器，而 Engine 一个都不直接看见。它同时决定一次 Cell 结果最多能花掉模型多少上下文：observation 的每一段都有上限，超限的那一段只留预览，全文溢写到一个工作区**相对**路径的内容引用上，Agent 可以自己去打开。之所以是相对路径：绝对路径会把 `$HOME` 泄进上下文，还会让渲染出来的 observation 长度取决于数据目录恰好落在哪儿。模型适配器还把取消一路交到传输层，于是限流退避重试期间就能停下来，而不是等整个重试预算耗完才停。执行证据也是在这里计数的——只算真正分发出去的调用和真正跑过的 Cell，从不算只是声明或被拒绝的；带 `writes_files` 的原生工具会被 Web 捕获钩子前后包住，让它写的文件在正确的 frame 下变成 Artifact；可选的团队模式配额闸门也在这里，在 provider 请求发出之前就能拒绝它。 |
 
 ## 扩展与验证契约

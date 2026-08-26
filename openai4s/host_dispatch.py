@@ -1027,6 +1027,9 @@ class HostDispatcher:
         # ``self.store`` can be a closed generation (``Store.close()`` evicts
         # the singleton and ``get_store`` mints a new one), whose every query
         # raises and silently degrades reconciliation.
+        #: The current turn's task mode, stamped by the owning loop. ``None``
+        #: (and ``analysis_run``) keep the historical completion contract.
+        self._task_mode: str | None = None
         self._completion_service = CompletionService(
             evidence=lambda: gather_submission_evidence(
                 get_store(self.cfg.db_path),
@@ -1410,6 +1413,16 @@ class HostDispatcher:
     def set_workspace(self, path: str | Path) -> None:
         """Bind host-side file operations to the kernel's actual cwd."""
         self.workspace_path = Path(path).resolve()
+
+    def set_task_mode(self, mode: str | None) -> None:
+        """Bind the current turn's task mode for the completion contract.
+
+        Plain string on purpose: the vocabulary is owned by
+        ``openai4s.agent.task_modes`` and the *requirement* by
+        ``openai4s.host.code_evidence``; the Host layer only carries the value
+        so ``CompletionService`` can read which turn it is validating.
+        """
+        self._task_mode = str(mode) if mode else None
 
     def set_session_domain(self, domain: Any | None) -> None:
         """Attach the Web runtime's shared filesystem-aware session service."""
