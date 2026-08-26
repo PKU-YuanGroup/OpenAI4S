@@ -39,7 +39,7 @@
       "tests": "tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "13e25a645cc9e21d4b5aab4d78b8ec11ff65b1cb8004ee1255eb14b70d3836f5"
+      "evidence_digest": "b4f9d13fa3f5f63d63a52c7fa6c353fcbf8ec8b6bd8fa50c1f21a6f77adaeb1d"
     },
     {
       "source": "R1",
@@ -176,7 +176,7 @@
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "ecf259cec547ee80ec7eebcdc2909f5e7f50b021c74329228f8b506afc718cf3"
+      "evidence_digest": "453a8ac825408733a27f0cc2006d7640e1847a5e9c7da5926331a362b4df2de2"
     },
     {
       "source": "R2",
@@ -245,7 +245,7 @@
       "tests": "tests/test_auth_exit_matrix.py,tests/test_gateway_host_allowlist.py,tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "7bbbb51ef2a33bf7b4f64e8fe7f3cffeb798fc23c117acd9374fda674fb11933"
+      "evidence_digest": "1eb2c4191b040db52fe93ff71ac9952594a6772a3207a7e4abb9eeee5f72f51f"
     },
     {
       "source": "R3",
@@ -300,7 +300,7 @@
       "tests": "tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "13e25a645cc9e21d4b5aab4d78b8ec11ff65b1cb8004ee1255eb14b70d3836f5"
+      "evidence_digest": "b4f9d13fa3f5f63d63a52c7fa6c353fcbf8ec8b6bd8fa50c1f21a6f77adaeb1d"
     },
     {
       "source": "R3",
@@ -355,7 +355,7 @@
       "tests": "tests/test_plan_resume_claim.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "36293187cf2ced7c7602c88e22a6263fb9d329937c049f14c3f73a76a4da9ad3"
+      "evidence_digest": "9f1a4449b5647d98222bda98caad254ecdcb5738b167a2bd0b96791d806af156"
     },
     {
       "source": "R4",
@@ -397,7 +397,7 @@
       "tests": "tests/test_materialisation_atomicity.py,tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "118837af700d86804172fd0d6f83c73f6ca74a373508619434c4e2fb68767856"
+      "evidence_digest": "8c90760f5b3f7199cac530515abb5034b7e6cf5ef65cfd1a86dd395bb0717ec1"
     },
     {
       "source": "R4",
@@ -495,7 +495,7 @@
       "tests": "tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "13e25a645cc9e21d4b5aab4d78b8ec11ff65b1cb8004ee1255eb14b70d3836f5"
+      "evidence_digest": "b4f9d13fa3f5f63d63a52c7fa6c353fcbf8ec8b6bd8fa50c1f21a6f77adaeb1d"
     },
     {
       "source": "R5",
@@ -634,7 +634,7 @@
       "tests": "tests/test_materialisation_atomicity.py,tests/test_artifact_ref_chip.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "118837af700d86804172fd0d6f83c73f6ca74a373508619434c4e2fb68767856"
+      "evidence_digest": "8c90760f5b3f7199cac530515abb5034b7e6cf5ef65cfd1a86dd395bb0717ec1"
     },
     {
       "source": "R6",

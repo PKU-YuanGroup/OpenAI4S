@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import socket
 import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -39,6 +38,7 @@ import pytest
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
+from tests._ports import bound_gateway_server
 
 
 class _Hub:
@@ -51,24 +51,15 @@ class _Hub:
         return None
 
 
-def _free_port() -> int:
-    # The allowlist compares against `cfg.port`, so the daemon has to actually
-    # be listening on the port the config names — an ephemeral bind (port 0)
-    # would make every legitimate request fail the port check and the test
-    # would pass for the wrong reason.
-    sock = socket.socket()
-    try:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-    finally:
-        sock.close()
-
-
 @pytest.fixture()
 def daemon(tmp_path: Path):
     """A real gateway on loopback: real Handler, real socket, real status lines."""
 
-    port = _free_port()
+    # The allowlist compares against `cfg.port`, so the daemon has to actually
+    # be listening on the port the config names — which is why the port comes
+    # from the already-bound server rather than an ephemeral probe: the config
+    # names the real port AND nobody can take it between probe and bind.
+    httpd, port = bound_gateway_server()
     cfg = Config(
         data_dir=tmp_path,
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
@@ -79,8 +70,7 @@ def daemon(tmp_path: Path):
     cfg.ensure_dirs()
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
-    httpd.daemon_threads = True
+    httpd.RequestHandlerClass = handler_cls
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     token = local_auth.load_or_mint(cfg.data_dir)
