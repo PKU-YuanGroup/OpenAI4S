@@ -27,6 +27,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from openai4s.agent.models import KernelEnvSpec
 from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
 from openai4s.host.delegation_policy import child_execution_policy
@@ -777,6 +778,7 @@ class DelegationRunner:
         cell_hooks_factory: Callable[[str], object] | None = None,
         trusted_capture_admission: Callable[[], str | None] | None = None,
         trusted_capture_lease: Callable[[], Any] | None = None,
+        env: KernelEnvSpec | None = None,
     ) -> None:
         if depth < 0 or depth > MAX_DEPTH:
             raise ValueError(f"delegation depth must be between 0 and {MAX_DEPTH}")
@@ -800,6 +802,12 @@ class DelegationRunner:
         # Carried unchanged through every nesting level. This is a process
         # boundary selected by the Web owner, not a child-model option.
         self.read_isolation = read_isolation
+        # Interpreter/environment inheritance: the parent session's selection,
+        # threaded into each child Agent (which threads it into ITS nested
+        # runner), so every descendant kernel runs the same environment. None
+        # preserves the CLI contract (sys.executable, no env). Re-stamped per
+        # Web turn alongside workspace/read_isolation.
+        self.env = env
         # Web embedding supplies the Artifact boundary.  The delegation core
         # only forwards this duck-typed hook and remains independent of server
         # storage or UI projections.
@@ -967,6 +975,11 @@ class DelegationRunner:
                     else None
                 ),
                 delegated_cell_hooks_factory=self.cell_hooks_factory,
+                env=self.env,
+                # Child kernel lifetimes become durable generation rows under
+                # the child frame, so artifact environment provenance resolves
+                # the child's real interpreter instead of assuming the daemon.
+                generations=self.store,
             )
             agent.dispatcher.set_child_execution_policy(execution_policy)
             if child.attach_agent(agent):

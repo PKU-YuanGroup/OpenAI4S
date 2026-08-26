@@ -6337,8 +6337,33 @@ class SessionRunner:
             import dataclasses as _dc
 
             from openai4s.agent.delegation import DelegationError, DelegationRunner
+            from openai4s.agent.models import KernelEnvSpec
 
             child_cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
+
+            # Delegated children inherit the session's selected environment.
+            # Resolution follows the same order the kernel spawn uses, through
+            # the non-mutating projection: _resolve_env would rewrite
+            # st.env_name on every runtime-ensure, clobbering the live
+            # kernel's label when a pinned env is momentarily undiscoverable.
+            # Failure degrades to no inheritance rather than un-wiring
+            # delegation for the turn.
+            child_env = None
+            try:
+                from openai4s.kernel import environments as envmod
+
+                environment = envmod.get_environment(self._selected_env_name(st))
+                if environment is not None and environment.interpreter is not None:
+                    child_env = KernelEnvSpec(
+                        python=environment.interpreter,
+                        env_root=(
+                            str(environment.root) if environment.is_conda else None
+                        ),
+                        env_name=environment.name,
+                        r_env=getattr(disp, "active_r_env", None),
+                    )
+            except Exception:  # noqa: BLE001 — env inheritance is best effort
+                child_env = None
 
             def build_child_cell_hooks(producer_frame_id):
                 return self.artifacts.delegated_cell_hooks(
@@ -6395,6 +6420,7 @@ class SessionRunner:
                     cell_hooks_factory=cell_hooks_factory,
                     trusted_capture_admission=capture_admission,
                     trusted_capture_lease=capture_lease,
+                    env=child_env,
                 )
                 st.delegation_runner = runner
             else:
@@ -6406,6 +6432,8 @@ class SessionRunner:
                 # children must follow it, not the one at runner creation.
                 runner.workspace = st.workspace
                 runner.read_isolation = self._kernel_read_isolation(st)
+                # An env switch between turns must reach future children too.
+                runner.env = child_env
                 runner.cell_hooks_factory = cell_hooks_factory
                 runner.set_trusted_capture_admission(capture_admission)
                 runner.set_trusted_capture_lease(capture_lease)

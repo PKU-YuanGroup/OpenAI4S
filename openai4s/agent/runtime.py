@@ -8,6 +8,7 @@ dispatcher-backed control tools without importing those concrete services.
 from __future__ import annotations
 
 import hashlib
+import json
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -277,6 +278,126 @@ class CompactionPolicy:
         return CompactionArchiveMetadata.from_mapping(source)
 
 
+def _generation_json_safe(value: Any) -> Any:
+    """The supervisor's JSON coercion, mirrored: canonical JSON must not fail."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_generation_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _generation_json_safe(item) for key, item in value.items()}
+    return str(value)
+
+
+class KernelGenerationRecorder:
+    """Durable ``kernel_generations`` rows for Agent-owned local kernels.
+
+    Web session kernels get their rows from ``KernelSupervisor``; CLI and
+    delegated-child kernels are LazyKernel-spawned by the Agent itself and had
+    none, so artifact environment provenance under a child frame could only
+    degrade to the "assumed" daemon fallback.  The environment metadata here
+    mirrors the field layout ``KernelSupervisor._begin_generation`` writes,
+    without importing the supervisor (the runtime is language-normalized so
+    provenance readers recognize it).  ``close`` finishes the open row; a
+    child thread dying uncleanly may leave its row unfinished, which is
+    acceptable — such a row is abandoned like any other live generation at
+    the next daemon boot.
+    """
+
+    def __init__(self, store: Any, root_frame_id: str) -> None:
+        self._store = store
+        self._root_frame_id = str(root_frame_id)
+        # language -> (generation_id, worker identity key)
+        self._open: dict[str, tuple[str, tuple[Any, Any]]] = {}
+
+    def observe(self, kernel: Any, *, language: str = "python") -> str | None:
+        """Ensure a durable row describes the live worker; rotate on respawn."""
+        inner = getattr(kernel, "current", None)
+        if inner is None:
+            inner = kernel
+        generation = getattr(inner, "generation", None)
+        if generation is None:
+            open_row = self._open.get(language)
+            return open_row[0] if open_row is not None else None
+        # The per-instance authorization id (a fresh UUID per worker object)
+        # guards against id() reuse after a replaced kernel is collected.
+        identity = getattr(inner, "authorization_generation", None) or id(inner)
+        key = (identity, generation)
+        open_row = self._open.get(language)
+        if open_row is not None and open_row[1] == key:
+            return open_row[0]
+        self.close(language=language, reason="kernel_respawned")
+        generation_id = self._create(inner, language)
+        if generation_id is not None:
+            self._open[language] = (generation_id, key)
+        return generation_id
+
+    def close(
+        self, *, language: str | None = None, reason: str = "run_finished"
+    ) -> None:
+        """Finish the open row(s); persistence failures never break a run."""
+        languages = [language] if language is not None else list(self._open)
+        for name in languages:
+            open_row = self._open.pop(name, None)
+            if open_row is None:
+                continue
+            try:
+                self._store.finish_kernel_generation(
+                    open_row[0], state="released", reason=reason
+                )
+            except Exception:  # noqa: BLE001 - provenance cannot break a run
+                pass
+
+    def _create(self, kernel: Any, language: str) -> str | None:
+        argv = getattr(kernel, "argv", None)
+        interpreter = getattr(kernel, "python", None)
+        if language == "r" and isinstance(argv, (list, tuple)) and len(argv) >= 2:
+            # r_kernel.r_argv ends with ``<Rscript> <r_worker.R>``.
+            interpreter = argv[-2]
+        environment: dict[str, Any] = {
+            "key": None,
+            "runtime": "r" if language == "r" else "python",
+            "interpreter": interpreter,
+            "worker_argv": _generation_json_safe(argv),
+            "environment_root": getattr(kernel, "env_root", None),
+            "environment_name": getattr(kernel, "env_name", None),
+            "working_directory": getattr(kernel, "cwd", None),
+        }
+        try:
+            sandbox = getattr(kernel, "sandbox_status", None)
+            if sandbox is not None:
+                environment["sandbox"] = _generation_json_safe(sandbox)
+        except Exception:  # noqa: BLE001 - metadata must not break a cell
+            pass
+        try:
+            json.dumps(environment)
+        except (TypeError, ValueError):
+            environment = {
+                key: value
+                for key, value in environment.items()
+                if isinstance(value, (str, int, float, bool)) or value is None
+            }
+        pid = getattr(kernel, "pid", None)
+        try:
+            pid = int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            pid = None
+        try:
+            row = self._store.create_kernel_generation(
+                root_frame_id=self._root_frame_id,
+                branch_id=self._root_frame_id,
+                language=language,
+                environment=environment,
+                bootstrap={"status": "agent_managed", "loaded_sidecars": []},
+                worker_pid=pid,
+                state="active",
+            )
+        except Exception:  # noqa: BLE001 - provenance cannot break a run
+            return None
+        generation_id = row.get("generation_id") if isinstance(row, dict) else None
+        return str(generation_id) if generation_id else None
+
+
 @dataclass
 class LocalActionExecutor:
     """Execute one selected action against a run-scoped local runtime."""
@@ -291,6 +412,13 @@ class LocalActionExecutor:
     tool_catalog: Any = None
     prose_nudge: str = NO_CODE_NUDGE
     action_ledger: Any = None
+    # Applies a host.env.use() request recorded by the dispatcher callback at
+    # the next Python-cell boundary — never mid-cell (the Web pending-env
+    # model). None preserves the fixed-kernel contract.
+    apply_pending_env: Callable[[], None] | None = None
+    # Durable kernel-generation registration for Agent-owned workers; None
+    # keeps the historical in-memory-only continuity metadata.
+    generation_recorder: KernelGenerationRecorder | None = None
 
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState
@@ -431,6 +559,8 @@ class LocalActionExecutor:
     def _execute_code(
         self, action: CodeCell, reply: ModelReply, state: RunState
     ) -> ExecutionOutcome:
+        if action.language != "r" and self.apply_pending_env is not None:
+            self.apply_pending_env()
         refusal = self.pre_exec_gate(action.code, state.messages)
         if refusal is not None:
             self.log(f"[safety] cell not executed: {refusal}")
@@ -496,6 +626,10 @@ class LocalActionExecutor:
         generation = getattr(self.kernel, "generation", None)
         if generation is None:
             return
+        if self.generation_recorder is not None:
+            durable = self.generation_recorder.observe(self.kernel)
+            if durable is not None:
+                state.metadata["durable_kernel_generation_id"] = durable
         previous = state.metadata.get("active_kernel_generation")
         if previous is not None and str(previous) != str(generation):
             state.metadata["previous_kernel_generation"] = previous
@@ -687,6 +821,7 @@ __all__ = [
     "ChatModel",
     "CompactionPolicy",
     "CompletionSignal",
+    "KernelGenerationRecorder",
     "LocalActionExecutor",
     "TranscriptEventSink",
     "TranscriptTurn",
