@@ -402,8 +402,16 @@ try {
   });
   const permissionCard = page.locator(".perm-card:not(.resolved)").last();
   await permissionCard.waitFor({ state: "visible", timeout: 20000 });
+  // Count resolved cards before clicking: the resolution receipt can land
+  // before the next locator poll, at which point no unresolved card exists
+  // and waiting on the unresolved locator would time out.
+  const resolvedCards = page.locator(".perm-card.resolved");
+  const resolvedBefore = await resolvedCards.count();
   await permissionCard.locator(".perm-allow").click();
-  await permissionCard.waitFor({ state: "attached" });
+  await page.waitForFunction(
+    (expected) => document.querySelectorAll(".perm-card.resolved").length >= expected,
+    resolvedBefore + 1,
+  );
   await waitUntil("permission-resumed REPL completion", async () => {
     const snapshot = await api(`/frames/${encodeURIComponent(frameId)}/execution-queue`);
     return !queueTickets(snapshot).some((ticket) => ticket.execution_id === permissionExecutionId);
