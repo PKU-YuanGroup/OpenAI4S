@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 import socket
 import threading
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -38,6 +38,7 @@ from openai4s.config import Config, LLMConfig
 from openai4s.server import contract
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
+from tests._ports import bound_gateway_server
 
 
 class _Hub:
@@ -108,19 +109,28 @@ class _Daemon:
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
-        self.port = _free_port()
+        self._httpd: ThreadingHTTPServer | None
+        self._httpd, self.port = bound_gateway_server()
         self.cfg = _config(data_dir, self.port)
         self._runners: list = []
-        self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.start()
 
     def start(self) -> None:
+        if self._httpd is None:
+            # A restart must come back on the SAME port -- the cookie under
+            # test was issued against it -- so this rebind cannot go through
+            # port 0. The close()->bind() gap here is ours alone and
+            # milliseconds wide, unlike the fixture-wide probe-then-rebind
+            # window bound_gateway_server closes for the first bind.
+            self._httpd = ThreadingHTTPServer(
+                ("127.0.0.1", self.port), BaseHTTPRequestHandler
+            )
+            self._httpd.daemon_threads = True
         runner = gateway_mod.SessionRunner(self.cfg, _Hub())
         self._runners.append(runner)
         handler_cls = gateway_mod.make_handler(self.cfg, _Hub(), runner)
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", self.port), handler_cls)
-        self._httpd.daemon_threads = True
+        self._httpd.RequestHandlerClass = handler_cls
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
