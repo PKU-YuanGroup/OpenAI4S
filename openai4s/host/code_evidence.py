@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -89,8 +89,6 @@ class CodeEvidenceContext:
     artifact_names: frozenset[str] = frozenset()
     cell_lookup: Callable[[str], Mapping[str, Any] | None] | None = None
     frame_id: str | None = None
-    #: Filled by callers that want the derived stdout excerpts back.
-    observations: list[dict[str, Any]] = field(default_factory=list)
 
 
 def gather_code_evidence_context(
@@ -349,9 +347,6 @@ def _check_test_evidence(
                 f"so {command!r} did not pass"
             )
             continue
-        context.observations.append(
-            {"command": command, "producing_cell_id": cell_id, "stdout": stdout}
-        )
 
 
 def verify_code_evidence(
