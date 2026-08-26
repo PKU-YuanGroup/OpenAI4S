@@ -177,13 +177,19 @@ _TASK_MODE_SHARED_STRUCTURE = """\
   end-to-end run. The tests are part of the deliverable, not scaffolding."""
 
 _TASK_MODE_SHARED_COMPLETION = """\
+Save each source file as an artifact (`host.save_artifact(path, filename)`)
+once it is written, so it is a durable deliverable rather than a file that
+happens to be on disk.
+
 Finish by declaring, in `host.submit_output(...)` or `finalize_response`:
 `source_files` (every source file you wrote), `entry_points`,
 `architecture_summary` (one short paragraph naming what each module owns), and
 `test_evidence` (each entry names the command and the id of the cell that
 actually ran it). The Host verifies these against the filesystem, the artifact
 store, and the recorded cell output before accepting the completion — an
-unbacked claim is refused, not published."""
+unbacked claim is refused, not published. There is no field for a test's output
+text: pass or fail is read off the recorded output of the cell you name, so
+report the cell, not your reading of it."""
 
 TASK_MODE_REUSABLE_PIPELINE = f"""\
 [TASK MODE: reusable_pipeline]
