@@ -75,6 +75,26 @@ class _Client:
         handler._route("POST")
         return sent["code"], sent["body"]
 
+    def get(self, path):
+        handler = object.__new__(self._handler_class)
+        handler._correlation_id = "req-1"
+        sent: dict = {}
+
+        def _send(code, payload, ctype, extra=None):
+            sent["code"] = code
+            sent["body"] = json.loads(payload.decode("utf-8"))
+
+        handler._send = _send
+        handler.command = "GET"
+        handler.path = f"/api/v1{path}"
+        handler.headers = {
+            "Content-Length": "0",
+            local_auth.TOKEN_HEADER: self._token,
+        }
+        handler._body = lambda: {}
+        handler._route("GET")
+        return sent["code"], sent["body"]
+
     def seed_child(self, child_id, status="running"):
         """A durable child record with no live runner behind it.
 
@@ -318,3 +338,30 @@ def test_a_runner_that_refuses_the_steer_is_a_conflict_not_a_success(client):
     assert status == 409
     assert body["code"] == "delegation_record_stale"
     assert "child is stopped" in body["error"]
+
+
+@pytest.mark.stubbed_backend
+def test_an_unknown_child_status_never_takes_down_the_projection(client):
+    """A widened child lifecycle (or a corrupted row) must degrade to an
+    honest count, not a KeyError that 500s every /delegations read. The
+    fabricated status is injected under ignore_check_constraints, so this
+    response shape is synthetic — hence the recorder stays paused."""
+    child_id = client.seed_child("child-1", status="done")
+    conn = client.store._conn
+    conn.execute("PRAGMA ignore_check_constraints=ON")
+    try:
+        conn.execute(
+            "UPDATE delegation_children SET status='paused' "
+            "WHERE root_frame_id=? AND child_id=?",
+            (client.frame_id, child_id),
+        )
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA ignore_check_constraints=OFF")
+
+    status, body = client.get(f"/frames/{client.frame_id}/delegations")
+    assert status == 200
+    assert body["stats"]["total"] == 1
+    assert body["stats"]["done"] == 0
+    assert body["stats"]["paused"] == 1
+    assert body["children"][0]["status"] == "paused"

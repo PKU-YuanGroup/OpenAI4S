@@ -225,7 +225,12 @@ CREATE TABLE IF NOT EXISTS execution_log (
     wall_s        REAL,
     cpu_s         REAL,
     peak_rss_kb   INTEGER,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    -- v28: the kernel generation that ran a directly-recorded Cell. Web
+    -- cells derive theirs from execution_attempts; delegated children have
+    -- no attempt row, so the log row itself may carry the binding. Last so
+    -- fresh and ALTER-upgraded databases agree on column order.
+    generation_id TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_exec_frame ON execution_log(frame_id);
 CREATE INDEX IF NOT EXISTS ix_exec_root  ON execution_log(root_frame_id);
@@ -1593,6 +1598,10 @@ class Store:
                         "compute_job_input_versions",
                         self._apply_compute_job_input_versions,
                     ),
+                    28: (
+                        "delegation_generation_and_task_status",
+                        self._apply_delegation_generation_and_task_status,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1706,6 +1715,39 @@ class Store:
         except sqlite3.OperationalError as error:
             if not _is_duplicate_column(error):
                 raise
+
+    def _apply_delegation_generation_and_task_status(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Version 28: durable identity for delegated child executions.
+
+        ``execution_log.generation_id`` lets a directly-recorded Cell (a
+        delegated child, which has no execution_attempts row) name the kernel
+        generation that ran it; attempt-backed Web cells keep their
+        attempt-derived binding. ``delegation_children.task_status`` records
+        the child's derived completion contract alongside the lifecycle
+        ``status``. Historical rows keep NULL — inventing either value would
+        be provenance that is wrong rather than absent.
+        """
+
+        from openai4s.storage.delegation import DELEGATION_SCHEMA
+        from openai4s.storage.migrations import _is_duplicate_column, apply_ddl_script
+
+        # The delegation tables belong to their repository, which is
+        # constructed only after migrations finish — on a fresh database they
+        # do not exist yet at this point. Idempotent DDL first, so the ALTER
+        # below always has a table to alter (a freshly created table already
+        # carries the column, which the guard treats as success).
+        apply_ddl_script(conn, DELEGATION_SCHEMA)
+        for statement in (
+            "ALTER TABLE execution_log ADD COLUMN generation_id TEXT",
+            "ALTER TABLE delegation_children ADD COLUMN task_status TEXT",
+        ):
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as error:
+                if not _is_duplicate_column(error):
+                    raise
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -3003,6 +3045,7 @@ class Store:
         figures: list | None = None,
         files_read: list | None = None,
         files_written: list | None = None,
+        generation_id: str | None = None,
     ) -> str:
         return self._frames.log_cell(
             frame_id=frame_id,
@@ -3022,6 +3065,7 @@ class Store:
             figures=figures,
             files_read=files_read,
             files_written=files_written,
+            generation_id=generation_id,
         )
 
     def list_cells(

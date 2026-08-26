@@ -579,6 +579,64 @@ def test_execution_log_consumes_matching_attempt_revision_without_reallocating(
         )
 
 
+def test_log_cell_generation_id_round_trips_and_attempts_stay_authoritative(
+    tmp_path,
+):
+    """A directly-recorded cell (a delegated child has no execution_attempts
+    row) carries its own generation; attempt-backed Web cells keep the
+    attempt-derived binding even against a conflicting column stamp."""
+    store, repository, _clock = _repository(tmp_path)
+    frame = repository.new_frame(project_id="science")
+
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="direct()",
+        result={"id": "cell-direct"},
+        cell_index=1,
+        generation_id="gen-direct",
+    )
+    assert repository.cell_detail("cell-direct")["generation_id"] == "gen-direct"
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-direct"]["generation_id"] == "gen-direct"
+
+    group = store.append_action_group(
+        root_frame_id=frame,
+        turn_id="turn-1",
+        kind="execution",
+    )
+    store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id="cell-attempt",
+        state_revision=2,
+        generation_id="gen-attempt",
+    )
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="web()",
+        result={"id": "cell-attempt"},
+        cell_index=2,
+        state_revision=2,
+        generation_id="gen-stale-column",
+    )
+    assert repository.cell_detail("cell-attempt")["generation_id"] == "gen-attempt"
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-attempt"]["generation_id"] == "gen-attempt"
+
+    # no attempt and no stamp resolve to None exactly as before
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="legacy()",
+        result={"id": "cell-legacy"},
+        cell_index=3,
+    )
+    assert repository.cell_detail("cell-legacy")["generation_id"] is None
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-legacy"]["generation_id"] is None
+
+
 def test_delete_frame_removes_complete_session_aggregate(tmp_path):
     store, repository, _clock = _repository(tmp_path)
     root = repository.new_frame(project_id="science")

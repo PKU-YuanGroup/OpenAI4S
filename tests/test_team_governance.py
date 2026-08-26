@@ -276,3 +276,55 @@ def test_host_query_cannot_read_governance_tables(store):
     for table in ("project_members", "invites", "usage_ledger", "quotas"):
         with pytest.raises(PermissionError):
             store.query(f"SELECT * FROM {table}")
+
+
+def test_rows_keyed_under_a_delegate_frame_follow_the_parent_sessions_owners(store):
+    """A delegated child's rows carry the child frame id as their session key
+    (frame_id = root_frame_id = the delegate frame). The delegate frame has no
+    session_owners row of its own, so resolving the session from the raw key
+    made every child-keyed row admin-only — invisible to the very owner whose
+    session spawned it. The clause resolves through the frames table instead."""
+    from openai4s.storage.frames import visible_session_clause
+
+    alice = store.team.create_user(username="alice", password="fake-a")
+    mallory = store.team.create_user(username="mallory", password="fake-m")
+
+    root = store.new_frame(kind="turn", project_id="proj_a")
+    store.team.set_session_owner(root, alice["id"], project_id="proj_a")
+    child = store.new_frame(parent_id=root, kind="delegate", depth=1)
+
+    store.log_cell(
+        frame_id=child,
+        root_frame_id=child,
+        code="print('child')",
+        result={"id": "cell-child-keyed"},
+        cell_index=1,
+        origin="delegate",
+    )
+
+    def visible_cells(user_id):
+        clause, params = visible_session_clause(user_id, table="execution_log")
+        return {
+            row["producing_cell_id"]
+            for row in store._conn.execute(
+                f"SELECT producing_cell_id FROM execution_log WHERE {clause}",
+                params,
+            )
+        }
+
+    assert "cell-child-keyed" in visible_cells(alice["id"])
+    assert "cell-child-keyed" not in visible_cells(mallory["id"])
+
+    # A row whose frame has no frames-table entry keeps the existing rule:
+    # its raw key is the session, so an owner row on that key still matches
+    # and an unowned key stays admin-only.
+    store.log_cell(
+        frame_id="f-unframed",
+        root_frame_id="f-unframed",
+        code="x=1",
+        result={"id": "cell-unframed"},
+        cell_index=1,
+    )
+    store.team.set_session_owner("f-unframed", alice["id"], project_id="proj_a")
+    assert "cell-unframed" in visible_cells(alice["id"])
+    assert "cell-unframed" not in visible_cells(mallory["id"])
