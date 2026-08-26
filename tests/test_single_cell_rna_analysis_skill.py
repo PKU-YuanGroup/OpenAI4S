@@ -341,6 +341,31 @@ def test_boolean_config_fields_reject_truthy_strings(tmp_path, kernel):
     assert any("statistics.de must be a JSON boolean" in e for e in result["errors"])
 
 
+def test_formula_unsafe_keys_and_levels_are_rejected(tmp_path, kernel):
+    config = _base_config(tmp_path / "unused.csv")
+    config["design"]["donor_key"] = "donor-id"
+    config["design"]["tested"] = "anti-PD1"
+    config["statistics"] = {"de": True, "da": True}
+    result = kernel.preflight(config)
+    assert result["status"] == "invalid"
+    assert any("not formula-safe" in error for error in result["errors"])
+    assert any("Milo's contrast string" in error for error in result["errors"])
+
+    # With inference disabled, the same names never reach a formula or a
+    # contrast string, so they must not be rejected for it.
+    config["statistics"] = {"de": False, "da": False}
+    result = kernel.preflight(config)
+    assert not any("not formula-safe" in error for error in result["errors"])
+    assert not any("Milo's contrast string" in error for error in result["errors"])
+
+    # DE alone passes levels to PyDESeq2 as a list, so only the column-name
+    # rule applies.
+    config["statistics"] = {"de": True, "da": False}
+    result = kernel.preflight(config)
+    assert any("not formula-safe" in error for error in result["errors"])
+    assert not any("Milo's contrast string" in error for error in result["errors"])
+
+
 def test_paired_design_rejects_covariates(tmp_path, kernel):
     config = _base_config(tmp_path / "unused.csv")
     config["design"]["covariates"] = ["sex"]

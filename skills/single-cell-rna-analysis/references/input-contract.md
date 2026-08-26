@@ -68,7 +68,13 @@ hard failure.
 In comparative mode, `design` declares `tested`, `reference`, `condition_key`, `donor_key`, optional
 `sample_key`, `covariates`, and `paired`. Both levels must occur. A paired
 design requires donors represented in both levels. The workflow checks design
-rank after cells have been loaded.
+rank after cells have been loaded. Because model formulas and contrast strings
+are built from these values, when DE or DA is enabled the `donor_key`,
+`condition_key`, and covariate column names must be formula-safe identifiers
+(letters, digits, underscores, not starting with a digit), and when DA is
+enabled the `tested`/`reference` level values may contain only letters,
+digits, underscores, and dots — Milo's contrast string cannot express other
+characters. Rename the column or level, or disable the statistic.
 
 `integration.method` is `none` or `harmony`. Harmony requires nonempty,
 user-supplied `batch_keys`, and every key must be present. A requested batch

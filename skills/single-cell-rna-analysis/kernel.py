@@ -14,6 +14,7 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 import traceback
 from collections import defaultdict
@@ -248,6 +249,46 @@ def _config_errors(config: Mapping[str, Any]) -> tuple[list[str], list[str]]:
                 "paired designs fit ~ donor + condition; covariates are not "
                 "supported with design.paired=true"
             )
+        # Formula and contrast strings are built by interpolation: a column
+        # name like `donor-id` parses as subtraction in formulaic, and a
+        # condition level containing `-` makes pertpy's Milo contrast string
+        # ambiguous. Reject at preflight instead of failing (or silently
+        # mis-specifying the model) inside DESeq2/Milo.
+        statistics_config = config.get("statistics") or {}
+        wants_de = bool(statistics_config.get("de", True))
+        wants_da = bool(statistics_config.get("da", True))
+        if wants_de or wants_da:
+            covariates = design.get("covariates", [])
+            formula_keys = [
+                ("design.donor_key", design.get("donor_key")),
+                ("design.condition_key", design.get("condition_key")),
+                *(
+                    [
+                        (f"design.covariates[{index}]", value)
+                        for index, value in enumerate(covariates)
+                    ]
+                    if isinstance(covariates, list)
+                    else []
+                ),
+            ]
+            for label, value in formula_keys:
+                if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(value)):
+                    errors.append(
+                        f"{label} {str(value)!r} is not formula-safe; rename "
+                        "the metadata column to letters, digits, and "
+                        "underscores (not starting with a digit)"
+                    )
+        if wants_da:
+            for label, value in (
+                ("design.tested", design.get("tested")),
+                ("design.reference", design.get("reference")),
+            ):
+                if value and not re.fullmatch(r"[A-Za-z0-9_.]+", str(value)):
+                    errors.append(
+                        f"{label} {str(value)!r} cannot be expressed in Milo's "
+                        "contrast string; rename the level to letters, digits, "
+                        "underscores, and dots, or disable statistics.da"
+                    )
 
     integration = config.get("integration") or {}
     if integration.get("method") not in {"none", "harmony"}:

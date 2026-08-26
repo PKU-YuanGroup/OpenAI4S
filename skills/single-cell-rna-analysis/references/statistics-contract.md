@@ -35,7 +35,10 @@ metadata. Positive log2 fold change means tested greater than reference.
 Milo counts neighborhoods by sample, not by cell. Use Pertpy's `pydeseq2`
 solver. Pertpy is not part of the default kernel environment (its core drags
 the Flax/NumPyro/ott-jax stack); install the optional `singlecell` extra, or
-DA reports `failed_missing_dependency` while the base analysis completes. Include donor as a fixed design covariate for paired data and declared
+DA reports `failed_missing_dependency` while the base analysis completes.
+The contrast is expressed as the string
+`{condition_key}{tested}-{condition_key}{reference}`, which is why preflight
+restricts DA level values to letters, digits, underscores, and dots. Include donor as a fixed design covariate for paired data and declared
 covariates otherwise. Export logFC, PValue, FDR and SpatialFDR where available.
 Milo failure is reported independently of pseudobulk DE and does not invalidate
 the base analysis.
