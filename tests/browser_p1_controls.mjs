@@ -591,6 +591,65 @@ try {
     `${exportMenu.downloadName} / ${exportMenu.label}`,
   );
 
+  // A failed per-frame execution-log fetch must not be cached as an empty
+  // cell list: the pre-fix behavior pinned `[]` for that frame until the
+  // session was reopened, so the retry (the next click on the frame row)
+  // could never actually retry. Drives the real selectExecFrame through the
+  // page's own api()/fetch, with the route intercepted to fail once and then
+  // to answer -- the client `api` is a top-level const, so interception is
+  // the only seam that exercises the real call path.
+  const execLogRoute = "**/api/v1/frames/f-exec-retry/execution-log*";
+  await page.route(execLogRoute, (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "injected execution-log failure" }),
+  }));
+  const execFail = await page.evaluate(async () => {
+    const st = execSourcesState();
+    window.__execRetrySaved = {
+      open: st.open, selected: st.selected, cells: st.cells,
+      error: st.error, cellRequest: st.cellRequest,
+    };
+    st.cells = {}; st.error = "";
+    await selectExecFrame("f-exec-retry");
+    return {
+      cachedAfterFailure: Object.prototype.hasOwnProperty.call(st.cells, "f-exec-retry"),
+      errorAfterFailure: String(st.error || ""),
+    };
+  });
+  await page.unroute(execLogRoute);
+  await page.route(execLogRoute, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ kernels: ["python"], entries: [
+      { producing_cell_id: "cell-retry-1", cell_index: 1, state_revision: 1, kernel_id: "python", language: "python", origin: "delegate", source: "x = 1", stdout: "", stderr: "", error: "", status: "ok", figures: [], files_written: [], files_read: [] },
+    ] }),
+  }));
+  const execRecover = await page.evaluate(async () => {
+    const st = execSourcesState();
+    await selectExecFrame("f-exec-retry");
+    const out = {
+      recoveredCells: (st.cells["f-exec-retry"] || []).length,
+      errorCleared: !st.error,
+    };
+    const saved = window.__execRetrySaved;
+    delete window.__execRetrySaved;
+    st.open = saved.open; st.selected = saved.selected; st.cells = saved.cells;
+    st.error = saved.error; st.cellRequest = saved.cellRequest;
+    return out;
+  });
+  await page.unroute(execLogRoute);
+  check(
+    "a failed execution-log fetch is not cached as an empty frame",
+    execFail.cachedAfterFailure === false && execFail.errorAfterFailure.length > 0,
+    JSON.stringify(execFail),
+  );
+  check(
+    "re-selecting the frame retries, recovers, and clears the error",
+    execRecover.recoveredCells === 1 && execRecover.errorCleared,
+    JSON.stringify(execRecover),
+  );
+
   // ---- P1-A: model profiles, and P1-B: memory -- both Customize panels ----
   // Driven through the tray a user actually clicks, not by calling the render
   // function: these two are reached by a tab id, and a tab that stopped

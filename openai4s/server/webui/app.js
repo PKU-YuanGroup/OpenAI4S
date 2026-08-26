@@ -10032,12 +10032,19 @@ async function selectExecFrame(frameId) {
   st.selected = frameId;
   renderNotebook();
   if (st.cells[frameId]) return;
+  // Guarded like loadExecutionSources: a stale response (frame re-selected,
+  // session switched) may still fill its own cache slot, but only the latest
+  // request owns the shared error banner.
+  const request = st.cellRequest = (st.cellRequest || 0) + 1;
   try {
     const d = await api(`/frames/${encodeURIComponent(frameId)}/execution-log`);
     st.cells[frameId] = (d && d.entries) || [];
+    if (S.execSources === st && request === st.cellRequest) st.error = "";
   } catch (e) {
-    st.cells[frameId] = [];
-    st.error = t("nb.exec.loadFailed", publicText(e && e.message, 200));
+    // Do not cache the failure: an empty slot lets the next click retry
+    // instead of pinning an empty cell list until the session reopens.
+    if (S.execSources === st && request === st.cellRequest)
+      st.error = t("nb.exec.loadFailed", publicText(e && e.message, 200));
   }
   if (S.execSources === st && st.open) renderNotebook();
 }
