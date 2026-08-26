@@ -205,6 +205,7 @@ from openai4s.server.trusted_capture import (
 from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
+from openai4s.specialists import builtin_catalog
 from openai4s.storage.connectors import public_connector
 from openai4s.storage.governance import QuotaExceeded
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
@@ -6342,17 +6343,28 @@ class SessionRunner:
             child_cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
 
             # Delegated children inherit the session's selected environment.
-            # Resolution follows the same order the kernel spawn uses, through
-            # the non-mutating projection: _resolve_env would rewrite
-            # st.env_name on every runtime-ensure, clobbering the live
-            # kernel's label when a pinned env is momentarily undiscoverable.
-            # Failure degrades to no inheritance rather than un-wiring
-            # delegation for the turn.
+            # Resolution follows the same order the kernel spawn uses, but
+            # non-mutating (_resolve_env would rewrite st.env_name on every
+            # runtime-ensure) and WITHOUT _selected_env_name's silent
+            # base-substitution: when the session's real selection is
+            # transiently undiscoverable (e.g. conda discovery empty right
+            # after a restart) child_env stays None and the re-stamp below
+            # keeps the runner's last known-good spec, instead of downgrading
+            # future children to the daemon default for the turn.
             child_env = None
             try:
                 from openai4s.kernel import environments as envmod
 
-                environment = envmod.get_environment(self._selected_env_name(st))
+                if st.kernels.alive("python") and st.env_name:
+                    selection = st.env_name
+                else:
+                    selection = (
+                        st.desired_env
+                        or self._persisted_env(st.root_frame_id)
+                        or st.env_name
+                        or envmod.default_env_name()
+                    )
+                environment = envmod.get_environment(selection)
                 if environment is not None and environment.interpreter is not None:
                     child_env = KernelEnvSpec(
                         python=environment.interpreter,
@@ -6432,8 +6444,11 @@ class SessionRunner:
                 # children must follow it, not the one at runner creation.
                 runner.workspace = st.workspace
                 runner.read_isolation = self._kernel_read_isolation(st)
-                # An env switch between turns must reach future children too.
-                runner.env = child_env
+                # An env switch between turns must reach future children too —
+                # but a transient resolution failure (child_env None) keeps
+                # the last known-good spec rather than downgrading it.
+                if child_env is not None:
+                    runner.env = child_env
                 runner.cell_hooks_factory = cell_hooks_factory
                 runner.set_trusted_capture_admission(capture_admission)
                 runner.set_trusted_capture_lease(capture_lease)
@@ -11459,80 +11474,12 @@ class SessionRunner:
 # --------------------------------------------------------------------------- #
 #  Customize-panel payloads (agents / compute / environment / network / memory)
 # --------------------------------------------------------------------------- #
-# Built-in agent roster surfaced in Customize → Agents. These describe the
-# Code-as-Action harness the way opencode describes its build/plan/explore/
-# general agents: a primary scientist plus specialised sub-agents you can
-# host.delegate() to.
-_BUILTIN_AGENTS = [
-    {
-        "name": "SCIENTIST",
-        "mode": "primary",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": True,
-        "unrestricted": True,
-        "description": "Primary research agent. Writes Python that calls the full "
-        "host.* toolset (bash, web_search/web_fetch, file + grep/glob "
-        "tools, delegate, skills) and produces publication-grade "
-        "figures, tables and reports.",
-    },
-    {
-        "name": "EXPLORE",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": False,
-        "description": "Read-only scout. Searches the literature and your files "
-        "(web_search, web_fetch, grep, glob, read_file) and returns a "
-        "concise map — no writes.",
-    },
-    {
-        "name": "GENERAL",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": True,
-        "description": "General-purpose sub-agent for a self-contained sub-task; "
-        "runs the full toolset and returns a structured result via "
-        "host.delegate(...).",
-    },
-    {
-        "name": "REMOTE_GPU_PROVISIONER",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": True,
-        "description": "Remote GPU setup specialist. When an SSH GPU host exists "
-        "but fold / ESM mutation scoring / ProteinMPNN services are "
-        "not provisioned, it inspects the host, installs or locates "
-        "real wrappers, verifies them, and registers capabilities.",
-    },
-    {
-        "name": "PLAN",
-        "mode": "primary",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": True,
-        "unrestricted": False,
-        "description": "Planning agent (Plan mode). Investigates and proposes a "
-        "step-by-step plan without executing changes.",
-    },
-    {
-        "name": "REVIEWER",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": False,
-        "description": "Evidence-grounded reviewer. Checks a completed answer, "
-        "execution trace, and produced artifacts for unsupported claims, missing "
-        "deliverables, provenance gaps, and reproducibility risks without writing "
-        "files or calling tools.",
-    },
-]
+# Built-in agent roster surfaced in Customize → Agents. Derived from
+# openai4s/specialists.py — the single source of truth that also supplies the
+# runtime personas and execution policies — so the catalog can never again
+# advertise a specialist the delegation resolver does not know. The payload
+# keys/types are the frozen shape the old literal list carried.
+_BUILTIN_AGENTS = builtin_catalog()
 
 # Connectors directory: MCP servers the operator may explicitly add. Bundled
 # adapters are importable with OpenAI4S, but an entry here is only a catalog

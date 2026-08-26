@@ -273,6 +273,54 @@ def test_wire_delegation_stamps_and_restamps_the_session_env(monkeypatch, tmp_pa
         runner.close()
 
 
+def test_transient_env_resolution_failure_keeps_the_last_known_good_spec(
+    monkeypatch, tmp_path
+):
+    """A per-turn re-stamp that cannot resolve the selected environment (e.g.
+    conda discovery momentarily empty after a restart) must keep the last
+    known-good spec instead of downgrading future children to the daemon
+    default."""
+    roots = tmp_path / "envs"
+    _fake_env(roots, "sci")
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(roots))
+    envmod.discover_environments(force=True)
+
+    cfg = Config(
+        data_dir=tmp_path / "data",
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=2,
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    frame_id = runner.store.new_frame(kind="turn", project_id="default", status="ready")
+    st = runner._state(frame_id, "default")
+    st.desired_env = "sci"
+    try:
+        runner._ensure_runtime(st)
+        delegated = st.delegation_runner
+        assert delegated is not None and delegated.env is not None
+        good = delegated.env
+        assert good.env_name == "sci"
+
+        # The environment becomes transiently undiscoverable.
+        monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(tmp_path / "nowhere"))
+        envmod.invalidate_cache()
+        runner._wire_delegation(st)
+        assert st.delegation_runner is delegated
+        assert delegated.env == good, (
+            "a transient env-resolution failure downgraded runner.env to "
+            f"{delegated.env!r}"
+        )
+
+        # Once discovery recovers, the re-stamp follows the selection again.
+        monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(roots))
+        envmod.invalidate_cache()
+        runner._wire_delegation(st)
+        assert delegated.env is not None
+        assert delegated.env.env_name == "sci"
+    finally:
+        runner.close()
+
+
 # --------------------------------------------------------------------------
 # D3: a child kernel registers a durable generation the provenance can name
 # --------------------------------------------------------------------------
