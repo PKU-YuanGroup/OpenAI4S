@@ -845,7 +845,10 @@ def _extract_counts(adata: Any, counts_layer: str) -> Any:
 
 def _read_one(path: str, matrix_format: str, counts_layer: str, sc: Any) -> Any:
     if matrix_format == "10x_mtx":
-        adata = sc.read_10x_mtx(path, var_names="gene_symbols", make_unique=False)
+        # Stock CellRanger references carry duplicated gene symbols, so the
+        # symbols must be de-duplicated on read or every real matrix would
+        # trip the duplicate-gene rejection downstream.
+        adata = sc.read_10x_mtx(path, var_names="gene_symbols", make_unique=True)
     elif matrix_format == "10x_h5":
         adata = sc.read_10x_h5(path)
     elif matrix_format == "h5ad":
