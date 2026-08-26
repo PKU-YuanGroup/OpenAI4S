@@ -275,6 +275,7 @@ _TOOL_GROUP = {
     "list_skills": "skills",
     "search_skills": "skills",
     "load_skill": "skills",
+    "read_skill_file": "skills",
     "skill_status": "skills",
     "skill_history": "skills",
     "rollback_skill_version": "skills",

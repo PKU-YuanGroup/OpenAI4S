@@ -253,6 +253,14 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "load_skill":
         name = args[0] if args and isinstance(args[0], str) else a.get("name", "")
         return ("skill", f"Loading {name} skill guidance", {"name": name})
+    if method == "skills_read":
+        # Distinct from load_skill on purpose: loading pulls a Skill's whole
+        # SKILL.md recipe into context, while this reads ONE file inside that
+        # Skill's directory (a reference document, a data contract, an
+        # example). A card that said "loaded" for both hid which one happened.
+        name = str(a.get("name") or "")
+        path = str(a.get("path") or "SKILL.md")
+        return ("skill", f"Reading {name}/{path}", {"name": name, "path": path})
     if method in {"skills_status", "skills_history", "skills_rollback"}:
         name = a.get("name", "")
         verb = {
@@ -903,6 +911,15 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
             return (
                 {"name": r.get("name"), "version_id": r.get("version_id")},
                 "rolled back",
+            )
+        if method == "skills_read":
+            # A reference read returns bytes, not a Skill record: the generic
+            # "loaded" tail below would report an empty name and description
+            # for it and read as a SKILL.md load that never happened.
+            text = result if isinstance(result, str) else ""
+            return (
+                {"content": text[:24000], "chars": len(text)},
+                _plural(len(text), "char") + " read",
             )
         return (
             {
