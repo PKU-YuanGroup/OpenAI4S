@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-本目录树共暴露 603 个内置 Skill：42 份由 OpenAI4S 筛选维护的配方，加上固定版本的
+本目录树共暴露 604 个内置 Skill：43 份由 OpenAI4S 筛选维护的配方，加上固定版本的
 GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，加上把它跑起来所需的
 运维知识——而不是 provider 的 JSON Tool。披露是渐进的：精选 Skill 各占一行摘要，大型
 第三方集合合计只占一行，再通过搜索或精确名称展开。只有被选中的 `SKILL.md` 和可选

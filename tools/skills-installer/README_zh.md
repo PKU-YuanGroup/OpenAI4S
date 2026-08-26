@@ -7,7 +7,7 @@
 
 ```bash
 npx openai4s-skills list
-npx openai4s-skills install --all                 # 42 个精选 Skill
+npx openai4s-skills install --all                 # 43 个精选 Skill
 npx openai4s-skills install --collection bioskills # 561 个固定版第三方配方
 npx openai4s-skills install alphafold2 boltz --target claude
 npx openai4s-skills installed
@@ -52,6 +52,6 @@ tarball 的 SHA-256——不是 commit SHA，因为把分支解析成 commit 是
 
 ## 它处在什么位置
 
-对 OpenAI4S 用户来说这个命令基本是多余的：wheel 已经带上了全部 603 个 Skill，
+对 OpenAI4S 用户来说这个命令基本是多余的：wheel 已经带上了全部 604 个 Skill，
 而 `openai4s/skills_loader/loader.py` 让自带 Skill 优先于 `<data_dir>/user-skills`
 中的同名者。它存在的理由是反方向——把这些配方送到不是 OpenAI4S 的 agent 面前。

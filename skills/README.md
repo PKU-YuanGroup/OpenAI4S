@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This tree exposes 603 bundled Skills: 42 curated OpenAI4S recipes plus the 561
+This tree exposes 604 bundled Skills: 43 curated OpenAI4S recipes plus the 561
 recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
 plus the operational knowledge needed to run it—not a provider JSON Tool.
 Disclosure is progressive: curated Skills receive one summary line each, while
