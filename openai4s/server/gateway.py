@@ -9125,6 +9125,14 @@ class SessionRunner:
                     st.dispatcher, "control_tool_policy", None
                 ),
             )
+            bind_evidence_scope = getattr(
+                st.dispatcher, "set_task_evidence_scope", None
+            )
+            if callable(bind_evidence_scope):
+                bind_evidence_scope(
+                    turn_id=action_ledger.turn_id,
+                    branch_id=action_ledger.branch_id or root_frame_id,
+                )
             turn_execution_id = str(
                 getattr(execution, "execution_id", "") or turn_request_id
             )
@@ -15806,7 +15814,16 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             m = re.fullmatch(r"/frames/([^/]+)/execution-sources/export", sub)
             if m and method == "GET":
-                exported = runner.session_domain.execution_sources_export(m.group(1))
+                from openai4s.server.execution_sources import (
+                    ExecutionSourcesExportTooLarge,
+                )
+
+                try:
+                    exported = runner.session_domain.execution_sources_export(
+                        m.group(1)
+                    )
+                except ExecutionSourcesExportTooLarge as error:
+                    raise GatewayError(413, str(error)) from error
                 self._send(
                     200,
                     exported["data"],

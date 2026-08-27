@@ -7,13 +7,13 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 
 from openai4s.host.code_evidence import (
     CODE_EVIDENCE_KEYS,
     CodeEvidenceContext,
     requires_code_evidence,
-    verify_code_evidence,
+    validate_code_evidence,
 )
 
 PAST_TENSE_STARTERS = frozenset(
@@ -661,6 +661,21 @@ class CompletionService:
         self._evidence = evidence
         self._task_mode = task_mode
         self._code_evidence = code_evidence
+        self._last_output_file_seal: dict[str, str] | None = None
+
+    def _verify_code_claims_with_seal(
+        self, payload: dict
+    ) -> tuple[str | None, Mapping[str, str]]:
+        mode = self._task_mode() if self._task_mode is not None else None
+        if not requires_code_evidence(mode):
+            return None, {}
+        context: CodeEvidenceContext | None = None
+        if self._code_evidence is not None:
+            try:
+                context = self._code_evidence()
+            except Exception:  # noqa: BLE001 - an unreadable store is not a pass
+                context = None
+        return validate_code_evidence(payload, task_mode=mode, context=context)
 
     def verify_code_claims(self, payload: dict) -> str | None:
         """Refuse a code-mode completion whose evidence does not check out.
@@ -673,16 +688,26 @@ class CompletionService:
         the whole point of these fields is that the claim is checkable.
         """
 
-        mode = self._task_mode() if self._task_mode is not None else None
-        if not requires_code_evidence(mode):
+        error, _seal = self._verify_code_claims_with_seal(payload)
+        return error
+
+    def revalidate_pending_completion(self) -> str | None:
+        """Recheck a mid-cell submission after Cell capture has completed."""
+
+        if self.last_output is None:
             return None
-        context: CodeEvidenceContext | None = None
-        if self._code_evidence is not None:
-            try:
-                context = self._code_evidence()
-            except Exception:  # noqa: BLE001 - an unreadable store is not a pass
-                context = None
-        return verify_code_evidence(payload, task_mode=mode, context=context)
+        error, current_seal = self._verify_code_claims_with_seal(self.last_output)
+        if error is None and dict(current_seal) == dict(
+            self._last_output_file_seal or {}
+        ):
+            return None
+        if error is None:
+            error = (
+                "completion source or entry-point bytes changed after "
+                "host.submit_output verified them"
+            )
+        self.clear()
+        return error
 
     def submit(self, spec: dict) -> dict:
         bullets = spec.get("completion_bullets") or []
@@ -706,7 +731,7 @@ class CompletionService:
             if error:
                 return {"error": error}
 
-        code_error = self.verify_code_claims(spec)
+        code_error, file_seal = self._verify_code_claims_with_seal(spec)
         if code_error:
             return {"error": code_error}
 
@@ -752,10 +777,12 @@ class CompletionService:
             # while an analysis submission's envelope is unchanged.
             if spec.get(key) is not None:
                 self.last_output[key] = spec[key]
+        self._last_output_file_seal = dict(file_seal)
         return {"status": "ok"}
 
     def clear(self) -> None:
         self.last_output = None
+        self._last_output_file_seal = None
 
 
 __all__ = [

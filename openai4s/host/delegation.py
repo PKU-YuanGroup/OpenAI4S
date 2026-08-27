@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any, Callable, Protocol
 
 from openai4s.host import resource_allowlist
+from openai4s.host.delegation_policy import (
+    DelegationPolicyError,
+    child_execution_policy,
+)
 from openai4s.specialists import BUILTIN_SPECIALISTS, builtin_specialist
 
 
@@ -44,11 +48,17 @@ def _with_persona(request: Any, persona: str) -> Any:
     """
     if isinstance(request, str):
         return persona + request
-    if isinstance(request, dict) and "request" in request:
-        return {
-            **request,
-            "request": _with_persona(request.get("request", ""), persona),
-        }
+    if isinstance(request, dict):
+        # Dict-shaped fan-out items are accepted by the delegation runtime in
+        # each of these spellings.  `_spec_to_task` consumes them in this
+        # order, so decorate the first effective payload instead of silently
+        # dropping the specialist persona for `task` and `prompt` requests.
+        for key in ("request", "task", "prompt"):
+            if key in request:
+                return {
+                    **request,
+                    key: _with_persona(request.get(key, ""), persona),
+                }
     if isinstance(request, list):
         return [_with_persona(item, persona) for item in request]
     return request
@@ -216,10 +226,40 @@ def _with_profile_overrides(spec: dict, profile: dict) -> dict:
         ("max_steps", "max_steps"),
         ("max_turns", "max_turns"),
         ("permissions", "permissions"),
-        ("capabilities", "capabilities"),
     ):
         if target not in merged and profile.get(source) is not None:
             merged[target] = profile[source]
+
+    # Capability lists are authority, not a cosmetic setting.  A restricted
+    # profile is the ceiling: omission inherits it, while an explicit list is
+    # accepted only when every requested capability is a true subset.  Use
+    # the runtime policy's alias expansion so `list_dir` can narrow
+    # `read_file`, while broad aliases such as `web` cannot smuggle in
+    # `web_download` through a read-only profile.
+    profile_capabilities = profile.get("capabilities")
+    if profile_capabilities is not None:
+        if "capabilities" not in merged:
+            merged["capabilities"] = profile_capabilities
+        else:
+            profile_policy = child_execution_policy(
+                {
+                    "capabilities": profile_capabilities,
+                    "unrestricted": False,
+                }
+            )
+            requested_policy = child_execution_policy(
+                {"capabilities": merged.get("capabilities")}
+            )
+            denied = sorted(
+                capability
+                for capability in requested_policy.allowed
+                if not profile_policy.permits_capability(capability)
+            )
+            if denied:
+                raise DelegationPolicyError(
+                    "delegated capabilities exceed specialist profile: "
+                    + ", ".join(denied)
+                )
 
     # The row is the parent, the call site is the child, and the result may
     # only be tighter than the row. `skills` is the row's legacy spelling of

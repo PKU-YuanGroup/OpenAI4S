@@ -945,11 +945,16 @@ class SessionPackageService:
             },
         )
 
-        generations = self._bounded_records(
-            "generations", self.store.list_kernel_generations(root_frame_id)
+        generations = self._export_generations(
+            root_frame_id,
+            branch_ids=set(branch_ids),
+            cells=cells,
+            attempts=attempts,
+            environment_snapshots=environment_snapshots,
+            recovery=recovery,
         )
         environment = {
-            "generations": [_sanitize(item) for item in generations],
+            "generations": generations,
             "artifact_environment_snapshots": environment_snapshots,
         }
         permission_state = self.store.list_permission_rules_for_frame(
@@ -1206,6 +1211,99 @@ class SessionPackageService:
             )
         )
         return self._bounded_records("cells", output)
+
+    def _export_generations(
+        self,
+        root_frame_id: str,
+        *,
+        branch_ids: set[str],
+        cells: list[dict[str, Any]],
+        attempts: list[dict[str, Any]],
+        environment_snapshots: list[dict[str, Any]],
+        recovery: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Export only session-owned generations and bind every reference.
+
+        Artifact snapshots may have been produced by delegated frames whose
+        kernels use the child frame as their generation root. Include those
+        referenced generations, but project them onto the package Session's
+        root branch: imported generations are inert historical identities,
+        not restartable child workers. Dangling or foreign identifiers are
+        cleared rather than becoming live cross-session references.
+        """
+
+        requested: set[str] = {
+            str(row.get("generation_id"))
+            for row in (*cells, *attempts, *environment_snapshots)
+            if row.get("generation_id")
+        }
+        for row in recovery:
+            for key in ("source_generation_id", "candidate_generation_id"):
+                if row.get(key):
+                    requested.add(str(row[key]))
+
+        records: dict[str, dict[str, Any]] = {}
+
+        def session_owned(row: Mapping[str, Any]) -> bool:
+            generation_root = str(row.get("root_frame_id") or "")
+            if generation_root == root_frame_id:
+                return True
+            frame = self.store.get_frame(generation_root)
+            return bool(
+                isinstance(frame, Mapping)
+                and str(frame.get("root_frame_id") or generation_root) == root_frame_id
+            )
+
+        def add(row: Any) -> None:
+            if not isinstance(row, Mapping) or not session_owned(row):
+                return
+            generation_id = str(row.get("generation_id") or "")
+            if not generation_id:
+                return
+            portable = _sanitize(row)
+            portable["root_frame_id"] = root_frame_id
+            if (
+                str(row.get("root_frame_id") or "") != root_frame_id
+                or str(portable.get("branch_id") or "") not in branch_ids
+            ):
+                portable["branch_id"] = root_frame_id
+            records[generation_id] = portable
+
+        for row in self.store.list_kernel_generations(root_frame_id):
+            add(row)
+        for generation_id in sorted(requested):
+            try:
+                add(self.store.get_kernel_generation(generation_id))
+            except Exception:  # noqa: BLE001 - an unbound id is scrubbed below
+                continue
+
+        valid = set(records)
+        for row in (*cells, *attempts):
+            generation_id = row.get("generation_id")
+            if generation_id and str(generation_id) not in valid:
+                row["generation_id"] = None
+        for snapshot in environment_snapshots:
+            generation_id = snapshot.get("generation_id")
+            if generation_id and str(generation_id) not in valid:
+                snapshot["generation_id"] = None
+                snapshot["generation_confidence"] = None
+                snapshot["provenance"] = "unresolved_generation_removed_on_export"
+        for row in recovery:
+            for key in ("source_generation_id", "candidate_generation_id"):
+                generation_id = row.get(key)
+                if generation_id and str(generation_id) not in valid:
+                    row[key] = None
+
+        ordered = sorted(
+            records.values(),
+            key=lambda item: (
+                str(item.get("branch_id") or ""),
+                str(item.get("language") or ""),
+                int(item.get("ordinal") or 0),
+                str(item.get("generation_id") or ""),
+            ),
+        )
+        return self._bounded_records("generations", ordered)
 
     @staticmethod
     def _safe_group(group: Mapping[str, Any]) -> dict[str, Any]:
@@ -1757,20 +1855,28 @@ class SessionPackageService:
                 branch_map,
                 documents["ledger.json"],
             )
+            generation_map = self._import_generations(
+                new_root,
+                branch_map,
+                documents["environment.json"].get("generations") or [],
+            )
             cell_map, revision_map = self._import_cells(
                 new_root,
                 new_project_id,
                 documents["notebook.json"].get("cells") or [],
+                generation_map=generation_map,
             )
             self._import_attempts(
                 documents["ledger.json"].get("execution_attempts") or [],
                 group_map=group_map,
                 cell_map=cell_map,
                 revision_map=revision_map,
+                generation_map=generation_map,
             )
             env_map = self._import_environment_snapshots(
                 documents["environment.json"].get("artifact_environment_snapshots")
-                or []
+                or [],
+                generation_map=generation_map,
             )
             imported_env_ids.update(env_map.values())
             artifact_map, version_map, live_artifacts = self._import_artifacts(
@@ -1798,11 +1904,6 @@ class SessionPackageService:
                 version_map=version_map,
                 cell_map=cell_map,
                 new_root=new_root,
-            )
-            generation_map = self._import_generations(
-                new_root,
-                branch_map,
-                documents["environment.json"].get("generations") or [],
             )
             workspace_projection = snapshots.get("workspace") or {}
             package_tree_ids = {
@@ -2282,6 +2383,26 @@ class SessionPackageService:
             seen_revisions.add(revision)
             if str(cell.get("language") or "python").lower() not in {"python", "r"}:
                 raise SessionPackageError("cell language is invalid")
+            generation_id = cell.get("generation_id")
+            if generation_id not in (None, "") and (
+                not isinstance(generation_id, str)
+                or generation_id not in generation_ids
+            ):
+                # Schema-v1 exporters predating portable child generations
+                # could leave this stamp dangling.  Clear it during the v1
+                # migration instead of either rejecting a formerly valid
+                # archive or treating the foreign string as a local identity.
+                cell["generation_id"] = None
+
+        for snapshot in env_snapshots:
+            generation_id = snapshot.get("generation_id")
+            if generation_id not in (None, "") and (
+                not isinstance(generation_id, str)
+                or generation_id not in generation_ids
+            ):
+                snapshot["generation_id"] = None
+                snapshot["generation_confidence"] = None
+                snapshot["provenance"] = "legacy_unresolved_generation_removed"
 
         seen_event_ids: set[str] = set()
         for group in groups:
@@ -3118,6 +3239,8 @@ class SessionPackageService:
         new_root: str,
         new_project: str,
         cells: list[Any],
+        *,
+        generation_map: Mapping[str, str],
     ) -> tuple[dict[str, str], dict[int, int]]:
         mapping = {
             str(item.get("producing_cell_id")): f"c-{uuid.uuid4().hex[:12]}"
@@ -3156,12 +3279,11 @@ class SessionPackageService:
             # recovery input. A confirmed fresh restart can later unlock the
             # session without replaying any package-authored Cell.
             policy = "never"
-            # The exported cell carries its resolved kernel-generation id
-            # (attempt-derived for Web cells, row-stamped for delegated/CLI
-            # cells). Replayed attempts are allocated with generation_id=None,
-            # so the stamp must ride the execution_log row or the round trip
-            # silently drops the environment provenance.
-            generation_id = item.get("generation_id")
+            # Package identities never enter the live local generation
+            # namespace. The referenced historical generation was imported
+            # first and is now an inert, Session-owned local row.
+            source_generation_id = item.get("generation_id")
+            generation_id = generation_map.get(str(source_generation_id or ""))
             self.store.log_cell(
                 frame_id=new_root,
                 root_frame_id=new_root,
@@ -3190,7 +3312,7 @@ class SessionPackageService:
                     for path in item.get("files_written") or []
                     if isinstance(path, str) and not _is_secret_path(path)
                 ],
-                generation_id=(str(generation_id) if generation_id else None),
+                generation_id=generation_id,
             )
         return mapping, revision_map
 
@@ -3201,6 +3323,7 @@ class SessionPackageService:
         group_map: Mapping[str, str],
         cell_map: Mapping[str, str],
         revision_map: Mapping[int, int],
+        generation_map: Mapping[str, str],
     ) -> None:
         for item in attempts:
             group_id = group_map.get(str(item.get("group_id") or ""))
@@ -3217,7 +3340,7 @@ class SessionPackageService:
                 group_id=group_id,
                 producing_cell_id=cell_id,
                 state_revision=revision,
-                generation_id=None,
+                generation_id=generation_map.get(str(item.get("generation_id") or "")),
                 owner_instance_id=None,
                 replayed_from_cell_id=cell_map.get(
                     str(item.get("replayed_from_cell_id") or "")
@@ -3245,11 +3368,27 @@ class SessionPackageService:
                     finished_at=int(item["finished_at"]),
                 )
 
-    def _import_environment_snapshots(self, snapshots: list[Any]) -> dict[str, str]:
+    def _import_environment_snapshots(
+        self,
+        snapshots: list[Any],
+        *,
+        generation_map: Mapping[str, str],
+    ) -> dict[str, str]:
         mapping: dict[str, str] = {}
         for item in snapshots:
             source_id = item.get("snapshot_id")
-            new_id = self.store.upsert_env_snapshot(dict(item))
+            imported = dict(item)
+            imported["generation_id"] = generation_map.get(
+                str(item.get("generation_id") or "")
+            )
+            # The referenced generation is locally scoped now, but the
+            # package-authored package list/interpreter was not measured by
+            # this installation. Keep it explicitly below verified.
+            imported["generation_confidence"] = (
+                "imported_unverified" if imported["generation_id"] else None
+            )
+            imported["provenance"] = "imported_session_package_untrusted"
+            new_id = self.store.upsert_env_snapshot(imported)
             if source_id:
                 mapping[str(source_id)] = str(new_id)
         return mapping

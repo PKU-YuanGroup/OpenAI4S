@@ -237,6 +237,10 @@ def test_sdk_executes_only_after_issue_and_consume_and_reports_diff(
     assert (
         audits[0]["args"][0]["stdout"]["sha256"] == hashlib.sha256(b"done").hexdigest()
     )
+    executed_command = "printf 'science' > result.txt; printf 'done'"
+    assert audits[0]["resource_keys"] == (
+        f"command-sha256:{command_digest(executed_command)}",
+    )
 
 
 def test_host_dispatcher_permission_gate_and_secret_safe_audit(tmp_path, monkeypatch):
@@ -266,11 +270,15 @@ def test_host_dispatcher_permission_gate_and_secret_safe_audit(tmp_path, monkeyp
         decision="allow",
     )
     allowed = build_host(dispatcher)
-    result = allowed.bash("printf 'API_TOKEN=super-secret-value'")
+    with dispatcher.bind_action_context(
+        {"action_group_id": "group-test-cell", "action_id": "group-test-cell:action"}
+    ):
+        result = allowed.bash("printf 'API_TOKEN=super-secret-value'")
     assert result["exit_code"] == 0
 
     rows = dispatcher.store._conn.execute(
-        "SELECT method,args_preview FROM host_call_log ORDER BY created_at"
+        "SELECT method,args_preview,action_group_id,resource_keys "
+        "FROM host_call_log ORDER BY created_at"
     ).fetchall()
     requests = dispatcher.store._conn.execute(
         "SELECT target,payload FROM permission_requests ORDER BY created_at"
@@ -291,6 +299,12 @@ def test_host_dispatcher_permission_gate_and_secret_safe_audit(tmp_path, monkeyp
     assert completed[-1]["output"]["exit_code"] == 0
     assert completed[-1]["output"]["stdout"]["chars"] > 0
     assert "workspace_diff" in completed[-1]["output"]
+    bash_row = next(row for row in rows if row["method"] == "bash")
+    assert bash_row["action_group_id"] == "group-test-cell"
+    authorized_command = "printf 'API_TOKEN=super-secret-value'"
+    assert f"command-sha256:{command_digest(authorized_command)}" in (
+        bash_row["resource_keys"] or ""
+    )
 
 
 def test_secret_file_reference_is_rejected_by_host(tmp_path):

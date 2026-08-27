@@ -5451,6 +5451,25 @@ class Store:
             resource_keys=resource_keys,
         )
 
+    def has_successful_bash_receipt(
+        self,
+        *,
+        producing_cell_id: str,
+        command_sha256: str,
+        root_frame_id: str,
+        branch_id: str,
+        turn_id: str,
+    ) -> bool:
+        """Return the exact Host-authorized command receipt for code evidence."""
+
+        return self._host_calls.has_successful_bash_receipt(
+            producing_cell_id=producing_cell_id,
+            command_sha256=command_sha256,
+            root_frame_id=root_frame_id,
+            branch_id=branch_id,
+            turn_id=turn_id,
+        )
+
     # --- generic read-only query (host.query backing) -------------------
     def _refresh_scoped_views(
         self, conn: sqlite3.Connection, scope: Mapping[str, Any]

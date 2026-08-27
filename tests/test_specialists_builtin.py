@@ -191,6 +191,34 @@ def test_call_site_settings_still_win_over_builtin_defaults():
     assert spec["unrestricted"] is False
 
 
+@pytest.mark.parametrize(
+    "name,capability",
+    [
+        ("EXPLORE", "bash"),
+        ("EXPLORE", "write_file"),
+        ("EXPLORE", "web_download"),
+        ("PLAN", "web"),
+        ("REVIEWER", "delegation"),
+    ],
+)
+def test_restricted_builtin_call_cannot_widen_capabilities(name, capability):
+    service, _sent = _service(_EmptyStore())
+
+    with pytest.raises(ValueError, match="exceed specialist profile"):
+        service.delegate(
+            {"request": "work", "name": name, "capabilities": [capability]}
+        )
+
+
+def test_restricted_builtin_accepts_method_level_capability_subset():
+    service, sent = _service(_EmptyStore())
+    service.delegate(
+        {"request": "map files", "name": "EXPLORE", "capabilities": ["list_dir"]}
+    )
+
+    assert sent[0]["capabilities"] == ["list_dir"]
+
+
 def test_a_stored_row_with_the_same_name_overrides_the_builtin():
     row = {
         "name": "EXPLORE",

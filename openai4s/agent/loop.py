@@ -9,6 +9,7 @@ scientific execution. Structured finalization closes control-only work, while
 
 from __future__ import annotations
 
+import inspect
 import os
 import threading
 import uuid
@@ -354,36 +355,10 @@ class Agent:
                 and Path(self.env.env_root).name == self.env.env_name
             ):
                 self.dispatcher.active_env_bin = str(Path(self.env.env_root) / "bin")
-        # Wire a real delegation runner unless this IS a leaf. It carries
-        # our depth/frame so children nest correctly and steering
-        # is scoped to our direct children.
-        if self.allow_delegate:
-            from openai4s.agent.delegation import MAX_DEPTH, DelegationRunner
-
-            # Defense in depth: depth-MAX_DEPTH Agents are leaves even when an
-            # embedder accidentally passes allow_delegate=True.
-            if self.delegate_depth < MAX_DEPTH:
-                runner = DelegationRunner(
-                    self.cfg,
-                    depth=self.delegate_depth,
-                    parent_frame_id=self.frame_id,
-                    store=self.dispatcher.store,
-                    workspace=self.workspace,
-                    read_isolation=self.read_isolation,
-                    cell_hooks_factory=self.delegated_cell_hooks_factory,
-                    env=self.env,
-                )
-                self._delegation_runner = runner
-                self.dispatcher._delegate_fn = runner
-                self.dispatcher.steer_fns = {
-                    "children": runner.children,
-                    "collect": runner.collect,
-                    "stop_child": runner.stop_child,
-                    "send_message": runner.send_message,
-                    "delegation_stats": runner.delegation_stats,
-                }
-            else:
-                self.allow_delegate = False
+        # Wire a real delegation runner unless this IS a leaf. The runner owns
+        # a ThreadPoolExecutor and is therefore run-scoped; ``run()`` recreates
+        # it after teardown when this Agent instance is reused.
+        self._ensure_delegation_runner()
         # replay: only the ROOT agent records a tape (children replay as
         # part of the parent's flow, not independently).
         if is_root and self.cfg.record_tape:
@@ -565,6 +540,7 @@ class Agent:
         if self._cancelled():
             self._close_run()
             return self._finish([], None, "cancelled")
+        self._ensure_delegation_runner()
         # The per-turn seam the Web path already had and this one did not: the
         # mode fragment rides on the USER message, never on the system prompt
         # (which a delegated child and a reused Agent both compose once).
@@ -737,6 +713,12 @@ class Agent:
             tool_resolver=tool_catalog.get,
             tool_policy_resolver=getattr(self.dispatcher, "control_tool_policy", None),
         )
+        bind_evidence_scope = getattr(self.dispatcher, "set_task_evidence_scope", None)
+        if callable(bind_evidence_scope):
+            bind_evidence_scope(
+                turn_id=ledger.turn_id,
+                branch_id=ledger.branch_id or str(root_frame_id),
+            )
         ledger.append_user({"role": "user", "content": task})
         return ledger
 
@@ -755,7 +737,19 @@ class Agent:
             raise RuntimeError(f"unknown environment {name!r}; available: {available}")
         if environment.interpreter is None:
             # R-only env: the tool already retargeted active_r_env; the python
-            # kernel is untouched (same as the Web pending-env application).
+            # kernel is untouched (same as the Web pending-env application),
+            # but the immutable selection carried to future descendants must
+            # still reflect the newly selected R channel.
+            current = self.env
+            self.env = KernelEnvSpec(
+                python=(current.python if current is not None else None),
+                env_root=(current.env_root if current is not None else None),
+                env_name=(current.env_name if current is not None else None),
+                r_env=environment.name,
+            )
+            runner = self._delegation_runner
+            if runner is not None:
+                runner.env = self.env
             return
         self._pending_env = name
 
@@ -801,7 +795,7 @@ class Agent:
         self._log(f"[env] switching python kernel to '{environment.name}'")
         lazy_kernel.shutdown()
 
-    def _execute_r(self, code: str) -> dict:
+    def _execute_r(self, code: str, *, cell_id: str | None = None) -> dict:
         """Run one ```r cell on the persistent R kernel, spawning it lazily.
 
         The kernel is respawned when host.env.use() retargeted the R channel
@@ -838,7 +832,20 @@ class Agent:
             except Exception:  # noqa: BLE001 - cancellation probe is best effort
                 pass
         try:
-            return k.execute(code, origin="agent")
+            execute = k.execute
+            kwargs: dict[str, Any] = {"origin": "agent"}
+            if cell_id is not None:
+                try:
+                    parameters = inspect.signature(execute).parameters.values()
+                except (TypeError, ValueError):
+                    parameters = ()
+                if any(
+                    parameter.name == "cell_id"
+                    or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters
+                ):
+                    kwargs["cell_id"] = cell_id
+            return execute(code, **kwargs)
         except Exception as e:  # noqa: BLE001 — dead worker: drop it, soft-fail
             self._shutdown_r_kernel()
             return {"error": f"R kernel failed: {e}"}
@@ -948,11 +955,56 @@ class Agent:
                 runner.close(cancel=cancelled)
             except Exception:  # noqa: BLE001 - pool teardown is best effort
                 pass
+            finally:
+                # A closed ThreadPoolExecutor is not reusable. Clear both the
+                # owned runner and the dispatcher's bound-method views so the
+                # next ``run()`` installs a fresh, consistently wired runner.
+                if self._delegation_runner is runner:
+                    self._delegation_runner = None
+                if (
+                    self.dispatcher is not None
+                    and self.dispatcher._delegate_fn is runner
+                ):
+                    self.dispatcher._delegate_fn = None
+                    self.dispatcher.steer_fns = {}
         if self._recorder is not None:
             try:
                 self._recorder.flush()  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 pass
+
+    def _ensure_delegation_runner(self) -> None:
+        """Install this run's delegation facade and executor when needed."""
+
+        if not self.allow_delegate or self._delegation_runner is not None:
+            return
+        from openai4s.agent.delegation import MAX_DEPTH, DelegationRunner
+
+        # Defense in depth: depth-MAX_DEPTH Agents are leaves even when an
+        # embedder accidentally passes allow_delegate=True.
+        if self.delegate_depth >= MAX_DEPTH:
+            self.allow_delegate = False
+            return
+        assert self.dispatcher is not None
+        runner = DelegationRunner(
+            self.cfg,
+            depth=self.delegate_depth,
+            parent_frame_id=self.frame_id,
+            store=self.dispatcher.store,
+            workspace=self.workspace,
+            read_isolation=self.read_isolation,
+            cell_hooks_factory=self.delegated_cell_hooks_factory,
+            env=self.env,
+        )
+        self._delegation_runner = runner
+        self.dispatcher._delegate_fn = runner
+        self.dispatcher.steer_fns = {
+            "children": runner.children,
+            "collect": runner.collect,
+            "stop_child": runner.stop_child,
+            "send_message": runner.send_message,
+            "delegation_stats": runner.delegation_stats,
+        }
 
 
 def _extract_code(text: str) -> str | None:

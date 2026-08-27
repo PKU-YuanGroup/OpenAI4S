@@ -594,12 +594,20 @@ def test_an_explicit_code_mode_run_records_cells_under_the_agents_frame(
     )
     agent.run("tidy the helpers into a module")
 
-    row = agent.dispatcher.store.cell_detail("cell-known-1")
-    assert row is not None
+    rows = agent.dispatcher.store.list_cells(agent.frame_id)
+    assert len(rows) == 1
+    row = rows[0]
+    detail = agent.dispatcher.store.cell_detail(row["producing_cell_id"])
+    assert detail is not None
     assert row["status"] == "ok"
-    assert row["root_frame_id"] == agent.frame_id
-    assert row["origin"] == "agent"
+    assert detail["root_frame_id"] == agent.frame_id
+    assert detail["origin"] == "agent"
     assert row["stdout"] == "3 passed in 0.01s\n"
+    attempts = agent.dispatcher.store.list_execution_attempts(
+        producing_cell_id=row["producing_cell_id"]
+    )
+    assert len(attempts) == 1
+    assert attempts[0]["terminal_state"] == "completed"
 
 
 def test_a_detected_mode_run_stays_unrecorded_like_every_cli_run_before_it(
@@ -617,7 +625,7 @@ def test_a_detected_mode_run_stays_unrecorded_like_every_cli_run_before_it(
     assert agent.dispatcher.store.cell_detail("cell-unrec-1") is None
 
 
-def test_the_recorded_cell_backs_a_full_circle_codebase_completion(
+def test_print_only_recorded_cell_cannot_back_a_codebase_completion(
     monkeypatch, tmp_path
 ):
     import hashlib
@@ -645,6 +653,7 @@ def test_the_recorded_cell_backs_a_full_circle_codebase_completion(
         root_frame_id=agent.frame_id,
         project_id="default",
     )
+    cell_id = agent.dispatcher.store.list_cells(agent.frame_id)[0]["producing_cell_id"]
     result = agent.dispatcher(
         "submit_output",
         [
@@ -657,15 +666,15 @@ def test_the_recorded_cell_backs_a_full_circle_codebase_completion(
                 "test_evidence": [
                     {
                         "command": "python -m pytest tests/",
-                        "producing_cell_id": "cell-tests-1",
+                        "producing_cell_id": cell_id,
                     }
                 ],
             }
         ],
     )
-    assert result == {"status": "ok"}
-    assert agent.dispatcher.last_output is not None
-    assert agent.dispatcher.last_output["entry_points"] == ["helpers.py"]
+    assert "error" in result
+    assert "successful Host-authorized execution receipt" in result["error"]
+    assert agent.dispatcher.last_output is None
 
 
 def test_a_codebase_change_run_completes_end_to_end_with_a_real_kernel(
@@ -677,6 +686,8 @@ def test_a_codebase_change_run_completes_end_to_end_with_a_real_kernel(
     ran never executed."""
     from openai4s.agent import loop as loop_mod
 
+    monkeypatch.setenv("OPENAI4S_UNATTENDED_APPROVAL", "allow")
+
     reply_write = (
         "```python\n"
         "from pathlib import Path\n"
@@ -685,12 +696,15 @@ def test_a_codebase_change_run_completes_end_to_end_with_a_real_kernel(
         "    encoding='utf-8',\n"
         ")\n"
         "host.save_artifact('convert.py', 'convert.py')\n"
-        "import importlib.util\n"
-        "spec = importlib.util.spec_from_file_location('convert', 'convert.py')\n"
-        "module = importlib.util.module_from_spec(spec)\n"
-        "spec.loader.exec_module(module)\n"
-        "assert module.convert('3') == 6\n"
-        "print('convert smoke: 1 test passed')\n"
+        "import shlex, sys\n"
+        "test_command = (\n"
+        '    f"{shlex.quote(sys.executable)} -c "\n'
+        '    + shlex.quote("from convert import convert; '
+        "assert convert('3') == 6\")\n"
+        ")\n"
+        "test_result = host.bash(test_command)\n"
+        "assert test_result['exit_code'] == 0, test_result\n"
+        "print('convert smoke passed')\n"
         "```"
     )
     reply_submit = (
@@ -707,7 +721,7 @@ def test_a_codebase_change_run_completes_end_to_end_with_a_real_kernel(
         "    source_files=[{'path': 'convert.py'}],\n"
         "    entry_points=['convert.py'],\n"
         "    architecture_summary='convert.py owns the numeric conversion helper.',\n"
-        "    test_evidence=[{'command': 'python convert smoke test', "
+        "    test_evidence=[{'command': test_command, "
         "'producing_cell_id': cell_id}],\n"
         ")\n"
         "```"
@@ -740,4 +754,4 @@ def test_a_codebase_change_run_completes_end_to_end_with_a_real_kernel(
     cell_id = submitted["test_evidence"][0]["producing_cell_id"]
     row = agent.dispatcher.store.cell_detail(cell_id)
     assert row is not None and row["status"] == "ok"
-    assert "1 test passed" in (row["stdout"] or "")
+    assert "convert smoke passed" in (row["stdout"] or "")

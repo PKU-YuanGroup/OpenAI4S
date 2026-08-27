@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -572,8 +573,14 @@ class LocalActionExecutor:
         if refusal is not None:
             self.log(f"[safety] cell not executed: {refusal}")
             return self._user_observation(refusal)
+        attempt = self._allocate_code_attempt()
         hooks = self.cell_hooks
-        token = hooks.before(action) if hooks is not None else None
+        try:
+            token = hooks.before(action) if hooks is not None else None
+        except BaseException:
+            if attempt is not None:
+                self._finish_code_attempt(attempt, "prepare_failed")
+            raise
         result: dict | None = None
         receipt_binder = getattr(self.dispatcher, "bind_artifact_receipt_scope", None)
         try:
@@ -581,7 +588,10 @@ class LocalActionExecutor:
                 receipt_binder() if callable(receipt_binder) else nullcontext([])
             ) as artifact_receipts:
                 if action.language == "r":
-                    result = self.execute_r(action.code)
+                    if attempt is None:
+                        result = self.execute_r(action.code)
+                    else:
+                        result = self.execute_r(action.code, cell_id=attempt[2])
                 else:
                     group_id = getattr(self.action_ledger, "current_group_id", None)
                     context = (
@@ -596,18 +606,59 @@ class LocalActionExecutor:
                     binder = getattr(self.kernel, "bind_action_context", None)
                     if callable(binder):
                         with binder(context):
-                            result = self.kernel.execute(action.code, origin="agent")
+                            result = self.kernel.execute(
+                                action.code,
+                                origin="agent",
+                                **({"cell_id": attempt[2]} if attempt else {}),
+                            )
                     else:
-                        result = self.kernel.execute(action.code, origin="agent")
+                        result = self.kernel.execute(
+                            action.code,
+                            origin="agent",
+                            **({"cell_id": attempt[2]} if attempt else {}),
+                        )
                     self._record_kernel_generation(state)
+                if attempt is not None:
+                    assert result is not None
+                    result["id"] = attempt[2]
+                    durable_generation = (
+                        state.metadata.get("durable_kernel_generation_id")
+                        if action.language != "r"
+                        else None
+                    )
+                    if durable_generation:
+                        attempt[0].bind_execution_attempt_generation(
+                            attempt[1], str(durable_generation)
+                        )
+                    attempt[0].mark_execution_attempt_response(attempt[1])
             if result is not None and artifact_receipts:
                 result["_openai4s_artifact_receipts"] = list(artifact_receipts)
         except BaseException:
-            if hooks is not None:
-                hooks.after(action, token, None)
+            try:
+                if hooks is not None:
+                    failed_result = (
+                        {"id": attempt[2], "error": "host-side execution failure"}
+                        if attempt is not None
+                        else None
+                    )
+                    hooks.after(action, token, failed_result)
+            finally:
+                if attempt is not None:
+                    self._finish_code_attempt(attempt, "failed")
             raise
-        if hooks is not None:
-            hooks.after(action, token, result)
+        try:
+            if hooks is not None:
+                hooks.after(action, token, result)
+            if attempt is not None:
+                attempt[0].mark_execution_attempt_capture(attempt[1])
+                self._finish_code_attempt(
+                    attempt,
+                    self._attempt_terminal_state(result),
+                )
+        except BaseException:
+            if attempt is not None:
+                self._finish_code_attempt(attempt, "record_failed")
+            raise
         assert result is not None
         # Hooks consume the Host-owned evidence before durable/output
         # projection. A headless CLI has no Artifact capture and discards it;
@@ -625,8 +676,72 @@ class LocalActionExecutor:
             reply.content
         ):
             observation += MULTI_CELL_NOTE
+        revalidate = getattr(self.dispatcher, "revalidate_pending_completion", None)
+        post_capture_error = revalidate() if callable(revalidate) else None
+        if post_capture_error:
+            observation += (
+                "\n\n[Completion evidence rejected after cell capture]\n"
+                + str(post_capture_error)
+            )
         completion = getattr(self.dispatcher, "last_output", None)
         return self._user_observation(observation, completion=completion)
+
+    def _allocate_code_attempt(self) -> tuple[Any, str, str] | None:
+        """Allocate a durable CLI Cell attempt before its worker can run."""
+
+        group_id = getattr(self.action_ledger, "current_group_id", None)
+        store = getattr(self.action_ledger, "store", None)
+        required = (
+            "allocate_execution_attempt",
+            "mark_execution_attempt_started",
+            "mark_execution_attempt_response",
+            "mark_execution_attempt_capture",
+            "finish_execution_attempt",
+        )
+        if (
+            not group_id
+            or store is None
+            or not all(callable(getattr(store, name, None)) for name in required)
+        ):
+            return None
+        cell_id = str(uuid.uuid4())
+        attempt = store.allocate_execution_attempt(
+            group_id=str(group_id),
+            producing_cell_id=cell_id,
+        )
+        attempt_id = str(attempt.get("attempt_id") or "")
+        if not attempt_id:
+            raise RuntimeError("execution attempt allocation returned no identity")
+        try:
+            store.mark_execution_attempt_started(attempt_id)
+        except BaseException:
+            try:
+                store.finish_execution_attempt(
+                    attempt_id,
+                    terminal_state="record_failed",
+                )
+            except BaseException:
+                pass
+            raise
+        return store, attempt_id, cell_id
+
+    @staticmethod
+    def _finish_code_attempt(attempt: tuple[Any, str, str], state: str) -> None:
+        attempt[0].finish_execution_attempt(
+            attempt[1],
+            terminal_state=state,
+        )
+
+    @staticmethod
+    def _attempt_terminal_state(result: dict | None) -> str:
+        if not isinstance(result, dict):
+            return "failed"
+        if result.get("interrupted"):
+            return "interrupted"
+        error = str(result.get("error") or "")
+        if "timed out" in error.lower() or "timeout" in error.lower():
+            return "timed_out"
+        return "failed" if error else "completed"
 
     def _record_kernel_generation(self, state: RunState) -> None:
         """Publish generation continuity without inventing missing identity."""

@@ -408,6 +408,86 @@ def test_env_use_without_a_switch_callback_is_an_error():
     assert "base" in result["error"]  # names the environment the kernel stays on
 
 
+def test_r_only_env_switch_updates_descendant_inheritance_and_status(
+    monkeypatch, tmp_path
+):
+    roots = tmp_path / "envs"
+    r_env = roots / "r-special"
+    (r_env / "bin").mkdir(parents=True)
+    rscript = r_env / "bin" / "Rscript"
+    rscript.write_text("#!/bin/sh\necho R\n", "utf-8")
+    rscript.chmod(0o755)
+    monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(roots))
+    envmod.discover_environments(force=True)
+
+    initial = KernelEnvSpec(
+        python="/selected/python/bin/python",
+        env_root="/selected/python",
+        env_name="python-selected",
+        r_env="r-old",
+    )
+    agent = Agent(use_skills=False, env=initial)
+    switched = agent.dispatcher._m_env_use({"name": "r-special"})
+
+    assert switched["ok"] is True
+    assert agent.dispatcher.active_r_env == "r-special"
+    assert agent.env == KernelEnvSpec(
+        python=initial.python,
+        env_root=initial.env_root,
+        env_name=initial.env_name,
+        r_env="r-special",
+    )
+    runner = agent._delegation_runner
+    assert runner is not None and runner.env == agent.env
+
+    arguments = {
+        "summary": "child complete",
+        "completion_bullets": ["Completed child work"],
+    }
+
+    def finalize_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        call = {
+            "id": "final-r-env",
+            "wire_id": "wire-final-r-env",
+            "name": "finalize_response",
+            "ordinal": 0,
+            "raw_arguments": "{}",
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        return {
+            "content": "",
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            },
+        }
+
+    observed = []
+    real_run = loop_mod.Agent.run
+
+    def observing_run(self, task):
+        nested = self._delegation_runner
+        observed.append((self.env, nested.env if nested is not None else None))
+        return real_run(self, task)
+
+    monkeypatch.setattr(loop_mod, "chat", finalize_chat)
+    monkeypatch.setattr(loop_mod.Agent, "run", observing_run)
+    try:
+        result = runner({"request": "report inherited environments"})
+    finally:
+        runner.close()
+
+    assert observed == [(agent.env, agent.env)]
+    assert result["environment"]["python"] == initial.python
+    assert result["environment"]["env_name"] == initial.env_name
+    assert result["environment"]["r_env"] == "r-special"
+
+
 def test_child_env_use_switches_the_next_cells_interpreter(monkeypatch, tmp_path):
     roots = tmp_path / "envs"
     env_dir = _fake_env(roots, "sci")

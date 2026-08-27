@@ -830,17 +830,21 @@ def test_session_package_is_deterministic_and_round_trips_durable_state(tmp_path
         store.close()
 
 
-def test_import_replay_keeps_the_execution_log_generation_stamp(tmp_path):
-    """An export/import round trip keeps a cell's kernel-generation identity.
-
-    Delegated-child and CLI cells carry their generation on the
-    ``execution_log`` row itself (no execution attempt to re-derive it from),
-    and the import replay allocates attempts with ``generation_id=None`` — so
-    unless the replay threads the exported stamp through ``log_cell``, the
-    imported row silently loses the provenance the original recorded.
-    """
+def test_import_replay_remaps_the_execution_log_generation_stamp(tmp_path):
+    """A round trip keeps provenance without reusing a package identity."""
     store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
     try:
+        source_generation = store.create_kernel_generation(
+            root_frame_id=root,
+            branch_id=root,
+            language="python",
+            environment={
+                "environment_name": "source-env",
+                "interpreter": "/source/python",
+            },
+            bootstrap={},
+            state="active",
+        )
         store.log_cell(
             frame_id=root,
             root_frame_id=root,
@@ -850,7 +854,7 @@ def test_import_replay_keeps_the_execution_log_generation_stamp(tmp_path):
             cell_index=2,
             state_revision=2,
             origin="delegate",
-            generation_id="generation-stamp-1",
+            generation_id=source_generation["generation_id"],
         )
         exported = domain.session_export(root)
         imported = domain.session_import(exported["data"])
@@ -858,12 +862,194 @@ def test_import_replay_keeps_the_execution_log_generation_stamp(tmp_path):
 
         cells = store.list_cells(new_root)
         stamped = next(c for c in cells if c["code"] == "stamped = True")
-        assert stamped["generation_id"] == "generation-stamp-1"
+        assert stamped["generation_id"]
+        assert stamped["generation_id"] != source_generation["generation_id"]
         detail = store.cell_detail(stamped["producing_cell_id"])
-        assert detail["generation_id"] == "generation-stamp-1"
+        assert detail["generation_id"] == stamped["generation_id"]
+        imported_generation = store.get_kernel_generation(stamped["generation_id"])
+        assert imported_generation["root_frame_id"] == new_root
+        assert imported_generation["state"] == "released"
+        assert imported_generation["environment"] == {
+            "imported": True,
+            "source_environment_name": "source-env",
+            "trusted": False,
+        }
         # The pre-existing cell without a stamp stays honestly unstamped.
         plain = next(c for c in cells if c["code"] == "score = 0.93")
         assert plain["generation_id"] is None
+    finally:
+        store.close()
+
+
+def test_session_import_clears_legacy_cell_generation_outside_package(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        victim = store.new_frame(kind="turn", status="ready")
+        victim_generation = store.create_kernel_generation(
+            root_frame_id=victim,
+            branch_id=victim,
+            language="python",
+            environment={
+                "environment_name": "victim-only",
+                "interpreter": "/victim/private/python",
+            },
+            bootstrap={},
+            state="active",
+        )
+        files = _unpack(domain.session_export(root)["data"])
+        notebook = json.loads(files["notebook.json"])
+        notebook["cells"][0]["generation_id"] = victim_generation["generation_id"]
+        files["notebook.json"] = _canonical(notebook)
+
+        imported = domain.session_import(_repack(files))
+        imported_cell = next(
+            cell
+            for cell in store.list_cells(imported["root_frame_id"])
+            if cell["code"] == "score = 0.93"
+        )
+        assert imported_cell["generation_id"] is None
+        # The dangling package string must never resolve to or mutate an
+        # unrelated generation that happens to exist on this installation.
+        assert (
+            store.get_kernel_generation(victim_generation["generation_id"])[
+                "environment"
+            ]["environment_name"]
+            == "victim-only"
+        )
+    finally:
+        store.close()
+
+
+def test_imported_artifact_environment_generation_is_remapped_and_untrusted(tmp_path):
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    try:
+        source_generation = store.create_kernel_generation(
+            root_frame_id=root,
+            branch_id=root,
+            language="python",
+            environment={
+                "environment_name": "measured-source",
+                "interpreter": "/source/python",
+            },
+            bootstrap={},
+            state="active",
+        )
+        source_snapshot_id = store.upsert_env_snapshot(
+            {
+                "kind": "python",
+                "python_version": "3.12",
+                "implementation": "CPython",
+                "platform": "test",
+                "packages": [],
+                "interpreter": "/source/python",
+                "environment_name": "measured-source",
+                "generation_id": source_generation["generation_id"],
+            }
+        )
+        artifact_path = tmp_path / "environment-bound.txt"
+        artifact_path.write_text("bound\n", encoding="utf-8")
+        store.save_artifact(
+            path=str(artifact_path),
+            snapshot_path=str(artifact_path),
+            filename="environment-bound.txt",
+            content_type="text/plain",
+            size_bytes=artifact_path.stat().st_size,
+            checksum=hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project["project_id"],
+            env_snapshot_id=source_snapshot_id,
+        )
+
+        imported = domain.session_import(domain.session_export(root)["data"])
+        imported_artifact = next(
+            row
+            for row in store.list_artifacts(
+                {"root_frame_id": imported["root_frame_id"]}
+            )
+            if row["filename"] == "environment-bound.txt"
+        )
+        snapshot = store.env_snapshot_for_artifact(imported_artifact["artifact_id"])
+
+        assert snapshot["generation_id"]
+        assert snapshot["generation_id"] != source_generation["generation_id"]
+        assert snapshot["generation_confidence"] == "imported_unverified"
+        assert snapshot["provenance"] == "imported_session_package_untrusted"
+        generation = store.get_kernel_generation(snapshot["generation_id"])
+        assert generation["root_frame_id"] == imported["root_frame_id"]
+    finally:
+        store.close()
+
+
+def test_session_import_clears_legacy_snapshot_generation_outside_package(tmp_path):
+    store, domain, project, root, _artifact, _checkpoint, _workspace = _source(tmp_path)
+    try:
+        victim = store.new_frame(kind="turn", status="ready")
+        victim_generation = store.create_kernel_generation(
+            root_frame_id=victim,
+            branch_id=victim,
+            language="python",
+            environment={
+                "environment_name": "victim-only",
+                "interpreter": "/victim/private/python",
+            },
+            bootstrap={},
+            state="active",
+        )
+        source_snapshot_id = store.upsert_env_snapshot(
+            {
+                "kind": "python",
+                "python_version": "3.12",
+                "implementation": "CPython",
+                "platform": "test",
+                "packages": [],
+                "interpreter": "/source/python",
+                "environment_name": "legacy-source",
+                "generation_id": victim_generation["generation_id"],
+            }
+        )
+        artifact_path = tmp_path / "legacy-environment.txt"
+        artifact_path.write_text("bound\n", encoding="utf-8")
+        store.save_artifact(
+            path=str(artifact_path),
+            snapshot_path=str(artifact_path),
+            filename="legacy-environment.txt",
+            content_type="text/plain",
+            size_bytes=artifact_path.stat().st_size,
+            checksum=hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+            frame_id=root,
+            root_frame_id=root,
+            project_id=project["project_id"],
+            env_snapshot_id=source_snapshot_id,
+        )
+
+        files = _unpack(domain.session_export(root)["data"])
+        environment = json.loads(files["environment.json"])
+        snapshot = next(
+            item
+            for item in environment["artifact_environment_snapshots"]
+            if item["snapshot_id"] == source_snapshot_id
+        )
+        snapshot["generation_id"] = victim_generation["generation_id"]
+        environment["generations"] = []
+        files["environment.json"] = _canonical(environment)
+
+        imported = domain.session_import(_repack(files))
+        imported_artifact = next(
+            row
+            for row in store.list_artifacts(
+                {"root_frame_id": imported["root_frame_id"]}
+            )
+            if row["filename"] == "legacy-environment.txt"
+        )
+        imported_snapshot = store.env_snapshot_for_artifact(
+            imported_artifact["artifact_id"]
+        )
+        assert imported_snapshot["generation_id"] is None
+        assert imported_snapshot["generation_confidence"] is None
+        assert imported_snapshot["provenance"] == ("imported_session_package_untrusted")
     finally:
         store.close()
 

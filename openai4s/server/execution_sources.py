@@ -54,6 +54,17 @@ from openai4s.storage.branch_projection import project_branch_records
 _MAX_FRAMES = 200
 _MAX_CELLS_PER_FRAME = 2000
 _MAX_DEPTH = 12
+# Source is duplicated into an individual Cell file and a per-language
+# session file before ZIP compression.  Bound the uncompressed input, not the
+# compressed response: highly compressible source is still expensive while
+# those copies are being assembled in the shared daemon.
+_MAX_EXPORT_SOURCE_BYTES = 16 * 1024 * 1024
+_MAX_EXPORT_CELL_BYTES = 4 * 1024 * 1024
+
+
+class ExecutionSourcesExportTooLarge(ValueError):
+    """The requested source archive exceeds its host-memory safety budget."""
+
 
 _README_EN = """# Executed code sources
 
@@ -144,7 +155,11 @@ class ExecutionSourcesService:
     ) -> dict[str, Any]:
         """Return immutable ZIP bytes plus the HTTP descriptor Gateway needs."""
 
-        frames, truncated = self._collect(root_frame_id, branch_id)
+        frames, truncated = self._collect(
+            root_frame_id,
+            branch_id,
+            max_source_bytes=_MAX_EXPORT_SOURCE_BYTES,
+        )
         documents: dict[str, bytes] = {
             "README.md": _README_EN.encode("utf-8"),
             "README_zh.md": _README_ZH.encode("utf-8"),
@@ -242,13 +257,21 @@ class ExecutionSourcesService:
 
     # -- collection ------------------------------------------------------
     def _collect(
-        self, root_frame_id: str, branch_id: str | None
+        self,
+        root_frame_id: str,
+        branch_id: str | None,
+        *,
+        max_source_bytes: int | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         root = self.store.get_frame(root_frame_id)
         if root is None:
             raise KeyError(f"unknown frame {root_frame_id!r}")
         artifact_links = self._artifact_links(root_frame_id)
-        generation_cache: dict[str, dict[str, Any] | None] = {}
+        generation_cache: dict[tuple[str, str], tuple[bool, dict[str, Any] | None]] = {}
+        source_budget = {
+            "used": 0,
+            "maximum": max_source_bytes,
+        }
         frames: list[dict[str, Any]] = []
         truncated = False
 
@@ -272,6 +295,7 @@ class ExecutionSourcesService:
                 is_root=parent_id is None,
                 artifact_links=artifact_links,
                 generation_cache=generation_cache,
+                source_budget=source_budget,
             )
             truncated = truncated or cells_truncated
             counts = {
@@ -327,11 +351,11 @@ class ExecutionSourcesService:
         return frames, truncated
 
     def _delegate_children(self, frame_id: str) -> list[dict[str, Any]]:
-        detail = None
-        try:
-            detail = self.store.frame_detail(frame_id, page=0, page_size=1)
-        except Exception:  # noqa: BLE001 - a missing frame yields no children
-            detail = None
+        # `_collect` has already resolved this frame.  A backend failure while
+        # enumerating its children is not evidence that it has no children;
+        # propagating the error keeps the projection from looking complete
+        # when part of the execution tree could not be read.
+        detail = self.store.frame_detail(frame_id, page=0, page_size=1)
         children = (detail or {}).get("children") or []
         return [
             child
@@ -347,7 +371,8 @@ class ExecutionSourcesService:
         branch_id: str | None,
         is_root: bool,
         artifact_links: Mapping[str, list[str]],
-        generation_cache: dict[str, dict[str, Any] | None],
+        generation_cache: dict[tuple[str, str], tuple[bool, dict[str, Any] | None]],
+        source_budget: dict[str, int | None],
     ) -> tuple[list[dict[str, Any]], bool]:
         if is_root:
             rows = self._branch_cells(frame_id, branch_id or frame_id)
@@ -362,9 +387,23 @@ class ExecutionSourcesService:
                 if code.endswith("\n")
                 else (code + "\n").encode("utf-8")
             )
+            maximum = source_budget["maximum"]
+            if maximum is not None:
+                size = len(source_bytes)
+                used = int(source_budget["used"] or 0)
+                if size > _MAX_EXPORT_CELL_BYTES or used + size > maximum:
+                    raise ExecutionSourcesExportTooLarge(
+                        "executed source archive exceeds the export byte limit"
+                    )
+                source_budget["used"] = used + size
             language = str(row.get("language") or "python").lower()
             cell_id = str(row.get("producing_cell_id") or f"cell-{order}")
             generation_id = row.get("generation_id")
+            generation_owned, environment = self._environment(
+                generation_id,
+                frame_id=frame_id,
+                cache=generation_cache,
+            )
             cells.append(
                 {
                     "id": cell_id,
@@ -373,8 +412,12 @@ class ExecutionSourcesService:
                     "status": self._status(row),
                     "source_bytes": source_bytes,
                     "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
-                    "generation_id": (str(generation_id) if generation_id else None),
-                    "environment": self._environment(generation_id, generation_cache),
+                    "generation_id": (
+                        str(generation_id)
+                        if generation_id and generation_owned
+                        else None
+                    ),
+                    "environment": environment,
                     "artifacts": sorted(artifact_links.get(cell_id, [])),
                     "interrupted": bool(row.get("interrupted")),
                     "created_at": self._int(row.get("created_at")),
@@ -452,26 +495,32 @@ class ExecutionSourcesService:
     def _environment(
         self,
         generation_id: Any,
-        cache: dict[str, dict[str, Any] | None],
-    ) -> dict[str, Any] | None:
-        """The generation's own environment identity, or an honest null."""
+        *,
+        frame_id: str,
+        cache: dict[tuple[str, str], tuple[bool, dict[str, Any] | None]],
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Return ownership plus environment identity for this exact frame."""
         if not generation_id:
-            return None
-        key = str(generation_id)
+            return False, None
+        key = (str(generation_id), frame_id)
         if key not in cache:
             resolved: dict[str, Any] | None = None
             try:
-                row = self.store.get_kernel_generation(key)
+                row = self.store.get_kernel_generation(key[0])
             except Exception:  # noqa: BLE001 - provenance stays optional
                 row = None
-            if isinstance(row, Mapping):
+            owned = bool(
+                isinstance(row, Mapping)
+                and str(row.get("root_frame_id") or "") == frame_id
+            )
+            if owned and isinstance(row, Mapping):
                 environment = row.get("environment")
                 if isinstance(environment, Mapping):
                     resolved = {
                         "name": environment.get("environment_name"),
                         "interpreter": environment.get("interpreter"),
                     }
-            cache[key] = resolved
+            cache[key] = (owned, resolved)
         return cache[key]
 
     @staticmethod
@@ -520,4 +569,4 @@ class ExecutionSourcesService:
         return stem[:120]
 
 
-__all__ = ["ExecutionSourcesService"]
+__all__ = ["ExecutionSourcesExportTooLarge", "ExecutionSourcesService"]

@@ -17,10 +17,11 @@ completion envelope as ordinary, unverified output. The four fields, and what
 each is verified against:
 
 ``source_files``
-    Every file resolves inside an evidence root, exists, matches its declared
-    sha256, and is registered in the artifact store. A path outside the roots
-    is refused the same way a fabricated artifact claim is — existence
-    elsewhere on the machine is not this run's evidence.
+    Every file resolves inside the session workspace, passes the same
+    secret/alias-aware read boundary as the Host file tools, matches its
+    declared sha256, and matches the checksum of an artifact version at that
+    exact workspace-relative path in the current session root. A basename (or
+    same-project artifact from another session) is not evidence for a path.
 ``entry_points``
     Each file exists; a Python entry point must ``compile()`` from its own
     source bytes. **Compile only, never exec** — validating an entry point must
@@ -31,11 +32,11 @@ each is verified against:
     A non-empty prose statement of what each module owns.
 ``test_evidence``
     Each entry names a command and the ``producing_cell_id`` of the cell that
-    ran it. The cell must be a real ``execution_log`` row belonging to this
-    run's frame, with ``ok`` status and non-empty recorded stdout, and the
-    pass/fail reading is derived from that **stored** stdout. The model never
-    supplies the output text: there is no field for it, so "the tests passed"
-    cannot be a claim, only a record.
+    ran it. The cell must be a real successful execution in the current
+    user-turn/branch, and its action group must contain a successful synthetic
+    ``bash`` audit receipt for the exact Host-authorized command digest. Merely
+    printing passing-looking text, citing a different command, or replaying a
+    prior turn's Cell cannot satisfy the contract.
 
 ``analysis_run`` is untouched: the fields stay optional and unvalidated, so
 every existing completion keeps working byte for byte.
@@ -48,7 +49,10 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
+
+from openai4s.bash_capability import command_digest, command_preserves_failure_status
 
 #: The task modes whose completion must carry verified code evidence.
 EVIDENCE_REQUIRED_MODES = frozenset({"reusable_pipeline", "codebase_change"})
@@ -85,11 +89,16 @@ _FAILURE_SIGNALS = (
 class CodeEvidenceContext:
     """What the Host can check a code-evidence claim against.
 
-    ``search_roots`` are the same evidence roots produced-file reconciliation
-    uses (the session workspace and the daemon's cwd). ``artifact_names`` holds
-    lowercased artifact filenames, ids and version ids. ``cell_lookup`` reads
-    one ``execution_log`` row by producing cell id, and ``frame_id`` scopes it:
-    a real row from someone else's session is not this run's evidence.
+    ``search_roots`` normally contains exactly the session workspace.
+    ``source_reader`` is the Host file service's verified opener projected as a
+    bounded bytes reader, so evidence cannot become a second route around its
+    secret-name, alias, hardlink, and descriptor checks. ``artifact_checksums``
+    maps exact normalized workspace-relative paths to current-root artifact
+    checksums. ``cell_lookup`` reads one ``execution_log`` row by producing
+    cell id, and ``frame_id`` scopes it: a real row from someone else's session
+    is not this run's evidence. ``test_receipt`` proves that the same Cell's
+    action group in the bound turn/branch recorded a successful Host-authorized
+    execution of the exact command.
 
     ``has_cells`` is a lazy probe — "did this runtime record ANY cell for this
     run?" — consulted only when a named cell is missing, so the refusal can
@@ -99,6 +108,13 @@ class CodeEvidenceContext:
     """
 
     search_roots: tuple[Path, ...] = ()
+    artifact_checksums: Mapping[str, frozenset[str]] = MappingProxyType({})
+    source_reader: Callable[[str], tuple[Path, str, bytes] | None] | None = None
+    test_receipt: Callable[[str, str], bool] | None = None
+    turn_id: str | None = None
+    branch_id: str | None = None
+    # Compatibility projection for callers that display the old context. It is
+    # never consulted for verification: basenames/ids are not path evidence.
     artifact_names: frozenset[str] = frozenset()
     cell_lookup: Callable[[str], Mapping[str, Any] | None] | None = None
     frame_id: str | None = None
@@ -109,6 +125,10 @@ def gather_code_evidence_context(
     store: Any,
     frame_id: str | None,
     search_roots: Sequence[Path] = (),
+    *,
+    file_service: Any | None = None,
+    turn_id: str | None = None,
+    branch_id: str | None = None,
 ) -> CodeEvidenceContext:
     """Build a context from the live Store. Store failures propagate.
 
@@ -117,13 +137,52 @@ def gather_code_evidence_context(
     nothing", which is the fail-open this module exists to prevent.
     """
 
+    roots = tuple(Path(root).resolve() for root in search_roots)
+    workspace = roots[0] if roots else None
+    scope = store.resolve_frame_scope(frame_id)
+    root_frame_id = str(scope.get("root_frame_id") or frame_id or "") or None
+    selected_branch = str(branch_id or root_frame_id or "") or None
+
+    checksums: dict[str, set[str]] = {}
     names: set[str] = set()
-    for row in store.list_artifact_names() or []:
-        for key in ("filename", "artifact_id", "latest_version_id"):
-            _add_name(names, row.get(key))
-    frame = str(frame_id) if frame_id else None
+    if root_frame_id and workspace is not None:
+        for row in store.list_artifacts({"root_frame_id": root_frame_id}) or []:
+            version_id = str(row.get("latest_version_id") or "")
+            version = store.version_meta(version_id) if version_id else None
+            if not isinstance(version, Mapping):
+                continue
+            key = _artifact_path_key(version.get("path"), workspace)
+            checksum = str(version.get("checksum") or "").strip().lower()
+            if key is None or not checksum:
+                continue
+            checksums.setdefault(key, set()).add(checksum)
+            names.add(key.lower())
+
+    source_reader = _source_reader(file_service, workspace)
+    frame = root_frame_id
+
+    def receipt(cell_id: str, command: str) -> bool:
+        if not frame or not turn_id or not selected_branch:
+            return False
+        return bool(
+            store.has_successful_bash_receipt(
+                producing_cell_id=cell_id,
+                command_sha256=command_digest(command),
+                root_frame_id=frame,
+                branch_id=selected_branch,
+                turn_id=str(turn_id),
+            )
+        )
+
     return CodeEvidenceContext(
-        search_roots=tuple(search_roots),
+        search_roots=roots,
+        artifact_checksums=MappingProxyType(
+            {key: frozenset(value) for key, value in checksums.items()}
+        ),
+        source_reader=source_reader,
+        test_receipt=receipt,
+        turn_id=(str(turn_id) if turn_id else None),
+        branch_id=selected_branch,
         artifact_names=frozenset(names),
         cell_lookup=store.cell_detail,
         frame_id=frame,
@@ -133,12 +192,46 @@ def gather_code_evidence_context(
     )
 
 
-def _add_name(names: set[str], value: Any) -> None:
+def _artifact_path_key(value: Any, workspace: Path) -> str | None:
+    """Return one exact canonical workspace-relative artifact path."""
+
     if not isinstance(value, str) or not value.strip():
-        return
-    text = value.strip().lower()
-    names.add(text)
-    names.add(text.rstrip("/").rsplit("/", 1)[-1])
+        return None
+    try:
+        raw = Path(value)
+        target = (raw if raw.is_absolute() else workspace / raw).resolve()
+        relative = target.relative_to(workspace.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not relative.parts:
+        return None
+    return relative.as_posix()
+
+
+def _source_reader(
+    file_service: Any | None, workspace: Path | None
+) -> Callable[[str], tuple[Path, str, bytes] | None] | None:
+    """Adapt the Host file service's verified descriptor into a byte reader."""
+
+    opener = getattr(file_service, "open_verified_read", None)
+    if not callable(opener) or workspace is None:
+        return None
+
+    def read(claim: str) -> tuple[Path, str, bytes] | None:
+        # The opener performs lexical, resolved-alias, inode, and no-follow
+        # checks before exposing the descriptor. Read that descriptor, never a
+        # subsequently re-resolved pathname, so a rename cannot swap the file
+        # between policy and hashing.
+        with opener(claim) as opened:
+            if int(opened.size_bytes) > MAX_SOURCE_BYTES:
+                return None
+            data = opened.handle.read(MAX_SOURCE_BYTES + 1)
+            if len(data) > MAX_SOURCE_BYTES:
+                return None
+            relative = Path(str(opened.relative)).as_posix()
+            return workspace / relative, relative, data
+
+    return read
 
 
 def requires_code_evidence(task_mode: Any) -> bool:
@@ -197,12 +290,41 @@ def _read_source(path: Path) -> bytes | None:
         return None
 
 
+def _read_claim(
+    claim: str, context: CodeEvidenceContext
+) -> tuple[Path, str, bytes] | None:
+    if context.source_reader is not None:
+        try:
+            return context.source_reader(claim)
+        except Exception:  # noqa: BLE001 - an unsafe/unreadable path is no evidence
+            return None
+    resolved = _resolve_in_roots(claim, context.search_roots)
+    if resolved is None:
+        return None
+    data = _read_source(resolved)
+    if data is None:
+        return None
+    relative: str | None = None
+    for root in context.search_roots:
+        try:
+            relative = resolved.relative_to(root.resolve()).as_posix()
+            break
+        except (OSError, RuntimeError, ValueError):
+            continue
+    if relative is None:
+        return None
+    return resolved, relative, data
+
+
 def _entries(value: Any) -> list[Any]:
     return list(value) if isinstance(value, (list, tuple)) else []
 
 
 def _check_source_files(
-    value: Any, context: CodeEvidenceContext, problems: list[str]
+    value: Any,
+    context: CodeEvidenceContext,
+    problems: list[str],
+    verified_files: dict[str, str] | None = None,
 ) -> None:
     entries = _entries(value)
     if not entries:
@@ -215,39 +337,39 @@ def _check_source_files(
             problems.append(f"'source_files' entry {item!r} is not a {{path, sha256}}")
             continue
         claim = str(item.get("path") or "")
-        resolved = _resolve_in_roots(claim, context.search_roots)
-        if resolved is None:
+        read = _read_claim(claim, context)
+        if read is None:
             problems.append(
-                f"source file {claim!r} is not inside this run's evidence roots "
-                "(the session workspace or the daemon's working directory)"
+                f"source file {claim!r} does not exist or is unavailable inside "
+                "this session's workspace (unreadable, unsafe, or outside the root)"
             )
             continue
-        data = _read_source(resolved)
-        if data is None:
-            problems.append(f"source file {claim!r} does not exist or is unreadable")
-            continue
+        _resolved, relative, data = read
+        actual = hashlib.sha256(data).hexdigest()
         declared = item.get("sha256")
         if isinstance(declared, str) and declared.strip():
-            actual = hashlib.sha256(data).hexdigest()
             if actual != declared.strip().lower():
                 problems.append(
-                    f"source file {claim!r} declares sha256 "
-                    f"{declared.strip().lower()[:16]}… but is {actual[:16]}…"
+                    f"source file {claim!r} declares sha256 that does not match "
+                    "its current bytes (declared sha256 mismatch)"
                 )
                 continue
-        lowered = claim.lower()
-        basename = lowered.rstrip("/").rsplit("/", 1)[-1]
-        if not (
-            lowered in context.artifact_names or basename in context.artifact_names
-        ):
+        captured = context.artifact_checksums.get(relative, frozenset())
+        if actual not in captured:
             problems.append(
-                f"source file {claim!r} was never captured as an artifact "
-                "version, so it is not a deliverable this session can hand back"
+                f"source file {claim!r} does not match an artifact version at "
+                "that exact path in this session"
             )
+            continue
+        if verified_files is not None:
+            verified_files[f"source:{relative}"] = actual
 
 
 def _check_entry_points(
-    value: Any, context: CodeEvidenceContext, problems: list[str]
+    value: Any,
+    context: CodeEvidenceContext,
+    problems: list[str],
+    verified_files: dict[str, str] | None = None,
 ) -> None:
     entries = _entries(value)
     if not entries:
@@ -255,20 +377,20 @@ def _check_entry_points(
         return
     for item in entries:
         claim = str(item.get("path") if isinstance(item, Mapping) else item or "")
-        resolved = _resolve_in_roots(claim, context.search_roots)
-        if resolved is None:
+        read = _read_claim(claim, context)
+        if read is None:
             problems.append(
-                f"entry point {claim!r} is not inside this run's evidence roots"
+                f"entry point {claim!r} is unavailable inside this session's "
+                "workspace (missing, unreadable, unsafe, or outside the root)"
             )
             continue
-        data = _read_source(resolved)
-        if data is None:
-            problems.append(f"entry point {claim!r} does not exist or is unreadable")
-            continue
+        resolved, relative, data = read
         if resolved.suffix.lower() not in _PYTHON_SUFFIXES:
             # Existence and bytes only. The daemon has no honest parser for R
             # (or anything else), and pretending otherwise would either reject
             # valid code or accept broken code on a guess.
+            if verified_files is not None:
+                verified_files[f"entry:{relative}"] = hashlib.sha256(data).hexdigest()
             continue
         try:
             # compile(), never exec(): verifying an entry point must not be a
@@ -276,6 +398,9 @@ def _check_entry_points(
             compile(data, str(resolved), "exec", dont_inherit=True)
         except (SyntaxError, ValueError) as error:
             problems.append(f"entry point {claim!r} does not compile: {error}")
+            continue
+        if verified_files is not None:
+            verified_files[f"entry:{relative}"] = hashlib.sha256(data).hexdigest()
 
 
 def _check_architecture_summary(value: Any, problems: list[str]) -> None:
@@ -315,6 +440,12 @@ def _check_test_evidence(
         cell_id = str(item.get("producing_cell_id") or "").strip()
         if not command:
             problems.append("a 'test_evidence' entry names no command")
+            continue
+        if not command_preserves_failure_status(command):
+            problems.append(
+                f"test command {command!r} uses shell composition that can mask "
+                "an earlier failure status"
+            )
             continue
         if not cell_id:
             problems.append(
@@ -370,18 +501,28 @@ def _check_test_evidence(
                 f"recorded status is {status or 'unknown'!r}, not 'ok'"
             )
             continue
-        stdout = row.get("stdout")
-        if not isinstance(stdout, str) or not stdout.strip():
-            problems.append(
-                f"cell {cell_id!r} recorded no stdout, so it is not evidence "
-                f"that {command!r} passed"
-            )
-            continue
-        failure = stdout_reports_failure(stdout)
+        failure = stdout_reports_failure(row.get("stdout"))
         if failure is not None:
             problems.append(
                 f"the recorded output of cell {cell_id!r} reports {failure!r}, "
                 f"so {command!r} did not pass"
+            )
+            continue
+        receipt = context.test_receipt
+        if receipt is None:
+            problems.append(
+                f"test evidence for {command!r} cannot be verified because no "
+                "trusted shell-execution receipt source is available"
+            )
+            continue
+        try:
+            verified = bool(receipt(cell_id, command))
+        except Exception:  # noqa: BLE001 - an unreadable receipt is not a pass
+            verified = False
+        if not verified:
+            problems.append(
+                f"cell {cell_id!r} has no successful Host-authorized execution "
+                f"receipt for the exact command {command!r} in this turn and branch"
             )
             continue
 
@@ -398,35 +539,62 @@ def verify_code_evidence(
     every check passed; otherwise the soft-fail refusal message.
     """
 
+    error, _seal = validate_code_evidence(
+        payload,
+        task_mode=task_mode,
+        context=context,
+    )
+    return error
+
+
+def validate_code_evidence(
+    payload: Mapping[str, Any],
+    *,
+    task_mode: Any,
+    context: CodeEvidenceContext | None,
+) -> tuple[str | None, Mapping[str, str]]:
+    """Validate claims and seal every file byte-string checked successfully."""
+
+    empty: Mapping[str, str] = MappingProxyType({})
     if not requires_code_evidence(task_mode):
-        return None
+        return None, empty
     if context is None:
         return (
-            f"this turn runs in {task_mode} mode, whose completion must carry "
-            "verified source_files / entry_points / architecture_summary / "
-            "test_evidence, but no evidence context is available in this "
-            "runtime to check them against"
+            (
+                f"this turn runs in {task_mode} mode, whose completion must carry "
+                "verified source_files / entry_points / architecture_summary / "
+                "test_evidence, but no evidence context is available in this "
+                "runtime to check them against"
+            ),
+            empty,
         )
     missing = [key for key in CODE_EVIDENCE_KEYS if not payload.get(key)]
     if missing:
         return (
-            f"this turn runs in {task_mode} mode, so its completion must "
-            "declare " + ", ".join(missing) + ". Save the implementation to "
-            "source files, keep a thin entry point, run the tests in a cell, "
-            "then submit again naming each file, each entry point, what each "
-            "module owns, and the cell id that ran each test command."
+            (
+                f"this turn runs in {task_mode} mode, so its completion must "
+                "declare " + ", ".join(missing) + ". Save the implementation to "
+                "source files, keep a thin entry point, run the tests in a cell, "
+                "then submit again naming each file, each entry point, what each "
+                "module owns, and the cell id that ran each test command."
+            ),
+            empty,
         )
     problems: list[str] = []
-    _check_source_files(payload.get("source_files"), context, problems)
-    _check_entry_points(payload.get("entry_points"), context, problems)
+    verified_files: dict[str, str] = {}
+    _check_source_files(payload.get("source_files"), context, problems, verified_files)
+    _check_entry_points(payload.get("entry_points"), context, problems, verified_files)
     _check_architecture_summary(payload.get("architecture_summary"), problems)
     _check_test_evidence(payload.get("test_evidence"), context, problems)
     if not problems:
-        return None
+        return None, MappingProxyType(dict(sorted(verified_files.items())))
     return (
-        f"the {task_mode} completion evidence does not check out: "
-        + "; ".join(problems)
-        + ". Fix the code or the claim — do not restate it."
+        (
+            f"the {task_mode} completion evidence does not check out: "
+            + "; ".join(problems)
+            + ". Fix the code or the claim — do not restate it."
+        ),
+        empty,
     )
 
 
@@ -438,5 +606,6 @@ __all__ = [
     "gather_code_evidence_context",
     "requires_code_evidence",
     "stdout_reports_failure",
+    "validate_code_evidence",
     "verify_code_evidence",
 ]

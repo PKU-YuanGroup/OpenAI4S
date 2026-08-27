@@ -1038,9 +1038,9 @@ class HostDispatcher:
             workspace=lambda: self.workspace_path,
         )
         # Late-bound on purpose: the CLI assigns frame_id after construction,
-        # and a mid-cell submit must probe the workspace *and* the process
-        # cwd — the kernel inherits this process's cwd, and a file the
-        # current cell just wrote exists only on disk until capture runs.
+        # and a mid-cell submit must probe the bound workspace. The process cwd
+        # is deliberately not a second root: on Web runs it is daemon-global,
+        # and treating it as session evidence exposes unrelated files.
         # The store is re-resolved per submit rather than captured: a cached
         # ``self.store`` can be a closed generation (``Store.close()`` evicts
         # the singleton and ``get_store`` mints a new one), whose every query
@@ -1048,17 +1048,25 @@ class HostDispatcher:
         #: The current turn's task mode, stamped by the owning loop. ``None``
         #: (and ``analysis_run``) keep the historical completion contract.
         self._task_mode: str | None = None
+        # Explicit current-user-turn identity for code evidence. Inferring this
+        # from the latest durable group races concurrent activity and lets a
+        # prior turn's passing Cell be replayed as current evidence.
+        self._task_turn_id: str | None = None
+        self._task_branch_id: str | None = None
         self._completion_service = CompletionService(
             evidence=lambda: gather_submission_evidence(
                 get_store(self.cfg.db_path),
                 self.frame_id,
-                search_roots=(self._files.workspace(), Path.cwd()),
+                search_roots=(self._files.workspace(),),
             ),
             task_mode=lambda: self._task_mode,
             code_evidence=lambda: gather_code_evidence_context(
                 get_store(self.cfg.db_path),
                 self.frame_id,
-                search_roots=(self._files.workspace(), Path.cwd()),
+                search_roots=(self._files.workspace(),),
+                file_service=self._files,
+                turn_id=self._task_turn_id,
+                branch_id=self._task_branch_id,
             ),
         )
         # Lifecycle owners may stamp the supervisor's persistent generation
@@ -1084,7 +1092,7 @@ class HostDispatcher:
             frame_id=lambda: self.frame_id,
             generation=self._current_bash_generation,
             allowed_roots=_configured_bash_allowed_roots,
-            audit=lambda **fields: self.store.log_host_call(**fields),
+            audit=self._audit_bash_result,
             step_sink=lambda: self.on_step,
         )
         self._data_service = HostDataService(
@@ -1239,7 +1247,10 @@ class HostDispatcher:
 
     @last_output.setter
     def last_output(self, value: dict | None) -> None:
-        self._completion_service.last_output = value
+        if value is None:
+            self._completion_service.clear()
+        else:
+            self._completion_service.last_output = value
 
     @property
     def skill_loader(self) -> Any:
@@ -1452,6 +1463,29 @@ class HostDispatcher:
         evidence out of a turn nobody asked to be strict about.
         """
         self._task_mode = str(mode) if mode else None
+        # Every owning loop calls this at the start of a user turn. Clear the
+        # old scope before the new ledger exists so an omitted caller binding
+        # fails closed instead of silently reusing the previous turn.
+        self._task_turn_id = None
+        self._task_branch_id = None
+
+    def set_task_evidence_scope(
+        self, *, turn_id: str | None, branch_id: str | None = None
+    ) -> None:
+        """Bind code evidence to the current durable user turn and branch."""
+
+        self._task_turn_id = str(turn_id) if turn_id else None
+        self._task_branch_id = (
+            str(branch_id or self.frame_id or "") if turn_id else None
+        )
+
+    def _audit_bash_result(self, **fields: Any) -> None:
+        """Persist a shell receipt under the Cell's canonical action group."""
+
+        context = self._current_action_context()
+        fields.setdefault("action_group_id", context.get("action_group_id"))
+        fields.setdefault("action_id", context.get("action_id"))
+        self.store.log_host_call(**fields)
 
     def verify_code_evidence(self, payload: Mapping[str, Any]) -> str | None:
         """The code-mode completion check, shared by both completion doors.
@@ -1462,6 +1496,11 @@ class HostDispatcher:
         one door and be absent on the other.
         """
         return self._completion_service.verify_code_claims(dict(payload))
+
+    def revalidate_pending_completion(self) -> str | None:
+        """Recheck a mid-cell completion against post-capture file bytes."""
+
+        return self._completion_service.revalidate_pending_completion()
 
     def set_session_domain(self, domain: Any | None) -> None:
         """Attach the Web runtime's shared filesystem-aware session service."""

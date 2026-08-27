@@ -1478,9 +1478,17 @@ class ArtifactRepository:
                         snapshot.get("interpreter"),
                         snapshot.get("environment_name"),
                         snapshot.get("generation_id"),
-                        # Written now means addressed with its generation in
-                        # the basis, so it cannot be shared by a later kernel.
-                        "verified" if snapshot.get("generation_id") else None,
+                        # Local capture defaults to verified when its address
+                        # includes a generation. Importers may explicitly
+                        # lower that claim: a remapped local identity prevents
+                        # cross-session references, but does not prove that
+                        # package-authored environment metadata was measured
+                        # by this installation.
+                        (
+                            snapshot.get("generation_confidence")
+                            if "generation_confidence" in snapshot
+                            else ("verified" if snapshot.get("generation_id") else None)
+                        ),
                         snapshot.get("packages_unavailable"),
                         # Measured from a kernel generation, or assumed from
                         # this process? The fallback path has always said so
@@ -1596,20 +1604,26 @@ class ArtifactRepository:
         return [dict(row) for row in rows]
 
     def artifact_names_for_frame(self, frame_id: str) -> list[str]:
-        """Distinct artifact filenames whose versions this frame produced.
+        """Distinct artifact filenames whose captures this frame produced.
 
         The delegation envelope's ``artifacts`` field and the
         ``require_artifacts`` boundary check read this instead of trusting the
-        child's claims: ``artifact_versions.frame_id`` is stamped by the
-        capture/save paths, so a name appears here only when the store really
-        attributed a version to the frame.
+        child's claims.  A newly created version carries its producer on
+        ``artifact_versions``.  A later Cell that emits byte-identical output
+        intentionally reuses that version and carries its producer on
+        ``artifact_capture_observations`` instead; both are durable capture
+        evidence and neither may be omitted from the boundary check.
         """
         with self._lock:
             rows = self._connection.execute(
-                "SELECT DISTINCT a.filename FROM artifact_versions v "
+                "SELECT a.filename AS filename FROM artifact_versions v "
                 "JOIN artifacts a ON v.artifact_id=a.artifact_id "
-                "WHERE v.frame_id=? ORDER BY a.filename",
-                (frame_id,),
+                "WHERE v.frame_id=? "
+                "UNION "
+                "SELECT o.filename AS filename "
+                "FROM artifact_capture_observations o WHERE o.frame_id=? "
+                "ORDER BY filename",
+                (frame_id, frame_id),
             ).fetchall()
         return [row["filename"] for row in rows]
 

@@ -26,6 +26,8 @@ import io
 import json
 import zipfile
 
+import pytest
+
 from openai4s.agent.cell_record import DelegatedCellRecorder
 from openai4s.config import Config, LLMConfig, get_config
 from openai4s.server.execution_sources import ExecutionSourcesService
@@ -216,6 +218,35 @@ def test_sources_projection_populates_generation_and_environment():
     bare = _frame_by_id(payload, child)["cells"][1]
     assert bare["generation_id"] is None
     assert bare["environment"] is None
+
+
+def test_sources_projection_refuses_foreign_generation_metadata():
+    store = _store()
+    victim = store.new_frame(kind="turn", status="ready")
+    attacker = store.new_frame(kind="turn", status="ready")
+    generation = store.create_kernel_generation(
+        root_frame_id=victim,
+        branch_id=victim,
+        language="python",
+        environment={
+            "interpreter": "/victim/private/python",
+            "environment_name": "victim-only",
+        },
+        bootstrap={},
+        state="active",
+    )
+    store.log_cell(
+        frame_id=attacker,
+        root_frame_id=attacker,
+        code="print('attacker')",
+        result=_cell_result("cell-foreign-generation"),
+        cell_index=1,
+        generation_id=generation["generation_id"],
+    )
+
+    cell = ExecutionSourcesService(store).projection(attacker)["frames"][0]["cells"][0]
+    assert cell["generation_id"] is None
+    assert cell["environment"] is None
 
 
 def test_sources_projection_links_artifact_versions(tmp_path):
@@ -452,6 +483,46 @@ def test_sources_export_carries_only_execution_log_fields():
     assert b"sk-live-abcdef" not in everything
     assert b"STDOUT-SHOULD-NOT-EXPORT" not in everything
     assert b"STDERR-SHOULD-NOT-EXPORT" not in everything
+
+
+def test_sources_export_refuses_aggregate_utf8_source_over_budget(monkeypatch):
+    import openai4s.server.execution_sources as sources_mod
+
+    store = _store()
+    root = store.new_frame(kind="turn", status="ready")
+    _log_root_cell(store, root, "cell-budget-1", "éé", index=1)
+    _log_root_cell(store, root, "cell-budget-2", "éé", index=2)
+    # Each encoded source is five bytes including the appended newline.  The
+    # first fits; accepting the second would cross the aggregate byte budget.
+    monkeypatch.setattr(sources_mod, "_MAX_EXPORT_SOURCE_BYTES", 9)
+
+    with pytest.raises(
+        sources_mod.ExecutionSourcesExportTooLarge,
+        match="export byte limit",
+    ):
+        ExecutionSourcesService(store).export(root)
+
+
+def test_delegate_child_enumeration_errors_are_not_rendered_as_complete():
+    class _BrokenStore:
+        def get_frame(self, frame_id):
+            return {
+                "frame_id": frame_id,
+                "root_frame_id": frame_id,
+                "kind": "turn",
+            }
+
+        def list_artifacts(self, _filters):
+            return []
+
+        def list_cells(self, _frame_id, **_kwargs):
+            return []
+
+        def frame_detail(self, _frame_id, **_kwargs):
+            raise RuntimeError("database read failed")
+
+    with pytest.raises(RuntimeError, match="database read failed"):
+        ExecutionSourcesService(_BrokenStore()).projection("root")
 
 
 def test_sources_export_is_byte_deterministic_and_survives_restart():

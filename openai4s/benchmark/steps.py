@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -1186,6 +1188,109 @@ def telemetry_identity_cycle(ctx: Context, inputs: dict) -> dict:
 # --------------------------------------------------------------------------
 
 
+def _local_python_command(command: str) -> str:
+    """Resolve a portable ``python`` test command to this benchmark runtime."""
+
+    try:
+        words = shlex.split(command, posix=True)
+    except ValueError:
+        return command
+    if words and words[0] in {"python", "python3"}:
+        return shlex.join([sys.executable, *words[1:]])
+    return command
+
+
+def _run_codebase_test(ctx: Context, command: str) -> tuple[str, dict, str]:
+    """Run one claimed test command through the real Host bash capability."""
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.kernel.manager import Kernel
+
+    store = ctx.store
+    root_frame_id = str(ctx.state["root_frame_id"])
+    project_id = str(ctx.state["project_id"])
+    branch_id = root_frame_id
+    turn_id = str(
+        ctx.state.setdefault("codebase_turn_id", f"benchmark-codebase-{root_frame_id}")
+    )
+    dispatcher = build_dispatcher(
+        ctx.config,
+        frame_id=root_frame_id,
+        workspace=ctx.workspace,
+    )
+    dispatcher.set_task_evidence_scope(turn_id=turn_id, branch_id=branch_id)
+    store.set_permission_rule(
+        scope="conversation",
+        scope_id=root_frame_id,
+        tool="bash",
+        pattern=command,
+        decision="allow",
+    )
+    group = store.append_action_group(
+        root_frame_id=root_frame_id,
+        branch_id=branch_id,
+        turn_id=turn_id,
+        kind="code",
+    )
+    group_id = str(group["group_id"])
+    cell_id = str(uuid.uuid4())
+    attempt = store.allocate_execution_attempt(
+        group_id=group_id,
+        producing_cell_id=cell_id,
+    )
+    attempt_id = str(attempt["attempt_id"])
+    store.mark_execution_attempt_started(attempt_id)
+    code = (
+        f"_test = host.bash({command!r})\n"
+        "print(_test.get('stdout', ''), end='')\n"
+        "print(_test.get('stderr', ''), end='')\n"
+        "print('exit', _test.get('exit_code'))\n"
+    )
+    kernel = Kernel(dispatcher=dispatcher, cwd=str(ctx.workspace))
+    finished = False
+    try:
+        with kernel.bind_action_context(
+            {
+                "action_group_id": group_id,
+                "action_id": f"{group_id}:action",
+                "tool_call_id": None,
+            }
+        ):
+            result = kernel.execute(code, cell_id=cell_id)
+        store.mark_execution_attempt_response(attempt_id)
+        logged_cell_id = store.log_cell(
+            frame_id=root_frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+            code=code,
+            result=result,
+            origin="agent",
+            language="python",
+        )
+        if logged_cell_id != cell_id:
+            raise RuntimeError("test Cell identity changed while it was recorded")
+        store.mark_execution_attempt_capture(attempt_id)
+        terminal_state = "failed" if result.get("error") else "completed"
+        store.finish_execution_attempt(attempt_id, terminal_state=terminal_state)
+        finished = True
+    finally:
+        if not finished:
+            try:
+                store.finish_execution_attempt(
+                    attempt_id,
+                    terminal_state="failed",
+                )
+            except Exception:  # noqa: BLE001 - preserve the execution failure
+                pass
+        kernel.shutdown()
+    if result.get("error"):
+        raise RuntimeError(
+            f"test cell failed: {result.get('error')}: "
+            f"{result.get('error_message')}"
+        )
+    return code, result, cell_id
+
+
 def produce_codebase(ctx: Context, inputs: dict) -> dict:
     """Write a structured deliverable with the real kernel, then really test it.
 
@@ -1229,20 +1334,13 @@ def produce_codebase(ctx: Context, inputs: dict) -> dict:
                 )
             written.append(name)
 
-        command = str(
-            inputs.get("test_command") or "python -m unittest discover -s tests -v"
-        )
-        test_code = (
-            "import shlex, subprocess, sys\n"
-            f"_argv = [sys.executable] + shlex.split({command!r})[1:]\n"
-            "_r = subprocess.run(_argv, capture_output=True, text=True)\n"
-            "print(_r.stdout)\n"
-            "print(_r.stderr)\n"
-            "print('exit', _r.returncode)\n"
-        )
-        test_result = kernel.execute(test_code)
     finally:
         kernel.shutdown()
+
+    command = _local_python_command(
+        str(inputs.get("test_command") or "python -m unittest discover -s tests -v")
+    )
+    test_code, test_result, cell_id = _run_codebase_test(ctx, command)
 
     for name in written:
         path = ctx.workspace / name
@@ -1257,16 +1355,6 @@ def produce_codebase(ctx: Context, inputs: dict) -> dict:
             root_frame_id=ctx.state["root_frame_id"],
             project_id=ctx.state["project_id"],
         )
-
-    cell_id = ctx.store.log_cell(
-        frame_id=ctx.state["root_frame_id"],
-        root_frame_id=ctx.state["root_frame_id"],
-        project_id=ctx.state["project_id"],
-        code=test_code,
-        result=test_result,
-        origin="agent",
-        language="python",
-    )
 
     # The claim names every declared file, whether or not it got written: a
     # run that stopped halfway is only interesting if it still says it is done.
@@ -1342,8 +1430,6 @@ def tamper_codebase(ctx: Context, inputs: dict) -> dict:
     if mode == "failing_tests":
         # A real cell, a real failing test run, a real execution_log row. The
         # claim points at it and calls it evidence of a pass.
-        from openai4s.kernel.manager import Kernel
-
         (ctx.workspace / "tests" / "test_broken.py").write_text(
             "import unittest\n\n\n"
             "class Broken(unittest.TestCase):\n"
@@ -1352,27 +1438,7 @@ def tamper_codebase(ctx: Context, inputs: dict) -> dict:
             encoding="utf-8",
         )
         command = str(claim["test_evidence"][0]["command"])
-        code = (
-            "import shlex, subprocess, sys\n"
-            f"_argv = [sys.executable] + shlex.split({command!r})[1:]\n"
-            "_r = subprocess.run(_argv, capture_output=True, text=True)\n"
-            "print(_r.stdout)\n"
-            "print(_r.stderr)\n"
-        )
-        kernel = Kernel(cwd=str(ctx.workspace))
-        try:
-            result = kernel.execute(code)
-        finally:
-            kernel.shutdown()
-        cell_id = ctx.store.log_cell(
-            frame_id=ctx.state["root_frame_id"],
-            root_frame_id=ctx.state["root_frame_id"],
-            project_id=ctx.state["project_id"],
-            code=code,
-            result=result,
-            origin="agent",
-            language="python",
-        )
+        _code, _result, cell_id = _run_codebase_test(ctx, command)
         claim["test_evidence"] = [{"command": command, "producing_cell_id": cell_id}]
         return {"tampered": mode, "cell_id": cell_id}
     raise KeyError(f"unknown codebase tamper mode {mode!r}")
@@ -1391,6 +1457,10 @@ def verify_codebase(ctx: Context, inputs: dict) -> dict:
     dispatcher = build_dispatcher(ctx.config, frame_id=ctx.state["root_frame_id"])
     dispatcher.set_workspace(ctx.workspace)
     dispatcher.set_task_mode(mode)
+    dispatcher.set_task_evidence_scope(
+        turn_id=ctx.state.get("codebase_turn_id"),
+        branch_id=ctx.state["root_frame_id"],
+    )
     spec: dict[str, Any] = {
         "output": {"summary": "built the pipeline"},
         "completion_bullets": ["Wrote the pipeline package"],

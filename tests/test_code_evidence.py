@@ -24,6 +24,10 @@ from openai4s.agent.actions import (
     NativeToolCall,
 )
 from openai4s.agent.finalize import execute_finalize_action, finalize_response_schema
+from openai4s.bash_capability import (
+    command_digest,
+    command_preserves_failure_status,
+)
 from openai4s.host.code_evidence import (
     CODE_EVIDENCE_KEYS,
     EVIDENCE_REQUIRED_MODES,
@@ -87,15 +91,11 @@ def tree(tmp_path):
 
 
 def _context(tree, cells=None, frame_id="frame-1"):
-    names = {
+    paths = {
         "seqpipe/__init__.py",
         "seqpipe/domain.py",
         "seqpipe/run.py",
         "tests/test_domain.py",
-        "__init__.py",
-        "domain.py",
-        "run.py",
-        "test_domain.py",
     }
     rows = (
         cells
@@ -110,7 +110,17 @@ def _context(tree, cells=None, frame_id="frame-1"):
     )
     return CodeEvidenceContext(
         search_roots=(tree,),
-        artifact_names=frozenset(names),
+        artifact_checksums={
+            path: frozenset({_sha(tree / path)})
+            for path in paths
+            if (tree / path).is_file()
+        },
+        test_receipt=lambda cell_id, command: (
+            cell_id == "cell-7" and command == "python -m pytest tests/"
+        ),
+        turn_id="turn-current",
+        branch_id=frame_id,
+        artifact_names=frozenset(paths),
         cell_lookup=_Cells(rows),
         frame_id=frame_id,
     )
@@ -137,6 +147,51 @@ def _payload(tree, **overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _record_test_cell(
+    store,
+    frame: str,
+    *,
+    turn_id: str,
+    command: str,
+    cell_id: str = "cell-test",
+    branch_id: str | None = None,
+    bash_ok: bool = True,
+    with_receipt: bool = True,
+):
+    branch = branch_id or frame
+    group = store.append_action_group(
+        root_frame_id=frame,
+        branch_id=branch,
+        turn_id=turn_id,
+        kind="code",
+    )
+    attempt = store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id=cell_id,
+        state_revision=1,
+    )
+    store.mark_execution_attempt_started(attempt["attempt_id"])
+    store.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code=f"host.bash({command!r})",
+        result={"id": cell_id, "stdout": "model-controlled text"},
+    )
+    if with_receipt:
+        store.log_host_call(
+            method="bash",
+            args=[{"command_sha256": command_digest(command)}],
+            ok=bash_ok,
+            frame_id=frame,
+            action_group_id=group["group_id"],
+            resource_keys=[f"command-sha256:{command_digest(command)}"],
+        )
+    store.mark_execution_attempt_response(attempt["attempt_id"])
+    store.mark_execution_attempt_capture(attempt["attempt_id"])
+    store.finish_execution_attempt(attempt["attempt_id"], terminal_state="completed")
+    return group
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +264,7 @@ def test_a_deleted_source_file_is_refused(tree):
     error = verify_code_evidence(
         payload, task_mode="codebase_change", context=_context(tree)
     )
-    assert error and "seqpipe/domain.py" in error and "does not exist" in error
+    assert error and "seqpipe/domain.py" in error and "unavailable" in error
 
 
 @pytest.mark.parametrize("claim", ["/etc/hosts", "../outside.py", "../../etc/passwd"])
@@ -222,16 +277,18 @@ def test_a_source_file_outside_the_evidence_roots_is_refused(claim, tree):
         task_mode="codebase_change",
         context=_context(tree),
     )
-    assert error and "evidence roots" in error
+    assert error and "session's workspace" in error
 
 
 def test_a_mismatched_sha256_is_refused(tree):
+    actual = _sha(tree / "seqpipe/run.py")
     error = verify_code_evidence(
         _payload(tree, source_files=[{"path": "seqpipe/run.py", "sha256": "0" * 64}]),
         task_mode="codebase_change",
         context=_context(tree),
     )
-    assert error and "declares sha256" in error
+    assert error and "declared sha256" in error
+    assert actual[:16] not in error
 
 
 def test_a_file_that_was_never_captured_as_an_artifact_is_refused(tree):
@@ -241,7 +298,184 @@ def test_a_file_that_was_never_captured_as_an_artifact_is_refused(tree):
         task_mode="reusable_pipeline",
         context=_context(tree),
     )
-    assert error and "never captured as an artifact" in error
+    assert error and "artifact version at that exact path" in error
+
+
+def test_another_sessions_same_path_and_bytes_are_not_source_evidence(tmp_path):
+    from openai4s.store import get_store
+
+    workspace = tmp_path / "workspace"
+    source = _write(workspace, "pkg/module.py", "VALUE = 1\n")
+    store = get_store(tmp_path / "scope.db")
+    current = store.new_frame(kind="turn", project_id="default")
+    other = store.new_frame(kind="turn", project_id="default")
+    data = source.read_bytes()
+    store.save_artifact(
+        path=str(source),
+        filename="pkg/module.py",
+        content_type="text/x-python",
+        size_bytes=len(data),
+        checksum=hashlib.sha256(data).hexdigest(),
+        frame_id=other,
+        root_frame_id=other,
+        project_id="default",
+    )
+
+    context = gather_code_evidence_context(store, current, (workspace,))
+    context = CodeEvidenceContext(
+        **{**context.__dict__, "test_receipt": lambda _cell, _command: True}
+    )
+    error = verify_code_evidence(
+        {
+            "source_files": [{"path": "pkg/module.py"}],
+            "entry_points": ["pkg/module.py"],
+            "architecture_summary": "module.py owns the implementation.",
+            "test_evidence": [{"command": "pytest", "producing_cell_id": "x"}],
+        },
+        task_mode="codebase_change",
+        context=context,
+    )
+    assert error and "artifact version at that exact path" in error
+    store.close()
+
+
+def test_same_basename_elsewhere_and_bytes_changed_after_capture_are_refused(tmp_path):
+    from openai4s.store import get_store
+
+    workspace = tmp_path / "workspace"
+    captured = _write(workspace, "left/module.py", "VALUE = 1\n")
+    _write(workspace, "right/module.py", "VALUE = 1\n")
+    store = get_store(tmp_path / "paths.db")
+    frame = store.new_frame(kind="turn", project_id="default")
+    data = captured.read_bytes()
+    store.save_artifact(
+        path=str(captured),
+        filename="module.py",
+        content_type="text/x-python",
+        size_bytes=len(data),
+        checksum=hashlib.sha256(data).hexdigest(),
+        frame_id=frame,
+        root_frame_id=frame,
+        project_id="default",
+    )
+    context = gather_code_evidence_context(store, frame, (workspace,))
+    context = CodeEvidenceContext(
+        **{**context.__dict__, "test_receipt": lambda _cell, _command: True}
+    )
+    base_payload = {
+        "entry_points": ["right/module.py"],
+        "architecture_summary": "module.py owns the implementation.",
+        "test_evidence": [{"command": "pytest", "producing_cell_id": "x"}],
+    }
+    wrong_path = verify_code_evidence(
+        {**base_payload, "source_files": [{"path": "right/module.py"}]},
+        task_mode="codebase_change",
+        context=context,
+    )
+    assert wrong_path and "exact path" in wrong_path
+
+    captured.write_text("VALUE = 2\n", encoding="utf-8")
+    changed = verify_code_evidence(
+        {
+            **base_payload,
+            "source_files": [{"path": "left/module.py"}],
+            "entry_points": ["left/module.py"],
+        },
+        task_mode="codebase_change",
+        context=context,
+    )
+    assert changed and "exact path" in changed
+    store.close()
+
+
+@pytest.mark.parametrize("relative", [".env", "id_rsa", ".aws/credentials"])
+def test_source_hashing_refuses_secret_files_before_disclosing_a_digest(
+    tmp_path, relative
+):
+    from openai4s.host.files import WorkspaceFileService
+    from openai4s.store import get_store
+
+    workspace = tmp_path / "workspace"
+    source = _write(workspace, relative, "credential-material-never-hash-me\n")
+    actual = _sha(source)
+    store = get_store(tmp_path / f"secret-{source.name}.db")
+    frame = store.new_frame(kind="turn", project_id="default")
+    data = source.read_bytes()
+    store.save_artifact(
+        path=str(source),
+        filename=relative,
+        content_type="text/plain",
+        size_bytes=len(data),
+        checksum=actual,
+        frame_id=frame,
+        root_frame_id=frame,
+        project_id="default",
+    )
+    files = WorkspaceFileService(
+        data_dir=tmp_path / ".data",
+        frame_id=lambda: frame,
+        workspace=lambda: workspace,
+    )
+    context = gather_code_evidence_context(
+        store, frame, (workspace,), file_service=files, turn_id="turn-secret"
+    )
+    error = verify_code_evidence(
+        {
+            "source_files": [{"path": relative, "sha256": "0" * 64}],
+            "entry_points": [relative],
+            "architecture_summary": "The declared file owns the implementation.",
+            "test_evidence": [{"command": "pytest", "producing_cell_id": "x"}],
+        },
+        task_mode="codebase_change",
+        context=context,
+    )
+    assert error and "unavailable" in error
+    assert actual[:16] not in error
+    store.close()
+
+
+def test_source_hashing_refuses_a_benign_named_symlink_alias_to_a_secret(tmp_path):
+    from openai4s.host.files import WorkspaceFileService
+    from openai4s.store import get_store
+
+    workspace = tmp_path / "workspace"
+    secret = _write(workspace, ".env", "TOKEN=credential-material\n")
+    alias = workspace / "apparently-benign.py"
+    alias.symlink_to(secret)
+    actual = _sha(secret)
+    store = get_store(tmp_path / "alias.db")
+    frame = store.new_frame(kind="turn", project_id="default")
+    store.save_artifact(
+        path=str(alias),
+        filename=alias.name,
+        content_type="text/x-python",
+        size_bytes=secret.stat().st_size,
+        checksum=actual,
+        frame_id=frame,
+        root_frame_id=frame,
+        project_id="default",
+    )
+    files = WorkspaceFileService(
+        data_dir=tmp_path / ".data",
+        frame_id=lambda: frame,
+        workspace=lambda: workspace,
+    )
+    context = gather_code_evidence_context(
+        store, frame, (workspace,), file_service=files, turn_id="turn-alias"
+    )
+    error = verify_code_evidence(
+        {
+            "source_files": [{"path": alias.name, "sha256": "0" * 64}],
+            "entry_points": [alias.name],
+            "architecture_summary": "The declared file owns the implementation.",
+            "test_evidence": [{"command": "pytest", "producing_cell_id": "x"}],
+        },
+        task_mode="codebase_change",
+        context=context,
+    )
+    assert error and "unavailable" in error
+    assert actual[:16] not in error
+    store.close()
 
 
 def test_an_empty_source_list_is_not_a_deliverable(tree):
@@ -308,7 +542,7 @@ def test_an_r_entry_point_is_existence_checked_not_parsed_as_python(tree):
         task_mode="reusable_pipeline",
         context=_context(tree),
     )
-    assert error and "does not exist" in error
+    assert error and "unavailable" in error
 
 
 def test_an_empty_entry_point_list_is_refused(tree):
@@ -321,7 +555,7 @@ def test_an_empty_entry_point_list_is_refused(tree):
 
 
 # --------------------------------------------------------------------------
-# test_evidence — derived from the STORED stdout
+# test_evidence — bound to Host-authorized shell receipts
 # --------------------------------------------------------------------------
 
 
@@ -384,42 +618,148 @@ def test_a_failed_cell_cannot_back_a_passing_claim(tree):
     assert error and "'error'" in error
 
 
-def test_the_stored_stdout_decides_pass_or_fail_not_the_model(tree):
-    """The model names a command and a cell; it has no field for the output.
-    An ok cell whose recorded stdout shows failures is a refusal."""
-    cells = {
-        "cell-7": {
-            "root_frame_id": "frame-1",
-            "status": "ok",
-            "stdout": "FAILED tests/test_domain.py::test_score\n1 failed, 2 passed\n",
+def test_printing_passing_looking_output_is_not_a_test_receipt(tree):
+    """An ok Cell and model-controlled stdout are not execution evidence."""
+    context = _context(tree)
+    context = CodeEvidenceContext(
+        **{
+            **context.__dict__,
+            "test_receipt": lambda _cell_id, _command: False,
         }
-    }
-    error = verify_code_evidence(
-        _payload(tree), task_mode="reusable_pipeline", context=_context(tree, cells)
     )
-    assert error and "did not pass" in error
+    error = verify_code_evidence(
+        _payload(tree), task_mode="reusable_pipeline", context=context
+    )
+    assert error and "no successful Host-authorized execution receipt" in error
 
 
-def test_a_traceback_in_the_recorded_output_is_a_failure(tree):
-    cells = {
-        "cell-7": {
-            "root_frame_id": "frame-1",
-            "status": "ok",
-            "stdout": "Traceback (most recent call last):\n  ...\nImportError\n",
+def test_a_receipt_for_command_a_cannot_back_command_b(tree):
+    error = verify_code_evidence(
+        _payload(
+            tree,
+            test_evidence=[
+                {"command": "python -m pytest other/", "producing_cell_id": "cell-7"}
+            ],
+        ),
+        task_mode="reusable_pipeline",
+        context=_context(tree),
+    )
+    assert error and "exact command" in error
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pytest tests/; true",
+        "python -m pytest tests/ || true",
+        "python -m pytest tests/ | cat",
+        "python -m pytest tests/ & wait",
+        "python -m pytest tests/\ntrue",
+        'sh -c "python -m pytest tests/; true"',
+        'env sh -c "python -m pytest tests/; true"',
+        'echo "$(python -m pytest tests/; true)"',
+    ],
+)
+def test_shell_composition_cannot_mask_a_failed_test(command, tree):
+    context = _context(tree)
+    context = CodeEvidenceContext(
+        **{
+            **context.__dict__,
+            # Prove the syntax guard fires even if an exact successful receipt
+            # exists for the masking command.
+            "test_receipt": lambda _cell_id, _command: True,
         }
-    }
-    error = verify_code_evidence(
-        _payload(tree), task_mode="reusable_pipeline", context=_context(tree, cells)
     )
-    assert error and "did not pass" in error
+    error = verify_code_evidence(
+        _payload(
+            tree,
+            test_evidence=[{"command": command, "producing_cell_id": "cell-7"}],
+        ),
+        task_mode="codebase_change",
+        context=context,
+    )
+    assert error and "mask an earlier failure status" in error
 
 
-def test_a_cell_with_no_recorded_output_is_not_evidence(tree):
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pytest tests/",
+        "python -m pytest tests/ && echo verified",
+        "python -c \"print(';')\"",
+        "python -m pytest tests/ >results.txt 2>&1",
+    ],
+)
+def test_non_masking_shell_forms_remain_valid_evidence_commands(command):
+    assert command_preserves_failure_status(command) is True
+
+
+def test_a_successful_receipt_does_not_depend_on_model_controlled_stdout(tree):
     cells = {"cell-7": {"root_frame_id": "frame-1", "status": "ok", "stdout": "   "}}
-    error = verify_code_evidence(
-        _payload(tree), task_mode="codebase_change", context=_context(tree, cells)
+    assert (
+        verify_code_evidence(
+            _payload(tree), task_mode="codebase_change", context=_context(tree, cells)
+        )
+        is None
     )
-    assert error and "recorded no stdout" in error
+
+
+def test_the_store_receipt_binds_exact_command_cell_turn_and_branch(tmp_path):
+    from openai4s.store import get_store
+
+    store = get_store(tmp_path / "receipts.db")
+    frame = store.new_frame(kind="turn", project_id="default")
+    command = "python -m pytest tests/test_pipeline.py -q"
+    _record_test_cell(store, frame, turn_id="turn-current", command=command)
+
+    common = {
+        "producing_cell_id": "cell-test",
+        "root_frame_id": frame,
+        "branch_id": frame,
+        "turn_id": "turn-current",
+    }
+    assert store.has_successful_bash_receipt(
+        **common, command_sha256=command_digest(command)
+    )
+    assert not store.has_successful_bash_receipt(
+        **common, command_sha256=command_digest("python -m pytest other.py -q")
+    )
+    assert not store.has_successful_bash_receipt(
+        **{**common, "turn_id": "turn-prior"},
+        command_sha256=command_digest(command),
+    )
+    assert not store.has_successful_bash_receipt(
+        **{**common, "branch_id": "branch-other"},
+        command_sha256=command_digest(command),
+    )
+    store.close()
+
+
+@pytest.mark.parametrize("with_receipt,bash_ok", [(False, True), (True, False)])
+def test_print_only_and_nonzero_shell_runs_do_not_create_passing_receipts(
+    tmp_path, with_receipt, bash_ok
+):
+    from openai4s.store import get_store
+
+    store = get_store(tmp_path / f"failed-{with_receipt}-{bash_ok}.db")
+    frame = store.new_frame(kind="turn", project_id="default")
+    command = "python -m pytest -q"
+    _record_test_cell(
+        store,
+        frame,
+        turn_id="turn-current",
+        command=command,
+        with_receipt=with_receipt,
+        bash_ok=bash_ok,
+    )
+    assert not store.has_successful_bash_receipt(
+        producing_cell_id="cell-test",
+        command_sha256=command_digest(command),
+        root_frame_id=frame,
+        branch_id=frame,
+        turn_id="turn-current",
+    )
+    store.close()
 
 
 def test_a_real_cell_from_another_session_is_not_this_runs_evidence(tree):
@@ -497,6 +837,52 @@ def test_submit_output_accepts_and_carries_the_verified_declarations(tree):
     assert service.last_output is not None
     for key in CODE_EVIDENCE_KEYS:
         assert service.last_output[key] == payload[key]
+
+
+def test_submit_output_is_revoked_when_verified_source_changes_after_submit(tree):
+    service = CompletionService(
+        task_mode=lambda: "codebase_change",
+        # Rebuild the context on each call, as the gateway does after it has
+        # captured the completed Cell's newest Artifact versions.
+        code_evidence=lambda: _context(tree),
+    )
+    payload = _payload(tree)
+    result = service.submit(
+        {
+            "output": {"summary": "done"},
+            "completion_bullets": ["Built the pipeline"],
+            **{key: payload[key] for key in CODE_EVIDENCE_KEYS},
+        }
+    )
+    assert result == {"status": "ok"}
+
+    _write(tree, "seqpipe/run.py", "def main():\n    return 99\n")
+
+    error = service.revalidate_pending_completion()
+    assert error and "changed after host.submit_output" in error
+    assert service.last_output is None
+
+
+def test_non_python_entry_point_bytes_are_sealed_after_submit(tree):
+    _write(tree, "pipeline.R", "main <- function() 1\n")
+    service = CompletionService(
+        task_mode=lambda: "reusable_pipeline",
+        code_evidence=lambda: _context(tree),
+    )
+    payload = _payload(tree, entry_points=["pipeline.R"])
+    assert service.submit(
+        {
+            "output": {"summary": "done"},
+            "completion_bullets": ["Built the pipeline"],
+            **{key: payload[key] for key in CODE_EVIDENCE_KEYS},
+        }
+    ) == {"status": "ok"}
+
+    _write(tree, "pipeline.R", "main <- function() 2\n")
+
+    error = service.revalidate_pending_completion()
+    assert error and "changed after host.submit_output" in error
+    assert service.last_output is None
 
 
 def test_an_analysis_submission_envelope_is_byte_for_byte_what_it_was(tree):
@@ -596,6 +982,7 @@ def test_finalize_without_the_hook_is_exactly_what_it_was(tree):
 def test_the_context_reads_artifact_names_and_the_execution_log_from_the_store(
     tmp_path,
 ):
+    from openai4s.host.files import WorkspaceFileService
     from openai4s.store import get_store
 
     store = get_store(tmp_path / "ctx.db")
@@ -614,16 +1001,53 @@ def test_the_context_reads_artifact_names_and_the_execution_log_from_the_store(
         root_frame_id=frame,
         project_id="default",
     )
-    cell_id = store.log_cell(
+    turn_id = "turn-current"
+    group = store.append_action_group(
+        root_frame_id=frame,
+        branch_id=frame,
+        turn_id=turn_id,
+        kind="code",
+    )
+    cell_id = "cell-real"
+    attempt = store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id=cell_id,
+        state_revision=1,
+    )
+    store.mark_execution_attempt_started(attempt["attempt_id"])
+    store.log_cell(
         frame_id=frame,
         root_frame_id=frame,
         code="import subprocess",
-        result={"id": "cell-real", "status": "ok", "stdout": GOOD_STDOUT},
+        result={"id": cell_id, "status": "ok", "stdout": GOOD_STDOUT},
     )
+    store.log_host_call(
+        method="bash",
+        args=[{"command_sha256": command_digest("pytest")}],
+        ok=True,
+        frame_id=frame,
+        action_group_id=group["group_id"],
+        resource_keys=[f"command-sha256:{command_digest('pytest')}"],
+    )
+    store.mark_execution_attempt_response(attempt["attempt_id"])
+    store.mark_execution_attempt_capture(attempt["attempt_id"])
+    store.finish_execution_attempt(attempt["attempt_id"], terminal_state="completed")
 
-    context = gather_code_evidence_context(store, frame, (tmp_path,))
+    files = WorkspaceFileService(
+        data_dir=tmp_path / ".data",
+        frame_id=lambda: frame,
+        workspace=lambda: tmp_path,
+    )
+    context = gather_code_evidence_context(
+        store,
+        frame,
+        (tmp_path,),
+        file_service=files,
+        turn_id=turn_id,
+        branch_id=frame,
+    )
     assert "seqpipe/run.py" in context.artifact_names
-    assert "run.py" in context.artifact_names
+    assert "run.py" not in context.artifact_names
     assert context.frame_id == frame
     row = context.cell_lookup(cell_id)
     assert row and row["status"] == "ok" and row["stdout"] == GOOD_STDOUT

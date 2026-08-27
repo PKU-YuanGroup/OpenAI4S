@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+import openai4s.agent.delegation as deleg_mod
 import openai4s.agent.loop as loop_mod
 from openai4s.agent.delegation import (
     DelegationError,
@@ -249,7 +250,7 @@ def test_a_declared_failure_is_never_upgraded_by_present_artifacts(monkeypatch):
 
 
 def test_malformed_require_artifacts_is_refused_before_reservation():
-    runner = DelegationRunner(get_config(), child_max_turns=3)
+    runner, store, parent = _runner_with_store(child_max_turns=3)
     try:
         with pytest.raises(DelegationError, match="require_artifacts"):
             runner({"request": "x", "require_artifacts": "results.csv"})
@@ -427,6 +428,67 @@ def test_retries_rerun_a_failed_child_with_limitations_appended(monkeypatch):
         assert [child["overrides"].get("retries") for child in children] == [1, None]
     finally:
         runner.close()
+
+
+@pytest.mark.parametrize("stop_method", ["stop_child", "cancel_all"])
+def test_terminal_attempt_stop_atomically_prevents_retry(monkeypatch, stop_method):
+    """A retry cannot appear after cancellation snapshots a terminal attempt."""
+
+    retry_ready = threading.Event()
+    release_retry = threading.Event()
+    attempts: list[str] = []
+    results: list[dict] = []
+    errors: list[BaseException] = []
+    real_retry_spec = deleg_mod._retry_spec
+
+    def paused_retry_spec(spec, result, attempt):
+        retry = real_retry_spec(spec, result, attempt)
+        retry_ready.set()
+        assert release_retry.wait(_RENDEZVOUS_TIMEOUT)
+        return retry
+
+    def always_failed(self, task):
+        attempts.append(task)
+        return _submitted(task_status="failed")
+
+    monkeypatch.setattr(loop_mod.Agent, "run", always_failed)
+    monkeypatch.setattr(deleg_mod, "_retry_spec", paused_retry_spec)
+    runner, store, parent = _runner_with_store(child_max_turns=3)
+
+    def invoke():
+        try:
+            results.append(runner({"request": "fragile", "retries": 1}))
+        except BaseException as error:  # noqa: BLE001 - surface thread failures
+            errors.append(error)
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    try:
+        assert retry_ready.wait(_RENDEZVOUS_TIMEOUT)
+        original = runner.children()[0]
+        assert original["status"] == "done"
+        assert original["task_status"] == "failed"
+        if stop_method == "stop_child":
+            runner.stop_child(original["child_id"])
+        else:
+            runner.cancel_all("test cancellation")
+    finally:
+        release_retry.set()
+        worker.join(_RENDEZVOUS_TIMEOUT)
+        runner.close(cancel=True)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert attempts == ["fragile"]
+    assert results[0]["task_status"] == "failed"
+    assert len(runner.children()) == 1
+    assert runner.delegation_stats()["spawned_session"] == 1
+    durable = store.delegation_tree(parent)
+    assert durable["budget"]["spawned"] == 1
+    assert durable["budget"]["active"] == 0
+    assert len(durable["children"]) == 1
+    assert durable["children"][0]["status"] == "done"
+    assert durable["children"][0]["task_status"] == "failed"
 
 
 def test_retries_are_clamped_to_two(monkeypatch):

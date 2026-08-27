@@ -548,7 +548,15 @@ class WebActionExecutor:
                 reply.content
             ):
                 observation += MULTI_CELL_NOTE
-            completion = getattr(self.dispatcher(), "last_output", None)
+            dispatcher = self.dispatcher()
+            revalidate = getattr(dispatcher, "revalidate_pending_completion", None)
+            post_capture_error = revalidate() if callable(revalidate) else None
+            if post_capture_error:
+                observation += (
+                    "\n\n[Completion evidence rejected after cell capture]\n"
+                    + str(post_capture_error)
+                )
+            completion = getattr(dispatcher, "last_output", None)
             return self._user_observation(observation, completion=completion)
         return self._legacy_or_nudge(reply, state)
 

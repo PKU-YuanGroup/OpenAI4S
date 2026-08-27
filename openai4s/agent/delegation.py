@@ -267,6 +267,27 @@ class _SteeringMessage:
         return {**self.snapshot(), "text_preview": self.text}
 
 
+class _RetryChain:
+    """Cancellation shared by every immutable attempt of one logical child.
+
+    Mutations happen while ``_DelegationTree.lock`` is held. The Event makes
+    cancellation visible to the child runtime without taking that tree lock.
+    """
+
+    def __init__(self, chain_id: str) -> None:
+        self.chain_id = chain_id
+        self.cancel_event = threading.Event()
+        self.reason = "child stopped"
+
+    def cancel(self, reason: str) -> None:
+        if not self.cancel_event.is_set():
+            self.reason = reason
+            self.cancel_event.set()
+
+    def cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
+
 class _Child:
     """Thread-safe state for one direct or nested sub-agent."""
 
@@ -282,6 +303,7 @@ class _Child:
         store: Any | None,
         budget: DelegationBudget,
         clock: Callable[[], float],
+        retry_chain: _RetryChain | None = None,
     ) -> None:
         self.child_id = child_id
         self.name = name
@@ -291,6 +313,7 @@ class _Child:
         self.parent_frame_id = parent_frame_id
         self.store = store
         self.budget = budget
+        self._retry_chain = retry_chain or _RetryChain(child_id)
         self.status = "pending"
         self.result: dict[str, Any] | None = None
         self.future: Future | None = None
@@ -778,6 +801,87 @@ class _DelegationTree:
             self.children[child.child_id] = child
         self.emit("registered", child)
 
+    def create_retry(
+        self,
+        previous: _Child,
+        *,
+        spec: dict[str, Any],
+        depth: int,
+        parent_child_id: str | None,
+        parent_frame_id: str | None,
+        store: Any | None,
+        direct_children: dict[str, _Child],
+    ) -> _Child | None:
+        """Atomically refuse cancellation or reserve and register one retry."""
+
+        with self.lock:
+            chain = previous._retry_chain
+            if chain.cancelled():
+                return None
+            child_ids = self.allocate(
+                parent_child_id=parent_child_id,
+                depth=depth,
+                count=1,
+            )
+            child = _Child(
+                child_ids[0],
+                spec.get("name"),
+                spec,
+                depth=depth + 1,
+                parent_child_id=parent_child_id,
+                parent_frame_id=parent_frame_id,
+                store=store,
+                budget=self.budget,
+                clock=self.clock,
+                retry_chain=chain,
+            )
+            self.children[child.child_id] = child
+            direct_children[child.child_id] = child
+            # Publish registration before cancellation can observe the child;
+            # otherwise a stopped event could race ahead of "registered".
+            self.emit("registered", child)
+            return child
+
+    def cancel_retry_subtrees(
+        self, child_ids: Sequence[str], reason: str
+    ) -> list[tuple[_Child, bool, Any | None, Future | None]]:
+        """Cancel attempts, their retry siblings, and all nested descendants.
+
+        Chain cancellation and child stop publication share the same tree lock
+        as ``create_retry``. Therefore a retry is either registered and stopped
+        here, or observes the cancelled chain before consuming another budget
+        slot; it cannot appear in the gap after a cancellation snapshot.
+        """
+
+        with self.lock:
+            affected: set[str] = set()
+            frontier = list(child_ids)
+            while frontier:
+                current = frontier.pop(0)
+                if current in affected:
+                    continue
+                child = self.children.get(current)
+                if child is None:
+                    continue
+                chain = child._retry_chain
+                chain.cancel(reason)
+                related = [
+                    candidate.child_id
+                    for candidate in self.children.values()
+                    if candidate._retry_chain is chain
+                    or candidate.parent_child_id == current
+                ]
+                affected.add(current)
+                frontier.extend(item for item in related if item not in affected)
+
+            stopped = []
+            for child in self.children.values():
+                if child.child_id not in affected:
+                    continue
+                first, agent, future = child.request_stop(reason)
+                stopped.append((child, first, agent, future))
+            return stopped
+
     def restore(self, children: Sequence[_Child]) -> None:
         with self.lock:
             for child in children:
@@ -849,7 +953,7 @@ class _ChildCancellation:
         self._child = child
 
     def cancelled(self) -> bool:
-        return self._child.stop_event.is_set()
+        return self._child.stop_event.is_set() or self._child._retry_chain.cancelled()
 
 
 def _child_context_budget(cfg: Config):
@@ -1354,32 +1458,25 @@ class DelegationRunner:
             and result.get("task_status") in _RETRYABLE_STATUS
             and result.get("stop_reason") != "stopped"
             and not child.stop_event.is_set()
+            and not child._retry_chain.cancelled()
         ):
             attempt += 1
             retry_spec = _retry_spec(child.spec, result, attempt)
             try:
-                child_ids = self._tree.allocate(
+                retry_child = self._tree.create_retry(
+                    child,
+                    spec=retry_spec,
                     parent_child_id=self.parent_child_id,
                     depth=self.depth,
-                    count=1,
+                    parent_frame_id=self.parent_frame_id,
+                    store=self.store,
+                    direct_children=self._children,
                 )
             except DelegationError:
                 # Budget exhausted: the honest last result stands.
                 break
-            retry_child = _Child(
-                child_ids[0],
-                retry_spec.get("name"),
-                retry_spec,
-                depth=self.depth + 1,
-                parent_child_id=self.parent_child_id,
-                parent_frame_id=self.parent_frame_id,
-                store=self.store,
-                budget=self.budget,
-                clock=self._tree.clock,
-            )
-            with self._tree.lock:
-                self._children[retry_child.child_id] = retry_child
-            self._tree.register(retry_child)
+            if retry_child is None:
+                break
             child = retry_child
             result = self._run_one(retry_child)
         return result
@@ -1627,9 +1724,19 @@ class DelegationRunner:
         with self._tree.lock:
             if child_id not in self._children:
                 raise KeyError(f"no such child {child_id!r}")
-        affected = self._tree.descendants(child_id)
-        for child in affected:
-            first, agent, future = child.request_stop(reason)
+            stopped = self._tree.cancel_retry_subtrees([child_id], reason)
+        self._signal_stopped(stopped, direct_ids={child_id})
+        return self._children[child_id].snapshot()
+
+    def _signal_stopped(
+        self,
+        stopped: Sequence[tuple[_Child, bool, Any | None, Future | None]],
+        *,
+        direct_ids: set[str],
+    ) -> None:
+        """Signal runtime handles after atomic tree cancellation is published."""
+
+        for child, first, agent, future in stopped:
             if future is not None:
                 future.cancel()
             if first and agent is not None:
@@ -1639,8 +1746,11 @@ class DelegationRunner:
                     pass
             if child.snapshot()["status"] == "stopped":
                 self._persist_status(child, "stopped")
-                self._tree.emit("stopped", child, propagated=child.child_id != child_id)
-        return self._children[child_id].snapshot()
+                self._tree.emit(
+                    "stopped",
+                    child,
+                    propagated=child.child_id not in direct_ids,
+                )
 
     def send_message(self, spec: dict[str, Any]) -> dict[str, Any]:
         child_id = spec["child_id"]
@@ -1698,9 +1808,10 @@ class DelegationRunner:
     def cancel_all(self, reason: str = "parent cancelled") -> list[str]:
         """Cancel every descendant owned by this runner's subtree."""
 
-        direct_ids = [child["child_id"] for child in self.children()]
-        for child_id in direct_ids:
-            self._stop_subtree(child_id, reason)
+        with self._tree.lock:
+            direct_ids = list(self._children)
+            stopped = self._tree.cancel_retry_subtrees(direct_ids, reason)
+        self._signal_stopped(stopped, direct_ids=set(direct_ids))
         return direct_ids
 
     def close(self, *, cancel: bool = False) -> None:
