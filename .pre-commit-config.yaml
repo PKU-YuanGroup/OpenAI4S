@@ -1,6 +1,15 @@
+# Every `rev:` is a commit SHA with the tag it came from in a `# frozen:`
+# comment -- the same form `pre-commit autoupdate --freeze` writes, and the
+# same trust model the repository already applies to every GitHub Action (see
+# `.github/workflows/README.md` on why a tag is mutable). It matters more here
+# than there: none of these tools is in `uv.lock`, so pre-commit clones them
+# from this file at hook time, `ruff-check` runs with `--fix` (write access to
+# the whole working tree), and `setup.sh` installs the hooks for every
+# contributor -- so a re-pointed tag would rewrite source on developer
+# machines, not just fail a CI check. Dependabot maintains the frozen form.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
     hooks:
       - id: end-of-file-fixer
       - id: mixed-line-ending
@@ -9,12 +18,12 @@ repos:
       - id: check-merge-conflict
         args: ['--assume-in-merge']
   - repo: https://github.com/pycqa/isort
-    rev: 8.0.1
+    rev: a333737ed43df02b18e6c95477ea1b285b3de15a  # frozen: 8.0.1
     hooks:
       - id: isort
         args: ["--profile", "black"]
   - repo: https://github.com/psf/black
-    rev: 26.5.1
+    rev: 87928e6d6761a4a6d22250e1fee5601b3998086e  # frozen: 26.5.1
     hooks:
       - id: black
   # astral-sh is the canonical home; charliermarsh/ruff-pre-commit is a
@@ -22,7 +31,7 @@ repos:
   # arrived and a bare `ruff` became ambiguous. The rule set is pinned in
   # pyproject.toml's [tool.ruff.lint]; see the comment there for why.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 'v0.16.4'
+    rev: aab412d509121cb5f7533134b7e67f9fab59c682  # frozen: v0.16.4
     hooks:
       - id: ruff-check
         args: [--fix, "--ignore=E501,F401,E722,E402,E741"]

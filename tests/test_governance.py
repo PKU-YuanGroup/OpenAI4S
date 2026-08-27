@@ -9,7 +9,34 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-PINNED_ACTION = re.compile(r"^\s*uses:\s*[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$")
+
+# `- uses:` is as common as `uses:` in these files, and a pattern anchored on
+# the bare form collects nothing at all from a workflow written in list style:
+# ci.yml's 42 pins were invisible to this module until the `-?` went in.
+USES_LINE = re.compile(r"^\s*-?\s*uses:")
+
+# The trailing version comment is REQUIRED, not optional. A 40-hex SHA is
+# unreadable, so `# vX.Y.Z` is the only part of the pin a reviewer actually
+# reads -- leaving it optional let an action merge with no human-readable
+# identity at all, and let a bumped SHA keep a stale comment that tells every
+# future reader the wrong version.
+#
+# What this deliberately does NOT claim: that the comment names the SHA it sits
+# beside. Dereferencing a tag needs the network and this suite is offline by
+# design, so the identity check stays a human step -- what is mechanised here
+# is that there is always a claim to check.
+PINNED_ACTION = re.compile(r"^\s*-?\s*uses:\s*[^@\s]+@[0-9a-f]{40}\s+#\s*\S.*$")
+
+# The one documented exception, named once so every test below agrees on it.
+# pypa/gh-action-pypi-publish is a Docker-container action whose image PyPA
+# publishes tagged by RELEASE ref only (never by commit SHA), so a SHA pin
+# fails the image pull with `manifest unknown` before the OIDC exchange starts.
+UNPINNABLE_ACTIONS = frozenset({"uses: pypa/gh-action-pypi-publish@release/v1"})
+
+
+def _uses_lines(name):
+    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    return [line for line in text.splitlines() if USES_LINE.match(line)]
 
 
 # CodeQL scanning is provided by the repository's CodeQL default setup, not an
@@ -18,11 +45,44 @@ PINNED_ACTION = re.compile(r"^\s*uses:\s*[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$")
 @pytest.mark.parametrize("name", ["scorecard.yml"])
 def test_security_scanners_pin_every_action_to_a_commit(name):
     lines = (WORKFLOWS / name).read_text(encoding="utf-8").splitlines()
-    uses = [line for line in lines if line.lstrip().startswith("uses:")]
+    uses = _uses_lines(name)
 
     assert uses
     assert all(PINNED_ACTION.fullmatch(line) for line in uses)
     assert all("pull_request_target" not in line for line in lines)
+
+
+def test_every_workflow_pins_every_action_to_a_commit():
+    """The sweep the two scoped tests above cannot perform.
+
+    Those cover scorecard.yml and release.yml. ci.yml -- 42 `uses:` lines, the
+    file every contributor's code and every fork PR passes through -- and
+    publish-image.yml were pinned by convention only, named by no test at all.
+    Dependabot's `workflow-actions` group rewrites `uses:` lines in all four,
+    so a grouped bump landing a mutable tag in an uncovered file reads exactly
+    like a covered one and passes every gate.
+
+    Discovery is a glob rather than a list so a workflow added later is covered
+    the day it lands, instead of the day someone remembers to extend a
+    parametrize.
+    """
+    workflows = sorted(
+        p.name for p in [*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]
+    )
+    assert workflows
+
+    moving = {}
+    for name in workflows:
+        offenders = [
+            line.strip()
+            for line in _uses_lines(name)
+            if not PINNED_ACTION.fullmatch(line)
+            and line.strip() not in UNPINNABLE_ACTIONS
+        ]
+        if offenders:
+            moving[name] = offenders
+
+    assert moving == {}
 
 
 def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
@@ -63,21 +123,18 @@ def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
 
 
 def test_release_workflow_pins_every_action_to_a_commit():
-    workflow = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
-    uses = [line for line in workflow.splitlines() if line.lstrip().startswith("uses:")]
+    uses = _uses_lines("release.yml")
 
     assert uses
     # Every action is SHA-pinned so a mutable upstream branch cannot inject code.
-    # The one documented exception is pypa/gh-action-pypi-publish: it is a
-    # Docker-container action whose image PyPA publishes tagged by RELEASE ref
-    # only (never by commit SHA), so a SHA pin fails the image pull with
-    # `manifest unknown` before the OIDC exchange starts. It must stay on PyPA's
-    # documented `release/v1` image-backed ref — and nothing else may move.
+    # The one documented exception is pypa/gh-action-pypi-publish, and the
+    # reason it cannot be pinned is recorded beside UNPINNABLE_ACTIONS above.
+    # It must stay on PyPA's documented `release/v1` image-backed ref — and
+    # nothing else may move.
     moving = [
         line
         for line in uses
-        if not PINNED_ACTION.fullmatch(line)
-        and line.strip() != "uses: pypa/gh-action-pypi-publish@release/v1"
+        if not PINNED_ACTION.fullmatch(line) and line.strip() not in UNPINNABLE_ACTIONS
     ]
     assert moving == []
 
