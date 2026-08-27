@@ -165,6 +165,28 @@ def test_the_shell_itself_is_still_unframeable():
     assert security_headers()["X-Frame-Options"] == "DENY"
 
 
+def test_the_preview_says_why_it_is_static_instead_of_showing_a_dead_panel(
+    index_html,
+):
+    """A skill's interactive dashboard renders its chrome and never draws.
+
+    That is deliberate -- `script-src 'none'`, no `allow-scripts`, and the
+    iframe's own `sandbox=""` all agree -- but silently showing an empty canvas
+    is indistinguishable from a broken artifact. The preview has to say it.
+    """
+    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
+    preview_line = next(
+        line for line in app_js.splitlines() if 'rendererId === "html-preview"' in line
+    )
+
+    assert 't("viewer.renderer.noscript")' in preview_line
+    for language_marker in (
+        '"viewer.renderer.noscript": "预览不执行脚本',
+        '"viewer.renderer.noscript": "This preview runs no scripts',
+    ):
+        assert language_marker in app_js, "the note must exist in both languages"
+
+
 def test_html_preview_iframe_does_not_reenable_artifact_capabilities(index_html):
     app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
     preview_line = next(

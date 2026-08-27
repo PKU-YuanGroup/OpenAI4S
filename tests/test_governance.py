@@ -25,35 +25,36 @@ def test_security_scanners_pin_every_action_to_a_commit(name):
     assert all("pull_request_target" not in line for line in lines)
 
 
-def test_codeql_ignores_only_the_one_exact_upstream_capture():
-    """What an offline test can actually check about this file.
+def test_no_captured_web_page_is_extracted_as_executable_source():
+    """Byte-exact captures must not carry a source extension.
 
-    Not whether the exclusion is *in effect*: this repo runs CodeQL's default
-    setup, which reads a repo config file only when the repository property
-    `github-codeql-config-file` names it, and no test can see a repository
-    property. The previous version asserted the file's own bytes and nothing
-    else, which reads as an effectiveness gate and is not one. So: the paths
-    must be real, non-executable and wildcard-free, and the unmet precondition
-    must still be written down where whoever reads a green suite will find it.
+    An `.html` capture is analysed by CodeQL's JavaScript extractor, so a
+    fixture that is only ever *parsed* raises alerts about code that never
+    runs. The previous answer was `.github/codeql-config.yml`, which default
+    setup honours only when the repository property `github-codeql-config-file`
+    names it -- unset here, so the exclusion did nothing and the alert stayed
+    open while an offline test asserting the file's own bytes reported success.
+    The extension is the fix that needs no repository setting, and it is
+    verifiable: identical bytes under `.html` and `.html.capture` produce an
+    alert for the first name only.
     """
-    yaml = pytest.importorskip("yaml")
-    source = (ROOT / ".github" / "codeql-config.yml").read_text(encoding="utf-8")
-    config = yaml.safe_load(source)
-
-    assert config["paths-ignore"] == [
-        "tests/fixtures/arxiv_abs_2503.06687.html",
+    fixtures = ROOT / "tests" / "fixtures"
+    source_suffixes = {".html", ".htm", ".js", ".mjs", ".ts", ".jsx", ".tsx"}
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for path in fixtures.rglob("*")
+        if path.is_file() and path.suffix in source_suffixes
     ]
-    for path in config["paths-ignore"]:
-        assert "*" not in path
-        # A stale exclusion for a file that no longer exists is an invisible
-        # path waiting for a future capture to land on the same name.
-        assert (ROOT / path).is_file(), f"{path} does not exist"
-        assert (ROOT / path).suffix not in {".py", ".js", ".mjs", ".sh"}
 
-    assert "NOT IN EFFECT YET" in source
-    assert "github-codeql-config-file" in source
-    contents = (ROOT / ".github" / "CONTENTS.md").read_text(encoding="utf-8")
-    assert "not set" in contents.lower() or "NOT IN EFFECT" in contents
+    assert offenders == [], (
+        "these captures will be extracted as source; append a non-source "
+        f"suffix such as .capture: {offenders}"
+    )
+    assert (fixtures / "arxiv_abs_2503.06687.html.capture").is_file()
+    assert not (ROOT / ".github" / "codeql-config.yml").exists(), (
+        "the inert config is gone; if it comes back it needs the repository "
+        "property set, and a test that can see whether it is"
+    )
 
 
 def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
