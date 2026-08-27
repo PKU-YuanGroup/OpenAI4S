@@ -383,18 +383,25 @@ def test_the_ketcher_page_carries_no_inline_script():
     outright: the frame rendered its chrome and the editor never initialized.
     The artifact id rides a data attribute for the same reason -- it is data,
     and it should not be interpolated into executable source.
+
+    Inventoried with the real HTML parser rather than a tag regex: this test
+    asserts an *absence*, so a pattern that misses `<SCRIPT>` -- or a tag split
+    across a newline -- would report the very thing it exists to catch as
+    fixed. `HTMLParser` lower-cases tag names for free.
     """
-    import re
+    from tests.test_security_headers import _ScriptInventory
 
     document = ketcher_document(
         Config(roadmap_features=RoadmapFeatureFlags(stage9_artifact_workbench=True)),
         {"artifact_id": ["art-1"]},
     ).decode("utf-8")
 
-    assert re.search(r"<script(?![^>]*\bsrc=)[^>]*>", document) is None
-    assert re.findall(r'<script[^>]*\bsrc="([^"]+)"', document) == [
-        "/static/ketcher-page.js"
-    ]
+    inventory = _ScriptInventory()
+    inventory.feed(document)
+    inventory.close()
+
+    assert None not in inventory.sources, "an inline <script> cannot be authorized"
+    assert inventory.sources == ["/static/ketcher-page.js"]
     assert 'data-artifact-id="art-1"' in document
     assert (
         Path(ketcher_document.__globals__["KETCHER_VENDOR"]).parents[1]
