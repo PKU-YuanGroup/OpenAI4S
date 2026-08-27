@@ -104,6 +104,7 @@ from openai4s.server import (
     local_auth,
     orchestration_routes,
     retrieval_source,
+    sandbox_grants,
     team_policy,
     team_routes,
     ws_frames,
@@ -183,6 +184,7 @@ from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import (
     artifact_security_headers,
     embeddable_security_headers,
+    sandboxed_artifact_security_headers,
     security_headers,
 )
 from openai4s.server.session_deletion import SessionDeletionService
@@ -12410,6 +12412,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         for origin in (getattr(cfg, "trusted_proxy_origins", ()) or ())
     )
 
+    def _app_origins() -> tuple[str, ...]:
+        """Origins allowed to frame a sandboxed artifact preview.
+
+        Both loopback names at the bound port: the operator may have opened
+        either, and the sandbox origin is deliberately *the other one*, so a
+        preview opened from `127.0.0.1` is framed by `127.0.0.1` and served
+        from `localhost`, or the reverse. Nothing else is admitted -- a
+        non-loopback deployment gets no sandboxed preview rather than a
+        `frame-ancestors` naming a host we did not verify.
+        """
+        if _bind_is_wildcard:
+            return ()
+        return tuple(
+            f"http://{host}:{_allowed_port}" for host in ("127.0.0.1", "localhost")
+        )
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "openai4s-gateway/1.0"
         protocol_version = "HTTP/1.1"
@@ -12441,7 +12459,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # truthiness: an empty profile is a caller that computed one and
             # got nothing, and silently answering that with the permissive UI
             # shell policy is the one direction this must never fail in.
-            hardened = security if security is not None else security_headers()
+            hardened = (
+                security
+                if security is not None
+                else security_headers(frame_src=_app_origins())
+            )
             for k, v in hardened.items():
                 self.send_header(k, _sanitize_header_value(v))
             for k, v in (extra or {}).items():
@@ -13245,6 +13267,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             self.close_connection = True
                             self._json({"error": "cross-origin request refused"}, 403)
                             return
+                # A grant-bearing path authenticates itself and reaches
+                # exactly one thing, so it is admitted before the session
+                # gates -- the sandbox origin has no cookie to present. It is
+                # placed above them rather than beside them so no later route
+                # addition can accidentally sit behind the same prefix.
+                if path.startswith(sandbox_grants.SANDBOX_PREFIX):
+                    if method != "GET":
+                        self._json({"error": "not found"}, 404)
+                        return
+                    self._serve_sandbox_grant(path)
+                    return
                 # Team guard (OPENAI4S_TEAM_MODE): resolves every request to a
                 # user or the loopback-CLI service identity, and *replaces*
                 # the single-credential token gate below — a member's browser
@@ -13574,7 +13607,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # its own headers instead of going through _send, so it has to
                 # opt in explicitly — and it takes the same `security` profile
                 # as `_serve_file`, or the two writers of one fact drift.
-                profile = security if security is not None else security_headers()
+                profile = (
+                    security
+                    if security is not None
+                    else security_headers(frame_src=_app_origins())
+                )
                 for key, value in profile.items():
                     self.send_header(key, _sanitize_header_value(value))
                 for key, value in (extra or {}).items():
@@ -13587,6 +13624,55 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self.wfile.write(chunk)
 
         # ---- artifact bytes --------------------------------------------
+        def _serve_sandbox_grant(self, path: str) -> None:
+            """Serve artifact bytes on the sandbox origin, under a grant.
+
+            The one route reachable without a session credential, so it is
+            written as an allowlist: a grant that verifies, a `/preview/`
+            path below it, and an artifact whose frame the grant names. Any
+            other shape is 404 with no detail -- a probe of this origin must
+            not learn whether an id exists.
+            """
+            if not _auth_token:
+                # Nothing signs grants, so none can be honoured. This is the
+                # posture where the app never offers a sandboxed preview.
+                self._json({"error": "not found"}, 404)
+                return
+            try:
+                token, remainder = sandbox_grants.split_path(path)
+                granted_frame = sandbox_grants.verify(_auth_token, token)
+            except sandbox_grants.GrantError:
+                self._json({"error": "not found"}, 404)
+                return
+            if not remainder.startswith("/preview/"):
+                self._json({"error": "not found"}, 404)
+                return
+            ident = unquote(remainder[len("/preview/") :])
+            meta = store.get_artifact(ident) or store.artifact_by_unique_filename(ident)
+            if not isinstance(meta, dict) or str(
+                meta.get("root_frame_id") or ""
+            ) != str(granted_frame):
+                # Includes the cross-frame case: a preview of one session's
+                # report resolving another session's file by name.
+                self._json({"error": "not found"}, 404)
+                return
+            target = meta.get("path") or store.resolve_artifact_path(
+                str(meta.get("artifact_id") or "")
+            )
+            if not target or not Path(target).is_file():
+                self._json({"error": "not found"}, 404)
+                return
+            ctype = meta.get("content_type") or _guess_ctype(Path(target).name)
+            if str(ident) == str(meta.get("artifact_id") or "") and str(
+                ctype
+            ).startswith("text/html"):
+                ctype = "text/html; charset=utf-8"
+            self._serve_file(
+                Path(target),
+                ctype,
+                security=sandboxed_artifact_security_headers(_app_origins()),
+            )
+
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
             # Artifact bytes are user/agent-authored and may be navigated to as
             # a top-level document, outside the Workbench iframe's sandbox.
@@ -16265,6 +16351,32 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                             }
                             for v in vs
                         ]
+                    }
+                )
+                return
+            m = re.fullmatch(r"/artifacts/([^/]+)/sandbox-grant", sub)
+            if m and method == "POST":
+                # Minted here, where the caller is authenticated, and spent on
+                # the sandbox origin, which has no credential of its own. The
+                # grant names the artifact's frame so the document's sibling
+                # files resolve and nothing else does.
+                artifact = store.get_artifact(m.group(1))
+                if not isinstance(artifact, dict):
+                    self._json({"error": "artifact not found"}, 404)
+                    return
+                self._team_guard_served_artifact(artifact)
+                if not _auth_token:
+                    # No signing secret, so no sandboxed preview exists to
+                    # grant. The client falls back to the inert preview.
+                    self._json({"error": "sandbox preview unavailable"}, 409)
+                    return
+                token = sandbox_grants.mint(
+                    _auth_token, str(artifact.get("root_frame_id") or "")
+                )
+                self._json(
+                    {
+                        "path": sandbox_grants.grant_path(token, m.group(1)),
+                        "expires_in": sandbox_grants.DEFAULT_TTL_SECONDS,
                     }
                 )
                 return

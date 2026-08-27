@@ -108,6 +108,18 @@ function apiErrorText(e) {
   const msg = (e && e.message) ? String(e.message) : String(e);
   return (e && e.requestId) ? `${msg} [${e.requestId}]` : msg;
 }
+// The origin a sandboxed artifact preview is served from: the *other* loopback
+// name at this same port, which the daemon already admits in its Host allowlist
+// and which is a distinct browser origin. Distinct is the whole point -- no
+// session cookie is sent there, and the same-origin policy, not a CSP
+// directive, is what keeps an artifact's script away from the workbench
+// document and the API. Anything other than loopback gets "" and the inert
+// preview, because we have not verified what that origin would be.
+function defaultSandboxOrigin() {
+  const other = { "127.0.0.1": "localhost", "localhost": "127.0.0.1" }[location.hostname];
+  if (!other || location.protocol !== "http:") return "";
+  return `${location.protocol}//${other}${location.port ? ":" + location.port : ""}`;
+}
 const api = async (p, o = {}) => {
   // `p` must be an internal, same-origin API path: a single leading slash and no
   // scheme/host. Rejecting "//host" (protocol-relative) and non-string input keeps
@@ -8646,6 +8658,29 @@ function renderArtifactBody(body, a) {
     renderArtifactDescriptor(body, a, compatibilityRendererDescriptor(a));
   });
 }
+// An HTML artifact is model-authored, so it runs on the sandbox origin or it
+// does not run at all. Start inert -- that is the safe state and the one that
+// survives a failed or unavailable grant -- and upgrade only once the daemon
+// has actually minted one.
+function renderHtmlPreview(content, a) {
+  const frame = el("iframe");
+  frame.setAttribute("sandbox", "");
+  frame.src = `/preview/${encodeURIComponent(a.id)}`;
+  content.appendChild(frame);
+  const note = el("p", "muted renderer-noscript", t("viewer.renderer.noscript"));
+  content.appendChild(note);
+  if (!S.sandboxOrigin) return;
+  api(`/artifacts/${encodeURIComponent(a.id)}/sandbox-grant`, { method: "POST" }).then(grant => {
+    const path = grant && typeof grant.path === "string" ? grant.path : "";
+    if (!path || path[0] !== "/" || path[1] === "/") return;
+    // `allow-same-origin` names the *sandbox* origin, not this one, so the
+    // document gets its own sibling files and still cannot reach here.
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    frame.src = S.sandboxOrigin + path;
+    note.remove();
+  }).catch(() => { /* stay inert; the note already says why */ });
+}
+
 function renderArtifactDescriptor(body, a, descriptor) {
   body.innerHTML = "";
   const renderer = descriptor.renderer || {};
@@ -8661,7 +8696,7 @@ function renderArtifactDescriptor(body, a, descriptor) {
   const url = artUrl(a); const nm = String(a.filename || "").toLowerCase();
   if (rendererId === "image") renderAnnotatableImage(content, a, url);
   else if (rendererId === "pdf") { const frame = el("iframe"); frame.dataset.currentPage = "1"; frame.src = url + "#page=1"; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "pdf", frame); }
-  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", ""); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); const note = el("p", "muted renderer-noscript", t("viewer.renderer.noscript")); content.appendChild(note); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
+  else if (rendererId === "html-preview") { renderHtmlPreview(content, a); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
   else if (rendererId === "molecule-3d") molecule(content, url, nm);
   else if (rendererId === "chemistry-2d") renderChemistry2D(content, a, url);
   else if (rendererId === "genome-track") renderGenomeTrack(content, a, url);
@@ -13320,7 +13355,7 @@ function makeColResizer(host, kind) {
 
 /* ---------- init ---------- */
 async function init() {
-  try { S.sandboxOrigin = (window.__OPERON__ || {}).sandboxOrigin || ""; } catch {}
+  try { S.sandboxOrigin = (window.__OPERON__ || {}).sandboxOrigin || defaultSandboxOrigin(); } catch {}
   paintIcons();
   document.documentElement.lang = LANG === "en" ? "en" : "zh";
   applyStaticI18n(document); refreshLangToggle();

@@ -90,7 +90,7 @@ def test_policy_never_parses_html_to_authorize_scripts():
         for name, p in parameters.items()
         if p.kind is not inspect.Parameter.KEYWORD_ONLY
     ] == []
-    assert set(parameters) == {"frame_ancestors"}
+    assert set(parameters) == {"frame_ancestors", "frame_src"}
 
 
 def test_untrusted_artifact_policy_cannot_execute_or_reach_same_origin():
@@ -165,21 +165,30 @@ def test_the_shell_itself_is_still_unframeable():
     assert security_headers()["X-Frame-Options"] == "DENY"
 
 
-def test_the_preview_says_why_it_is_static_instead_of_showing_a_dead_panel(
-    index_html,
-):
-    """A skill's interactive dashboard renders its chrome and never draws.
+def _html_preview_renderer(app_js: str) -> str:
+    """The body of `renderHtmlPreview`, where the whole decision lives."""
+    start = app_js.index("function renderHtmlPreview(")
+    end = app_js.index("function renderArtifactDescriptor(", start)
+    return app_js[start:end]
 
-    That is deliberate -- `script-src 'none'`, no `allow-scripts`, and the
-    iframe's own `sandbox=""` all agree -- but silently showing an empty canvas
-    is indistinguishable from a broken artifact. The preview has to say it.
+
+def test_the_html_preview_starts_inert_and_says_why(index_html):
+    """The safe state is the *initial* state, not a state it falls back to.
+
+    A grant can be unavailable (no signing secret), refused, or simply slow.
+    Building the frame inert and upgrading only on success means every one of
+    those paths ends somewhere safe without a single error branch having to
+    remember to. While it is inert it says so, because an interactive
+    dashboard that renders its chrome and never draws is indistinguishable
+    from a corrupt artifact.
     """
     app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
-    preview_line = next(
-        line for line in app_js.splitlines() if 'rendererId === "html-preview"' in line
-    )
+    body = _html_preview_renderer(app_js)
 
-    assert 't("viewer.renderer.noscript")' in preview_line
+    inert = body.index('frame.setAttribute("sandbox", "")')
+    upgrade = body.index('frame.setAttribute("sandbox", "allow-scripts')
+    assert inert < upgrade, "the frame must be built inert before any upgrade"
+    assert 't("viewer.renderer.noscript")' in body
     for language_marker in (
         '"viewer.renderer.noscript": "预览不执行脚本',
         '"viewer.renderer.noscript": "This preview runs no scripts',
@@ -187,15 +196,42 @@ def test_the_preview_says_why_it_is_static_instead_of_showing_a_dead_panel(
         assert language_marker in app_js, "the note must exist in both languages"
 
 
-def test_html_preview_iframe_does_not_reenable_artifact_capabilities(index_html):
-    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
-    preview_line = next(
-        line for line in app_js.splitlines() if 'rendererId === "html-preview"' in line
-    )
+def test_scripts_are_only_ever_enabled_against_the_sandbox_origin(index_html):
+    """The load-bearing assertion of the whole sandbox-origin design.
 
-    assert 'frame.setAttribute("sandbox", "")' in preview_line
-    assert "allow-scripts" not in preview_line
-    assert "allow-forms" not in preview_line
+    `allow-scripts` on a *same-origin* frame would hand model-authored HTML
+    the session cookie and `parent.document`. It is admissible only because
+    the document is served from another origin, so the two must be
+    inseparable: the upgrade sits behind the `S.sandboxOrigin` guard and sets
+    the src from it.
+    """
+    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
+    body = _html_preview_renderer(app_js)
+
+    guard = body.index("if (!S.sandboxOrigin) return;")
+    upgrade = body.index('frame.setAttribute("sandbox", "allow-scripts')
+    src = body.index("frame.src = S.sandboxOrigin + path;")
+    assert guard < upgrade < src
+
+    # And nowhere else in the client.
+    enabling = [
+        line
+        for line in app_js.splitlines()
+        if "allow-scripts" in line and "sandbox" in line
+    ]
+    assert len(enabling) == 1, f"allow-scripts appears outside the upgrade: {enabling}"
+
+
+def test_the_sandbox_origin_is_a_different_loopback_name(index_html):
+    """Distinctness is the security property; loopback is the safety bound."""
+    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
+    start = app_js.index("function defaultSandboxOrigin()")
+    body = app_js[start : app_js.index("const api = async", start)]
+
+    assert '"127.0.0.1": "localhost"' in body and '"localhost": "127.0.0.1"' in body
+    # Anything else gets "" and the inert preview rather than an origin we
+    # have not verified.
+    assert 'if (!other || location.protocol !== "http:") return "";' in body
 
 
 def test_connect_src_is_same_origin_only():

@@ -5180,6 +5180,51 @@ def test_preview_route_forces_html_content_type(tmp_path):
     assert security["X-Frame-Options"] == "SAMEORIGIN"
 
 
+def test_a_sandbox_grant_is_minted_scoped_and_spendable(tmp_path):
+    """The grant route, and the scope that makes the sandbox origin safe.
+
+    The whole reason an artifact may execute is that the origin serving it
+    holds no credential of its own -- so this route is the credential, and a
+    grant that named more than one session would hand a model-authored script
+    a way to read the rest of them.
+    """
+    from openai4s.server import sandbox_grants
+
+    cfg, runner, store, fid, st = _runner_frame(tmp_path)
+    handler, sends = _bytes_handler(cfg, runner)
+    handler.headers = _auth_headers(cfg)
+    replies: list[tuple] = []
+    handler._json = lambda payload, code=200: replies.append((code, payload))
+
+    report = st.workspace / "report.html"
+    report.write_text("<html><script>1</script></html>")
+    rec = runner._register_file(st, report, "c1", lambda e: None)
+
+    try:
+        handler.path = f"/api/v1/artifacts/{rec['artifact_id']}/sandbox-grant"
+        handler._route("POST")
+        code, payload = replies[-1]
+        assert code == 200, payload
+        assert payload["expires_in"] == sandbox_grants.DEFAULT_TTL_SECONDS
+
+        token, remainder = sandbox_grants.split_path(payload["path"])
+        assert remainder == f"/preview/{rec['artifact_id']}"
+        # The grant names the artifact's session and nothing wider.
+        from openai4s.server import local_auth
+
+        secret = local_auth.load_or_mint(cfg.data_dir)
+        assert sandbox_grants.verify(secret, token) == str(
+            store.get_artifact(rec["artifact_id"])["root_frame_id"]
+        )
+
+        # And an artifact that does not exist mints nothing to probe with.
+        handler.path = "/api/v1/artifacts/a-nope/sandbox-grant"
+        handler._route("POST")
+        assert replies[-1][0] == 404
+    finally:
+        runner.close()
+
+
 def test_send_serializes_only_the_artifact_security_profile(tmp_path):
     """The final HTTP writer must not add the UI shell's DENY/CSP headers.
 

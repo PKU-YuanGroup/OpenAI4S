@@ -97,6 +97,7 @@ gateway.py
 | [`response_capture.py`](response_capture.py) | 观测各 route 真实返回了什么，并固化进 [`docs/response-schemas.json`](../../docs/response-schemas.json)。它从外面包住 `make_handler` 的 `_api`，而不是在 `_json` 里挂钩子：gateway 测试会把 `handler._json` 换成自己的收集器，钩在真正的 `_json` 里会漏掉几乎所有 route，却看起来在正常工作。这里没有任何代码跑在生产路径上。字段**类型**随宿主机变化的子树（内核的 `sandbox` 块：能强制 sandbox 时 `backend` 是字符串，不能时是 null）记为不透明而不予固化——固化它等于把捕获时那台机器钉进契约，然后判定其他每一台机器都是破坏性变更。这份清单只收「类型随宿主机变化」的子树，不是给形状不方便的 route 停车用的。 |
 | [`response_schema.py`](response_schema.py) | 一套小而明确的形状代数（类型、必填键、元素形状），零依赖，因为 core 只用标准库。它回答的是「这个响应的形状变了吗」；它不是 JSON Schema draft-2020-12，也不假装是。 |
 | [`reviews.py`](reviews.py) | 先攒出一次科学审阅所依据的有界证据包，再把这次审阅推到结果。整个过程可取消，结果会落到持久化、用量记账和公开的审阅事件上。 |
+| [`sandbox_grants.py`](sandbox_grants.py) | sandbox origin 上提供 Artifact 字节所用的能力凭证。调用方已通过鉴权的应用源负责签发；不持有任何 cookie 的 sandbox origin 只认这一种凭证。token 放在**路径**段而不是 query 或 cookie 里，文档中的相对子资源因此会自动带上它；一份 grant 只指定一个 frame 和一个截止时间，于是同目录文件能解析、别的会话的 Artifact 不能。签名用的是 daemon 自己的 access token，因此不需要再存或轮换第二份密钥。 |
 | [`security_headers.py`](security_headers.py) | 作用于每个响应的静态 CSP 与加固响应头。所有可执行 UI 代码都放在同源文件中，因此 `script-src` 不需要 `'unsafe-inline'`，也不需要通过重新解析 HTML 动态生成 hash/nonce。 |
 | [`session_branching.py`](session_branching.py) | 让一个会话长出分支所需的全部动作：打 checkpoint、隔离 fork、预览 revert、激活分支，以及把 revert/undo 历史只追加地记下来。revert 从不改写旧的 checkpoint：它先把当前状态记成撤销目标；如果当前 head 之后有外部文件被改动，这次操作会记为 `conflict`，一个字节都不会动。 |
 | [`session_deletion.py`](session_deletion.py) | 会话被持久删除后的清理。会话聚合、工作区、按 root 隔离的 kernel Artifact 输入缓存、快照/CAS 引用和进程内状态都会清掉，而这个会话自己 scope 之外的东西一概不碰。 |
