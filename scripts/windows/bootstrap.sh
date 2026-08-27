@@ -367,7 +367,16 @@ cli)
     echo "not installed: $APP" >&2
     exit 1
   fi
-  configure_fake_ip_dns
+  # The Fake-IP verdict only matters to a command that can make an outbound
+  # request. `status`, `url` and `stop` cannot, and on the very machines this
+  # feature exists for -- a Clash/TUN resolver in 198.18/15 -- probing first
+  # would block each of them on a third-party lookup. `stop` in particular is
+  # the command that has to work when DNS is the thing that is wedged. Anything
+  # not named here still gets the probe, so a new subcommand fails safe.
+  case "${1:-}" in
+    status|url|stop|--help|-h|help) ;;
+    *) configure_fake_ip_dns ;;
+  esac
   exec "$APP/bin/openai4s" "$@"
   ;;
 

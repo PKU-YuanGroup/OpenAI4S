@@ -79,9 +79,10 @@ $FakeIpDnsMode = if ($env:OPENAI4S_WSL_FAKE_IP_DNS) {
 $WslLogPath = if ($WslDataDir) {
     "$WslDataDir/logs/app.out"
 } else {
-    # `$HOME`, not `~`: this string is emitted inside an `sh -lc` command, and
-    # sh expands the variable where a tilde inside quotes stays literal.
-    '$HOME/.openai4s/logs/app.out'
+    # A tilde, because the command this ends up in runs through WSL's default
+    # shell, which expands it. Neither cmd.exe nor PowerShell touches a bare
+    # `~` on the way there, where both would substitute `$HOME`.
+    '~/.openai4s/logs/app.out'
 }
 $PypiIndex = if ($env:OPENAI4S_WSL_PYPI_INDEX) {
     $env:OPENAI4S_WSL_PYPI_INDEX
@@ -136,7 +137,15 @@ function Open-AppUrl([string] $appUrl) {
 }
 
 function Get-WslLogCommand([string] $Distro) {
-    return "wsl -d `"$Distro`" --exec sh -lc 'tail -40 `"$WslLogPath`"'"
+    # No `--exec` and no inner `sh -lc`: without `--exec`, wsl.exe runs the line
+    # through the distribution's default shell, so `~` still expands and the
+    # command needs no single quotes. That matters because `OpenAI4S.cmd` is a
+    # cmd.exe wrapper -- cmd does not treat `'` as quoting, so the previous
+    # form pasted back as `sh -lc 'tail` and died on an unterminated string, in
+    # all four of the fatal paths that print it. Double quotes around the
+    # distribution name are honoured by cmd and PowerShell alike, and
+    # `Assert-WslDataDir` refuses whitespace so the path never needs any.
+    return "wsl -d `"$Distro`" -- tail -40 $WslLogPath"
 }
 
 function Set-UrlHost([string] $Url, [string] $NewHost) {
@@ -518,11 +527,14 @@ function Assert-WslDataDir([string] $Value) {
     # Quoting and expansion characters are refused, not escaped: the value is
     # interpolated into sh command strings (Test-DistroHasInstall) where a
     # quote or `$` would change what the shell runs.
+    # Whitespace is refused for the same reason as the quoting characters, not
+    # a stricter one: `Get-WslLogCommand` prints this path as a command the user
+    # is meant to paste into cmd.exe, where a space would split it in two.
     if (-not $Value.StartsWith('/') -or $Value -eq '/' -or $parts -contains '..' -or
-        $Value -match "[`r`n]" -or
+        $Value -match '\s' -or
         $Value.IndexOfAny([char[]] @('"', "'", '`', '$', '\')) -ge 0) {
         Stop-WithGuidance 'OPENAI4S_WSL_DATA_DIR must be a specific absolute Linux path.' @(
-            'Example: /home/me/.openai4s  (no quotes, backslashes, or $)'
+            'Example: /home/me/.openai4s  (no spaces, quotes, backslashes, or $)'
         )
     }
 }
@@ -749,6 +761,21 @@ if (-not (Test-SandboxIndependentCli $Arguments)) {
 if ($Arguments -and $Arguments.Count -gt 0) {
     $code = Invoke-Bootstrap $distro $bootstrap (@('install', $payloadLinux, $facts.Digest, $facts.BundleDir))
     if ($code -ne 0) { exit $code }
+    if ($BindHost -ne $ClientHost) {
+        # `openai4s url` and `status` can only render the host the daemon was
+        # told to BIND, and a wildcard renders as `localhost` -- the one address
+        # Windows cannot reach with localhostForwarding=false. Those are the
+        # exact commands the docs send the user to when the browser will not
+        # open, so re-authority what they print, the same way the auto-open path
+        # already does. Buffered rather than streamed only on this branch, which
+        # is the branch that is otherwise wrong.
+        $result = Invoke-BootstrapCapture $distro $bootstrap (@('cli', $facts.BundleDir) + $Arguments)
+        $loopback = "http://(localhost|127\.0\.0\.1):$AppPort"
+        foreach ($line in $result.Lines) {
+            Write-Host ([regex]::Replace($line, $loopback, "http://${ClientHost}:$AppPort"))
+        }
+        exit $result.ExitCode
+    }
     exit (Invoke-Bootstrap $distro $bootstrap (@('cli', $facts.BundleDir) + $Arguments))
 }
 

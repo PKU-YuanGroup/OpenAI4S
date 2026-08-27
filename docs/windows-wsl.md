@@ -121,6 +121,11 @@ openai4s stop
 
 `status` 和 `url` 会读取当前守护进程记录的实际监听地址，因此显式关闭
 `localhostForwarding` 后改用 WSL IPv4 时也不需要重复设置 `OPENAI4S_HOST`。
+这条记录的是**绑定**地址：显式指定 `OPENAI4S_HOST=0.0.0.0` 时它就是通配符，
+CLI 会按容器语义渲染成 `localhost`——而在关闭 localhost 转发的 Windows 上正好
+不可达。所以经 `OpenAI4S.cmd` 走这两条命令时，启动器会把打印出来的回环地址
+改写成可路由的 WSL IPv4；在 WSL 内部直接调用 `openai4s url` 则仍会得到
+`localhost`，那在 WSL 内部本来就是对的。
 
 也可以从 PowerShell 直接让 WSL 后台启动：
 
@@ -216,7 +221,7 @@ $env:OPENAI4S_WSL_PROXY = 'http://172.24.128.1:7897'
 | `bubblewrap ... required` | 在 Ubuntu 24.04 中通过国内 APT 镜像安装 `bubblewrap`。 |
 | `bubblewrap ... cannot create` | 检查 `wsl -l -v`，并确认系统策略没有禁用 user/network namespace。 |
 | 端口被占用 | 设置 `$env:OPENAI4S_PORT='8080'` 后重新启动。 |
-| 浏览器打不开 | 先运行 `.\OpenAI4S.cmd status`，再运行 `.\OpenAI4S.cmd url`；启动器可自动处理显式的 `localhostForwarding=false`，其他转发故障可删除该配置后运行 `wsl --shutdown`。 |
+| 浏览器打不开 | 先运行 `.\OpenAI4S.cmd status`，再运行 `.\OpenAI4S.cmd url`（务必经 `OpenAI4S.cmd`，它会把通配符绑定打印出的回环地址改写成可路由地址）；启动器可自动处理显式的 `localhostForwarding=false`，其他转发故障可删除该配置后运行 `wsl --shutdown`。 |
 | 服务启动后退出 | 查看 `wsl -d Ubuntu-24.04 -- tail -80 ~/.openai4s/logs/app.out`。 |
 | WSL 提示 localhost 代理未镜像 | 按上一节启用 mirrored networking，或使用允许局域网连接的 Windows 网关地址。 |
 | 公开域名被报为 `private/loopback` | 重新通过 Windows 启动器启动；默认 Fake-IP `auto` 模式会安全识别 `198.18.0.0/15`。若曾显式关闭，可清除 `OPENAI4S_WSL_FAKE_IP_DNS` 或设为 `auto`。 |
@@ -289,7 +294,13 @@ openai4s stop
 
 `status` and `url` read the live endpoint recorded by the daemon, so the WSL
 IPv4 fallback for an explicit `localhostForwarding=false` needs no repeated
-`OPENAI4S_HOST` setting.
+`OPENAI4S_HOST` setting. What the daemon records is the **bind** address, which
+for an explicit `OPENAI4S_HOST=0.0.0.0` is the wildcard, and the CLI renders
+that as `localhost` — correct inside WSL and in a container, and precisely the
+address Windows cannot reach with forwarding off. So when these two run through
+`OpenAI4S.cmd`, the launcher rewrites the loopback authority it prints to the
+routable WSL IPv4; `openai4s url` called directly inside WSL still says
+`localhost`, which is right there.
 
 ### Proxy note
 

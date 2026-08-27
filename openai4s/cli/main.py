@@ -658,7 +658,10 @@ def cmd_serve(args) -> int:
         # peek keeps the common "already running" answer immediate.
         existing = _read_pid(cfg)
         if existing and _daemon_alive(cfg, existing):
-            print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+            print(
+                f"daemon already running (pid {existing}) at "
+                f"{_url(cfg, endpoint=_live_endpoint(cfg))}"
+            )
             return 1
         return _cmd_serve_detached(args, cfg)
     # Atomically claim the singleton, covering the whole boot. A plain
@@ -669,7 +672,10 @@ def cmd_serve(args) -> int:
     if not _acquire_singleton(cfg):
         existing = _read_pid(cfg)
         if existing and _daemon_alive(cfg, existing):
-            print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+            print(
+                f"daemon already running (pid {existing}) at "
+                f"{_url(cfg, endpoint=_live_endpoint(cfg))}"
+            )
         else:
             print(
                 "another `openai4s serve` is starting on this data dir; "

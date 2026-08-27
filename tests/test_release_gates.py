@@ -1254,6 +1254,16 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     assert "$fields = $text -split '\\s{2,}'" in launcher
     assert "@($fields[0..($fields.Count - 3)]) -join ' '" in launcher
     assert "Get-WslLogCommand" in launcher
+    # The guidance command is printed for a user to paste, and `OpenAI4S.cmd`
+    # is a cmd.exe wrapper: no inner `sh -lc`, so no single quotes cmd would
+    # not honour, and no whitespace in the data dir to need any.
+    assert 'return "wsl -d `"$Distro`" -- tail -40 $WslLogPath"' in launcher
+    assert "$Value -match '\\s'" in launcher
+    # `url`/`status` render the BIND host, which for a wildcard is `localhost`
+    # -- unreachable from Windows with forwarding off. The passthrough
+    # re-authorities what they print, not just the auto-open URL.
+    assert '$loopback = "http://(localhost|127\\.0\\.0\\.1):$AppPort"' in launcher
+    assert "[regex]::Replace($line, $loopback" in launcher
     assert 'wsl --set-version `"$($named.Name)`" 2' in launcher
     assert "$BindHost" in launcher
     assert "$ClientHost" in launcher
@@ -1288,6 +1298,9 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     assert "configure_fake_ip_dns" in bootstrap
     assert "OPENAI4S_ALLOW_FAKE_IP_DNS" in bootstrap
     assert "198.18.*|198.19.*" in bootstrap
+    # No third-party DNS lookup in front of a command that cannot egress --
+    # `stop` most of all, which has to work when DNS is what is wedged.
+    assert "status|url|stop|--help|-h|help) ;;" in bootstrap
     assert "--no-browser" in bootstrap
     assert "--detached" in bootstrap
     # User-edited mirror files survive relaunch, and explicit `off` has a real
