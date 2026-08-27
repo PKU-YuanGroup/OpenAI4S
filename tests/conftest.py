@@ -92,6 +92,17 @@ os.environ["OPENAI4S_ALLOW_PRIVATE_FETCH"] = "0"
 # self-test would round-trip through it on top. Tests that mean to exercise a
 # keychain backend construct it explicitly.
 os.environ["OPENAI4S_SECRET_STORE"] = "plaintext"
+# The Volcengine bridge resolves `arkcli` from PATH when no path is configured,
+# and the response-contract sweep drives the /volcengine/* routes against the
+# real service. On a machine that installed the CLI (the startup guide's own
+# advice), the "offline" suite would spawn real arkcli subprocesses — including
+# `auth login --no-browser`, a live SSO round trip — and a schema capture would
+# freeze that machine's account state into docs/response-schemas.json. Pinning
+# the configured path to a nonexistent sentinel makes executable() resolve to
+# "" everywhere, so every test and capture records the deterministic
+# "not installed" projection. Tests that exercise the bridge inject their own
+# executable or runner explicitly.
+os.environ["OPENAI4S_ARKCLI_PATH"] = "/nonexistent/openai4s-offline-arkcli"
 # Nothing in the offline suite may reach the real telemetry endpoint, for the
 # same reason the share relay is cleared below — and this one is not
 # hypothetical. A benchmark case granted consent to itself, sealed a payload
@@ -165,6 +176,8 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI4S_ALLOW_PRIVATE_FETCH", "0")
     # Never the developer's real keychain — see the module-level default.
     monkeypatch.setenv("OPENAI4S_SECRET_STORE", "plaintext")
+    # Never the developer's real Ark CLI — see the module-level default.
+    monkeypatch.setenv("OPENAI4S_ARKCLI_PATH", "/nonexistent/openai4s-offline-arkcli")
     # Re-applied per test: a test that overrode the endpoint for its own reasons
     # must not leave the next one pointed at the real host. See the module-level
     # default for why this is set at all.

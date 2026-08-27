@@ -25,7 +25,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
+      "evidence_digest": "f89245edd204c074cc38b9790ece05f7f0a0f5778062623cbfc47b0bc6b9a919"
     },
     {
       "source": "R1",
@@ -135,7 +135,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
+      "evidence_digest": "f89245edd204c074cc38b9790ece05f7f0a0f5778062623cbfc47b0bc6b9a919"
     },
     {
       "source": "R2",
@@ -731,7 +731,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
+      "evidence_digest": "f89245edd204c074cc38b9790ece05f7f0a0f5778062623cbfc47b0bc6b9a919"
     },
     {
       "source": "R7",
