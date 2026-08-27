@@ -98,11 +98,14 @@ class BundleCheckError(RuntimeError):
 # --------------------------------------------------------------------------
 
 
-def manifest_packages() -> list[tuple[str, str]]:
+def manifest_packages(arch: str | None = None) -> list[tuple[str, str]]:
     """``(pip-name, import-name)`` for every package the builders pre-bake.
 
     Read from the same manifest the build scripts install from, so the package
-    set a verifier enforces is exactly the one that was bundled.
+    set a verifier enforces is exactly the one that was bundled. When ``arch``
+    is given, lines annotated ``skip_arch=<arch>`` are excluded — the builders
+    drop them for targets that have no wheel, so the verifier must not demand
+    them there.
     """
     if not MANIFEST.is_file():
         raise BundleCheckError(f"missing package manifest {MANIFEST}")
@@ -114,14 +117,16 @@ def manifest_packages() -> list[tuple[str, str]]:
         parts = line.split()
         if len(parts) < 2:
             raise BundleCheckError(f"manifest line missing import name: {raw!r}")
+        if arch is not None and f"skip_arch={arch}" in parts[2:]:
+            continue
         packages.append((parts[0], parts[1]))
     if not packages:
         raise BundleCheckError("package manifest lists no packages")
     return packages
 
 
-def bundled_imports() -> list[str]:
-    return [import_name for _, import_name in manifest_packages()]
+def bundled_imports(arch: str | None = None) -> list[str]:
+    return [import_name for _, import_name in manifest_packages(arch)]
 
 
 # --------------------------------------------------------------------------

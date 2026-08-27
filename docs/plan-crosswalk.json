@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "b9911be7d097c988d5e38e578547bd2e13cb84d1ee97d4a9380008f9effc09bb"
+      "evidence_digest": "6ee033426db4ee3f9161d41d6d5d395d687034e2a5a467e9af4032ef6390bc3d"
     },
     {
       "source": "R7",

@@ -498,7 +498,7 @@ async function selfTest() {
     const envRoot = path.join(owned.dataDir, "fixture-envs");
     const prepared = runFixture(["prepare", "--env-root", envRoot]);
     const readiness = runFixture(["inspect-readiness", "--env-root", envRoot]);
-    assertion(JSON.stringify(prepared.required_package_counts) === JSON.stringify({ python: 32, r: 8 }), "fixture dependency counts changed");
+    assertion(JSON.stringify(prepared.required_package_counts) === JSON.stringify({ python: 33, r: 8 }), "fixture dependency counts changed");
     assertion(readiness.ready === true && readiness.state === "ready", "production readiness did not accept fixture metadata");
     assertion((readiness.missing_environments || []).length === 0, "fixture has a missing environment");
     assertion(Object.keys(readiness.missing_packages || {}).length === 0, "fixture has a missing package");
@@ -550,7 +550,7 @@ async function runAcceptance() {
     owned = createOwnedDataDir();
     const envRoot = path.join(owned.dataDir, "fixture-envs");
     const prepared = runFixture(["prepare", "--env-root", envRoot]);
-    assertion(prepared.required_package_counts?.python === 32 && prepared.required_package_counts?.r === 8, "standard metadata fixture is incomplete");
+    assertion(prepared.required_package_counts?.python === 33 && prepared.required_package_counts?.r === 8, "standard metadata fixture is incomplete");
 
     const port = await allocateLoopbackPort();
     const base = validateLoopbackUrl(`http://127.0.0.1:${port}/`);

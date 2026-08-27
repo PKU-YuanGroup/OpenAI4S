@@ -381,7 +381,7 @@ def verify(target: Path) -> None:
         version = _check_version(app, src)
         _, arch = _archive_arch(app)
         skills = check_sources(src)
-        imports = bundled_imports()
+        imports = bundled_imports(arch)
         present = _check_stack_present(app, imports)
         compiled = check_bytecode([src, app / "runtime" / "lib"])
         icons = _check_icons(app)
