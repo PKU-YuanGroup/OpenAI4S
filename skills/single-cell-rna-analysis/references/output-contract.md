@@ -5,7 +5,11 @@
 Persist `preflight.json`, `01_qc.h5ad`, `02_embedding.h5ad`,
 `03_clustering.h5ad`, `04_annotation.h5ad`, and final `analysis.h5ad` as stages
 complete. `run_manifest.json` records state for preflight, QC, embedding,
-clustering, annotation and statistics.
+clustering, annotation and statistics. Checkpoints `03`, `04`, and
+`analysis.h5ad` are derived files: they share the compressed matrix payload of
+their upstream stage and rewrite only the slots that stage changed (`obs` and
+`uns`; plus `obsm` for `analysis.h5ad`), because clustering, annotation, and
+the final stamp never modify X, layers, raw, var, obsp, or varm.
 
 Each stage records the SHA-256 of its effective configuration slice and input
 fingerprint. `resume(run_dir)` reloads `config.resolved.json`, rehashes inputs,

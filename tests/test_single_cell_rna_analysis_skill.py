@@ -801,6 +801,48 @@ def test_deterministic_synthetic_run_preserves_counts_and_resumes(tmp_path, kern
 
 
 @pytest.mark.slow
+def test_derived_checkpoints_share_the_matrix_payload(tmp_path, kernel):
+    ad = pytest.importorskip("anndata")
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("scanpy")
+    pytest.importorskip("skmisc")
+    source = ad.read_h5ad(_synthetic_h5ad(tmp_path))
+    source.obs = pd.DataFrame(index=source.obs_names.copy())
+    path = tmp_path / "descriptive.h5ad"
+    source.write_h5ad(path)
+    config = _descriptive_config(path)
+    config["clustering"] = {
+        "resolutions": [0.5],
+        "selected_resolution": 0.5,
+        "n_neighbors": 8,
+        "n_pcs": 12,
+    }
+    run_dir = tmp_path / "run"
+    result = kernel.run(config, run_dir)
+    assert result["status"] == "completed"
+
+    def dense(value):
+        return value.toarray() if hasattr(value, "toarray") else np.asarray(value)
+
+    embedded = ad.read_h5ad(run_dir / "02_embedding.h5ad")
+    for name in ("03_clustering.h5ad", "04_annotation.h5ad", "analysis.h5ad"):
+        derived = ad.read_h5ad(run_dir / name)
+        # Derived checkpoints rewrite obs/uns (and obsm for the final file)
+        # in place; the matrix payload must stay byte-equal upstream data.
+        assert np.array_equal(dense(derived.X), dense(embedded.X)), name
+        assert np.array_equal(
+            dense(derived.layers["counts"]), dense(embedded.layers["counts"])
+        ), name
+        assert derived.raw is not None, name
+    clustered = ad.read_h5ad(run_dir / "03_clustering.h5ad")
+    assert "cluster" in clustered.obs
+    final = ad.read_h5ad(run_dir / "analysis.h5ad")
+    assert final.uns["openai4s"]["analysis_mode"] == "descriptive"
+    assert "X_umap" in final.obsm
+
+
+@pytest.mark.slow
 def test_resume_drops_warnings_from_recomputed_stages(tmp_path, kernel):
     ad = pytest.importorskip("anndata")
     pytest.importorskip("scanpy")

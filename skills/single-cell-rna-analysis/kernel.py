@@ -920,6 +920,38 @@ def _read_one(path: str, matrix_format: str, counts_layer: str, sc: Any) -> Any:
     return adata
 
 
+def _derive_h5ad(
+    source: Path, destination: Path, adata: Any, keys: tuple[str, ...]
+) -> None:
+    """Write a checkpoint that differs from ``source`` only in ``keys``.
+
+    Clustering, annotation, and the final stamp never touch X, layers, raw,
+    var, obsp, or varm, so re-serializing (and re-gzipping) the full matrix
+    for each derived checkpoint is pure waste: copy the already-compressed
+    source file and rewrite the small changed slots in place.
+    """
+    import h5py
+
+    try:
+        from anndata.io import write_elem
+    except ImportError:  # anndata < 0.11
+        from anndata.experimental import write_elem
+
+    shutil.copyfile(source, destination)
+    payload = {
+        "obs": lambda: adata.obs,
+        "uns": lambda: dict(adata.uns),
+        "obsm": lambda: dict(adata.obsm),
+    }
+    with h5py.File(destination, "r+") as handle:
+        for key in keys:
+            if key in handle:
+                del handle[key]
+            write_elem(
+                handle, key, payload[key](), dataset_kwargs={"compression": "gzip"}
+            )
+
+
 def _load_data(
     config: Mapping[str, Any], np: Any, pd: Any, sc: Any, ad: Any
 ) -> tuple[Any, list[str]]:
@@ -2057,7 +2089,12 @@ def _run(
 
         if resume_index <= stage_order.index("clustering"):
             clustered = _run_clustering(embedded, resolved, sc)
-            clustered.write_h5ad(output / STAGE_FILES["clustering"], compression="gzip")
+            _derive_h5ad(
+                output / STAGE_FILES["embedding"],
+                output / STAGE_FILES["clustering"],
+                clustered,
+                keys=("obs", "uns"),
+            )
             cluster_columns = [
                 column
                 for column in clustered.obs.columns
@@ -2102,7 +2139,12 @@ def _run(
                 tables / "annotation_assignments.csv", index=False
             )
             annotated.uns["openai4s_annotation_status"] = annotation_status
-            annotated.write_h5ad(output / STAGE_FILES["annotation"], compression="gzip")
+            _derive_h5ad(
+                output / STAGE_FILES["clustering"],
+                output / STAGE_FILES["annotation"],
+                annotated,
+                keys=("obs", "uns"),
+            )
             manifest["stages"]["annotation"] = "completed"
             _checkpoint_manifest()
         else:
@@ -2172,7 +2214,14 @@ def _run(
             "annotation_status": annotation_status,
             "statistics_status": manifest["statistics_status"],
         }
-        annotated.write_h5ad(output / "analysis.h5ad", compression="gzip")
+        # obsm too: Milo's neighborhood scaffolding lands there and was always
+        # part of the published object.
+        _derive_h5ad(
+            output / STAGE_FILES["annotation"],
+            output / "analysis.h5ad",
+            annotated,
+            keys=("obs", "uns", "obsm"),
+        )
         _plot_outputs(annotated, output, pd)
         _sync_warnings()
         manifest["status"] = (
