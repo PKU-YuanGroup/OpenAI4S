@@ -40,6 +40,53 @@ RDKit is not required to plan, rank, or review routes. If the chemistry extra is
 unavailable on the current platform, omit it; the dashboard falls back to
 transparent local SVG placeholders while the rest of the skill remains usable.
 
+## Scenario 2 benchmark contract
+
+For a frozen target set, stock, route budget, and private reference routes, use
+`multistep_benchmark.py`. Call `validate_targets` and `normalize_stock`, run the
+planner, then pass its complete output through `normalize_planner_outputs` and
+`evaluate_routes`. The verifier recomputes solution state using molecule-OR and
+reaction-AND semantics; a backend `solved=true` flag is never trusted. Preserve
+search statistics, termination reason, failed routes, duplicates, and budget
+violations in the intermediate artifact.
+
+## Cross-model route admission gate
+
+Treat planner `solved=true` as stock closure, not reaction feasibility. For a
+route proposed for deeper review, freeze one route before validation and apply
+these independent checks to every reaction node:
+
+1. map the fixed reactant/product pair and flag low mapping confidence;
+2. generate condition hypotheses as complete joint beams, without inventing
+   temperature or missing slots;
+3. run forward Top-K prediction using a predeclared condition beam and compare
+   canonical products;
+4. preserve invalid products, model disagreement, low policy probability, and
+   low template occurrence as failures rather than reranking them away;
+5. reject or hold the whole route when a critical step lacks forward support.
+
+Bounded diagnostics may compare no-condition input with a fixed number of
+condition beams, but must not search conditions indefinitely until the intended
+product appears. Record the tested budget and every result. Never report a
+route as experimentally ready merely because all leaves are in stock. Do not
+run a quarantined yield model or use its number to rescue a failed route.
+
+## Path and reproducibility hygiene
+
+Keep public artifacts path-free. Use `OPENAI4S_REPOSITORY`,
+`OPENAI4S_RETRO_MODEL_ROOT`, `OPENAI4S_RETRO_DATA_ROOT`, and
+`OPENAI4S_RETRO_RUN_DIR` at execution time; do not serialize usernames, home
+directories, mount points, temporary directories, credentials, or environment
+prefixes into reports. Model manifests should contain logical artifact IDs,
+versions, licenses, sizes, and hashes.
+
+Before sharing a reproducibility ZIP, use `reproducibility_bundle.py` to scan a
+prepared path-free directory and build a deterministic archive. Include source,
+configuration, environment specifications, manifests, summaries, and bounded
+result JSON. Exclude checkpoints, stocks, caches, credentials, and complete
+binary environments unless redistribution is explicitly authorized. A binary
+environment archive is not a substitute for an environment specification.
+
 ## Capability summary
 
 This skill implements multi-step search plus route-review support:
@@ -88,15 +135,48 @@ and a render-then-verify QA pass.
 Create the backend once outside OpenAI4S:
 
 ```bash
-conda create -n retro python=3.11 -y
-conda activate retro
-python -m pip install "aizynthfinder[all]"
-mkdir -p ~/Documents/Openai4S/retro_data
-download_public_data ~/Documents/Openai4S/retro_data
+MODEL_ROOT="$PWD/models"
+uv run python skills/retrosynthesis_planning/reaction_model_deployment.py plan \
+  aizynthfinder-4.4.1 --root "$MODEL_ROOT"
+conda create --prefix "$MODEL_ROOT/envs/aizynthfinder-4.4.1" python=3.11 pip -y
+conda run --prefix "$MODEL_ROOT/envs/aizynthfinder-4.4.1" \
+  python -m pip install "aizynthfinder[all]==4.4.1"
+conda run --prefix "$MODEL_ROOT/envs/aizynthfinder-4.4.1" \
+  download_public_data "$MODEL_ROOT/artifacts/aizynthfinder-4.4.1"
 ```
 
-The public-data command writes a `config.yml` file. Keep model files and stock
-files out of git.
+The public-data command writes a `config.yml` file. Snapshot the whole policy,
+template, filter, stock, and config tree with `reaction_model_deployment.py
+snapshot`, and verify that manifest before each benchmark. The registry pins
+AiZynthFinder 4.4.1, its release commit, and the PyPI wheel SHA-256. Public-data
+files remain separately versioned artifacts whose terms and hashes must be
+reviewed after download. Keep environments, caches, models, and stock out of git.
+
+The isolated JSON backend now executes the search directly, so Scenario 2 does
+not need to scrape the CLI. Supply a manifest whose SHA-256 identifies the whole
+reviewed public-data snapshot:
+
+```python
+from retrosynthesis_planning.reaction_model_backends import ReactionModelBackend
+
+planner = ReactionModelBackend(
+    "aizynthfinder",
+    manifest="/models/aizynthfinder/model-manifest.json",
+    python_command=("/models/aizynthfinder/env/bin/python",),
+    timeout_seconds=1800,
+)
+search = planner.plan_routes(
+    [{"target_id": "target-01", "target_smiles": "CC(=O)Oc1ccccc1C(=O)O"}],
+    config_path="/models/aizynthfinder/config.yml",
+    max_routes=10,
+)
+```
+
+The result already uses the Scenario 2 boundary: one record per target with
+`routes`, `termination_reason`, and `search_stats`. An individual target failure
+returns `termination_reason="backend_error"` and a scrubbed diagnostic while
+the remaining batch continues. The evaluator must still recompute solved state
+with reaction-AND/molecule-OR semantics; it must not trust backend metadata.
 
 ## Import
 

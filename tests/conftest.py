@@ -86,6 +86,7 @@ os.environ["OPENAI4S_LLM_API_KEY"] = "test-key"
 os.environ["OPENAI4S_UNATTENDED_APPROVAL"] = "deny"
 os.environ["OPENAI4S_NOTEBOOK_REPL"] = "0"
 os.environ["OPENAI4S_ALLOW_PRIVATE_FETCH"] = "0"
+os.environ["OPENAI4S_ALLOW_FAKE_IP_DNS"] = "0"
 # Keep the suite out of the developer's real login keychain, for the same
 # reason ~/.openai4s is redirected below. Left on `auto`, every Store that
 # touched a credential would write to it — and the broker's resolution

@@ -14,7 +14,8 @@ metadata:
 # Reaction-yield estimation
 
 Answer one scientific question: for a fully specified reaction string, what
-yield does a trained regression model predict? Use the number to rank comparable
+yield does a trained regression model predict? Only after the exact deployment
+passes its canaries and held-out validation may the number rank comparable
 in-domain reactions or prioritize experiments. Do not call it a calibrated
 probability of step success, and never multiply step predictions into a route
 success probability.
@@ -22,6 +23,15 @@ success probability.
 Use `sagawa/ReactionT5v2-yield`, a 2025 MIT checkpoint trained on Open Reaction
 Database records and distributed with a direct local inference example. The
 model takes reactants, reagents, and product; a target alone is not valid input.
+
+**Deployment status:** the currently pinned released checkpoint is quarantined
+for quantitative use. With the upstream wrapper, canonicalization, sorted
+mixture components, fixed 400-token padding, and the upstream Transformers
+version, the published model-card canary was expected to return about 19.1666%
+but returned 65.924858%. Until that discrepancy is resolved against a
+deployment-matched held-out set, the backend may be exercised for protocol
+testing only and its values must not rank reactions or support scientific
+conclusions.
 
 ## Install and run
 
@@ -128,6 +138,34 @@ never relabel the clipped column as the raw model result. Pass its
 `models/reactiont5/yield-f0658bfd360bceaaf560f11b850781c50221fe0b`
 directory and set `HF_HUB_OFFLINE=1`; do not pass the Hub model ID.
 
+For OpenAI4S, use `reaction_model_deployment.py` to install the pinned shared
+ReactionT5v2 environment, download `sagawa/ReactionT5v2-yield` at revision
+`f0658bfd360bceaaf560f11b850781c50221fe0b`, snapshot the complete local model,
+and call `ReactionModelBackend("reactiont5_yield", ...)`. The committed worker
+contains the model-card regression head, requires a local checkpoint, disables
+implicit downloads, preserves raw un-clipped output, and reports package and
+manifest provenance.
+
+The worker also reproduces the pinned upstream preprocessing: each molecular
+mixture is RDKit-canonicalized component-wise, components are sorted, an absent
+reagent is encoded as one blank character, and inputs are padded/truncated to
+400 tokens by default. `input_max_length` is recorded and bounded to 32--1024.
+Matching preprocessing did not remove the canary discrepancy above.
+
+Copy the wrapper exactly from the official model card or repository rather than
+loading the checkpoint as a plain seq2seq model. Pin the Hugging Face revision
+and record package versions, device, input string, and checkpoint hash.
+
+## Scenario 6 benchmark contract
+
+Use `../retrosynthesis_planning/yield_benchmark.py` for the frozen random test
+and four molecular-framework OOD groups. Submit the raw predicted percentage;
+never clip it before evaluation. Intervals must be either fully specified or
+explicitly absent, and every prediction carries a domain-status label. The
+evaluator reports per-group MAE/RMSE/R2/ranking and interval diagnostics,
+macro-OOD MAE, and worst-group MAE rather than hiding shift behind one pooled
+score.
+
 ## Domain gate
 
 Before quoting the number, record:
@@ -157,6 +195,7 @@ only for presentation; preserve any raw prediction outside 0–100 for audit.
 | --- | --- |
 | product or reagent context missing | Refuse quantitative interpretation; request a complete reaction record. |
 | raw prediction outside 0–100 | Preserve it, flag extrapolation, and show a clipped display value only if needed. |
+| released model-card canary mismatch | Quarantine the checkpoint; do not rank reactions until independently resolved. |
 | no deployment-matched held-out set | Label `screening_only`; do not state expected experimental error. |
 | multiple route steps | Score steps separately and report the weakest/most uncertain steps; never multiply percentages. |
 

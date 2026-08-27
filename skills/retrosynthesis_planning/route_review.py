@@ -177,11 +177,33 @@ def _route_feature_set(route: Mapping[str, Any]) -> set[str]:
     return features
 
 
+def route_feature_set(route: Mapping[str, Any]) -> frozenset[str]:
+    """Return the stable public feature set used for route comparison."""
+
+    return frozenset(_route_feature_set(route))
+
+
 def _jaccard(left: set[str], right: set[str]) -> float:
     if not left and not right:
         return 1.0
     union = left | right
     return len(left & right) / len(union) if union else 0.0
+
+
+def route_similarity(left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
+    """Compare routes by reaction, product, precursor, and terminal features.
+
+    ``_jaccard`` scores two empty sets as ``1.0``, which is the right
+    convention for de-duplication and an inverted one for scoring: a route
+    with no recoverable tree would otherwise report a perfect match against
+    every reference. Scoring treats "no features" as no evidence.
+    """
+
+    left_features = set(route_feature_set(left))
+    right_features = set(route_feature_set(right))
+    if not left_features or not right_features:
+        return 0.0
+    return _jaccard(left_features, right_features)
 
 
 def select_diverse_routes(

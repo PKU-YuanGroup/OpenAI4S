@@ -504,7 +504,20 @@ def run_confined_probe(
     # the try leaked the just-created workspace on every probe on such a host.
     try:
         argv, env, sandbox = _confined_probe(base_argv, workspace)
-        return subprocess.run(argv, capture_output=True, timeout=timeout, env=env)
+        # `start_new_session` for the same reason `PipeTransport` sets it:
+        # `KernelSandbox.wrap_command` no longer emits bubblewrap's
+        # `--new-session`, so the session boundary has to come from the spawn.
+        # A foreign interpreter runs its own `.pth` files and `sitecustomize`
+        # before the probe code, and `stdin` here is the daemon's, so without
+        # this it would hold the operator's controlling terminal.
+        return subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout,
+            env=env,
+            start_new_session=True,
+        )
     finally:
         if sandbox is not None:
             try:

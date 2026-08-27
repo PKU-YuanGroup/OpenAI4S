@@ -214,6 +214,74 @@ def test_bwrap_mounts_only_workspace_and_private_temp_writable():
     assert wrapped[wrapped.index("--") + 1 :] == command
 
 
+def test_runtime_bwrap_inherits_the_pipe_transport_session(tmp_path):
+    """One process group must contain bwrap, the worker, and Cell children.
+
+    ``PipeTransport`` already uses ``start_new_session=True``. A second
+    ``bwrap --new-session`` moved the worker into another group, so the
+    transport's watchdog group kill stopped only bwrap and leaked Cell work.
+    The standalone wrapper keeps its default flag for self-tests and other
+    callers; the runtime adapter deliberately omits the duplicate boundary.
+    """
+
+    sandbox = KernelSandbox(
+        status=SandboxStatus(
+            state="enabled",
+            mode="enforce",
+            backend="bubblewrap",
+            enforced=True,
+            self_test_passed=True,
+            network_policy="blocked",
+            workspace=str(tmp_path),
+            temp_dir=str(tmp_path / "private"),
+            detail="test",
+        ),
+        executable="/usr/bin/bwrap",
+        temp_dir=str(tmp_path / "private"),
+    )
+
+    wrapped = sandbox.wrap_command(["/bin/true"])
+
+    assert "--new-session" not in wrapped
+    assert "--new-session" in wrap_bwrap_command(
+        ["/bin/true"],
+        executable="/usr/bin/bwrap",
+        workspace=tmp_path,
+        temp_dir=tmp_path / "private",
+    )
+
+
+def test_the_self_test_probes_the_argv_the_runtime_actually_launches(tmp_path):
+    """`self_test_passed` has to certify the boundary the kernel gets, not another.
+
+    This probe is the gate that decides whether `auto` degrades visibly and
+    whether `enforce` fails closed, and its whole claim is that it proves the
+    boundary by establishing one and probing it. Once the runtime argv dropped
+    `--new-session`, a probe left at the wrapper's default was attesting to a
+    configuration no kernel, dynamic tool or preinstall launch runs.
+    """
+
+    calls: list = []
+    sandbox = create_kernel_sandbox(
+        tmp_path,
+        mode="auto",
+        platform_name="linux",
+        which=lambda name: "/usr/bin/bwrap",
+        runner=_passing_runner(calls),
+    )
+    try:
+        assert sandbox.status.self_test_passed is True
+        probed = calls[0][0]
+        assert "--new-session" not in probed
+        # Not just "the flag is absent" -- the sandbox flags the probe ran
+        # under are the ones the runtime emits, in the same order.
+        runtime = sandbox.wrap_command(["/bin/true"])
+        flags = [part for part in probed if part.startswith("--")]
+        assert flags == [part for part in runtime if part.startswith("--")]
+    finally:
+        sandbox.close()
+
+
 def test_bwrap_raw_network_compatibility_switch_only_removes_network_namespace():
     wrapped = wrap_bwrap_command(
         ["/bin/true"],

@@ -4,17 +4,57 @@
 
 This document describes the optional external-model boundary for the retrosynthesis planning Skill. The OpenAI4S side remains stdlib-only. Heavy model packages, checkpoints, CUDA libraries and model-specific dependencies stay in a separate Python or conda environment and communicate with OpenAI4S through one versioned JSON request and one JSON response.
 
-The first implementation supports single-step inference with RetroChimera and the model wrappers exposed by Syntheseus. It does not replace AiZynthFinder multi-step planning, and it does not treat a model score as an experimental success probability.
+The same boundary now covers AiZynthFinder, RXNMapper, ReactionT5v2-forward,
+ReactionT5v2-yield, and Parrot through `reaction_model_backends.py` and
+`reaction_model_worker.py`. `reaction_model_deployment.py` is the authoritative
+environment/artifact registry. It pins package versions and upstream revisions,
+generates reviewable install/download commands, snapshots every artifact file,
+and verifies those snapshots before inference. Network commands are printed but
+never executed implicitly.
+
+| Capability | Frozen identity | Required external artifact |
+| --- | --- | --- |
+| AiZynthFinder | 4.4.1 / release commit `9859f5b…` | Complete `download_public_data` policy/template/filter/stock/config snapshot |
+| RXNMapper | 0.4.3 / tag commit `640d9dd…` | Reviewed PyPI wheel plus embedded model, wheel SHA recorded in the registry |
+| ReactionT5v2 forward | HF revision `9331140…` | Complete local HF snapshot; inference is `local_files_only` |
+| ReactionT5v2 yield | HF revision `f0658bf…` | Complete local HF snapshot; inference is `local_files_only` |
+| Parrot | HF revision `b9ef604…`; legacy source `0fb2325…` | MIT `USPTO_condition.mar` plus metadata, with exact size and SHA256 admission |
+
+AiZynthFinder public-data artifacts remain `review-required`. Parrot's original
+Google Drive artifacts also remain blocked; only the separately published,
+first-author Hugging Face revision named above has an explicit MIT admission.
+A code license does not silently license any other dataset or checkpoint.
+
+The original boundary supports single-step inference with RetroChimera and the
+model wrappers exposed by Syntheseus. The reaction-model sibling now implements
+AiZynthFinder multi-step search, mapping, forward prediction, yield estimation,
+and condition recommendation. No model score is treated as an experimental
+success probability.
+
+## Verified deployment status
+
+| Backend | Engineering status | Scientific-use status |
+| --- | --- | --- |
+| AiZynthFinder 4.4.1 | Direct `plan_routes` worker and Scenario 2 conversion are implemented and contract-tested. The isolated environment is external to git. | Live search still requires an approved, hashed policy/template/filter/stock snapshot; upstream calls it public but does not state one artifact-wide license in the downloader. |
+| RXNMapper 0.4.3 | Pinned isolated environment, wheel hash, manifest, and real mapping smoke test pass. | Ready for mapping benchmarks subject to normal domain checks. |
+| ReactionT5v2-forward | Pinned HF snapshot `9331140...` and real CPU model-card product canary pass. | Usable as a bounded forward/round-trip signal, not feasibility proof. |
+| ReactionT5v2-yield | Pinned HF snapshot loads; upstream preprocessing is reproduced. Its published canary expected about 19.1666 but returned 65.924858. | Quarantined: protocol testing only until resolved and independently validated. |
+| Parrot | Exact MIT HF snapshot, relocatable Python 3.8 environment, MAR adapter, and real GPU worker canary pass; 15 joint beams were returned. | Deployable for USPTO categorical condition hypotheses. Temperature is unsupported, and frozen benchmark accuracy remains unmeasured. |
 
 ## Scope
 
-The external backend is intended for three uses:
+The external backends are intended for these bounded uses:
 
 - generating additional single-step precursor proposals;
+- searching multi-step routes against a declared stock;
+- mapping atoms and extracting reaction-centre evidence;
+- predicting forward products for round-trip diagnostics;
+- adapting complete joint Parrot condition beams from the admitted USPTO checkpoint;
+- exercising the yield wire protocol while its current checkpoint is quarantined;
 - comparing proposals from models with different inductive biases;
 - recording model and checkpoint provenance before a proposal is used in route review.
 
-Multi-step Syntheseus search, forward-model validation, model-consensus ranking and interactive subtree replanning are planned follow-ups rather than hidden behavior in this first adapter.
+Multi-step Syntheseus search, model-consensus ranking, and interactive subtree replanning remain separate capabilities rather than hidden behavior in one adapter.
 
 ## Architecture
 
@@ -23,11 +63,11 @@ OpenAI4S retrosynthesis Skill
         |
         | one versioned JSON request on stdin
         v
-isolated syntheseus_worker.py process
+isolated syntheseus_worker.py or reaction_model_worker.py
         |
         | optional imports and model inference
         v
-RetroChimera or Syntheseus model environment
+reviewed model-specific environment and local artifacts
         |
         | one versioned JSON response on stdout
         v
@@ -40,7 +80,7 @@ Three limits on that, stated rather than implied. The swap declines when there i
 
 The host never uses `shell=True`, applies request and response size limits, enforces a timeout, verifies the response `request_id`, and rejects unknown response fields.
 
-## Supported model classes
+## Supported single-step Syntheseus model classes
 
 | Family | Model names accepted by the worker | Intended role | Dependency note |
 | --- | --- | --- | --- |
@@ -285,7 +325,6 @@ The adapter therefore returns proposals and provenance. It does not generate a s
 The next compatible layers are:
 
 - a normalized multi-backend candidate bundle and reciprocal-rank consensus;
-- forward-model round-trip and stereochemistry-aware validation;
 - weakest-step and shared-failure analysis across route alternatives;
 - PaRoutes-style offline route benchmarking and opt-in model canaries;
 - an interactive route DAG showing model votes, reaction centers, evidence grade and review actions;

@@ -13,6 +13,7 @@ from openai4s.config import Config, LLMConfig, RoadmapFeatureFlags
 from openai4s.host_dispatch import HostDispatcher
 from openai4s.kernel import Kernel
 from openai4s.server.artifacts import (
+    CONTENT_FINGERPRINT_ENV,
     ArtifactManager,
     ArtifactOperationError,
     artifact_receipt_map,
@@ -1694,3 +1695,99 @@ def test_imported_session_snapshots_are_inside_trusted_storage(tmp_path):
     outside.write_bytes(payload)
     with pytest.raises(PermissionError, match="outside trusted storage"):
         service.verified_snapshot_bytes(dict(version, snapshot_path=str(outside)))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="mkfifo and mode bits are POSIX")
+def test_snapshot_survives_the_file_types_a_cell_can_leave_behind(
+    tmp_path, monkeypatch
+):
+    """The workspace walk must not block, and must not lose a file it cannot read.
+
+    ``snapshot`` runs on both sides of every Cell over a directory tree the
+    agent controls, so its per-entry probe has to answer for whatever is
+    there. Two entries are enough to break a naive ``os.open``:
+
+    * a FIFO — ``os.open(fifo, O_RDONLY)`` blocks until a writer appears, and
+      the ``S_ISREG`` rejection runs *after* the open, so it cannot save it.
+      One ``os.mkfifo`` in a streaming pipeline wedged the Cell boundary
+      forever, and the FIFO persists, so every later Cell re-wedged on it.
+    * a regular file the daemon cannot read — ``lstat`` needs only search
+      permission on the parent, ``open`` needs read permission on the file.
+      Dropping it removes it from *both* snapshots, so it can never register
+      as changed and one ``chmod 000`` hides a deliverable from capture.
+
+    Asserted with a hard timeout rather than by calling and hoping: a hang is
+    the failure mode, and a test that hangs reports nothing.
+    """
+
+    import threading
+
+    # Pin the digest on: whether the snapshot reads bytes is a property of the
+    # filesystem, and this test is about which entries survive the walk, not
+    # about where the digest applies.
+    monkeypatch.setenv(CONTENT_FINGERPRINT_ENV, "1")
+    harness = ArtifactHarness(tmp_path)
+    readable = harness.workspace / "result.csv"
+    readable.write_bytes(b"a,b\n1,2\n")
+    unreadable = harness.workspace / "locked.csv"
+    unreadable.write_bytes(b"x,y\n3,4\n")
+    os.chmod(unreadable, 0o000)
+    os.mkfifo(harness.workspace / "stream.fifo")
+    (harness.workspace / "subdir").mkdir()
+
+    result: dict[str, object] = {}
+    worker = threading.Thread(
+        target=lambda: result.update(
+            snapshot=harness.manager.snapshot(harness.workspace)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=20)
+    assert not worker.is_alive(), "snapshot() blocked on a non-regular workspace entry"
+
+    snapshot = result["snapshot"]
+    assert str(readable) in snapshot
+    assert str(unreadable) in snapshot, "an unreadable regular file left provenance"
+    assert str(harness.workspace / "stream.fifo") not in snapshot
+    assert str(harness.workspace / "subdir") not in snapshot
+
+    # The readable file carries a digest; the unreadable one falls back to the
+    # metadata-only identity rather than disappearing.
+    assert snapshot[str(readable)][-1] == hashlib.sha256(b"a,b\n1,2\n").hexdigest()
+    assert snapshot[str(unreadable)][-1] is None
+
+    os.chmod(unreadable, 0o600)
+
+
+def test_the_content_digest_is_paid_only_where_the_ctime_can_lag(tmp_path, monkeypatch):
+    """The read cost is gated on the filesystem, not charged to every platform.
+
+    The digest exists for one defect: WSL's ext4-on-VHD can report the same
+    ctime tick after a same-length rewrite whose mtime was restored. The size
+    ceiling is per *file*, so leaving the digest unconditional reads the whole
+    workspace on both sides of every Cell — ~190-330x the metadata walk — on
+    hosts where the kernel-owned ctime is already authoritative.
+
+    Both directions are asserted, because a gate that never opens is the same
+    bug as a gate that never closes.
+    """
+
+    harness = ArtifactHarness(tmp_path)
+    path = harness.workspace / "result.csv"
+    path.write_bytes(b"a,b\n1,2\n")
+    digest = hashlib.sha256(b"a,b\n1,2\n").hexdigest()
+
+    monkeypatch.setenv(CONTENT_FINGERPRINT_ENV, "0")
+    assert harness.manager.snapshot(harness.workspace)[str(path)][-1] is None
+
+    monkeypatch.setenv(CONTENT_FINGERPRINT_ENV, "1")
+    assert harness.manager.snapshot(harness.workspace)[str(path)][-1] == digest
+
+    # With no override the answer comes from the probe, and it must be one
+    # answer for the whole process: a `before` and an `after` that disagreed
+    # would report every bounded file as changed.
+    monkeypatch.delenv(CONTENT_FINGERPRINT_ENV, raising=False)
+    first = harness.manager.snapshot(harness.workspace)[str(path)]
+    second = harness.manager.snapshot(harness.workspace)[str(path)]
+    assert first == second

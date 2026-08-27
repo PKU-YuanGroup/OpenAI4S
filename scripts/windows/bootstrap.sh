@@ -68,9 +68,14 @@ run_preflight() {
     exit 1
   fi
 
-  # Installed is not the same as usable. Exercise the same lifecycle and
-  # namespace flags emitted by wrap_bwrap_command(), rather than a stronger
-  # user/uid configuration that the real scientific Cell never requests.
+  # Installed is not the same as usable. Exercise the lifecycle and namespace
+  # flags emitted by wrap_bwrap_command(), rather than a stronger user/uid
+  # configuration that the real scientific Cell never requests. `--new-session`
+  # is the one deliberate difference: the runtime argv omits it because the
+  # spawner owns the session, so probing it here asks a strict superset --
+  # enough to prove the distribution can build the boundary, which is all this
+  # preflight decides. The exact-argv guarantee belongs to the daemon's own
+  # sandbox self-test, which does pass new_session=False.
   if ! bwrap --die-with-parent --new-session \
       --unshare-ipc --unshare-uts --unshare-net \
       --ro-bind / / --dev /dev --proc /proc -- /bin/true >/dev/null 2>&1; then
@@ -88,43 +93,71 @@ MANAGED_MARK="managed-by-openai4s-windows-launcher"
 
 configure_network() {
   APP="$1"
+  FRESH_INSTALL="${2:-0}"
   PYPI_INDEX="${OPENAI4S_PYPI_INDEX_URL:-}"
   CONDA_MIRROR="${OPENAI4S_CONDA_MIRROR:-}"
+  PIP_CONF="$APP/runtime/pip.conf"
 
-  if [ -n "$PYPI_INDEX" ]; then
+  PYPI_MODE="unchanged"
+  if [ "$PYPI_INDEX" = "off" ]; then
+    PYPI_MODE="official"
+    PYPI_INDEX=""
+  elif [ -n "$PYPI_INDEX" ]; then
+    PYPI_MODE="mirror"
+  fi
+
+  if [ "$PYPI_MODE" = "mirror" ]; then
     case "$PYPI_INDEX" in
       http://*|https://*) ;;
       *) echo "invalid PyPI mirror URL: $PYPI_INDEX" >&2; exit 1 ;;
     esac
+  fi
+
+  # A fresh install always claims the file, even with no mirror selected. The
+  # unmarked file is then the pristine bundle baseline, and leaving it unmarked
+  # would make it permanently unclaimable: a later launch sees "no marker, not
+  # fresh" and reports it user-managed, so setting OPENAI4S_WSL_PYPI_INDEX
+  # afterwards would silently never take effect.
+  if [ "$PYPI_MODE" != "unchanged" ] || [ "$FRESH_INSTALL" = "1" ]; then
     # This is pip's site config for the embedded interpreter. Environment-only
     # PIP_* settings do not reach a sandboxed Cell, so putting the mirror here
     # is what keeps later in-Cell installs off a direct public index.
     #
     # The bundle ships a build-time pip.conf that routes installs to the user
-    # site and names no index; rewriting that one is this launcher's job. A
-    # file without the managed marker that already names an index-url is the
-    # user's own mirror choice and is left alone.
-    PIP_CONF="$APP/runtime/pip.conf"
+    # site and names no index; rewriting that one is this launcher's job. On a
+    # fresh install the unmarked file is that pristine baseline and may be
+    # claimed. On later launches, removing the marker transfers ownership to
+    # the user, and the launcher preserves the whole file rather than guessing
+    # which individual setting was intentional.
     if [ -f "$PIP_CONF" ] && ! grep -q "$MANAGED_MARK" "$PIP_CONF" 2>/dev/null \
-        && grep -q '^index-url' "$PIP_CONF" 2>/dev/null; then
-      echo "note: $PIP_CONF has a user-managed index-url; leaving it unchanged" >&2
-      echo "      (set OPENAI4S_WSL_PYPI_INDEX to manage mirrors from the launcher)" >&2
+        && [ "$FRESH_INSTALL" != "1" ]; then
+      echo "note: $PIP_CONF is user-managed; leaving it unchanged" >&2
     else
-      printf '%s\n' \
-        "# $MANAGED_MARK -- rewritten on every launch." \
-        '# Set OPENAI4S_WSL_PYPI_INDEX in Windows to change the mirror, or to' \
-        '# off to restore the official index. Direct edits here are preserved' \
-        '# only if this marker line is removed.' \
-        '[global]' \
-        "index-url = $PYPI_INDEX" \
-        '' \
-        '[install]' \
-        'user = true' \
-        'break-system-packages = true' > "$PIP_CONF"
+      {
+        printf '%s\n' \
+          "# $MANAGED_MARK -- rewritten on every launch." \
+          '# Set OPENAI4S_WSL_PYPI_INDEX in Windows to change the mirror, or to' \
+          '# off to restore the official index. Direct edits here are preserved' \
+          '# only if this marker line is removed.'
+        if [ "$PYPI_MODE" = "mirror" ]; then
+          printf '%s\n' '[global]' "index-url = $PYPI_INDEX" ''
+        fi
+        printf '%s\n' \
+          '[install]' \
+          'user = true' \
+          'break-system-packages = true'
+      } > "$PIP_CONF"
     fi
   fi
 
-  if [ -n "$CONDA_MIRROR" ]; then
+  if [ "$CONDA_MIRROR" = "off" ]; then
+    CONDARC_FILE="$NETWORK_DIR/condarc"
+    if [ -f "$CONDARC_FILE" ] && grep -q "$MANAGED_MARK" "$CONDARC_FILE" 2>/dev/null; then
+      rm -f -- "$CONDARC_FILE"
+    elif [ -f "$CONDARC_FILE" ]; then
+      echo "note: $CONDARC_FILE is user-managed; leaving it unchanged" >&2
+    fi
+  elif [ -n "$CONDA_MIRROR" ]; then
     case "$CONDA_MIRROR" in
       http://*|https://*) ;;
       *) echo "invalid Conda mirror URL: $CONDA_MIRROR" >&2; exit 1 ;;
@@ -150,6 +183,61 @@ configure_network() {
         'show_channel_urls: true' > "$CONDARC_FILE"
     fi
   fi
+}
+
+is_fake_ip_address() {
+  case "$1" in
+    198.18.*|198.19.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+configure_fake_ip_dns() {
+  MODE="${OPENAI4S_FAKE_IP_DNS_MODE:-auto}"
+  case "$MODE" in
+    on|1|true|yes)
+      OPENAI4S_ALLOW_FAKE_IP_DNS=1
+      ;;
+    off|0|false|no)
+      OPENAI4S_ALLOW_FAKE_IP_DNS=0
+      ;;
+    auto|'')
+      # Clash and similar Windows TUN proxies may put both their WSL DNS
+      # listener and every synthetic public answer in RFC 2544's
+      # 198.18.0.0/15 range. Require both signals before enabling the daemon's
+      # narrow compatibility path. The Python guard still accepts that range
+      # only for catalogued or explicitly approved domains and never for an IP
+      # literal, loopback, metadata, or another private range.
+      #
+      # The local resolver check gates the network one, and that order is
+      # load-bearing rather than stylistic: this function runs before every
+      # `cli` action too, so an unconditional `getent` would put a live DNS
+      # lookup of a third-party domain in front of `status`, `url` and `stop`
+      # -- and block each of them for the full resolv.conf budget on exactly
+      # the half-configured proxy this feature exists for. A machine with an
+      # ordinary resolver now reads one local file and stops.
+      RESOLV_CONF="${OPENAI4S_WSL_RESOLV_CONF:-/etc/resolv.conf}"
+      RESOLVER=""
+      PROBE=""
+      if [ -r "$RESOLV_CONF" ]; then
+        RESOLVER="$(awk '/^[[:space:]]*nameserver[[:space:]]+/ {print $2; exit}' "$RESOLV_CONF")"
+      fi
+      if is_fake_ip_address "$RESOLVER" && command -v getent >/dev/null 2>&1; then
+        PROBE="$(getent ahostsv4 api.openalex.org 2>/dev/null | awk 'NR == 1 {print $1; exit}')"
+      fi
+      if is_fake_ip_address "$RESOLVER" && is_fake_ip_address "$PROBE"; then
+        OPENAI4S_ALLOW_FAKE_IP_DNS=1
+        echo "detected trusted WSL Fake-IP DNS; enabling restricted public-domain compatibility" >&2
+      else
+        OPENAI4S_ALLOW_FAKE_IP_DNS=0
+      fi
+      ;;
+    *)
+      echo "invalid OPENAI4S_FAKE_IP_DNS_MODE: $MODE (expected auto, on, or off)" >&2
+      exit 2
+      ;;
+  esac
+  export OPENAI4S_ALLOW_FAKE_IP_DNS
 }
 
 install_cli_link() {
@@ -195,7 +283,7 @@ install)
   MARKER="$APP/.installed"
 
   if [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$EXPECTED" ] && [ -x "$APP/bin/openai4s" ]; then
-    configure_network "$APP"
+    configure_network "$APP" 0
     install_cli_link "$APP"
     echo "already-installed $APP"
     exit 0
@@ -231,9 +319,15 @@ install)
     echo "the payload did not unpack into $APP" >&2
     exit 1
   fi
-  printf '%s\n' "$EXPECTED" > "$MARKER"
-  configure_network "$APP"
+  configure_network "$APP" 1
   install_cli_link "$APP"
+  # The marker is the *last* step, because it is what makes the next launch
+  # take the already-installed fast path. Written first, an install that then
+  # failed to write pip.conf (unwritable tree, ENOSPC) left a tree marked
+  # complete: every later launch skipped the extraction, re-entered
+  # configure_network with FRESH_INSTALL=0, and failed the same way with no
+  # route back to a working install.
+  printf '%s\n' "$EXPECTED" > "$MARKER"
   echo "installed $APP"
   ;;
 
@@ -247,6 +341,7 @@ serve)
     exit 1
   fi
   mkdir -p "$DATA_DIR/logs"
+  configure_fake_ip_dns
 
   OPENAI4S_HOST="$HOST"
   OPENAI4S_PORT="$PORT"
@@ -272,6 +367,16 @@ cli)
     echo "not installed: $APP" >&2
     exit 1
   fi
+  # The Fake-IP verdict only matters to a command that can make an outbound
+  # request. `status`, `url` and `stop` cannot, and on the very machines this
+  # feature exists for -- a Clash/TUN resolver in 198.18/15 -- probing first
+  # would block each of them on a third-party lookup. `stop` in particular is
+  # the command that has to work when DNS is the thing that is wedged. Anything
+  # not named here still gets the probe, so a new subcommand fails safe.
+  case "${1:-}" in
+    status|url|stop|--help|-h|help) ;;
+    *) configure_fake_ip_dns ;;
+  esac
   exec "$APP/bin/openai4s" "$@"
   ;;
 

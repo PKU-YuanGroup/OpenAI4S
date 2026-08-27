@@ -4,6 +4,8 @@
 
 该 Scenario 面向“给定目标分子，能否在有限计算预算内找到连接到固定可购库存的完整多步路线”。它评价的是搜索系统，不只是单步模型：相同 expansion policy、filter policy、stock snapshot 和预算下，不同搜索策略如何组合局部断键、处理 AND-OR 依赖、避免循环并返回多样路线。
 
+与只要求 planner 返回若干“看起来像路线”的基础任务相比，本场景的特殊条件是库存与资源预算同时冻结：路线必须在严格 AND 语义下让所有叶节点命中同一 stock，而且不能通过增加模型调用、深度或墙钟时间换取更高 solved rate。它因此真正比较 budgeted search policy，而不是比较谁使用了更强的单步模型、更多供应商数据或更长运行时间。
+
 Benchmark 采用 PaRoutes 的 n1/n5 目标、参考路线和库存。PaRoutes 是为多步逆合成规划设计的公开框架，提供 10,000 个目标的两种难度设置、两个固定 stock、参考路线和路线相似性/聚类工具。正式主榜只在冻结的公开子集上开发，在隐藏目标子集上最终评分；参考路线和 route fingerprints 不提供给 Harness。
 
 `solved` 是严格的图语义：一条反应的全部前体分支都必须递归到达库存，才能称完整路线。搜索到一个库存分子、生成一条看似合理的部分树或 forward model 恢复目标，都不能替代 solved 判定。
@@ -188,6 +190,8 @@ reference_repository/
 ## 评估自动化实现难度
 
 全流程可离线自动化：输入/库存冻结 ✓ → policy 准入 ✓ → AND-OR 搜索 ✓ → 完整性验证 ✓ → 路线规范化 ✓ → PaRoutes 私有评分 ✓。最大工程成本是大规模模型推理和公平的资源计量，不是指标实现。
+
+仓库已提供 `retrosynthesis_planning.multistep_benchmark`：严格校验 target/stock，按 molecule-OR 与 reaction-AND 重新计算库存闭合，记录预算超限、终止原因、重复路线，并按 target 计算 solved rate、参考路线恢复和路线相似度。它不包含 AiZynthFinder checkpoint、PaRoutes 数据或模型推理本身。
 
 ## 评测指标
 

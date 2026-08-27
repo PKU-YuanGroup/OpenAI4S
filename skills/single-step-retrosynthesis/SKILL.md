@@ -101,6 +101,45 @@ increasingly hallucination-prone.
 - Keep disagreements between edit-based and sequence-based models as review
   diversity; do not average scores from unlike models.
 
+For a class-unknown benchmark, run the deterministic protocol after model
+inference. The protocol fails closed without RDKit because identity/string
+fallbacks would corrupt exact-match science; install the repository's optional
+chemistry environment first:
+
+```bash
+uv sync --extra chemistry
+```
+
+Then normalize the frozen public output:
+
+```bash
+uv run python skills/retrosynthesis_planning/single_step_benchmark.py normalize \
+  --targets input/targets.csv \
+  --predictions results/predictions.jsonl \
+  --model-manifest input/model_manifest.json \
+  --top-k 10 \
+  --output results/intermediate_results.json
+```
+
+The public target CSV is intentionally strict: it accepts only `target_id` and
+`product_smiles`, so a reaction class, reference precursor, patent identifier,
+or accidental extra column fails closed. Run `evaluate` only in the separate
+evaluator process after predictions are frozen:
+
+```bash
+uv run python skills/retrosynthesis_planning/single_step_benchmark.py evaluate \
+  --targets input/targets.csv \
+  --predictions results/predictions.jsonl \
+  --references private_evaluator/reference_precursor_sets.jsonl \
+  --top-k 10 \
+  --output private_evaluator/metrics.json
+```
+
+The evaluator compares dot-separated precursor molecules as unordered
+multisets, preserves invalid and duplicate beams, scores each target before
+aggregation, and supports multiple recorded precursor sets per product. It does
+not turn patent-record recovery into a feasibility label.
+
 ## Optional diversity model
 
 Use `sagawa/ReactionT5v2-retrosynthesis` when a second sequence model is useful.

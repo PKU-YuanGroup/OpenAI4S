@@ -55,6 +55,7 @@ mutually hostile at the host-filesystem level.
 | **Biosecurity screener** | `OPENAI4S_BIOSECURITY` (on) | trajectory screener (ALLOW / ESCALATE / BLOCK) on biosecurity-relevant content |
 | **Injection detector** | `OPENAI4S_INJECTION_SCAN` (on) | annotates tool-returned content (web / PDF / MCP) so the model treats it as **data, not instructions** |
 | **Egress allowlist** | `OPENAI4S_EGRESS` (`off`) | application policy for `web_fetch` / `web_search` and authorized `host.bash`; the OS sandbox is the separate raw-network boundary |
+| **Fake-IP DNS bridge** | `OPENAI4S_ALLOW_FAKE_IP_DNS` (`off`) | accepts RFC 2544 `198.18.0.0/15` proxy answers only for a hostname in the built-in/user-approved egress catalog; IP literals and every other private/metadata range remain blocked |
 | **Remote-compute confinement** | `OPENAI4S_COMPUTE_CONFINEMENT` (`auto`) | the provider helper runs inside a real OS boundary — Seatbelt on macOS, bubblewrap on Linux — that puts the user's home out of reach — a `tmpfs` over it on Linux; on macOS a denial of `file-read-data` *and* `file-read-xattr`, since an xattr on macOS routinely holds the file's own bytes and `getxattr` was serving what `open` refused — confines writes to the job's stage directory, and (macOS) denies the keychain services, because the credential is read *by securityd* and no file rule covers that. `available()` proves it by establishing a boundary and probing it, not by `which`; the helper re-checks from inside before reading a credential and exits 71 without acting if it does not hold. **The network is deliberately not isolated** (`network_isolated: false`) — calling a provider's REST API is the helper's whole job, so outbound egress is a separate capability and is not enabled. `enforce` refuses `byoc:*` ops only where no boundary can be established: no `bwrap`/`sandbox-exec` on `PATH`, a host that fails the self-test (e.g. unprivileged user namespaces disabled), or a platform with no backend — and it refuses on *every* op, not just submit. `auto` degrades visibly in those same cases; `off` skips the wrapping entirely (see [`docs/compute.md`](compute.md)) |
 | **Secret store** | `OPENAI4S_SECRET_STORE` (`auto`) | credentials behind an opaque reference in the system keychain (after a real round-trip self-test) or the process environment; `auto` **fails closed** when neither is available. Plaintext is reachable only by asking for it by name, and no obfuscated-file fallback exists |
 | **Data-dir permissions** | always on | the data dir is `0700` and the database (plus any `-wal`/`-shm`) is `0600`; POSIX only — Windows needs an ACL, and the posture reports `supported: false` there rather than claiming a boundary |
@@ -64,6 +65,14 @@ mutually hostile at the host-filesystem level.
 SSRF risk. `OPENAI4S_ALLOW_PRIVATE_FETCH=1` is an explicit trusted-local
 override (useful for testing a service on `127.0.0.1`); it does not weaken the
 kernel OS sandbox or authorize arbitrary worker networking.
+
+The Windows launcher separately detects Clash-style Fake-IP DNS inside WSL and
+sets the narrower `OPENAI4S_ALLOW_FAKE_IP_DNS=1` process flag. This is not a
+private-network override: only a hostname already present in the egress catalog
+(or explicitly granted by the user) may use a synthetic `198.18.0.0/15`
+answer. A literal address, an unlisted hostname, a credential-endpoint child
+hostname, loopback, link-local, metadata, and every other private range still
+fail closed.
 
 Additional enforcement: an opencode-style **permission broker** gates
 risk-bearing tools, a **secret-file guard** blocks `.env` / `*.key` / `id_rsa`

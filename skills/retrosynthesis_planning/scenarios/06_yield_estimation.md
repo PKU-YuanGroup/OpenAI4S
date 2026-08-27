@@ -4,7 +4,9 @@
 
 该 Scenario 面向反应物、试剂和目标产物均已知，需要预测 isolated yield 并识别模型外推失败的反应优选任务。Benchmark 使用 Ahneman 等人的 Buchwald–Hartwig C–N 偶联高通量实验数据及后续公开的 random/MFF Test1–4 划分。该数据具有成体系的真实实验收率，适合评价回归和分布外泛化；不使用噪声更大、实验尺度和缺失机制复杂的 USPTO 抽取收率作为主 Ground Truth。
 
-默认部署模型为 ReactionT5v2-yield；Yield-BERT/rxn_yields 提供经典开源基线和官方训练模型。正式比较的核心不是只在随机拆分上获得高 R²，而是在固定的 Test1–4 留组分外推设置下，能否保持较低误差、合理排序并识别不确定性。
+与随机 IID split 上拟合一个回归器的基础任务相比，本场景把未见反应组分组合的 Test1–4 作为主评价条件，并要求 public validation 校准的不确定性、macro-average 与 worst-group 同时报告。模型不能依靠近重复反应获得高 R²，也不能用随机测试集的平均表现掩盖某一类组分外推完全失效。
+
+候选部署模型为 ReactionT5v2-yield；Yield-BERT/rxn_yields 提供经典开源基线和官方训练模型。当前固定的 ReactionT5v2-yield release 虽能加载，但其 model-card canary 在复现上游 wrapper 与预处理后仍出现显著不一致（期望约 19.1666，实测 65.924858），因此必须保持隔离，不能作为默认科学结果模型。正式比较的核心不是只在随机拆分上获得高 R²，而是在固定的 Test1–4 留组分外推设置下，能否保持较低误差、合理排序并识别不确定性。
 
 收率是反应、条件、操作和测量协议的联合属性。模型输入中缺失的时间、浓度或加料信息会形成不可约不确定性，因此输出必须称“在该数据定义和输入字段下的预测收率”，不能扩展为路线可行性或跨实验室绝对收率保证。
 
@@ -14,7 +16,7 @@
 
 - **Buchwald–Hartwig HTE**：Ahneman 等人公开的 Pd 催化 C–N 偶联实验矩阵，共约 3,955 条反应；rxn4chemistry 官方 `rxn_yields` 仓库提供预处理、random split、MFF 外推设置和模型代码。
 - **ReactionT5v2**：作者官方仓库明确链接 Buchwald–Hartwig 数据，提供 yield 训练/预测代码，并通过 `CN_test_data_path` 从 ORD 预训练数据删除测试反应以降低泄漏。
-- **ReactionT5v2-yield**：MIT 权重和推理入口可本地部署。
+- **ReactionT5v2-yield**：MIT 权重和推理入口可本地加载，但当前固定 release 未通过其公开 canary；仅可做协议测试，重新通过独立验证前不得进入正式评分或候选排序。
 - **Yield-BERT**：`rxn_yields` 官方实现与已训练模型以 MIT 发布，论文同时指出 USPTO 收率受反应尺度等偏差影响。
 
 原始 HTE 数据、派生 split 和模型权重的再发布条款必须分别冻结。若上游下载链接未附清晰数据许可证，Reference Repository 只能提供构建脚本与哈希，不能擅自重新打包数据。
@@ -199,6 +201,8 @@ reference_repository/
 ## 评估自动化实现难度
 
 全流程可离线自动化：单位/重复审计 ✓ → OOD split/预训练泄漏审计 ✓ → public validation ✓ → 批量回归 ✓ → 不确定性校准 ✓ → private split-level 评价 ✓。关键发布阻塞是原始 HTE 数据再分发条款和每个 checkpoint 的精确训练/去重清单。
+
+仓库已提供 `retrosynthesis_planning.yield_benchmark`：冻结 random_test 与四个 MFF 子组，保留未经裁剪的原始预测和显式区间缺失，计算每组误差、R2、Spearman、Top-decile enrichment、区间覆盖，以及 macro-OOD 和 worst-group MAE。它不包含受外部条款约束的数据或权重。
 
 ## 评测指标
 

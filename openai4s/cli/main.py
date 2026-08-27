@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import errno
 import getpass
+import ipaddress
 import json
 import os
 import shutil
@@ -169,23 +170,115 @@ def _process_start_token(pid: int) -> str | None:
     return fields[19].decode("ascii", "replace")
 
 
-def _recorded_identity(cfg) -> tuple[int | None, str | None]:
-    """The (pid, start token) the running daemon wrote, as far as it is known."""
+def _recorded_state(cfg) -> dict[str, object] | None:
+    """Return the daemon sidecar when it is a JSON object, otherwise ``None``."""
     path = getattr(cfg, "statefile", None)
     if path is None:
-        return (None, None)
+        return None
     try:
         payload = json.loads(Path(path).read_text("utf-8"))
     except (OSError, ValueError):
-        return (None, None)
+        return None
     if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _recorded_identity(cfg) -> tuple[int | None, str | None]:
+    """The (pid, start token) the running daemon wrote, as far as it is known."""
+    payload = _recorded_state(cfg)
+    if payload is None:
         return (None, None)
     pid = payload.get("pid")
     start = payload.get("pid_start")
     return (
-        pid if isinstance(pid, int) else None,
+        pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
         start if isinstance(start, str) and start else None,
     )
+
+
+def _valid_recorded_host(value: object) -> bool:
+    """Whether a sidecar value is a bind host, rather than URL-shaped input."""
+    if not isinstance(value, str):
+        return False
+    # The empty string is Python's IPv4 wildcard bind and is rendered as
+    # localhost by `_reachable_host`. Preserve that established meaning.
+    if value == "":
+        return True
+    if value != value.strip() or any(char.isspace() for char in value):
+        return False
+    if any(char in value for char in "/?#@\\[]"):
+        return False
+
+    if ":" in value:
+        try:
+            ipaddress.IPv6Address(value)
+        except ValueError:
+            return False
+        return True
+
+    try:
+        ascii_host = value.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    if len(ascii_host) > 253:
+        return False
+    candidate = ascii_host[:-1] if ascii_host.endswith(".") else ascii_host
+    if not candidate:
+        return False
+    if all(char in "0123456789." for char in candidate):
+        try:
+            ipaddress.IPv4Address(candidate)
+        except ValueError:
+            return False
+        return True
+    for label in candidate.split("."):
+        if (
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or not all(char.isalnum() or char == "-" for char in label)
+        ):
+            return False
+    return True
+
+
+def _recorded_endpoint(cfg, expected_pid: int) -> tuple[str, int] | None:
+    """The live daemon endpoint, only for the exact recorded process generation.
+
+    ``daemon.json`` is a non-authoritative sidecar. A stale generation, a
+    partially written file, or a malformed host/port must therefore fall back
+    to the caller's current config rather than steering a local control request.
+    A pid alone is not an identity: after reuse, a stale sidecar could otherwise
+    redirect the local access-token URL to an unrelated host that happens to
+    hold the same pid.  Linux provides the process start token needed to bind
+    the endpoint to one generation.  On platforms where that token is
+    unavailable, callers safely fall back to their current configuration.
+    """
+    payload = _recorded_state(cfg)
+    if payload is None:
+        return None
+    recorded_pid = payload.get("pid")
+    if (
+        not isinstance(recorded_pid, int)
+        or isinstance(recorded_pid, bool)
+        or recorded_pid != expected_pid
+    ):
+        return None
+    recorded_start = payload.get("pid_start")
+    if not isinstance(recorded_start, str) or not recorded_start:
+        return None
+    current_start = _process_start_token(expected_pid)
+    if current_start is None or current_start != recorded_start:
+        return None
+    host = payload.get("host")
+    port = payload.get("port")
+    if not isinstance(host, str) or not _valid_recorded_host(host):
+        return None
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        return None
+    return (host, port)
 
 
 def _daemon_alive(cfg, pid: int) -> bool:
@@ -214,6 +307,24 @@ def _daemon_alive(cfg, pid: int) -> bool:
     return current == recorded_start
 
 
+def _live_endpoint(cfg) -> tuple[str, int] | None:
+    """The endpoint of the daemon that currently owns this data dir, if known.
+
+    Every command that dials the local daemon needs the same answer, and
+    getting it in only some of them is how one CLI comes to disagree with
+    itself: under the WSL NAT fallback the launcher starts `serve` with an
+    explicit `OPENAI4S_HOST`, while a later `openai4s <cmd>` has only the
+    default. ``None`` means "no better information than the caller's config".
+    """
+
+    if getattr(cfg, "pidfile", None) is None:
+        return None
+    pid = _read_pid(cfg)
+    if not pid or not _daemon_alive(cfg, pid):
+        return None
+    return _recorded_endpoint(cfg, pid)
+
+
 def _reachable_host(host: str) -> str:
     """A bind address, rendered as somewhere a client can actually connect.
 
@@ -234,7 +345,12 @@ def _reachable_host(host: str) -> str:
     return "localhost" if host in ("0.0.0.0", "::", "") else host
 
 
-def _url(cfg, *, with_token: bool = True) -> str:
+def _url(
+    cfg,
+    *,
+    with_token: bool = True,
+    endpoint: tuple[str, int] | None = None,
+) -> str:
     """The URL a person can actually open.
 
     This returned the bare origin, and every human-facing caller used it: the
@@ -247,7 +363,10 @@ def _url(cfg, *, with_token: bool = True) -> str:
     `with_token=False` is for anywhere the string is not being handed to a
     person to open — a credential does not belong in a log line or a title.
     """
-    base = f"http://{_reachable_host(cfg.host)}:{cfg.port}/"
+    host, port = endpoint if endpoint is not None else (cfg.host, cfg.port)
+    reachable_host = _reachable_host(host)
+    authority = f"[{reachable_host}]" if ":" in reachable_host else reachable_host
+    base = f"http://{authority}:{port}/"
     if not with_token:
         return base
     try:
@@ -539,7 +658,10 @@ def cmd_serve(args) -> int:
         # peek keeps the common "already running" answer immediate.
         existing = _read_pid(cfg)
         if existing and _daemon_alive(cfg, existing):
-            print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+            print(
+                f"daemon already running (pid {existing}) at "
+                f"{_url(cfg, endpoint=_live_endpoint(cfg))}"
+            )
             return 1
         return _cmd_serve_detached(args, cfg)
     # Atomically claim the singleton, covering the whole boot. A plain
@@ -550,7 +672,10 @@ def cmd_serve(args) -> int:
     if not _acquire_singleton(cfg):
         existing = _read_pid(cfg)
         if existing and _daemon_alive(cfg, existing):
-            print(f"daemon already running (pid {existing}) at {_url(cfg)}")
+            print(
+                f"daemon already running (pid {existing}) at "
+                f"{_url(cfg, endpoint=_live_endpoint(cfg))}"
+            )
         else:
             print(
                 "another `openai4s serve` is starting on this data dir; "
@@ -710,11 +835,14 @@ def cmd_status(args) -> int:
     if not pid or not _daemon_alive(cfg, pid):
         print("daemon: not running")
         return 1
+    endpoint = _recorded_endpoint(cfg, pid)
     # confirm via /health
     try:
-        with _open_daemon(_url(cfg, with_token=False) + "health", timeout=3) as r:
+        with _open_daemon(
+            _url(cfg, with_token=False, endpoint=endpoint) + "health", timeout=3
+        ) as r:
             health = json.loads(r.read().decode("utf-8"))
-        print(f"daemon: running (pid {pid}) at {_url(cfg)}")
+        print(f"daemon: running (pid {pid}) at {_url(cfg, endpoint=endpoint)}")
         print(f"  model    : {health.get('model')}")
         # The loopback health response is intentionally a minimal public
         # projection.  The CLI already owns the local configuration, so it can
@@ -790,7 +918,7 @@ def cmd_stop(args) -> int:
 
 
 def cmd_url(args) -> int:
-    print(_url(get_config()))
+    print(_url(cfg := get_config(), endpoint=_live_endpoint(cfg)))
     return 0
 
 
@@ -1500,7 +1628,8 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
             f"path must be relative to the API root, not {path!r} "
             f"(it is joined with {contract.API_ROOT})"
         )
-    url = _url(cfg, with_token=False).rstrip("/") + contract.API_ROOT + path
+    base = _url(cfg, with_token=False, endpoint=_live_endpoint(cfg))
+    url = base.rstrip("/") + contract.API_ROOT + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")

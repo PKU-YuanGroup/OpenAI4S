@@ -204,13 +204,28 @@ def _materialize_pinned_tree(source: Path, commit: str, destination: Path) -> No
 
     entries = _selected_tree_entries(source, commit)
     requests = b"".join(f"{object_id}\n".encode("ascii") for _, object_id, _ in entries)
-    result = subprocess.run(
-        ["git", "-C", str(source), "cat-file", "--batch"],
-        input=requests,
-        check=True,
-        capture_output=True,
-        env=_git_environment(),
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(source), "cat-file", "--batch"],
+            input=requests,
+            check=True,
+            capture_output=True,
+            env=_git_environment(),
+        )
+    except subprocess.CalledProcessError as error:
+        # Git 2.43+ exits 128 when a partial clone has an unavailable promisor
+        # remote, instead of returning a per-object ``missing`` batch header.
+        # Keep that version-dependent transport detail behind the importer's
+        # stable fail-closed contract, and never create the destination tree.
+        # `capture_output=True` means git's own diagnosis -- which object is
+        # missing, which promisor remote is unreachable -- is in `error.stderr`
+        # and nowhere else. Dropping it leaves an operator with a message that
+        # names no cause.
+        detail = (error.stderr or b"").decode("utf-8", "replace").strip()
+        raise RuntimeError(
+            "cannot read pinned Git blob stream"
+            + (f" (git exited {error.returncode}: {detail})" if detail else "")
+        ) from error
     stream = io.BytesIO(result.stdout)
     destination.mkdir(parents=True)
     for mode, expected_object, relative in entries:

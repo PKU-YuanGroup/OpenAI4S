@@ -240,6 +240,14 @@ def test_six_detailed_science_scenarios_are_independent_benchmark_specs():
         "05_condition_recommendation.md",
         "06_yield_estimation.md",
     )
+    distinguishing_conditions = {
+        "01_single_step_retrosynthesis.md": "跨类别 disconnection search",
+        "02_multistep_route_planning.md": "budgeted search policy",
+        "03_atom_mapping.md": "对称原子置换",
+        "04_forward_prediction.md": "outcome prediction",
+        "05_condition_recommendation.md": "condition tuple",
+        "06_yield_estimation.md": "worst-group",
+    }
     required_sections = (
         "## Scenario Overview",
         "## 数据可获取性与 Benchmark 构建方案",
@@ -261,9 +269,207 @@ def test_six_detailed_science_scenarios_are_independent_benchmark_specs():
             assert heading in body, f"{filename} is missing {heading}"
         assert "private_evaluator/" in body
         assert "Ground Truth" in body
+        assert distinguishing_conditions[filename] in body
 
     assert (scenario_dir / "README.md").exists()
     assert (scenario_dir / "README_zh.md").exists()
+
+
+def _single_step_benchmark():
+    sys.path.insert(0, str(get_config().skills_dir))
+    from retrosynthesis_planning import single_step_benchmark  # noqa: PLC0415
+
+    return single_step_benchmark
+
+
+def _toy_canonicalizer(smiles):
+    value = smiles.strip()
+    if value == "not-smiles":
+        raise ValueError("invalid fixture molecule")
+    aliases = {
+        "OCC": "CCO",
+        "CN": "CN",
+        "NC": "CN",
+    }
+    return aliases.get(value, value)
+
+
+def test_class_unknown_benchmark_rejects_hidden_reaction_fields():
+    benchmark = _single_step_benchmark()
+
+    with pytest.raises(benchmark.SingleStepProtocolError, match="class-unknown"):
+        benchmark.validate_public_targets(
+            [
+                {
+                    "target_id": "target-1",
+                    "product_smiles": "CCOC=O",
+                    "reaction_class": "1",
+                }
+            ],
+            canonicalizer=_toy_canonicalizer,
+        )
+
+
+def test_single_step_benchmark_preserves_invalid_and_duplicate_beams():
+    benchmark = _single_step_benchmark()
+    targets = benchmark.validate_public_targets(
+        [{"target_id": "target-1", "product_smiles": "CCOC=O"}],
+        canonicalizer=_toy_canonicalizer,
+    )
+    normalized = benchmark.normalize_prediction_payloads(
+        targets,
+        [
+            {
+                "target_id": "target-1",
+                "predictions": [
+                    {"rank": 1, "reactants_smiles": "N.OCC", "score": 0.7},
+                    {"rank": 2, "reactants_smiles": "CCO.N", "score": 0.6},
+                    {"rank": 3, "reactants_smiles": "", "score": 0.2},
+                    {"rank": 4, "reactants_smiles": None, "score": None},
+                    {
+                        "rank": 5,
+                        "reactants_smiles": "not-smiles",
+                        "score": 0.1,
+                    },
+                ],
+            }
+        ],
+        top_k=5,
+        canonicalizer=_toy_canonicalizer,
+    )
+
+    beams = normalized[0].predictions
+    assert [beam.status for beam in beams] == [
+        "valid",
+        "valid",
+        "empty",
+        "invalid",
+        "invalid",
+    ]
+    assert beams[0].signature == "CCO.N"
+    assert beams[1].signature == "CCO.N"
+    assert beams[1].duplicate_of_rank == 1
+    assert len(beams) == 5
+
+
+def test_single_step_private_evaluator_scores_targets_before_aggregation():
+    benchmark = _single_step_benchmark()
+    targets = benchmark.validate_public_targets(
+        [
+            {"target_id": "target-1", "product_smiles": "CCOC=O"},
+            {"target_id": "target-2", "product_smiles": "CCBr"},
+        ],
+        canonicalizer=_toy_canonicalizer,
+    )
+    predictions = benchmark.normalize_prediction_payloads(
+        targets,
+        [
+            {
+                "target_id": "target-1",
+                "predictions": [
+                    {"rank": 1, "reactants_smiles": "N.OCC", "score": 0.7},
+                    {"rank": 2, "reactants_smiles": "Cl.C", "score": 0.2},
+                ],
+            },
+            {
+                "target_id": "target-2",
+                "predictions": [
+                    {"rank": 1, "reactants_smiles": "not-smiles", "score": 0.6},
+                    {"rank": 2, "reactants_smiles": "Br.C", "score": 0.4},
+                ],
+            },
+        ],
+        top_k=3,
+        canonicalizer=_toy_canonicalizer,
+    )
+    references = benchmark.normalize_references(
+        targets,
+        [
+            {
+                "target_id": "target-1",
+                "precursor_sets": ["CCO.N", "C.I"],
+            },
+            {"target_id": "target-2", "precursor_sets": ["C.Br"]},
+        ],
+        canonicalizer=_toy_canonicalizer,
+    )
+
+    metrics = benchmark.evaluate_predictions(predictions, references, top_k=3)
+
+    assert metrics["top_k_exact_match_accuracy"] == {"1": 0.5, "3": 1.0}
+    assert metrics["multi_reference_recall_at_k"] == {"1": 0.25, "3": 0.75}
+    assert metrics["mean_reciprocal_rank"] == 0.75
+    assert metrics["invalid_prediction_rate"] == 0.25
+    assert metrics["unused_budget_slot_rate"] == pytest.approx(1 / 3)
+    assert [row["first_hit_rank"] for row in metrics["targets"]] == [1, 2]
+
+
+def test_single_step_benchmark_cli_writes_public_and_private_artifacts(tmp_path):
+    benchmark = _single_step_benchmark()
+    targets_path = tmp_path / "targets.csv"
+    predictions_path = tmp_path / "predictions.jsonl"
+    references_path = tmp_path / "references.jsonl"
+    intermediate_path = tmp_path / "intermediate_results.json"
+    metrics_path = tmp_path / "metrics.json"
+    targets_path.write_text(
+        "target_id,product_smiles\ntarget-1,CCOC=O\n", encoding="utf-8"
+    )
+    predictions_path.write_text(
+        json.dumps(
+            {
+                "target_id": "target-1",
+                "predictions": [{"rank": 1, "reactants_smiles": "N.OCC", "score": 0.7}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    references_path.write_text(
+        json.dumps({"target_id": "target-1", "precursor_sets": ["CCO.N"]}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        benchmark.main(
+            [
+                "normalize",
+                "--targets",
+                str(targets_path),
+                "--predictions",
+                str(predictions_path),
+                "--output",
+                str(intermediate_path),
+                "--top-k",
+                "3",
+            ],
+            canonicalizer=_toy_canonicalizer,
+        )
+        == 0
+    )
+    assert (
+        benchmark.main(
+            [
+                "evaluate",
+                "--targets",
+                str(targets_path),
+                "--predictions",
+                str(predictions_path),
+                "--references",
+                str(references_path),
+                "--output",
+                str(metrics_path),
+                "--top-k",
+                "3",
+            ],
+            canonicalizer=_toy_canonicalizer,
+        )
+        == 0
+    )
+    intermediate = json.loads(intermediate_path.read_text(encoding="utf-8"))
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert intermediate["task_condition"] == "reaction_class_unknown"
+    assert intermediate["targets"][0]["predictions"][0]["signature"] == "CCO.N"
+    assert metrics["top_k_exact_match_accuracy"] == {"1": 1.0, "3": 1.0}
 
 
 def test_aspirin_example_dashboard_is_documented():

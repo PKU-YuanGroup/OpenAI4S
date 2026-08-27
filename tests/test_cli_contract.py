@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import signal
 import subprocess
@@ -247,6 +248,129 @@ def test_url_command_is_offline_and_returns_success(monkeypatch, capsys):
 
     assert module.main(["url"]) == 0
     assert capsys.readouterr().out.strip() == "http://127.0.0.1:9876/"
+
+
+def _recorded_daemon_config(tmp_path, *, host="172.25.100.5", port=9876, pid=4321):
+    config = SimpleNamespace(
+        host="127.0.0.1",
+        port=8760,
+        data_dir=tmp_path,
+        pidfile=tmp_path / "openai4s.pid",
+        statefile=tmp_path / "daemon.json",
+    )
+    config.pidfile.write_text(str(pid), encoding="utf-8")
+    config.statefile.write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "pid_start": "daemon-start",
+                "host": host,
+                "port": port,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config
+
+
+@pytest.mark.parametrize(
+    ("recorded_host", "url_host"),
+    [
+        ("172.25.100.5", "172.25.100.5"),
+        ("0.0.0.0", "localhost"),
+        ("", "localhost"),
+        ("::", "localhost"),
+        ("::1", "[::1]"),
+    ],
+)
+def test_url_uses_the_live_recorded_endpoint_without_losing_url_semantics(
+    tmp_path, monkeypatch, capsys, recorded_host, url_host
+):
+    from openai4s.server import local_auth
+
+    module = _cli_module()
+    config = _recorded_daemon_config(tmp_path, host=recorded_host)
+    token = local_auth.load_or_mint(tmp_path)
+
+    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
+    monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
+
+    assert module.cmd_url(SimpleNamespace()) == 0
+    assert capsys.readouterr().out.strip() == (f"http://{url_host}:9876/?token={token}")
+
+
+def test_url_ignores_a_recorded_endpoint_when_the_pid_is_not_live(
+    tmp_path, monkeypatch, capsys
+):
+    module = _cli_module()
+    config = _recorded_daemon_config(tmp_path)
+
+    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: False)
+
+    assert module.cmd_url(SimpleNamespace()) == 0
+    assert capsys.readouterr().out.strip() == "http://127.0.0.1:8760/"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {"pid": 4322, "host": "172.25.100.5", "port": 9876},
+            id="stale-pid",
+        ),
+        pytest.param(
+            {
+                "pid": 4321,
+                "pid_start": "stale-start",
+                "host": "172.25.100.5",
+                "port": 9876,
+            },
+            id="reused-pid",
+        ),
+        pytest.param(
+            {
+                "pid": 4321,
+                "pid_start": None,
+                "host": "172.25.100.5",
+                "port": 9876,
+            },
+            id="missing-start-token",
+        ),
+        pytest.param(
+            {"pid": True, "host": "172.25.100.5", "port": 9876}, id="bool-pid"
+        ),
+        pytest.param({"pid": 4321, "host": None, "port": 9876}, id="host-type"),
+        pytest.param({"pid": 4321, "host": "bad host", "port": 9876}, id="host-space"),
+        pytest.param(
+            {"pid": 4321, "host": "http://remote", "port": 9876},
+            id="host-url",
+        ),
+        pytest.param({"pid": 4321, "host": "[::1]", "port": 9876}, id="host-brackets"),
+        pytest.param(
+            {"pid": 4321, "host": "127.0.0.1", "port": "9876"},
+            id="port-type",
+        ),
+        pytest.param({"pid": 4321, "host": "127.0.0.1", "port": True}, id="bool-port"),
+        pytest.param({"pid": 4321, "host": "127.0.0.1", "port": 0}, id="port-zero"),
+        pytest.param({"pid": 4321, "host": "127.0.0.1", "port": 65536}, id="port-high"),
+        pytest.param("not-json", id="malformed-json"),
+    ],
+)
+def test_recorded_endpoint_rejects_stale_or_invalid_state(
+    tmp_path, monkeypatch, payload
+):
+    module = _cli_module()
+    config = SimpleNamespace(statefile=tmp_path / "daemon.json")
+    if isinstance(payload, str):
+        content = payload
+    else:
+        content = json.dumps({"pid_start": "daemon-start", **payload})
+    config.statefile.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
+
+    assert module._recorded_endpoint(config, 4321) is None
 
 
 def test_stage1_run_allows_control_only_agent_before_any_readiness_probe(
@@ -686,6 +810,40 @@ def test_status_reports_the_local_data_dir_without_trusting_health(monkeypatch, 
     assert "model    : demo" in output
     assert "data_dir : /trusted/local-data" in output
     assert "/leaked" not in output
+
+
+def test_status_probes_and_reports_the_live_recorded_endpoint(
+    tmp_path, monkeypatch, capsys
+):
+    module = _cli_module()
+    config = _recorded_daemon_config(tmp_path, host="172.25.100.5", port=9123)
+    opened = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"status":"ok","model":"demo"}'
+
+    def open_daemon(request, *, timeout):
+        opened.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module, "get_config", lambda: config)
+    monkeypatch.setattr(module, "_daemon_alive", lambda _cfg, _pid: True)
+    monkeypatch.setattr(module, "_process_start_token", lambda _pid: "daemon-start")
+    monkeypatch.setattr(module, "_open_daemon", open_daemon)
+
+    assert module.cmd_status(SimpleNamespace()) == 0
+    assert opened == [("http://172.25.100.5:9123/health", 3)]
+    output = capsys.readouterr().out
+    assert "at http://172.25.100.5:9123/" in output
+    assert "127.0.0.1:8760" not in output
 
 
 @pytest.mark.skipif(os.name != "posix", reason="SIGINT dispositions are POSIX")
