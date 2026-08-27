@@ -9,7 +9,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 CHUNK_SIZE = 1024 * 1024
 
@@ -358,6 +358,21 @@ def snapshot_artifacts(
             else [path]
         )
         for candidate in candidates:
+            # The containment check above only reaches the caller's arguments.
+            # ``is_file()`` and ``_sha256_file`` follow symlinks, so without
+            # re-checking here a link inside the tree smuggles in exactly the
+            # file the guard just refused, recorded under an in-base path.
+            if candidate.is_symlink():
+                raise ReactionModelDeploymentError(
+                    f"artifact snapshot must not contain a symlink: {candidate}"
+                )
+            resolved = candidate.resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError as exc:
+                raise ReactionModelDeploymentError(
+                    f"artifact {resolved} is outside snapshot base {root}"
+                ) from exc
             relative_file = candidate.relative_to(root).as_posix()
             size, digest = _sha256_file(candidate)
             files.append({"path": relative_file, "bytes": size, "sha256": digest})
@@ -388,7 +403,20 @@ def verify_artifact_snapshot(
         raise ReactionModelDeploymentError("artifact snapshot fingerprint mismatch")
     root = Path(base).resolve()
     failures: list[str] = []
+    recorded: set[str] = set()
     for entry in manifest["files"]:
+        if not isinstance(entry, Mapping) or not {
+            "path",
+            "bytes",
+            "sha256",
+        } <= set(entry):
+            raise ReactionModelDeploymentError(
+                "artifact snapshot entry must record path, bytes, and sha256"
+            )
+        if not isinstance(entry["path"], str):
+            raise ReactionModelDeploymentError(
+                "artifact snapshot entry path must be a string"
+            )
         relative = Path(entry["path"])
         if relative.is_absolute() or ".." in relative.parts:
             raise ReactionModelDeploymentError("artifact snapshot contains unsafe path")
@@ -396,12 +424,27 @@ def verify_artifact_snapshot(
         if not path.is_file():
             failures.append(f"missing:{entry['path']}")
             continue
+        recorded.add(relative.as_posix())
         size, digest = _sha256_file(path)
         if size != entry["bytes"] or digest != entry["sha256"]:
             failures.append(f"changed:{entry['path']}")
+    # Checking only the recorded entries makes the gate blind to a file *added*
+    # after snapshotting - and both consumers load whatever is in the directory
+    # (``from model import ...`` after a sys.path insert, and
+    # ``from_pretrained``, which prefers an added model.safetensors over a
+    # verified pytorch_model.bin). Enumerate the tree and refuse strangers.
+    for present in sorted(root.rglob("*")):
+        if present.is_symlink():
+            failures.append(f"symlink:{present.relative_to(root).as_posix()}")
+            continue
+        if not present.is_file():
+            continue
+        relative_present = present.relative_to(root).as_posix()
+        if relative_present not in recorded:
+            failures.append(f"unexpected:{relative_present}")
     return {
         "ok": not failures,
-        "failures": failures,
+        "failures": sorted(failures),
         "verified_files": len(manifest["files"]),
         "snapshot_sha256": fingerprint,
     }

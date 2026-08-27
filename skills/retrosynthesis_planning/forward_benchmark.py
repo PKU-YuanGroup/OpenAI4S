@@ -203,6 +203,11 @@ def evaluate_forward_predictions(
     isomeric_canonicalizer: Canonicalizer = rdkit_canonicalize,
     connectivity_canonicalizer: Canonicalizer = rdkit_connectivity_canonicalize,
 ) -> dict[str, Any]:
+    # The non-empty invariant is enforced on the normalize side by every
+    # validate_* helper; without it here the metric divisions below reduce
+    # to a bare ZeroDivisionError instead of a protocol refusal.
+    if not predictions:
+        raise BenchmarkProtocolError("forward predictions must not be empty")
     budget = positive_int(top_k, field="top_k", maximum=10)
     references: dict[str, tuple[set[str], set[str]]] = {}
     for index, row in enumerate(reference_rows, start=1):

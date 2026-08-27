@@ -19,7 +19,7 @@ from .single_step_benchmark import normalize_precursor_set, rdkit_canonicalize
 Canonicalizer = Callable[[str], str]
 SLOTS = ("catalyst1", "solvent1", "solvent2", "reagent1", "reagent2")
 INPUT_FIELDS = frozenset({"reaction_id", "reactants", "product"})
-PAYLOAD_FIELDS = frozenset({"reaction_id", "predictions", "error"})
+PAYLOAD_FIELDS = frozenset({"reaction_id", "predictions", "raw_output", "error"})
 REFERENCE_FIELDS = frozenset({"reaction_id", "condition_sets"})
 
 
@@ -194,6 +194,11 @@ def evaluate_condition_predictions(
     *,
     top_k: int,
 ) -> dict[str, Any]:
+    # The non-empty invariant is enforced on the normalize side by every
+    # validate_* helper; without it here the metric divisions below reduce
+    # to a bare ZeroDivisionError instead of a protocol refusal.
+    if not predictions:
+        raise BenchmarkProtocolError("condition predictions must not be empty")
     budget = positive_int(top_k, field="top_k", maximum=10)
     references: dict[str, set[tuple[str | None, ...]]] = {}
     for index, row in enumerate(reference_rows, start=1):
@@ -229,10 +234,18 @@ def evaluate_condition_predictions(
             if candidate["valid"] and values in refs:
                 ranks.append(candidate["rank"])
         first = min(ranks) if ranks else None
-        top_one = prediction["predictions"][0] if prediction["predictions"] else None
+        # Ranks are validated as unique and within budget, never as 1-based or
+        # contiguous, so ``predictions[0]`` is whatever survived - not the
+        # rank-1 beam this metric is named for.
+        top_one = next(
+            (item for item in prediction["predictions"] if item["rank"] == 1), None
+        )
         for position, slot in enumerate(SLOTS):
             if top_one and any(
-                top_one["condition_signature"][position] == ref[position]
+                # A reference slot left empty is absence of evidence: scoring
+                # None == None would credit a model that predicts nothing.
+                ref[position] is not None
+                and top_one["condition_signature"][position] == ref[position]
                 for ref in refs
             ):
                 slot_hits[slot] += 1

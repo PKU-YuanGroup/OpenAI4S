@@ -191,9 +191,19 @@ def _jaccard(left: set[str], right: set[str]) -> float:
 
 
 def route_similarity(left: Mapping[str, Any], right: Mapping[str, Any]) -> float:
-    """Compare routes by reaction, product, precursor, and terminal features."""
+    """Compare routes by reaction, product, precursor, and terminal features.
 
-    return _jaccard(set(route_feature_set(left)), set(route_feature_set(right)))
+    ``_jaccard`` scores two empty sets as ``1.0``, which is the right
+    convention for de-duplication and an inverted one for scoring: a route
+    with no recoverable tree would otherwise report a perfect match against
+    every reference. Scoring treats "no features" as no evidence.
+    """
+
+    left_features = set(route_feature_set(left))
+    right_features = set(route_feature_set(right))
+    if not left_features or not right_features:
+        return 0.0
+    return _jaccard(left_features, right_features)
 
 
 def select_diverse_routes(

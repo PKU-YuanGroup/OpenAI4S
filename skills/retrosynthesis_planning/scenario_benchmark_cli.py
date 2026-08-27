@@ -50,6 +50,15 @@ SCENARIO_IDS = {
 }
 
 
+DEFAULT_TOP_K = 10
+
+
+def _requested_top_k(args: argparse.Namespace) -> int:
+    """Return the Top-K the caller asked for, defaulting when omitted."""
+
+    return DEFAULT_TOP_K if args.top_k is None else int(args.top_k)
+
+
 def _load(path: str) -> Any:
     with Path(path).open(encoding="utf-8") as handle:
         return json.load(handle)
@@ -95,9 +104,9 @@ def _normalize(args: argparse.Namespace) -> dict[str, Any]:
         )
     elif args.scenario == "forward":
         records = normalize_forward_outputs(
-            validate_forward_inputs(inputs), predictions, top_k=args.top_k
+            validate_forward_inputs(inputs), predictions, top_k=_requested_top_k(args)
         )
-        metadata = {"top_k": args.top_k}
+        metadata = {"top_k": _requested_top_k(args)}
     elif args.scenario == "conditions":
         if not args.vocabulary:
             raise BenchmarkProtocolError(
@@ -110,14 +119,36 @@ def _normalize(args: argparse.Namespace) -> dict[str, Any]:
             validate_condition_inputs(inputs),
             predictions,
             vocabulary=vocabulary,
-            top_k=args.top_k,
+            top_k=_requested_top_k(args),
         )
-        metadata = {"top_k": args.top_k}
+        metadata = {"top_k": _requested_top_k(args)}
     else:
         records = normalize_yield_outputs(validate_yield_inputs(inputs), predictions)
     return build_intermediate_artifact(
         SCENARIO_IDS[args.scenario], records, metadata=metadata
     )
+
+
+def _frozen_top_k(artifact: Mapping[str, Any], args: argparse.Namespace) -> int:
+    """Return the Top-K budget the trajectory was frozen under.
+
+    ``_normalize`` records the budget in ``metadata`` and ``_evaluate`` proves
+    the artifact is that frozen one. Re-reading ``--top-k`` here instead would
+    let a stray (or defaulted) flag publish cutoffs the submission was never
+    allowed to fill, under a hash that still validates.
+    """
+
+    metadata = artifact.get("metadata")
+    frozen = metadata.get("top_k") if isinstance(metadata, Mapping) else None
+    if frozen is None:
+        return _requested_top_k(args)
+    if not isinstance(frozen, int) or isinstance(frozen, bool):
+        raise BenchmarkProtocolError("intermediate artifact top_k must be an integer")
+    if args.top_k is not None and int(args.top_k) != frozen:
+        raise BenchmarkProtocolError(
+            f"--top-k {args.top_k} contradicts the frozen artifact budget {frozen}"
+        )
+    return frozen
 
 
 def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
@@ -136,14 +167,15 @@ def _evaluate(args: argparse.Namespace) -> dict[str, Any]:
         raise BenchmarkProtocolError("intermediate artifact scenario_id mismatch")
     records = artifact["records"]
     references = _array(_load(args.references), field="references")
+    top_k = _frozen_top_k(artifact, args)
     if args.scenario == "multistep":
         return evaluate_routes(records, references)
     if args.scenario == "atom_mapping":
         return evaluate_mappings(records, references)
     if args.scenario == "forward":
-        return evaluate_forward_predictions(records, references, top_k=args.top_k)
+        return evaluate_forward_predictions(records, references, top_k=top_k)
     if args.scenario == "conditions":
-        return evaluate_condition_predictions(records, references, top_k=args.top_k)
+        return evaluate_condition_predictions(records, references, top_k=top_k)
     return evaluate_yield_predictions(records, references)
 
 
@@ -158,7 +190,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--stock")
     parser.add_argument("--config")
     parser.add_argument("--vocabulary")
-    parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--top-k", type=int, default=None)
     return parser
 
 

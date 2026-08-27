@@ -55,6 +55,8 @@ def require_exact_fields(
     *,
     field: str,
 ) -> None:
+    if not isinstance(value, Mapping):
+        raise BenchmarkProtocolError(f"{field} must be an object")
     actual = set(value)
     if actual != set(expected):
         raise BenchmarkProtocolError(

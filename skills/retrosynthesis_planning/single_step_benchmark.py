@@ -442,6 +442,11 @@ def evaluate_predictions(
 ) -> dict[str, Any]:
     """Evaluate frozen beams against private references, target by target."""
 
+    # The non-empty invariant is enforced on the normalize side by every
+    # validate_public_targets; without it here the metric divisions below reduce
+    # to a bare ZeroDivisionError instead of a protocol refusal.
+    if not predictions:
+        raise SingleStepProtocolError("predictions must not be empty")
     budget = _top_k(top_k)
     prediction_ids = [item.target_id for item in predictions]
     if len(prediction_ids) != len(set(prediction_ids)):

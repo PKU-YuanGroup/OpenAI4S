@@ -11,12 +11,19 @@ from openai4s.config import get_config
 sys.path.insert(0, str(get_config().skills_dir))
 
 from retrosynthesis_planning.atom_mapping_benchmark import (  # noqa: E402
+    PREDICTION_FIELDS as ATOM_MAPPING_PREDICTION_FIELDS,
+)
+from retrosynthesis_planning.atom_mapping_benchmark import (  # noqa: E402
     BenchmarkProtocolError,
     evaluate_mappings,
     validate_public_reactions,
 )
 from retrosynthesis_planning.benchmark_common import (  # noqa: E402
     build_intermediate_artifact,
+    require_exact_fields,
+)
+from retrosynthesis_planning.condition_benchmark import (  # noqa: E402
+    PAYLOAD_FIELDS as CONDITION_PAYLOAD_FIELDS,
 )
 from retrosynthesis_planning.condition_benchmark import (  # noqa: E402
     SLOTS,
@@ -34,6 +41,7 @@ from retrosynthesis_planning.multistep_benchmark import (  # noqa: E402
     normalize_planner_outputs,
     normalize_stock,
     validate_targets,
+    verify_route_tree,
 )
 from retrosynthesis_planning.reaction_model_backends import (  # noqa: E402
     ReactionModelBackend,
@@ -41,6 +49,7 @@ from retrosynthesis_planning.reaction_model_backends import (  # noqa: E402
 from retrosynthesis_planning.reaction_model_deployment import (  # noqa: E402
     ENVIRONMENTS,
     PARROT_HF_ARTIFACTS,
+    ReactionModelDeploymentError,
     artifact_commands,
     model_manifest,
     snapshot_artifacts,
@@ -53,6 +62,7 @@ from retrosynthesis_planning.reproducibility_bundle import (  # noqa: E402
     ReproducibilityBundleError,
     build_reproducibility_bundle,
 )
+from retrosynthesis_planning.route_review import route_similarity  # noqa: E402
 from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402
     main as scenario_cli_main,
 )
@@ -410,6 +420,7 @@ class AiZynthFinder:
             {"target_id": "target-1", "target_smiles": "CCO"},
         ],
         config_path=str(config),
+        stocks=["zinc"],
         max_routes=3,
     )
     failed, record = response["result"]["records"]
@@ -498,3 +509,161 @@ def test_reproducibility_bundle_is_deterministic_and_rejects_local_paths(tmp_pat
     )
     with pytest.raises(ReproducibilityBundleError, match="local or forbidden"):
         build_reproducibility_bundle(source, tmp_path / "rejected.zip")
+
+
+def _identity_smiles(value):
+    return value
+
+
+def test_stock_closure_alone_never_certifies_a_solved_route():
+    """A route with no reaction node is not a route, however well it closes."""
+
+    verification = verify_route_tree(
+        {
+            "tree": {
+                "type": "mol",
+                "smiles": "TARGET",
+                "children": [{"type": "mol", "smiles": "BUY"}],
+            }
+        },
+        target_smiles="TARGET",
+        stock=frozenset({"BUY"}),
+        canonicalizer=_identity_smiles,
+    )
+    assert verification["verified_solved"] is False
+    assert verification["valid"] is False
+    assert verification["reaction_count"] == 0
+
+
+def test_route_verification_does_not_depend_on_child_order():
+    """``visit`` has side effects, so the walk must not short-circuit."""
+
+    def route(order):
+        return {
+            "tree": {
+                "type": "mol",
+                "smiles": "T",
+                "children": [
+                    {
+                        "type": "reaction",
+                        "children": [{"type": "mol", "smiles": name} for name in order],
+                    }
+                ],
+            }
+        }
+
+    forward = verify_route_tree(
+        route(["X", "Y", "Z"]),
+        target_smiles="T",
+        stock=frozenset(),
+        canonicalizer=_identity_smiles,
+    )
+    reverse = verify_route_tree(
+        route(["Z", "Y", "X"]),
+        target_smiles="T",
+        stock=frozenset(),
+        canonicalizer=_identity_smiles,
+    )
+    assert forward["unresolved_leaves"] == ["X", "Y", "Z"]
+    assert forward == reverse
+
+
+def test_node_kind_tolerates_whitespace_like_route_review():
+    """``reaction `` must stay an AND-node, not decay into a molecule OR-node."""
+
+    verification = verify_route_tree(
+        {
+            "tree": {
+                "type": "mol",
+                "smiles": "T",
+                "children": [
+                    {
+                        "type": "reaction ",
+                        "children": [
+                            {"type": "mol", "smiles": "A"},
+                            {"type": "mol", "smiles": "B"},
+                        ],
+                    }
+                ],
+            }
+        },
+        target_smiles="T",
+        stock=frozenset({"A"}),
+        canonicalizer=_identity_smiles,
+    )
+    assert verification["verified_solved"] is False
+    assert verification["unresolved_leaves"] == ["B"]
+    assert verification["reaction_count"] == 1
+
+
+def test_route_similarity_treats_an_empty_feature_set_as_no_evidence():
+    assert route_similarity({"rank": 1}, {"tree": {}}) == 0.0
+
+
+def test_require_exact_fields_rejects_a_non_mapping_row():
+    with pytest.raises(BenchmarkProtocolError):
+        require_exact_fields(["reaction_id"], {"reaction_id"}, field="row 1")
+
+
+def test_every_evaluator_refuses_empty_records():
+    """The normalize side rejects empty input; the evaluate side must too."""
+
+    for call in (
+        lambda: evaluate_routes([], []),
+        lambda: evaluate_mappings([], []),
+        lambda: evaluate_forward_predictions([], [], top_k=1),
+        lambda: evaluate_condition_predictions([], [], top_k=1),
+        lambda: evaluate_yield_predictions([], []),
+    ):
+        with pytest.raises(BenchmarkProtocolError):
+            call()
+
+
+def test_worker_payload_schemas_accept_their_own_worker_records():
+    """The record shapes reaction_model_worker emits must normalize."""
+
+    assert "error" in ATOM_MAPPING_PREDICTION_FIELDS
+    assert {"raw_output", "error"} <= CONDITION_PAYLOAD_FIELDS
+
+
+def test_quarantined_model_is_refused_without_an_explicit_override():
+    manifest = model_manifest(
+        "reactiont5v2",
+        checkpoint_id="sagawa/ReactionT5v2-yield@f0658bfd",
+        checkpoint_sha256="c" * 64,
+    )
+    with pytest.raises(ValueError, match="quarantined"):
+        ReactionModelBackend("reactiont5_yield", manifest=manifest)
+
+
+def test_backend_refuses_a_checkpoint_from_the_sibling_model():
+    manifest = model_manifest(
+        "reactiont5v2",
+        checkpoint_id="sagawa/ReactionT5v2-yield@f0658bfd",
+        checkpoint_sha256="c" * 64,
+    )
+    with pytest.raises(ValueError, match="ReactionT5v2-forward"):
+        ReactionModelBackend("reactiont5_forward", manifest=manifest)
+
+
+def test_artifact_verification_detects_a_file_added_after_the_snapshot(tmp_path):
+    base = tmp_path / "base"
+    (base / "models").mkdir(parents=True)
+    (base / "models" / "weights.bin").write_text("w", encoding="utf-8")
+    manifest = snapshot_artifacts([base / "models"], base=base)
+    assert verify_artifact_snapshot(manifest, base=base)["ok"] is True
+    (base / "models" / "model.safetensors").write_text("added", encoding="utf-8")
+    result = verify_artifact_snapshot(manifest, base=base)
+    assert result["ok"] is False
+    assert "unexpected:models/model.safetensors" in result["failures"]
+
+
+def test_snapshot_refuses_a_symlink_that_escapes_the_base(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "weights.bin").write_text("outside", encoding="utf-8")
+    base = tmp_path / "base"
+    (base / "models").mkdir(parents=True)
+    os.symlink(outside / "weights.bin", base / "models" / "weights.bin")
+    with pytest.raises(ReactionModelDeploymentError, match="symlink"):
+        snapshot_artifacts([base / "models"], base=base)

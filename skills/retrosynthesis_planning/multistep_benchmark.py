@@ -83,7 +83,7 @@ def _children(node: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _kind(node: Mapping[str, Any]) -> str:
-    value = str(node.get("type") or node.get("kind") or "").lower()
+    value = str(node.get("type") or node.get("kind") or "").strip().lower()
     if value in {"reaction", "rxn"} or node.get("is_reaction") is True:
         return "reaction"
     return "molecule"
@@ -143,7 +143,18 @@ def verify_route_tree(
             else:
                 if any(_kind(child) != "reaction" for child in children):
                     issues.append("molecule_has_nonreaction_child")
-                solved = any(visit(child, depth) for child in children)
+                # ``visit`` records issues, reactions, depth and unresolved
+                # leaves as it walks. A short-circuiting ``any``/``all`` would
+                # stop at the first decisive child and silently drop every
+                # sibling's findings, making the verdict depend on child order.
+                # A molecule is only solved *through a reaction*: crediting a
+                # molecule->molecule edge would let stock closure stand in for
+                # reaction feasibility.
+                resolved = [
+                    visit(child, depth) and _kind(child) == "reaction"
+                    for child in children
+                ]
+                solved = any(resolved)
         else:
             reaction_count += 1
             if not children:
@@ -152,7 +163,7 @@ def verify_route_tree(
             else:
                 if any(_kind(child) != "molecule" for child in children):
                     issues.append("reaction_has_nonmolecule_child")
-                solved = all(visit(child, depth + 1) for child in children)
+                solved = all([visit(child, depth + 1) for child in children])
         visiting.remove(identity)
         return solved
 
@@ -167,19 +178,27 @@ def verify_route_tree(
     if root != target_smiles:
         issues.append("root_target_mismatch")
     solved = visit(tree, 0) and root == target_smiles
+    valid = not any(
+        issue
+        in {
+            "cycle_detected",
+            "invalid_molecule_smiles",
+            "invalid_root_smiles",
+            "root_target_mismatch",
+            "reaction_without_precursors",
+            # A molecule whose child is not a reaction turns the reaction
+            # AND-branch into a molecule OR-branch, so stock closure alone
+            # can report a route solved. That is not a valid route tree.
+            "molecule_has_nonreaction_child",
+            "reaction_has_nonmolecule_child",
+        }
+        for issue in issues
+    )
     return {
-        "verified_solved": solved,
-        "valid": not any(
-            issue
-            in {
-                "cycle_detected",
-                "invalid_molecule_smiles",
-                "invalid_root_smiles",
-                "root_target_mismatch",
-                "reaction_without_precursors",
-            }
-            for issue in issues
-        ),
+        # A structurally invalid tree cannot certify a solved route; callers
+        # read ``verified_solved`` alone, so it must not outrank ``valid``.
+        "verified_solved": solved and valid,
+        "valid": valid,
         "unresolved_leaves": sorted(set(unresolved)),
         "reaction_count": reaction_count,
         "max_depth": max_depth,
@@ -278,10 +297,32 @@ def normalize_planner_outputs(
     return tuple(normalized)
 
 
+def _canonicalization_mode() -> str:
+    """Report whether route matching can actually canonicalize chemistry."""
+
+    try:
+        rdkit_canonicalize("CCO")
+    except Exception:
+        return "raw_string"
+    return "rdkit"
+
+
 def evaluate_routes(
     normalized: Sequence[Mapping[str, Any]],
     reference_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    # The non-empty invariant is enforced on the normalize side by every
+    # validate_* helper; without it here the metric divisions below reduce
+    # to a bare ZeroDivisionError instead of a protocol refusal.
+    if not normalized:
+        raise BenchmarkProtocolError("normalized planner records must not be empty")
+    # ``route_signature``/``route_similarity`` fall back to a stripped raw
+    # string when RDKit is absent, so the headline recovery and similarity
+    # metrics can answer a string-comparison question instead of a chemical
+    # one. ``normalize_planner_outputs`` fails closed; scoring cannot, because
+    # ``route_review`` offers no canonicalizer seam - so record which mode
+    # produced the numbers, inside the envelope ``result_sha256`` covers.
+    canonicalization = _canonicalization_mode()
     references: dict[str, list[Mapping[str, Any]]] = {}
     for index, row in enumerate(reference_rows, start=1):
         require_exact_fields(row, REFERENCE_FIELDS, field=f"reference row {index}")
@@ -352,9 +393,16 @@ def evaluate_routes(
         "budget_compliance_rate": sum(row["budget_compliant"] for row in target_results)
         / count,
         "duplicate_route_rate": duplicate_count / route_count if route_count else 0.0,
+        "canonicalization": canonicalization,
         "targets": target_results,
         "caveat": "A verified solved route reaches the frozen stock; it is not experimental validation.",
     }
+    if canonicalization != "rdkit":
+        result["caveat"] += (
+            " RDKit was unavailable, so route matching compared raw SMILES"
+            " strings; these recovery and similarity numbers are not a"
+            " chemical comparison."
+        )
     result["result_sha256"] = sha256_json(result)
     return result
 

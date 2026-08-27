@@ -17,7 +17,7 @@ from .benchmark_common import (
 
 REACTION_FIELDS = frozenset({"reaction_id", "reaction_smiles"})
 PREDICTION_FIELDS = frozenset(
-    {"reaction_id", "mapped_reaction", "confidence", "atom_correspondence"}
+    {"reaction_id", "mapped_reaction", "confidence", "atom_correspondence", "error"}
 )
 REFERENCE_FIELDS = frozenset(
     {"reaction_id", "equivalent_correspondences", "bond_changes", "ambiguous"}
@@ -274,6 +274,11 @@ def evaluate_mappings(
     predictions: Sequence[Mapping[str, Any]],
     reference_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    # The non-empty invariant is enforced on the normalize side by every
+    # validate_* helper; without it here the metric divisions below reduce
+    # to a bare ZeroDivisionError instead of a protocol refusal.
+    if not predictions:
+        raise BenchmarkProtocolError("mapping predictions must not be empty")
     refs: dict[str, Mapping[str, Any]] = {}
     for index, row in enumerate(reference_rows, start=1):
         require_exact_fields(row, REFERENCE_FIELDS, field=f"reference row {index}")

@@ -223,6 +223,14 @@ def _plan_routes(request: Mapping[str, Any]) -> dict[str, Any]:
     policies = _name_array(options.get("policies", []), "policies")
     filters = _name_array(options.get("filters", []), "filters")
     stocks = _name_array(options.get("stocks", []), "stocks")
+    if not stocks:
+        # Defaulting to every configured stock maximizes stock closure, which
+        # is the one quantity the scenario contract says must not stand in for
+        # reaction feasibility. The sibling policy default is first-only, so an
+        # all-stocks default is an asymmetry, not a considered choice.
+        raise RequestError(
+            "invalid_request", "stocks must name at least one configured stock"
+        )
     max_routes = options.get("max_routes", 10)
     if (
         isinstance(max_routes, bool)
@@ -233,8 +241,9 @@ def _plan_routes(request: Mapping[str, Any]) -> dict[str, Any]:
 
     with contextlib.redirect_stdout(sys.stderr):
         finder = AiZynthFinder(configfile=config_path)
-        finder.stock.select(stocks or finder.stock.items)
+        finder.stock.select(stocks)
         finder.expansion_policy.select(policies or finder.expansion_policy.items[0])
+        selected_policies = list(policies) or [finder.expansion_policy.items[0]]
         if filters:
             finder.filter_policy.select(filters)
         else:
@@ -287,6 +296,9 @@ def _plan_routes(request: Mapping[str, Any]) -> dict[str, Any]:
                 }
             )
         statistics["wall_seconds"] = round(time.monotonic() - started, 6)
+        statistics["selected_stocks"] = list(stocks)
+        statistics["selected_policies"] = list(selected_policies)
+        statistics["selected_filters"] = list(filters)
         solved = bool(statistics.get("is_solved"))
         records.append(
             {
@@ -745,8 +757,13 @@ def main() -> int:
         sys.stdout.buffer.write(encoded)
         sys.stdout.buffer.flush()
     else:
-        os.write(reserved, encoded)
-        os.close(reserved)
+        # ``os.write`` is one write(2): it returns the bytes actually
+        # transferred, and a short write here would emit truncated JSON that
+        # the host then blames on the model. The buffered writer loops, and
+        # ``closefd=True`` closes the descriptor even on BrokenPipeError.
+        with os.fdopen(reserved, "wb", closefd=True) as handle:
+            handle.write(encoded)
+            handle.flush()
     return 0
 
 

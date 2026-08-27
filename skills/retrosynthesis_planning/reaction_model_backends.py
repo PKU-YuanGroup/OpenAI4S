@@ -28,6 +28,27 @@ SUPPORTED_MODELS = {
     "reactiont5_yield": "ReactionT5v2",
     "parrot": "Parrot",
 }
+#: Admission state per registered model. The quarantine and block decisions
+#: are stated in MODEL_BACKENDS.md, MODEL_TASKS.md and SKILL.md; keeping them
+#: only in prose leaves two sources of truth and no gate, so they are declared
+#: here and enforced in ``ReactionModelBackend.__init__``.
+ADMITTED = "admitted"
+QUARANTINED = "quarantined"
+MODEL_STATES = {
+    "aizynthfinder": ADMITTED,
+    "rxnmapper": ADMITTED,
+    "reactiont5_forward": ADMITTED,
+    # Published canary not reproduced; protocol testing only, never a score
+    # that ranks reactions or rescues a route.
+    "reactiont5_yield": QUARANTINED,
+    "parrot": ADMITTED,
+}
+#: ``model`` alone cannot separate two checkpoints of the same architecture, so
+#: admission also pins the checkpoint each backend id is allowed to load.
+CHECKPOINT_PREFIXES = {
+    "reactiont5_forward": "sagawa/ReactionT5v2-forward",
+    "reactiont5_yield": "sagawa/ReactionT5v2-yield",
+}
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _PATH_IN_TEXT = re.compile(
@@ -149,12 +170,27 @@ class ReactionModelBackend:
         repository_dir: str | Path | None = None,
         timeout_seconds: float = 600.0,
         env: Mapping[str, str] | None = None,
+        allow_quarantined: bool = False,
     ) -> None:
         if model not in SUPPORTED_MODELS:
             raise ValueError(f"unsupported reaction model {model!r}")
+        state = MODEL_STATES.get(model, QUARANTINED)
+        if state != ADMITTED and not allow_quarantined:
+            raise ValueError(
+                f"reaction model {model!r} is {state}; pass allow_quarantined=True "
+                "to run it for protocol testing only, never for a reported score"
+            )
         loaded = load_model_manifest(manifest)
         if loaded is None or loaded.model != SUPPORTED_MODELS[model]:
             raise ValueError("a matching reviewed model manifest is required")
+        expected_checkpoint = CHECKPOINT_PREFIXES.get(model)
+        if expected_checkpoint and not loaded.checkpoint_id.startswith(
+            expected_checkpoint
+        ):
+            raise ValueError(
+                f"reaction model {model!r} requires a {expected_checkpoint} "
+                f"checkpoint, not {loaded.checkpoint_id!r}"
+            )
         prefix = tuple(python_command or (sys.executable,))
         if not prefix or not all(
             isinstance(item, str) and item.strip() for item in prefix
@@ -163,6 +199,7 @@ class ReactionModelBackend:
         if not math.isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive and finite")
         self.model = model
+        self.state = state
         self.manifest = loaded
         self.command = (
             *prefix,
@@ -230,9 +267,16 @@ class ReactionModelBackend:
             raise BackendExecutionError(
                 "invalid_json", "reaction backend did not return one JSON object"
             ) from exc
-        return _normalize_response(
+        normalized = _normalize_response(
             response, request_id=request_id, manifest=self.manifest
         )
+        normalized["admission_state"] = self.state
+        if self.state != ADMITTED:
+            normalized["warnings"] = [
+                *normalized["warnings"],
+                f"model {self.model!r} is {self.state}: protocol testing only",
+            ]
+        return normalized
 
     def capabilities(self) -> dict[str, Any]:
         return self.run("capabilities", [])
@@ -309,4 +353,12 @@ class ReactionModelBackend:
         )
 
 
-__all__ = ["ReactionModelBackend", "SUPPORTED_MODELS", "WIRE_SCHEMA_VERSION"]
+__all__ = [
+    "ADMITTED",
+    "CHECKPOINT_PREFIXES",
+    "MODEL_STATES",
+    "QUARANTINED",
+    "ReactionModelBackend",
+    "SUPPORTED_MODELS",
+    "WIRE_SCHEMA_VERSION",
+]

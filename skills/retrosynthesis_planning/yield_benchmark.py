@@ -234,6 +234,11 @@ def evaluate_yield_predictions(
     predictions: Sequence[Mapping[str, Any]],
     reference_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    # The non-empty invariant is enforced on the normalize side by every
+    # validate_* helper; without it here the metric divisions below reduce
+    # to a bare ZeroDivisionError instead of a protocol refusal.
+    if not predictions:
+        raise BenchmarkProtocolError("yield predictions must not be empty")
     references: dict[str, float] = {}
     for index, row in enumerate(reference_rows, start=1):
         require_exact_fields(row, REFERENCE_FIELDS, field=f"yield reference {index}")
