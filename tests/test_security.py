@@ -466,9 +466,15 @@ def test_agent_loop_refuses_unsafe_cell_without_executing(monkeypatch):
     executed = []
     real_execute = loop_mod.Kernel.execute
 
-    def spy_execute(self, code, origin="agent", on_chunk=None):
+    def spy_execute(self, code, origin="agent", on_chunk=None, **kwargs):
         executed.append(code)
-        return real_execute(self, code, origin=origin, on_chunk=on_chunk)
+        return real_execute(
+            self,
+            code,
+            origin=origin,
+            on_chunk=on_chunk,
+            **kwargs,
+        )
 
     monkeypatch.setattr(loop_mod.Kernel, "execute", spy_execute)
 

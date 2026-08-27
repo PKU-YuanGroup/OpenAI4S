@@ -367,6 +367,289 @@ try {
     steerTarget.slice(0, 200),
   );
 
+  // ---- D9: the structured, truthful delegate step card --------------------
+  // Every terminal shape the server can emit, rendered through the real
+  // buildStepCard. Green is reserved for completed; partial/blocked/stopped/
+  // max_turns render amber "warning"; failed/malformed/transport render red.
+  // The default card must be human-readable — raw JSON only behind the
+  // collapsed "Show details" reveal.
+  const delegateCards = await page.evaluate(() => {
+    const bigOutput = "R".repeat(12000);
+    const envelope = (over) => Object.assign({
+      name: "assay-reader", child_id: "c-1", frame_id: "f-child",
+      task_status: "completed", stop_reason: "submitted", status: null,
+      turns: 3, max_turns: 8,
+      environment: { python: "/envs/sci/bin/python", env_name: "sci-env" },
+      summary: "wrote the report", limitations: [], artifacts: ["report.md"],
+      raw: JSON.stringify({ child_id: "c-1", output: bigOutput }),
+    }, over || {});
+    const build = (status, output) => buildStepCard({
+      step_id: "s-" + Math.random().toString(16).slice(2),
+      kind: "delegate", title: "Delegating to assay-reader",
+      input: { specialist: "assay-reader", request: "do the thing" },
+      status, output,
+    });
+    const describe = (handle) => {
+      const card = handle.card;
+      const json = card.querySelector(".s-json");
+      const clone = card.cloneNode(true);
+      clone.querySelectorAll(".s-json").forEach((node) => node.remove());
+      const chips = [...card.querySelectorAll(".dlg-chip")].map((chip) => chip.className);
+      return {
+        classes: card.className,
+        meta: card.querySelector(".s-meta").textContent,
+        chips,
+        visibleText: clone.textContent,
+        jsonHidden: json ? json.style.display === "none" : null,
+        hasToggle: !!card.querySelector(".s-out-tgl"),
+        envShown: clone.textContent.includes("sci-env"),
+        artifactShown: clone.textContent.includes("report.md"),
+      };
+    };
+    return {
+      completed: describe(build("done", envelope())),
+      blocked: describe(build("warning", envelope({ task_status: "blocked", limitations: ["needs credentials"] }))),
+      partial: describe(build("warning", envelope({ task_status: "partial" }))),
+      maxTurns: describe(build("warning", envelope({ task_status: "partial", stop_reason: "max_turns", error: "max_turns exhausted before completion" }))),
+      cancelled: describe(build("warning", { name: "assay-reader", child_id: "c-1", frame_id: null, task_status: null, stop_reason: "stopped", status: null, turns: null, max_turns: 8, environment: null, summary: "", limitations: [], artifacts: [], raw: "{}" })),
+      runtimeError: describe(build("error", { error: "RuntimeError: kernel died" })),
+      malformed: describe(build("error", { raw: "42" })),
+      legacy: describe(build("done", { result: JSON.stringify({ old: "flattened", stop_reason: "submitted", output: { summary: "an old stored step" } }, null, 1) })),
+      bigOutputLeak: bigOutput.slice(0, 64),
+    };
+  });
+  check("completed card is green-path done", !delegateCards.completed.classes.includes("warn") && !delegateCards.completed.classes.includes("err"), delegateCards.completed.classes);
+  check("completed chip says completed", delegateCards.completed.chips.some((c) => c.includes("completed")), JSON.stringify(delegateCards.completed.chips));
+  check("completed card shows env + artifacts", delegateCards.completed.envShown && delegateCards.completed.artifactShown, delegateCards.completed.visibleText.slice(0, 200));
+  check(
+    "the default card contains NO raw JSON blob",
+    delegateCards.completed.jsonHidden === true && !delegateCards.completed.visibleText.includes('"child_id"'),
+    `jsonHidden=${delegateCards.completed.jsonHidden}`,
+  );
+  check("10k+ output stays behind details", delegateCards.completed.hasToggle && !delegateCards.completed.visibleText.includes(delegateCards.bigOutputLeak), "raw output leaked into the default card");
+  check("blocked renders amber warning", delegateCards.blocked.classes.includes("warn") && delegateCards.blocked.chips.some((c) => c.includes("warning")), delegateCards.blocked.classes);
+  check("blocked card lists its limitations", delegateCards.blocked.visibleText.includes("needs credentials"), delegateCards.blocked.visibleText.slice(0, 200));
+  check("partial renders amber warning", delegateCards.partial.classes.includes("warn"), delegateCards.partial.classes);
+  check("max_turns stays a structured warning, not a bare error dump", delegateCards.maxTurns.classes.includes("warn") && delegateCards.maxTurns.visibleText.includes("max_turns exhausted"), delegateCards.maxTurns.visibleText.slice(0, 200));
+  check("cancelled renders amber, chip says stopped", delegateCards.cancelled.classes.includes("warn") && delegateCards.cancelled.chips.some((c) => c.includes("warning")), JSON.stringify(delegateCards.cancelled.chips));
+  check("a runtime error renders red", delegateCards.runtimeError.classes.includes("err"), delegateCards.runtimeError.classes);
+  check("a malformed result renders red with its summary word", delegateCards.malformed.classes.includes("err"), delegateCards.malformed.classes);
+  check("a legacy flattened stored step still renders (graceful degrade)", delegateCards.legacy.visibleText.includes("flattened"), delegateCards.legacy.visibleText.slice(0, 120));
+
+  // A step forwarded from a child (input.delegation decoration) renders nested
+  // with the child tag — child activity never masquerades as the root's.
+  const childStep = await page.evaluate(() => {
+    const handle = buildStepCard({
+      step_id: "s-child-x", kind: "skill", title: "Loading a skill",
+      input: { name: "x", delegation: { delegation_child_id: "c-1", child_frame_id: "f-child", child_name: "structure-scout", depth: 2 } },
+      status: "done", output: {},
+    });
+    return {
+      isChild: handle.card.className.includes("step-child"),
+      tag: (handle.card.querySelector(".s-child-tag") || {}).textContent || "",
+      indent: handle.card.style.getPropertyValue("--step-child-indent"),
+    };
+  });
+  check("a forwarded child step renders as nested", childStep.isChild, childStep.tag);
+  check("the child tag names the child", childStep.tag.includes("structure-scout"), childStep.tag);
+  check("depth scales the nesting indent", childStep.indent === "24px", childStep.indent);
+
+  // ---- D8: the live delegation_child_event stream updates the panel -------
+  const liveEvent = await page.evaluate(() => {
+    const previous = S.delegationState;
+    S.delegationState = { root_frame_id: "f-root", initialized: true, budget: null, stats: { total: 0, pending: 0, running: 0, done: 0, failed: 0, stopped: 0 }, children: [] };
+    mergeDelegationChildEvent({
+      type: "delegation_child_event", event: "running", root_frame_id: "f-root",
+      child: { child_id: "c-live", name: "live-child", status: "running", task_status: "", depth: 1, frame_id: "f-child-live", progress: { turn_boundary: 1, max_turns: 6 }, steering: { queued: 0, delivered: 0 } },
+    });
+    mergeDelegationChildEvent({
+      type: "delegation_child_event", event: "done", root_frame_id: "f-root",
+      child: { child_id: "c-live", name: "live-child", status: "done", task_status: "partial", depth: 1, frame_id: "f-child-live", progress: { turn_boundary: 6, max_turns: 6 }, steering: { queued: 0, delivered: 0 } },
+    });
+    const panel = renderDelegationPanel();
+    const stats = S.delegationState.stats;
+    S.delegationState = previous;
+    const row = panel.querySelector(".delegation-child");
+    return {
+      rows: panel.querySelectorAll(".delegation-child").length,
+      rowClass: row ? row.className : "",
+      chips: row ? [...row.querySelectorAll(".dlg-chip")].map((chip) => chip.className) : [],
+      frameRef: row ? (row.querySelector(".dlg-frame-ref") || {}).title || "" : "",
+      stats,
+    };
+  });
+  check("a live child event stream upserts one panel row", liveEvent.rows === 1, `${liveEvent.rows} rows`);
+  check("the panel row reaches the terminal status", liveEvent.rowClass.includes("status-done"), liveEvent.rowClass);
+  check("the panel row surfaces task_status", liveEvent.chips.some((c) => c.includes("warning")), JSON.stringify(liveEvent.chips));
+  check("the panel row references the child frame", liveEvent.frameRef === "f-child-live", liveEvent.frameRef);
+  check("live stats recount from the merged children", liveEvent.stats.total === 1 && liveEvent.stats.done === 1, JSON.stringify(liveEvent.stats));
+  const eventHandler = await page.evaluate(() => String(onEvent));
+  check(
+    "the delegation_child_event handler feeds the live merge and the timeline",
+    eventHandler.includes("mergeDelegationChildEvent") && eventHandler.includes("delegation_child_event"),
+    "onEvent does not route delegation_child_event through the live merge",
+  );
+
+  // ---- D10: the Executed code surface (execution history, root + children)
+  // Render-level, injected state, through the real build/render functions: the
+  // navigator must show child frames, the per-frame cell list must render a
+  // failed cell in true order, and the surface must label itself as execution
+  // history distinct from Artifacts/deliverables.
+  const executedCode = await page.evaluate(() => {
+    const state = {
+      open: true, loading: false, error: "", request: 1,
+      data: {
+        root_frame_id: "f-exec-root", truncated: false,
+        frames: [
+          { frame_id: "f-exec-root", parent_id: null, root_frame_id: "f-exec-root", name: "analysis", kind: "turn", depth: 0, status: "ready", order: 0, counts: { cells: 1, ok: 1, error: 0, interrupted: 0 }, cells: [] },
+          { frame_id: "f-exec-child", parent_id: "f-exec-root", root_frame_id: "f-exec-root", name: "assay-reader", kind: "delegate", depth: 1, status: "done", order: 1, counts: { cells: 2, ok: 1, error: 1, interrupted: 0 }, cells: [] },
+        ],
+      },
+      selected: "f-exec-child",
+      cells: {
+        "f-exec-child": [
+          { producing_cell_id: "cell-c1", cell_index: 1, state_revision: 1, kernel_id: "python", language: "python", origin: "delegate", source: "data = load('assay.csv')", stdout: "", stderr: "", error: "", status: "ok", figures: [], files_written: [], files_read: [] },
+          { producing_cell_id: "cell-c2", cell_index: 2, state_revision: 2, kernel_id: "python", language: "python", origin: "delegate", source: "raise ValueError('bad assay')", stdout: "", stderr: "", error: "ValueError: bad assay", status: "error", figures: [], files_written: [], files_read: [] },
+        ],
+      },
+    };
+    const view = buildExecutedCodeView(state);
+    const frames = [...view.querySelectorAll(".nb-exec-frame")];
+    const cellsRendered = [...view.querySelectorAll(".notebook-cell")];
+    const failed = cellsRendered[1] || null;
+    return {
+      frameRows: frames.length,
+      frameNames: frames.map((f) => f.textContent),
+      frameIds: frames.map((f) => f.getAttribute("data-frame")),
+      indents: frames.map((f) => f.style.getPropertyValue("--exec-indent")),
+      selectedIsChild: frames[1] ? frames[1].className.includes("on") : false,
+      cellCount: cellsRendered.length,
+      cellOrder: cellsRendered.map((c) => c.getAttribute("data-producing-cell")),
+      failedHasError: failed ? !!failed.querySelector(".nbc-error") : false,
+      failedText: failed ? failed.textContent : "",
+      title: (view.querySelector(".nb-exec-title") || {}).textContent || "",
+      note: (view.querySelector(".nb-exec-note") || {}).textContent || "",
+      artifactsTabLabel: t("dock.files.heading"),
+    };
+  });
+  check("executed-code navigator shows root and child frames", executedCode.frameRows === 2, `${executedCode.frameRows} rows`);
+  check(
+    "the child frame is listed by name and the root by its label",
+    executedCode.frameNames[1].includes("assay-reader") && executedCode.frameIds[0] === "f-exec-root",
+    JSON.stringify(executedCode.frameNames),
+  );
+  check(
+    "child depth is drawn as indentation",
+    executedCode.indents[0] === "0px" && executedCode.indents[1] === "14px",
+    JSON.stringify(executedCode.indents),
+  );
+  check("the selected child frame is marked", executedCode.selectedIsChild, "child row lacks .on");
+  check(
+    "the child cell list renders both cells in true order",
+    executedCode.cellCount === 2 && executedCode.cellOrder[0] === "cell-c1" && executedCode.cellOrder[1] === "cell-c2",
+    JSON.stringify(executedCode.cellOrder),
+  );
+  check(
+    "the failed cell renders with its error, not dropped",
+    executedCode.failedHasError && executedCode.failedText.includes("bad assay"),
+    executedCode.failedText.slice(0, 160),
+  );
+  check(
+    "the surface labels itself as execution history",
+    executedCode.title.length > 0 && executedCode.note.length > 0,
+    `${executedCode.title} / ${executedCode.note.slice(0, 80)}`,
+  );
+  check(
+    "the label is distinct from the Artifacts surface and says so",
+    executedCode.title !== executedCode.artifactsTabLabel && /Artifacts/i.test(executedCode.note),
+    executedCode.note.slice(0, 160),
+  );
+
+  // The download split-button must carry the sources.zip entry, pointing at
+  // the execution-sources export route (not the notebook export).
+  const exportMenu = await page.evaluate(() => {
+    const link = notebookExportLink("f-exec-root");
+    const items = [...link.querySelectorAll(".prov-dlitem")];
+    const sources = items.find((a) => (a.getAttribute("href") || "").includes("/execution-sources/export"));
+    return {
+      items: items.length,
+      hasSources: !!sources,
+      href: sources ? sources.getAttribute("href") : "",
+      downloadName: sources ? sources.getAttribute("download") : "",
+      label: sources ? sources.textContent : "",
+    };
+  });
+  check("the download menu carries the sources.zip entry", exportMenu.hasSources, `${exportMenu.items} items`);
+  check(
+    "the sources entry targets the execution-sources export route",
+    exportMenu.href.includes("/frames/f-exec-root/execution-sources/export"),
+    exportMenu.href,
+  );
+  check(
+    "the sources entry downloads as sources.zip with its own label",
+    exportMenu.downloadName.endsWith("sources.zip") && exportMenu.label.length > 0,
+    `${exportMenu.downloadName} / ${exportMenu.label}`,
+  );
+
+  // A failed per-frame execution-log fetch must not be cached as an empty
+  // cell list: the pre-fix behavior pinned `[]` for that frame until the
+  // session was reopened, so the retry (the next click on the frame row)
+  // could never actually retry. Drives the real selectExecFrame through the
+  // page's own api()/fetch, with the route intercepted to fail once and then
+  // to answer -- the client `api` is a top-level const, so interception is
+  // the only seam that exercises the real call path.
+  const execLogRoute = "**/api/v1/frames/f-exec-retry/execution-log*";
+  await page.route(execLogRoute, (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "injected execution-log failure" }),
+  }));
+  const execFail = await page.evaluate(async () => {
+    const st = execSourcesState();
+    window.__execRetrySaved = {
+      open: st.open, selected: st.selected, cells: st.cells,
+      error: st.error, cellRequest: st.cellRequest,
+    };
+    st.cells = {}; st.error = "";
+    await selectExecFrame("f-exec-retry");
+    return {
+      cachedAfterFailure: Object.prototype.hasOwnProperty.call(st.cells, "f-exec-retry"),
+      errorAfterFailure: String(st.error || ""),
+    };
+  });
+  await page.unroute(execLogRoute);
+  await page.route(execLogRoute, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ kernels: ["python"], entries: [
+      { producing_cell_id: "cell-retry-1", cell_index: 1, state_revision: 1, kernel_id: "python", language: "python", origin: "delegate", source: "x = 1", stdout: "", stderr: "", error: "", status: "ok", figures: [], files_written: [], files_read: [] },
+    ] }),
+  }));
+  const execRecover = await page.evaluate(async () => {
+    const st = execSourcesState();
+    await selectExecFrame("f-exec-retry");
+    const out = {
+      recoveredCells: (st.cells["f-exec-retry"] || []).length,
+      errorCleared: !st.error,
+    };
+    const saved = window.__execRetrySaved;
+    delete window.__execRetrySaved;
+    st.open = saved.open; st.selected = saved.selected; st.cells = saved.cells;
+    st.error = saved.error; st.cellRequest = saved.cellRequest;
+    return out;
+  });
+  await page.unroute(execLogRoute);
+  check(
+    "a failed execution-log fetch is not cached as an empty frame",
+    execFail.cachedAfterFailure === false && execFail.errorAfterFailure.length > 0,
+    JSON.stringify(execFail),
+  );
+  check(
+    "re-selecting the frame retries, recovers, and clears the error",
+    execRecover.recoveredCells === 1 && execRecover.errorCleared,
+    JSON.stringify(execRecover),
+  );
+
   // ---- P1-A: model profiles, and P1-B: memory -- both Customize panels ----
   // Driven through the tray a user actually clicks, not by calling the render
   // function: these two are reached by a tab id, and a tab that stopped

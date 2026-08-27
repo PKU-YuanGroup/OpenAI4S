@@ -790,3 +790,120 @@ def test_the_policy_actually_installs_the_provider():
     source = inspect.getsource(delegation._SteeringContextPolicy.__init__)
     assert "context_budget_provider=" in source
     assert "_child_context_budget" in source
+
+
+# --------------------------------------------------------------------------
+# child step forwarding into the parent session's step sink (D8)
+# --------------------------------------------------------------------------
+
+
+def _step(step_id, kind, phase, **extra):
+    if phase == "begin":
+        base = {
+            "phase": "begin",
+            "step_id": step_id,
+            "kind": kind,
+            "title": f"{kind} title",
+            "input": {"query": "x"},
+        }
+    else:
+        base = {
+            "phase": "end",
+            "step_id": step_id,
+            "status": "done",
+            "output": {},
+            "summary": "ok",
+        }
+    base.update(extra)
+    return base
+
+
+def test_child_steps_are_forwarded_bounded_and_decorated(monkeypatch):
+    """Meaningful child steps (skills / env / artifacts / delegate / errors)
+    reach the parent session's step sink decorated with the child identity;
+    per-chunk noise kinds are dropped unless they end in an error."""
+
+    forwarded = []
+
+    def fake_run(self, task):
+        on_step = self.dispatcher.on_step
+        assert on_step is not None, "the forwarder was not installed"
+        on_step(_step("s-skill", "skill", "begin"))
+        on_step(_step("s-skill", "skill", "end", summary="loaded"))
+        # not meaningful and successful: dropped entirely
+        on_step(_step("s-search", "search", "begin"))
+        on_step(_step("s-search", "search", "end"))
+        # not meaningful but ends in an error: both phases relayed
+        on_step(_step("s-fetch", "fetch", "begin"))
+        on_step(_step("s-fetch", "fetch", "end", status="error", summary="failed"))
+        return _submitted()
+
+    monkeypatch.setattr(loop_mod.Agent, "run", fake_run)
+    runner = DelegationRunner(get_config(), child_step_sink=forwarded.append)
+    try:
+        result = runner({"request": "child task", "name": "step-scout"})
+    finally:
+        runner.close()
+
+    assert result["stop_reason"] == "submitted"
+    ids = [(ev["step_id"], ev["phase"]) for ev in forwarded]
+    assert ("s-skill", "begin") in ids and ("s-skill", "end") in ids
+    assert not any(step_id == "s-search" for step_id, _phase in ids)
+    assert ("s-fetch", "begin") in ids and ("s-fetch", "end") in ids
+    begin = next(
+        ev for ev in forwarded if ev["step_id"] == "s-skill" and ev["phase"] == "begin"
+    )
+    decoration = begin["input"]["delegation"]
+    assert decoration["delegation_child_id"] == result["child_id"]
+    assert decoration["child_name"] == "step-scout"
+    assert decoration["depth"] == 1
+    assert "child_frame_id" in decoration
+    # the child's own payload is untouched
+    assert begin["input"]["query"] == "x"
+
+
+def test_child_step_flood_is_capped_with_one_elision_marker(monkeypatch):
+    forwarded = []
+
+    def fake_run(self, task):
+        on_step = self.dispatcher.on_step
+        for index in range(205):
+            on_step(_step(f"s-{index}", "skill", "begin"))
+            on_step(_step(f"s-{index}", "skill", "end"))
+        return _submitted()
+
+    monkeypatch.setattr(loop_mod.Agent, "run", fake_run)
+    runner = DelegationRunner(get_config(), child_step_sink=forwarded.append)
+    try:
+        runner({"request": "flood", "name": "flooder"})
+    finally:
+        runner.close()
+
+    plain = [
+        ev for ev in forwarded if not str(ev.get("step_id", "")).startswith("s-elide")
+    ]
+    markers = [
+        ev for ev in forwarded if str(ev.get("step_id", "")).startswith("s-elide")
+    ]
+    assert len(plain) == 400  # 200 steps x begin+end
+    # exactly one marker step (begin+end) names the elided count
+    assert len(markers) == 2
+    marker_end = next(ev for ev in markers if ev["phase"] == "end")
+    assert "5 more" in marker_end["summary"]
+
+
+def test_cli_runner_without_step_sink_leaves_child_dispatcher_unwired(monkeypatch):
+    observed = {}
+
+    def fake_run(self, task):
+        observed["on_step"] = self.dispatcher.on_step
+        return _submitted()
+
+    monkeypatch.setattr(loop_mod.Agent, "run", fake_run)
+    runner = DelegationRunner(get_config())
+    try:
+        runner({"request": "cli child"})
+    finally:
+        runner.close()
+
+    assert observed["on_step"] is None

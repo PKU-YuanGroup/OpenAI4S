@@ -55,6 +55,7 @@ from openai4s.agent.ledger import (
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
+from openai4s.agent.task_modes import TaskMode, resolve_task_mode, task_mode_prompt
 from openai4s.config import (
     DATA_ROOT_USERS_DIR,
     Config,
@@ -205,6 +206,7 @@ from openai4s.server.trusted_capture import (
 from openai4s.server.variable_inspector import VariableInspectorService
 from openai4s.server.workbench_state import SessionWorkbenchStateService
 from openai4s.skills_loader import SkillLoader
+from openai4s.specialists import builtin_catalog
 from openai4s.storage.connectors import public_connector
 from openai4s.storage.governance import QuotaExceeded
 from openai4s.storage.memories import ALL_PROJECTS as MEMORY_ALL_PROJECTS
@@ -1782,6 +1784,17 @@ class SessionState:
         # Explore mode: autonomous deep exploration — larger turn budget and the
         # turn only ends via host.submit_output (prose-only replies are nudged).
         self.explore: bool = False
+        # Which KIND of task this turn is. Resolved per turn (explicit body
+        # field first, else a conservative classification of the user's text)
+        # and re-stamped on every turn, because a session's second request can
+        # be a different kind of work from its first. `task_mode_binding`
+        # records whether the mode was SELECTED rather than detected: only a
+        # selected mode arms the required, Host-verified completion evidence —
+        # a detected one drives the (advisory) prompt fragment and nothing
+        # else, because a classifier false positive must never refuse an
+        # honest completion.
+        self.task_mode: str = TaskMode.ANALYSIS_RUN.value
+        self.task_mode_binding: bool = False
         self.last_model_prose: str = ""
         self.last_engine_completion = None
         # Set only around one AgentEngine CodeCell dispatch so the compatible
@@ -6337,8 +6350,44 @@ class SessionRunner:
             import dataclasses as _dc
 
             from openai4s.agent.delegation import DelegationError, DelegationRunner
+            from openai4s.agent.models import KernelEnvSpec
 
             child_cfg = _dc.replace(self.cfg, llm=self._llm_cfg(st))
+
+            # Delegated children inherit the session's selected environment.
+            # Resolution follows the same order the kernel spawn uses, but
+            # non-mutating (_resolve_env would rewrite st.env_name on every
+            # runtime-ensure) and WITHOUT _selected_env_name's silent
+            # base-substitution: when the session's real selection is
+            # transiently undiscoverable (e.g. conda discovery empty right
+            # after a restart) child_env stays None and the re-stamp below
+            # keeps the runner's last known-good spec, instead of downgrading
+            # future children to the daemon default for the turn.
+            child_env = None
+            try:
+                from openai4s.kernel import environments as envmod
+
+                if st.kernels.alive("python") and st.env_name:
+                    selection = st.env_name
+                else:
+                    selection = (
+                        st.desired_env
+                        or self._persisted_env(st.root_frame_id)
+                        or st.env_name
+                        or envmod.default_env_name()
+                    )
+                environment = envmod.get_environment(selection)
+                if environment is not None and environment.interpreter is not None:
+                    child_env = KernelEnvSpec(
+                        python=environment.interpreter,
+                        env_root=(
+                            str(environment.root) if environment.is_conda else None
+                        ),
+                        env_name=environment.name,
+                        r_env=getattr(disp, "active_r_env", None),
+                    )
+            except Exception:  # noqa: BLE001 — env inheritance is best effort
+                child_env = None
 
             def build_child_cell_hooks(producer_frame_id):
                 return self.artifacts.delegated_cell_hooks(
@@ -6378,6 +6427,23 @@ class SessionRunner:
             capture_lease = (
                 trusted_capture_lease if self.stage1_trusted_delivery else None
             )
+
+            # D8: live child events reach the parent Timeline. The emitter
+            # stamps root_frame_id; the normalizer owns the output exclusion
+            # (single owner — the client sanitizer stays as belt), and child
+            # steps persist root-keyed through the same sink the root
+            # dispatcher uses.
+            from openai4s.server.workbench_state import delegation_event_projection
+
+            emit_event = self.hub.emitter(st.root_frame_id)
+
+            def child_event_sink(payload):
+                try:
+                    emit_event(delegation_event_projection(payload))
+                except Exception:  # noqa: BLE001 — telemetry must not strand a child
+                    pass
+
+            child_step_sink = self._make_step_sink(st)
             runner = st.delegation_runner
             if runner is None:
                 runner = DelegationRunner(
@@ -6386,6 +6452,8 @@ class SessionRunner:
                     parent_frame_id=st.root_frame_id,
                     store=self.store,
                     owner_instance_id=self._owner_instance_id,
+                    event_sink=child_event_sink,
+                    child_step_sink=child_step_sink,
                     # Without this, a delegated child falls back to
                     # os.getcwd() — the daemon's launch directory — so its
                     # kernels and relative writes pollute the checkout and
@@ -6395,6 +6463,7 @@ class SessionRunner:
                     cell_hooks_factory=cell_hooks_factory,
                     trusted_capture_admission=capture_admission,
                     trusted_capture_lease=capture_lease,
+                    env=child_env,
                 )
                 st.delegation_runner = runner
             else:
@@ -6406,9 +6475,18 @@ class SessionRunner:
                 # children must follow it, not the one at runner creation.
                 runner.workspace = st.workspace
                 runner.read_isolation = self._kernel_read_isolation(st)
+                # An env switch between turns must reach future children too —
+                # but a transient resolution failure (child_env None) keeps
+                # the last known-good spec rather than downgrading it.
+                if child_env is not None:
+                    runner.env = child_env
                 runner.cell_hooks_factory = cell_hooks_factory
                 runner.set_trusted_capture_admission(capture_admission)
                 runner.set_trusted_capture_lease(capture_lease)
+                # Future children keep emitting into the live session hub even
+                # when the runner predates this turn's rewiring.
+                runner.set_event_sink(child_event_sink)
+                runner.set_child_step_sink(child_step_sink)
             disp._delegate_fn = runner
             disp.steer_fns = {
                 "children": runner.children,
@@ -7439,6 +7517,7 @@ class SessionRunner:
         plan: bool = False,
         annos: list | None = None,
         explore: bool = False,
+        task_mode: str | None = None,
         on_admitted: Callable[[MessageJob], None] | None = None,
     ) -> MessageJob:
         """Start a user turn in a background thread.
@@ -7460,6 +7539,15 @@ class SessionRunner:
         #    session is bricked, and compaction cannot rescue it because
         #    summarising the message means sending it. Refusing costs the user
         #    one paste; accepting costs them the session.
+        # An explicit task mode is validated here, synchronously, before a
+        # ticket exists: a bad value is the caller's mistake and must be a 400
+        # on the submit, not a ValueError inside a background turn thread.
+        if task_mode is not None and str(task_mode).strip():
+            try:
+                resolve_task_mode(None, explicit=task_mode)
+            except ValueError as error:
+                raise GatewayError(400, str(error), "invalid_task_mode") from error
+
         text = str(user_text or "")
         if len(text) > MAX_MESSAGE_CHARS:
             raise GatewayError(
@@ -7580,6 +7668,7 @@ class SessionRunner:
                                 if job.model_profile_id
                                 else None
                             ),
+                            task_mode=task_mode,
                         )
                         result.setdefault("job_id", job.job_id)
                         result.setdefault("execution_id", ticket.execution_id)
@@ -8875,6 +8964,7 @@ class SessionRunner:
         annos: list | None = None,
         explore: bool = False,
         frozen_binding: tuple[str, int] | None = None,
+        task_mode: str | None = None,
     ) -> dict:
         st = self._state(root_frame_id, project_id)
         if frozen_binding:
@@ -8895,6 +8985,11 @@ class SessionRunner:
         st.plan = bool(plan)
         # plan mode wins: a plan turn never executes, so explore is meaningless
         st.explore = bool(explore) and not st.plan
+        # Per turn, not per session: the same session's next request can be a
+        # different kind of work. An invalid explicit selection is a 400 at
+        # `submit_message`; a direct caller gets the same ValueError shape.
+        st.task_mode = resolve_task_mode(user_text, explicit=task_mode).value
+        st.task_mode_binding = bool(task_mode is not None and str(task_mode).strip())
         # Frozen above the `processing` event rather than in the failure
         # handler, because that event is how a *queued* turn announces itself:
         # its 202 resolved while an earlier turn still owned the screen, so the
@@ -8920,6 +9015,15 @@ class SessionRunner:
             # history, not a scientific worker.  A CodeCell acquires its kernel
             # later through CellExecutionService.prepare_language.
             self._ensure_runtime(st)
+            # After the runtime exists: the completion contract reads the mode
+            # off the dispatcher to decide whether source/entry-point/test
+            # evidence is required and verified for this turn's submission.
+            # Only an EXPLICIT selection is stamped; a detected mode guides
+            # the prompt fragment below and arms nothing (None also clears a
+            # previous turn's explicit stamp from this session's dispatcher).
+            set_mode = getattr(st.dispatcher, "set_task_mode", None)
+            if callable(set_mode):
+                set_mode(st.task_mode if st.task_mode_binding else None)
             self._seed_messages(st)
             self.store.update_frame(root_frame_id, status="processing")
             emit(
@@ -8991,6 +9095,11 @@ class SessionRunner:
                 )
             if st.explore:
                 resolved = resolved + "\n\n" + _EXPLORE_PROTOCOL
+            mode_fragment = task_mode_prompt(
+                st.task_mode, explicit=st.task_mode_binding
+            )
+            if mode_fragment:
+                resolved = resolved + "\n\n" + mode_fragment
             # attach the pinned figure(s) with the pin marker drawn on, so a
             # vision model SEES what the user pointed at (not an x%/y% guess)
             content = (
@@ -9016,6 +9125,14 @@ class SessionRunner:
                     st.dispatcher, "control_tool_policy", None
                 ),
             )
+            bind_evidence_scope = getattr(
+                st.dispatcher, "set_task_evidence_scope", None
+            )
+            if callable(bind_evidence_scope):
+                bind_evidence_scope(
+                    turn_id=action_ledger.turn_id,
+                    branch_id=action_ledger.branch_id or root_frame_id,
+                )
             turn_execution_id = str(
                 getattr(execution, "execution_id", "") or turn_request_id
             )
@@ -11431,80 +11548,12 @@ class SessionRunner:
 # --------------------------------------------------------------------------- #
 #  Customize-panel payloads (agents / compute / environment / network / memory)
 # --------------------------------------------------------------------------- #
-# Built-in agent roster surfaced in Customize → Agents. These describe the
-# Code-as-Action harness the way opencode describes its build/plan/explore/
-# general agents: a primary scientist plus specialised sub-agents you can
-# host.delegate() to.
-_BUILTIN_AGENTS = [
-    {
-        "name": "SCIENTIST",
-        "mode": "primary",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": True,
-        "unrestricted": True,
-        "description": "Primary research agent. Writes Python that calls the full "
-        "host.* toolset (bash, web_search/web_fetch, file + grep/glob "
-        "tools, delegate, skills) and produces publication-grade "
-        "figures, tables and reports.",
-    },
-    {
-        "name": "EXPLORE",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": False,
-        "description": "Read-only scout. Searches the literature and your files "
-        "(web_search, web_fetch, grep, glob, read_file) and returns a "
-        "concise map — no writes.",
-    },
-    {
-        "name": "GENERAL",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": True,
-        "description": "General-purpose sub-agent for a self-contained sub-task; "
-        "runs the full toolset and returns a structured result via "
-        "host.delegate(...).",
-    },
-    {
-        "name": "REMOTE_GPU_PROVISIONER",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": True,
-        "description": "Remote GPU setup specialist. When an SSH GPU host exists "
-        "but fold / ESM mutation scoring / ProteinMPNN services are "
-        "not provisioned, it inspects the host, installs or locates "
-        "real wrappers, verifies them, and registers capabilities.",
-    },
-    {
-        "name": "PLAN",
-        "mode": "primary",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": True,
-        "unrestricted": False,
-        "description": "Planning agent (Plan mode). Investigates and proposes a "
-        "step-by-step plan without executing changes.",
-    },
-    {
-        "name": "REVIEWER",
-        "mode": "subagent",
-        "healthy": True,
-        "source": "bundled",
-        "supportsPlanMode": False,
-        "unrestricted": False,
-        "description": "Evidence-grounded reviewer. Checks a completed answer, "
-        "execution trace, and produced artifacts for unsupported claims, missing "
-        "deliverables, provenance gaps, and reproducibility risks without writing "
-        "files or calling tools.",
-    },
-]
+# Built-in agent roster surfaced in Customize → Agents. Derived from
+# openai4s/specialists.py — the single source of truth that also supplies the
+# runtime personas and execution policies — so the catalog can never again
+# advertise a specialist the delegation resolver does not know. The payload
+# keys/types are the frozen shape the old literal list carried.
+_BUILTIN_AGENTS = builtin_catalog()
 
 # Connectors directory: MCP servers the operator may explicitly add. Bundled
 # adapters are importable with OpenAI4S, but an entry here is only a catalog
@@ -14632,6 +14681,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         plan=bool(b.get("plan")),
                         annos=annos,
                         explore=bool(b.get("explore")),
+                        task_mode=b.get("task_mode"),
                         on_admitted=_persist_correlation,
                     )
                 except BaseException:
@@ -15447,7 +15497,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 r"recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|"
                 r"branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|"
                 r"checkpoints|revert/(?:preview|apply|undo|operations)|"
-                r"notebook/export|session/export|kernel/variables|execution)",
+                r"notebook/export|session/export|kernel/variables|"
+                r"execution-sources(?:/export)?|execution)",
                 sub,
             )
             if workbench and store.get_frame(workbench.group(1)) is None:
@@ -15742,6 +15793,37 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 exported = runner.session_domain.notebook_export(
                     m.group(1), language=language
                 )
+                self._send(
+                    200,
+                    exported["data"],
+                    exported["content_type"],
+                    {
+                        "Content-Disposition": (
+                            f'attachment; filename="{exported["filename"]}"'
+                        ),
+                        "X-Content-SHA256": exported["sha256"],
+                    },
+                )
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/execution-sources", sub)
+            if m and method == "GET":
+                # The executed-code hierarchy: root + every delegated child
+                # frame, cell metadata only (the per-frame /execution-log
+                # route serves the code text itself).
+                self._json(runner.session_domain.execution_sources(m.group(1)))
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/execution-sources/export", sub)
+            if m and method == "GET":
+                from openai4s.server.execution_sources import (
+                    ExecutionSourcesExportTooLarge,
+                )
+
+                try:
+                    exported = runner.session_domain.execution_sources_export(
+                        m.group(1)
+                    )
+                except ExecutionSourcesExportTooLarge as error:
+                    raise GatewayError(413, str(error)) from error
                 self._send(
                     200,
                     exported["data"],

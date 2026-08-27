@@ -46,6 +46,31 @@ async function api(path, { method = "GET", data } = {}) {
   return response.json();
 }
 
+// The trusted-capture guard refuses every external workspace mutation while a
+// background execution is registered (409 trusted_capture_busy), and the
+// permission-resume section spawns one whose exit nothing here can await —
+// there is no REST projection of the background registry. The refusal IS the
+// contract, so the first mutation after that section retries admission with a
+// bounded budget instead of racing the job's exit; any other failure, or a
+// job that never drains, still fails the run loudly.
+async function apiRetryWhileCaptureBusy(path, { method = "GET", data } = {}) {
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    const response = await page.request.fetch(new URL(`api/v1${path}`, baseUrl).toString(), {
+      method,
+      data,
+      headers: data === undefined ? undefined : { "Content-Type": "application/json" },
+    });
+    if (response.ok()) return response.json();
+    const body = await response.text();
+    const busy = response.status() === 409 && body.includes("trusted_capture_busy");
+    if (!busy || Date.now() >= deadline) {
+      throw new Error(`${method} ${path} returned HTTP ${response.status()}: ${body}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 async function requireOne(selector, message = selector) {
   const count = await page.locator(selector).count();
   if (count !== 1) throw new Error(`expected one ${message}, found ${count}`);
@@ -442,24 +467,14 @@ try {
 
   // Version restore is append-only. Historical bytes stay immutable while a
   // restored copy becomes a fresh latest version and invalidates UI caches.
-  // The permission block above left a short-lived background execution
-  // behind, and external workspace mutation is refused while one is running.
-  // Retry the busy admission instead of racing the background job's exit.
-  const upload = await waitUntil("workspace capture idle for artifact upload", async () => {
-    try {
-      return await api("/uploads", {
-        method: "POST",
-        data: {
-          frame_id: frameId,
-          project_id: projectId,
-          filename: "browser-versioned.txt",
-          content_base64: Buffer.from("VERSION-ONE", "utf8").toString("base64"),
-        },
-      });
-    } catch (error) {
-      if (String(error).includes("trusted_capture_busy")) return null;
-      throw error;
-    }
+  const upload = await apiRetryWhileCaptureBusy("/uploads", {
+    method: "POST",
+    data: {
+      frame_id: frameId,
+      project_id: projectId,
+      filename: "browser-versioned.txt",
+      content_base64: Buffer.from("VERSION-ONE", "utf8").toString("base64"),
+    },
   });
   if (!upload.artifact_id) throw new Error("artifact upload did not return an id");
   await api(`/artifacts/${encodeURIComponent(upload.artifact_id)}/edit`, {

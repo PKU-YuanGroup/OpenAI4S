@@ -75,6 +75,26 @@ class _Client:
         handler._route("POST")
         return sent["code"], sent["body"]
 
+    def get(self, path):
+        handler = object.__new__(self._handler_class)
+        handler._correlation_id = "req-1"
+        sent: dict = {}
+
+        def _send(code, payload, ctype, extra=None):
+            sent["code"] = code
+            sent["body"] = json.loads(payload.decode("utf-8"))
+
+        handler._send = _send
+        handler.command = "GET"
+        handler.path = f"/api/v1{path}"
+        handler.headers = {
+            "Content-Length": "0",
+            local_auth.TOKEN_HEADER: self._token,
+        }
+        handler._body = lambda: {}
+        handler._route("GET")
+        return sent["code"], sent["body"]
+
     def seed_child(self, child_id, status="running"):
         """A durable child record with no live runner behind it.
 
@@ -318,3 +338,82 @@ def test_a_runner_that_refuses_the_steer_is_a_conflict_not_a_success(client):
     assert status == 409
     assert body["code"] == "delegation_record_stale"
     assert "child is stopped" in body["error"]
+
+
+@pytest.mark.stubbed_backend
+def test_an_unknown_child_status_never_takes_down_the_projection(client):
+    """A widened child lifecycle (or a corrupted row) must degrade to an
+    honest count, not a KeyError that 500s every /delegations read. The
+    fabricated status is injected under ignore_check_constraints, so this
+    response shape is synthetic — hence the recorder stays paused."""
+    child_id = client.seed_child("child-1", status="done")
+    conn = client.store._conn
+    conn.execute("PRAGMA ignore_check_constraints=ON")
+    try:
+        conn.execute(
+            "UPDATE delegation_children SET status='paused' "
+            "WHERE root_frame_id=? AND child_id=?",
+            (client.frame_id, child_id),
+        )
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA ignore_check_constraints=OFF")
+
+    status, body = client.get(f"/frames/{client.frame_id}/delegations")
+    assert status == 200
+    assert body["stats"]["total"] == 1
+    assert body["stats"]["done"] == 0
+    assert body["stats"]["paused"] == 1
+    assert body["children"][0]["status"] == "paused"
+
+
+# --------------------------------------------------------------------------
+# the real projection route carries the machine-readable task_status
+# --------------------------------------------------------------------------
+
+
+def test_the_delegations_route_carries_task_status(client):
+    """GET /frames/{fid}/delegations must surface the completion contract so
+    the workbench panel can color a child by what its task actually reached,
+    not only by its transport lifecycle."""
+
+    client.store.restore_delegation_tree(
+        root_frame_id=client.frame_id,
+        owner_instance_id="owner-1",
+        runner_instance_id="runner-1",
+        budget_limit=48,
+    )
+    reserved = client.store.reserve_delegation_children(
+        root_frame_id=client.frame_id,
+        owner_instance_id="owner-1",
+        runner_instance_id="runner-1",
+        count=1,
+        depth=1,
+        parent_child_id=None,
+    )
+    child_id = (reserved.get("child_ids") or [None])[0]
+    assert child_id
+    client.store.persist_delegation_child(
+        root_frame_id=client.frame_id,
+        owner_instance_id="owner-1",
+        runner_instance_id="runner-1",
+        child={
+            "child_id": child_id,
+            "name": "worker",
+            "status": "done",
+            "depth": 1,
+            "parent_child_id": None,
+            "frame_id": "f-child",
+            "stop_reason": "submitted",
+            "task_status": "partial",
+        },
+        messages=[],
+    )
+
+    status, body = client.get(f"/frames/{client.frame_id}/delegations")
+
+    assert status == 200
+    child = next(c for c in body["children"] if c["child_id"] == child_id)
+    assert child["task_status"] == "partial"
+    assert child["stop_reason"] == "submitted"
+    assert child["status"] == "done"

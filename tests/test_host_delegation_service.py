@@ -218,6 +218,26 @@ def test_a_fan_out_of_dicts_keeps_it_as_well():
     assert all("ALWAYS CITE" in item["request"] for item in requests)
 
 
+@pytest.mark.parametrize("payload_key", ["task", "prompt"])
+def test_dict_fan_out_persona_reaches_every_supported_payload_key(payload_key):
+    service, sent = _persona_service(PROFILE)
+    service.delegate(
+        {
+            "request": [{payload_key: "A"}, {payload_key: "B"}],
+            "name": "bioinfo",
+        }
+    )
+
+    requests = sent[0]["request"]
+    assert all("ALWAYS CITE" in item[payload_key] for item in requests)
+    assert [
+        item[payload_key].endswith(value) for item, value in zip(requests, "AB")
+    ] == [
+        True,
+        True,
+    ]
+
+
 def test_the_single_shapes_are_unchanged():
     """The fix replaced two branches with one recursion; the shapes that
     already worked have to keep working."""

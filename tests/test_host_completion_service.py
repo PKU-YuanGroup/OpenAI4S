@@ -33,6 +33,37 @@ def test_success_commits_structured_output_and_clear_resets_state():
     assert service.last_output is None
 
 
+def test_declared_task_status_is_validated_and_committed():
+    """D5: an optional honest status rides the completion; the undeclared
+    two-key CompletionRecord shape is untouched (asserted by the exact
+    equality in the success test above)."""
+    service = CompletionService()
+    spec = {
+        "output": {"summary": "partially done"},
+        "completion_bullets": ["Completed the first half"],
+        "task_status": "partial",
+    }
+    assert service.submit(spec) == {"status": "ok"}
+    assert service.last_output == {
+        "output": {"summary": "partially done"},
+        "completion_bullets": ["Completed the first half"],
+        "task_status": "partial",
+    }
+
+    previous = service.last_output
+    for bad in ("done", "almost", 1, True, ""):
+        result = service.submit(
+            {
+                "output": {},
+                "completion_bullets": ["Computed it"],
+                "task_status": bad,
+            }
+        )
+        assert set(result) == {"error"}, f"accepted invalid task_status {bad!r}"
+        assert "task_status" in result["error"]
+        assert service.last_output is previous
+
+
 @pytest.mark.parametrize(
     "bullets, expected",
     [

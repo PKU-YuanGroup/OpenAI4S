@@ -456,6 +456,65 @@ def test_execution_log_status_json_fallback_append_only_and_clock(tmp_path):
         )
 
 
+def test_frame_detail_orders_same_instant_children_deterministically(tmp_path):
+    """Same-millisecond delegate siblings must keep one stable order.
+
+    ``ORDER BY created_at ASC`` alone leaves equal timestamps in unspecified
+    SQL order (in practice insertion rowid), so a rebuilt table could reorder
+    child ordinals and break the sources.zip byte-determinism promise;
+    ``frame_id`` is the tiebreaker.
+    """
+    store, repository, _clock = _repository(tmp_path)
+    parent = repository.new_frame(project_id="science")
+    first = repository.new_frame(parent_id=parent, kind="delegate", depth=1)
+    second = repository.new_frame(parent_id=parent, kind="delegate", depth=1)
+    # Rename so insertion (rowid) order z->a disagrees with id order, and
+    # give both the same created_at millisecond.
+    with store._lock:
+        store._conn.execute(
+            "UPDATE frames SET frame_id='z-child', created_at=5000 " "WHERE frame_id=?",
+            (first,),
+        )
+        store._conn.execute(
+            "UPDATE frames SET frame_id='a-child', created_at=5000 " "WHERE frame_id=?",
+            (second,),
+        )
+        store._conn.commit()
+    children = repository.frame_detail(parent)["children"]
+    assert [child["frame_id"] for child in children] == ["a-child", "z-child"]
+
+
+def test_list_cells_projects_the_stored_interrupted_flag(tmp_path):
+    """``list_cells`` must surface the stored ``interrupted`` column as a bool.
+
+    The writer stored the flag (and derived ``status`` from it), but the list
+    projection never SELECTed the column — so a reader trusting
+    ``row["interrupted"]`` got ``False`` for the very cell whose status said
+    "interrupted": two answers for one stored fact.
+    """
+    store, repository, _clock = _repository(tmp_path)
+    frame = repository.new_frame(project_id="science")
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="run_forever()",
+        result={"id": "cell-int", "interrupted": True},
+        cell_index=1,
+    )
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="print('fine')",
+        result={"id": "cell-ok", "stdout": "fine"},
+        cell_index=2,
+    )
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-int"]["status"] == "interrupted"
+    assert listed["cell-int"]["interrupted"] is True
+    assert listed["cell-ok"]["status"] == "ok"
+    assert listed["cell-ok"]["interrupted"] is False
+
+
 def test_cell_projection_metadata_is_validated_and_round_trips(tmp_path):
     _store, repository, _clock = _repository(tmp_path)
     frame = repository.new_frame(project_id="science")
@@ -577,6 +636,64 @@ def test_execution_log_consumes_matching_attempt_revision_without_reallocating(
             cell_index=2,
             state_revision=2,
         )
+
+
+def test_log_cell_generation_id_round_trips_and_attempts_stay_authoritative(
+    tmp_path,
+):
+    """A directly-recorded cell (a delegated child has no execution_attempts
+    row) carries its own generation; attempt-backed Web cells keep the
+    attempt-derived binding even against a conflicting column stamp."""
+    store, repository, _clock = _repository(tmp_path)
+    frame = repository.new_frame(project_id="science")
+
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="direct()",
+        result={"id": "cell-direct"},
+        cell_index=1,
+        generation_id="gen-direct",
+    )
+    assert repository.cell_detail("cell-direct")["generation_id"] == "gen-direct"
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-direct"]["generation_id"] == "gen-direct"
+
+    group = store.append_action_group(
+        root_frame_id=frame,
+        turn_id="turn-1",
+        kind="execution",
+    )
+    store.allocate_execution_attempt(
+        group_id=group["group_id"],
+        producing_cell_id="cell-attempt",
+        state_revision=2,
+        generation_id="gen-attempt",
+    )
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="web()",
+        result={"id": "cell-attempt"},
+        cell_index=2,
+        state_revision=2,
+        generation_id="gen-stale-column",
+    )
+    assert repository.cell_detail("cell-attempt")["generation_id"] == "gen-attempt"
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-attempt"]["generation_id"] == "gen-attempt"
+
+    # no attempt and no stamp resolve to None exactly as before
+    repository.log_cell(
+        frame_id=frame,
+        root_frame_id=frame,
+        code="legacy()",
+        result={"id": "cell-legacy"},
+        cell_index=3,
+    )
+    assert repository.cell_detail("cell-legacy")["generation_id"] is None
+    listed = {c["producing_cell_id"]: c for c in repository.list_cells(frame)}
+    assert listed["cell-legacy"]["generation_id"] is None
 
 
 def test_delete_frame_removes_complete_session_aggregate(tmp_path):

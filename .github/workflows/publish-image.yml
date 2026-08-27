@@ -1,0 +1,86 @@
+# Publish the daemon container image to GitHub Packages (ghcr.io).
+#
+# Two triggers: automatically when a release is published, and manually for an
+# existing tag (the first publication for a release that predates this
+# workflow). Either way the ref that gets built is a `v*` release tag, and
+# `scripts/verify_release_tag.py` refuses a tree whose declared versions do not
+# match it — so an image can never carry a tag its own `__version__` disagrees
+# with.
+#
+# The image is not merely built: `scripts/container_smoke.sh` — the same gate
+# PR CI runs — builds it and then proves the daemon actually boots and serves
+# inside it. Only a smoke-passing image is pushed. linux/amd64 only for now:
+# the science stack under QEMU multiplies the build time without a user on the
+# other end; an arm64 slice is a deliberate later addition, not a flag flip.
+#
+# Login uses the job's own GITHUB_TOKEN (packages: write) — no long-lived
+# registry credential exists anywhere in the repository.
+
+name: Publish container image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Release tag to build from, e.g. v0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-image-${{ github.event.release.tag_name || inputs.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/pku-yuangroup/openai4s
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: ghcr
+      url: https://github.com/PKU-YuanGroup/OpenAI4S/pkgs/container/openai4s
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Resolve the release tag
+        id: ref
+        run: |
+          ref="${{ github.event.release.tag_name || inputs.ref }}"
+          case "$ref" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "error: '$ref' is not a vMAJOR.MINOR.PATCH release tag" >&2; exit 1 ;;
+          esac
+          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+
+      - name: Tag matches the tree's declared versions
+        run: python3 scripts/verify_release_tag.py "${{ steps.ref.outputs.tag }}"
+
+      - name: Build the image and smoke it
+        run: |
+          OPENAI4S_SMOKE_IMAGE="$IMAGE:${{ steps.ref.outputs.version }}" \
+            bash scripts/container_smoke.sh
+
+      - name: Push the smoke-passing image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:${{ steps.ref.outputs.version }}"
+          docker tag "$IMAGE:${{ steps.ref.outputs.version }}" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+
+      - name: Report the published digest
+        run: |
+          docker inspect --format '{{ range .RepoDigests }}{{ . }}{{ "\n" }}{{ end }}' \
+            "$IMAGE:${{ steps.ref.outputs.version }}"

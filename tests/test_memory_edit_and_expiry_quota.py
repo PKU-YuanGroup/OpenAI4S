@@ -25,7 +25,6 @@ import json
 import socket
 import threading
 import time
-from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -35,6 +34,7 @@ from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
 from openai4s.storage.memories import MemoryLimitError
 from openai4s.store import get_store
+from tests._ports import bound_gateway_server
 
 DAY_MS = 86_400_000
 
@@ -219,7 +219,7 @@ def test_an_edited_memory_moves_to_the_front_of_the_injection_order(tmp_path):
 
 def test_the_edit_route_is_scoped_and_answers_the_edited_row(tmp_path):
     """Driven through the real handler, so the 400/404 are the ones HTTP sees."""
-    port = _free_port()
+    httpd, port = bound_gateway_server()
     cfg = Config(
         data_dir=tmp_path,
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
@@ -229,7 +229,7 @@ def test_the_edit_route_is_scoped_and_answers_the_edited_row(tmp_path):
     runner = gateway_mod.SessionRunner(cfg, _NullHub(), start_idle_sweeper=False)
     saved = runner.store.add_memory(content="before", project_id="p")
     handler_cls = gateway_mod.make_handler(cfg, runner.hub, runner)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+    httpd.RequestHandlerClass = handler_cls
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     token = local_auth.load_or_mint(cfg.data_dir)
 

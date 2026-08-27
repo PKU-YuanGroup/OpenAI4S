@@ -30,6 +30,11 @@ on:
         type: boolean
         required: false
         default: false
+      pypi_only:
+        description: "Publish only the wheel/sdist to PyPI for an ALREADY-PUBLIC release of this tag; nothing is staged onto the release and nothing else is touched"
+        type: boolean
+        required: false
+        default: false
 
 # Two dispatches naming the same tag could interleave, and both `attach` jobs
 # would `gh release upload --clobber` onto the same draft. The pipeline detects
@@ -105,17 +110,23 @@ jobs:
           echo "frozen at $SHA"
 
   guard:
-    name: Require an existing stable draft release
-    if: inputs.publish
+    name: Require the release state the mode expects
+    if: inputs.publish || inputs.pypi_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: The named tag must exist and must be a non-prerelease draft
+      - name: The named tag must exist, in the state the chosen mode requires
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
+          PYPI_ONLY: ${{ inputs.pypi_only }}
         run: |
+          if [ "$PUBLISH" = "true" ] && [ "$PYPI_ONLY" = "true" ]; then
+            echo '::error::set either "publish" or "pypi_only", not both'
+            exit 1
+          fi
           if [ -z "$TAG" ]; then
             echo '::error::publishing requires the "tag" input'
             exit 1
@@ -124,9 +135,22 @@ jobs:
             echo "::error::no release $TAG exists; create the draft first"
             exit 1
           fi
-          if [ "$(jq -r .isDraft release.json)" != "true" ]; then
-            echo "::error::$TAG is already public; staging assets onto it is the half-published state this pipeline exists to prevent"
-            exit 1
+          if [ "$PYPI_ONLY" = "true" ]; then
+            # The inverse requirement. This mode exists for exactly one gap: a
+            # release already made public whose PyPI version was never
+            # published. Nothing is staged and nothing is flipped, so the
+            # half-published hazard the draft rule below guards does not
+            # apply here — what would be wrong is running it against a draft,
+            # where the full publish path is the correct tool.
+            if [ "$(jq -r .isDraft release.json)" != "false" ]; then
+              echo "::error::$TAG is still a draft; use the normal publish path"
+              exit 1
+            fi
+          else
+            if [ "$(jq -r .isDraft release.json)" != "true" ]; then
+              echo "::error::$TAG is already public; staging assets onto it is the half-published state this pipeline exists to prevent"
+              exit 1
+            fi
           fi
           if [ "$(jq -r .isPrerelease release.json)" = "true" ]; then
             echo "::error::$TAG is marked as a prerelease; stable publication requires a non-prerelease draft"
@@ -456,6 +480,13 @@ jobs:
         with:
           name: linux-app-bundle
           path: dist/
+      # The receipt step below runs `uv run --locked`, and this job never
+      # installed uv — which nothing noticed for as long as the pipeline was
+      # unreachable, and the first complete dispatch (v0.2.0 pypi_only, run
+      # 32831018097) died here with `uv: command not found` after every build
+      # had succeeded.
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Build the .zip
         run: bash scripts/build_windows_zip.sh
       - name: Verify the package
@@ -639,9 +670,17 @@ jobs:
 
   pypi:
     name: Publish to PyPI with OIDC
-    if: inputs.publish
     # A version number, once taken on an index, is taken forever, so this may
-    # only run from the staged path where every check has already passed.
+    # only run from a path where every check has already passed. In
+    # `pypi_only` mode `attach` is deliberately skipped (there is no draft to
+    # stage onto), so the status functions replace the implicit success():
+    # every other needs-failure still blocks this job via !failure(), and
+    # attach is required to be either 'success' (publish) or exactly
+    # 'skipped' (pypi_only).
+    if: >-
+      !failure() && !cancelled() &&
+      (inputs.publish || inputs.pypi_only) &&
+      (needs.attach.result == 'success' || (inputs.pypi_only && needs.attach.result == 'skipped'))
     needs: [guard, quality, build, macos-app, linux-app, windows-package, windows-launcher, attach]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -656,6 +695,16 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+      - name: Keep only index-distributable files
+        # The artifact also carries build-receipt-dist.json — staging consumes
+        # it, but the publish action hands twine the whole directory and twine
+        # refuses anything that is not a wheel or an sdist (first complete
+        # dispatch, run 32835188788: `InvalidDistribution: Unknown
+        # distribution format: 'build-receipt-dist.json'`). Deleting here, in
+        # this job's own workspace, leaves the artifact and every other
+        # consumer of it untouched.
+        run: |
+          find dist -type f ! -name '*.whl' ! -name '*.tar.gz' -print -delete
       - name: Publish package distributions
         # NOT SHA-pinned, unlike every other action here: this one is a Docker
         # container action whose generated Dockerfile does

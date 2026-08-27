@@ -476,6 +476,7 @@ class BashAuthorizationService:
                     args=[safe],
                     ok=ok,
                     frame_id=capability.frame_id,
+                    resource_keys=(f"command-sha256:{capability.command_sha256}",),
                 )
             except Exception:  # noqa: BLE001 — command already ran; do not lie
                 pass

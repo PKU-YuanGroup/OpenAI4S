@@ -23,10 +23,8 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
-import socket
 import threading
 import uuid
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +33,7 @@ from openai4s.server import artifact_refs
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
 from openai4s.store import get_store
+from tests._ports import bound_gateway_server
 
 # ---------------------------------------------------------------------------
 # scaffolding
@@ -115,12 +114,6 @@ def _data_service(cfg, store, frame_id, workspace: Path):
     return HostDataService(
         store=store, config=cfg, frame_id=lambda: frame_id, resolve_path=_resolve
     )
-
-
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +369,7 @@ def test_reopening_a_session_gets_the_reference_back_from_the_route(
     A direct call to the projection would not notice the route dropping the
     field, and that is exactly what reopen depends on.
     """
-    port = _free_port()
+    httpd, port = bound_gateway_server()
     runner = _runner(monkeypatch, tmp_path)
     runner.cfg.port = port
     store = runner.store
@@ -389,7 +382,7 @@ def test_reopening_a_session_gets_the_reference_back_from_the_route(
     )
 
     handler = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    httpd.RequestHandlerClass = handler
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     token = local_auth.load_or_mint(runner.cfg.data_dir)
     try:
@@ -590,7 +583,7 @@ def test_reopening_a_session_still_shows_the_reference_was_partial(
     export asserting -- via a `sha256` that names the whole version -- that the
     model read a file it only saw the front of.
     """
-    port = _free_port()
+    httpd, port = bound_gateway_server()
     runner = _runner(monkeypatch, tmp_path)
     runner.cfg.port = port
     store = runner.store
@@ -600,7 +593,7 @@ def test_reopening_a_session_still_shows_the_reference_was_partial(
     runner.run_message(frame_id, "default", f"read @big.csv#{seeded['version_id']}")
 
     handler = gateway_mod.make_handler(runner.cfg, runner.hub, runner)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    httpd.RequestHandlerClass = handler
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     token = local_auth.load_or_mint(runner.cfg.data_dir)
     try:

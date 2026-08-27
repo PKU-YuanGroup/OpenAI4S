@@ -64,6 +64,41 @@ treated as usable.
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.
 
+## Three different things a Skill can give an agent
+
+These look alike in a step card and are mechanically unrelated. Telling them
+apart is what stops "the reference is unreadable" from being the wrong
+diagnosis.
+
+| | What it does | How | Where it lands |
+| --- | --- | --- | --- |
+| **SKILL.md loaded** | Pulls the whole recipe into the model's context | `load_skill` (native) / `host.load_skill(...)` | Model context. Step card: *Loading `<name>` skill guidance* |
+| **Reference read** | Returns the bytes of ONE file inside the Skill directory | `read_skill_file` (native) / `host.skills.read(name, path)` | Model context. Step card: *Reading `<name>/<path>`* |
+| **Sidecar imported** | Makes `kernel.py`'s functions callable | `import <name>.kernel` inside a Python cell | The kernel process, via the sealed import gate |
+
+A recipe that says "read `references/data_contracts.md` before running the
+pipeline" needs the second one. Until `read_skill_file` existed, the only route
+was `host.skills.read(...)` from inside a Python cell — so an agent working
+purely in the tool plane, and a delegated child that never runs a cell most of
+all, structurally could not follow that instruction. Its natural fallback,
+`read_text_file`, is confined to the session workspace and a Skill directory is
+not in it, so the failure surfaced as a path error that reads exactly like "the
+file does not exist".
+
+`read_skill_file` maps to the same `skills_read` host method, so nothing about
+the safety envelope changes: the Skill allowlist applies (a Skill this agent
+may not see is reported as "no such skill", indistinguishable from absent, so
+refusals cannot be used to enumerate), capability state applies, and the
+loader's containment guard refuses any path — symlinks included — that resolves
+outside the Skill directory. Output is bounded at 50,000 characters with an
+explicit truncation marker, matching `load_skill`, because a data contract
+silently cut mid-table is one the agent half-read while believing it had all of
+it.
+
+Only the sidecar import touches the kernel, only it needs a running worker of
+the right generation, and only it is invalidated by editing `kernel.py`
+mid-session.
+
 ## Writable Skill versions and rollback
 
 Bundled `openai4s` Skills remain authoritative and read-only. Writable Skills
