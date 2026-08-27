@@ -1273,10 +1273,12 @@ def _run_embedding(adata: Any, config: Mapping[str, Any], sc: Any) -> Any:
             batch_key=config["design"].get("sample_key", "sample_id"),
         )
         adata.uns["openai4s_hvg_method"] = "seurat_v3_counts"
-    except ValueError:
+    except (ImportError, ValueError):
         # LOESS can be singular for small targeted panels or deterministic test
-        # matrices. Fall back to the log-normalized Seurat dispersion method;
-        # the raw count layer remains untouched and is still the only DE input.
+        # matrices, and seurat_v3 needs scikit-misc, which has no wheel on some
+        # platforms (linux-aarch64). Fall back to the log-normalized Seurat
+        # dispersion method; the raw count layer remains untouched and is
+        # still the only DE input.
         sc.pp.highly_variable_genes(
             adata,
             flavor="seurat",

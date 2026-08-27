@@ -801,6 +801,35 @@ def test_deterministic_synthetic_run_preserves_counts_and_resumes(tmp_path, kern
 
 
 @pytest.mark.slow
+def test_hvg_falls_back_when_scikit_misc_is_absent(tmp_path, kernel, monkeypatch):
+    ad = pytest.importorskip("anndata")
+    pd = pytest.importorskip("pandas")
+    sc = pytest.importorskip("scanpy")
+    source = ad.read_h5ad(_synthetic_h5ad(tmp_path))
+    source.obs = pd.DataFrame(index=source.obs_names.copy())
+    source.obs["sample_id"] = "pbmc3k"
+    source.layers["counts"] = source.X.copy()
+
+    real_hvg = sc.pp.highly_variable_genes
+
+    def no_skmisc_hvg(adata, **kwargs):
+        if kwargs.get("flavor") == "seurat_v3":
+            raise ImportError("Please install skmisc")
+        return real_hvg(adata, **kwargs)
+
+    monkeypatch.setattr(sc.pp, "highly_variable_genes", no_skmisc_hvg)
+    config = kernel._resolved_config(_descriptive_config(tmp_path / "unused.h5ad"))
+    config["clustering"].update({"n_neighbors": 8, "n_pcs": 12})
+
+    embedded = kernel._run_embedding(source, config, sc)
+
+    # scikit-misc has no wheel on some platforms (linux-aarch64): the
+    # documented fallback must absorb the ImportError, not die on it.
+    assert embedded.uns["openai4s_hvg_method"] == "seurat_log_fallback"
+    assert "X_umap" in embedded.obsm
+
+
+@pytest.mark.slow
 def test_derived_checkpoints_share_the_matrix_payload(tmp_path, kernel):
     ad = pytest.importorskip("anndata")
     np = pytest.importorskip("numpy")

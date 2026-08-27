@@ -87,13 +87,17 @@ def _specs_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "envs"
 
 
-def _dependency_name(value: str) -> str:
-    """Return a normalized name from a simple conda/pip requirement.
+def _dependency_entry(value: str) -> tuple[str, bool]:
+    """Return ``(normalized_name, platform_optional)`` for one requirement.
 
     The bundled manifests use direct names with optional conda or PEP 440
     constraints.  Unsupported requirement forms fail closed instead of being
     guessed.  Channel qualification is harmless and is accepted even though
-    the current standard manifests do not use it.
+    the current standard manifests do not use it.  An entry carrying a PEP 508
+    environment marker (``; platform_machine != ...``) is not a universal
+    requirement: its name is still validated, but it is excluded from the
+    authoritative list so readiness does not demand it on the very platforms
+    the marker excludes.
     """
 
     token = value.strip()
@@ -101,13 +105,19 @@ def _dependency_name(value: str) -> str:
         token = token[1:-1].strip()
     if "::" in token:
         token = token.rsplit("::", 1)[1].strip()
+    token, _, marker = token.partition(";")
+    token = token.strip()
     match = _DEPENDENCY_NAME.fullmatch(token)
     if match is None:
         raise _ManifestError("unsupported dependency declaration")
     normalized = pkgscan.normalize_pkg(match.group(1))
     if not normalized:
         raise _ManifestError("empty dependency name")
-    return normalized
+    return normalized, bool(marker.strip())
+
+
+def _dependency_name(value: str) -> str:
+    return _dependency_entry(value)[0]
 
 
 def _parse_direct_dependencies(path: Path, expected_name: str) -> tuple[str, ...]:
@@ -161,10 +171,14 @@ def _parse_direct_dependencies(path: Path, expected_name: str) -> tuple[str, ...
                 in_pip = True
                 continue
             in_pip = False
-            dependencies.append(_dependency_name(item))
+            name, platform_optional = _dependency_entry(item)
+            if not platform_optional:
+                dependencies.append(name)
             continue
         if indent > 2 and in_pip and stripped.startswith("- "):
-            dependencies.append(_dependency_name(stripped[2:].strip()))
+            name, platform_optional = _dependency_entry(stripped[2:].strip())
+            if not platform_optional:
+                dependencies.append(name)
             continue
         raise _ManifestError("unsupported dependencies structure")
 

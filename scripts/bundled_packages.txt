@@ -10,7 +10,10 @@
 # The Windows package carries the Linux bundle as its WSL2 payload, so it
 # inherits this same set rather than declaring one of its own.
 #
-# One package per line:  <pip-name> <import-name>   (# starts a comment)
+# One package per line:  <pip-name> <import-name> [skip_arch=<arch>...]
+# (# starts a comment). A `skip_arch=` column excludes the package from
+# bundles built for that architecture — and from that bundle's verifier —
+# because no wheel exists there; the in-tree consumer degrades gracefully.
 #
 # This is the pip-installable superset of the DEFAULT python.yml kernel env plus
 # the stdlib-networking helpers, so a downloaded app runs the common
@@ -44,7 +47,10 @@ numba            numba
 rdkit            rdkit
 
 # --- single-cell ---
-scanpy[harmony,skmisc]==1.11.5 scanpy
+scanpy[harmony]==1.11.5 scanpy
+# seurat_v3 HVG needs scikit-misc; it has no linux-aarch64 wheel and the
+# single-cell Skill falls back to the seurat flavor without it.
+scikit-misc==0.5.2 skmisc skip_arch=aarch64
 anndata          anndata
 leidenalg        leidenalg
 igraph           igraph

@@ -175,6 +175,42 @@ def test_shipped_manifests_are_the_authoritative_33_and_8_package_lists():
     )
 
 
+def test_marker_entries_are_platform_optional_but_still_validated(tmp_path):
+    from openai4s.kernel.readiness import _ManifestError, _parse_direct_dependencies
+
+    spec = tmp_path / "python.yml"
+    spec.write_text(
+        "name: python\n"
+        "dependencies:\n"
+        "  - numpy\n"
+        "  - pip\n"
+        "  - pip:\n"
+        '      - scikit-misc==0.5.2; platform_machine != "aarch64"\n'
+        "      - pandas\n",
+        encoding="utf-8",
+    )
+    parsed = _parse_direct_dependencies(spec, "python")
+    # The marker entry is not a universal requirement: readiness must not
+    # demand it on the very platforms the marker excludes.
+    assert parsed == ("numpy", "pip", "pandas")
+
+    bad = tmp_path / "bad.yml"
+    bad.write_text(
+        "name: bad\n"
+        "dependencies:\n"
+        "  - pip\n"
+        "  - pip:\n"
+        '      - not a name!; platform_machine != "aarch64"\n',
+        encoding="utf-8",
+    )
+    try:
+        _parse_direct_dependencies(bad, "bad")
+    except _ManifestError:
+        pass
+    else:  # pragma: no cover - the gate must stay fail-closed
+        raise AssertionError("a malformed marker entry must still fail closed")
+
+
 def test_complete_standard_profile_is_ready_using_local_package_metadata(tmp_path):
     found = _complete_environments(tmp_path)
 

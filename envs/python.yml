@@ -53,7 +53,13 @@ dependencies:
       # the default env and the desktop bundle: its core hard-requires the
       # Flax/NumPyro/ott-jax stack. Install it via the optional `singlecell`
       # uv extra; the Skill degrades DA to failed_missing_dependency without it.
-      - scanpy[harmony,skmisc]==1.11.5
+      - scanpy[harmony]==1.11.5
+      # scikit-misc (seurat_v3 HVG's LOESS) publishes no linux-aarch64 wheel,
+      # so the marker keeps `openai4s setup` working on Graviton/Jetson; the
+      # Skill falls back to the log-normalized seurat HVG flavor without it.
+      # Marker-carrying entries are platform-optional and excluded from the
+      # readiness requirement list (openai4s/kernel/readiness.py).
+      - scikit-misc==0.5.2; platform_machine != "aarch64"
       - pydeseq2==0.5.4
       # from PyPI so pip selects the bundled PDFium wheel matching this platform.
       - pypdfium2==5.9.0
