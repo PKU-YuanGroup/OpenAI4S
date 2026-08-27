@@ -129,6 +129,33 @@ Record the model ID, reviewed revision, local file hashes, source commit, packag
 versions, device, beam settings, and input string. Never fall back from a
 missing local snapshot to a moving Hub model ID.
 
+For a reproducible OpenAI4S deployment, use the pinned `reactiont5v2` plan in
+`../retrosynthesis_planning/reaction_model_deployment.py`, download
+`sagawa/ReactionT5v2-forward` at revision
+`933114058cb2604dc1bf536dbebdfcefbe83d4fc`, snapshot every downloaded file, and
+pass the local snapshot to `ReactionModelBackend("reactiont5_forward", ...)`.
+The worker forces `local_files_only=True`; implicit Hugging Face downloads are
+not allowed during inference. `top_k` is limited to 1--10 and
+`max_new_tokens` to 1--256; record both values with each run.
+
+The pinned snapshot has passed a real CPU model-card canary in the external
+model root: the declared reactant/reagent example returned
+`CN1CCC=C(CO)C1`, exactly matching the published expected product. This proves
+that the pinned files load and the input protocol is reproduced; it is not a
+chemistry-wide accuracy claim.
+
+## Scenario 4 benchmark contract
+
+Use `../retrosynthesis_planning/forward_benchmark.py` with the frozen separated
+reactant/reagent inputs. Preserve every submitted beam, including empty,
+invalid, and duplicate products. The private evaluator compares against all
+recorded products and reports both isomeric and connectivity Top-K accuracy so
+stereochemistry-only failures remain visible. A connectivity hit is not silently
+promoted to an exact stereochemical hit.
+
+Pin the Hugging Face revision for reproducible work and record resolved commit,
+model ID, package versions, device, beam settings, and input string.
+
 ## Round-trip check
 
 1. Keep precursors and reagents in different fields; missing reagents are an

@@ -4,6 +4,8 @@
 
 该 Scenario 面向反应物和产物均已知、但原子对应关系未知的反应理解任务。Harness 需要为每个完整 reaction SMILES 分配守恒且一致的 atom-map number，并从映射结果确定形成键、断裂键和键级变化。
 
+与“调用一个 mapper 并返回 mapped SMILES”的基础任务相比，本场景额外要求参考 correspondence 独立于被测模型、评分对 map number 重命名和对称原子置换不敏感，并把没有唯一答案的反应分流为 ambiguous。核心难点因此不是输出任意带编号字符串，而是在不修改反应角色的条件下恢复可独立验证的原子对应。
+
 这是一个独立科学问题，不接受只有目标产物的输入，也不预测前体或反应条件。映射的核心真值是“哪些反应物原子对应哪些产物原子”，不是某个软件产生的 mapped SMILES 字符串；不同 map number 命名可能表达同一个对应关系，必须在原子置换等价类下比较。
 
 默认模型 RXNMapper 是工程上成熟的本地开源实现，但它的输出不能反过来充当自己的 Ground Truth。正式 Benchmark 只允许使用具有人工校正、明确来源和可审计映射的反应集。若官方 RXNMapper 数据包中的具体文件、许可与人工核验状态尚未冻结，本场景保持“设计完成、数据发布阻塞”，不得用 RXNMapper 批量映射 USPTO 后自评。
@@ -189,6 +191,8 @@ reference_repository/
 ## 评估自动化实现难度
 
 模型推理与变化键提取可完全自动化。真正困难的是建立不由被测 mapper 自举、又处理对称多解的可信 Ground Truth。完成数据来源/许可证/人工核验审计前，本场景不能进入正式榜单。
+
+仓库已提供 `retrosynthesis_planning.atom_mapping_benchmark`：公开输入禁止 atom map，输出必须携带显式稳定原子对应；协议检查元素守恒、重复/缺失映射并抽取成键变化，私有 evaluator 支持预先冻结的对称等价映射。它不替代独立人工核验的 Ground Truth 构建。
 
 ## 评测指标
 

@@ -57,6 +57,23 @@ Use `BatchedMapper` for campaigns because it handles invalid records without
 aborting the whole batch. Keep the original reaction string alongside the
 mapped result.
 
+For OpenAI4S, create a manifest from the reviewed RXNMapper 0.4.3 wheel SHA in
+`reaction_model_deployment.UPSTREAM_DISTRIBUTIONS`, then call
+`ReactionModelBackend("rxnmapper", ...)` with a `python_command` that uses the
+external prefix. The foreign worker emits mapped reactions, confidence, stable
+atom correspondences, failures, runtime package versions, and the exact
+manifest fingerprint. It never downloads a model during inference.
+
+## Scenario 3 benchmark contract
+
+Use `../retrosynthesis_planning/atom_mapping_benchmark.py` for curated blind
+evaluation. Public inputs must be map-free. The adapter must emit the mapped
+reaction plus explicit stable reactant/product atom correspondences; the
+normalizer checks conservation, duplicate/unmapped atoms and changed bonds.
+Private scoring accepts pre-frozen symmetry-equivalent correspondences and
+excludes explicitly ambiguous reactions from whole-reaction exact accuracy,
+while still reporting changed-bond F1 for them.
+
 ## Derive the reaction centre
 
 Parse the mapped reactant and product sides with RDKit. Build bond dictionaries
