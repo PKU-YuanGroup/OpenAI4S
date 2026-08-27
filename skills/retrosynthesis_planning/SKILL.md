@@ -50,6 +50,43 @@ reaction-AND semantics; a backend `solved=true` flag is never trusted. Preserve
 search statistics, termination reason, failed routes, duplicates, and budget
 violations in the intermediate artifact.
 
+## Cross-model route admission gate
+
+Treat planner `solved=true` as stock closure, not reaction feasibility. For a
+route proposed for deeper review, freeze one route before validation and apply
+these independent checks to every reaction node:
+
+1. map the fixed reactant/product pair and flag low mapping confidence;
+2. generate condition hypotheses as complete joint beams, without inventing
+   temperature or missing slots;
+3. run forward Top-K prediction using a predeclared condition beam and compare
+   canonical products;
+4. preserve invalid products, model disagreement, low policy probability, and
+   low template occurrence as failures rather than reranking them away;
+5. reject or hold the whole route when a critical step lacks forward support.
+
+Bounded diagnostics may compare no-condition input with a fixed number of
+condition beams, but must not search conditions indefinitely until the intended
+product appears. Record the tested budget and every result. Never report a
+route as experimentally ready merely because all leaves are in stock. Do not
+run a quarantined yield model or use its number to rescue a failed route.
+
+## Path and reproducibility hygiene
+
+Keep public artifacts path-free. Use `OPENAI4S_REPOSITORY`,
+`OPENAI4S_RETRO_MODEL_ROOT`, `OPENAI4S_RETRO_DATA_ROOT`, and
+`OPENAI4S_RETRO_RUN_DIR` at execution time; do not serialize usernames, home
+directories, mount points, temporary directories, credentials, or environment
+prefixes into reports. Model manifests should contain logical artifact IDs,
+versions, licenses, sizes, and hashes.
+
+Before sharing a reproducibility ZIP, use `reproducibility_bundle.py` to scan a
+prepared path-free directory and build a deterministic archive. Include source,
+configuration, environment specifications, manifests, summaries, and bounded
+result JSON. Exclude checkpoints, stocks, caches, credentials, and complete
+binary environments unless redistribution is explicitly authorized. A binary
+environment archive is not a substitute for an environment specification.
+
 ## Capability summary
 
 This skill implements multi-step search plus route-review support:
@@ -98,7 +135,7 @@ and a render-then-verify QA pass.
 Create the backend once outside OpenAI4S:
 
 ```bash
-MODEL_ROOT=/aaa/fionafyang/buddy1/whaleywang/openai4s-models
+MODEL_ROOT="$PWD/models"
 uv run python skills/retrosynthesis_planning/reaction_model_deployment.py plan \
   aizynthfinder-4.4.1 --root "$MODEL_ROOT"
 conda create --prefix "$MODEL_ROOT/envs/aizynthfinder-4.4.1" python=3.11 pip -y
@@ -125,10 +162,7 @@ from retrosynthesis_planning.reaction_model_backends import ReactionModelBackend
 planner = ReactionModelBackend(
     "aizynthfinder",
     manifest="/models/aizynthfinder/model-manifest.json",
-    python_command=(
-        "/aaa/fionafyang/buddy1/whaleywang/openai4s-models/"
-        "envs/aizynthfinder-4.4.1/bin/python",
-    ),
+    python_command=("/models/aizynthfinder/env/bin/python",),
     timeout_seconds=1800,
 )
 search = planner.plan_routes(

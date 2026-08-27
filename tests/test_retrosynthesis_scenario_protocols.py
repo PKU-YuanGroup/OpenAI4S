@@ -49,6 +49,10 @@ from retrosynthesis_planning.reaction_model_deployment import (  # noqa: E402
 from retrosynthesis_planning.reaction_model_worker import (  # noqa: E402
     _parse_parrot_rank,
 )
+from retrosynthesis_planning.reproducibility_bundle import (  # noqa: E402
+    ReproducibilityBundleError,
+    build_reproducibility_bundle,
+)
 from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402
     main as scenario_cli_main,
 )
@@ -284,7 +288,7 @@ def test_unified_cli_evaluates_hashed_condition_artifact(tmp_path):
 
 
 def test_reaction_model_environment_plan_stays_under_explicit_external_root(tmp_path):
-    root = tmp_path / "whaleywang-models"
+    root = tmp_path / "external-models"
     plan = ENVIRONMENTS["rxnmapper-0.4.3"].to_dict(root)
     assert plan["environment_prefix"].startswith(str(root.resolve()))
     assert plan["cache_dir"].startswith(str(root.resolve()))
@@ -293,7 +297,7 @@ def test_reaction_model_environment_plan_stays_under_explicit_external_root(tmp_
 
 
 def test_parrot_hf_plan_uses_the_reviewed_mit_snapshot(tmp_path):
-    root = tmp_path / "whaleywang-models"
+    root = tmp_path / "external-models"
     plan = ENVIRONMENTS["parrot-hf-b9ef6049"].to_dict(root)
     assert plan["checkpoint_license"] == "MIT"
     assert plan["requires_terms_review"] is False
@@ -476,3 +480,21 @@ def test_parrot_rank_parser_supports_the_python38_environment():
     assert _parse_parrot_rank("top-2", 9) == 2
     assert _parse_parrot_rank("3", 9) == 3
     assert _parse_parrot_rank("not-a-rank", 9) == 9
+
+
+def test_reproducibility_bundle_is_deterministic_and_rejects_local_paths(tmp_path):
+    source = tmp_path / "public"
+    source.mkdir()
+    (source / "summary.json").write_text('{"status":"pass"}\n', encoding="utf-8")
+    first = tmp_path / "first.zip"
+    second = tmp_path / "second.zip"
+    first_result = build_reproducibility_bundle(source, first)
+    second_result = build_reproducibility_bundle(source, second)
+    assert first.read_bytes() == second.read_bytes()
+    assert first_result["sha256"] == second_result["sha256"]
+
+    (source / "leak.md").write_text(
+        "machine path: /home/operator/model", encoding="utf-8"
+    )
+    with pytest.raises(ReproducibilityBundleError, match="local or forbidden"):
+        build_reproducibility_bundle(source, tmp_path / "rejected.zip")
