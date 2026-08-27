@@ -320,10 +320,14 @@ jobs:
           python-version: "3.11"
       - name: Install the locked CPU single-cell stack
         run: uv sync --locked --extra singlecell
-      - name: Verify pinned scientific imports
-        run: uv run python -c "import harmonypy, pertpy, pydeseq2, scanpy, skmisc"
       - name: Run deterministic offline single-cell contracts
-        run: uv run python -m pytest tests/test_single_cell_rna_analysis_skill.py -m "not network"
+        # The import probe is a precondition of the same gate, like
+        # `--collect-only` for the suite gate: the tests importorskip the
+        # stack, so a broken install would otherwise turn into silently
+        # skipped science contracts rather than a red check.
+        run: |
+          uv run python -c "import harmonypy, pertpy, pydeseq2, scanpy, skmisc"
+          uv run python -m pytest tests/test_single_cell_rna_analysis_skill.py -m "not network"
 
   # Three gates that used to be steps in `test`, after `pytest`. A step can only
   # run when every step before it passed, so all three were unreachable whenever

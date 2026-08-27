@@ -174,6 +174,11 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
         CHECK_SUITE_KIND,
         check_name="Linux bubblewrap Python/R persistent interrupt",
     ),
+    Gate(
+        "ci-singlecell-skill",
+        CHECK_SUITE_KIND,
+        check_name="Single-cell workflow (Python 3.11)",
+    ),
 )
 
 GATES: tuple[Gate, ...] = LOCAL_GATES + CHECK_SUITE_GATES

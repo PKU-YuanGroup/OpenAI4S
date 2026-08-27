@@ -46,6 +46,8 @@ node tests/browser_admission_fault.mjs                      # pinned-comment adm
 node tests/browser_matrix.mjs --browser=firefox             # cross-engine breadth (chromium/firefox/webkit)
 OPENAI4S_STAGE0_SELF_TEST=1 node tests/browser_stage0_acceptance.mjs   # Stage 0 harness self-check, no browser/daemon
 node tools/skills-installer/selftest.mjs                    # the npx Skill installer: extraction safety, install/uninstall
+uv sync --locked --extra singlecell && \
+  uv run python -m pytest tests/test_single_cell_rna_analysis_skill.py -m "not network"   # the locked single-cell stack contracts (py3.11+)
 node tools/skills-installer/check_package.mjs               # `npm pack` still carries the CLI *and* the Skill tree
 ```
 
