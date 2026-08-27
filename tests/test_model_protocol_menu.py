@@ -284,8 +284,7 @@ def test_the_scan_still_happens_when_the_button_is_pressed():
     discovery is useful, it just has to be asked for."""
     result = _open_pane()
     assert any(
-        path.startswith("/model-endpoints/discover")
-        for path in result["afterClick"]
+        path.startswith("/model-endpoints/discover") for path in result["afterClick"]
     )
 
 
