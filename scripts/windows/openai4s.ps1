@@ -79,7 +79,9 @@ $FakeIpDnsMode = if ($env:OPENAI4S_WSL_FAKE_IP_DNS) {
 $WslLogPath = if ($WslDataDir) {
     "$WslDataDir/logs/app.out"
 } else {
-    '~/.openai4s/logs/app.out'
+    # `$HOME`, not `~`: this string is emitted inside an `sh -lc` command, and
+    # sh expands the variable where a tilde inside quotes stays literal.
+    '$HOME/.openai4s/logs/app.out'
 }
 $PypiIndex = if ($env:OPENAI4S_WSL_PYPI_INDEX) {
     $env:OPENAI4S_WSL_PYPI_INDEX
@@ -118,24 +120,38 @@ function Write-Section([string] $Text) {
 function Open-AppUrl([string] $appUrl) {
     if ($env:OPENAI4S_NO_OPEN) {
         Write-Host '  browser open suppressed by OPENAI4S_NO_OPEN.' -ForegroundColor DarkGray
-        Write-Host '  run OpenAI4S.cmd url to print a secure browser URL.' -ForegroundColor DarkGray
+        # Print it. The caller already paid a wsl.exe round trip for this exact
+        # string, and the readiness line above it carries no sign-in token, so
+        # sending the user back to OpenAI4S.cmd url would be advice instead of
+        # the answer we are holding.
+        Write-Host "  $appUrl" -ForegroundColor DarkGray
         return
     }
     try {
         Start-Process $appUrl
     } catch {
-        Write-Host '  the default browser could not be opened.' -ForegroundColor Yellow
-        Write-Host '  run OpenAI4S.cmd url to print a secure browser URL.' -ForegroundColor Yellow
+        Write-Host '  the default browser could not be opened. Open this URL:' -ForegroundColor Yellow
+        Write-Host "  $appUrl" -ForegroundColor Yellow
     }
 }
 
 function Get-WslLogCommand([string] $Distro) {
-    $linuxLog = if ($WslDataDir) {
-        $WslLogPath
-    } else {
-        '$HOME/.openai4s/logs/app.out'
+    return "wsl -d `"$Distro`" --exec sh -lc 'tail -40 `"$WslLogPath`"'"
+}
+
+function Set-UrlHost([string] $Url, [string] $NewHost) {
+    # `openai4s url` can only know the host the daemon was told to BIND. When
+    # that is the wildcard, the CLI renders it as `localhost` -- the one address
+    # Windows cannot reach with localhostForwarding=false, which is exactly the
+    # case the NAT fallback exists for. The sign-in token lives in the query, so
+    # re-authority the URL rather than discarding it.
+    try {
+        $builder = New-Object System.UriBuilder $Url
+        if ($builder.Host -ne $NewHost) { $builder.Host = $NewHost }
+        return $builder.Uri.AbsoluteUri
+    } catch {
+        return $Url
     }
-    return "wsl -d `"$Distro`" --exec sh -lc 'tail -40 `"$linuxLog`"'"
 }
 
 function Stop-WithGuidance([string] $Problem, [string[]] $Steps) {
@@ -249,14 +265,31 @@ function Get-WslDistros {
         if (-not $text) { continue }
         $isDefault = $text.StartsWith('*')
         $text = $text.TrimStart('*').Trim()
-        $fields = $text -split '\s+'
+        # Split on runs of two or more spaces, because that is what separates
+        # the padded columns. Splitting on any whitespace cannot tell a name
+        # containing a space ("My Distro") from a localized multi-word STATE
+        # ("Wird ausgeftihrt", "En cours d'execution") -- and this listing is
+        # localized, as the header-row comment below already acknowledges.
+        # Single-space separation (a name long enough to eat the padding) falls
+        # back to the first field only, which is what this read before names
+        # with spaces were supported.
+        $paddedColumns = $true
+        $fields = $text -split '\s{2,}'
+        if ($fields.Count -lt 3) {
+            $paddedColumns = $false
+            $fields = $text -split '\s+'
+        }
         if ($fields.Count -lt 3) { continue }
         # The header row, in whatever language Windows is running in, is the one
         # whose last field is not a number.
         $wslVersion = 0
         if (-not [int]::TryParse($fields[-1], [ref] $wslVersion)) { continue }
         $state = $fields[-2]
-        $name = @($fields[0..($fields.Count - 3)]) -join ' '
+        $name = if ($paddedColumns) {
+            @($fields[0..($fields.Count - 3)]) -join ' '
+        } else {
+            $fields[0]
+        }
         $distros += [pscustomobject]@{
             Name      = $name
             State     = $state
@@ -732,7 +765,7 @@ if ($code -ne 0) {
 
 if (Test-Serving) {
     if (Test-OpenAI4SServing $distro $bootstrap $facts.BundleDir) {
-        $appUrl = Get-AppUrl $distro $bootstrap $facts.BundleDir
+        $appUrl = Set-UrlHost (Get-AppUrl $distro $bootstrap $facts.BundleDir) $ClientHost
         Write-Host "OpenAI4S is already serving at $Url -- opening it." -ForegroundColor Green
         Open-AppUrl $appUrl
         exit 0
@@ -761,7 +794,7 @@ $deadline = (Get-Date).AddSeconds(60)
 while ((Get-Date) -lt $deadline) {
     if (Test-Serving) {
         if (Test-OpenAI4SServing $distro $bootstrap $facts.BundleDir) {
-            $appUrl = Get-AppUrl $distro $bootstrap $facts.BundleDir
+            $appUrl = Set-UrlHost (Get-AppUrl $distro $bootstrap $facts.BundleDir) $ClientHost
             Write-Host ''
             Write-Host "  ready: $Url" -ForegroundColor Green
             Open-AppUrl $appUrl

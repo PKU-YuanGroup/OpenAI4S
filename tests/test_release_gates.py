@@ -1237,7 +1237,11 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     assert "$CondaMirrorOff = $CondaMirror -eq 'off'" in launcher
     assert "'OPENAI4S_PYPI_INDEX_URL=off'" in launcher
     assert "'OPENAI4S_CONDA_MIRROR=off'" in launcher
-    assert "$name = @($fields[0..($fields.Count - 3)]) -join ' '" in launcher
+    # Padded-column split: a name with a space and a localized multi-word
+    # STATE are indistinguishable under a bare `\s+`, and `wsl -l -v` produces
+    # both.
+    assert "$fields = $text -split '\\s{2,}'" in launcher
+    assert "@($fields[0..($fields.Count - 3)]) -join ' '" in launcher
     assert "Get-WslLogCommand" in launcher
     assert 'wsl --set-version `"$($named.Name)`" 2' in launcher
     assert "$BindHost" in launcher
@@ -1485,6 +1489,38 @@ def test_windows_launcher_off_restores_official_indexes(tmp_path):
     assert "user = true" in restored
     assert "break-system-packages = true" in restored
     assert not condarc.exists()
+
+
+def test_windows_launcher_claims_the_pristine_bundle_pip_conf_on_install(tmp_path):
+    """A first launch with no mirror selected must not strand the file forever.
+
+    The bundle ships an unmarked `pip.conf`. Ownership is decided by the
+    managed marker, so if the install leaves that pristine file unmarked, every
+    later launch reads "no marker, not a fresh install" and reports it
+    user-managed -- and setting OPENAI4S_WSL_PYPI_INDEX afterwards silently
+    never takes effect, with no way back short of deleting the file by hand.
+    """
+
+    tarball = tmp_path / "OpenAI4S-9.9.9-linux-x86_64.tar.gz"
+    bundle_dir = _write_fake_linux_payload(tarball, "9.9.9", "x86_64")
+    digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+
+    first = _run_windows_bootstrap_install(tmp_path, tarball, digest, bundle_dir)
+    assert first.returncode == 0, first.stderr
+
+    pip_conf = tmp_path / "data" / "app" / bundle_dir / "runtime" / "pip.conf"
+    claimed = pip_conf.read_text("utf-8")
+    assert "managed-by-openai4s-windows-launcher" in claimed
+    assert "index-url" not in claimed
+    assert "user = true" in claimed
+
+    mirror = "https://mirror.example.invalid/simple"
+    later = _run_windows_bootstrap_install(
+        tmp_path, tarball, digest, bundle_dir, OPENAI4S_PYPI_INDEX_URL=mirror
+    )
+    assert later.returncode == 0, later.stderr
+    assert "is user-managed" not in later.stderr
+    assert f"index-url = {mirror}" in pip_conf.read_text("utf-8")
 
 
 def test_windows_launcher_never_rewrites_user_owned_network_files(tmp_path):

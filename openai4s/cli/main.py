@@ -307,6 +307,24 @@ def _daemon_alive(cfg, pid: int) -> bool:
     return current == recorded_start
 
 
+def _live_endpoint(cfg) -> tuple[str, int] | None:
+    """The endpoint of the daemon that currently owns this data dir, if known.
+
+    Every command that dials the local daemon needs the same answer, and
+    getting it in only some of them is how one CLI comes to disagree with
+    itself: under the WSL NAT fallback the launcher starts `serve` with an
+    explicit `OPENAI4S_HOST`, while a later `openai4s <cmd>` has only the
+    default. ``None`` means "no better information than the caller's config".
+    """
+
+    if getattr(cfg, "pidfile", None) is None:
+        return None
+    pid = _read_pid(cfg)
+    if not pid or not _daemon_alive(cfg, pid):
+        return None
+    return _recorded_endpoint(cfg, pid)
+
+
 def _reachable_host(host: str) -> str:
     """A bind address, rendered as somewhere a client can actually connect.
 
@@ -894,13 +912,7 @@ def cmd_stop(args) -> int:
 
 
 def cmd_url(args) -> int:
-    cfg = get_config()
-    endpoint = None
-    if getattr(cfg, "pidfile", None) is not None:
-        pid = _read_pid(cfg)
-        if pid and _daemon_alive(cfg, pid):
-            endpoint = _recorded_endpoint(cfg, pid)
-    print(_url(cfg, endpoint=endpoint))
+    print(_url(cfg := get_config(), endpoint=_live_endpoint(cfg)))
     return 0
 
 
@@ -1604,7 +1616,8 @@ def _daemon_request(cfg, method: str, path: str, body: dict | None = None):
             f"path must be relative to the API root, not {path!r} "
             f"(it is joined with {contract.API_ROOT})"
         )
-    url = _url(cfg, with_token=False).rstrip("/") + contract.API_ROOT + path
+    base = _url(cfg, with_token=False, endpoint=_live_endpoint(cfg))
+    url = base.rstrip("/") + contract.API_ROOT + path
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")

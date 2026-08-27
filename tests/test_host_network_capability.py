@@ -264,6 +264,27 @@ def test_the_ssrf_guard_applies_to_every_method(monkeypatch, method):
             webtools._http_get(target, method=method)
 
 
+def test_the_guard_reads_the_host_the_client_will_actually_dial(monkeypatch):
+    """Percent-encoding the authority must not walk past the SSRF guard.
+
+    Both clients that actually connect decode the authority before they do:
+    `urllib.request.Request._parse` runs `unquote(self.host)`, and `requests`
+    normalizes the same way. A guard that inspects the *encoded* spelling is
+    therefore guarding a host nobody dials -- `169%2e254%2e169%2e254` fails to
+    resolve here (and the guard fails open on a resolution failure, by design)
+    while the client connects to the cloud metadata service.
+    """
+
+    monkeypatch.delenv("OPENAI4S_ALLOW_PRIVATE_FETCH", raising=False)
+    for target in (
+        "http://169%2e254%2e169%2e254/latest/meta-data",
+        "http://127%2e0%2e0%2e1:8760/",
+        "http://10%2E0%2E0%2E7/private",
+    ):
+        with pytest.raises(webtools.SSRFBlocked):
+            webtools.guard_url(target)
+
+
 def test_the_download_path_goes_through_the_same_guard(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENAI4S_ALLOW_PRIVATE_FETCH", raising=False)
     _stub_urlopen(monkeypatch, lambda _r: _Response(b"data"))

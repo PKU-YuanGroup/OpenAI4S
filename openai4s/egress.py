@@ -255,8 +255,18 @@ def domain_allowed(host_or_url: str) -> bool:
     """Whether an outbound request to this host/URL is permitted.
 
     Fail-open: ``off`` mode → always True; an unparseable target → True (let the
-    request fail on its own rather than mis-block)."""
+    request fail on its own rather than mis-block).
+
+    The unparseable case is kept here rather than inherited from
+    :func:`domain_in_allowlist`, which is deliberately fail-*closed*. Callers
+    of this function read a False as "an existing hard policy refuses this",
+    and `permissions.py` turns that into a Guardian hard deny plus a durable
+    audit row. A scheme-bearing target with no host (``file:///abs/path``) is
+    not an egress decision at all, so answering it with a denial names a
+    policy that never issued."""
     if egress_mode() != "allowlist":
+        return True
+    if not domain_of(host_or_url):
         return True
     return domain_in_allowlist(host_or_url)
 

@@ -68,9 +68,14 @@ run_preflight() {
     exit 1
   fi
 
-  # Installed is not the same as usable. Exercise the same lifecycle and
-  # namespace flags emitted by wrap_bwrap_command(), rather than a stronger
-  # user/uid configuration that the real scientific Cell never requests.
+  # Installed is not the same as usable. Exercise the lifecycle and namespace
+  # flags emitted by wrap_bwrap_command(), rather than a stronger user/uid
+  # configuration that the real scientific Cell never requests. `--new-session`
+  # is the one deliberate difference: the runtime argv omits it because the
+  # spawner owns the session, so probing it here asks a strict superset --
+  # enough to prove the distribution can build the boundary, which is all this
+  # preflight decides. The exact-argv guarantee belongs to the daemon's own
+  # sandbox self-test, which does pass new_session=False.
   if ! bwrap --die-with-parent --new-session \
       --unshare-ipc --unshare-uts --unshare-net \
       --ro-bind / / --dev /dev --proc /proc -- /bin/true >/dev/null 2>&1; then
@@ -108,17 +113,22 @@ configure_network() {
     esac
   fi
 
-  if [ "$PYPI_MODE" != "unchanged" ]; then
+  # A fresh install always claims the file, even with no mirror selected. The
+  # unmarked file is then the pristine bundle baseline, and leaving it unmarked
+  # would make it permanently unclaimable: a later launch sees "no marker, not
+  # fresh" and reports it user-managed, so setting OPENAI4S_WSL_PYPI_INDEX
+  # afterwards would silently never take effect.
+  if [ "$PYPI_MODE" != "unchanged" ] || [ "$FRESH_INSTALL" = "1" ]; then
     # This is pip's site config for the embedded interpreter. Environment-only
     # PIP_* settings do not reach a sandboxed Cell, so putting the mirror here
     # is what keeps later in-Cell installs off a direct public index.
     #
     # The bundle ships a build-time pip.conf that routes installs to the user
-    # site and names no index; rewriting that one is this launcher's job. A
-    # On a fresh install the unmarked file is the pristine bundle baseline and
-    # may be claimed. On later launches, removing the marker transfers
-    # ownership to the user, and the launcher preserves the whole file rather
-    # than guessing which individual setting was intentional.
+    # site and names no index; rewriting that one is this launcher's job. On a
+    # fresh install the unmarked file is that pristine baseline and may be
+    # claimed. On later launches, removing the marker transfers ownership to
+    # the user, and the launcher preserves the whole file rather than guessing
+    # which individual setting was intentional.
     if [ -f "$PIP_CONF" ] && ! grep -q "$MANAGED_MARK" "$PIP_CONF" 2>/dev/null \
         && [ "$FRESH_INSTALL" != "1" ]; then
       echo "note: $PIP_CONF is user-managed; leaving it unchanged" >&2
@@ -198,13 +208,21 @@ configure_fake_ip_dns() {
       # narrow compatibility path. The Python guard still accepts that range
       # only for catalogued or explicitly approved domains and never for an IP
       # literal, loopback, metadata, or another private range.
+      #
+      # The local resolver check gates the network one, and that order is
+      # load-bearing rather than stylistic: this function runs before every
+      # `cli` action too, so an unconditional `getent` would put a live DNS
+      # lookup of a third-party domain in front of `status`, `url` and `stop`
+      # -- and block each of them for the full resolv.conf budget on exactly
+      # the half-configured proxy this feature exists for. A machine with an
+      # ordinary resolver now reads one local file and stops.
       RESOLV_CONF="${OPENAI4S_WSL_RESOLV_CONF:-/etc/resolv.conf}"
       RESOLVER=""
       PROBE=""
       if [ -r "$RESOLV_CONF" ]; then
         RESOLVER="$(awk '/^[[:space:]]*nameserver[[:space:]]+/ {print $2; exit}' "$RESOLV_CONF")"
       fi
-      if command -v getent >/dev/null 2>&1; then
+      if is_fake_ip_address "$RESOLVER" && command -v getent >/dev/null 2>&1; then
         PROBE="$(getent ahostsv4 api.openalex.org 2>/dev/null | awk 'NR == 1 {print $1; exit}')"
       fi
       if is_fake_ip_address "$RESOLVER" && is_fake_ip_address "$PROBE"; then
@@ -301,9 +319,15 @@ install)
     echo "the payload did not unpack into $APP" >&2
     exit 1
   fi
-  printf '%s\n' "$EXPECTED" > "$MARKER"
   configure_network "$APP" 1
   install_cli_link "$APP"
+  # The marker is the *last* step, because it is what makes the next launch
+  # take the already-installed fast path. Written first, an install that then
+  # failed to write pip.conf (unwritable tree, ENOSPC) left a tree marked
+  # complete: every later launch skipped the extraction, re-entered
+  # configure_network with FRESH_INSTALL=0, and failed the same way with no
+  # route back to a working install.
+  printf '%s\n' "$EXPECTED" > "$MARKER"
   echo "installed $APP"
   ;;
 

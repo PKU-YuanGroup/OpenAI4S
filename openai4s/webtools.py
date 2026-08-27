@@ -69,23 +69,26 @@ def _require_network() -> None:
         )
 
 
-def _fake_ip_address_allowed(
-    host: str, addr: ipaddress.IPv4Address | ipaddress.IPv6Address
-) -> bool:
+def _fake_ip_host_allowed(host: str) -> bool:
     """Accept a proxy-synthetic address only across a narrow trust boundary.
 
     Clash-style Fake-IP DNS maps public names into RFC 2544's
     ``198.18.0.0/15`` benchmarking range and a TUN adapter translates the
     subsequent connection back to the original hostname.  Treating that range
     as generally public would create an SSRF hole, so compatibility requires
-    all three conditions below: an explicit process opt-in, a hostname rather
-    than an IP literal, and a built-in or user-approved egress domain.
+    all three conditions: an explicit process opt-in, a hostname rather than
+    an IP literal, and a built-in or user-approved egress domain.
+
+    Only the last two are per-*host*, which is why they live here rather than
+    beside the address test: ``getaddrinfo`` returns one entry per socktype,
+    so a per-address form re-read the environment, re-parsed the host and
+    rebuilt the whole egress catalog two or three times for one lookup.
     """
 
     enabled = (
         os.environ.get("OPENAI4S_ALLOW_FAKE_IP_DNS", "").strip().lower() in _TRUE_VALUES
     )
-    if not enabled or addr.version != 4 or addr not in _FAKE_IP_NETWORK:
+    if not enabled:
         return False
     try:
         ipaddress.ip_address(host.rstrip("."))
@@ -108,6 +111,7 @@ def _host_is_private(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except (socket.gaierror, UnicodeError):
         return False  # let the request itself fail normally
+    fake_ip_host: bool | None = None
     for info in infos:
         try:
             addr = ipaddress.ip_address(info[4][0])
@@ -121,8 +125,11 @@ def _host_is_private(host: str) -> bool:
             or addr.is_multicast
             or addr.is_unspecified
         ):
-            if _fake_ip_address_allowed(host, addr):
-                continue
+            if addr.version == 4 and addr in _FAKE_IP_NETWORK:
+                if fake_ip_host is None:
+                    fake_ip_host = _fake_ip_host_allowed(host)
+                if fake_ip_host:
+                    continue
             return True
     return False
 
@@ -142,7 +149,12 @@ def guard_url(url: str) -> None:
 def _guard_url(url: str) -> None:
     if os.environ.get("OPENAI4S_ALLOW_PRIVATE_FETCH", "") in ("1", "true", "yes"):
         return  # explicit opt-in (e.g. fetching a local model endpoint)
-    host = urllib.parse.urlparse(url).hostname or ""
+    # Percent-decoded, because both clients that actually connect decode the
+    # authority first: `urllib.request.Request._parse` does `unquote(self.host)`
+    # and `requests` normalizes the same way. Guarding the encoded spelling
+    # guards a host nobody dials -- `http://169%2e254%2e169%2e254/` yields a
+    # `gaierror` here (fail-open) and the metadata address in the client.
+    host = urllib.parse.unquote(urllib.parse.urlparse(url).hostname or "")
     if _host_is_private(host):
         raise SSRFBlocked(
             f"refusing to fetch a private/loopback/metadata address: {host!r} "

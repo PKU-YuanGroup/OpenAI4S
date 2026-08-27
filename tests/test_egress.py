@@ -128,6 +128,26 @@ def test_catalog_membership_is_mode_independent_and_preserves_exact_hosts(monkey
     assert egress.domain_in_allowlist("sub.data.example.com") is True
 
 
+def test_an_unparseable_target_stays_fail_open_for_domain_allowed(monkeypatch):
+    """`domain_allowed` must not inherit `domain_in_allowlist`'s fail-closed answer.
+
+    Callers read a False from `domain_allowed` as "an existing hard policy
+    refuses this": `permissions.py` turns it into a Guardian hard deny plus a
+    durable audit row naming that policy. A scheme-bearing target with no host
+    (`file:///abs/path`, a bare `https://`, an unbalanced IPv6 bracket) is not
+    an egress decision at all, so denying it names a policy that never issued
+    -- the false-denial class `_guardian_hard_deny`'s own comment exists to
+    prevent. The catalog answer stays fail-closed; only this wrapper does not.
+    """
+
+    monkeypatch.setenv("OPENAI4S_EGRESS", "allowlist")
+    assert egress.egress_mode() == "allowlist"
+    for target in ("file:///home/me/notes.txt", "https://", "http://[::1", ""):
+        assert egress.domain_of(target) == ""
+        assert egress.domain_allowed(target) is True
+        assert egress.domain_in_allowlist(target) is False
+
+
 def test_domain_of_parses_url_bare_and_port(monkeypatch):
     assert egress.domain_of("https://api.openalex.org/works?x=1") == "api.openalex.org"
     assert egress.domain_of("ncbi.nlm.nih.gov/geo") == "ncbi.nlm.nih.gov"

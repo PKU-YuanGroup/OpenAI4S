@@ -12,11 +12,13 @@ import platform as _pf
 import re
 import shutil
 import stat
+import sys
 import threading
 import uuid
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
@@ -37,14 +39,39 @@ _EMBEDDED_IMAGE_TYPES = frozenset(
 _MAX_EMBEDDED_FIGURE_BYTES = 8 * 1024 * 1024
 _MAX_ARTIFACT_RECEIPTS = 512
 # WSL's ext4/VHD metadata can report the same ctime tick immediately after a
-# same-length rewrite whose mtime was restored. Hash bounded files so that
-# common text/tabular outputs cannot disappear from provenance merely because
-# the metadata cache has not advanced yet. Large scientific inputs retain the
-# constant-I/O metadata path; capture must not reread multi-gigabyte datasets
-# before and after every Cell.
+# same-length rewrite whose mtime was restored. Where that happens, hash bounded
+# files so that common text/tabular outputs cannot disappear from provenance
+# merely because the metadata cache has not advanced yet. Large scientific
+# inputs retain the constant-I/O metadata path; capture must not reread
+# multi-gigabyte datasets before and after every Cell.
 _MAX_WORKSPACE_FINGERPRINT_BYTES = 8 * 1024 * 1024
+#: Force the digest on (for a filesystem with coarse timestamps we have not
+#: named) or off (for a workspace where the read cost outweighs the risk).
+CONTENT_FINGERPRINT_ENV = "OPENAI4S_ARTIFACT_CONTENT_FINGERPRINT"
 EventSink = Callable[[dict[str, Any]], None]
 Broadcast = Callable[[str, dict[str, Any]], None]
+
+
+@lru_cache(maxsize=1)
+def _metadata_ctime_can_lag() -> bool:
+    """True on WSL, whose ext4-on-VHD can defer a ctime update within one tick.
+
+    Cached because the answer must not vary inside a process: the ``before``
+    and ``after`` fingerprints of an unchanged file have to compare equal, and
+    a probe that flipped mid-Cell would report every bounded file as changed.
+    `sys.platform` rather than `platform.system()`, for the reason
+    `platform_support` gives: mixing the two vocabularies is how a check
+    silently stops matching.
+    """
+
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with open("/proc/sys/kernel/osrelease", "rb") as handle:
+            return b"microsoft" in handle.read(256).lower()
+    except OSError:
+        return False
+
 
 _ARTIFACT_WRITER_LOCKS: dict[str, threading.RLock] = {}
 _ARTIFACT_WRITER_LOCKS_GUARD = threading.Lock()
@@ -3031,9 +3058,11 @@ class ArtifactManager:
         An mtime alone is caller-controlled: ``os.utime`` and ``copy2`` can
         restore it after replacing bytes. Device/inode/size plus kernel-owned
         ctime detects replacement and ordinary in-place writes. WSL can defer
-        that ctime update within one filesystem tick, so bounded files also
-        carry a content digest. Multi-gigabyte scientific inputs retain the
-        constant-I/O metadata path rather than being hashed for every Cell.
+        that ctime update within one filesystem tick, so *there* bounded files
+        also carry a content digest; on a filesystem whose ctime is
+        authoritative the boundary stays proportional to directory entries
+        rather than to workspace bytes. Multi-gigabyte scientific inputs retain
+        the constant-I/O metadata path everywhere.
         """
         try:
             repo_roots = {git_dir.parent for git_dir in workspace.rglob(".git")}
@@ -3051,31 +3080,89 @@ class ArtifactManager:
         return result
 
     @staticmethod
+    def _content_fingerprints_required() -> bool:
+        """Whether the snapshot must read bytes rather than trust the metadata.
+
+        The digest answers one filesystem. Everywhere else the kernel-owned
+        ctime is authoritative, and hashing anyway is not free: the ceiling
+        above is per *file*, so a workspace of ordinary sub-cap outputs is read
+        in full on both sides of every Cell — measured at ~190-330x the
+        metadata walk on a warm cache, and worse on WSL's own DrvFs, which is
+        the slowest of the three. Paying that on macOS and ordinary Linux buys
+        nothing, because the defect it guards against cannot happen there.
+
+        The environment override is the escape hatch in both directions, since
+        "coarse enough to defeat the ctime" is a property of the filesystem
+        rather than of the platform, and this only names the one we have seen.
+        """
+
+        override = os.environ.get(CONTENT_FINGERPRINT_ENV, "").strip().lower()
+        if override in ("1", "true", "yes", "on"):
+            return True
+        if override in ("0", "false", "no", "off"):
+            return False
+        return _metadata_ctime_can_lag()
+
+    @staticmethod
+    def _metadata_fingerprint(path: Path) -> WorkspaceFileState | None:
+        """The digest-free identity, for a regular file that cannot be opened.
+
+        ``lstat`` needs only search permission on the parent directory; opening
+        needs read permission on the file itself. A deliverable the daemon may
+        not read still has an identity worth tracking, and dropping it would
+        remove it from both snapshots — so it could never register as changed,
+        and one ``chmod 000`` in a Cell would hide a file from capture.
+        """
+
+        try:
+            status = path.stat(follow_symlinks=False)
+        except OSError:
+            return None
+        if not stat.S_ISREG(status.st_mode):
+            return None
+        return (
+            int(status.st_dev),
+            int(status.st_ino),
+            int(status.st_size),
+            int(status.st_mtime_ns),
+            int(status.st_ctime_ns),
+            None,
+        )
+
+    @staticmethod
     def _live_fingerprint(path: Path) -> WorkspaceFileState | None:
         """Identity of the exact regular live file a child already captured."""
 
         try:
+            # O_NONBLOCK is load-bearing, not hygiene: this walks a directory
+            # tree the agent controls, and `os.open` on a writer-less FIFO
+            # blocks forever. The `S_ISREG` rejection that used to make every
+            # non-regular entry free now runs *after* the open, so it cannot
+            # save us. `lstat` never blocked; neither may this.
             descriptor = os.open(
                 path,
                 os.O_RDONLY
                 | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
             )
-            status = os.fstat(descriptor)
         except OSError:
-            return None
+            return ArtifactManager._metadata_fingerprint(path)
         try:
+            status = os.fstat(descriptor)
             if not stat.S_ISREG(status.st_mode):
                 return None
             digest = None
-            if int(status.st_size) <= _MAX_WORKSPACE_FINGERPRINT_BYTES:
+            if (
+                int(status.st_size) <= _MAX_WORKSPACE_FINGERPRINT_BYTES
+                and ArtifactManager._content_fingerprints_required()
+            ):
                 hasher = hashlib.sha256()
-                # Duplicate the descriptor so the buffered wrapper owns only
-                # its copy. The original remains available for the final close
-                # on every success and exception path.
-                with os.fdopen(os.dup(descriptor), "rb") as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        hasher.update(chunk)
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
                 digest = hasher.hexdigest()
             return (
                 int(status.st_dev),
