@@ -117,10 +117,23 @@ def test_restricted_builtins_derive_a_fail_closed_execution_policy():
         policy = child_execution_policy(overrides)
         assert policy.restricted is True
         # Read-only by construction: none of the restricted builtins may
-        # write workspace files or run shell.
+        # write workspace files or run shell — including web_download, the
+        # workspace file writer the broad `web` alias would smuggle in.
         assert not policy.allows("write_file")
         assert not policy.allows("authorize_bash")
+        assert not policy.allows("web_download")
         assert policy.allows("read_file")
+
+
+def test_read_only_scouts_keep_web_reads_without_the_download_writer():
+    """EXPLORE and PLAN advertise web research; the policy must keep the
+    read side (web_search/web_fetch) while refusing web_download, which
+    persists URL bytes into the shared session workspace."""
+    for name in ("EXPLORE", "PLAN"):
+        policy = child_execution_policy(BUILTIN_SPECIALISTS[name].profile_overrides())
+        assert policy.allows("web_search"), name
+        assert policy.allows("web_fetch"), name
+        assert not policy.allows("web_download"), name
 
 
 def test_unrestricted_builtins_inject_no_restriction_keys():

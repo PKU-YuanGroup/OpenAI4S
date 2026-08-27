@@ -133,7 +133,18 @@ Working standards:
             name="EXPLORE",
             mode="subagent",
             unrestricted=False,
-            capabilities=("web", "science", "read_file", "data", "llm"),
+            # Deliberately NOT the `web` alias: that alias includes
+            # web_download, a workspace file writer a read-only scout must
+            # never hold. Web reads are named explicitly instead.
+            capabilities=(
+                "web_search",
+                "web_fetch",
+                "egress_check",
+                "science",
+                "read_file",
+                "data",
+                "llm",
+            ),
             description=(
                 "Read-only scout. Searches the literature and your files "
                 "(web_search, web_fetch, grep, glob, read_file) and returns a "
@@ -226,7 +237,18 @@ Protocol:
             mode="primary",
             supports_plan_mode=True,
             unrestricted=False,
-            capabilities=("web", "science", "read_file", "data", "llm", "workflow"),
+            # Same explicit web-read set as EXPLORE: the `web` alias would
+            # smuggle in the web_download workspace writer.
+            capabilities=(
+                "web_search",
+                "web_fetch",
+                "egress_check",
+                "science",
+                "read_file",
+                "data",
+                "llm",
+                "workflow",
+            ),
             description=(
                 "Planning agent (Plan mode). Investigates and proposes a "
                 "step-by-step plan without executing changes."
