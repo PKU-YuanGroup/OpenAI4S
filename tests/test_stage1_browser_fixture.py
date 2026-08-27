@@ -429,7 +429,7 @@ def test_metadata_fixture_is_found_by_production_readiness(tmp_path, monkeypatch
         discover=lambda: environments.discover_environments(force=True),
     )
 
-    assert prepared["required_package_counts"] == {"python": 32, "r": 8}
+    assert prepared["required_package_counts"] == {"python": 33, "r": 8}
     assert prepared["fixture_kind"] == "metadata_fixture"
     assert prepared["runtime_execution_verified"] is False
     assert prepared["runtime_markers"]["python"] == "current_python"

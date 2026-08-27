@@ -1018,9 +1018,20 @@ def test_every_desktop_bundle_pre_bakes_the_same_science_stack():
     assert ("rdkit", "rdkit") in packages
     assert ("scikit-learn", "sklearn") in packages
 
+    # A `skip_arch=` annotation excludes the package for that architecture
+    # only: the builder drops it and the verifier must not demand it there.
+    assert ("scikit-misc==0.5.2", "skmisc") in packages
+    aarch64 = contract.manifest_packages("aarch64")
+    assert ("scikit-misc==0.5.2", "skmisc") not in aarch64
+    assert ("rdkit", "rdkit") in aarch64
+    assert "skmisc" not in contract.bundled_imports("aarch64")
+    assert "skmisc" in contract.bundled_imports()
+
     for builder in ("build_macos_dmg.sh", "build_linux_bundle.sh"):
         text = (ROOT / "scripts" / builder).read_text("utf-8")
         assert "scripts/bundled_packages.txt" in text, f"{builder} bundles its own list"
+    linux = (ROOT / "scripts" / "build_linux_bundle.sh").read_text("utf-8")
+    assert "skip_arch=" in linux, "the linux builder must honor skip_arch"
 
     for verifier in ("verify_macos_bundle", "verify_linux_bundle"):
         source = (ROOT / "scripts" / f"{verifier}.py").read_text("utf-8")

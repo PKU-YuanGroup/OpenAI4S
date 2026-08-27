@@ -427,8 +427,15 @@ try {
   });
   const permissionCard = page.locator(".perm-card:not(.resolved)").last();
   await permissionCard.waitFor({ state: "visible", timeout: 20000 });
+  // Count resolved cards before clicking: the resolution receipt can land
+  // before the next locator poll, at which point no unresolved card exists
+  // and waiting on the unresolved locator would time out.
+  const resolvedCards = page.locator(".perm-card.resolved");
+  const resolvedBefore = await resolvedCards.count();
   await permissionCard.locator(".perm-allow").click();
-  await permissionCard.waitFor({ state: "attached" });
+  // Locator-only (the workbench CSP has no unsafe-eval, so waitForFunction
+  // is refused): nth(n) attaches exactly when at least n+1 cards resolved.
+  await resolvedCards.nth(resolvedBefore).waitFor({ state: "attached" });
   await waitUntil("permission-resumed REPL completion", async () => {
     const snapshot = await api(`/frames/${encodeURIComponent(frameId)}/execution-queue`);
     return !queueTickets(snapshot).some((ticket) => ticket.execution_id === permissionExecutionId);

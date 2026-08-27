@@ -339,12 +339,16 @@ def test_dispatcher_env_list_and_use(tmp_path, monkeypatch):
     switched = {}
     disp.on_env_switch = lambda n: switched.__setitem__("name", n)
 
-    r = disp._m_env_list({"packages": ["biotite", "pandas", "scanpy"]})
+    # The probe package must be one no environment (including the daemon's own
+    # venv, which discovery also surfaces) can ever have installed: scanpy is
+    # no longer safe here because `uv sync --extra singlecell` puts it in the
+    # dev venv.
+    r = disp._m_env_list({"packages": ["biotite", "pandas", "nonexistent-probe-pkg"]})
     assert r["current"] == "struct"
     envs = {e["name"]: e for e in r["environments"]}
     assert "biotite" in envs["struct"]["has"]
     assert "pandas" in envs["python"]["has"]
-    assert r["missing"] == ["scanpy"]  # in no env → truly needs install
+    assert r["missing"] == ["nonexistent-probe-pkg"]  # in no env → needs install
     assert envs["r"]["runnable"] is False
 
     u = disp._m_env_use({"name": "python"})

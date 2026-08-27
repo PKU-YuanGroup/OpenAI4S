@@ -305,6 +305,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_share_viewer.py`](test_share_viewer.py) | 静态查看器资产可加载、router 能提供真实的外壳/JS/CSS；CLI `share` 子命令可解析；`relay gen-token` 打印 token。 |
 | [`test_session_title_service.py`](test_session_title_service.py) | 后台生成的会话标题。它跑在另一个线程上，所以测试大多是竞态：它不能覆盖掉用户刚刚打上去的标题；如果后台工作启动期间 `Store` 被换掉了，它得解析到新的那个。 |
 | [`test_setup_environments.py`](test_setup_environments.py) | 内置的 Python/R 环境 manifest，全程不碰 conda 就能验。两条承诺撑着这个模块：不显式要求更新，就绝不改动已有环境；更新只作用于探测到的 prefix，而且不做 prune，你自己装的包能活下来。它还钉住了 Python manifest 绝不用 pip 装 NumPy-1 ABI 的 RDKit，以及 `--only` 和 `--profile` 不能同时给。 |
+| [`test_single_cell_rna_analysis_skill.py`](test_single_cell_rna_analysis_skill.py) | 精选单细胞工作流的发现、sidecar 编译与检索；Harmony 元数据缺失/完全混杂及 reference 混用的结构化 preflight 失败；raw-count 与 donor 重复数门控；运行时生成的确定性配对 donor AnnData 完整运行，验证 counts layer、Artifact 和字节稳定 resume；另有 Pertpy Kang 2018 的可选 `network` 冒烟。 |
 | [`test_session_tool_catalog.py`](test_session_tool_catalog.py) | 关于会话 Tool 组合的两个测试。Host 先给 Dynamic Tool 的生命周期把住闸门，代理才在同一份目录里执行；渐进披露保留核心组，只激活相关的那几组。 |
 | [`test_settings_repository.py`](test_settings_repository.py) | 设置、模型 profile 与 feedback。模型 profile 的写操作由共享锁串行化；权限播种也走这同一个仓储——这正是两者被放在一起测的原因。 |
 | [`test_skill_customization_service.py`](test_skill_customization_service.py) | 在 Web Customize 面板里写出来的用户 Skill。有意思的是路径处理：删 `foo` 不能把 `foo-bar` 一起带走；目录和文档都不能是指向用户根目录之外的符号链接。内置 Skill 保持只读，并在重名时胜出。 |
