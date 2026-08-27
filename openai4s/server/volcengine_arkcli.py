@@ -46,6 +46,15 @@ _SAFE_ENV_NAMES = frozenset(
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_RUNTIME_DIR",
+        # Proxy variables are a deliberate trade-off: a proxy URL can embed
+        # credentials, but without them the arkcli child cannot reach the
+        # control plane at all on proxied networks. The shared kernel
+        # allowlist keeps excluding them. ``_child_env`` matches on
+        # ``key.upper()``, so the lowercase forms are covered too.
+        "ALL_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
     }
 )
 _DEVICE_CODE = re.compile(r"^[A-Za-z0-9+/=_&-]{8,8192}$")
@@ -85,16 +94,25 @@ def _child_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
     }
 
 
+_ARKCLI_SKILLS = {
+    "auth": "arkcli-auth",
+    "plans": "arkcli-plans",
+    "usage": "arkcli-usage",
+    "profile": "arkcli-profile",
+    "api": "arkcli-api-explorer",
+}
+
+
 def _command_env(argv: Sequence[str]) -> dict[str, str]:
     child_env = _child_env()
-    domain = str(argv[1] if len(argv) > 1 else "").lower()
-    skill_name = {
-        "auth": "arkcli-auth",
-        "plans": "arkcli-plans",
-        "usage": "arkcli-usage",
-        "profile": "arkcli-profile",
-        "api": "arkcli-api-explorer",
-    }.get(domain, "arkcli-auth")
+    # The domain sits at argv[1] when arkcli runs directly and at argv[2]
+    # when a resolved batch shim prepends the node interpreter and script.
+    skill_name = "arkcli-auth"
+    for part in argv[1:3]:
+        matched = _ARKCLI_SKILLS.get(str(part).lower())
+        if matched:
+            skill_name = matched
+            break
     child_env.update(
         {
             "ARKCLI_CALLER_TYPE": "ai_agent",
@@ -178,6 +196,44 @@ def _run_bounded(
     )
 
 
+_SHIM_SCRIPT = re.compile(
+    r"%(?:~dp0|dp0%)[\\/]([^\"\r\n<>|*?%]+?\.(?:js|cjs|mjs))",
+    re.IGNORECASE,
+)
+
+
+def _resolve_batch_shim(
+    path: str, *, which: Callable[[str], str | None] = shutil.which
+) -> list[str] | None:
+    """Bypass an npm ``.cmd`` shim (the BatBadBut class of argv corruption).
+
+    CreateProcess hands a batch file to cmd.exe, whose argument re-parsing
+    does not match ``list2cmdline`` quoting, so JSON ``--params`` arguments
+    get mangled. When the shim's Node entry script can be located, running
+    ``node <script>`` directly keeps argv byte-exact; on any mismatch the
+    caller keeps the batch file as-is.
+    """
+
+    shim = Path(path)
+    if shim.suffix.lower() not in {".cmd", ".bat"}:
+        return None
+    try:
+        with open(shim, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(65536)
+    except OSError:
+        return None
+    match = _SHIM_SCRIPT.search(text)
+    if match is None:
+        return None
+    script = shim.parent / match.group(1).replace("\\", "/")
+    if not script.is_file():
+        return None
+    node = which("node")
+    if not node:
+        return None
+    return [node, str(script)]
+
+
 def _text(value: Any, limit: int = 160) -> str:
     return " ".join(str(value or "").split())[:limit]
 
@@ -190,6 +246,26 @@ def _named(mapping: Mapping[str, Any], *names: str) -> Any:
     for name in names:
         if name in mapping:
             return mapping[name]
+    return None
+
+
+def _flag(value: Any) -> bool | None:
+    """Read a control-plane boolean that may arrive as JSON, number, or text."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
     return None
 
 
@@ -367,9 +443,10 @@ class ArkCliBridge:
         try:
             result = self._run(("--version",), timeout_s=5.0)
         except ArkCliError:
-            self._version = ""
-        else:
-            self._version = _text(result.stdout, 80)
+            # A transient probe failure must not become a permanent blank:
+            # leave the cache unset so the next availability scan retries.
+            return ""
+        self._version = _text(result.stdout, 80)
         return self._version
 
     def _run(
@@ -382,8 +459,13 @@ class ArkCliBridge:
         executable = self.executable()
         if not executable:
             raise ArkCliError("arkcli_not_installed", "Ark CLI is not installed")
+        argv: tuple[str, ...] = (executable, *args)
+        if os.name == "nt" and executable.lower().endswith((".cmd", ".bat")):
+            resolved = _resolve_batch_shim(executable, which=self._which)
+            if resolved is not None:
+                argv = (*resolved, *args)
         try:
-            result = self._runner((executable, *args), timeout_s, cancel_event)
+            result = self._runner(argv, timeout_s, cancel_event)
         except OSError as error:
             # A resolvable-but-unrunnable executable (no exec bit, a dead npm
             # shim interpreter, ENOEXEC) must surface as the projected error
@@ -454,21 +536,26 @@ class ArkCliBridge:
 
         if not _PROFILE_NAME.fullmatch(profile_name):
             raise ArkCliError("ark_profile_invalid", "Ark CLI profile name is invalid")
-        payload = _mapping(
-            self._json(
-                (
-                    "resources",
-                    "list",
-                    "--profile",
-                    profile_name,
-                    "--modality",
-                    "text",
-                ),
-                timeout_s=60.0,
-            )
+        # The payload may be a mapping or, like the other list commands, a
+        # bare top-level JSON list (current_default then resolves to "").
+        payload = self._json(
+            (
+                "resources",
+                "list",
+                "--profile",
+                profile_name,
+                "--modality",
+                "text",
+            ),
+            timeout_s=60.0,
         )
         current_default = _text(
-            _named(payload, "current_default", "currentDefault", "CurrentDefault"),
+            _named(
+                _mapping(payload),
+                "current_default",
+                "currentDefault",
+                "CurrentDefault",
+            ),
             256,
         )
         candidates: list[dict[str, Any]] = []
@@ -481,7 +568,7 @@ class ArkCliBridge:
             if (
                 not _MODEL_ID.fullmatch(endpoint_id)
                 or (kind and kind != "endpoint")
-                or _named(item, "invocable", "Invocable") is not True
+                or _flag(_named(item, "invocable", "Invocable")) is not True
             ):
                 continue
             candidates.append(
@@ -647,40 +734,52 @@ class ArkCliBridge:
     def api_key(self, profile_name: str, key_id: str | None = None) -> str:
         """Retrieve one freshly validated raw key for backend-only provisioning."""
 
-        candidates = self.api_key_inventory(profile_name)
         if key_id is not None:
-            requested = str(key_id).strip()
-            selected = [
-                item for item in candidates if str(item["id"]).strip() == requested
-            ]
-            if len(selected) != 1:
+            # An explicit id needs no inventory pre-flight: get_raw is the
+            # authority on whether the key still exists, and skipping the two
+            # inventory CLI calls halves the configure path's subprocess cost.
+            if not _PROFILE_NAME.fullmatch(profile_name):
+                raise ArkCliError(
+                    "ark_profile_invalid", "Ark CLI profile name is invalid"
+                )
+            try:
+                return self._raw_key(profile_name, key_id)
+            except ArkCliError as error:
+                if error.code in {
+                    "arkcli_not_installed",
+                    "arkcli_timeout",
+                    "login_cancelled",
+                }:
+                    raise
                 raise ArkCliError(
                     "ark_key_choice_invalid",
                     "The selected Ark API key is no longer available",
-                )
+                ) from error
+        candidates = self.api_key_inventory(profile_name)
+        selected = [item for item in candidates if item["selected"]]
+        if len(selected) == 1:
             chosen = selected[0]
+        elif len(candidates) == 1:
+            chosen = candidates[0]
+        elif not candidates:
+            raise ArkCliError(
+                "ark_key_missing",
+                "No usable API key exists for the selected Ark profile",
+            )
         else:
-            selected = [item for item in candidates if item["selected"]]
-            if len(selected) == 1:
-                chosen = selected[0]
-            elif len(candidates) == 1:
-                chosen = candidates[0]
-            elif not candidates:
-                raise ArkCliError(
-                    "ark_key_missing",
-                    "No usable API key exists for the selected Ark profile",
-                )
-            else:
-                raise ArkCliError(
-                    "ark_key_choice_required",
-                    "Choose which Ark API key OpenAI4S should use",
-                )
+            raise ArkCliError(
+                "ark_key_choice_required",
+                "Choose which Ark API key OpenAI4S should use",
+            )
+        return self._raw_key(profile_name, chosen["id"])
+
+    def _raw_key(self, profile_name: str, key_id: Any) -> str:
         raw = self._json(
             (
                 "api",
                 "apikey.get_raw",
                 "--params",
-                json.dumps({"Id": chosen["id"]}, separators=(",", ":")),
+                json.dumps({"Id": key_id}, separators=(",", ":")),
                 "--profile",
                 profile_name,
             ),

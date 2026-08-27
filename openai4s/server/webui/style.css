@@ -771,7 +771,6 @@ body.layout-wide{--col:1080px}
 .volc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:11px}
 .volc-actions button{display:inline-flex;align-items:center;justify-content:center;gap:5px}
 .volc-actions .icon-ghost{width:28px;height:28px;padding:0}
-.volc-wait{margin-top:10px;color:var(--text-400);font-size:12px}
 .volc-login-prep{max-width:680px;margin-top:9px;color:var(--text-400);font-size:12px;line-height:1.55}
 .volc-project-hint{margin:7px 0 0 27px;color:var(--text-400);font-size:11px;line-height:1.45}
 .volc-notice{display:grid;grid-template-columns:18px minmax(0,1fr);gap:9px;margin-top:11px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-100)}

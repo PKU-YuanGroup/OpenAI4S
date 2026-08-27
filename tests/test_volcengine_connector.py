@@ -11,12 +11,14 @@ import pytest
 
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
+from openai4s.server.errors import GatewayError
 from openai4s.server.volcengine_arkcli import (
     ArkCliBridge,
     ArkCliError,
     CommandResult,
     _child_env,
     _normalize_device_code,
+    _resolve_batch_shim,
 )
 from openai4s.server.volcengine_connector import (
     ProvisioningMaterial,
@@ -134,6 +136,24 @@ def test_child_process_environment_does_not_inherit_daemon_secrets():
         }
     )
     assert child == {"PATH": "/bin", "HOME": "/home/alice", "DISPLAY": ":0"}
+
+
+def test_proxy_environment_variables_reach_the_arkcli_child():
+    child = _child_env(
+        {
+            "PATH": "/bin",
+            "HTTPS_PROXY": "http://127.0.0.1:7890",
+            "http_proxy": "http://127.0.0.1:7890",
+            "NO_PROXY": "localhost",
+            "ALL_PROXY": "socks5://127.0.0.1:7891",
+            "OPENAI_API_KEY": "secret-openai",
+        }
+    )
+    assert child["HTTPS_PROXY"] == "http://127.0.0.1:7890"
+    assert child["http_proxy"] == "http://127.0.0.1:7890"
+    assert child["NO_PROXY"] == "localhost"
+    assert child["ALL_PROXY"] == "socks5://127.0.0.1:7891"
+    assert "OPENAI_API_KEY" not in child
 
 
 def test_bridge_matches_the_profile_default_before_getting_the_raw_key():
@@ -275,6 +295,63 @@ def test_bridge_lists_only_invocable_platform_text_endpoints():
 
     assert bridge.endpoint_inventory(profile) == [
         {"id": "ep-ready", "name": "", "selected": True}
+    ]
+
+
+def test_endpoint_inventory_accepts_a_top_level_list_payload():
+    profile = "platform_cn-beijing_default"
+    replies = {
+        (
+            "resources",
+            "list",
+            "--profile",
+            profile,
+            "--modality",
+            "text",
+            "--format",
+            "json",
+        ): [
+            {"id": "ep-ready", "resource_kind": "endpoint", "invocable": True},
+        ]
+    }
+    bridge, _runner = _bridge(replies)
+
+    assert bridge.endpoint_inventory(profile) == [
+        {"id": "ep-ready", "name": "", "selected": False}
+    ]
+
+
+def test_endpoint_inventory_tolerates_string_and_numeric_invocable_flags():
+    profile = "platform_cn-beijing_default"
+    replies = {
+        (
+            "resources",
+            "list",
+            "--profile",
+            profile,
+            "--modality",
+            "text",
+            "--format",
+            "json",
+        ): {
+            "current_default": "",
+            "items": [
+                {"id": "ep-str", "resource_kind": "endpoint", "invocable": "true"},
+                {"id": "ep-yes", "resource_kind": "endpoint", "invocable": "Yes"},
+                {"id": "ep-one", "resource_kind": "endpoint", "invocable": 1},
+                {"id": "ep-false", "resource_kind": "endpoint", "invocable": "false"},
+                {"id": "ep-zero", "resource_kind": "endpoint", "invocable": 0},
+                {"id": "ep-off", "resource_kind": "endpoint", "invocable": False},
+                {"id": "ep-absent", "resource_kind": "endpoint"},
+            ],
+        }
+    }
+    bridge, _runner = _bridge(replies)
+
+    assert [row["id"] for row in bridge.endpoint_inventory(profile)] == [
+        "ep-str",
+        "ep-yes",
+        "ep-one",
     ]
 
 
@@ -466,6 +543,101 @@ def test_connection_projection_contains_quota_but_no_cloud_identifiers_or_keys()
     assert "private-user-id" not in encoded
     assert "private-account-id" not in encoded
     assert "ark-live-secret-value" not in encoded
+
+
+def test_pascalcase_whoami_fields_still_project_a_connected_identity():
+    bridge = _ConnectedBridge()
+    bridge.whoami = lambda: {
+        "LoggedIn": True,
+        "AuthMethod": "sso",
+        "Name": "Alice",
+        "ProjectName": "default",
+        "Region": "cn-beijing",
+        "IsRoot": False,
+        "SsoExpired": False,
+    }
+
+    payload = VolcengineConnectorService(bridge).connection()
+
+    assert payload["state"] == "connected"
+    assert payload["identity"] == {
+        "logged_in": True,
+        "auth_method": "sso",
+        "name": "Alice",
+        "project_name": "default",
+        "region": "cn-beijing",
+        "is_root": False,
+        "sso_expired": False,
+    }
+
+
+def test_a_chinese_seat_error_projects_the_seat_required_state():
+    bridge = _ConnectedBridge()
+    bridge.usage = lambda: {
+        "items": [{"product": "agent-plan", "error": "未分配席位，请联系管理员"}]
+    }
+
+    payload = VolcengineConnectorService(bridge).connection()
+
+    assert payload["usage"]["items"][0]["error_code"] == "seat_required"
+    assert payload["access"]["state"] == "seat_required"
+
+
+def test_an_untagged_aggregate_usage_row_does_not_exhaust_a_tagged_plan():
+    bridge = _ConnectedBridge()
+    bridge.usage = lambda: {
+        "items": [
+            {
+                "product": "agent-plan",
+                "subscribed": True,
+                "periods": [{"label": "5h", "used": 25, "total": 100, "percent": 25}],
+            },
+            {
+                "product": "",
+                "subscribed": True,
+                "periods": [{"label": "5h", "used": 100, "total": 100, "percent": 100}],
+            },
+        ]
+    }
+
+    payload = VolcengineConnectorService(bridge).connection()
+
+    assert payload["access"]["state"] == "ready"
+
+
+def test_an_untagged_seat_error_does_not_block_a_tagged_healthy_plan():
+    bridge = _ConnectedBridge()
+    bridge.usage = lambda: {
+        "items": [
+            {
+                "product": "agent-plan",
+                "subscribed": True,
+                "periods": [{"label": "5h", "used": 1, "total": 100, "percent": 1}],
+            },
+            {"product": "", "error": "no seat allocated"},
+        ]
+    }
+
+    payload = VolcengineConnectorService(bridge).connection()
+
+    assert payload["access"]["state"] == "ready"
+
+
+def test_a_single_untagged_usage_row_still_reports_quota_exhaustion():
+    bridge = _ConnectedBridge()
+    bridge.usage = lambda: {
+        "items": [
+            {
+                "product": "",
+                "subscribed": True,
+                "periods": [{"label": "5h", "used": 100, "total": 100, "percent": 100}],
+            }
+        ]
+    }
+
+    payload = VolcengineConnectorService(bridge).connection()
+
+    assert payload["access"]["state"] == "quota_exhausted"
 
 
 def test_pending_or_expired_plans_are_not_available_for_configuration():
@@ -708,6 +880,22 @@ def test_multiple_api_keys_require_an_explicit_opaque_choice():
     assert chosen == ["cloud-key-two"]
 
 
+def test_provisioning_material_repr_never_contains_the_api_key():
+    material = ProvisioningMaterial(
+        api_key="ark-live-secret-value",
+        plan_key="agent-plan",
+        plan_name="Agent Plan",
+        profile_name="agent-plan_cn-beijing",
+        model="doubao-seed-2-0-pro-260215",
+        region="cn-beijing",
+        account_name="Alice",
+    )
+
+    assert material.api_key == "ark-live-secret-value"
+    assert "ark-live-secret-value" not in repr(material)
+    assert "ark-live-secret-value" not in str(material)
+
+
 def test_device_login_is_single_flight_until_the_code_is_submitted():
     class DeviceBridge(_ConnectedBridge):
         def login_device_start(self):
@@ -733,6 +921,51 @@ def test_the_offline_suite_never_resolves_a_real_arkcli(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
 
     assert ArkCliBridge().executable() == ""
+
+
+def test_an_npm_cmd_shim_resolves_to_the_node_entry_script(tmp_path):
+    script = tmp_path / "node_modules" / "arkcli" / "bin" / "arkcli.js"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    node = tmp_path / "node"
+    node.write_text("", encoding="utf-8")
+    shim = tmp_path / "arkcli.cmd"
+    shim.write_text(
+        "@ECHO off\r\n"
+        "SETLOCAL\r\n"
+        'IF EXIST "%~dp0\\node.exe" (\r\n'
+        '  SET "_prog=%~dp0\\node.exe"\r\n'
+        ") ELSE (\r\n"
+        '  SET "_prog=node"\r\n'
+        ")\r\n"
+        'endLocal & "%_prog%" '
+        '"%~dp0\\node_modules\\arkcli\\bin\\arkcli.js" %*\r\n',
+        encoding="utf-8",
+    )
+
+    resolved = _resolve_batch_shim(
+        str(shim), which=lambda name: str(node) if name == "node" else None
+    )
+
+    assert resolved == [str(node), str(script)]
+
+
+def test_a_plain_batch_file_is_not_mistaken_for_an_npm_shim(tmp_path):
+    batch = tmp_path / "arkcli.bat"
+    batch.write_text("@echo off\r\necho arkcli\r\n", encoding="utf-8")
+    node = tmp_path / "node"
+    node.write_text("", encoding="utf-8")
+
+    def which(name):
+        return str(node) if name == "node" else None
+
+    assert _resolve_batch_shim(str(batch), which=which) is None
+
+    dangling = tmp_path / "dangling.cmd"
+    dangling.write_text(
+        '"%~dp0\\node_modules\\arkcli\\bin\\missing.js" %*\r\n', encoding="utf-8"
+    )
+    assert _resolve_batch_shim(str(dangling), which=which) is None
 
 
 def test_chinese_project_selection_failure_maps_to_the_recovery_state():
@@ -779,6 +1012,26 @@ def test_an_unrunnable_executable_is_a_controlled_failure_not_a_crash():
 
     payload = VolcengineConnectorService(bridge).connection()
     assert payload["state"] == "error"
+
+
+def test_a_transient_version_probe_failure_is_not_cached_forever():
+    attempts = []
+
+    def runner(argv, timeout_s, cancel_event):
+        del timeout_s, cancel_event
+        attempts.append(tuple(argv[1:]))
+        if len(attempts) == 1:
+            return CommandResult(1, "", "temporary control-plane hiccup")
+        return CommandResult(0, "arkcli 1.0.15", "")
+
+    bridge = ArkCliBridge(
+        executable="arkcli", which=lambda _name: "/opt/arkcli", runner=runner
+    )
+
+    assert bridge.version() == ""
+    assert bridge.version() == "arkcli 1.0.15"
+    assert bridge.version() == "arkcli 1.0.15"
+    assert len(attempts) == 2
 
 
 def test_plaintext_envelope_paste_is_accepted_and_rewrapped():
@@ -907,6 +1160,96 @@ def test_key_choice_projection_surfaces_a_pending_endpoint_choice():
         access["endpoint_choices"][1]["id"],
     )
     assert material.model == "ep-two"
+
+
+def test_provisioning_reuses_the_scan_probes_without_re_spawning_the_cli():
+    bridge = _ConnectedBridge()
+    counts = {"profiles": 0, "inventory": 0, "endpoints": 0}
+    bridge.plans = lambda: []
+    bridge.usage = lambda: {"items": []}
+
+    def profiles():
+        counts["profiles"] += 1
+        return [
+            {
+                "name": "platform_cn-beijing_default",
+                "type": "platform",
+                "api_key_count": 1,
+            }
+        ]
+
+    def inventory(_profile):
+        counts["inventory"] += 1
+        return [
+            {
+                "id": "cloud-key-one",
+                "mask": "****1111",
+                "name": "OpenAI4S",
+                "suffix": "1111",
+                "selected": True,
+            }
+        ]
+
+    def endpoints(_profile):
+        counts["endpoints"] += 1
+        return [{"id": "ep-only", "name": "", "selected": True}]
+
+    bridge.profiles = profiles
+    bridge.api_key_inventory = inventory
+    bridge.endpoint_inventory = endpoints
+    seen = []
+    bridge.api_key = (
+        lambda _profile, key_id=None: seen.append(key_id) or "ark-live-secret-value"
+    )
+    service = VolcengineConnectorService(bridge)
+
+    material = service.provisioning_material("platform")
+
+    assert material.model == "ep-only"
+    assert counts == {"profiles": 1, "inventory": 1, "endpoints": 1}
+    assert seen == ["cloud-key-one"]
+
+
+def test_an_explicit_key_choice_skips_the_inventory_preflight():
+    profile = "agent-plan_cn-beijing"
+    replies = {
+        (
+            "api",
+            "apikey.get_raw",
+            "--params",
+            '{"Id":9}',
+            "--profile",
+            profile,
+            "--format",
+            "json",
+        ): {"Result": {"ApiKey": "ark-live-secret-value"}},
+    }
+    bridge, runner = _bridge(replies)
+
+    assert bridge.api_key(profile, 9) == "ark-live-secret-value"
+    assert [call[1] for call in runner.calls] == ["apikey.get_raw"]
+
+
+def test_a_dead_explicit_key_choice_maps_to_the_choice_error():
+    profile = "agent-plan_cn-beijing"
+    replies = {
+        (
+            "api",
+            "apikey.get_raw",
+            "--params",
+            '{"Id":404}',
+            "--profile",
+            profile,
+            "--format",
+            "json",
+        ): CommandResult(1, "", "the requested api key does not exist"),
+    }
+    bridge, _runner = _bridge(replies)
+
+    with pytest.raises(ArkCliError) as raised:
+        bridge.api_key(profile, 404)
+
+    assert raised.value.code == "ark_key_choice_invalid"
 
 
 def test_connection_scan_is_single_flight_across_threads():
@@ -1180,5 +1523,95 @@ def test_gateway_browser_login_returns_cross_platform_authorization(
                 200,
             )
         ]
+    finally:
+        runner.close()
+
+
+def _volcengine_route_handler(tmp_path, monkeypatch, connector):
+    monkeypatch.setattr(gateway_mod, "VolcengineConnectorService", lambda: connector)
+    cfg = Config(
+        data_dir=tmp_path,
+        llm=LLMConfig(provider="deepseek", api_key="test-key"),
+        max_turns=3,
+    )
+    runner = gateway_mod.SessionRunner(cfg, _Hub())
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    handler._query = lambda: {}
+    handler._json = lambda obj, code=200: None
+    return handler, runner
+
+
+@pytest.mark.stubbed_backend
+def test_gateway_rejects_an_unknown_login_mode_with_a_400(tmp_path, monkeypatch):
+    handler, runner = _volcengine_route_handler(
+        tmp_path, monkeypatch, _GatewayConnector()
+    )
+    try:
+        handler._body = lambda: {"mode": "tty"}
+
+        with pytest.raises(GatewayError) as raised:
+            handler._api("POST", "/volcengine/login")
+
+        assert raised.value.code == 400
+        assert raised.value.error_code == "invalid_login_mode"
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_gateway_disconnect_without_confirmation_is_a_400(tmp_path, monkeypatch):
+    handler, runner = _volcengine_route_handler(
+        tmp_path, monkeypatch, _GatewayConnector()
+    )
+    try:
+        handler._body = lambda: {}
+
+        with pytest.raises(GatewayError) as raised:
+            handler._api("POST", "/volcengine/disconnect")
+
+        assert raised.value.code == 400
+        assert raised.value.error_code == "confirmation_required"
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_gateway_configure_surfaces_a_pending_plan_choice_as_a_409(
+    tmp_path, monkeypatch
+):
+    class ChoiceRequired(_GatewayConnector):
+        def provisioning_material(
+            self, plan_key=None, key_choice=None, endpoint_choice=None
+        ):
+            raise ArkCliError("plan_choice_required", "Choose which Ark plan to use")
+
+    handler, runner = _volcengine_route_handler(tmp_path, monkeypatch, ChoiceRequired())
+    try:
+        handler._body = lambda: {}
+
+        with pytest.raises(GatewayError) as raised:
+            handler._api("POST", "/volcengine/configure")
+
+        assert raised.value.code == 409
+        assert raised.value.error_code == "plan_choice_required"
+    finally:
+        runner.close()
+
+
+@pytest.mark.stubbed_backend
+def test_gateway_login_maps_an_arkcli_timeout_to_a_503(tmp_path, monkeypatch):
+    class TimingOut(_GatewayConnector):
+        def start_device_login(self):
+            raise ArkCliError("arkcli_timeout", "Ark CLI did not finish in time")
+
+    handler, runner = _volcengine_route_handler(tmp_path, monkeypatch, TimingOut())
+    try:
+        handler._body = lambda: {"mode": "device"}
+
+        with pytest.raises(GatewayError) as raised:
+            handler._api("POST", "/volcengine/login")
+
+        assert raised.value.code == 503
+        assert raised.value.error_code == "arkcli_timeout"
     finally:
         runner.close()

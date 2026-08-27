@@ -7,7 +7,8 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.server.volcengine_arkcli import (
@@ -29,7 +30,9 @@ _CHOICE_ID = re.compile(r"^[a-f0-9]{32}$")
 class ProvisioningMaterial:
     """Private handoff from Ark CLI to the model-profile secret boundary."""
 
-    api_key: str
+    # repr=False: the default dataclass repr would print the raw key into any
+    # log or traceback that formats this object.
+    api_key: str = field(repr=False)
     plan_key: str
     plan_name: str
     profile_name: str
@@ -40,13 +43,17 @@ class ProvisioningMaterial:
 
 def _public_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "logged_in": bool(payload.get("logged_in")),
-        "auth_method": _text(payload.get("auth_method"), 32),
-        "name": _text(payload.get("name"), 120),
-        "project_name": _text(payload.get("project_name"), 120),
-        "region": _text(payload.get("region"), 64),
-        "is_root": bool(payload.get("is_root")),
-        "sso_expired": bool(payload.get("sso_expired")),
+        "logged_in": bool(_named(payload, "logged_in", "loggedIn", "LoggedIn")),
+        "auth_method": _text(
+            _named(payload, "auth_method", "authMethod", "AuthMethod"), 32
+        ),
+        "name": _text(_named(payload, "name", "Name"), 120),
+        "project_name": _text(
+            _named(payload, "project_name", "projectName", "ProjectName"), 120
+        ),
+        "region": _text(_named(payload, "region", "Region"), 64),
+        "is_root": bool(_named(payload, "is_root", "isRoot", "IsRoot")),
+        "sso_expired": bool(_named(payload, "sso_expired", "ssoExpired", "SsoExpired")),
     }
 
 
@@ -78,7 +85,8 @@ def _public_plans(plans: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 def _usage_error_code(value: Any) -> str:
     lowered = str(value or "").lower()
-    if "no seat" in lowered or "seat bound" in lowered:
+    # ``.lower()`` does not affect the Chinese seat wording (未分配席位).
+    if "no seat" in lowered or "seat bound" in lowered or "席位" in lowered:
         return "seat_required"
     if "accessdenied" in lowered or "access denied" in lowered:
         return "access_denied"
@@ -184,13 +192,24 @@ def _decorate_plan_access(
     return decorated
 
 
+def _plan_usage_rows(
+    usage: Mapping[str, Any], plan_key: str
+) -> list[Mapping[str, Any]]:
+    """Rows that speak for one plan: tagged rows win, and an untagged
+    aggregate row counts only when the plan has no tagged row of its own
+    (otherwise one shared row would exhaust or seat-block every plan)."""
+
+    rows = [item for item in usage.get("items", []) if isinstance(item, Mapping)]
+    tagged = [
+        item for item in rows if _text(item.get("product"), 64).lower() == plan_key
+    ]
+    if tagged:
+        return tagged
+    return [item for item in rows if not _text(item.get("product"), 64)]
+
+
 def _quota_exhausted(usage: Mapping[str, Any], plan_key: str) -> bool:
-    for item in usage.get("items", []):
-        if not isinstance(item, Mapping):
-            continue
-        product = _text(item.get("product"), 64).lower()
-        if product and product != plan_key:
-            continue
+    for item in _plan_usage_rows(usage, plan_key):
         for period in item.get("periods", []):
             if not isinstance(period, Mapping):
                 continue
@@ -234,12 +253,7 @@ def _access_projection(
     if len(available) == 1:
         plan = available[0]
         plan_key = str(plan.get("key") or "")
-        usage_rows = [
-            item
-            for item in usage.get("items", [])
-            if isinstance(item, Mapping)
-            and (not item.get("product") or item.get("product") == plan_key)
-        ]
+        usage_rows = _plan_usage_rows(usage, plan_key)
         if any(item.get("error_code") == "seat_required" for item in usage_rows):
             state = "seat_required"
         else:
@@ -384,6 +398,10 @@ class VolcengineConnectorService:
         self._scan_in_flight: threading.Event | None = None
         self._cached_at = float("-inf")
         self._cached: dict[str, Any] | None = None
+        # Raw probed profile rows from the latest scan (internal fields
+        # included), so provisioning can reuse the inventories that scan
+        # already paid for instead of re-spawning the CLI for each of them.
+        self._probed_profiles: list[dict[str, Any]] = []
         self._login: dict[str, Any] = {"state": "idle"}
         self._key_choice_ids: dict[tuple[str, str], str] = {}
         self._key_choices: dict[str, tuple[str, Any]] = {}
@@ -452,6 +470,7 @@ class VolcengineConnectorService:
                 profile["_key_error"] = error.code
                 projected.append(profile)
                 continue
+            profile["_key_candidates"] = [dict(item) for item in candidates]
             selected = [item for item in candidates if item.get("selected")]
             if len(selected) == 1 or len(candidates) == 1:
                 profile["_key_state"] = "ready"
@@ -474,6 +493,7 @@ class VolcengineConnectorService:
                     profile["_endpoint_state"] = "endpoint_check_failed"
                     profile["_endpoint_error"] = error.code
                 else:
+                    profile["_endpoints"] = [dict(item) for item in endpoints]
                     selected_endpoints = [
                         item for item in endpoints if item.get("selected")
                     ]
@@ -561,6 +581,8 @@ class VolcengineConnectorService:
             owner.set()
 
     def _scan(self) -> dict[str, Any]:
+        with self._lock:
+            self._probed_profiles = []
         availability = self.bridge.availability()
         if not availability["installed"]:
             payload = {
@@ -595,24 +617,31 @@ class VolcengineConnectorService:
                 "access": {"state": "unavailable"},
             }
             return self._cache(payload)
-        plans_error = ""
-        usage_error = ""
-        profiles_error = ""
-        try:
-            plans = _public_plans(self.bridge.plans())
-        except ArkCliError as error:
-            plans = []
-            plans_error = error.code
-        try:
-            usage = _public_usage(self.bridge.usage())
-        except ArkCliError as error:
-            usage = {"items": []}
-            usage_error = error.code
-        try:
-            profiles = self._probe_profile_keys(self.bridge.profiles())
-        except ArkCliError as error:
-            profiles = []
-            profiles_error = error.code
+
+        def leg(call: Callable[[], Any], fallback: Any) -> tuple[Any, str]:
+            try:
+                return call(), ""
+            except ArkCliError as error:
+                return fallback, error.code
+
+        # The three legs are independent CLI conversations already isolated by
+        # their own error codes; running them concurrently makes the scan's
+        # wall time the max of the legs instead of their sum.
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            plans_future = pool.submit(
+                leg, lambda: _public_plans(self.bridge.plans()), []
+            )
+            usage_future = pool.submit(
+                leg, lambda: _public_usage(self.bridge.usage()), {"items": []}
+            )
+            profiles_future = pool.submit(
+                leg, lambda: self._probe_profile_keys(self.bridge.profiles()), []
+            )
+        plans, plans_error = plans_future.result()
+        usage, usage_error = usage_future.result()
+        profiles, profiles_error = profiles_future.result()
+        with self._lock:
+            self._probed_profiles = [dict(profile) for profile in profiles]
         plans = _decorate_plan_access(
             plans,
             profiles,
@@ -776,6 +805,34 @@ class VolcengineConnectorService:
             self._login = {"state": "idle"}
         return self.connection(force=True)
 
+    def _probed_snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(profile) for profile in self._probed_profiles]
+
+    @staticmethod
+    def _select_probed_key(profile_row: Mapping[str, Any] | None) -> Any:
+        """Pick the key id the latest scan would auto-select, mirroring the
+        bridge's own selection so no second inventory round trip is needed."""
+
+        candidates = (profile_row or {}).get("_key_candidates")
+        if not isinstance(candidates, list):
+            # No probe data (live-fallback path); the bridge re-inventories.
+            return None
+        selected = [item for item in candidates if item.get("selected")]
+        if len(selected) == 1:
+            return selected[0]["id"]
+        if len(candidates) == 1:
+            return candidates[0]["id"]
+        if not candidates:
+            raise ArkCliError(
+                "ark_key_missing",
+                "No usable API key exists for the selected Ark profile",
+            )
+        raise ArkCliError(
+            "ark_key_choice_required",
+            "Choose which Ark API key OpenAI4S should use",
+        )
+
     def provisioning_material(
         self,
         plan_key: Any = None,
@@ -787,6 +844,11 @@ class VolcengineConnectorService:
             raise ArkCliError(
                 "volcengine_not_connected", "Connect a Volcengine account first"
             )
+        # The forced scan above just probed every profile's key and endpoint
+        # inventories; reuse those rows instead of re-spawning the CLI for
+        # data that is seconds old. An empty snapshot (probe failure) falls
+        # back to the live calls.
+        probed = self._probed_snapshot()
         requested = _text(plan_key, 64).lower()
 
         choice = _text(key_choice, 64).lower()
@@ -805,9 +867,10 @@ class VolcengineConnectorService:
                 )
 
         if requested == "platform":
+            rows = probed or [dict(profile) for profile in self.bridge.profiles()]
             profiles = [
                 profile
-                for profile in self.bridge.profiles()
+                for profile in rows
                 if _text(
                     _named(profile, "type", "Type", "profile_type", "profileType"),
                     64,
@@ -823,7 +886,8 @@ class VolcengineConnectorService:
                 raise ArkCliError(
                     "ark_profile_ambiguous", "Ark CLI has multiple platform profiles"
                 )
-            profile_name = _text(_named(profiles[0], "name", "Name"), 160)
+            profile_row = profiles[0]
+            profile_name = _text(_named(profile_row, "name", "Name"), 160)
             if choice:
                 if resolved_key[0] != profile_name:
                     raise ArkCliError(
@@ -832,7 +896,9 @@ class VolcengineConnectorService:
                     )
                 key_id = resolved_key[1]
 
-            endpoints = self.bridge.endpoint_inventory(profile_name)
+            endpoints = profile_row.get("_endpoints")
+            if not isinstance(endpoints, list):
+                endpoints = self.bridge.endpoint_inventory(profile_name)
             requested_endpoint = _text(endpoint_choice, 64).lower()
             selected_endpoint: dict[str, Any] | None = None
             if requested_endpoint:
@@ -877,6 +943,8 @@ class VolcengineConnectorService:
                         "ark_endpoint_choice_required",
                         "Choose which Ark endpoint OpenAI4S should use",
                     )
+            if key_id is None:
+                key_id = self._select_probed_key(profile_row)
             key = self.bridge.api_key(profile_name, key_id)
             identity = snapshot.get("identity", {})
             region = _text(identity.get("region"), 64).lower()
@@ -907,7 +975,31 @@ class VolcengineConnectorService:
             raise ArkCliError("plan_required", "No active Ark plan is available")
         else:
             raise ArkCliError("plan_choice_required", "Choose which Ark plan to use")
-        profile_name = self.bridge.profile_for_plan(selected["key"])
+        profile_row: dict[str, Any] | None = None
+        if probed:
+            matches = [
+                row
+                for row in probed
+                if _text(
+                    _named(row, "type", "Type", "profile_type", "profileType"), 64
+                ).lower()
+                == selected["key"]
+                and _PROFILE_NAME.fullmatch(_text(_named(row, "name", "Name"), 160))
+            ]
+            if not matches:
+                raise ArkCliError(
+                    "ark_profile_missing",
+                    "Ark CLI has no profile for the selected plan",
+                )
+            if len(matches) > 1:
+                raise ArkCliError(
+                    "ark_profile_ambiguous",
+                    "Ark CLI has multiple profiles for the selected plan",
+                )
+            profile_row = matches[0]
+            profile_name = _text(_named(profile_row, "name", "Name"), 160)
+        else:
+            profile_name = self.bridge.profile_for_plan(selected["key"])
         model = self.bridge.default_model(profile_name)
         if choice:
             if resolved_key[0] != profile_name:
@@ -916,6 +1008,8 @@ class VolcengineConnectorService:
                     "The selected Ark API key is no longer available",
                 )
             key_id = resolved_key[1]
+        if key_id is None:
+            key_id = self._select_probed_key(profile_row)
         key = self.bridge.api_key(profile_name, key_id)
         identity = snapshot.get("identity", {})
         region = _text(identity.get("region"), 64).lower()
