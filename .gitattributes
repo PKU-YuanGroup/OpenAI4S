@@ -1,3 +1,12 @@
+.gitattributes text eol=lf
+
+# Shell entry points run inside Linux or WSL even when Git checks the repository
+# out on Windows.  Git for Windows defaults core.autocrlf=true, so without this
+# rule bootstrap.sh and the release scripts acquire CRLF and fail before their
+# first command can run.  The packaged Windows-side launchers are deliberately
+# CRLF; build_windows_zip.sh also enforces these endings in the release archive.
+*.sh text eol=lf
+
 # Preserve byte-exact vendored bioSkills payloads from the pinned upstream
 # commit. `-text` is the attribute that actually does this: it disables git's
 # end-of-line conversion, so a clone with core.autocrlf=true (the Git for

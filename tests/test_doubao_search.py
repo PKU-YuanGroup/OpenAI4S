@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import io
+import ipaddress
 import json
 import socket
 import types
@@ -49,6 +50,23 @@ pytestmark = pytest.mark.stubbed_backend
 
 _OLD_SECRET = "doubao-plan-canary-before-rotation"
 _NEW_SECRET = "doubao-plan-canary-after-rotation"
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_dns(monkeypatch):
+    """The transport is fake, so host DNS must not decide this module's result."""
+
+    def _offline_dns(host, port, *_args, **_kwargs):
+        try:
+            address = str(ipaddress.ip_address(host))
+        except ValueError:
+            address = "93.184.216.34"
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        return [
+            (family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, port or 0))
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _offline_dns)
 
 
 class _Response(io.BytesIO):

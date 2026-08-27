@@ -83,6 +83,7 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
             "check_url",
             "command_domains",
             "domain_allowed",
+            "domain_in_allowlist",
             "domain_of",
             "egress_mode",
             "grant_domain",
