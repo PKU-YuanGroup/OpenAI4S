@@ -198,7 +198,7 @@ def test_the_menu_ignores_values_that_are_not_protocol_ids():
 
 
 # --------------------------------------------------------------------------
-# opening the pane contacts nobody
+# opening the pane does not scan local model servers
 # --------------------------------------------------------------------------
 
 _PANE_HARNESS = """
@@ -268,12 +268,11 @@ def _open_pane() -> dict:
     return _run(script, json.dumps(payload))
 
 
-def test_opening_the_models_pane_scans_nothing():
-    """It read the profile list and then probed four loopback ports, on every
-    render -- and this pane is re-rendered after every save, activate and
-    delete. Nothing on open may touch a socket."""
+def test_opening_the_models_pane_does_not_scan_local_servers():
+    """The pane may load account metadata, but local model discovery remains
+    an explicit action instead of probing four loopback ports on every render."""
     result = _open_pane()
-    assert result["onOpen"] == ["/model-profiles"]
+    assert result["onOpen"] == ["/model-profiles", "/volcengine/connection"]
     assert "/model-endpoints/discover" not in result["onOpen"]
     # And it says so, rather than reusing "nothing was detected" for something
     # that was never looked for.
@@ -284,7 +283,9 @@ def test_the_scan_still_happens_when_the_button_is_pressed():
     """Removing the render-time call must not remove the feature: local
     discovery is useful, it just has to be asked for."""
     result = _open_pane()
-    assert "/model-endpoints/discover" in result["afterClick"][1]
+    assert any(
+        path.startswith("/model-endpoints/discover") for path in result["afterClick"]
+    )
 
 
 def test_the_generated_menu_is_the_control_the_user_sees():

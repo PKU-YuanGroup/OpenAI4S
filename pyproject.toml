@@ -39,6 +39,23 @@ science = [
     "matplotlib>=3.7",
     "scikit-learn>=1.3",
 ]
+# CPU-first single-cell workflows require Python 3.11 because PyDESeq2 0.5.4
+# raised its floor. Pertpy 1.0.3 is the newest release compatible with both
+# that floor and Scanpy 1.11.5; Pertpy 1.1.1 requires Python 3.12 and imports a
+# Scanpy symbol that 1.11.5 removed. Keep the group separate from `science`:
+# the OpenAI4S core still supports Python 3.10 and remains dependency-free.
+# Pertpy's core hard-requires the Flax/NumPyro/ott-jax stack, so pertpy and
+# its mudata pin live ONLY here — never in envs/python.yml or the desktop
+# bundle. Install with: uv sync --extra singlecell
+singlecell = [
+    "scanpy[harmony,skmisc]==1.11.5; python_version >= '3.11'",
+    "igraph>=0.11; python_version >= '3.11'",
+    "leidenalg>=0.10; python_version >= '3.11'",
+    # Pertpy calls mudata.set_options(), removed in mudata 0.4.
+    "mudata<0.4; python_version >= '3.11'",
+    "pertpy[de]==1.0.3; python_version >= '3.11'",
+    "pydeseq2==0.5.4; python_version >= '3.11'",
+]
 # Optional cheminformatics support is kept separate because RDKit does not
 # publish wheels for every platform supported by the core/science environment.
 # Install where available with: uv sync --extra chemistry

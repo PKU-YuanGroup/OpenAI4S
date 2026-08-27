@@ -56,6 +56,12 @@ GATES = {
     # the other.
     "skills-installer": ("tools/skills-installer/selftest.mjs", ()),
     "skills-package": ("tools/skills-installer/check_package.mjs", ()),
+    # Deliberately `python -m pytest`, not the `uv run pytest` needle above:
+    # the locked single-cell stack is its own independent question.
+    "singlecell-skill": (
+        "python -m pytest tests/test_single_cell_rna_analysis_skill.py",
+        (),
+    ),
 }
 
 

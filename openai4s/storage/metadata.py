@@ -392,6 +392,64 @@ class HostCallRepository:
             ),
         )
 
+    def has_successful_bash_receipt(
+        self,
+        *,
+        producing_cell_id: str,
+        command_sha256: str,
+        root_frame_id: str,
+        branch_id: str,
+        turn_id: str,
+    ) -> bool:
+        """Whether one exact Cell ran one exact command successfully.
+
+        A receipt is intentionally the intersection of three independently
+        durable records:
+
+        * the Cell's successful append-only execution row;
+        * its completed attempt in the current turn/branch action group; and
+        * the synthetic ``bash`` audit emitted only after a consumed Host
+          capability reported ``status=completed`` and ``exit_code=0``.
+
+        The command is matched through an exact resource key, not the bounded
+        ``args_preview``. Long commands therefore remain verifiable without
+        persisting their plaintext or relying on a truncation-prone prefix.
+        """
+
+        wanted = f"command-sha256:{command_sha256}"
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT h.resource_keys FROM host_call_log AS h "
+                "JOIN execution_attempts AS a "
+                "ON a.group_id=h.action_group_id "
+                "JOIN action_groups AS g ON g.group_id=a.group_id "
+                "JOIN execution_log AS e "
+                "ON e.producing_cell_id=a.producing_cell_id "
+                "WHERE a.producing_cell_id=? AND g.root_frame_id=? "
+                "AND g.branch_id=? AND g.turn_id=? AND g.kind='code' "
+                "AND e.root_frame_id=? AND e.status='ok' "
+                "AND a.finished_at IS NOT NULL "
+                "AND a.terminal_state IN ('completed','succeeded','ok') "
+                "AND h.method='bash' AND h.ok=1 "
+                "AND h.created_at>=a.started_at "
+                "AND h.created_at<=a.finished_at",
+                (
+                    producing_cell_id,
+                    root_frame_id,
+                    branch_id,
+                    turn_id,
+                    root_frame_id,
+                ),
+            ).fetchall()
+        for row in rows:
+            try:
+                resources = json.loads(row["resource_keys"] or "[]")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(resources, list) and wanted in resources:
+                return True
+        return False
+
     @staticmethod
     def _result_audit(method: str, result: Any) -> tuple[str, str | None]:
         """Return a bounded shape preview plus a content-integrity digest.

@@ -222,8 +222,9 @@ OpenAI4S $VERSION - first launch on Windows
 
 5. Choosing a distribution.
 
-   The default WSL2 distribution is used. To pick another, set
-   OPENAI4S_WSL_DISTRO before launching:
+   OPENAI4S_WSL_DISTRO wins when set. Otherwise the launcher keeps a WSL2
+   distribution that already contains OpenAI4S data, then prefers Ubuntu
+   24.04, and only then falls back to the Windows default. To pick one:
 
      set OPENAI4S_WSL_DISTRO=Ubuntu-24.04
      OpenAI4S.cmd
@@ -246,8 +247,9 @@ OpenAI4S $VERSION - first launch on Windows
    The bundled app itself installs offline. Later pip/Conda package downloads
    default to the Tsinghua mirrors in this Windows/WSL launcher. Override with
    OPENAI4S_WSL_PYPI_INDEX or OPENAI4S_WSL_CONDA_MIRROR, or set either to
-   \`off\` to keep the official indexes. A pip.conf or condarc you edited
-   yourself is preserved on later launches.
+   \`off\` to restore the official indexes. Remove the
+   managed-by-openai4s-windows-launcher marker before editing pip.conf or
+   condarc yourself; the launcher then preserves the whole file.
 
    To use a local proxy, set OPENAI4S_WSL_PROXY before launch. In WSL NAT mode,
    Windows localhost is not WSL localhost; either enable mirrored networking

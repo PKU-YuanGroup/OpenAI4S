@@ -1,9 +1,9 @@
 # `workflows/`
 
-The versioned science-workflow benchmark's manifests: eleven workflows and 34
+The versioned science-workflow benchmark's manifests: thirteen workflows and 46
 cases, each workflow JSON declaring what a run is supposed to do and what
 counts as having done it. The root-level `next-round-acceptance.json` is a
-separate Stage 0 field/safety pack, not a twelfth science workflow.
+separate Stage 0 field/safety pack, not a fourteenth science workflow.
 
 They live in the repository rather than in a fixture directory for one reason:
 a case change has to be a reviewable diff. The runner that executes them is
@@ -21,6 +21,8 @@ about the half of the system whose job is to refuse.
 | --- | --- |
 | [`next-round-acceptance.json`](next-round-acceptance.json) | Strict Stage 0 pack for six field paths, seven safety actions, and denominator-explicit baseline metrics |
 | [`artifact-lineage/`](artifact-lineage/README.md) | A derived artifact carries its lineage |
+| [`codebase-mode/`](codebase-mode/README.md) | A source deliverable, and whether the Host believes the claim about it |
+| [`delegation/`](delegation/README.md) | What the parent is told a child did |
 | [`environment-provenance/`](environment-provenance/README.md) | An artifact's environment provenance |
 | [`environment-transaction/`](environment-transaction/README.md) | plan -> apply -> rollback as a transaction |
 | [`evidence-package/`](evidence-package/README.md) | Exporting and verifying an evidence package |

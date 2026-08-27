@@ -7,7 +7,7 @@ an OpenAI4S data directory, or into any directory named on the command line.
 
 ```bash
 npx openai4s-skills list
-npx openai4s-skills install --all                 # the 42 curated Skills
+npx openai4s-skills install --all                 # the 43 curated Skills
 npx openai4s-skills install --collection bioskills # the 561 pinned recipes
 npx openai4s-skills install alphafold2 boltz --target claude
 npx openai4s-skills installed
@@ -57,7 +57,7 @@ whose answer nothing here checks against the archive it unpacked. Pass
 ## Where this fits
 
 For an OpenAI4S user this command is mostly redundant: the wheel already ships
-all 603 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
+all 604 Skills, and `openai4s/skills_loader/loader.py` gives a bundled Skill
 precedence over a same-named one in `<data_dir>/user-skills`. Its reason to
 exist is the other direction — putting these recipes in front of an agent that
 is not OpenAI4S.

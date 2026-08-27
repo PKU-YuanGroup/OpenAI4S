@@ -698,7 +698,7 @@
         404
       ]
     },
-    "/frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution)": {
+    "/frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution)": {
       "content_types": [
         "application/json"
       ],
@@ -1016,6 +1016,32 @@
         "application/json"
       ],
       "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/execution-sources": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/execution-sources/export": {
+      "content_types": [
+        "application/json",
+        "application/zip"
+      ],
+      "kinds": [
+        "binary",
         "json"
       ],
       "statuses": [
@@ -2280,6 +2306,90 @@
       ]
     },
     "/uploads": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/volcengine/configure": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        409
+      ]
+    },
+    "/volcengine/connection": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/volcengine/disconnect": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        400,
+        404
+      ]
+    },
+    "/volcengine/login": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        503
+      ]
+    },
+    "/volcengine/login/cancel": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/volcengine/login/complete": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        409
+      ]
+    },
+    "/volcengine/refresh": {
       "content_types": [
         "application/json"
       ],

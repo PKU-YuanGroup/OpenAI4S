@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-This tree exposes 603 bundled Skills: 42 curated OpenAI4S recipes plus the 561
+This tree exposes 604 bundled Skills: 43 curated OpenAI4S recipes plus the 561
 recipes in the pinned GPTomics/bioSkills collection. A Skill is a recipe—code
 plus the operational knowledge needed to run it—not a provider JSON Tool.
 Disclosure is progressive: curated Skills receive one summary line each, while
@@ -52,6 +52,7 @@ search or exact loading. Only a selected Skill's `SKILL.md` and optional
 | [`remote-compute-ssh/`](remote-compute-ssh/) | The orchestration half of running on the user's own SSH or SLURM host: partitions, env activation, job scripts, staging, harvest, recovery. Not the science. Each submit puts an approval modal in front of the user and spends their allocation, so the shape of a good run is to read what is already known about the host, ask once for what is not, land the first submit, and write down what you learned. |
 | [`retrosynthesis_planning/`](retrosynthesis_planning/) | The multi-step scientific task: AiZynthFinder searches from a target to a declared stock, after which routes are normalized, de-duplicated, ranked, structurally audited, and rendered for chemist review. Single-step, forward, mapping, condition, and yield questions have their own Skills. |
 | [`scgpt/`](scgpt/) | A transformer foundation model for single-cell data: cell embeddings for clustering, zero-shot or fine-tuned cell-type annotation, and gene-level representations for perturbation or GRN work. Checkpoints are raw directories rather than HuggingFace repos. The code is MIT and no source states a license for the weights. |
+| [`single-cell-rna-analysis/`](single-cell-rna-analysis/) | CPU-first Scanpy workflow for cell-called human/mouse 10x scRNA-seq and snRNA-seq counts: single-sample descriptive QC/clustering or donor-aware comparative inference, explicit-only Harmony, evidence-assisted annotation, checkpoints and a checksummed result bundle. |
 | [`scvi-tools/`](scvi-tools/) | The probabilistic counterpart to `scgpt`: scVI for a batch-corrected latent space, scANVI for label transfer from a partly annotated reference, and Bayesian differential expression. It needs raw integer UMI counts. For spatial deconvolution or mapping, use cell2location, DestVI, or Tangram instead. |
 | [`solublempnn/`](solublempnn/) | ProteinMPNN's architecture retrained on a soluble-PDB subset, which shifts the output away from the surface hydrophobics the full-PDB model happily places. Reach for it when designs are aggregating or going to inclusion bodies. It trades a few points of native recovery for that bias, and a sequence-only prior is not a solubility measurement. |
 | [`single-step-retrosynthesis/`](single-step-retrosynthesis/) | RetroChimera one-step precursor proposals through the existing isolated, manifest-checked Syntheseus adapter. It deliberately stops before stock search or recursive route planning. |

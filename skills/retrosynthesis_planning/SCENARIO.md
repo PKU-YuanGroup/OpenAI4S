@@ -56,7 +56,7 @@ cannot score a route step whose reaction context is unspecified.
 | P2 | Multi-step route planning | target, policy, stock, budget | solved/unsolved route trees | AiZynthFinder | command builder, import, normalization, audit, ranking |
 | P3 | Atom mapping/reaction centre | complete reaction SMILES | mapped reaction, changed bonds | RXNMapper | standalone Skill; optional model environment required |
 | P4 | Forward product prediction | reactants and reagents | Top-K products | ReactionT5v2-forward | standalone Skill; optional model environment required |
-| P5 | Condition recommendation | fixed reaction | condition sets, optional temperature | Parrot (conditional candidate) | terms review and a manifest allow decision are required before any checkpoint download or inference |
+| P5 | Condition recommendation | fixed reaction | categorical condition sets | Parrot USPTO | exact MIT HF snapshot admitted; real GPU worker canary passes; no temperature; frozen benchmark pending |
 | P6 | Yield estimation | reactants, reagents, product | predicted yield | ReactionT5v2-yield | standalone Skill; in-domain screening only |
 
 ## Problem 1. Single-step precursor generation
@@ -216,13 +216,13 @@ temperature hypotheses should be validated first?
 
 ### Technique and implementation
 
-Use Parrot only as a conditional candidate. The code, data labels,
-environments, and CLI are public, but the downloader's external checkpoint
-archives do not separately declare machine-readable license terms. Review the
-terms for the exact checkpoint and record an explicit allow/deny decision in
-the model manifest before any checkpoint download or inference; a missing or deny
-decision means stop. USPTO and Reaxys configurations do not have identical
-temperature capabilities. The Skill is `reaction-condition-recommendation`.
+Use the admitted Parrot USPTO checkpoint from first-author HF revision
+`b9ef604...`. Its repository declares MIT, and the MAR plus metadata are pinned
+by exact size and SHA256 in the model manifest. The legacy Google Drive
+artifacts remain blocked. The repository-native MAR adapter and real GPU worker
+canary pass with 15 joint beams; this proves executable inference, not
+scientific benchmark accuracy. This USPTO checkpoint does not support
+temperature. The Skill is `reaction-condition-recommendation`.
 
 ### Independent metrics
 
@@ -234,8 +234,8 @@ literature or ELN records.
 
 Freeze the reaction first; bind dictionaries to checkpoints; never fabricate
 unsupported temperature; keep LLM suggestions distinct from Parrot output. Do
-not download or run a Parrot checkpoint until its terms are reviewed and the
-model manifest records an allow decision; refuse on a missing or deny decision.
+not substitute another Parrot checkpoint for the admitted HF snapshot; refuse
+on a missing/deny decision or identity/hash mismatch.
 
 ## Problem 6. Reaction-yield estimation
 
@@ -290,11 +290,11 @@ closed loops remain database, rule, experiment, process, and decision problems.
 | Problem | Offline interface test | Live inference | Scientific benchmark | Status |
 | --- | --- | --- | --- | --- |
 | P1 | yes | RetroChimera env/weights | public benchmark required | integrated; no default-CI weight download |
-| P2 | yes | AiZynthFinder assets/stock | frozen search benchmark | integrated; live search optional |
-| P3 | Skill discovery | RXNMapper env | mapping benchmark | recipe complete |
-| P4 | Skill discovery | ReactionT5v2 weights | forward benchmark | recipe complete |
-| P5 | Skill discovery | Parrot env plus pre-download terms decision | fixed condition set | conditional recipe; manifest allow required before inference |
-| P6 | Skill discovery | ReactionT5v2 weights | deployment held-out set | recipe complete; bounded interpretation |
+| P2 | worker contract pass | reviewed AiZynthFinder assets/stock | frozen search benchmark | direct route-search backend implemented; artifact terms review pending |
+| P3 | worker contract + real smoke pass | pinned RXNMapper env | mapping benchmark | deployable |
+| P4 | worker contract + real canary pass | pinned ReactionT5v2 weights | forward benchmark | deployable as a bounded validation signal |
+| P5 | worker/MAR/GPU canary pass | frozen benchmark pending | fixed categorical condition set | exact MIT HF revision and hashes pinned; 15 joint beams; no temperature |
+| P6 | worker contract; released canary fails | pinned ReactionT5v2 weights | deployment held-out set | quarantined from quantitative use |
 
 ## Scenario-wide hard constraints
 

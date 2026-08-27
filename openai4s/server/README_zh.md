@@ -74,6 +74,7 @@ gateway.py
 | [`local_auth.py`](local_auth.py) | daemon 自己的访问令牌：在数据目录下只铸一次、仅属主可读、比较用恒定时间。是文件而非 Store 行，因为 CLI 必须在任何数据库存在之前读到它，而 `openai4s doctor` 恰恰要在数据库本身坏掉时还能工作。此前它活在闭包里、每次重启都换，已发出的每个 cookie 都因此失效。铸造时用 `os.link` 发布——这是唯一只可能成功一次的操作，于是并发启动的多个 daemon 会收敛到同一个令牌，而不是各自握着一个。|
 | [`errors.py`](errors.py) | `GatewayError`、稳定的机器错误码、追加式的公开失败信封，以及那个异常投影器：它把任意 `str(e)` 挡在响应体之外，而运维仍能从结构化日志里拿到原始异常。独立成模块，是因为 `GatewayError` 原本位于 gateway 自身 import 区块下方约 5800 行处，兄弟模块从那里 import 它构成循环导入，会让 daemon 在**启动时**就失败。从 `Handler._api` 里切出的每个路由组都要抛这个异常，否则每抽一次就要重新踩一次这个坑。gateway 仍然再导出原来的名字。 |
 | [`execution_coordinator.py`](execution_coordinator.py) | 会话级 FIFO 执行所有权的 Web 适配层。ticket 状态会被投影成 WebSocket 事件；已准入的 ticket 会绑定到它的取消事件和当时那把内核 lease 上；中断只会打到由那个执行 id 精确持有的那把 lease。 |
+| [`execution_sources.py`](execution_sources.py) | 把已执行代码的层级汇于一处：`GET /frames/{fid}/execution-sources` 投影根 frame 加上每个被委派的子 frame（递归；名称、深度、每 frame 计数，以及每个 Cell 的语言/状态/源码 SHA-256/generation/环境/Artifact 关联——从不内联代码文本本身），`…/execution-sources/export` 则把同一批行渲染成字节确定性的 `sources.zip`：真正执行过的源文件，失败的 Cell 一并包含并标注，附一份新的 manifest 与中英双语的"持久内核"警示。离开 store 的只有 `execution_log` 字段与公开元数据——不含提示词、host 载荷、输出或凭据。 |
 | [`execution_views.py`](execution_views.py) | 读不可变的 Cell 历史，回答 Notebook 想问的问题：这个 Cell 跑在哪个运行时 generation 上、依赖了什么、之后是否已经失效、重试过几次、数据从哪来。 |
 | [`gateway.py`](gateway.py) | HTTP/WebSocket 的主组合门面。协议 frame 的编解码、hub 与续传缓冲、`SessionState` 与 `SessionRunner`、REST 路由、静态资源和安全检查都落在这里，本表所列全部 service 的装配也在这里。 |
 | [`global_views.py`](global_views.py) | 组合跨会话的项目级研究 Timeline 与 Artifact 血缘视图。 |
@@ -116,6 +117,8 @@ gateway.py
 | [`trusted_capture.py`](trusted_capture.py) | 管理 Stage 1 会话级前台 Artifact 捕获、独立后台内核与面向用户的外部工作区变更三者之间的准入边界。同一线程的捕获和外部变更均可在各自类别内嵌套；另一所有者或任何跨类别重叠都会在工作区动作开始前失败即关闭。 |
 | [`urls.py`](urls.py) | 服务端统一拥有的持久资源 URL。trusted completion 只接受非空的精确 version id，把它百分号编码到保留的 `/api/v1/artifacts/versions/{version_id}` 命名空间；该路径不会回退为 Artifact id 或文件名，flag-off 的旧 helper 也被隔离在这里，不再散落在 completion 文案中。 |
 | [`variable_inspector.py`](variable_inspector.py) | 通过一个很窄的 manager 协议请求，读取活着且空闲的 Python/R 命名空间，返回有界、净化过的变量预览。它不会创建会话，也不会创建 worker，更不会进入 Cell 事务。 |
+| [`volcengine_arkcli.py`](volcengine_arkcli.py) | 以固定命令集调用官方 Ark CLI：子进程只继承允许名单内的环境变量，输出有大小上限，JSON 和错误会先校验、脱敏，并且不经过 shell 拼接。 |
+| [`volcengine_connector.py`](volcengine_connector.py) | 为 Web 应用投影火山身份、套餐与额度、API Key 和 Endpoint 状态，管理浏览器 OAuth 会话，并将 Ark 明文 Key 一次性交给 `ModelProfileService` 与 SecretBroker。公开响应中的云端资源只使用进程内不透明选择标识。 |
 | [`workbench_state.py`](workbench_state.py) | 根据持久状态与实时状态投影 Context 和 Security 面板。它不暴露消息内容；在真实 worker 报回自测结果之前，它也不会声称 OS 沙箱已经存在。 |
 | [`ws_frames.py`](ws_frames.py) | 由 gateway WebSocket 与分享隧道共用的、加固过的 RFC 6455 帧编解码。按角色的读取会校验掩码方向、FIN、RSV、opcode、canonical 长度、64 位最高位、控制帧大小与载荷上限；gateway 通过别名保留原有调用点。 |
 

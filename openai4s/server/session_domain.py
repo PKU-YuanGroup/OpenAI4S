@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from openai4s.server.action_timeline import ActionTimelineService
+from openai4s.server.execution_sources import ExecutionSourcesService
 from openai4s.server.notebook_export import NotebookExportService
 from openai4s.server.recovery_control import RecoveryControlService
 from openai4s.server.recovery_recipe import build_recovery_recipe
@@ -222,6 +223,7 @@ class SessionDomainService:
         )
         self.timeline = ActionTimelineService(store)
         self.notebooks = NotebookExportService(store)
+        self.sources = ExecutionSourcesService(store)
         self.packages = SessionPackageService(
             store,
             data_dir=data_dir,
@@ -721,6 +723,22 @@ class SessionDomainService:
         return self.notebooks.export(
             root_frame_id,
             language=language,
+            branch_id=self.store.active_session_branch(root_frame_id),
+        )
+
+    def execution_sources(self, root_frame_id: str) -> dict[str, Any]:
+        """The executed-code hierarchy (root + delegated frames), no code text."""
+
+        return self.sources.projection(
+            root_frame_id,
+            branch_id=self.store.active_session_branch(root_frame_id),
+        )
+
+    def execution_sources_export(self, root_frame_id: str) -> dict[str, Any]:
+        """One deterministic ``sources.zip`` of the executed-code hierarchy."""
+
+        return self.sources.export(
+            root_frame_id,
             branch_id=self.store.active_session_branch(root_frame_id),
         )
 

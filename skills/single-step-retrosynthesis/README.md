@@ -11,3 +11,8 @@ between a precursor proposal and a complete multi-step route explicit.
 | [`SKILL.md`](SKILL.md) | Model choice, isolated invocation, candidate normalization, output contract, scientific limits, and failure handling. |
 | [`README.md`](README.md) | English directory index. |
 | [`README_zh.md`](README_zh.md) | Chinese directory index. |
+
+The executable class-unknown benchmark protocol is shared from
+[`../retrosynthesis_planning/single_step_benchmark.py`](../retrosynthesis_planning/single_step_benchmark.py)
+so normalization and evaluator semantics have one implementation rather than a
+copy in each Skill.

@@ -39,6 +39,7 @@
                           http://127.0.0.1:7897 with mirrored networking)
     OPENAI4S_WSL_PYPI_INDEX  Python mirror used by later package installs
     OPENAI4S_WSL_CONDA_MIRROR  Conda mirror root used by environment setup
+    OPENAI4S_WSL_FAKE_IP_DNS  auto (default), on, or off for Clash-style DNS
     OPENAI4S_WSL_DATA_DIR  optional absolute Linux data path (default ~/.openai4s)
     OPENAI4S_HOST         default 127.0.0.1
     OPENAI4S_PORT         default 8760
@@ -58,14 +59,29 @@ $ErrorActionPreference = 'Stop'
 $env:WSL_UTF8 = '1'
 
 $Here = $PSScriptRoot
-$AppHost = if ($env:OPENAI4S_HOST) { $env:OPENAI4S_HOST } else { '127.0.0.1' }
+$BindHost = if ($env:OPENAI4S_HOST) { $env:OPENAI4S_HOST } else { '127.0.0.1' }
+$ClientHost = switch ($BindHost) {
+    '0.0.0.0' { '127.0.0.1'; break }
+    '::' { '::1'; break }
+    default { $BindHost }
+}
+# Compatibility name retained for the packaged verifier. It is always the
+# client-facing host; binding and WSL environment propagation use $BindHost.
+$AppHost = $ClientHost
 $AppPort = if ($env:OPENAI4S_PORT) { $env:OPENAI4S_PORT } else { '8760' }
-$Url = "http://${AppHost}:${AppPort}/"
 $WslProxy = $env:OPENAI4S_WSL_PROXY
 $WslDataDir = $env:OPENAI4S_WSL_DATA_DIR
+$FakeIpDnsMode = if ($env:OPENAI4S_WSL_FAKE_IP_DNS) {
+    $env:OPENAI4S_WSL_FAKE_IP_DNS.Trim().ToLowerInvariant()
+} else {
+    'auto'
+}
 $WslLogPath = if ($WslDataDir) {
     "$WslDataDir/logs/app.out"
 } else {
+    # A tilde, because the command this ends up in runs through WSL's default
+    # shell, which expands it. Neither cmd.exe nor PowerShell touches a bare
+    # `~` on the way there, where both would substitute `$HOME`.
     '~/.openai4s/logs/app.out'
 }
 $PypiIndex = if ($env:OPENAI4S_WSL_PYPI_INDEX) {
@@ -80,8 +96,22 @@ $CondaMirror = if ($env:OPENAI4S_WSL_CONDA_MIRROR) {
 }
 # Windows cannot express an empty environment variable (set VAR= deletes it),
 # so `off` is the explicit way to say "no mirror: use the official indexes".
+$PypiIndexOff = $PypiIndex -eq 'off'
+$CondaMirrorOff = $CondaMirror -eq 'off'
 if ($PypiIndex -eq 'off') { $PypiIndex = '' }
 if ($CondaMirror -eq 'off') { $CondaMirror = '' }
+
+function Get-AppBaseUrl([string] $HostValue, [string] $PortValue) {
+    $address = $null
+    $urlHost = $HostValue
+    if ([Net.IPAddress]::TryParse($HostValue, [ref] $address) -and
+        $address.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) {
+        $urlHost = "[$HostValue]"
+    }
+    return "http://${urlHost}:${PortValue}/"
+}
+
+$Url = Get-AppBaseUrl $ClientHost $AppPort
 
 function Write-Section([string] $Text) {
     Write-Host ''
@@ -91,9 +121,46 @@ function Write-Section([string] $Text) {
 function Open-AppUrl([string] $appUrl) {
     if ($env:OPENAI4S_NO_OPEN) {
         Write-Host '  browser open suppressed by OPENAI4S_NO_OPEN.' -ForegroundColor DarkGray
+        # Print it. The caller already paid a wsl.exe round trip for this exact
+        # string, and the readiness line above it carries no sign-in token, so
+        # sending the user back to OpenAI4S.cmd url would be advice instead of
+        # the answer we are holding.
+        Write-Host "  $appUrl" -ForegroundColor DarkGray
         return
     }
-    Start-Process $appUrl
+    try {
+        Start-Process $appUrl
+    } catch {
+        Write-Host '  the default browser could not be opened. Open this URL:' -ForegroundColor Yellow
+        Write-Host "  $appUrl" -ForegroundColor Yellow
+    }
+}
+
+function Get-WslLogCommand([string] $Distro) {
+    # No `--exec` and no inner `sh -lc`: without `--exec`, wsl.exe runs the line
+    # through the distribution's default shell, so `~` still expands and the
+    # command needs no single quotes. That matters because `OpenAI4S.cmd` is a
+    # cmd.exe wrapper -- cmd does not treat `'` as quoting, so the previous
+    # form pasted back as `sh -lc 'tail` and died on an unterminated string, in
+    # all four of the fatal paths that print it. Double quotes around the
+    # distribution name are honoured by cmd and PowerShell alike, and
+    # `Assert-WslDataDir` refuses whitespace so the path never needs any.
+    return "wsl -d `"$Distro`" -- tail -40 $WslLogPath"
+}
+
+function Set-UrlHost([string] $Url, [string] $NewHost) {
+    # `openai4s url` can only know the host the daemon was told to BIND. When
+    # that is the wildcard, the CLI renders it as `localhost` -- the one address
+    # Windows cannot reach with localhostForwarding=false, which is exactly the
+    # case the NAT fallback exists for. The sign-in token lives in the query, so
+    # re-authority the URL rather than discarding it.
+    try {
+        $builder = New-Object System.UriBuilder $Url
+        if ($builder.Host -ne $NewHost) { $builder.Host = $NewHost }
+        return $builder.Uri.AbsoluteUri
+    } catch {
+        return $Url
+    }
 }
 
 function Stop-WithGuidance([string] $Problem, [string[]] $Steps) {
@@ -207,15 +274,34 @@ function Get-WslDistros {
         if (-not $text) { continue }
         $isDefault = $text.StartsWith('*')
         $text = $text.TrimStart('*').Trim()
-        $fields = $text -split '\s+'
+        # Split on runs of two or more spaces, because that is what separates
+        # the padded columns. Splitting on any whitespace cannot tell a name
+        # containing a space ("My Distro") from a localized multi-word STATE
+        # ("Wird ausgeftihrt", "En cours d'execution") -- and this listing is
+        # localized, as the header-row comment below already acknowledges.
+        # Single-space separation (a name long enough to eat the padding) falls
+        # back to the first field only, which is what this read before names
+        # with spaces were supported.
+        $paddedColumns = $true
+        $fields = $text -split '\s{2,}'
+        if ($fields.Count -lt 3) {
+            $paddedColumns = $false
+            $fields = $text -split '\s+'
+        }
         if ($fields.Count -lt 3) { continue }
         # The header row, in whatever language Windows is running in, is the one
         # whose last field is not a number.
         $wslVersion = 0
         if (-not [int]::TryParse($fields[-1], [ref] $wslVersion)) { continue }
+        $state = $fields[-2]
+        $name = if ($paddedColumns) {
+            @($fields[0..($fields.Count - 3)]) -join ' '
+        } else {
+            $fields[0]
+        }
         $distros += [pscustomobject]@{
-            Name      = $fields[0]
-            State     = $fields[-2]
+            Name      = $name
+            State     = $state
             Version   = $wslVersion
             IsDefault = $isDefault
         }
@@ -246,7 +332,7 @@ function Select-Distro {
                 'kernel sandbox cannot start and cells would run unisolated.',
                 '',
                 'Convert it:',
-                "    wsl --set-version $($named.Name) 2"
+                "    wsl --set-version `"$($named.Name)`" 2"
             )
         }
         return $named.Name
@@ -260,7 +346,7 @@ function Select-Distro {
             'kernel sandbox cannot start and cells would run unisolated.',
             '',
             'Convert one:',
-            "    wsl --set-version $($distros[0].Name) 2",
+            "    wsl --set-version `"$($distros[0].Name)`" 2",
             '',
             'Or set OPENAI4S_WSL_DISTRO to a WSL 2 distribution.'
         )
@@ -441,31 +527,42 @@ function Assert-WslDataDir([string] $Value) {
     # Quoting and expansion characters are refused, not escaped: the value is
     # interpolated into sh command strings (Test-DistroHasInstall) where a
     # quote or `$` would change what the shell runs.
+    # Whitespace is refused for the same reason as the quoting characters, not
+    # a stricter one: `Get-WslLogCommand` prints this path as a command the user
+    # is meant to paste into cmd.exe, where a space would split it in two.
     if (-not $Value.StartsWith('/') -or $Value -eq '/' -or $parts -contains '..' -or
-        $Value -match "[`r`n]" -or
+        $Value -match '\s' -or
         $Value.IndexOfAny([char[]] @('"', "'", '`', '$', '\')) -ge 0) {
         Stop-WithGuidance 'OPENAI4S_WSL_DATA_DIR must be a specific absolute Linux path.' @(
-            'Example: /home/me/.openai4s  (no quotes, backslashes, or $)'
+            'Example: /home/me/.openai4s  (no spaces, quotes, backslashes, or $)'
         )
     }
 }
 
 function Get-WslBootstrapArgs([string] $Distro, [string] $BootstrapLinux, [string[]] $BootstrapArgs) {
     $wslArgs = @('-d', $Distro, '--exec', 'env')
-    $wslArgs += "OPENAI4S_HOST=$AppHost"
+    $wslArgs += "OPENAI4S_HOST=$BindHost"
     $wslArgs += "OPENAI4S_PORT=$AppPort"
     if ($WslDataDir) {
         $wslArgs += "OPENAI4S_DATA_DIR=$WslDataDir"
     }
-    if ($PypiIndex) {
+    $wslArgs += "OPENAI4S_FAKE_IP_DNS_MODE=$FakeIpDnsMode"
+    if ($PypiIndexOff) {
+        $wslArgs += 'OPENAI4S_PYPI_INDEX_URL=off'
+        $wslArgs += 'PIP_INDEX_URL='
+        $wslArgs += 'UV_DEFAULT_INDEX='
+    } elseif ($PypiIndex) {
         $wslArgs += "OPENAI4S_PYPI_INDEX_URL=$PypiIndex"
         $wslArgs += "PIP_INDEX_URL=$PypiIndex"
         $wslArgs += "UV_DEFAULT_INDEX=$PypiIndex"
     }
-    if ($CondaMirror) {
+    if ($CondaMirrorOff) {
+        $wslArgs += 'OPENAI4S_CONDA_MIRROR=off'
+    } elseif ($CondaMirror) {
         $wslArgs += "OPENAI4S_CONDA_MIRROR=$CondaMirror"
     }
     $proxyBypass = "127.0.0.1,localhost,$AppHost"
+    if ($BindHost -ne $AppHost) { $proxyBypass += ",$BindHost" }
     $wslArgs += "NO_PROXY=$proxyBypass"
     $wslArgs += "no_proxy=$proxyBypass"
     if ($WslProxy) {
@@ -537,7 +634,7 @@ function Get-AppUrl([string] $Distro, [string] $BootstrapLinux, [string] $Bundle
         -not [Uri]::TryCreate($candidate, [UriKind]::Absolute, [ref] $parsed)) {
         Stop-WithGuidance 'OpenAI4S did not return a tokenized browser URL.' @(
             'Read the daemon log inside WSL:',
-            "    wsl -d $Distro -- tail -40 $WslLogPath"
+            "    $(Get-WslLogCommand $Distro)"
         )
     }
     if ([string]::IsNullOrWhiteSpace($parsed.Query)) {
@@ -547,7 +644,7 @@ function Get-AppUrl([string] $Distro, [string] $BootstrapLinux, [string] $Bundle
         # be read. Opening it is still the right next step, so warn instead of
         # refusing.
         Write-Host '  note: the URL carries no sign-in token. If the browser shows 401,' -ForegroundColor Yellow
-        Write-Host "  read the daemon log: wsl -d $Distro -- tail -40 $WslLogPath" -ForegroundColor Yellow
+        Write-Host "  read the daemon log: $(Get-WslLogCommand $Distro)" -ForegroundColor Yellow
     }
     return $parsed.AbsoluteUri
 }
@@ -560,7 +657,7 @@ function Test-OpenAI4SServing([string] $Distro, [string] $BootstrapLinux, [strin
 function Test-Serving {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
-        $async = $client.BeginConnect($AppHost, [int] $AppPort, $null, $null)
+        $async = $client.BeginConnect($ClientHost, [int] $AppPort, $null, $null)
         if (-not $async.AsyncWaitHandle.WaitOne(400, $false)) { return $false }
         $client.EndConnect($async)
         return $true
@@ -589,9 +686,18 @@ function Test-SandboxIndependentCli([string[]] $CliArgs) {
 # checking it first is also what lets the refusal be exercised against a bare
 # checkout, on a runner that has no WSL, without staging a package.
 Assert-HttpUrl 'OPENAI4S_WSL_PROXY' $WslProxy
-Assert-HttpUrl 'OPENAI4S_WSL_PYPI_INDEX' $PypiIndex
-Assert-HttpUrl 'OPENAI4S_WSL_CONDA_MIRROR' $CondaMirror
+if (-not $PypiIndexOff) {
+    Assert-HttpUrl 'OPENAI4S_WSL_PYPI_INDEX' $PypiIndex
+}
+if (-not $CondaMirrorOff) {
+    Assert-HttpUrl 'OPENAI4S_WSL_CONDA_MIRROR' $CondaMirror
+}
 Assert-WslDataDir $WslDataDir
+if ($FakeIpDnsMode -notin @('auto', 'on', 'off')) {
+    Stop-WithGuidance 'OPENAI4S_WSL_FAKE_IP_DNS must be auto, on, or off.' @(
+        "Current value: $FakeIpDnsMode"
+    )
+}
 $parsedPort = 0
 if (-not [int]::TryParse($AppPort, [ref] $parsedPort) -or
     $parsedPort -lt 1 -or $parsedPort -gt 65535) {
@@ -599,9 +705,16 @@ if (-not [int]::TryParse($AppPort, [ref] $parsedPort) -or
         "Current value: $AppPort"
     )
 }
+if ($BindHost.Contains(':')) {
+    Stop-WithGuidance 'OPENAI4S_HOST must be an IPv4 address or IPv4-capable hostname.' @(
+        'The bundled HTTP server does not support IPv6 listeners.',
+        'Use 127.0.0.1, 0.0.0.0, or the WSL IPv4 address instead.'
+    )
+}
 
 $distro = Select-Distro
-if (-not $env:OPENAI4S_HOST -and (Test-LocalhostForwardingDisabled)) {
+if ((Test-LocalhostForwardingDisabled) -and
+    ((-not $env:OPENAI4S_HOST) -or $BindHost -eq '0.0.0.0')) {
     $fallbackHost = Get-WslIpv4 $distro
     if (-not $fallbackHost) {
         Stop-WithGuidance 'localhost forwarding is disabled and the WSL NAT address was not found.' @(
@@ -609,9 +722,20 @@ if (-not $env:OPENAI4S_HOST -and (Test-LocalhostForwardingDisabled)) {
             'run wsl --shutdown, then start OpenAI4S again.'
         )
     }
-    $AppHost = $fallbackHost
-    $Url = "http://${AppHost}:${AppPort}/"
-    Write-Host "  localhostForwarding=false detected; using WSL NAT address $AppHost." -ForegroundColor Yellow
+    # A wildcard is a valid bind address but not a destination Windows can
+    # dial. Keep its listen-on-all-interfaces semantics while probing and
+    # opening the UI through WSL's routable NAT address.
+    if ($BindHost -ne '0.0.0.0') {
+        $BindHost = $fallbackHost
+    }
+    $ClientHost = $fallbackHost
+    $AppHost = $ClientHost
+    $Url = Get-AppBaseUrl $ClientHost $AppPort
+    if ($BindHost -eq '0.0.0.0') {
+        Write-Host "  localhostForwarding=false detected; keeping the wildcard bind and using WSL NAT address $ClientHost from Windows." -ForegroundColor Yellow
+    } else {
+        Write-Host "  localhostForwarding=false detected; using WSL NAT address $ClientHost." -ForegroundColor Yellow
+    }
 }
 $facts = Get-PackageFacts
 $packageLinux = ConvertTo-WslPath $distro $Here
@@ -637,6 +761,21 @@ if (-not (Test-SandboxIndependentCli $Arguments)) {
 if ($Arguments -and $Arguments.Count -gt 0) {
     $code = Invoke-Bootstrap $distro $bootstrap (@('install', $payloadLinux, $facts.Digest, $facts.BundleDir))
     if ($code -ne 0) { exit $code }
+    if ($BindHost -ne $ClientHost) {
+        # `openai4s url` and `status` can only render the host the daemon was
+        # told to BIND, and a wildcard renders as `localhost` -- the one address
+        # Windows cannot reach with localhostForwarding=false. Those are the
+        # exact commands the docs send the user to when the browser will not
+        # open, so re-authority what they print, the same way the auto-open path
+        # already does. Buffered rather than streamed only on this branch, which
+        # is the branch that is otherwise wrong.
+        $result = Invoke-BootstrapCapture $distro $bootstrap (@('cli', $facts.BundleDir) + $Arguments)
+        $loopback = "http://(localhost|127\.0\.0\.1):$AppPort"
+        foreach ($line in $result.Lines) {
+            Write-Host ([regex]::Replace($line, $loopback, "http://${ClientHost}:$AppPort"))
+        }
+        exit $result.ExitCode
+    }
     exit (Invoke-Bootstrap $distro $bootstrap (@('cli', $facts.BundleDir) + $Arguments))
 }
 
@@ -653,24 +792,27 @@ if ($code -ne 0) {
 
 if (Test-Serving) {
     if (Test-OpenAI4SServing $distro $bootstrap $facts.BundleDir) {
-        $appUrl = Get-AppUrl $distro $bootstrap $facts.BundleDir
+        $appUrl = Set-UrlHost (Get-AppUrl $distro $bootstrap $facts.BundleDir) $ClientHost
         Write-Host "OpenAI4S is already serving at $Url -- opening it." -ForegroundColor Green
         Open-AppUrl $appUrl
         exit 0
     }
     Stop-WithGuidance "port $AppPort is already in use by another program." @(
         'Choose another port and run again, for example:',
+        "    `$env:OPENAI4S_PORT='8080'  # PowerShell",
+        '    .\OpenAI4S.cmd',
+        '',
         '    set OPENAI4S_PORT=8080',
-        '    OpenAI4S.cmd'
+        '    OpenAI4S.cmd                 (Command Prompt)'
     )
 }
 
 Write-Host '  [2/3] starting the daemon...'
-$code = Invoke-Bootstrap $distro $bootstrap (@('serve', $facts.BundleDir, $AppHost, $AppPort))
+$code = Invoke-Bootstrap $distro $bootstrap (@('serve', $facts.BundleDir, $BindHost, $AppPort))
 if ($code -ne 0) {
     Stop-WithGuidance 'the daemon did not start.' @(
         'Read the log from inside WSL:',
-        "    wsl -d $distro -- tail -40 $WslLogPath"
+        "    $(Get-WslLogCommand $distro)"
     )
 }
 
@@ -679,7 +821,7 @@ $deadline = (Get-Date).AddSeconds(60)
 while ((Get-Date) -lt $deadline) {
     if (Test-Serving) {
         if (Test-OpenAI4SServing $distro $bootstrap $facts.BundleDir) {
-            $appUrl = Get-AppUrl $distro $bootstrap $facts.BundleDir
+            $appUrl = Set-UrlHost (Get-AppUrl $distro $bootstrap $facts.BundleDir) $ClientHost
             Write-Host ''
             Write-Host "  ready: $Url" -ForegroundColor Green
             Open-AppUrl $appUrl
@@ -691,7 +833,7 @@ while ((Get-Date) -lt $deadline) {
 
 Stop-WithGuidance "the daemon started but $Url never answered within 60s." @(
     'Read the log from inside WSL:',
-    "    wsl -d $distro -- tail -40 $WslLogPath",
+    "    $(Get-WslLogCommand $distro)",
     '',
     'If the log looks healthy, WSL localhost forwarding may be off. Check for',
     'a [wsl2] localhostForwarding=false line in %USERPROFILE%\.wslconfig, then',

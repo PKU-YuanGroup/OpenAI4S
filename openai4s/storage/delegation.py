@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS delegation_children (
     result_json TEXT,
     error TEXT,
     stop_reason TEXT,
+    task_status TEXT,
     turn_boundary INTEGER NOT NULL DEFAULT 0 CHECK (turn_boundary >= 0),
     max_turns INTEGER,
     last_progress_at REAL,
@@ -310,6 +311,7 @@ class DelegationProjectionRepository:
                     "UPDATE delegation_children SET parent_child_id=?,"
                     "parent_frame_id=?,frame_id=?,name=?,depth=?,status=?,"
                     "overrides_json=?,result_json=?,error=?,stop_reason=?,"
+                    "task_status=?,"
                     "turn_boundary=?,max_turns=?,last_progress_at=?,created_at=?,"
                     "started_at=?,finished_at=? WHERE root_frame_id=? AND child_id=?",
                     (
@@ -323,6 +325,7 @@ class DelegationProjectionRepository:
                         _encode_result(result) if result is not None else None,
                         _text(child.get("error"), 1200),
                         _text(child.get("stop_reason"), 240),
+                        _text(child.get("task_status"), 40),
                         max(0, int(child.get("turn_boundary") or 0)),
                         _positive(child.get("max_turns")),
                         _float(child.get("last_progress_at")),
@@ -383,7 +386,11 @@ class DelegationProjectionRepository:
             self._normalize_child(row, include_text=include_text) for row in rows
         ]
         for child in children:
-            stats[child["status"]] += 1
+            # `.get`-safe: an unknown status (a widened lifecycle, a corrupted
+            # row) must degrade to an honest count, never a KeyError that
+            # takes down every /delegations read.
+            status = child["status"]
+            stats[status] = stats.get(status, 0) + 1
         return {
             "root_frame_id": root_frame_id,
             "initialized": True,
@@ -428,6 +435,7 @@ class DelegationProjectionRepository:
             "output": result.get("output") if isinstance(result, dict) else None,
             "error": row["error"],
             "stop_reason": row["stop_reason"],
+            "task_status": row["task_status"],
             "created_at": row["created_at"],
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],

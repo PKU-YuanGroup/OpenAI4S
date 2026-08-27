@@ -22,7 +22,6 @@ from openai4s.kernel.readiness import (
 
 PYTHON_REQUIREMENTS = (
     "python",
-    "scanpy",
     "anndata",
     "leidenalg",
     "python-igraph",
@@ -52,6 +51,8 @@ PYTHON_REQUIREMENTS = (
     "networkx",
     "pip",
     "fair-esm",
+    "scanpy",
+    "pydeseq2",
     "pypdfium2",
 )
 R_REQUIREMENTS = (
@@ -150,25 +151,64 @@ def _write_managed_generation(
     return generation
 
 
-def test_shipped_manifests_are_the_authoritative_32_and_8_package_lists():
+def test_shipped_manifests_are_the_authoritative_33_and_8_package_lists():
     requirements = load_standard_profile_requirements()
 
     assert requirements == {
         "python": PYTHON_REQUIREMENTS,
         "r": R_REQUIREMENTS,
     }
-    assert len(requirements["python"]) == 32
+    assert len(requirements["python"]) == 33
     assert len(requirements["r"]) == 8
-    # Both conda and pip constraints are gone before matching package metadata.
+    # Both conda and pip constraints are gone before matching package metadata,
+    # and pip extras are stripped down to the distribution name.
     assert "python=3.11" not in requirements["python"]
     assert "pandas<3" not in requirements["python"]
     assert "fair-esm==2.0.0" not in requirements["python"]
-    assert requirements["python"][-2:] == ("fair-esm", "pypdfium2")
+    assert "scanpy[harmony,skmisc]==1.11.5" not in requirements["python"]
+    assert "pertpy" not in requirements["python"]  # extra-only: its core needs JAX
+    assert requirements["python"][-2:] == ("pydeseq2", "pypdfium2")
 
     projection = standard_profile_readiness(enabled=True, discover=lambda: [])
     assert projection["requirements_digest"] == (
-        "sha256:f327b2f66a771f285b43b838e65839dad2f163b53b163f7f7c16bdada81be038"
+        "sha256:80c9ab912a275ffb0d41205019faca4c40124951ff630bf6cc3da0921a7c3928"
     )
+
+
+def test_marker_entries_are_platform_optional_but_still_validated(tmp_path):
+    from openai4s.kernel.readiness import _ManifestError, _parse_direct_dependencies
+
+    spec = tmp_path / "python.yml"
+    spec.write_text(
+        "name: python\n"
+        "dependencies:\n"
+        "  - numpy\n"
+        "  - pip\n"
+        "  - pip:\n"
+        '      - scikit-misc==0.5.2; platform_machine != "aarch64"\n'
+        "      - pandas\n",
+        encoding="utf-8",
+    )
+    parsed = _parse_direct_dependencies(spec, "python")
+    # The marker entry is not a universal requirement: readiness must not
+    # demand it on the very platforms the marker excludes.
+    assert parsed == ("numpy", "pip", "pandas")
+
+    bad = tmp_path / "bad.yml"
+    bad.write_text(
+        "name: bad\n"
+        "dependencies:\n"
+        "  - pip\n"
+        "  - pip:\n"
+        '      - not a name!; platform_machine != "aarch64"\n',
+        encoding="utf-8",
+    )
+    try:
+        _parse_direct_dependencies(bad, "bad")
+    except _ManifestError:
+        pass
+    else:  # pragma: no cover - the gate must stay fail-closed
+        raise AssertionError("a malformed marker entry must still fail closed")
 
 
 def test_complete_standard_profile_is_ready_using_local_package_metadata(tmp_path):
@@ -188,7 +228,7 @@ def test_complete_standard_profile_is_ready_using_local_package_metadata(tmp_pat
     assert result["missing_packages"] == {}
     assert result["remediation"] is None
     assert [row["required_package_count"] for row in result["environments"]] == [
-        32,
+        33,
         8,
     ]
     assert all(row["state"] == READY for row in result["environments"])

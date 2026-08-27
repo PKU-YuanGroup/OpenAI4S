@@ -217,6 +217,16 @@ INSTANCE_CONFIG_PATHS = frozenset(
         "/datapro/config",
         "/doubao-search/config",
         "/telemetry/consent",
+        # Volcengine onboarding owns host Ark CLI authentication and can
+        # install, activate, or remove the instance-wide LLM credential.
+        # Keep the read-only connection projection open, but every mutation
+        # is an operator action in team mode.
+        "/volcengine/login",
+        "/volcengine/login/complete",
+        "/volcengine/login/cancel",
+        "/volcengine/refresh",
+        "/volcengine/configure",
+        "/volcengine/disconnect",
         # Three that enumeration missed, all writing a process-global or
         # instance-global switch rather than anything owned:
         #   `/network/status` sets `os.environ["OPENAI4S_ALLOW_NETWORK"]` in

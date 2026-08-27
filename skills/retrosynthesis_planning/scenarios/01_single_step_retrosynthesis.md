@@ -4,6 +4,8 @@
 
 该 Scenario 面向只有目标产物结构、需要提出一步断键方案的早期合成设计。Harness 获得一组匿名目标产物、固定推理预算和冻结模型环境，在不能访问参考反应物、反应类别和原始专利上下文的条件下，为每个产物生成有序的 Top-K 前体集合。
 
+与“已知 reaction class”的基础单步任务相比，本场景隐藏类别不是简单少给一个 metadata 字段。已知类别时，模型可以先把搜索限制在某一反应家族，再只比较该家族内的断键、离去基和前体；类别未知时，有限的 Top-K 名额必须同时承担“判断可能属于哪个反应家族”和“在每个家族内选择具体断键与前体”两层不确定性。错误的类别先验会让正确断键在 beam search 开始前就被排除，因此本场景评价的是跨类别 disconnection search，而不是条件于真实类别的模板排序。Workflow 不需要因此增加人为阶段，但模型准入必须确认没有隐藏类别输入或 typed checkpoint shortcut。
+
 科学问题不是“能否复现专利记录中的唯一字符串”，而是“模型能否在有限候选中恢复至少一个有文献记录的前体集合，并保持结构有效、候选不重复且具有断键多样性”。专利数据只记录实际执行过的一条反应，未命中该记录不证明替代前体不成立；因此 exact match 是可自动化的保守指标，不被描述为化学可行性的完整真值。
 
 默认执行模型为 RetroChimera 1，ReactionT5v2-retrosynthesis 可作为结构不同的对照。两者的原始分数含义不同，只分别用于模型内排序，不做未经校准的数值平均。
@@ -84,7 +86,7 @@ USPTO 专利反应的再发布许可、原始专利归属和派生数据条款�
 
 **输出：** admission report 和 checkpoint SHA256。
 
-**技术：** 校验归档/权重哈希、代码 commit、模型类别、训练 split 声明和许可证；记录 CPU/GPU、依赖版本和随机性设置。无法证明测试集隔离时必须退出正式评测。
+**技术：** 校验归档/权重哈希、代码 commit、模型类别、训练 split 声明和许可证；记录 CPU/GPU、依赖版本和随机性设置。必须确认推理入口运行于 class-unknown 模式，不能从文件列、模型参数、缓存或 typed checkpoint 注入真实类别。无法证明测试集隔离时必须退出正式评测。
 
 ### Stage 3. Budgeted Precursor Generation
 
@@ -198,6 +200,8 @@ reference_repository/
 ## 评估自动化实现难度
 
 全流程可离线自动化：输入规范化 ✓ → checkpoint 审计 ✓ → 批量生成 ✓ → 前体集合规范化 ✓ → 诊断 ✓ → 私有 exact-match 评分 ✓。主要非计算阻塞项是 USPTO 派生数据的发布许可审计与 checkpoint 训练集隔离证明。
+
+仓库已经提供 `retrosynthesis_planning.single_step_benchmark` 参考实现：公开阶段严格拒绝 `reaction_class`、参考前体和其他额外列；规范化阶段保留 invalid、empty、duplicate 和 unused budget；私有阶段按 target 计算多参考 Top-K、MRR 和候选集合诊断。该代码完成协议与离线 evaluator，不包含尚未获准再分发的 USPTO-50K 数据或大模型权重。
 
 ## 评测指标
 

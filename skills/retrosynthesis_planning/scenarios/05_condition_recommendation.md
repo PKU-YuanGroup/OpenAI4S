@@ -4,6 +4,8 @@
 
 该 Scenario 面向反应物和目标产物均已确定、但实验条件未知的反应执行准备。Harness 获得固定 reaction SMILES，在有限 Top-K 预算内推荐离散的催化剂、溶剂和试剂组合，并说明模型覆盖范围与不确定性。
 
+与让模型自由生成一段条件文本的基础任务相比，本场景冻结五个类别槽位、联合组合预算和 train-derived vocabulary。难点是生成内部一致的 condition tuple，并在 test-only 类别或训练域外反应上明确 OOV/abstention；不能把五个独立 Top-K 列表任意做笛卡尔积，也不能用不可评分的温度叙述掩盖类别恢复失败。
+
 默认模型 Parrot 在 USPTO-Condition 上预测类别型条件槽位。该公开数据不可靠地支持连续温度评测，因此本场景 v1 只评价 `catalyst1, solvent1, solvent2, reagent1, reagent2`；温度、时间、浓度、加料顺序和气氛不在本场景 Ground Truth 中。若模型或报告生成温度，只能作为未评分假设，不能混入条件 exact-match。
 
 专利条件并非唯一最优条件：一条记录只证明某组条件被报告过，未命中不等于建议不可行。因此主指标称“记录条件恢复”，并辅以槽位命中、组合 Top-K、多样性和覆盖率；不把模型推荐称为实验验证方案。
@@ -12,11 +14,11 @@
 
 ### 已验证的数据与模型来源
 
-- **Parrot**：作者官方仓库以 MIT 发布代码、配置、数据下载脚本和模型下载入口；论文给出 USPTO-Condition、USPTO-Suzuki 和 Reaxys 条件预测实验。
+- **Parrot**：作者官方仓库以 MIT 发布代码；第一作者 Hugging Face 仓库 `xiaoruiwang/ChemEnzyRetroPlanner_metadata` 也明确声明 MIT，并把 `USPTO_condition.mar` 描述为 Parrot 条件预测器。本场景只准入固定 revision `b9ef6049d341bfc62d835f09ad6ce33b6f86b047` 及经过大小/SHA256 校验的 MAR 和 metadata。
 - **USPTO-Condition**：官方 `download_data.py` 提供处理后数据归档入口，适合类别型条件 benchmark。
 - **Reaxys 条件数据**：需要受限原始数据库许可，不能随开源 Benchmark 再发布，因此不作为 v1 数据源。
 
-Parrot 外部 checkpoint 归档与处理后 USPTO-Condition 数据没有与代码许可证等价的独立机器可读授权声明。Reference Repository 发布前必须冻结下载文件、SHA256、字段说明和数据/权重许可审计结果；未完成时只能内部复现，不能宣称可再分发。
+Parrot 原官方下载器中的 Google Drive 归档仍没有与代码许可证等价的独立机器可读授权声明，因此保持阻塞；Reaxys 数据也不准入。已准入的第一作者 HF 固定快照必须继续按文件名、revision、大小与 SHA256 校验，不能静默替换。模型 artifact 可用于工程部署 canary；若其训练集与本场景 test split 的重叠无法审计，则不得据此报告正式 hidden-test 科学指标。
 
 ### 数据冻结规则
 
@@ -189,6 +191,8 @@ reference_repository/
 ## 评估自动化实现难度
 
 类别型场景可离线自动化：schema 校验 ✓ → 去重/泄漏审计 ✓ → public validation ✓ → Top-K 组合生成 ✓ → OOV/域诊断 ✓ → private evaluation ✓。发布阻塞是数据与 checkpoint 的再分发许可和 checkpoint split provenance；连续温度不属于 v1 自动化范围。
+
+仓库已提供 `retrosynthesis_planning.condition_benchmark`：冻结五个条件槽位及各自闭集词表，只接受模型实际发出的完整条件元组，禁止边际标签笛卡尔积；私有 evaluator 计算多参考 exact-tuple Top-K、slot recall、OOV、重复和预算利用率。
 
 ## 评测指标
 

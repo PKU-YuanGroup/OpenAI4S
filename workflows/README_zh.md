@@ -1,8 +1,8 @@
 # `workflows/`
 
-带版本的科学工作流基准清单：十一个 workflow、共 34 个用例，每份 workflow
+带版本的科学工作流基准清单：十三个 workflow、共 46 个用例，每份 workflow
 JSON 都声明「这次运行应该做什么、做到什么才算做到」。根目录的
-`next-round-acceptance.json` 是独立的 Stage 0 现场/安全验收包，不是第十二个
+`next-round-acceptance.json` 是独立的 Stage 0 现场/安全验收包，不是第十四个
 科学 workflow。
 
 它们放在仓库里而不是 fixture 目录里只有一个理由：用例的改动必须是一份可评审的 diff。执行它们的 runner 在 [`openai4s/benchmark/`](../openai4s/benchmark/README_zh.md)，它走的每一步都驱动生产代码——真实的 Store、真实的 kernel manager、真实的 host dispatcher、真实的 compute manager。被注入的只有离线跑不了的那些：模型、网络，以及包管理器。
@@ -13,6 +13,8 @@ JSON 都声明「这次运行应该做什么、做到什么才算做到」。根
 | --- | --- |
 | [`next-round-acceptance.json`](next-round-acceptance.json) | Stage 0 严格验收包：六条现场路径、七类安全动作和明确分母的基线指标 |
 | [`artifact-lineage/`](artifact-lineage/README_zh.md) | 派生产物携带 lineage |
+| [`codebase-mode/`](codebase-mode/README_zh.md) | 源码交付物，以及 Host 是否相信关于它的申报 |
+| [`delegation/`](delegation/README_zh.md) | 父代理被告知子代理做了什么 |
 | [`environment-provenance/`](environment-provenance/README_zh.md) | 产物环境 provenance |
 | [`environment-transaction/`](environment-transaction/README_zh.md) | 环境 plan → apply → rollback |
 | [`evidence-package/`](evidence-package/README_zh.md) | 证据包导出与验证 |

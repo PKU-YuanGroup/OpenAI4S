@@ -22,11 +22,11 @@
 | ID | 独立详细规范 | 当前成熟度 |
 | --- | --- | --- |
 | P1 | [`scenarios/01_single_step_retrosynthesis.md`](scenarios/01_single_step_retrosynthesis.md) | 设计完成；发布前需冻结 USPTO 派生数据许可与 checkpoint split 审计 |
-| P2 | [`scenarios/02_multistep_route_planning.md`](scenarios/02_multistep_route_planning.md) | 设计完成；PaRoutes 数据与自动指标明确，可优先实现 |
+| P2 | [`scenarios/02_multistep_route_planning.md`](scenarios/02_multistep_route_planning.md) | 设计与直接搜索 worker 已完成；实际 policy/stock artifact 条款待审计 |
 | P3 | [`scenarios/03_atom_mapping.md`](scenarios/03_atom_mapping.md) | 设计完成；正式 Ground Truth 的独立人工核验与许可仍是阻塞项 |
-| P4 | [`scenarios/04_forward_prediction.md`](scenarios/04_forward_prediction.md) | 设计完成；需冻结 USPTO_MIT 快照与 checkpoint 去重证明 |
-| P5 | [`scenarios/05_condition_recommendation.md`](scenarios/05_condition_recommendation.md) | 设计完成；v1 限于类别条件，数据许可待审计；任何 checkpoint 下载或推理前须审核其条款并在 manifest 记录允许/拒绝决定 |
-| P6 | [`scenarios/06_yield_estimation.md`](scenarios/06_yield_estimation.md) | 设计完成；以 Buchwald–Hartwig OOD split 为主，需冻结数据许可与去重清单 |
+| P4 | [`scenarios/04_forward_prediction.md`](scenarios/04_forward_prediction.md) | 设计与真实 model-card canary 已完成；仍需冻结 USPTO_MIT benchmark 快照与去重证明 |
+| P5 | [`scenarios/05_condition_recommendation.md`](scenarios/05_condition_recommendation.md) | 固定 MIT HF artifact、MAR adapter 与真实 GPU worker canary 已通过；无温度，冻结 benchmark 待测 |
+| P6 | [`scenarios/06_yield_estimation.md`](scenarios/06_yield_estimation.md) | 设计完成；固定 checkpoint 的公开 canary 不一致，定量使用已隔离 |
 
 ## 科学问题之间的关系
 
@@ -67,7 +67,7 @@
 | P2 | 多步逆合成路线规划 | 目标、单步策略、库存、预算 | solved/unsolved 路线树 | AiZynthFinder | 已有命令构造、路线导入、规范化、审计和排序 |
 | P3 | 原子映射与反应中心识别 | 完整 reaction SMILES | mapped reaction、变化键 | RXNMapper | 已写独立 Skill；需可选模型环境 |
 | P4 | 正向反应产物预测 | 反应物、试剂 | Top-K 产物 | ReactionT5v2-forward | 已写独立 Skill；需可选模型环境 |
-| P5 | 反应条件推荐 | 固定反应两侧 | 条件组合、可选温度 | Parrot（有条件候选） | 已写条件型 Skill；任何 checkpoint 下载或推理前须完成条款审核并在 manifest 记录允许决定 |
+| P5 | 反应条件推荐 | 固定反应两侧 | 类别条件组合 | Parrot USPTO | 精确 MIT HF 快照已准入；真实 GPU worker canary 通过；无温度，冻结 benchmark 待测 |
 | P6 | 反应收率估计 | 反应物、试剂、产物 | 预测收率 | ReactionT5v2-yield | 已写独立 Skill；只允许域内筛选解释 |
 
 ## Problem 1. 单步逆合成前体生成
@@ -315,15 +315,15 @@ round-trip recovery 只表示正向模型与逆向提案一致，不是实验可
 
 ### 技术
 
-当前候选模型为 Parrot。它提供公开推理代码、condition label 数据、CPU/GPU 环境和 CLI。USPTO checkpoint 主要输出类别条件；只有适当的 Reaxys 配置才涉及温度预测，不能宣称所有 checkpoint 都支持 temperature。
+当前实现为 Parrot USPTO。第一作者另行发布的 HF revision `b9ef604...` 明确声明 MIT；MAR 与 metadata 已按精确大小和 SHA256 固定。仓库原 Google Drive artifact 仍被阻塞，不能借用代码许可证。
 
-Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没有单独声明的机器可读许可证。因此，在任何 checkpoint 下载或推理前，必须审核所选 checkpoint 的条款，并在模型 manifest 中记录明确的允许/拒绝决定；记录缺失或决定为拒绝时必须停止。模型输出只作为检索与实验假设；文献或 ELN 验证必须另行记录。
+仓库原生 MAR adapter 和真实 GPU worker canary 已通过并返回 15 个联合 condition beams；这只证明工程可执行，不代表冻结 benchmark 精度或实验有效性。该 USPTO checkpoint 不支持 temperature。模型输出只作为检索与实验假设；文献或 ELN 验证必须另行记录。
 
 ### 模型实现
 
-- 有条件候选：Parrot（非默认实现）；
+- 已准入实现：Parrot USPTO（仅限固定 HF revision）；
 - 仓库 Skill：`reaction-condition-recommendation`；
-- 当前状态：有公开代码、checkpoint 下载器和 CLI，但任何下载或推理前都须完成所选 checkpoint 的条款审核，并在模型 manifest 中记录允许决定。
+- 当前状态：固定 artifact、隔离环境、adapter 与真实 GPU canary 通过；冻结 benchmark 精度待测，温度不支持。
 
 ### 独立评测指标
 
@@ -340,7 +340,7 @@ Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没
 2. label dictionary 必须与 checkpoint 配套并写入 provenance。
 3. 不支持温度的 checkpoint 不得输出伪造温度。
 4. LLM 补充的条件不得标记为 Parrot 输出。
-5. 未完成 checkpoint 条款审核且模型 manifest 未记录允许决定时，不得下载或运行 Parrot checkpoint；记录缺失或决定为拒绝时必须停止。
+5. 不得把其他 Parrot checkpoint 替换成已准入 HF 快照；manifest 缺失、拒绝或身份/哈希不匹配时必须停止。
 
 ## Problem 6. 反应收率估计
 
@@ -426,7 +426,7 @@ Parrot 代码为 MIT，但官方下载器指向的外部 checkpoint 压缩包没
 | P2 多步规划 | ✓ | 需 AiZynthFinder policies/stock | PaRoutes 详细设计已写 | 已集成；最接近可实现 Benchmark |
 | P3 原子映射 | ✓ Skill 发现 | 需 RXNMapper 环境 | 独立人工真值设计已写 | recipe 完成；可信 Ground Truth 待冻结 |
 | P4 正向预测 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | USPTO_MIT 详细设计已写 | recipe 完成；数据/去重 provenance 待冻结 |
-| P5 条件推荐 | ✓ Skill 发现 | 需 Parrot 环境及下载前条款决定 | USPTO 类别条件设计已写 | 条件型 recipe；推理前 manifest 必须记录允许决定 |
+| P5 条件推荐 | ✓ Skill 发现 | ✓ 可迁移 Python 3.8 环境 | USPTO 类别条件设计已写 | ✓ 固定 MIT HF artifact、MAR adapter、真实 GPU canary；冻结 benchmark 待测 |
 | P6 收率估计 | ✓ Skill 发现 | 需 ReactionT5v2 权重 | C–N 偶联 OOD 设计已写 | recipe 完成；数据许可/预训练去重待冻结 |
 
 ## 全 Scenario 的硬性约束

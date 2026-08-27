@@ -25,7 +25,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
+      "evidence_digest": "f89245edd204c074cc38b9790ece05f7f0a0f5778062623cbfc47b0bc6b9a919"
     },
     {
       "source": "R1",
@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "3b3766bc60156281468ff13e34fce251e8e34a9b0103f559e17748a890d1dbad"
+      "evidence_digest": "5e44f90dab9b6fcd7f062a23f880a15c07b7829844babc1b9303189dc070cc22"
     },
     {
       "source": "R1",
@@ -135,7 +135,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
+      "evidence_digest": "f89245edd204c074cc38b9790ece05f7f0a0f5778062623cbfc47b0bc6b9a919"
     },
     {
       "source": "R2",
@@ -176,7 +176,7 @@
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "453a8ac825408733a27f0cc2006d7640e1847a5e9c7da5926331a362b4df2de2"
+      "evidence_digest": "6366b0dc25dc7345879bc36141527191e5e8bebd788b6f69e0cdd2c4a9e4924a"
     },
     {
       "source": "R2",
@@ -190,7 +190,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "c4d464ee4b26a1b6f518989c3c893f6487f02d2771b07195c37070ad12246f58"
+      "evidence_digest": "4c238f2ca1bedf0023572619e6a7d7a126e183b4397a58197b79e3db20d7ee30"
     },
     {
       "source": "R2",
@@ -648,7 +648,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_queued_followups.py,tests/test_specialist_connector_allowlist.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "bd6a2f93d36938b8bdb2c01aa0961db8ab8a51b9cfe2071719c23a30d7d43db8"
+      "evidence_digest": "1bf59d5a7237146fe02e028ff1cc9fec9fef37740ef85d546e3e8013c9539b01"
     },
     {
       "source": "R6",
@@ -731,7 +731,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_protocol_menu.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "06d2d0a9c78892f6b3a32679949da87ef2507f6a74f7ffccb234002caf92855b"
+      "evidence_digest": "f89245edd204c074cc38b9790ece05f7f0a0f5778062623cbfc47b0bc6b9a919"
     },
     {
       "source": "R7",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "6ba9ca97b44d6d0e2b4c2acc689b6fe5dced4f99feea11ac9150ca55692188a1"
+      "evidence_digest": "6ee033426db4ee3f9161d41d6d5d395d687034e2a5a467e9af4032ef6390bc3d"
     },
     {
       "source": "R7",
