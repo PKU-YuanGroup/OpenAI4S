@@ -11899,6 +11899,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         providers=provider_specs,
     )
     volcengine_connector = VolcengineConnectorService()
+    # Serializes the read-check-create-set sequence on the dedicated profile:
+    # without it two concurrent configures both see no existing profile and
+    # both create one, orphaning a live credential the disconnect route can
+    # never reach (it deletes only the profile named by the setting).
+    _volcengine_configure_lock = threading.Lock()
 
     def _disconnect_managed_datapro_session() -> None:
         """Invalidate DataPro only for this live Store generation."""
@@ -12085,6 +12090,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         raise GatewayError(status, error.message, error.code) from error
 
     def _configure_volcengine(
+        plan_key: Any = None,
+        key_choice: Any = None,
+        endpoint_choice: Any = None,
+    ) -> dict[str, Any]:
+        with _volcengine_configure_lock:
+            return _configure_volcengine_locked(plan_key, key_choice, endpoint_choice)
+
+    def _configure_volcengine_locked(
         plan_key: Any = None,
         key_choice: Any = None,
         endpoint_choice: Any = None,
@@ -14022,7 +14035,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
             # ---- Volcengine account connection through the official Ark CLI ----
             if sub == "/volcengine/connection" and method == "GET":
-                self._json(_volcengine_connection_payload())
+                payload = _volcengine_connection_payload()
+                if self._team_visibility_filter() is not None:
+                    # Non-admin team members may see the connector state, but
+                    # never the live login envelope: authorize_url carries the
+                    # OAuth state token of the operator's pending sign-in, and
+                    # error_detail is operator-facing diagnostics.
+                    login = payload.get("login")
+                    payload["login"] = {
+                        "state": (
+                            login.get("state", "idle")
+                            if isinstance(login, dict)
+                            else "idle"
+                        )
+                    }
+                self._json(payload)
                 return
             if sub == "/volcengine/refresh" and method == "POST":
                 self._json(_volcengine_connection_payload(force=True))
@@ -14070,6 +14097,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     )
                 except ArkCliError as error:
                     _raise_volcengine_error(error)
+                except ModelProfileError as exc:
+                    self._json({"error": str(exc)}, exc.status_code)
                 return
             if sub == "/volcengine/disconnect" and method == "POST":
                 body = self._body()

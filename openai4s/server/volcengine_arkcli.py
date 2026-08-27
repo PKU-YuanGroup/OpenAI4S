@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+from openai4s.host.bash import redact_shell_text
+
 _MAX_OUTPUT_BYTES = 1_000_000
 _DEFAULT_TIMEOUT_S = 30.0
 _SAFE_ENV_NAMES = frozenset(
@@ -46,7 +48,7 @@ _SAFE_ENV_NAMES = frozenset(
         "XDG_RUNTIME_DIR",
     }
 )
-_DEVICE_CODE = re.compile(r"^[A-Za-z0-9+/=_-]{8,8192}$")
+_DEVICE_CODE = re.compile(r"^[A-Za-z0-9+/=_&-]{8,8192}$")
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 _MODEL_ID = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 
@@ -239,16 +241,33 @@ def _command_failure_detail(result: CommandResult) -> str:
     detail = _text(detail, 240)
     if not detail:
         return ""
+    # Shared baseline first: the same conservative shapes (Bearer, sk-/ark-
+    # tokens, NAME=value assignments) the approval/audit projections redact.
+    detail = redact_shell_text(detail, limit=240)
     detail = re.sub(r"https?://[^\s<>\"']+", "[redacted URL]", detail)
     detail = re.sub(
-        r"(?i)((?:authorization|æŽˆæƒ)?\s*code\s*[:=]\s*)[A-Za-z0-9+/=_-]{8,}",
+        r"(?i)((?:\bauthorization\s+)?\bcode\s*[:=：]\s*"
+        r"|授权\s*码?\s*[:=：]?\s*)[A-Za-z0-9+/=_&-]{8,}",
         r"\1[redacted]",
         detail,
     )
 
     def redact_token(match: re.Match[str]) -> str:
         token = match.group(0)
-        return "[redacted]" if any(char in token for char in "=+/_-") else token
+        if any(char in token for char in "=+/_-"):
+            return "[redacted]"
+        # Purely alphanumeric secrets exist too (an unpadded Base64 code has
+        # no separator): treat digit+letter and long mixed-case runs as
+        # credentials rather than prose.
+        has_digit = any(c.isdigit() for c in token)
+        has_alpha = any(c.isalpha() for c in token)
+        if len(token) >= 10 and has_digit and has_alpha:
+            return "[redacted]"
+        has_upper = any(c.isupper() for c in token)
+        has_lower = any(c.islower() for c in token)
+        if len(token) >= 12 and has_upper and has_lower:
+            return "[redacted]"
+        return token
 
     detail = re.sub(
         r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{8,}(?![A-Za-z0-9+/=_-])",
@@ -282,6 +301,14 @@ def _normalize_device_code(value: Any, authorize_url: str) -> str:
     raw = str(value or "").strip()
     if not _DEVICE_CODE.fullmatch(raw):
         raise ArkCliError("invalid_authorization_code", "Authorization code is invalid")
+    parsed = parse_qs(raw, keep_blank_values=True)
+    plain_code = (parsed.get("code") or [""])[0].strip()
+    plain_state = (parsed.get("state") or [""])[0].strip()
+    if plain_code and plain_state:
+        # A pasted plaintext ``code=...&state=...`` envelope: re-wrap it in the
+        # Base64 form the CLI expects instead of forwarding it verbatim.
+        envelope = urlencode({"code": plain_code, "state": plain_state})
+        return base64.urlsafe_b64encode(envelope.encode("utf-8")).decode("ascii")
     if _device_payload(raw):
         return raw
     state = (parse_qs(urlsplit(authorize_url).query).get("state") or [""])[0].strip()
@@ -355,7 +382,15 @@ class ArkCliBridge:
         executable = self.executable()
         if not executable:
             raise ArkCliError("arkcli_not_installed", "Ark CLI is not installed")
-        result = self._runner((executable, *args), timeout_s, cancel_event)
+        try:
+            result = self._runner((executable, *args), timeout_s, cancel_event)
+        except OSError as error:
+            # A resolvable-but-unrunnable executable (no exec bit, a dead npm
+            # shim interpreter, ENOEXEC) must surface as the projected error
+            # state, not escape the ArkCliError envelope into a 500.
+            raise ArkCliError(
+                "arkcli_failed", "Ark CLI could not be executed"
+            ) from error
         if result.cancelled:
             raise ArkCliError("login_cancelled", "Volcengine login was cancelled")
         if result.timed_out:
@@ -365,7 +400,7 @@ class ArkCliBridge:
             if "project" in detail and (
                 "non-interactive" in detail
                 or "noninteractive" in detail
-                or "éžäº¤äº’å¼ç»ˆç«¯" in detail
+                or "非交互式终端" in detail
             ):
                 raise ArkCliError(
                     "project_selection_required",
@@ -489,7 +524,9 @@ class ArkCliBridge:
             expires_in = 600
         return {"authorize_url": url, "expires_in_sec": expires_in}
 
-    def login_device_complete(self, code: Any) -> None:
+    def login_device_complete(
+        self, code: Any, cancel_event: threading.Event | None = None
+    ) -> None:
         value = str(code or "").strip()
         if not _DEVICE_CODE.fullmatch(value):
             raise ArkCliError(
@@ -498,6 +535,7 @@ class ArkCliBridge:
         self._run(
             ("auth", "login", "--no-browser", "--code", value),
             timeout_s=90.0,
+            cancel_event=cancel_event,
         )
 
     def logout(self) -> None:

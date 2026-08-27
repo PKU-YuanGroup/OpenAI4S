@@ -11974,9 +11974,13 @@ async function refreshVolcengine(root, { autoConfigure = true, announce = false 
   const checkFailed = ["check_failed", "key_check_failed", "endpoint_check_failed"].includes(accessState);
   root._volcRefreshMessage = announce && !checkFailed ? t("cust.volc.rechecked") : "";
   renderVolcenginePanel(root, next);
-  if (autoConfigure && !next.configured && plans.length === 1 && accessState === "ready") {
+  // Auto-configure only while never linked: once the Volcengine profile
+  // exists, `!configured` means the user deliberately activated a different
+  // profile, and a read-labeled Recheck (or a poll tick) must not switch the
+  // instance back to Ark behind their back.
+  if (autoConfigure && !next.configured && !next.linked && plans.length === 1 && accessState === "ready") {
     await configureVolcengine(root, next, plans[0].key);
-  } else if (autoConfigure && !next.configured && accessState === "platform_ready") {
+  } else if (autoConfigure && !next.configured && !next.linked && accessState === "platform_ready") {
     await configureVolcengine(root, next, "platform", "", (next.access || {}).endpoint_choice || "");
   }
   return next;
@@ -12019,11 +12023,17 @@ function renderVolcenginePanel(root, raw) {
 
   if (login.state === "awaiting_code") {
     volcNotice(root, "info", t("cust.volc.authTitle"), t("cust.volc.authBody"));
+    if (state._error) root.appendChild(el("div", "timeline-error", publicText(state._error, 240)));
     root.appendChild(el("div", "volc-project-hint", t("cust.volc.projectHint")));
     const auth = volcCommand(t("cust.volc.openAuth"), "globe", "solid-btn small");
     auth.onclick = () => openVolcengineAuthorization(login.authorize_url);
     const code = el("input", "cust-input volc-code"); code.placeholder = t("cust.volc.codePlaceholder"); code.autocomplete = "off";
     const complete = volcCommand(t("cust.volc.complete"), "link");
+    const abandon = volcCommand(t("cust.volc.cancel"), "x");
+    abandon.onclick = async () => {
+      try { const next = await api("/volcengine/login/cancel", { method: "POST" }); renderVolcenginePanel(root, { ...state, login: next }); }
+      catch (error) { hint(apiErrorText(error), true); }
+    };
     complete.onclick = async () => {
       const value = code.value.trim(); if (!value) { code.focus(); return; }
       complete.disabled = true;
@@ -12039,7 +12049,7 @@ function renderVolcenginePanel(root, raw) {
         } catch (_) { hint(apiErrorText(error), true); }
       }
     };
-    actions.appendChild(auth); actions.appendChild(code); actions.appendChild(complete); root.appendChild(actions); return;
+    actions.appendChild(auth); actions.appendChild(code); actions.appendChild(complete); actions.appendChild(abandon); root.appendChild(actions); return;
   }
 
   if (login.state === "failed") {
@@ -12149,9 +12159,26 @@ function renderVolcenginePanel(root, raw) {
     root.dataset.keyChoice = keyChoice; select.value = keyChoice;
     select.onchange = () => { root.dataset.keyChoice = select.value; };
     chooser.appendChild(select); root.appendChild(chooser);
+    // A platform profile can need an endpoint choice at the same time; render
+    // it here and submit both, or the two 409s ping-pong forever.
+    const endpointChoices = Array.isArray(access.endpoint_choices) ? access.endpoint_choices : [];
+    if (endpointChoices.length) {
+      const endpointRow = el("div", "volc-plan-row"); endpointRow.appendChild(el("label", "skill-lbl", t("cust.volc.endpoint")));
+      const endpointSelect = el("select", "cust-input");
+      endpointChoices.forEach(choice => {
+        const option = el("option"); option.value = choice.id;
+        option.textContent = choice.name || choice.suffix || t("cust.volc.endpoint");
+        endpointSelect.appendChild(option);
+      });
+      let endpointChoice = root.dataset.endpointChoice || "";
+      if (!endpointChoices.some(choice => choice.id === endpointChoice)) endpointChoice = endpointChoices[0] ? endpointChoices[0].id : "";
+      root.dataset.endpointChoice = endpointChoice; endpointSelect.value = endpointChoice;
+      endpointSelect.onchange = () => { root.dataset.endpointChoice = endpointSelect.value; };
+      endpointRow.appendChild(endpointSelect); root.appendChild(endpointRow);
+    }
     const use = volcCommand(t("cust.volc.usePlan"), "check", "solid-btn small");
     use.disabled = !keyChoice;
-    use.onclick = () => configureVolcengine(root, state, selected || access.plan_key, root.dataset.keyChoice);
+    use.onclick = () => configureVolcengine(root, state, selected || access.plan_key, root.dataset.keyChoice, endpointChoices.length ? root.dataset.endpointChoice : "");
     actions.appendChild(use);
   } else if (["profile_missing", "profile_ambiguous"].includes(accessState)) {
     volcNotice(root, "warn", t("cust.volc.profileMissingTitle"), t("cust.volc.profileMissingBody"));
@@ -12232,6 +12259,10 @@ function renderVolcenginePanel(root, raw) {
 }
 
 async function configureVolcengine(root, state, planKey, apiKeyChoice = "", endpointChoice = "") {
+  // One configure at a time: the poll timer and a user click can otherwise
+  // race two POSTs from a single browser.
+  if (root._volcConfiguring) return;
+  root._volcConfiguring = true;
   root.classList.add("busy");
   try {
     const result = await api("/volcengine/configure", { method: "POST", body: JSON.stringify({ plan_key: planKey, api_key_choice: apiKeyChoice || undefined, endpoint_choice: endpointChoice || undefined }) });
@@ -12245,6 +12276,8 @@ async function configureVolcengine(root, state, planKey, apiKeyChoice = "", endp
       catch (_) { /* Fall through to the original actionable error. */ }
     }
     renderVolcenginePanel(root, { ...state, _error: t("cust.volc.configureFailed", apiErrorText(error)) });
+  } finally {
+    root._volcConfiguring = false;
   }
 }
 
@@ -12253,6 +12286,9 @@ async function startVolcengineLogin(root) {
   // later navigation while the local API prepares the authorization URL.
   let authWindow = null;
   try { authWindow = window.open("about:blank", "_blank"); } catch (_) { /* Use the fallback button. */ }
+  // Sever the reverse handle: the SSO tab (and whatever its redirect chain
+  // lands on) must not keep a window.opener onto the workbench.
+  try { if (authWindow) authWindow.opener = null; } catch (_) { /* Best effort. */ }
   try {
     const login = await api("/volcengine/login", { method: "POST", body: JSON.stringify({ mode: "device" }) });
     authWindow = openVolcengineAuthorization(login.authorize_url, authWindow);

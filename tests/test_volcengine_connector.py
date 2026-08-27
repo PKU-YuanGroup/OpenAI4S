@@ -726,6 +726,222 @@ def test_device_login_is_single_flight_until_the_code_is_submitted():
     assert second["state"] == "awaiting_code"
 
 
+def test_the_offline_suite_never_resolves_a_real_arkcli(tmp_path, monkeypatch):
+    """conftest pins OPENAI4S_ARKCLI_PATH so pytest can never spawn a real CLI."""
+
+    _fake_arkcli(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+
+    assert ArkCliBridge().executable() == ""
+
+
+def test_chinese_project_selection_failure_maps_to_the_recovery_state():
+    code = "YWJjZGVmZ2g="
+    bridge, _runner = _bridge(
+        {
+            ("auth", "login", "--no-browser", "--code", code): CommandResult(
+                1, "", "Error: Project 尚未选择，当前为非交互式终端"
+            )
+        }
+    )
+
+    with pytest.raises(ArkCliError) as raised:
+        bridge.login_device_complete(code)
+
+    assert raised.value.code == "project_selection_required"
+
+
+def test_purely_alphanumeric_secrets_in_cli_errors_are_redacted():
+    token = "YWJjZGVmZ2hp"
+    bridge, _runner = _bridge(
+        {("auth", "logout"): CommandResult(1, "", f"invalid session token {token}")}
+    )
+
+    with pytest.raises(ArkCliError) as raised:
+        bridge.logout()
+
+    assert token not in raised.value.message
+    assert "[redacted]" in raised.value.message
+
+
+def test_an_unrunnable_executable_is_a_controlled_failure_not_a_crash():
+    def raising_runner(argv, timeout_s, cancel_event):
+        del argv, timeout_s, cancel_event
+        raise PermissionError(13, "Permission denied")
+
+    bridge = ArkCliBridge(
+        executable="arkcli", which=lambda _name: "/opt/arkcli", runner=raising_runner
+    )
+
+    with pytest.raises(ArkCliError) as raised:
+        bridge.whoami()
+    assert raised.value.code == "arkcli_failed"
+
+    payload = VolcengineConnectorService(bridge).connection()
+    assert payload["state"] == "error"
+
+
+def test_plaintext_envelope_paste_is_accepted_and_rewrapped():
+    prepared = _normalize_device_code(
+        "code=inner-code-123&state=csrf-state-123",
+        "https://signin.volcengine.com/authorize/test?state=other-state",
+    )
+    decoded = base64.urlsafe_b64decode(prepared + "=" * (-len(prepared) % 4)).decode()
+
+    assert decoded == "code=inner-code-123&state=csrf-state-123"
+
+
+def test_an_expired_pending_login_mints_a_fresh_authorization():
+    starts = []
+
+    class DeviceBridge(_ConnectedBridge):
+        def login_device_start(self):
+            starts.append(1)
+            return {
+                "authorize_url": "https://signin.volcengine.com/authorize/test",
+                "expires_in_sec": 60,
+            }
+
+    clock = {"now": 1_000_000.0}
+    service = VolcengineConnectorService(
+        DeviceBridge(), wall_clock=lambda: clock["now"]
+    )
+
+    first = service.start_device_login()
+    clock["now"] += 3600
+    second = service.start_device_login()
+
+    assert len(starts) == 2
+    assert second["state"] == "awaiting_code"
+    assert second["login_id"] != first["login_id"]
+
+
+def test_a_local_paste_format_error_keeps_the_pending_authorization():
+    class DeviceBridge(_ConnectedBridge):
+        def login_device_start(self):
+            return {
+                "authorize_url": "https://signin.volcengine.com/authorize/test",
+                "expires_in_sec": 600,
+            }
+
+    service = VolcengineConnectorService(DeviceBridge())
+    started = service.start_device_login()
+
+    with pytest.raises(ArkCliError) as raised:
+        service.complete_device_login("bad code\nwith whitespace")
+
+    assert raised.value.code == "invalid_authorization_code"
+    login = service.start_device_login()
+    assert login["state"] == "awaiting_code"
+    assert login["login_id"] == started["login_id"]
+
+
+def test_cancel_during_token_exchange_stays_cancelled():
+    holder = {}
+
+    class CancelRace(_ConnectedBridge):
+        def login_device_start(self):
+            return {
+                "authorize_url": "https://signin.volcengine.com/authorize/test",
+                "expires_in_sec": 600,
+            }
+
+        def login_device_complete(self, code, cancel_event=None):
+            del code, cancel_event
+            holder["service"].cancel_login()
+            raise ArkCliError("login_cancelled", "Volcengine login was cancelled")
+
+    service = VolcengineConnectorService(CancelRace())
+    holder["service"] = service
+    service.start_device_login()
+
+    with pytest.raises(ArkCliError):
+        service.complete_device_login("code=abc12345&state=xyz67890")
+
+    assert service.connection()["login"]["state"] == "cancelled"
+
+
+def test_key_choice_projection_surfaces_a_pending_endpoint_choice():
+    bridge = _ConnectedBridge()
+    bridge.plans = lambda: []
+    bridge.usage = lambda: {"items": []}
+    bridge.profiles = lambda: [
+        {
+            "name": "platform_cn-beijing_default",
+            "type": "platform",
+            "api_key_count": 2,
+        }
+    ]
+    bridge.api_key_inventory = lambda _profile: [
+        {
+            "id": "cloud-key-one",
+            "mask": "****1111",
+            "name": "First",
+            "suffix": "1111",
+            "selected": False,
+        },
+        {
+            "id": "cloud-key-two",
+            "mask": "****2222",
+            "name": "Second",
+            "suffix": "2222",
+            "selected": False,
+        },
+    ]
+    bridge.endpoint_inventory = lambda _profile: [
+        {"id": "ep-one", "name": "A", "selected": False},
+        {"id": "ep-two", "name": "B", "selected": False},
+    ]
+    bridge.api_key = lambda _profile, key_id=None: "ark-live-secret-value"
+    service = VolcengineConnectorService(bridge)
+
+    access = service.connection()["access"]
+
+    assert access["state"] == "key_choice_required"
+    assert len(access["key_choices"]) == 2
+    assert len(access["endpoint_choices"]) == 2
+
+    material = service.provisioning_material(
+        "platform",
+        access["key_choices"][0]["id"],
+        access["endpoint_choices"][1]["id"],
+    )
+    assert material.model == "ep-two"
+
+
+def test_connection_scan_is_single_flight_across_threads():
+    import threading as _threading
+    import time as _time
+
+    calls = []
+    started = _threading.Event()
+    gate = _threading.Event()
+
+    class SlowBridge(_ConnectedBridge):
+        def whoami(self):
+            calls.append(1)
+            started.set()
+            gate.wait(10.0)
+            return super().whoami()
+
+    service = VolcengineConnectorService(SlowBridge(), cache_ttl_s=60)
+    results = []
+    threads = [
+        _threading.Thread(target=lambda: results.append(service.connection(force=True)))
+        for _ in range(2)
+    ]
+    threads[0].start()
+    assert started.wait(5.0)
+    threads[1].start()
+    _time.sleep(0.3)
+    gate.set()
+    for thread in threads:
+        thread.join(10.0)
+
+    assert len(calls) == 1
+    assert all(result["state"] == "connected" for result in results)
+
+
 class _Hub:
     def emitter(self, _root_frame_id):
         return lambda _event: None

@@ -275,13 +275,20 @@ def _access_projection(
         if _profile_key_state(profile) == "key_choice_required"
     ]
     if len(key_choice_profiles) == 1:
-        return {
+        profile = key_choice_profiles[0]
+        projection = {
             "state": "key_choice_required",
             "plan_key": "platform",
             "has_api_key": True,
-            "key_choices": list(key_choice_profiles[0].get("_key_choices", [])),
+            "key_choices": list(profile.get("_key_choices", [])),
             "error_code": "",
         }
+        # Surface a pending endpoint choice alongside the key choice; without
+        # it a multi-key + multi-endpoint account can never submit both and
+        # configure loops between the two 409s forever.
+        if _text(profile.get("_endpoint_state"), 32) == "endpoint_choice_required":
+            projection["endpoint_choices"] = list(profile.get("_endpoint_choices", []))
+        return projection
     failed_profiles = [
         profile
         for profile in platform_profiles
@@ -374,6 +381,7 @@ class VolcengineConnectorService:
         self._clock = clock
         self._wall_clock = wall_clock
         self._lock = threading.RLock()
+        self._scan_in_flight: threading.Event | None = None
         self._cached_at = float("-inf")
         self._cached: dict[str, Any] | None = None
         self._login: dict[str, Any] = {"state": "idle"}
@@ -515,14 +523,44 @@ class VolcengineConnectorService:
             }
 
     def connection(self, *, force: bool = False) -> dict[str, Any]:
-        now = self._clock()
-        with self._lock:
-            if (
-                not force
-                and self._cached is not None
-                and now - self._cached_at < self.cache_ttl_s
-            ):
-                return {**self._cached, "login": self._public_login(), "cached": True}
+        while True:
+            with self._lock:
+                now = self._clock()
+                if (
+                    not force
+                    and self._cached is not None
+                    and now - self._cached_at < self.cache_ttl_s
+                ):
+                    return {
+                        **self._cached,
+                        "login": self._public_login(),
+                        "cached": True,
+                    }
+                waiter = self._scan_in_flight
+                if waiter is None:
+                    self._scan_in_flight = owner = threading.Event()
+                    break
+            # Single-flight: another thread is already running the CLI scan.
+            # Its result is brand new, which is fresh enough even for a forced
+            # caller — running a second identical scan would only double the
+            # subprocess spawns and control-plane calls.
+            waiter.wait(timeout=300.0)
+            with self._lock:
+                if self._cached is not None:
+                    return {
+                        **self._cached,
+                        "login": self._public_login(),
+                        "cached": True,
+                    }
+            force = False
+        try:
+            return self._scan()
+        finally:
+            with self._lock:
+                self._scan_in_flight = None
+            owner.set()
+
+    def _scan(self) -> dict[str, Any]:
         availability = self.bridge.availability()
         if not availability["installed"]:
             payload = {
@@ -619,22 +657,51 @@ class VolcengineConnectorService:
         return self.connection(force=True)
 
     def start_device_login(self) -> dict[str, Any]:
+        now = int(self._wall_clock())
         with self._lock:
-            if self._login.get("state") in {"awaiting_code", "connecting"}:
+            state = self._login.get("state")
+            expires_at = self._login.get("expires_at")
+            still_valid = not isinstance(expires_at, int) or expires_at > now
+            if state == "connecting" or (state == "awaiting_code" and still_valid):
                 return self._public_login()
-        result = self.bridge.login_device_start()
-        with self._lock:
+            # Claim the flow inside this lock scope: without the placeholder,
+            # two concurrent starts both pass the idle check and both spawn
+            # `arkcli auth login`, and an expired awaiting_code login would be
+            # handed out forever.
+            login_id = "volc-login-" + uuid.uuid4().hex[:12]
             self._login = {
-                "state": "awaiting_code",
-                "login_id": "volc-login-" + uuid.uuid4().hex[:12],
-                "authorize_url": result["authorize_url"],
-                "expires_at": int(self._wall_clock()) + result["expires_in_sec"],
+                "state": "connecting",
+                "login_id": login_id,
                 "method": "browser_oauth",
-                "phase": "authorization",
+                "phase": "starting",
             }
+        try:
+            result = self.bridge.login_device_start()
+        except ArkCliError:
+            # Release the claim: the route reports the failure, and the panel
+            # renders it from the response; a stuck "connecting" would block
+            # every later start.
+            with self._lock:
+                if self._login.get("login_id") == login_id:
+                    self._login = {"state": "idle"}
+            raise
+        with self._lock:
+            if (
+                self._login.get("login_id") == login_id
+                and self._login.get("state") == "connecting"
+            ):
+                self._login = {
+                    "state": "awaiting_code",
+                    "login_id": login_id,
+                    "authorize_url": result["authorize_url"],
+                    "expires_at": int(self._wall_clock()) + result["expires_in_sec"],
+                    "method": "browser_oauth",
+                    "phase": "authorization",
+                }
         return self._public_login()
 
     def complete_device_login(self, code: Any) -> dict[str, Any]:
+        cancel_event = threading.Event()
         with self._lock:
             if self._login.get("state") != "awaiting_code":
                 raise ArkCliError(
@@ -642,16 +709,18 @@ class VolcengineConnectorService:
                 )
             login_id = self._login.get("login_id")
             authorize_url = str(self._login.get("authorize_url") or "")
+            # Validate before the state transition: a purely local paste-format
+            # rejection must not destroy the still-valid pending authorization.
+            normalized = _normalize_device_code(code, authorize_url)
             self._login = {
                 "state": "connecting",
                 "login_id": login_id,
                 "method": "browser_oauth",
                 "phase": "token_exchange",
+                "_cancel": cancel_event,
             }
         try:
-            self.bridge.login_device_complete(
-                _normalize_device_code(code, authorize_url)
-            )
+            self.bridge.login_device_complete(normalized, cancel_event=cancel_event)
             snapshot = self.connection(force=True)
             if snapshot.get("state") != "connected":
                 raise ArkCliError(
@@ -660,26 +729,43 @@ class VolcengineConnectorService:
                 )
         except ArkCliError as error:
             with self._lock:
-                self._login = {
-                    "state": "failed",
-                    "login_id": login_id,
-                    "error_code": error.code,
-                    "error_detail": _text(error.message, 240),
-                    "method": "browser_oauth",
-                }
+                # Compare-and-set: a cancel that raced this exchange already
+                # owns the state, and "cancelled" must not become "failed".
+                if (
+                    self._login.get("login_id") == login_id
+                    and self._login.get("state") == "connecting"
+                ):
+                    self._login = {
+                        "state": "failed",
+                        "login_id": login_id,
+                        "error_code": error.code,
+                        "error_detail": _text(error.message, 240),
+                        "method": "browser_oauth",
+                    }
             raise
         with self._lock:
-            self._login = {
-                "state": "succeeded",
-                "login_id": login_id,
-                "method": "browser_oauth",
-            }
+            # Same compare-and-set: an acknowledged cancellation must not flip
+            # to "succeeded" after the CLI ran to completion anyway.
+            if (
+                self._login.get("login_id") == login_id
+                and self._login.get("state") == "connecting"
+            ):
+                self._login = {
+                    "state": "succeeded",
+                    "login_id": login_id,
+                    "method": "browser_oauth",
+                }
         return self._public_login()
 
     def cancel_login(self) -> dict[str, Any]:
         with self._lock:
             login_id = self._login.get("login_id")
+            cancel_event = self._login.get("_cancel")
             self._login = {"state": "cancelled", "login_id": login_id}
+        if isinstance(cancel_event, threading.Event):
+            # Actually stop the in-flight `arkcli auth login --code` run; the
+            # runner kills the subprocess when this event is set.
+            cancel_event.set()
         return self._public_login()
 
     def logout(self) -> dict[str, Any]:
