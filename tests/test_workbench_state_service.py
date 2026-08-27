@@ -269,3 +269,84 @@ def test_live_and_ended_language_sandboxes_still_aggregate_to_weaker_claim():
         "python",
         "r",
     }
+
+
+def test_delegation_event_projection_owns_the_output_exclusion():
+    """The live delegation_child_event ships the browser-safe child shape.
+
+    The projection contract (docs/webapp-api.md, delegations row) excludes
+    result/output bodies and steering text from the browser. That exclusion is
+    owned server-side by this normalizer; the frontend sanitizer stays as a
+    belt, not the only owner.
+    """
+
+    from openai4s.server.workbench_state import delegation_event_projection
+
+    projected = delegation_event_projection(
+        {
+            "type": "delegation_child_event",
+            "event": "steering_delivered",
+            "at": 9.0,
+            "message_ids": ["m-1"],
+            "boundary": 2,
+            "child": {
+                "child_id": "c-9",
+                "name": "scout",
+                "status": "running",
+                "task_status": None,
+                "output": {"secret": "not for the socket"},
+                "error": None,
+                "depth": 2,
+                "parent_child_id": "c-1",
+                "parent_frame_id": "f-root",
+                "frame_id": "f-child",
+                "created_at": 1.0,
+                "started_at": 2.0,
+                "finished_at": None,
+                "progress": {
+                    "turn_boundary": 2,
+                    "max_turns": 6,
+                    "last_progress_at": 3.0,
+                },
+                "steering": {
+                    "queued": 1,
+                    "delivered": 0,
+                    "discarded": 0,
+                    "messages": [{"message_id": "m-1", "status": "queued"}],
+                },
+                "overrides": {
+                    "model": "deepseek-chat",
+                    "steps": 4,
+                    "permissions": ["read", "write"],
+                    "capabilities": ["skills"],
+                },
+            },
+        }
+    )
+
+    assert projected["type"] == "delegation_child_event"
+    assert projected["event"] == "steering_delivered"
+    assert projected["message_ids"] == ["m-1"] and projected["boundary"] == 2
+    child = projected["child"]
+    assert "output" not in child
+    assert "messages" not in child["steering"]
+    assert child["steering"] == {"queued": 1, "delivered": 0, "discarded": 0}
+    assert child["overrides"] == {
+        "model": "deepseek-chat",
+        "steps": 4,
+        "permission_count": 2,
+        "capability_count": 1,
+    }
+    assert child["child_id"] == "c-9"
+    assert child["frame_id"] == "f-child"
+    assert child["depth"] == 2
+    assert child["progress"]["max_turns"] == 6
+
+
+def test_delegation_event_projection_tolerates_a_missing_child():
+    from openai4s.server.workbench_state import delegation_event_projection
+
+    projected = delegation_event_projection(
+        {"type": "delegation_child_event", "event": "x", "at": 1.0}
+    )
+    assert projected["child"] == {}

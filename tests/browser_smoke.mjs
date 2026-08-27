@@ -46,6 +46,31 @@ async function api(path, { method = "GET", data } = {}) {
   return response.json();
 }
 
+// The trusted-capture guard refuses every external workspace mutation while a
+// background execution is registered (409 trusted_capture_busy), and the
+// permission-resume section spawns one whose exit nothing here can await —
+// there is no REST projection of the background registry. The refusal IS the
+// contract, so the first mutation after that section retries admission with a
+// bounded budget instead of racing the job's exit; any other failure, or a
+// job that never drains, still fails the run loudly.
+async function apiRetryWhileCaptureBusy(path, { method = "GET", data } = {}) {
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    const response = await page.request.fetch(new URL(`api/v1${path}`, baseUrl).toString(), {
+      method,
+      data,
+      headers: data === undefined ? undefined : { "Content-Type": "application/json" },
+    });
+    if (response.ok()) return response.json();
+    const body = await response.text();
+    const busy = response.status() === 409 && body.includes("trusted_capture_busy");
+    if (!busy || Date.now() >= deadline) {
+      throw new Error(`${method} ${path} returned HTTP ${response.status()}: ${body}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 async function requireOne(selector, message = selector) {
   const count = await page.locator(selector).count();
   if (count !== 1) throw new Error(`expected one ${message}, found ${count}`);
@@ -435,7 +460,7 @@ try {
 
   // Version restore is append-only. Historical bytes stay immutable while a
   // restored copy becomes a fresh latest version and invalidates UI caches.
-  const upload = await api("/uploads", {
+  const upload = await apiRetryWhileCaptureBusy("/uploads", {
     method: "POST",
     data: {
       frame_id: frameId,

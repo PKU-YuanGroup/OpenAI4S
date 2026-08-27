@@ -27,6 +27,7 @@ from openai4s.kernel.readiness import (
 from openai4s.server.artifacts import ArtifactManager, PromotionTarget
 from openai4s.server.completions import completion_message
 from openai4s.server.delivery import CompletionDeliveryService
+from openai4s.server.execution_views import ExecutionViewService
 from openai4s.store import get_store
 
 _SCHEMA_VERSION = 1
@@ -289,6 +290,29 @@ def seed_trusted_delivery_fixture(
             depth=1,
             status="done",
         )
+        # Production now records every delegated child Cell into
+        # execution_log keyed under its own delegate frame (the
+        # DelegatedCellRecorder half of D1); the fixture seeds the same shape
+        # so the browser acceptance asserts cell_recorded over real routes.
+        store.log_cell(
+            frame_id=code_child,
+            root_frame_id=code_child,
+            project_id=project_id,
+            code=(
+                "from pathlib import Path\n"
+                "Path('stage1-delegated-code.txt')"
+                ".write_text('delegated code producer bytes\\n')\n"
+            ),
+            result={
+                "id": "cell-delegated-browser",
+                "stdout": "",
+                "stderr": "",
+                "error": None,
+            },
+            origin="delegate",
+            cell_seq=1,
+            cell_index=1,
+        )
         delegated_code = _register(
             manager,
             session,
@@ -456,6 +480,32 @@ def test_trusted_delivery_fixture_seeds_exact_messages_dedup_and_old_head(tmp_pa
     )
     assert result["delegated_provenance"]["code"]["frame_id"] != frame_id
     assert result["delegated_provenance"]["native"]["frame_id"] != frame_id
+
+    # The delegated code producer's Cell is durably recorded under its own
+    # delegate frame, so the lineage projection the browser asserts over the
+    # real route reports cell_recorded true — without flattening the child
+    # cell into the parent Notebook as a root "cell" interaction.
+    reopened = get_store(Config(data_dir=tmp_path).db_path)
+    code_child = result["delegated_provenance"]["code"]["frame_id"]
+    recorded = reopened.cell_detail("cell-delegated-browser")
+    assert recorded is not None
+    assert recorded["frame_id"] == code_child
+    assert recorded["root_frame_id"] == code_child
+    assert recorded["origin"] == "delegate"
+    lineage = ExecutionViewService(
+        store=reopened,
+        format_timestamp=lambda value: str(value) if value is not None else None,
+    ).artifact_lineage(result["delegated_provenance"]["code"]["artifact_id"])
+    assert lineage["producer"]["cell_recorded"] is True
+    assert lineage["producer"]["frame_kind"] == "delegate"
+    assert [item["kind"] for item in lineage["interactions"]] == ["save"]
+    native_lineage = ExecutionViewService(
+        store=reopened,
+        format_timestamp=lambda value: str(value) if value is not None else None,
+    ).artifact_lineage(result["delegated_provenance"]["native"]["artifact_id"])
+    assert native_lineage["producer"]["kind"] == "non_cell"
+    assert native_lineage["producer"]["cell_recorded"] is False
+    reopened.close()
     assert (
         result["head_change"]["old_version_id"]
         != result["head_change"]["new_version_id"]

@@ -154,7 +154,29 @@ def test_finalize_spec_is_closed_host_strict_and_outside_control_registry():
         "limitations",
         "next_steps",
         "completion_bullets",
+        "task_status",
+        # Code-mode evidence: optional on the wire and closed on the schema, so
+        # an analysis turn is unaffected while a reusable_pipeline /
+        # codebase_change turn has somewhere honest to put its deliverable.
+        "source_files",
+        "entry_points",
+        "architecture_summary",
+        "test_evidence",
     }
+    # There is deliberately no field for a test's OUTPUT text: pass/fail is
+    # read off the stored stdout of the named cell, so "the tests passed"
+    # cannot be a claim the payload carries.
+    assert set(
+        spec.input_schema["properties"]["test_evidence"]["items"]["properties"]
+    ) == {"command", "producing_cell_id"}
+    assert spec.input_schema["properties"]["task_status"]["enum"] == [
+        "completed",
+        "partial",
+        "blocked",
+        "failed",
+    ]
+    # Optional: the declaration is honesty support, never a new requirement.
+    assert "task_status" not in spec.input_schema["required"]
     assert "sole tool call" in spec.description
     assert "finalize_response" not in {tool.name for tool in REGISTRY}
 
@@ -182,6 +204,30 @@ def test_host_validation_rejects_missing_unknown_and_semantically_bad_fields():
     assert "past-tense" in validate_finalize_arguments(
         _arguments(completion_bullets=["Finish the task"])
     )
+
+
+def test_finalize_accepts_a_declared_task_status_and_rejects_garbage():
+    """D5: the closed schema takes an optional task_status enum, and the
+    accepted value rides into the completion record's output for the
+    delegation envelope's single-writer derivation to read."""
+    assert validate_finalize_arguments(_arguments(task_status="partial")) is None
+    assert validate_finalize_arguments(_arguments(task_status="blocked")) is None
+    error = validate_finalize_arguments(_arguments(task_status="almost done"))
+    assert error is not None and "task_status" in error
+    error = validate_finalize_arguments(_arguments(task_status=True))
+    assert error is not None and "task_status" in error
+
+    outcome = execute_finalize_action(
+        FinalizeAction(_call(_arguments(task_status="partial")))
+    )
+    assert outcome.completion is not None
+    assert outcome.completion["output"]["task_status"] == "partial"
+
+    refused = execute_finalize_action(
+        FinalizeAction(_call(_arguments(task_status="done")))
+    )
+    assert refused.completion is None
+    assert refused.history_messages[0]["is_error"] is True
 
 
 def test_router_reserves_finalization_only_for_one_standalone_native_call():

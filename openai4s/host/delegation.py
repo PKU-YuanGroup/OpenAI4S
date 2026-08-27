@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Any, Callable, Protocol
 
 from openai4s.host import resource_allowlist
+from openai4s.host.delegation_policy import (
+    DelegationPolicyError,
+    child_execution_policy,
+)
+from openai4s.specialists import BUILTIN_SPECIALISTS, builtin_specialist
 
 
 class AgentProfileStore(Protocol):
@@ -19,31 +24,12 @@ CapabilityScopeProvider = Callable[[], dict[str, str | None]]
 SpecialistEnabled = Callable[[str], bool]
 
 
+#: Compatibility view of the single source of truth in
+#: :mod:`openai4s.specialists`. This used to hold exactly one hand-written
+#: entry (REMOTE_GPU_PROVISIONER) while the gateway catalog advertised six
+#: specialists — the divergence D7 removes. Derived, never edited here.
 BUILTIN_SPECIALIST_PROMPTS = {
-    "REMOTE_GPU_PROVISIONER": """\
-You are the remote-GPU provisioning specialist. Your job is to turn a user-added
-SSH GPU host into real, verified services that the main scientist can call.
-
-Protocol:
-1. Inspect the current state with `host.remote_gpu_status()` and choose the
-   default/reachable SSH alias unless the user named a specific one.
-2. Use visible shell steps (`host.bash("ssh <alias> ...")`) to inspect the
-   remote host, create a scratch/service directory, and install or locate real
-   model runners. Prefer existing scripts/environments already present on the
-   host before downloading anything large.
-3. Provision only real services. For this app the important capabilities are:
-   `fold` (a wrapper consumed by `host.fold`) and `score_mutations` (an ESM
-   masked-marginal wrapper consumed by `host.score_mutations`). If you also
-   provision ProteinMPNN or another method, register it under a clear capability
-   name such as `proteinmpnn`.
-4. Verify before registering. A capability must have either a verified script
-   path or a structured `path_exists` / `executable_exists` probe that exits 0
-   on the remote host. Then call
-   `host.register_remote_capability(alias, capability, script=..., engine=...,
-   invoke=..., markers=..., probe={"kind":"path_exists","path":...})`.
-5. If provisioning cannot be completed, return a concise blocking reason and the
-   exact remote checks you ran. Never claim a model is configured until verified.
-""",
+    name: profile.system_prompt for name, profile in BUILTIN_SPECIALISTS.items()
 }
 
 
@@ -62,11 +48,17 @@ def _with_persona(request: Any, persona: str) -> Any:
     """
     if isinstance(request, str):
         return persona + request
-    if isinstance(request, dict) and "request" in request:
-        return {
-            **request,
-            "request": _with_persona(request.get("request", ""), persona),
-        }
+    if isinstance(request, dict):
+        # Dict-shaped fan-out items are accepted by the delegation runtime in
+        # each of these spellings.  `_spec_to_task` consumes them in this
+        # order, so decorate the first effective payload instead of silently
+        # dropping the specialist persona for `task` and `prompt` requests.
+        for key in ("request", "task", "prompt"):
+            if key in request:
+                return {
+                    **request,
+                    key: _with_persona(request.get(key, ""), persona),
+                }
     if isinstance(request, list):
         return [_with_persona(item, persona) for item in request]
     return request
@@ -134,7 +126,8 @@ class DelegationService:
                     agent = self._store().get_agent(name)
             except Exception:  # noqa: BLE001 - optional profile lookup
                 agent = None
-            builtin_prompt = BUILTIN_SPECIALIST_PROMPTS.get(str(name).upper())
+            builtin = builtin_specialist(str(name))
+            builtin_prompt = builtin.system_prompt if builtin is not None else None
             system_prompt = (
                 agent.get("system_prompt") if agent else None
             ) or builtin_prompt
@@ -144,7 +137,19 @@ class DelegationService:
                 # envelope. A call-site *setting* wins; a call-site
                 # *restriction* may only narrow the row's -- see
                 # `_with_profile_overrides`, where "always wins" was the defect.
+                # A stored row with a builtin's name OVERRIDES the builtin:
+                # only the row's overrides apply (its empty prompt still falls
+                # back to the builtin persona above).
                 spec = _with_profile_overrides(spec, agent)
+            elif builtin is not None:
+                # The builtin supplies the runtime policy the catalog always
+                # advertised: default capabilities and the unrestricted floor
+                # ride the spec, so `child_execution_policy(spec)` derives a
+                # real ChildExecutionPolicy that `_run_one` arms through the
+                # existing `set_child_execution_policy` choke point.
+                overrides = builtin.profile_overrides()
+                if overrides:
+                    spec = _with_profile_overrides(spec, overrides)
             if system_prompt:
                 request = spec.get("request")
                 persona = (
@@ -221,10 +226,40 @@ def _with_profile_overrides(spec: dict, profile: dict) -> dict:
         ("max_steps", "max_steps"),
         ("max_turns", "max_turns"),
         ("permissions", "permissions"),
-        ("capabilities", "capabilities"),
     ):
         if target not in merged and profile.get(source) is not None:
             merged[target] = profile[source]
+
+    # Capability lists are authority, not a cosmetic setting.  A restricted
+    # profile is the ceiling: omission inherits it, while an explicit list is
+    # accepted only when every requested capability is a true subset.  Use
+    # the runtime policy's alias expansion so `list_dir` can narrow
+    # `read_file`, while broad aliases such as `web` cannot smuggle in
+    # `web_download` through a read-only profile.
+    profile_capabilities = profile.get("capabilities")
+    if profile_capabilities is not None:
+        if "capabilities" not in merged:
+            merged["capabilities"] = profile_capabilities
+        else:
+            profile_policy = child_execution_policy(
+                {
+                    "capabilities": profile_capabilities,
+                    "unrestricted": False,
+                }
+            )
+            requested_policy = child_execution_policy(
+                {"capabilities": merged.get("capabilities")}
+            )
+            denied = sorted(
+                capability
+                for capability in requested_policy.allowed
+                if not profile_policy.permits_capability(capability)
+            )
+            if denied:
+                raise DelegationPolicyError(
+                    "delegated capabilities exceed specialist profile: "
+                    + ", ".join(denied)
+                )
 
     # The row is the parent, the call site is the child, and the result may
     # only be tighter than the row. `skills` is the row's legacy spelling of

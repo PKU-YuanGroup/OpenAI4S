@@ -339,6 +339,75 @@ class LoadSkillTool(Tool):
         return runtime.invoke(self.host_method, name)
 
 
+class ReadSkillFileTool(Tool):
+    """Read one file inside a Skill directory — a reference, not the recipe.
+
+    `load_skill` returns a Skill's whole SKILL.md; a recipe that says "read
+    `references/data_contracts.md` before running the pipeline" needs the file
+    itself. The only route to one was `host.skills.read(...)` from inside a
+    Python cell, so an agent working in the tool plane — a delegated child that
+    never runs a cell, most of all — structurally could not follow that
+    instruction, and its natural fallback (`read_text_file`) failed with a
+    workspace-escape error that reads exactly like "the file is not there".
+
+    Nothing about the safety envelope changes: this maps to the existing
+    `skills_read` host method, so the Skill allowlist, the capability-state
+    check and the loader's own containment guard (a path that resolves outside
+    the Skill directory, symlinks included, is refused) all apply unchanged.
+    """
+
+    name = "read_skill_file"
+    host_method = "skills_read"
+    description = (
+        "Read one file inside a Skill's directory by relative path (e.g. "
+        "references/data_contracts.md, examples/config.yaml). Use this for the "
+        "reference documents a loaded SKILL.md tells you to read; use "
+        "load_skill for the SKILL.md recipe itself. Do not use workspace file "
+        "tools — a Skill directory is not in the workspace."
+    )
+    parameters = {
+        "properties": {
+            "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Skill name from the available-skill catalog.",
+            },
+            "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "description": (
+                    "Path relative to the Skill directory. Defaults to "
+                    "SKILL.md; must stay inside the Skill directory."
+                ),
+            },
+        },
+        "required": ["name"],
+    }
+    requires_approval = False
+    # Matches LoadSkillTool: the bundled documents run to tens of thousands of
+    # characters, and a reference truncated mid-table is a data contract the
+    # agent half-read while believing it had all of it. Anything longer than
+    # this is bounded with an explicit truncation marker by the registry.
+    output_limit = 50_000
+    resource_key_prefix = "skill"
+    resource_target_key = "name"
+
+    def resource_keys(self, arguments: Any) -> tuple[str, ...]:
+        arguments = arguments if isinstance(arguments, dict) else {}
+        return (resource_key("skill", arguments.get("name") or "*"),)
+
+    def execute(self, runtime: ControlToolContext, arguments: dict) -> str:
+        arguments = arguments if isinstance(arguments, dict) else {}
+        return runtime.invoke(
+            self.host_method,
+            {
+                "name": str(arguments.get("name") or ""),
+                "path": str(arguments.get("path") or "SKILL.md"),
+            },
+        )
+
+
 class SkillStatusTool(Tool):
     """Inspect one exact personal/project Skill activation without reading bytes."""
 

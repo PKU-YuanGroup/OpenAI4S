@@ -10,6 +10,23 @@ from .actions import Action, NativeToolCall
 Message: TypeAlias = dict[str, Any]
 
 
+@dataclass(frozen=True)
+class KernelEnvSpec:
+    """Interpreter/environment selection carried into Agent-owned kernels.
+
+    Strings only, no kernel imports: this is the provider-neutral value the
+    delegation tree threads through every nesting level so a delegated child's
+    Python worker, background workers, and R channel inherit the parent
+    session's selected environment instead of silently falling back to the
+    daemon interpreter.
+    """
+
+    python: str | None = None
+    env_root: str | None = None
+    env_name: str | None = None
+    r_env: str | None = None
+
+
 def _tool_call(value: NativeToolCall | Mapping[str, Any]) -> NativeToolCall:
     if isinstance(value, NativeToolCall):
         return value

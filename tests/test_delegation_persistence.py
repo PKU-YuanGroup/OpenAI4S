@@ -236,3 +236,67 @@ def test_session_deletion_removes_delegation_projection(monkeypatch):
     store.delete_frame(root)
 
     assert store.delegation_tree(root)["initialized"] is False
+
+
+def _seeded_child(store, root, child):
+    store.restore_delegation_tree(
+        root_frame_id=root,
+        owner_instance_id="owner-ts",
+        runner_instance_id="runner-ts",
+        budget_limit=4,
+    )
+    child_id = store.reserve_delegation_children(
+        root_frame_id=root,
+        owner_instance_id="owner-ts",
+        runner_instance_id="runner-ts",
+        count=1,
+        depth=1,
+        parent_child_id=None,
+    )["child_ids"][0]
+    store.persist_delegation_child(
+        root_frame_id=root,
+        owner_instance_id="owner-ts",
+        runner_instance_id="runner-ts",
+        child={"child_id": child_id, "depth": 1, "created_at": 1.0, **child},
+        messages=[],
+    )
+    return child_id
+
+
+def test_task_status_is_stored_and_projected_for_terminal_children():
+    _cfg, store, root = _root_store()
+    child_id = _seeded_child(
+        store,
+        root,
+        {
+            "name": "worker",
+            "status": "failed",
+            "stop_reason": "max_turns",
+            "task_status": "partial",
+            "result": {"stop_reason": "max_turns"},
+        },
+    )
+
+    child = store.delegation_tree(root)["children"][0]
+    assert child["status"] == "failed"
+    assert child["stop_reason"] == "max_turns"
+    assert child["task_status"] == "partial"
+    # stored durably in its own column, not merely echoed by the projection
+    row = store._conn.execute(
+        "SELECT task_status,stop_reason FROM delegation_children "
+        "WHERE root_frame_id=? AND child_id=?",
+        (root, child_id),
+    ).fetchone()
+    assert (row["task_status"], row["stop_reason"]) == ("partial", "max_turns")
+
+
+def test_a_child_persisted_without_task_status_projects_null():
+    _cfg, store, root = _root_store()
+    _seeded_child(
+        store,
+        root,
+        {"name": "worker", "status": "done", "stop_reason": "submitted"},
+    )
+    child = store.delegation_tree(root)["children"][0]
+    assert child["status"] == "done"
+    assert child["task_status"] is None

@@ -481,6 +481,41 @@ def test_matching_head_dedup_is_opt_in_and_preserves_version_provenance(tmp_path
     )
 
 
+def test_artifact_names_for_frame_includes_same_byte_capture_observation(tmp_path):
+    store, repository = _repository(tmp_path)
+    root = store.new_frame(kind="turn", project_id="science", status="ready")
+    first_frame = store.new_frame(
+        parent_id=root, kind="delegate", project_id="science", status="ready"
+    )
+    second_frame = store.new_frame(
+        parent_id=root, kind="delegate", project_id="science", status="ready"
+    )
+    original = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum="same-bytes",
+        producing_cell_id="cell-1",
+        frame_id=first_frame,
+        reuse_matching_head=True,
+    )
+    reused = repository.record_cell_artifact(
+        path=str(tmp_path / "result.csv"),
+        filename="result.csv",
+        content_type="text/csv",
+        size_bytes=5,
+        checksum="same-bytes",
+        producing_cell_id="cell-2",
+        frame_id=second_frame,
+        reuse_matching_head=True,
+    )
+
+    assert reused["version_id"] == original["version_id"]
+    assert repository.artifact_names_for_frame(first_frame) == ["result.csv"]
+    assert repository.artifact_names_for_frame(second_frame) == ["result.csv"]
+
+
 def test_matching_head_from_non_cell_producer_reuses_bytes_and_observes_cell(
     tmp_path,
 ):

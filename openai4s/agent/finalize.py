@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any, Iterable, Mapping, MutableMapping, TypedDict
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, TypedDict
 
 from openai4s.host.completion import first_english_word, validate_completion_bullets
 from openai4s.tools import ToolSpec, finalize_tool_batch, validate_json_schema
@@ -210,6 +210,69 @@ _FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
             "maxItems": 4,
             "description": "One to four completed-action phrases.",
         },
+        "source_files": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "maxLength": 1_000},
+                    "sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            "maxItems": 200,
+            "description": (
+                "Source files this run saved. Required and verified for the "
+                "reusable_pipeline and codebase_change task modes."
+            ),
+        },
+        "entry_points": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 1_000},
+            "maxItems": 20,
+            "description": (
+                "Runnable entry-point paths. Python entries must compile from "
+                "their own source; they are never executed to check that."
+            ),
+        },
+        "architecture_summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4_000,
+            "description": "One paragraph naming what each module owns.",
+        },
+        "test_evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "minLength": 1, "maxLength": 1_000},
+                    "producing_cell_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                    },
+                },
+                "required": ["command", "producing_cell_id"],
+                "additionalProperties": False,
+            },
+            "maxItems": 50,
+            "description": (
+                "Test commands and the id of the cell that ran each. There is "
+                "deliberately no field for the output: pass/fail is read off "
+                "the recorded stdout of that cell, never from a claim."
+            ),
+        },
+        "task_status": {
+            "type": "string",
+            "enum": ["completed", "partial", "blocked", "failed"],
+            "description": (
+                "Optional honest machine-readable completion status; omitted "
+                "means completed. Declare partial/blocked/failed instead of "
+                "dressing an incomplete task as done."
+            ),
+        },
     },
     "required": ["summary", "completion_bullets"],
     "additionalProperties": False,
@@ -298,6 +361,7 @@ def execute_finalize_action(
     refusal: str | None = None,
     stop_reason: str | None = None,
     evidence: Mapping[str, Any] | None = None,
+    code_evidence: Callable[[Mapping[str, Any]], str | None] | None = None,
 ) -> ExecutionOutcome:
     """Close the provider call, then optionally accept structured completion.
 
@@ -309,6 +373,12 @@ def execute_finalize_action(
     when supplied, completion claims are reconciled against it and a payload
     claiming unexecuted work is refused. ``None`` preserves the legacy
     behaviour for callers that keep no ledger.
+
+    ``code_evidence`` is the Host's code-mode check (see
+    ``openai4s.host.code_evidence``), bound by the executor to the dispatcher
+    that knows this turn's task mode. It receives the accepted arguments and
+    returns a refusal string or ``None``. Omitted, the finalize contract is
+    exactly what it was — which is also what an ``analysis_run`` turn gets.
     """
 
     call = action.call
@@ -319,6 +389,9 @@ def execute_finalize_action(
     if error is None and evidence is not None:
         assert call.arguments is not None
         error = reconcile_completion_claims(call.arguments, evidence)
+    if error is None and code_evidence is not None:
+        assert call.arguments is not None
+        error = code_evidence(call.arguments)
     if error is None:
         assert call.arguments is not None
         record = _completion_record(call.arguments)

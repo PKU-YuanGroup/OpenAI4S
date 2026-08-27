@@ -1601,7 +1601,12 @@ def test_provenance_caches_follow_artifact_versions_and_refresh_mutations() -> N
     assert 'capture.capture_kind === "head_checksum_reused" || !cell' in review_source
     assert "producer.frame_id" in review_source
     assert 'producer.kind === "cell"' in review_source
-    assert "if (capture.cell_index != null)" in review_source
+    # A delegated capture (frame_kind "delegate") must never render a
+    # root-Notebook heading or view-code link, even now that its cell_index
+    # is recorded — the index orders the child frame's log, not the root's.
+    assert "const captureInRootNotebook" in review_source
+    assert 'capture.frame_kind !== "delegate"' in review_source
+    assert "if (captureInRootNotebook)" in review_source
     assert 't("prov.review.producedByIdentity"' in review_source
     assert 't("prov.review.nonCellProducer"' in review_source
 

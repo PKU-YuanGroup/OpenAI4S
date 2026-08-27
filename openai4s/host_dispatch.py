@@ -22,11 +22,12 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 from openai4s.config import Config, get_config
 from openai4s.doubao_search import DoubaoSearchService
 from openai4s.host.bash import BashAuthorizationService, redact_shell_text
+from openai4s.host.code_evidence import gather_code_evidence_context
 from openai4s.host.completion import CompletionService, gather_submission_evidence
 from openai4s.host.credentials import CredentialService
 from openai4s.host.data import HostDataService
@@ -252,6 +253,14 @@ def _step_begin(method: str, args: list) -> tuple[str, str, dict] | None:
     if method == "load_skill":
         name = args[0] if args and isinstance(args[0], str) else a.get("name", "")
         return ("skill", f"Loading {name} skill guidance", {"name": name})
+    if method == "skills_read":
+        # Distinct from load_skill on purpose: loading pulls a Skill's whole
+        # SKILL.md recipe into context, while this reads ONE file inside that
+        # Skill's directory (a reference document, a data contract, an
+        # example). A card that said "loaded" for both hid which one happened.
+        name = str(a.get("name") or "")
+        path = str(a.get("path") or "SKILL.md")
+        return ("skill", f"Reading {name}/{path}", {"name": name, "path": path})
     if method in {"skills_status", "skills_history", "skills_rollback"}:
         name = a.get("name", "")
         verb = {
@@ -662,8 +671,155 @@ def _declared_failure_reason(result: Any) -> str | None:
     return "reported ok=false"
 
 
+#: Delegate step status by the envelope's machine-readable task_status.
+#: Green ("done") is reserved for a child that declared completion and had it
+#: upheld by machine checks; everything not-done-but-not-broken is "warning".
+_DELEGATE_STEP_STATUS: dict[str, str] = {
+    "completed": "done",
+    "partial": "warning",
+    "blocked": "warning",
+    "failed": "error",
+}
+_DELEGATE_STEP_SEVERITY: dict[str, int] = {"done": 0, "warning": 1, "error": 2}
+
+
+def _delegate_result_status(result: Any) -> str:
+    """done/warning/error for one child result (envelope or async handle)."""
+    if not isinstance(result, dict):
+        return "error"  # malformed: no declared outcome at all
+    task_status = result.get("task_status")
+    if isinstance(task_status, str):
+        return _DELEGATE_STEP_STATUS.get(task_status, "error")
+    if result.get("stop_reason") in ("stopped", "cancelled", "max_turns"):
+        return "warning"
+    if result.get("error"):
+        return "error"
+    if result.get("status") in ("pending", "running"):
+        # wait=false handle: the spawn succeeded; the verdict is tracked in
+        # the delegation panel, not on this card.
+        return "done"
+    return "error"
+
+
+def _delegate_result_word(result: Any) -> str:
+    """The one-line summary word — the task_status itself, never 'done'."""
+    if not isinstance(result, dict):
+        return "malformed result"
+    task_status = result.get("task_status")
+    if isinstance(task_status, str):
+        return task_status
+    if result.get("stop_reason") in ("stopped", "cancelled"):
+        return "stopped"
+    if result.get("status") in ("pending", "running"):
+        return "started"
+    if result.get("error"):
+        return "failed"
+    return "malformed result"
+
+
+def _delegate_summary_text(result: dict) -> str:
+    """A bounded human-readable line from the child's own completion."""
+    final = result.get("final_message")
+    if isinstance(final, str) and final.strip():
+        return " ".join(final.split())[:500]
+    output = result.get("output")
+    if isinstance(output, str) and output.strip():
+        return " ".join(output.split())[:500]
+    if isinstance(output, dict):
+        for key in ("summary", "text", "message"):
+            value = output.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())[:500]
+    return ""
+
+
+def _delegate_child_view(result: dict) -> dict:
+    """Bounded structured projection of one child result for the step card."""
+    environment = result.get("environment")
+    limitations = result.get("limitations")
+    artifacts = result.get("artifacts")
+    view: dict = {
+        "name": result.get("name"),
+        "child_id": result.get("child_id"),
+        "frame_id": result.get("frame_id"),
+        "task_status": result.get("task_status"),
+        "stop_reason": result.get("stop_reason"),
+        "status": result.get("status"),
+        "turns": result.get("turns"),
+        "max_turns": result.get("max_turns"),
+        "environment": environment if isinstance(environment, dict) else None,
+        "summary": _delegate_summary_text(result),
+        "limitations": (
+            [str(item)[:300] for item in limitations[:8] if str(item).strip()]
+            if isinstance(limitations, list)
+            else []
+        ),
+        "artifacts": (
+            [str(item)[:200] for item in artifacts[:50]]
+            if isinstance(artifacts, list)
+            else []
+        ),
+    }
+    if result.get("error"):
+        view["error"] = str(result["error"])[:600]
+    missing = result.get("missing_artifacts")
+    if isinstance(missing, list) and missing:
+        view["missing_artifacts"] = [str(item)[:200] for item in missing[:50]]
+    return view
+
+
+def _delegate_step_projection(result: Any, ok: bool) -> tuple[dict, str, str]:
+    """(output, summary, status) for a delegate step card.
+
+    Replaces the old flattening (``{"result": _short(result, 2000)}``, "done"):
+    the summary word reflects the envelope's ``task_status`` — never a
+    hardcoded "done" — the default body is the structured projection, and the
+    bounded raw string sits behind it for the details reveal. Fan-out lists
+    project every child and the worst child's status wins. The generic
+    ``_declared_failure_reason`` contract stays untouched for everyone else.
+    """
+    if not ok:
+        err = result.get("error") if isinstance(result, dict) else None
+        reason = " ".join(str(err).split()) if err else ""
+        summary = "failed" if not reason else f"failed: {reason[:160]}"
+        return ({"error": str(err)[:600] if err else "failed"}, summary, "error")
+    if isinstance(result, list):
+        children = [
+            (
+                _delegate_child_view(item)
+                if isinstance(item, dict)
+                else {"summary": str(_short(item, 200))}
+            )
+            for item in result[:48]
+        ]
+        worst = "done"
+        counts: dict[str, int] = {}
+        for item in result:
+            status = _delegate_result_status(item)
+            if _DELEGATE_STEP_SEVERITY[status] > _DELEGATE_STEP_SEVERITY[worst]:
+                worst = status
+            word = _delegate_result_word(item)
+            counts[word] = counts.get(word, 0) + 1
+        breakdown = ", ".join(f"{n} {word}" for word, n in counts.items())
+        summary = (
+            f"{len(result)} children: {breakdown}"[:200] if result else "0 children"
+        )
+        return ({"children": children, "raw": _short(result, 2000)}, summary, worst)
+    if isinstance(result, dict):
+        view = _delegate_child_view(result)
+        view["raw"] = _short(result, 2000)
+        return (view, _delegate_result_word(result), _delegate_result_status(result))
+    return ({"raw": _short(result, 2000)}, "malformed result", "error")
+
+
 def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]:
     """(output, one-line summary) for a finished step."""
+    if kind == "delegate":
+        # Before the generic declared-failure read: a max_turns envelope
+        # carries a top-level ``error`` beside its structured fields, and the
+        # card must keep the structure rather than collapse to the error.
+        output, summary, _status = _delegate_step_projection(result, ok)
+        return (output, summary)
     err = _declared_failure_reason(result)
     if not ok or err is not None:
         # Carry the reason onto the card. This used to collapse every failure
@@ -756,6 +912,15 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
                 {"name": r.get("name"), "version_id": r.get("version_id")},
                 "rolled back",
             )
+        if method == "skills_read":
+            # A reference read returns bytes, not a Skill record: the generic
+            # "loaded" tail below would report an empty name and description
+            # for it and read as a SKILL.md load that never happened.
+            text = result if isinstance(result, str) else ""
+            return (
+                {"content": text[:24000], "chars": len(text)},
+                _plural(len(text), "char") + " read",
+            )
         return (
             {
                 "name": r.get("name"),
@@ -811,7 +976,7 @@ def _step_end(method: str, kind: str, result: Any, ok: bool) -> tuple[dict, str]
             {"filename": r.get("filename"), "version_id": r.get("version_id")},
             "saved",
         )
-    if kind in ("delegate", "mcp"):
+    if kind == "mcp":
         return ({"result": _short(result, 2000)}, "done")
     if kind == "fold":
         n_plddt = len((r.get("plddt_csv") or "").splitlines())
@@ -873,19 +1038,36 @@ class HostDispatcher:
             workspace=lambda: self.workspace_path,
         )
         # Late-bound on purpose: the CLI assigns frame_id after construction,
-        # and a mid-cell submit must probe the workspace *and* the process
-        # cwd — the kernel inherits this process's cwd, and a file the
-        # current cell just wrote exists only on disk until capture runs.
+        # and a mid-cell submit must probe the bound workspace. The process cwd
+        # is deliberately not a second root: on Web runs it is daemon-global,
+        # and treating it as session evidence exposes unrelated files.
         # The store is re-resolved per submit rather than captured: a cached
         # ``self.store`` can be a closed generation (``Store.close()`` evicts
         # the singleton and ``get_store`` mints a new one), whose every query
         # raises and silently degrades reconciliation.
+        #: The current turn's task mode, stamped by the owning loop. ``None``
+        #: (and ``analysis_run``) keep the historical completion contract.
+        self._task_mode: str | None = None
+        # Explicit current-user-turn identity for code evidence. Inferring this
+        # from the latest durable group races concurrent activity and lets a
+        # prior turn's passing Cell be replayed as current evidence.
+        self._task_turn_id: str | None = None
+        self._task_branch_id: str | None = None
         self._completion_service = CompletionService(
             evidence=lambda: gather_submission_evidence(
                 get_store(self.cfg.db_path),
                 self.frame_id,
-                search_roots=(self._files.workspace(), Path.cwd()),
-            )
+                search_roots=(self._files.workspace(),),
+            ),
+            task_mode=lambda: self._task_mode,
+            code_evidence=lambda: gather_code_evidence_context(
+                get_store(self.cfg.db_path),
+                self.frame_id,
+                search_roots=(self._files.workspace(),),
+                file_service=self._files,
+                turn_id=self._task_turn_id,
+                branch_id=self._task_branch_id,
+            ),
         )
         # Lifecycle owners may stamp the supervisor's persistent generation
         # here.  Until then the capability still binds the worker's per-process
@@ -910,7 +1092,7 @@ class HostDispatcher:
             frame_id=lambda: self.frame_id,
             generation=self._current_bash_generation,
             allowed_roots=_configured_bash_allowed_roots,
-            audit=lambda **fields: self.store.log_host_call(**fields),
+            audit=self._audit_bash_result,
             step_sink=lambda: self.on_step,
         )
         self._data_service = HostDataService(
@@ -1065,7 +1247,10 @@ class HostDispatcher:
 
     @last_output.setter
     def last_output(self, value: dict | None) -> None:
-        self._completion_service.last_output = value
+        if value is None:
+            self._completion_service.clear()
+        else:
+            self._completion_service.last_output = value
 
     @property
     def skill_loader(self) -> Any:
@@ -1263,6 +1448,59 @@ class HostDispatcher:
     def set_workspace(self, path: str | Path) -> None:
         """Bind host-side file operations to the kernel's actual cwd."""
         self.workspace_path = Path(path).resolve()
+
+    def set_task_mode(self, mode: str | None) -> None:
+        """Bind the current turn's BINDING task mode for the completion contract.
+
+        Plain string on purpose: the vocabulary is owned by
+        ``openai4s.agent.task_modes`` and the *requirement* by
+        ``openai4s.host.code_evidence``; the Host layer only carries the value
+        so ``CompletionService`` can read which turn it is validating. Owning
+        loops stamp a mode here only when it was selected EXPLICITLY (CLI
+        ``--mode``, the Web ``task_mode`` body field); a mode detected from
+        request text stays advisory — prompt guidance only — and stamps
+        ``None``, so a classifier false positive can never make required
+        evidence out of a turn nobody asked to be strict about.
+        """
+        self._task_mode = str(mode) if mode else None
+        # Every owning loop calls this at the start of a user turn. Clear the
+        # old scope before the new ledger exists so an omitted caller binding
+        # fails closed instead of silently reusing the previous turn.
+        self._task_turn_id = None
+        self._task_branch_id = None
+
+    def set_task_evidence_scope(
+        self, *, turn_id: str | None, branch_id: str | None = None
+    ) -> None:
+        """Bind code evidence to the current durable user turn and branch."""
+
+        self._task_turn_id = str(turn_id) if turn_id else None
+        self._task_branch_id = (
+            str(branch_id or self.frame_id or "") if turn_id else None
+        )
+
+    def _audit_bash_result(self, **fields: Any) -> None:
+        """Persist a shell receipt under the Cell's canonical action group."""
+
+        context = self._current_action_context()
+        fields.setdefault("action_group_id", context.get("action_group_id"))
+        fields.setdefault("action_id", context.get("action_id"))
+        self.store.log_host_call(**fields)
+
+    def verify_code_evidence(self, payload: Mapping[str, Any]) -> str | None:
+        """The code-mode completion check, shared by both completion doors.
+
+        ``host.submit_output`` reaches it inside ``CompletionService.submit``;
+        the Engine's ``finalize_response`` reaches it here, bound by the
+        executor. One implementation, so a mode's requirements cannot hold on
+        one door and be absent on the other.
+        """
+        return self._completion_service.verify_code_claims(dict(payload))
+
+    def revalidate_pending_completion(self) -> str | None:
+        """Recheck a mid-cell completion against post-capture file bytes."""
+
+        return self._completion_service.revalidate_pending_completion()
 
     def set_session_domain(self, domain: Any | None) -> None:
         """Attach the Web runtime's shared filesystem-aware session service."""
@@ -1708,15 +1946,25 @@ class HostDispatcher:
                     if step_result is None and raised_error is not None:
                         step_result = {"error": raised_error}
                     output, summary = _step_end(method, view[0], step_result, ok)
-                    # ``ok`` only tracks the soft-fail envelope; a structured
-                    # result that declares its own failure (``ok: False``) must
-                    # not render as a green "done" card either.
-                    step_ok = ok and _declared_failure_reason(step_result) is None
+                    if view[0] == "delegate":
+                        # Delegate-specific status read at the decision site:
+                        # the envelope's task_status is authoritative, and the
+                        # vocabulary grows "warning" for not-done-not-broken
+                        # (partial/blocked/stopped/max_turns). The generic
+                        # _declared_failure_reason contract is untouched.
+                        step_status = _delegate_step_projection(step_result, ok)[2]
+                    else:
+                        # ``ok`` only tracks the soft-fail envelope; a
+                        # structured result that declares its own failure
+                        # (``ok: False``) must not render as a green "done"
+                        # card either.
+                        step_ok = ok and _declared_failure_reason(step_result) is None
+                        step_status = "done" if step_ok else "error"
                     self.on_step(
                         {
                             "phase": "end",
                             "step_id": step_id,
-                            "status": ("done" if step_ok else "error"),
+                            "status": step_status,
                             "output": output,
                             "summary": summary,
                         }

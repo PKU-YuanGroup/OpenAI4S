@@ -560,6 +560,11 @@ def test_lineage_unknown_and_save_only_shapes_use_artifact_timestamp():
         "cell_recorded": True,
     }
 
+    # Legacy pre-v28 sessions: a delegated Cell that ran before child-cell
+    # recording existed has no execution_log row, so cell_recorded stays
+    # honestly false while the real Cell/frame identity is preserved.
+    # (Newly-recorded delegated producers report true — see
+    # tests/test_gateway_engine.py and tests/test_delegated_cell_record.py.)
     store.artifacts["unrecorded-cell"] = {
         "artifact_id": "unrecorded-cell",
         "filename": "delegated.txt",
