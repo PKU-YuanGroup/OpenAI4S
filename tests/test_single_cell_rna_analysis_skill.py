@@ -800,6 +800,46 @@ def test_deterministic_synthetic_run_preserves_counts_and_resumes(tmp_path, kern
     assert Path(rebuilt["manifest"]).read_bytes() != first_hash
 
 
+@pytest.mark.slow
+def test_resume_drops_warnings_from_recomputed_stages(tmp_path, kernel):
+    ad = pytest.importorskip("anndata")
+    pytest.importorskip("scanpy")
+    pytest.importorskip("skmisc")
+    pytest.importorskip("pydeseq2")
+    full_path = _synthetic_h5ad(tmp_path)
+    source = ad.read_h5ad(full_path)
+    two_donor = source[source.obs["donor_id"].isin(["d1", "d2"])].copy()
+    path = tmp_path / "input.h5ad"
+    two_donor.write_h5ad(path)
+
+    config = _base_config(path, mode="h5ad")
+    config["clustering"] = {
+        "resolutions": [0.5],
+        "selected_resolution": 0.5,
+        "n_neighbors": 8,
+        "n_pcs": 12,
+    }
+    config["statistics"] = {"de": True, "da": False}
+    run_dir = tmp_path / "run"
+    first = kernel.run(config, run_dir)
+    assert first["statistics_status"]["de"] == "skipped_insufficient_replicates"
+    assert any("three independent donors" in w for w in first["warnings"])
+
+    # Add the third donor pair: the input fingerprint changes, resume
+    # recomputes from preflight, and the now-false replication warning must
+    # not survive into the new report.
+    source.write_h5ad(path)
+    resumed = kernel.resume(run_dir)
+    assert resumed["statistics_status"]["de"] == "completed"
+    assert not any("three independent donors" in w for w in resumed["warnings"])
+    manifest = json.loads(Path(resumed["manifest"]).read_text(encoding="utf-8"))
+    assert not any(
+        "three independent donors" in w
+        for warnings in manifest["stage_warnings"].values()
+        for w in warnings
+    )
+
+
 @pytest.mark.network
 def test_kang_2018_optional_real_data_smoke(tmp_path, kernel):
     pt = pytest.importorskip("pertpy")

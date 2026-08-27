@@ -1913,9 +1913,8 @@ def _run(
                 "statistics",
             )
         },
-        "warnings": list(
-            (_prior_manifest or {}).get("warnings", check.get("warnings", []))
-        ),
+        "warnings": [],
+        "stage_warnings": {},
         "annotation_status": "not_started",
         "statistics_status": {"de": "not_started", "da": "not_started"},
     }
@@ -1935,6 +1934,29 @@ def _run(
         manifest["resumed_from_stage"] = resume_stage
         for stage in stage_order[:resume_index]:
             manifest["stages"][stage] = "completed"
+
+    # Warnings are attributed to the stage that produced them. A stage that is
+    # not re-run keeps its recorded warnings; a stage that re-runs starts
+    # clean, so a caveat whose cause was fixed cannot survive into the new
+    # report and contradict the recomputed result. Preflight always re-runs.
+    prior_stage_warnings = dict((_prior_manifest or {}).get("stage_warnings") or {})
+    stage_warnings: dict[str, list[str]] = {name: [] for name in stage_order}
+    stage_warnings["preflight"] = list(check.get("warnings", []))
+    for stage in stage_order[1:resume_index]:
+        stage_warnings[stage] = list(prior_stage_warnings.get(stage, []))
+
+    def _sync_warnings() -> None:
+        manifest["stage_warnings"] = {
+            name: list(values) for name, values in stage_warnings.items()
+        }
+        manifest["warnings"] = list(
+            dict.fromkeys(
+                warning
+                for name in stage_order
+                for warning in stage_warnings.get(name, [])
+            )
+        )
+
     if resolved:
         _write_json(output / "config.resolved.json", resolved)
     _write_json(output / "preflight.json", check)
@@ -1942,6 +1964,7 @@ def _run(
         manifest["status"] = "failed"
         manifest["stages"]["preflight"] = "failed"
         manifest["errors"] = check["errors"]
+        _sync_warnings()
         _write_report(output, manifest)
         _finalize_manifest(output, manifest)
         return _result(output, manifest)
@@ -1951,6 +1974,7 @@ def _run(
         # Persist progress after every completed stage so an interrupted run
         # can resume from the last durable stage instead of recomputing
         # everything; the file inventory is finalized only at the end.
+        _sync_warnings()
         _write_json(output / "run_manifest.json", manifest)
 
     _checkpoint_manifest()
@@ -1962,11 +1986,11 @@ def _run(
         ad, np, pd, sc = _science_imports()
         if resume_index <= stage_order.index("qc"):
             adata, load_warnings = _load_data(resolved, np, pd, sc, ad)
-            manifest["warnings"].extend(load_warnings)
+            stage_warnings["qc"].extend(load_warnings)
             qc_adata, qc_summary, cell_qc, qc_warnings = _run_qc(
                 adata, resolved, np, pd, sc
             )
-            manifest["warnings"].extend(qc_warnings)
+            stage_warnings["qc"].extend(qc_warnings)
             qc_summary.to_csv(tables / "qc_summary.csv", index=False)
             cell_qc.to_csv(tables / "cell_qc.csv", index=False)
             qc_adata.write_h5ad(output / STAGE_FILES["qc"], compression="gzip")
@@ -2008,7 +2032,7 @@ def _run(
             annotated, annotation_status, annotation_warnings, evidence = _annotate(
                 clustered, resolved, pd, np
             )
-            manifest["warnings"].extend(annotation_warnings)
+            stage_warnings["annotation"].extend(annotation_warnings)
             evidence_path = tables / "annotation_evidence.csv"
             # Remove first: a prior run's evidence table must not survive a
             # rerun that computes no evidence.
@@ -2062,21 +2086,21 @@ def _run(
                         tables / "differential_expression.csv",
                         pd,
                     )
-                    manifest["warnings"].extend(de_notes)
+                    stage_warnings["statistics"].extend(de_notes)
                 except Exception as exc:
                     de_status = "failed"
-                    manifest["warnings"].append(f"Pseudobulk DE failed: {exc}")
+                    stage_warnings["statistics"].append(f"Pseudobulk DE failed: {exc}")
                 da_status = _run_milo(
                     annotated, resolved, tables / "differential_abundance.csv"
                 )
                 if da_status == "failed":
-                    manifest["warnings"].append(
+                    stage_warnings["statistics"].append(
                         "Milo DA failed; see the adjacent error file."
                     )
             else:
                 de_status = "skipped_insufficient_replicates"
                 da_status = "skipped_insufficient_replicates"
-                manifest["warnings"].append(
+                stage_warnings["statistics"].append(
                     "DE/DA skipped: each contrast level requires at least three independent donors."
                 )
         manifest["statistics_status"] = {"de": de_status, "da": da_status}
@@ -2088,7 +2112,7 @@ def _run(
         ):
             status = str(manifest["statistics_status"][kind])
             if status.startswith("failed"):
-                manifest["warnings"].append(
+                stage_warnings["statistics"].append(
                     f"Requested {label} did not complete: {status}."
                 )
         manifest["stages"]["statistics"] = "completed"
@@ -2103,7 +2127,7 @@ def _run(
         }
         annotated.write_h5ad(output / "analysis.h5ad", compression="gzip")
         _plot_outputs(annotated, qc_summary, output, pd)
-        manifest["warnings"] = list(dict.fromkeys(manifest["warnings"]))
+        _sync_warnings()
         manifest["status"] = (
             "completed_with_warnings" if manifest["warnings"] else "completed"
         )
@@ -2117,6 +2141,7 @@ def _run(
                     "failed" if name != "statistics" else "not_started"
                 )
                 break
+    _sync_warnings()
     _write_report(output, manifest)
     _finalize_manifest(output, manifest)
     return _result(output, manifest)
