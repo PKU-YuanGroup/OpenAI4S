@@ -182,6 +182,7 @@ from openai4s.server.reviews import ReviewPorts, ReviewService
 from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import (
     artifact_security_headers,
+    embeddable_security_headers,
     security_headers,
 )
 from openai4s.server.session_deletion import SessionDeletionService
@@ -224,6 +225,10 @@ from openai4s.tools import control_tool_specs, get_tool
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
+#: The only `/static/` path served as a framed document rather than a
+#: subresource: `/ketcher` embeds it, so it needs `frame-ancestors 'self'`
+#: while every other static file keeps the shell's frame denial.
+_FRAMED_STATIC_DOCUMENT = "vendor/ketcher/index.html"
 _SHARE_ASSET_DIR = WEBUI_DIR / "share"
 # Files the read-only share viewer is allowed to serve from memory (loaded once).
 _SHARE_ASSET_NAMES = (
@@ -13431,10 +13436,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._serve_artifact(path[len("/preview/") :], force_html=True)
                     return
                 if method == "GET" and path == "/ketcher":
+                    # `app.js` reaches this document only as a child frame of
+                    # the workbench, so the shell's DENY / frame-ancestors
+                    # 'none' meant the editor rendered nothing at all. Its own
+                    # script stays same-origin-only.
                     self._send(
                         200,
                         ketcher_document(cfg, parse_qs(parsed.query)),
                         "text/html; charset=utf-8",
+                        security=embeddable_security_headers(WEBUI_DIR / "index.html"),
                     )
                     return
                 # unknown non-API GET -> SPA shell (deep-linking)
@@ -13516,7 +13526,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 target = Path(target_s)
                 if target.is_file():
                     ctype = _guess_ctype(target.name)
-                    self._serve_file(target, ctype)
+                    # The one static document that is itself framed: `/ketcher`
+                    # embeds the vendored editor's entry page. Everything else
+                    # under /static/ keeps the shell's frame denial.
+                    security = (
+                        embeddable_security_headers(WEBUI_DIR / "index.html")
+                        if rel == _FRAMED_STATIC_DOCUMENT
+                        else None
+                    )
+                    self._serve_file(target, ctype, security=security)
                 else:
                     self._json({"error": "not found"}, 404)
                 return True

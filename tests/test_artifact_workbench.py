@@ -375,6 +375,33 @@ def test_ketcher_is_placeholder_off_and_real_assets_on():
     ).is_file()
 
 
+def test_the_ketcher_page_carries_no_inline_script():
+    """The editor's own code has to be a same-origin file, not inline source.
+
+    The shared CSP is `script-src 'self' 'wasm-unsafe-eval'` with no hash and
+    no nonce, so the inline `<script>` this document used to carry was refused
+    outright: the frame rendered its chrome and the editor never initialized.
+    The artifact id rides a data attribute for the same reason -- it is data,
+    and it should not be interpolated into executable source.
+    """
+    import re
+
+    document = ketcher_document(
+        Config(roadmap_features=RoadmapFeatureFlags(stage9_artifact_workbench=True)),
+        {"artifact_id": ["art-1"]},
+    ).decode("utf-8")
+
+    assert re.search(r"<script(?![^>]*\bsrc=)[^>]*>", document) is None
+    assert re.findall(r'<script[^>]*\bsrc="([^"]+)"', document) == [
+        "/static/ketcher-page.js"
+    ]
+    assert 'data-artifact-id="art-1"' in document
+    assert (
+        Path(ketcher_document.__globals__["KETCHER_VENDOR"]).parents[1]
+        / "ketcher-page.js"
+    ).is_file()
+
+
 def test_workbench_routes_are_forbidden_when_the_flag_is_off(tmp_path):
     _cfg, runner, handler, fid = _setup(tmp_path, workbench=False)
     code, payload = _call(handler, "GET", "/artifacts/missing/table")

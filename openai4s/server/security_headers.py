@@ -54,8 +54,31 @@ def artifact_security_headers(index_html: Path) -> dict[str, str]:
     return headers
 
 
-def content_security_policy(index_html: Path) -> str:
-    """Return the static policy; ``index_html`` remains for API compatibility."""
+def embeddable_security_headers(index_html: Path) -> dict[str, str]:
+    """Headers for a UI-owned document the Workbench loads in an iframe.
+
+    `/ketcher` and the vendored editor it frames are first-party documents, not
+    Artifact bytes: they keep the shell's `script-src 'self'` and same-origin
+    `connect-src`. What they cannot keep is the shell's frame denial, because
+    the product's only way to reach them is an iframe of the workbench page.
+    `DENY` there is not a policy, it is the editor never rendering.
+    """
+    headers = security_headers(index_html)
+    headers["Content-Security-Policy"] = content_security_policy(
+        index_html, frame_ancestors="'self'"
+    )
+    headers["X-Frame-Options"] = "SAMEORIGIN"
+    return headers
+
+
+def content_security_policy(
+    index_html: Path, *, frame_ancestors: str = "'none'"
+) -> str:
+    """Return the static policy; ``index_html`` remains for API compatibility.
+
+    ``frame_ancestors`` is the one directive that varies by document, and it
+    varies because of who embeds it, not because of what it contains.
+    """
     _ = index_html
     script_src = ["'self'"]
     # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
@@ -83,7 +106,7 @@ def content_security_policy(index_html: Path) -> str:
             "object-src 'none'",
             "base-uri 'none'",
             "form-action 'self'",
-            "frame-ancestors 'none'",
+            f"frame-ancestors {frame_ancestors}",
         ]
     )
     return policy
@@ -110,5 +133,6 @@ __all__ = [
     "artifact_content_security_policy",
     "artifact_security_headers",
     "content_security_policy",
+    "embeddable_security_headers",
     "security_headers",
 ]

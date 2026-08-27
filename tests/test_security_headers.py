@@ -24,6 +24,7 @@ from openai4s.server.security_headers import (
     artifact_content_security_policy,
     artifact_security_headers,
     content_security_policy,
+    embeddable_security_headers,
     security_headers,
 )
 
@@ -103,6 +104,32 @@ def test_untrusted_artifact_headers_remain_embeddable_same_origin(index_html):
     assert headers["Content-Security-Policy"] == artifact_content_security_policy()
     assert headers["X-Frame-Options"] == "SAMEORIGIN"
     assert headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_a_first_party_framed_document_keeps_the_shell_script_policy(index_html):
+    """`/ketcher` is UI code, not Artifact bytes.
+
+    It needs one thing the shell profile refuses -- being framed by the
+    workbench -- and nothing else. Relaxing `script-src` or `connect-src` here
+    would widen the policy for a first-party origin to solve a framing problem.
+    """
+    headers = embeddable_security_headers(index_html)
+    policy = headers["Content-Security-Policy"]
+
+    assert _directive(policy, "frame-ancestors") == "frame-ancestors 'self'"
+    assert headers["X-Frame-Options"] == "SAMEORIGIN"
+    assert _directive(policy, "script-src") == "script-src 'self' 'wasm-unsafe-eval'"
+    assert "'unsafe-inline'" not in _directive(policy, "script-src")
+    assert _directive(policy, "connect-src") == "connect-src 'self'"
+    assert "sandbox" not in policy, "a first-party document keeps its own origin"
+
+
+def test_the_shell_itself_is_still_unframeable(index_html):
+    """The relaxation must be per-document, not a default that drifted."""
+    assert _directive(content_security_policy(index_html), "frame-ancestors") == (
+        "frame-ancestors 'none'"
+    )
+    assert security_headers(index_html)["X-Frame-Options"] == "DENY"
 
 
 def test_html_preview_iframe_does_not_reenable_artifact_capabilities(index_html):

@@ -5302,6 +5302,48 @@ def test_the_artifact_bundle_route_selects_the_hardened_profile(tmp_path):
     assert streamed[0]["security"]["X-Frame-Options"] == "SAMEORIGIN"
 
 
+def test_the_framed_editor_documents_are_the_only_relaxed_static_responses(tmp_path):
+    """`/ketcher` and the vendored page it frames need `frame-ancestors 'self'`.
+
+    They are the product's only first-party framed documents, and the shell's
+    `DENY` meant the chemistry editor rendered nothing at all. The relaxation
+    has to stop there: every other `/static/` response, and the shell itself,
+    keep the frame denial.
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler, sends = _bytes_handler(cfg, runner)
+    handler.headers = _auth_headers(cfg)
+
+    def profile(path):
+        del sends[:]
+        handler.path = path
+        handler._route("GET")
+        assert sends, path
+        return sends[-1][3]
+
+    try:
+        for framed in ("/ketcher", "/static/vendor/ketcher/index.html"):
+            security = profile(framed)
+            assert security is not None, framed
+            assert "frame-ancestors 'self'" in security["Content-Security-Policy"]
+            assert security["X-Frame-Options"] == "SAMEORIGIN"
+            # First-party code, so the shell's script policy is unchanged.
+            assert "script-src 'self' 'wasm-unsafe-eval'" in (
+                security["Content-Security-Policy"]
+            )
+
+        # A real sibling file under the very same vendored directory, so this
+        # asserts the path is matched exactly and not by directory prefix.
+        assert (
+            gateway_mod.WEBUI_DIR / "vendor" / "ketcher" / "VERSION"
+        ).is_file(), "pick another existing sibling for this assertion"
+        assert profile("/static/vendor/ketcher/VERSION") is None
+        assert profile("/static/app.js") is None
+    finally:
+        runner.close()
+
+
 def test_upload_without_frame_id_stores_file_but_never_broadcasts(tmp_path):
     """POST /api/uploads with NO frame_id: the file lands under
     data_dir/uploads, the artifact row has no root_frame_id, and no
