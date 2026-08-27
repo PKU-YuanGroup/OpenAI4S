@@ -344,6 +344,13 @@ class DynamicToolWorker:
                 text=True,
                 timeout=self.timeout_s,
                 check=False,
+                # The spawn boundary owns the session. `KernelSandbox.wrap_command`
+                # drops bubblewrap's own `--new-session` because `PipeTransport`
+                # already sets this — so every *other* caller of that shared
+                # wrapper has to set it too, or model-authored code inherits the
+                # daemon's controlling terminal and with it the TIOCSTI escape
+                # `--new-session` exists to close.
+                start_new_session=True,
             )
         except subprocess.TimeoutExpired as error:
             raise RuntimeError(

@@ -550,6 +550,7 @@ def wrap_bwrap_command(
     deny_read: Sequence[tuple[str, str]] = (),
     read_isolation: KernelReadIsolation | None = None,
     info_fd: int | None = None,
+    new_session: bool = True,
 ) -> list[str]:
     """Wrap ``command`` in a read-only-root bubblewrap mount namespace."""
 
@@ -561,7 +562,12 @@ def wrap_bwrap_command(
     wrapped = [
         str(executable),
         "--die-with-parent",
-        "--new-session",
+        # Off only for a spawner that already establishes the session itself
+        # (see `KernelSandbox.wrap_command`). Spliced in here rather than
+        # inserted at a fixed index afterwards: this argv is full of
+        # value-taking pairs, so a positional insert silently lands between a
+        # flag and its value the moment anything is added above it.
+        *(["--new-session"] if new_session else []),
         # Single-user mode keeps the host PID namespace: KernelSandbox's pidfd
         # path can then deliver SIGINT to bubblewrap's direct worker child.
         # Team read isolation instead gets a private PID namespace below; that
@@ -1017,6 +1023,20 @@ class KernelSandbox:
                 deny_read=self._deny_read,
                 read_isolation=self._read_isolation,
                 info_fd=info_fd,
+                # The *spawner* owns the session here, not bubblewrap. Asking
+                # bwrap to create a second one for its command splits the
+                # wrapper and the Cell's subprocesses into different process
+                # groups, so `PipeTransport._stop_group_or_leader`'s SIGKILL
+                # reaches only the wrapper and leaves the actual work alive.
+                #
+                # That makes `start_new_session=True` a precondition of this
+                # argv, not an incidental detail of one caller: every caller of
+                # `wrap_command` must set it (`kernel/manager.py` via
+                # `PipeTransport`, `tools/dynamic.py`, `kernel/preinstall.py`).
+                # Without it the sandboxed process keeps the daemon's
+                # controlling terminal, which is the TIOCSTI injection escape
+                # bubblewrap's `--new-session` exists to close.
+                new_session=False,
             )
         raise SandboxUnavailableError(
             f"unknown enabled sandbox backend: {self.status.backend!r}"
@@ -1658,6 +1678,13 @@ def _run_self_test(
             allow_raw_network=allow_raw_network,
             deny_read=deny_read,
             read_isolation=read_isolation,
+            # The argv the runtime actually launches, flag for flag. This is
+            # the gate that decides whether `auto` degrades visibly and whether
+            # `enforce` fails closed, and its whole claim is that it proves the
+            # boundary by establishing one and probing it -- so it has to
+            # establish the same one. Left at the default it attested to a
+            # configuration no kernel, dynamic tool or preinstall probe runs.
+            new_session=False,
         )
     try:
         completed = runner(

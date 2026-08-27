@@ -348,6 +348,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_workbench_state_service.py`](test_workbench_state_service.py) | Context 与 Security 两个面板。安全投影是刻意往小了说的：worker 还没启动时，它绝不宣称沙箱是生效的；Python 与 R 的说法不一致时，它报两者中更弱的那个。 |
 | [`test_worker_runtime_alias.py`](test_worker_runtime_alias.py) | 六个测试，证明 `openai4s_worker_runtime` 只是一次 re-export：`__all__` 相同、两个名字下是同一批对象、没有影子子模块，也没有自己的入口点。 |
 | [`test_workspace_streaming_budgets.py`](test_workspace_streaming_budgets.py) | 工作区文件工具与 `save_artifact` 背后的内存预算。每个用例都造一个整读必死的稀疏文件，并在调用前后盯住 `tracemalloc`——因为只检查返回窗口的测试，对着「先把整个文件读进来」的实现一样会通过。修复前在测试进程里实测：返回 256 MiB 文件的两行要 768 MiB，grep 一个 64 MiB 文件要 192 MiB，改 32 MiB 文件里的七个字符要 64 MiB，登记一个 64 MiB 产物要 64 MiB。 |
+| [`test_volcengine_connector.py`](test_volcengine_connector.py) | 官方 Ark CLI 边界及其 Gateway 适配：子进程环境中的密钥剥离、掩码 Key 的精确匹配、缺少 Key 与多 Key 不透明选择决策、公开身份与额度投影、单航班登录取消，以及“配置只保存 broker 引用且任何路由响应都不含 Ark 明文 Key 或云端 Key ID”的证明。测试不需要真实访问火山。 |
 
 ## 子目录
 
