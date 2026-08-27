@@ -7,7 +7,16 @@ import sys
 
 import atheris
 
-with atheris.instrument_imports():
+# Scoped, not blanket. `openai4s/server/__init__.py` eagerly imports the
+# gateway, so importing `ws_frames` pulls in 248 `openai4s` modules (370 total)
+# -- the store, the kernel manager, the LLM client, the tool registry, the
+# skills loader. Instrumenting all of that to fuzz two decoders costs start-up
+# and RSS inside the job's budget, and dilutes libFuzzer's coverage map with
+# counters no input here can ever reach, which degrades the very signal this
+# gate exists for. `include` names the two modules the docstring claims.
+with atheris.instrument_imports(
+    include=["openai4s.server.ws_frames", "openai4s.share.protocol"]
+):
     from openai4s.server.ws_frames import ws_read_frame
     from openai4s.share.protocol import ProtocolError, decode_control, decode_data
 

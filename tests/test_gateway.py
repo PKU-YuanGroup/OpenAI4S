@@ -5195,9 +5195,7 @@ def test_send_serializes_only_the_artifact_security_profile(tmp_path):
     handler.send_header = lambda key, value: emitted.append((key, value))
     handler.end_headers = lambda: None
     handler.wfile = io.BytesIO()
-    profile = gateway_mod.artifact_security_headers(
-        gateway_mod.WEBUI_DIR / "index.html"
-    )
+    profile = gateway_mod.artifact_security_headers()
 
     try:
         handler._send(200, b"<html></html>", "text/html", security=profile)
@@ -5257,9 +5255,7 @@ def test_streamed_artifact_bytes_carry_the_same_profile_as_served_ones(tmp_path)
     handler.wfile = io.BytesIO()
     payload = tmp_path / "bundle.zip"
     payload.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
-    profile = gateway_mod.artifact_security_headers(
-        gateway_mod.WEBUI_DIR / "index.html"
-    )
+    profile = gateway_mod.artifact_security_headers()
 
     try:
         handler._stream_file(payload, "application/zip", security=profile)

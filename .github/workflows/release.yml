@@ -628,19 +628,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           SHA: ${{ github.sha }}
         working-directory: source
-        run: |
-          set -euo pipefail
-          git fetch --force --no-tags origin \
-            "refs/tags/${TAG}:refs/tags/openai4s-release-candidate"
-          if [ "$(git cat-file -t refs/tags/openai4s-release-candidate)" != "tag" ]; then
-            echo "::error::$TAG is no longer an annotated tag"
-            exit 1
-          fi
-          TAG_SHA="$(git rev-parse --verify "refs/tags/openai4s-release-candidate^{commit}")"
-          if [ "$TAG_SHA" != "$SHA" ]; then
-            echo "::error::$TAG moved to $TAG_SHA after this run froze $SHA"
-            exit 1
-          fi
+        run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
       # `--from-artifacts` is what stops this job from re-running `build` and
       # `pytest`: its inputs are the artifacts the earlier jobs produced and
       # verified, and rebuilding here would put different bytes on GitHub than
@@ -738,19 +726,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           SHA: ${{ github.sha }}
         working-directory: source
-        run: |
-          set -euo pipefail
-          git fetch --force --no-tags origin \
-            "refs/tags/${TAG}:refs/tags/openai4s-release-candidate"
-          if [ "$(git cat-file -t refs/tags/openai4s-release-candidate)" != "tag" ]; then
-            echo "::error::$TAG is no longer an annotated tag"
-            exit 1
-          fi
-          TAG_SHA="$(git rev-parse --verify "refs/tags/openai4s-release-candidate^{commit}")"
-          if [ "$TAG_SHA" != "$SHA" ]; then
-            echo "::error::$TAG moved to $TAG_SHA after this run froze $SHA"
-            exit 1
-          fi
+        run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
       - name: Publish package distributions
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
@@ -793,19 +769,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           SHA: ${{ github.sha }}
         working-directory: source
-        run: |
-          set -euo pipefail
-          git fetch --force --no-tags origin \
-            "refs/tags/${TAG}:refs/tags/openai4s-release-candidate"
-          if [ "$(git cat-file -t refs/tags/openai4s-release-candidate)" != "tag" ]; then
-            echo "::error::$TAG is no longer an annotated tag"
-            exit 1
-          fi
-          TAG_SHA="$(git rev-parse --verify "refs/tags/openai4s-release-candidate^{commit}")"
-          if [ "$TAG_SHA" != "$SHA" ]; then
-            echo "::error::$TAG moved to $TAG_SHA after this run froze $SHA"
-            exit 1
-          fi
+        run: bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"
       - name: Publish, once PyPI has the version
         env:
           GH_TOKEN: ${{ github.token }}

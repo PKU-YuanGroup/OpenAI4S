@@ -765,16 +765,66 @@ def test_every_publication_boundary_revalidates_the_remote_annotated_tag():
             "TAG": "${{ inputs.tag }}",
             "SHA": "${{ github.sha }}",
         }
-        validation = str(step.get("run") or "")
-        assert '"refs/tags/${TAG}:refs/tags/openai4s-release-candidate"' in validation
-        assert "git cat-file -t refs/tags/openai4s-release-candidate" in validation
-        assert "refs/tags/openai4s-release-candidate^{commit}" in validation
-        assert '"$TAG_SHA" != "$SHA"' in validation
+        # Each boundary *calls* the one implementation. Asserting substrings of
+        # three inline copies made the gate mirror the copy-paste instead of
+        # removing the need for it: three copies can drift apart and still
+        # satisfy four substring checks each.
+        assert (
+            str(step.get("run") or "").strip()
+            == 'bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"'
+        )
 
     assert jobs["pypi"]["permissions"] == {
         "contents": "read",
         "id-token": "write",
     }, "the PyPI tag revalidation needs read access without widening OIDC"
+
+
+def test_the_tag_revalidation_is_one_implementation_with_teeth():
+    """The checks that used to be inline, asserted once against the script."""
+    script = (ROOT / "scripts" / "revalidate_release_tag.sh").read_text("utf-8")
+
+    assert "set -euo pipefail" in script
+    assert '"refs/tags/${TAG}:${LOCAL_REF}"' in script
+    assert 'git cat-file -t "$LOCAL_REF"' in script
+    assert '"${LOCAL_REF}^{commit}"' in script
+    assert '"$TAG_SHA" != "$SHA"' in script
+    assert script.count("exit 1") == 2, "both refusals must still be refusals"
+
+
+def test_the_container_publication_boundary_is_held_to_the_same_rule():
+    """`publish-image.yml` pushes to ghcr with `packages: write`.
+
+    It is the other publication workflow, and the release-workflow assertions
+    above cannot see it -- which is how it kept a mutable-tag checkout with the
+    token left in git config long after release.yml stopped.
+    """
+    job = _workflow("publish-image.yml")["jobs"]["publish"]
+    steps = job.get("steps") or []
+
+    checkouts = [s for s in steps if "actions/checkout" in str(s.get("uses") or "")]
+    assert checkouts, "no checkout to hold to the rule"
+    for step in checkouts:
+        with_ = step.get("with") or {}
+        assert with_.get("ref") == "${{ github.sha }}"
+        assert with_.get("persist-credentials") is False
+
+    revalidations = [
+        s for s in steps if "revalidate_release_tag.sh" in str(s.get("run") or "")
+    ]
+    assert len(revalidations) == 2, (
+        "the tag must be proved against the frozen SHA before the build and "
+        "again immediately before the outward-facing push"
+    )
+    names = [str(s.get("name") or "") for s in steps]
+    assert names.index("Push the smoke-passing image") > names.index(
+        "Revalidate the remote annotated tag before pushing"
+    )
+
+    resolve = next(s for s in steps if s.get("name") == "Resolve the release tag")
+    # Anchored: the `v[0-9]*.[0-9]*.[0-9]*` glob it replaces also matched
+    # `v1.2.3;anything`, and the value reaches later steps.
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in str(resolve.get("run") or "")
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release.yml"])

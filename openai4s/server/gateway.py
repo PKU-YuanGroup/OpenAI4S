@@ -12441,11 +12441,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # truthiness: an empty profile is a caller that computed one and
             # got nothing, and silently answering that with the permissive UI
             # shell policy is the one direction this must never fail in.
-            hardened = (
-                security
-                if security is not None
-                else security_headers(WEBUI_DIR / "index.html")
-            )
+            hardened = security if security is not None else security_headers()
             for k, v in hardened.items():
                 self.send_header(k, _sanitize_header_value(v))
             for k, v in (extra or {}).items():
@@ -13444,7 +13440,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         200,
                         ketcher_document(cfg, parse_qs(parsed.query)),
                         "text/html; charset=utf-8",
-                        security=embeddable_security_headers(WEBUI_DIR / "index.html"),
+                        security=embeddable_security_headers(),
                     )
                     return
                 # unknown non-API GET -> SPA shell (deep-linking)
@@ -13530,7 +13526,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     # embeds the vendored editor's entry page. Everything else
                     # under /static/ keeps the shell's frame denial.
                     security = (
-                        embeddable_security_headers(WEBUI_DIR / "index.html")
+                        embeddable_security_headers()
                         if rel == _FRAMED_STATIC_DOCUMENT
                         else None
                     )
@@ -13578,11 +13574,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # its own headers instead of going through _send, so it has to
                 # opt in explicitly — and it takes the same `security` profile
                 # as `_serve_file`, or the two writers of one fact drift.
-                profile = (
-                    security
-                    if security is not None
-                    else security_headers(WEBUI_DIR / "index.html")
-                )
+                profile = security if security is not None else security_headers()
                 for key, value in profile.items():
                     self.send_header(key, _sanitize_header_value(value))
                 for key, value in (extra or {}).items():
@@ -13642,7 +13634,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     200,
                     body,
                     ctype,
-                    security=artifact_security_headers(WEBUI_DIR / "index.html"),
+                    security=artifact_security_headers(),
                 )
                 return
             path = store.resolve_artifact_path(decoded_ident)
@@ -13686,7 +13678,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self._serve_file(
                 Path(path),
                 ctype,
-                security=artifact_security_headers(WEBUI_DIR / "index.html"),
+                security=artifact_security_headers(),
             )
 
         def _serve_artifact_bundle(self, artifacts: list[dict], filename: str) -> None:
@@ -13732,7 +13724,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     tmp_path,
                     "application/zip",
                     {"Content-Disposition": f'attachment; filename="{safe_name}"'},
-                    security=artifact_security_headers(WEBUI_DIR / "index.html"),
+                    security=artifact_security_headers(),
                 )
             finally:
                 try:

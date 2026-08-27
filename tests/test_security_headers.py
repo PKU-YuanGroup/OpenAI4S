@@ -56,9 +56,9 @@ def _directive(policy: str, name: str) -> str:
     raise AssertionError(f"{name} missing from policy: {policy}")
 
 
-def test_script_src_never_allows_unsafe_inline(index_html):
+def test_script_src_never_allows_unsafe_inline():
     """The load-bearing assertion: executable code lives in static files."""
-    script_src = _directive(content_security_policy(index_html), "script-src")
+    script_src = _directive(content_security_policy(), "script-src")
     assert "'unsafe-inline'" not in script_src
     assert "'unsafe-eval'" not in script_src
     assert "'sha256-" not in script_src
@@ -75,16 +75,22 @@ def test_index_html_has_only_same_origin_external_scripts(index_html):
     assert parser.sources[0] == "/static/theme-bootstrap.js"
 
 
-def test_policy_never_parses_html_to_authorize_scripts(tmp_path):
-    """Escaped script tokenizer states cannot influence a static policy."""
-    adversarial = tmp_path / "escaped-script.html"
-    adversarial.write_text(
-        "<script><!--<script>window.x=1;</script>-->window.y=2;</script>"
-    )
+def test_policy_never_parses_html_to_authorize_scripts():
+    """Escaped script tokenizer states cannot influence a static policy.
 
-    assert content_security_policy(adversarial) == content_security_policy(
-        tmp_path / "missing.html"
-    )
+    This used to write adversarial HTML and compare two policies. Now the
+    builder takes no path at all, so the property is structural: assert the
+    signature rather than a value the function could not have varied anyway.
+    """
+    import inspect
+
+    parameters = inspect.signature(content_security_policy).parameters
+    assert [
+        name
+        for name, p in parameters.items()
+        if p.kind is not inspect.Parameter.KEYWORD_ONLY
+    ] == []
+    assert set(parameters) == {"frame_ancestors"}
 
 
 def test_untrusted_artifact_policy_cannot_execute_or_reach_same_origin():
@@ -95,25 +101,52 @@ def test_untrusted_artifact_policy_cannot_execute_or_reach_same_origin():
     assert _directive(policy, "connect-src") == "connect-src 'none'"
     assert _directive(policy, "form-action") == "form-action 'none'"
     assert _directive(policy, "frame-ancestors") == "frame-ancestors 'self'"
-    assert _directive(policy, "sandbox") == "sandbox"
 
 
-def test_untrusted_artifact_headers_remain_embeddable_same_origin(index_html):
-    headers = artifact_security_headers(index_html)
+def test_the_artifact_sandbox_grants_an_origin_and_never_scripts():
+    """`allow-same-origin` alone, and it is load-bearing in both directions.
+
+    Without it the document has an opaque origin, where `'self'` matches
+    nothing: a report's own `<img src="figure.png">` fails to load even on a
+    top-level View, which is the pair `store.artifact_by_unique_filename`
+    exists to resolve. With `allow-scripts` added it would become an active
+    document on the origin that holds the session cookie. Exactly one token.
+    """
+    policy = artifact_content_security_policy()
+
+    assert _directive(policy, "sandbox") == "sandbox allow-same-origin"
+    assert "allow-scripts" not in policy
+    assert _directive(policy, "script-src") == "script-src 'none'"
+
+
+def test_an_artifact_can_load_its_own_sibling_files():
+    """The fetch directives the sandboxed origin makes reachable again."""
+    policy = artifact_content_security_policy()
+
+    assert _directive(policy, "img-src") == "img-src 'self' data: blob:"
+    assert _directive(policy, "style-src") == "style-src 'self' 'unsafe-inline'"
+    assert _directive(policy, "media-src") == "media-src 'self' data: blob:"
+    assert _directive(policy, "font-src") == "font-src 'self' data:"
+    # Reaching *out* stays closed: 'self' is for the artifact's own bytes.
+    assert _directive(policy, "connect-src") == "connect-src 'none'"
+
+
+def test_untrusted_artifact_headers_remain_embeddable_same_origin():
+    headers = artifact_security_headers()
 
     assert headers["Content-Security-Policy"] == artifact_content_security_policy()
     assert headers["X-Frame-Options"] == "SAMEORIGIN"
     assert headers["X-Content-Type-Options"] == "nosniff"
 
 
-def test_a_first_party_framed_document_keeps_the_shell_script_policy(index_html):
+def test_a_first_party_framed_document_keeps_the_shell_script_policy():
     """`/ketcher` is UI code, not Artifact bytes.
 
     It needs one thing the shell profile refuses -- being framed by the
     workbench -- and nothing else. Relaxing `script-src` or `connect-src` here
     would widen the policy for a first-party origin to solve a framing problem.
     """
-    headers = embeddable_security_headers(index_html)
+    headers = embeddable_security_headers()
     policy = headers["Content-Security-Policy"]
 
     assert _directive(policy, "frame-ancestors") == "frame-ancestors 'self'"
@@ -124,12 +157,12 @@ def test_a_first_party_framed_document_keeps_the_shell_script_policy(index_html)
     assert "sandbox" not in policy, "a first-party document keeps its own origin"
 
 
-def test_the_shell_itself_is_still_unframeable(index_html):
+def test_the_shell_itself_is_still_unframeable():
     """The relaxation must be per-document, not a default that drifted."""
-    assert _directive(content_security_policy(index_html), "frame-ancestors") == (
+    assert _directive(content_security_policy(), "frame-ancestors") == (
         "frame-ancestors 'none'"
     )
-    assert security_headers(index_html)["X-Frame-Options"] == "DENY"
+    assert security_headers()["X-Frame-Options"] == "DENY"
 
 
 def test_html_preview_iframe_does_not_reenable_artifact_capabilities(index_html):
@@ -143,11 +176,11 @@ def test_html_preview_iframe_does_not_reenable_artifact_capabilities(index_html)
     assert "allow-forms" not in preview_line
 
 
-def test_connect_src_is_same_origin_only(index_html):
+def test_connect_src_is_same_origin_only():
     """The exfiltration bound: an injected script must not be able to POST
     harvested data anywhere. Verified in-browser — a cross-origin fetch and a
     cross-origin WebSocket both raise connect-src violations."""
-    assert _directive(content_security_policy(index_html), "connect-src") == (
+    assert _directive(content_security_policy(), "connect-src") == (
         "connect-src 'self'"
     )
 
@@ -156,19 +189,19 @@ def test_wasm_is_permitted_without_reopening_eval(index_html):
     """3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
     covers that alone; 'unsafe-eval' would also hand eval() back to injected
     script."""
-    script_src = _directive(content_security_policy(index_html), "script-src")
+    script_src = _directive(content_security_policy(), "script-src")
     assert "'wasm-unsafe-eval'" in script_src
 
 
 def test_dangerous_sinks_are_closed(index_html):
-    policy = content_security_policy(index_html)
+    policy = content_security_policy()
     assert _directive(policy, "object-src") == "object-src 'none'"
     assert _directive(policy, "base-uri") == "base-uri 'none'"
     assert _directive(policy, "frame-ancestors") == "frame-ancestors 'none'"
 
 
 def test_default_src_is_self(index_html):
-    assert _directive(content_security_policy(index_html), "default-src") == (
+    assert _directive(content_security_policy(), "default-src") == (
         "default-src 'self'"
     )
 
@@ -177,12 +210,12 @@ def test_style_src_inline_is_a_deliberate_concession(index_html):
     """The UI sets style="" through innerHTML in a couple of places. Style
     injection cannot execute script, so this stays permitted — the point is
     that the concession is here and not in script-src."""
-    style_src = _directive(content_security_policy(index_html), "style-src")
+    style_src = _directive(content_security_policy(), "style-src")
     assert "'unsafe-inline'" in style_src
 
 
-def test_all_expected_headers_present(index_html):
-    h = security_headers(index_html)
+def test_all_expected_headers_present():
+    h = security_headers()
     assert h["X-Content-Type-Options"] == "nosniff"
     assert h["X-Frame-Options"] == "DENY"
     assert h["Referrer-Policy"] == "same-origin"
@@ -190,8 +223,9 @@ def test_all_expected_headers_present(index_html):
     assert "Permissions-Policy" in h
 
 
-def test_missing_index_html_still_yields_a_usable_policy(tmp_path):
-    """The static policy does not depend on an HTML file being readable."""
-    policy = content_security_policy(tmp_path / "nope.html")
+def test_the_policy_is_a_constant():
+    """The static policy does not depend on any file being readable."""
+    policy = content_security_policy()
+    assert policy == content_security_policy()
     assert "default-src 'self'" in policy
     assert "'unsafe-inline'" not in _directive(policy, "script-src")

@@ -26,15 +26,34 @@ def test_security_scanners_pin_every_action_to_a_commit(name):
 
 
 def test_codeql_ignores_only_the_one_exact_upstream_capture():
+    """What an offline test can actually check about this file.
+
+    Not whether the exclusion is *in effect*: this repo runs CodeQL's default
+    setup, which reads a repo config file only when the repository property
+    `github-codeql-config-file` names it, and no test can see a repository
+    property. The previous version asserted the file's own bytes and nothing
+    else, which reads as an effectiveness gate and is not one. So: the paths
+    must be real, non-executable and wildcard-free, and the unmet precondition
+    must still be written down where whoever reads a green suite will find it.
+    """
     yaml = pytest.importorskip("yaml")
-    config = yaml.safe_load(
-        (ROOT / ".github" / "codeql-config.yml").read_text(encoding="utf-8")
-    )
+    source = (ROOT / ".github" / "codeql-config.yml").read_text(encoding="utf-8")
+    config = yaml.safe_load(source)
 
     assert config["paths-ignore"] == [
         "tests/fixtures/arxiv_abs_2503.06687.html",
     ]
-    assert all("*" not in path for path in config["paths-ignore"])
+    for path in config["paths-ignore"]:
+        assert "*" not in path
+        # A stale exclusion for a file that no longer exists is an invisible
+        # path waiting for a future capture to land on the same name.
+        assert (ROOT / path).is_file(), f"{path} does not exist"
+        assert (ROOT / path).suffix not in {".py", ".js", ".mjs", ".sh"}
+
+    assert "NOT IN EFFECT YET" in source
+    assert "github-codeql-config-file" in source
+    contents = (ROOT / ".github" / "CONTENTS.md").read_text(encoding="utf-8")
+    assert "not set" in contents.lower() or "NOT IN EFFECT" in contents
 
 
 def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():

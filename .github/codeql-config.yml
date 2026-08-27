@@ -1,9 +1,27 @@
 name: OpenAI4S CodeQL configuration
 
-# This is one exact, non-executable upstream capture rather than a blanket tree
-# exclusion. It is a byte-exact arXiv page read only by parser tests. Executable
-# bioSkills examples remain scanned even when an individual alert is a false
-# positive; those alerts must be dismissed individually so a future re-pin does
-# not inherit an invisible path.
+# NOT IN EFFECT YET. This repository runs CodeQL's *default* setup — there is
+# no `codeql` workflow in `.github/workflows/` — and default setup reads a repo
+# config file only when the repository property `github-codeql-config-file`
+# names it. That property is unset today (`gh api repos/PKU-YuanGroup/OpenAI4S/
+# properties/values` returns `[]`), so alert 23,
+# `js/functionality-from-untrusted-source` on the fixture below, is still open.
+# Nothing in this tree can set it; a maintainer runs:
+#
+#   gh api -X PATCH repos/PKU-YuanGroup/OpenAI4S/properties/values \
+#     -f 'properties[][property_name]=github-codeql-config-file' \
+#     -f 'properties[][value]=.github/codeql-config.yml'
+#
+# Until then, treat the alert as open and dismiss it in the Security tab if it
+# needs closing sooner. The offline test for this file checks what a test can:
+# that the exclusion names one real, non-executable path, that it carries no
+# wildcard, and that this precondition is still written down. It cannot check
+# whether the exclusion is in effect, and does not pretend to.
+#
+# The exclusion itself is one exact, non-executable upstream capture rather than
+# a blanket tree exclusion: a byte-exact arXiv page read only by parser tests.
+# Executable bioSkills examples remain scanned even when an individual alert is
+# a false positive; those alerts must be dismissed individually so a future
+# re-pin does not inherit an invisible path.
 paths-ignore:
   - tests/fixtures/arxiv_abs_2503.06687.html

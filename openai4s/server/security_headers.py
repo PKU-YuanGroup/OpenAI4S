@@ -9,52 +9,71 @@ what stops an injected `<script>` from running or phoning home.
 All executable UI scripts are same-origin static files. Keeping executable
 code out of HTML means the policy needs neither a nonce nor a dynamically
 derived hash, and avoids having a security decision depend on duplicating the
-browser's full HTML tokenizer.
+browser's full HTML tokenizer. Nothing here reads a file: the policies are
+constants, and the one directive that varies — `frame-ancestors` — varies by
+who embeds a document rather than by what the document contains.
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 
 def artifact_content_security_policy() -> str:
     """Policy for untrusted, user- or agent-authored Artifact bytes.
 
     Artifact HTML may be opened directly as well as inside the Workbench's
-    sandboxed iframe. A response-level sandbox therefore keeps the document on
-    an opaque origin in either navigation mode, while the explicit script and
-    connection bans prevent it from composing executable sibling Artifacts.
+    sandboxed iframe, so the sandbox rides the response and applies in either
+    navigation mode.
+
+    **Artifact HTML never executes script in the product.** `script-src 'none'`
+    says so, the sandbox has no `allow-scripts`, and `app.js` frames previews
+    with `sandbox=""`; all three agree on purpose. A skill that emits an
+    interactive dashboard — `retrosynthesis_planning`, `admet_genetic` — gets a
+    static rendering in the Workbench and in a `/preview/` tab, and its
+    interactivity only on a downloaded copy opened from the filesystem. That is
+    a deliberate trade, not an oversight: these bytes are model-authored, and
+    the alternative is executing them on the origin that holds the session
+    cookie. Say it here rather than leaving a reader to infer it from three
+    separate files.
+
+    `allow-same-origin` is the one sandbox token granted, and it buys back the
+    sub-resources a report needs. Without it the document is on an opaque
+    origin, where `'self'` matches nothing and `<img src="figure.png">` — the
+    standard Code-as-Action pair, which `store.artifact_by_unique_filename`
+    exists to resolve — fails to load even on a top-level View. It grants no
+    active capability while `script-src 'none'` and the missing `allow-scripts`
+    stand: with no script there is nothing to read a cookie or a sibling
+    document with.
     """
     return "; ".join(
         [
             "default-src 'none'",
             "script-src 'none'",
-            "style-src 'unsafe-inline'",
-            "img-src data: blob:",
-            "font-src data:",
-            "media-src data: blob:",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "media-src 'self' data: blob:",
             "connect-src 'none'",
             "object-src 'none'",
             "base-uri 'none'",
             "form-action 'none'",
             "frame-ancestors 'self'",
-            "sandbox",
+            "sandbox allow-same-origin",
         ]
     )
 
 
-def artifact_security_headers(index_html: Path) -> dict[str, str]:
+def artifact_security_headers() -> dict[str, str]:
     """Hardened headers for an embeddable, untrusted Artifact document."""
-    headers = security_headers(index_html)
+    headers = security_headers()
     headers["Content-Security-Policy"] = artifact_content_security_policy()
     # The Workbench embeds same-origin previews. DENY would make that secure by
     # rendering nothing; SAMEORIGIN preserves the product while the CSP sandbox
-    # removes the preview document's origin and active capabilities.
+    # removes the preview document's active capabilities.
     headers["X-Frame-Options"] = "SAMEORIGIN"
     return headers
 
 
-def embeddable_security_headers(index_html: Path) -> dict[str, str]:
+def embeddable_security_headers() -> dict[str, str]:
     """Headers for a UI-owned document the Workbench loads in an iframe.
 
     `/ketcher` and the vendored editor it frames are first-party documents, not
@@ -63,23 +82,20 @@ def embeddable_security_headers(index_html: Path) -> dict[str, str]:
     the product's only way to reach them is an iframe of the workbench page.
     `DENY` there is not a policy, it is the editor never rendering.
     """
-    headers = security_headers(index_html)
+    headers = security_headers()
     headers["Content-Security-Policy"] = content_security_policy(
-        index_html, frame_ancestors="'self'"
+        frame_ancestors="'self'"
     )
     headers["X-Frame-Options"] = "SAMEORIGIN"
     return headers
 
 
-def content_security_policy(
-    index_html: Path, *, frame_ancestors: str = "'none'"
-) -> str:
-    """Return the static policy; ``index_html`` remains for API compatibility.
+def content_security_policy(*, frame_ancestors: str = "'none'") -> str:
+    """Return the static UI-shell policy.
 
     ``frame_ancestors`` is the one directive that varies by document, and it
     varies because of who embeds it, not because of what it contains.
     """
-    _ = index_html
     script_src = ["'self'"]
     # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
     # permits exactly that and nothing else — unlike 'unsafe-eval', it does not
@@ -112,10 +128,10 @@ def content_security_policy(
     return policy
 
 
-def security_headers(index_html: Path) -> dict[str, str]:
+def security_headers() -> dict[str, str]:
     """Headers applied to every response the gateway emits."""
     return {
-        "Content-Security-Policy": content_security_policy(index_html),
+        "Content-Security-Policy": content_security_policy(),
         # The gateway serves user/agent-authored artifacts; sniffing turns a
         # text/plain artifact into an executable document.
         "X-Content-Type-Options": "nosniff",
