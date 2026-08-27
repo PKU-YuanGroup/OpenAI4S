@@ -52,21 +52,32 @@ def _version(name: str) -> str | None:
         return None
 
 
+def _first_version(*names: str) -> str | None:
+    for name in names:
+        version = _version(name)
+        if version is not None:
+            return version
+    return None
+
+
 def _runtime() -> dict[str, Any]:
+    packages = {
+        name: _version(name)
+        for name in (
+            "aizynthfinder",
+            "rxnmapper",
+            "torch",
+            "transformers",
+            "simpletransformers",
+            "pandas",
+        )
+    }
+    # PyPI used the rdkit-pypi distribution name for the Python 3.8 wheels,
+    # while newer releases publish the same import package as rdkit.
+    packages["rdkit"] = _first_version("rdkit", "rdkit-pypi")
     return {
         "python": platform.python_version(),
-        "packages": {
-            name: _version(name)
-            for name in (
-                "aizynthfinder",
-                "rxnmapper",
-                "rdkit",
-                "torch",
-                "transformers",
-                "simpletransformers",
-                "pandas",
-            )
-        },
+        "packages": packages,
     }
 
 
@@ -82,6 +93,18 @@ def _array(value: Any, field: str) -> list[Mapping[str, Any]]:
     ):
         raise RequestError("invalid_request", f"{field} must be an array of objects")
     return value
+
+
+def _parse_parrot_rank(value: object, fallback: int) -> int:
+    """Parse Parrot's top-k label without requiring Python 3.9 APIs."""
+
+    rank_text = str(value or "")
+    if rank_text.startswith("top-"):
+        rank_text = rank_text[4:]
+    try:
+        return int(rank_text)
+    except ValueError:
+        return fallback
 
 
 def _validate(value: Any) -> dict[str, Any]:
@@ -475,17 +498,29 @@ def _predict_yields(request: Mapping[str, Any]) -> dict[str, Any]:
 def _recommend_conditions(request: Mapping[str, Any]) -> dict[str, Any]:
     rows = _array(request["inputs"], "inputs")
     repository = request.get("repository_dir")
+    model_location = request.get("model_location")
     options = request["options"]
     config_path = options.get("config_path")
     workspace = options.get("workspace_dir")
+    legacy_repository = (
+        Path(repository)
+        if isinstance(repository, str) and (Path(repository) / "inference.py").is_file()
+        else None
+    )
+    archive_model = (
+        Path(model_location)
+        if isinstance(model_location, str)
+        and (Path(model_location) / "model.py").is_file()
+        else None
+    )
     if (
-        not isinstance(repository, str)
-        or not Path(repository).is_dir()
+        (legacy_repository is None and archive_model is None)
         or not isinstance(config_path, str)
         or not Path(config_path).is_file()
     ):
         raise RequestError(
-            "checkpoint_required", "Parrot repository and config_path must exist"
+            "checkpoint_required",
+            "Parrot CLI repository or expanded model archive and config_path must exist",
         )
     if not isinstance(workspace, str) or not Path(workspace).is_dir():
         raise RequestError(
@@ -505,24 +540,41 @@ def _recommend_conditions(request: Mapping[str, Any]) -> dict[str, Any]:
             + "\n",
             encoding="utf-8",
         )
-        command = [
-            sys.executable,
-            str(Path(repository) / "inference.py"),
-            "--config_path",
-            config_path,
-            "--input_path",
-            str(input_path),
-            "--output_path",
-            str(output_path),
-            "--num_workers",
-            "1",
-            "--inference_batch_size",
-            "8",
-            "--gpu",
-            str(gpu),
-        ]
+        if archive_model is not None:
+            executable = Path(__file__).with_name("parrot_mar_inference.py")
+            command = [
+                sys.executable,
+                str(executable),
+                "--model-dir",
+                str(archive_model),
+            ]
+            working_directory = archive_model
+        else:
+            assert legacy_repository is not None
+            command = [sys.executable, str(legacy_repository / "inference.py")]
+            working_directory = legacy_repository
+        command.extend(
+            [
+                "--config_path",
+                config_path,
+                "--input_path",
+                str(input_path),
+                "--output_path",
+                str(output_path),
+                "--num_workers",
+                "1",
+                "--inference_batch_size",
+                "8",
+                "--gpu",
+                str(gpu),
+            ]
+        )
         completed = subprocess.run(
-            command, cwd=repository, stdout=sys.stderr, stderr=sys.stderr, check=False
+            command,
+            cwd=working_directory,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            check=False,
         )
         if completed.returncode or not output_path.is_file():
             raise RequestError(
@@ -572,11 +624,7 @@ def _recommend_conditions(request: Mapping[str, Any]) -> dict[str, Any]:
                 )
                 for slot, names in aliases.items()
             }
-            rank_text = str(output.get("top-k") or "")
-            try:
-                rank = int(rank_text.removeprefix("top-"))
-            except ValueError:
-                rank = ordinal
+            rank = _parse_parrot_rank(output.get("top-k"), ordinal)
             try:
                 score = float(output["scores"])
                 if not math.isfinite(score):

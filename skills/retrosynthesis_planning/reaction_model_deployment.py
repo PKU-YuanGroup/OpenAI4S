@@ -181,6 +181,32 @@ ENVIRONMENTS = {
             checkpoint_license="review-required",
             requires_terms_review=True,
         ),
+        EnvironmentSpec(
+            name="parrot-hf-b9ef6049",
+            python="3.8",
+            packages=(
+                "torch==1.13.1",
+                "transformers==4.18.0",
+                "simpletransformers==0.63.6",
+                "rdkit-pypi==2022.9.5",
+                "numpy==1.21.5",
+                "pandas==1.3.5",
+                "scipy==1.4.1",
+                "scikit-learn==0.23.1",
+                "rxnfp==0.1.0",
+                "pyyaml==6.0.2",
+            ),
+            source_url=(
+                "https://huggingface.co/xiaoruiwang/" "ChemEnzyRetroPlanner_metadata"
+            ),
+            source_revision="b9ef6049d341bfc62d835f09ad6ce33b6f86b047",
+            model="Parrot",
+            training_dataset=(
+                "USPTO-Condition categorical labels; temperature unsupported"
+            ),
+            code_license="MIT",
+            checkpoint_license="MIT",
+        ),
     )
 }
 
@@ -211,6 +237,26 @@ HF_REVISIONS = {
         "revision": "f0658bfd360bceaaf560f11b850781c50221fe0b",
         "training_dataset": "ORD; Buchwald-Hartwig C-N test reactions excluded as declared by author",
         "license": "MIT",
+    },
+}
+
+PARROT_HF_ARTIFACTS = {
+    "repository": "xiaoruiwang/ChemEnzyRetroPlanner_metadata",
+    "revision": "b9ef6049d341bfc62d835f09ad6ce33b6f86b047",
+    "license": "MIT",
+    "files": {
+        "USPTO_condition.mar": {
+            "bytes": 101_022_989,
+            "sha256": (
+                "4418693a91a7a3b5f2aa101a39d58702" "b154e58901ddbf1ac94edc4c28de8e7d"
+            ),
+        },
+        "condition_predictor_metadata.zip": {
+            "bytes": 143_606_133,
+            "sha256": (
+                "dfdf7fff11fe2d52af49146b1080dd63" "04ddd2b51665907fa759ffd4c5fca820"
+            ),
+        },
     },
 }
 
@@ -261,14 +307,24 @@ def artifact_commands(environment: str, root: str | Path) -> list[list[str]]:
                 "--detach",
                 ENVIRONMENTS[environment].source_revision,
             ],
+        ]
+    if environment == "parrot-hf-b9ef6049":
+        destination = artifacts / environment
+        return [
             [
                 "conda",
                 "run",
                 "--prefix",
                 str(prefix),
-                "python",
-                str(repository / "preprocess_script" / "download_data.py"),
-            ],
+                "huggingface-cli",
+                "download",
+                PARROT_HF_ARTIFACTS["repository"],
+                *PARROT_HF_ARTIFACTS["files"],
+                "--revision",
+                PARROT_HF_ARTIFACTS["revision"],
+                "--local-dir",
+                str(destination),
+            ]
         ]
     return []
 

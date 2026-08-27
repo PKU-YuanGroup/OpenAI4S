@@ -14,11 +14,11 @@
 
 ### 已验证的数据与模型来源
 
-- **Parrot**：作者官方仓库以 MIT 发布代码、配置、数据下载脚本和模型下载入口；论文给出 USPTO-Condition、USPTO-Suzuki 和 Reaxys 条件预测实验。
+- **Parrot**：作者官方仓库以 MIT 发布代码；第一作者 Hugging Face 仓库 `xiaoruiwang/ChemEnzyRetroPlanner_metadata` 也明确声明 MIT，并把 `USPTO_condition.mar` 描述为 Parrot 条件预测器。本场景只准入固定 revision `b9ef6049d341bfc62d835f09ad6ce33b6f86b047` 及经过大小/SHA256 校验的 MAR 和 metadata。
 - **USPTO-Condition**：官方 `download_data.py` 提供处理后数据归档入口，适合类别型条件 benchmark。
 - **Reaxys 条件数据**：需要受限原始数据库许可，不能随开源 Benchmark 再发布，因此不作为 v1 数据源。
 
-Parrot 外部 checkpoint 归档与处理后 USPTO-Condition 数据没有与代码许可证等价的独立机器可读授权声明。Reference Repository 发布前必须冻结下载文件、SHA256、字段说明和数据/权重许可审计结果；未完成时只能内部复现，不能宣称可再分发。
+Parrot 原官方下载器中的 Google Drive 归档仍没有与代码许可证等价的独立机器可读授权声明，因此保持阻塞；Reaxys 数据也不准入。已准入的第一作者 HF 固定快照必须继续按文件名、revision、大小与 SHA256 校验，不能静默替换。模型 artifact 可用于工程部署 canary；若其训练集与本场景 test split 的重叠无法审计，则不得据此报告正式 hidden-test 科学指标。
 
 ### 数据冻结规则
 

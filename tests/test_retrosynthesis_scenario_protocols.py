@@ -40,9 +40,14 @@ from retrosynthesis_planning.reaction_model_backends import (  # noqa: E402
 )
 from retrosynthesis_planning.reaction_model_deployment import (  # noqa: E402
     ENVIRONMENTS,
+    PARROT_HF_ARTIFACTS,
+    artifact_commands,
     model_manifest,
     snapshot_artifacts,
     verify_artifact_snapshot,
+)
+from retrosynthesis_planning.reaction_model_worker import (  # noqa: E402
+    _parse_parrot_rank,
 )
 from retrosynthesis_planning.scenario_benchmark_cli import (  # noqa: E402
     main as scenario_cli_main,
@@ -287,6 +292,21 @@ def test_reaction_model_environment_plan_stays_under_explicit_external_root(tmp_
     assert plan["source_revision"] == "640d9ddd304d28eb338482f4e9c2dd6b1a25de7c"
 
 
+def test_parrot_hf_plan_uses_the_reviewed_mit_snapshot(tmp_path):
+    root = tmp_path / "whaleywang-models"
+    plan = ENVIRONMENTS["parrot-hf-b9ef6049"].to_dict(root)
+    assert plan["checkpoint_license"] == "MIT"
+    assert plan["requires_terms_review"] is False
+    assert plan["source_revision"] == PARROT_HF_ARTIFACTS["revision"]
+    command = artifact_commands("parrot-hf-b9ef6049", root)[0]
+    assert "USPTO_condition.mar" in command
+    assert "condition_predictor_metadata.zip" in command
+    legacy = artifact_commands("parrot-0fb2325", root)
+    assert not any(
+        "download_data.py" in argument for item in legacy for argument in item
+    )
+
+
 def test_external_artifact_snapshot_detects_changed_checkpoint(tmp_path):
     checkpoint = tmp_path / "models" / "weights.bin"
     checkpoint.parent.mkdir()
@@ -450,3 +470,9 @@ with open(args.output_path, "w", newline="", encoding="utf-8") as handle:
     assert [item["rank"] for item in predictions] == [1, 2]
     assert predictions[0]["conditions"]["catalyst1"] == "Pd"
     assert predictions[1]["conditions"]["solvent1"] == "DMF"
+
+
+def test_parrot_rank_parser_supports_the_python38_environment():
+    assert _parse_parrot_rank("top-2", 9) == 2
+    assert _parse_parrot_rank("3", 9) == 3
+    assert _parse_parrot_rank("not-a-rank", 9) == 9

@@ -1,6 +1,6 @@
 ---
 name: reaction-condition-recommendation
-description: Recommend ranked catalyst, reagent, solvent, and supported temperature labels for a fully specified reaction using Parrot after checkpoint-terms review. Not for unknown reactions or lab procedures.
+description: Recommend ranked catalyst, reagent, and solvent labels for a fully specified reaction using the reviewed Parrot USPTO checkpoint. Not for unknown reactions or lab procedures.
 license: MIT
 origin: openai4s
 metadata:
@@ -9,6 +9,10 @@ metadata:
       name: Parrot inference code
       license: MIT
       terms_url: https://github.com/wangxr0526/Parrot/blob/main/LICENSE
+    - kind: checkpoint
+      name: Parrot USPTO condition predictor
+      license: MIT
+      terms_url: https://huggingface.co/xiaoruiwang/ChemEnzyRetroPlanner_metadata
 ---
 
 # Reaction-condition recommendation
@@ -18,13 +22,15 @@ does a trained model rank highest? Conditions are hypotheses used to focus
 literature/ELN retrieval. They are not an experimental procedure and must not be
 generated before reactants and products are specified.
 
-Parrot is the conditional implementation. Its official repository publishes
-code, checkpoints, dataset label dictionaries, CPU/GPU environment files, a
-CLI, and a web app. The repository code is MIT, but the externally hosted
-checkpoint archives do not carry a separate machine-readable license in the
-official downloader. Do not download or run a checkpoint, call it open, or make
-it an organizational default until its terms have been reviewed and the
-decision recorded in the model manifest.
+Parrot is the implementation. The original repository code is MIT, but its
+Google Drive archives do not carry separate machine-readable terms in the
+official downloader and remain blocked. The approved deployment instead uses
+the first author's separately published Hugging Face repository, whose
+repository card declares MIT. Admission is limited to revision
+`b9ef6049d341bfc62d835f09ad6ce33b6f86b047`, `USPTO_condition.mar` (SHA256
+`4418693a91a7a3b5f2aa101a39d58702b154e58901ddbf1ac94edc4c28de8e7d`) and
+`condition_predictor_metadata.zip` (SHA256
+`dfdf7fff11fe2d52af49146b1080dd6304ddd2b51665907fa759ffd4c5fca820`).
 
 ## Install and run
 
@@ -61,11 +67,13 @@ conda env create -n parrot -f "$PARROT_ROOT/source/envs_cpu.yaml"
 The final assertion must remain empty; if a reused checkout has modified or
 untracked files, stop instead of executing it as reviewed source.
 
-That source revision has been cloned and verified in the external deployment
-root used for this implementation, and the OpenAI4S adapter has been tested
-against Parrot's multi-row CSV beam layout. This validates the source identity
-and adapter protocol, not checkpoint inference. Invoke an approved snapshot
-through `ReactionModelBackend("parrot", ...)`; temporary inference files must
+That source revision and the approved Hugging Face snapshot have been verified
+in the external deployment root. The repository-native
+`../retrosynthesis_planning/parrot_mar_inference.py` adapter consumes a safely
+expanded MAR through `model_location`; the OpenAI4S worker has completed a real
+GPU canary and returned 15 joint condition beams. This is an engineering
+inference check, not benchmark accuracy or experimental validation. Invoke the
+snapshot through `ReactionModelBackend("parrot", ...)`; temporary files must
 use an explicit external `workspace_dir`.
 
 Do not execute the official `download_data.py` directly. At the reviewed
@@ -81,15 +89,14 @@ label dictionaries, and checkpoint at the repository-relative paths named by
 the reviewed configuration, and add the acquisition receipts to the manifest
 before inference.
 
-The current deployment intentionally stops before acquiring those Google Drive
-files because their separate terms have not been approved. A manifest with
-`checkpoint_license` equal to `review-required` is incomplete and cannot
-support a release or live-inference claim. Do not substitute the MIT source-code
-license for the missing artifact decision.
+The Google Drive files remain unapproved. Do not substitute the MIT source-code
+license for those artifacts or silently replace the admitted Hugging Face
+revision. A missing/deny admission decision, an unexpected filename, size, or
+digest, or a path/link-unsafe archive must stop before extraction or inference.
 
-Write one complete reaction SMILES per line. Parrot's configuration contains
-repository-relative model and dataset paths, so keep its repository as the
-process working directory and make session input/output paths absolute:
+Write one complete reaction SMILES per line. For the reviewed MAR deployment,
+pass the expanded model directory in the backend manifest. The legacy upstream
+CLI example below applies only to a separately reviewed legacy snapshot:
 
 ```bash
 SESSION_WORKSPACE="$PWD"
@@ -142,11 +149,13 @@ and validation state (`model_only`, `literature_analog`, `exact_precedent`, or
 
 | Symptom | Action |
 | --- | --- |
-| checkpoint terms not reviewed | Stop before download or inference, return `terms_review_required`, and do not substitute LLM-generated conditions. |
+| checkpoint admission missing, denied, or hash-mismatched | Stop before extraction or inference, return `terms_review_required`, and do not substitute LLM-generated conditions. |
 | only target or only precursors are known | Stop; select a concrete reaction before recommending conditions. |
 | label ID is absent from the dictionary | Preserve the raw ID, mark decoding failure, and do not guess a name. |
 | requested temperature with USPTO config | Report unsupported and switch only to a reviewed temperature-capable checkpoint. |
 | predicted combination is unsafe or incompatible | Preserve the prediction as rejected and route it to EHS/chemist review. |
 
-Primary source: <https://github.com/wangxr0526/Parrot>. The source paper is
-Wang et al., *Research* (2023), DOI 10.34133/research.0231.
+Primary sources: <https://github.com/wangxr0526/Parrot> and the first-author
+checkpoint distribution
+<https://huggingface.co/xiaoruiwang/ChemEnzyRetroPlanner_metadata>. The source
+paper is Wang et al., *Research* (2023), DOI 10.34133/research.0231.

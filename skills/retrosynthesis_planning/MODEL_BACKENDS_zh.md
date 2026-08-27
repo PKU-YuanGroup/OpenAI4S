@@ -14,9 +14,9 @@
 | RXNMapper | 0.4.3 / tag commit `640d9dd…` | 已审阅 PyPI wheel 与内置模型，wheel SHA 已登记 |
 | ReactionT5v2 forward | HF revision `9331140…` | 完整本地 HF 快照，推理强制 `local_files_only` |
 | ReactionT5v2 yield | HF revision `f0658bf…` | 完整本地 HF 快照，推理强制 `local_files_only` |
-| Parrot | repository commit `0fb2325…` | 完成条款审计后的仓库、配置、标签词表与 checkpoint 快照 |
+| Parrot | HF revision `b9ef604…`；legacy source `0fb2325…` | MIT `USPTO_condition.mar` 与 metadata，按精确大小和 SHA256 准入 |
 
-Parrot 与 AiZynthFinder public-data artifact 在单独下载文件及条款完成审计前保持 `review-required`。代码许可证不能自动覆盖数据集或 checkpoint。
+AiZynthFinder public-data artifact 仍为 `review-required`。Parrot 原 Google Drive artifact 也仍被阻塞；只有上表第一作者另行发布的 Hugging Face 固定 revision 获得明确 MIT 准入。代码许可证不能自动覆盖其他数据集或 checkpoint。
 
 ## 已验证的部署状态
 
@@ -26,7 +26,7 @@ Parrot 与 AiZynthFinder public-data artifact 在单独下载文件及条款完�
 | RXNMapper 0.4.3 | 固定隔离环境、wheel 哈希、manifest 和真实 mapping smoke test 均通过。 | 在常规域检查前提下可用于 mapping benchmark。 |
 | ReactionT5v2-forward | 固定 HF 快照 `9331140...`，真实 CPU model-card 产物 canary 通过。 | 可作为有边界的正向/round-trip 信号，不能作为可行性证明。 |
 | ReactionT5v2-yield | 固定 HF 快照可加载，并复现上游预处理；公开 canary 期望约 19.1666，实测 65.924858。 | 已隔离：问题解决并独立验证前，只允许协议测试。 |
-| Parrot | 源码固定在 `0fb2325...`；官方 CSV beam adapter 已通过协议测试。 | 官方下载器中的 Google Drive artifact 没有单独明确条款，因此 checkpoint 推理仍被阻塞。 |
+| Parrot | 精确 MIT HF 快照、可迁移 Python 3.8 环境、MAR adapter 和真实 GPU worker canary 均通过；返回 15 个联合 beam。 | 可用于 USPTO 类别条件假设；不支持温度，冻结 benchmark 精度尚未测量。 |
 
 ## 适用范围
 
@@ -36,7 +36,7 @@ Parrot 与 AiZynthFinder public-data artifact 在单独下载文件及条款完�
 - 在声明的库存上搜索多步路线；
 - 做原子映射并提取反应中心证据；
 - 做正向产物预测与 round-trip 诊断；
-- 在 artifact 获批后适配完整 Parrot condition beam；
+- 从已准入 USPTO checkpoint 适配完整的 Parrot 联合 condition beam；
 - 当前收率 checkpoint 隔离期间仅测试其 wire protocol；
 - 比较具有不同归纳偏置的模型是否给出一致建议；
 - 在候选进入路线审阅之前记录模型和 checkpoint provenance。

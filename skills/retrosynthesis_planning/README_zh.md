@@ -86,6 +86,7 @@ audit = audit_routes(routes)
 | [`reaction_model_deployment.py`](reaction_model_deployment.py) | AiZynthFinder、RXNMapper、ReactionT5v2 和 Parrot 的固定环境计划、上游 revision/发行包哈希、artifact tree 快照及无路径 manifest 生成。 |
 | [`reaction_model_backends.py`](reaction_model_backends.py) | 隔离 AiZynthFinder 规划及 mapping/forward/yield/condition 推理的纯标准库 Host adapter，强制 manifest fingerprint 并返回结构化进程错误。 |
 | [`reaction_model_worker.py`](reaction_model_worker.py) | 在外部环境运行 AiZynthFinder 路线搜索、RXNMapper、ReactionT5v2 正向/收率和 Parrot CLI 的 worker，不把重依赖引入 core。 |
+| [`parrot_mar_inference.py`](parrot_mar_inference.py) | 对已准入并安全展开的 Parrot MAR checkpoint 执行纯推理，保留联合 beam，并拒绝该 USPTO 权重不支持的温度输出。 |
 | [`syntheseus_worker.py`](syntheseus_worker.py) | 用于 RetroChimera 和受支持 Syntheseus 模型类别的隔离可选依赖 worker。它在处理请求前把文件描述符 1 重定向到 stderr（使原生模型输出无法破坏协议），剔除模型 metadata 中的文件系统路径，并只输出一个结构化 JSON 响应。 |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | 外部模型隔离安装、provenance manifest、使用方式、wire error、科学边界和离线 replay 验证的英文说明。 |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | 外部模型后端与可信度说明的中文版本。 |
