@@ -1562,7 +1562,7 @@ def test_environment_status_route_captures_ready_production_metadata(
     assert readiness["missing_environments"] == []
     assert readiness["missing_packages"] == {}
     assert [row["required_package_count"] for row in readiness["environments"]] == [
-        32,
+        33,
         8,
     ]
 
@@ -1689,8 +1689,9 @@ def test_stage1_readiness_allows_plan_draft_but_refuses_approve_and_resume_pre_c
         annos=None,
         explore=False,
         frozen_binding=None,
+        task_mode=None,
     ):
-        del project_id, user_text, model, annos, explore, frozen_binding
+        del project_id, user_text, model, annos, explore, frozen_binding, task_mode
         planned.append((root_frame_id, bool(plan)))
         return {"status": "completed", "frame_id": root_frame_id}
 
@@ -2949,6 +2950,7 @@ def test_submit_message_runs_turn_in_background(tmp_path):
         # freeze used to be written only to the frame, whose pin the rebind route
         # rewrites by design -- so a queued follow-up could adopt it after 202.
         frozen_binding=None,
+        task_mode=None,
     ):
         started.set()
         assert root_frame_id == "f-test"
@@ -3232,14 +3234,20 @@ def test_explore_flag_passes_through_submit_message(tmp_path):
         # freeze used to be written only to the frame, whose pin the rebind route
         # rewrites by design -- so a queued follow-up could adopt it after 202.
         frozen_binding=None,
+        task_mode=None,
     ):
         seen["explore"] = explore
+        seen["task_mode"] = task_mode
         return {"status": "completed", "frame_id": root_frame_id}
 
     runner.run_message = fake_run
     job = runner.submit_message("f-x", "default", "task", None, explore=True)
     assert job.wait_result()["status"] == "completed"
     assert seen["explore"] is True
+    # An unselected task mode crosses the queue as None; `run_message` is the
+    # one place that classifies, so a queued turn cannot be re-classified by a
+    # later edit to the stored message.
+    assert seen["task_mode"] is None
 
 
 def test_midtask_prose_conclusion_still_requires_structured_submit(

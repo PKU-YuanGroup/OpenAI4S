@@ -65,17 +65,27 @@ class EnvUseTool(Tool):
                 },
                 "note": note,
             }
-        if runtime.on_env_switch is not None:
-            try:
-                runtime.on_env_switch(name)
-                note = (
-                    f"switching to '{name}' before the next cell — put your "
-                    "imports in a new cell"
+        if runtime.on_env_switch is None:
+            # No switch mechanism exists in this runtime. Returning ok with a
+            # note here made the next cell silently run on the old interpreter
+            # while the caller had every reason to believe it switched.
+            from openai4s.tools.env_list import EnvListTool
+
+            current = EnvListTool.current_environment_name(runtime)
+            return {
+                "error": (
+                    "environment switching is not available in this runtime; "
+                    f"the kernel stays on '{current}'"
                 )
-            except Exception as exc:  # noqa: BLE001
-                return {"error": f"env switch refused: {exc}"}
-        else:
-            note = "env switching is only available in the web session kernel"
+            }
+        try:
+            runtime.on_env_switch(name)
+            note = (
+                f"switching to '{name}' before the next cell — put your "
+                "imports in a new cell"
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"env switch refused: {exc}"}
         return {
             "ok": True,
             "env": {

@@ -8,6 +8,8 @@ dispatcher-backed control tools without importing those concrete services.
 from __future__ import annotations
 
 import hashlib
+import json
+import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -277,6 +279,131 @@ class CompactionPolicy:
         return CompactionArchiveMetadata.from_mapping(source)
 
 
+def _generation_json_safe(value: Any) -> Any:
+    """The supervisor's JSON coercion, mirrored: canonical JSON must not fail."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_generation_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _generation_json_safe(item) for key, item in value.items()}
+    return str(value)
+
+
+class KernelGenerationRecorder:
+    """Durable ``kernel_generations`` rows for Agent-owned local kernels.
+
+    Web session kernels get their rows from ``KernelSupervisor``; CLI and
+    delegated-child kernels are LazyKernel-spawned by the Agent itself and had
+    none, so artifact environment provenance under a child frame could only
+    degrade to the "assumed" daemon fallback.  The environment metadata here
+    mirrors the field layout ``KernelSupervisor._begin_generation`` writes,
+    without importing the supervisor (the runtime is language-normalized so
+    provenance readers recognize it).  ``close`` finishes the open row; a
+    child thread dying uncleanly may leave its row unfinished, which is
+    acceptable — such a row is abandoned like any other live generation at
+    the next daemon boot.
+    """
+
+    def __init__(self, store: Any, root_frame_id: str) -> None:
+        self._store = store
+        self._root_frame_id = str(root_frame_id)
+        # language -> (generation_id, worker identity key)
+        self._open: dict[str, tuple[str, tuple[Any, Any]]] = {}
+
+    def observe(self, kernel: Any, *, language: str = "python") -> str | None:
+        """Ensure a durable row describes the live worker; rotate on respawn."""
+        inner = getattr(kernel, "current", None)
+        if inner is None:
+            inner = kernel
+        generation = getattr(inner, "generation", None)
+        if generation is None:
+            open_row = self._open.get(language)
+            return open_row[0] if open_row is not None else None
+        # The per-instance authorization id (a fresh UUID per worker object)
+        # guards against id() reuse after a replaced kernel is collected.
+        identity = getattr(inner, "authorization_generation", None) or id(inner)
+        key = (identity, generation)
+        open_row = self._open.get(language)
+        if open_row is not None and open_row[1] == key:
+            return open_row[0]
+        self.close(language=language, reason="kernel_respawned")
+        generation_id = self._create(inner, language)
+        if generation_id is not None:
+            self._open[language] = (generation_id, key)
+        return generation_id
+
+    def current(self, language: str = "python") -> str | None:
+        """The open durable generation id for ``language``, if any."""
+        open_row = self._open.get(language)
+        return open_row[0] if open_row is not None else None
+
+    def close(
+        self, *, language: str | None = None, reason: str = "run_finished"
+    ) -> None:
+        """Finish the open row(s); persistence failures never break a run."""
+        languages = [language] if language is not None else list(self._open)
+        for name in languages:
+            open_row = self._open.pop(name, None)
+            if open_row is None:
+                continue
+            try:
+                self._store.finish_kernel_generation(
+                    open_row[0], state="released", reason=reason
+                )
+            except Exception:  # noqa: BLE001 - provenance cannot break a run
+                pass
+
+    def _create(self, kernel: Any, language: str) -> str | None:
+        argv = getattr(kernel, "argv", None)
+        interpreter = getattr(kernel, "python", None)
+        if language == "r" and isinstance(argv, (list, tuple)) and len(argv) >= 2:
+            # r_kernel.r_argv ends with ``<Rscript> <r_worker.R>``.
+            interpreter = argv[-2]
+        environment: dict[str, Any] = {
+            "key": None,
+            "runtime": "r" if language == "r" else "python",
+            "interpreter": interpreter,
+            "worker_argv": _generation_json_safe(argv),
+            "environment_root": getattr(kernel, "env_root", None),
+            "environment_name": getattr(kernel, "env_name", None),
+            "working_directory": getattr(kernel, "cwd", None),
+        }
+        try:
+            sandbox = getattr(kernel, "sandbox_status", None)
+            if sandbox is not None:
+                environment["sandbox"] = _generation_json_safe(sandbox)
+        except Exception:  # noqa: BLE001 - metadata must not break a cell
+            pass
+        try:
+            json.dumps(environment)
+        except (TypeError, ValueError):
+            environment = {
+                key: value
+                for key, value in environment.items()
+                if isinstance(value, (str, int, float, bool)) or value is None
+            }
+        pid = getattr(kernel, "pid", None)
+        try:
+            pid = int(pid) if pid is not None else None
+        except (TypeError, ValueError):
+            pid = None
+        try:
+            row = self._store.create_kernel_generation(
+                root_frame_id=self._root_frame_id,
+                branch_id=self._root_frame_id,
+                language=language,
+                environment=environment,
+                bootstrap={"status": "agent_managed", "loaded_sidecars": []},
+                worker_pid=pid,
+                state="active",
+            )
+        except Exception:  # noqa: BLE001 - provenance cannot break a run
+            return None
+        generation_id = row.get("generation_id") if isinstance(row, dict) else None
+        return str(generation_id) if generation_id else None
+
+
 @dataclass
 class LocalActionExecutor:
     """Execute one selected action against a run-scoped local runtime."""
@@ -291,13 +418,22 @@ class LocalActionExecutor:
     tool_catalog: Any = None
     prose_nudge: str = NO_CODE_NUDGE
     action_ledger: Any = None
+    # Applies a host.env.use() request recorded by the dispatcher callback at
+    # the next Python-cell boundary — never mid-cell (the Web pending-env
+    # model). None preserves the fixed-kernel contract.
+    apply_pending_env: Callable[[], None] | None = None
+    # Durable kernel-generation registration for Agent-owned workers; None
+    # keeps the historical in-memory-only continuity metadata.
+    generation_recorder: KernelGenerationRecorder | None = None
 
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState
     ) -> ExecutionOutcome:
         if isinstance(action, FinalizeAction):
             return execute_finalize_action(
-                action, evidence=execution_evidence(state.metadata)
+                action,
+                evidence=execution_evidence(state.metadata),
+                code_evidence=getattr(self.dispatcher, "verify_code_evidence", None),
             )
         if isinstance(action, NativeToolBatch):
             return self._execute_native(action, state)
@@ -431,12 +567,20 @@ class LocalActionExecutor:
     def _execute_code(
         self, action: CodeCell, reply: ModelReply, state: RunState
     ) -> ExecutionOutcome:
+        if action.language != "r" and self.apply_pending_env is not None:
+            self.apply_pending_env()
         refusal = self.pre_exec_gate(action.code, state.messages)
         if refusal is not None:
             self.log(f"[safety] cell not executed: {refusal}")
             return self._user_observation(refusal)
+        attempt = self._allocate_code_attempt()
         hooks = self.cell_hooks
-        token = hooks.before(action) if hooks is not None else None
+        try:
+            token = hooks.before(action) if hooks is not None else None
+        except BaseException:
+            if attempt is not None:
+                self._finish_code_attempt(attempt, "prepare_failed")
+            raise
         result: dict | None = None
         receipt_binder = getattr(self.dispatcher, "bind_artifact_receipt_scope", None)
         try:
@@ -444,7 +588,10 @@ class LocalActionExecutor:
                 receipt_binder() if callable(receipt_binder) else nullcontext([])
             ) as artifact_receipts:
                 if action.language == "r":
-                    result = self.execute_r(action.code)
+                    if attempt is None:
+                        result = self.execute_r(action.code)
+                    else:
+                        result = self.execute_r(action.code, cell_id=attempt[2])
                 else:
                     group_id = getattr(self.action_ledger, "current_group_id", None)
                     context = (
@@ -459,18 +606,59 @@ class LocalActionExecutor:
                     binder = getattr(self.kernel, "bind_action_context", None)
                     if callable(binder):
                         with binder(context):
-                            result = self.kernel.execute(action.code, origin="agent")
+                            result = self.kernel.execute(
+                                action.code,
+                                origin="agent",
+                                **({"cell_id": attempt[2]} if attempt else {}),
+                            )
                     else:
-                        result = self.kernel.execute(action.code, origin="agent")
+                        result = self.kernel.execute(
+                            action.code,
+                            origin="agent",
+                            **({"cell_id": attempt[2]} if attempt else {}),
+                        )
                     self._record_kernel_generation(state)
+                if attempt is not None:
+                    assert result is not None
+                    result["id"] = attempt[2]
+                    durable_generation = (
+                        state.metadata.get("durable_kernel_generation_id")
+                        if action.language != "r"
+                        else None
+                    )
+                    if durable_generation:
+                        attempt[0].bind_execution_attempt_generation(
+                            attempt[1], str(durable_generation)
+                        )
+                    attempt[0].mark_execution_attempt_response(attempt[1])
             if result is not None and artifact_receipts:
                 result["_openai4s_artifact_receipts"] = list(artifact_receipts)
         except BaseException:
-            if hooks is not None:
-                hooks.after(action, token, None)
+            try:
+                if hooks is not None:
+                    failed_result = (
+                        {"id": attempt[2], "error": "host-side execution failure"}
+                        if attempt is not None
+                        else None
+                    )
+                    hooks.after(action, token, failed_result)
+            finally:
+                if attempt is not None:
+                    self._finish_code_attempt(attempt, "failed")
             raise
-        if hooks is not None:
-            hooks.after(action, token, result)
+        try:
+            if hooks is not None:
+                hooks.after(action, token, result)
+            if attempt is not None:
+                attempt[0].mark_execution_attempt_capture(attempt[1])
+                self._finish_code_attempt(
+                    attempt,
+                    self._attempt_terminal_state(result),
+                )
+        except BaseException:
+            if attempt is not None:
+                self._finish_code_attempt(attempt, "record_failed")
+            raise
         assert result is not None
         # Hooks consume the Host-owned evidence before durable/output
         # projection. A headless CLI has no Artifact capture and discards it;
@@ -488,14 +676,82 @@ class LocalActionExecutor:
             reply.content
         ):
             observation += MULTI_CELL_NOTE
+        revalidate = getattr(self.dispatcher, "revalidate_pending_completion", None)
+        post_capture_error = revalidate() if callable(revalidate) else None
+        if post_capture_error:
+            observation += (
+                "\n\n[Completion evidence rejected after cell capture]\n"
+                + str(post_capture_error)
+            )
         completion = getattr(self.dispatcher, "last_output", None)
         return self._user_observation(observation, completion=completion)
+
+    def _allocate_code_attempt(self) -> tuple[Any, str, str] | None:
+        """Allocate a durable CLI Cell attempt before its worker can run."""
+
+        group_id = getattr(self.action_ledger, "current_group_id", None)
+        store = getattr(self.action_ledger, "store", None)
+        required = (
+            "allocate_execution_attempt",
+            "mark_execution_attempt_started",
+            "mark_execution_attempt_response",
+            "mark_execution_attempt_capture",
+            "finish_execution_attempt",
+        )
+        if (
+            not group_id
+            or store is None
+            or not all(callable(getattr(store, name, None)) for name in required)
+        ):
+            return None
+        cell_id = str(uuid.uuid4())
+        attempt = store.allocate_execution_attempt(
+            group_id=str(group_id),
+            producing_cell_id=cell_id,
+        )
+        attempt_id = str(attempt.get("attempt_id") or "")
+        if not attempt_id:
+            raise RuntimeError("execution attempt allocation returned no identity")
+        try:
+            store.mark_execution_attempt_started(attempt_id)
+        except BaseException:
+            try:
+                store.finish_execution_attempt(
+                    attempt_id,
+                    terminal_state="record_failed",
+                )
+            except BaseException:
+                pass
+            raise
+        return store, attempt_id, cell_id
+
+    @staticmethod
+    def _finish_code_attempt(attempt: tuple[Any, str, str], state: str) -> None:
+        attempt[0].finish_execution_attempt(
+            attempt[1],
+            terminal_state=state,
+        )
+
+    @staticmethod
+    def _attempt_terminal_state(result: dict | None) -> str:
+        if not isinstance(result, dict):
+            return "failed"
+        if result.get("interrupted"):
+            return "interrupted"
+        error = str(result.get("error") or "")
+        if "timed out" in error.lower() or "timeout" in error.lower():
+            return "timed_out"
+        return "failed" if error else "completed"
 
     def _record_kernel_generation(self, state: RunState) -> None:
         """Publish generation continuity without inventing missing identity."""
         generation = getattr(self.kernel, "generation", None)
         if generation is None:
             return
+        if self.generation_recorder is not None:
+            durable = self.generation_recorder.observe(self.kernel)
+            if durable is not None:
+                state.metadata["durable_kernel_generation_id"] = durable
         previous = state.metadata.get("active_kernel_generation")
         if previous is not None and str(previous) != str(generation):
             state.metadata["previous_kernel_generation"] = previous
@@ -687,6 +943,7 @@ __all__ = [
     "ChatModel",
     "CompactionPolicy",
     "CompletionSignal",
+    "KernelGenerationRecorder",
     "LocalActionExecutor",
     "TranscriptEventSink",
     "TranscriptTurn",

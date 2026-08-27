@@ -1,0 +1,86 @@
+{
+  "id": "delegation",
+  "version": "1.0.0",
+  "title": "委派完成契约：父代理被告知子代理做了什么",
+  "summary": "子代理的 `submitted` 只说明它选择了提交，不说明任务完成。这个工作流用脚本化模型驱动真实的 DelegationRunner、真实的子 Agent 与真实的 Store：诚实申报 blocked 的子代理，在父代理可见的信封与持久投影里都必须是 blocked——绝不能被读成完成；耗尽 max_turns 的子代理必须落到 failed 生命周期并持久记录 stop_reason。只断言终态，不做任何时序握手。",
+  "steps": [
+    "open_session",
+    "run_delegation"
+  ],
+  "permissions": [
+    "workspace:read",
+    "workspace:write",
+    "kernel:execute"
+  ],
+  "artifacts": [],
+  "failure_conditions": [
+    "诚实申报 blocked 的子代理被父代理读成完成",
+    "信封里的 task_status 与持久投影里的不一致",
+    "耗尽 max_turns 的子代理被记成 done 而不是 failed",
+    "终态没有持久化 stop_reason"
+  ],
+  "cases": [
+    {
+      "id": "delegation/blocked-child-is-not-done",
+      "title": "子代理申报 blocked：父代理不得当作完成",
+      "outcome": "provenance",
+      "inputs": {
+        "run_delegation": {
+          "child_script": [
+            "```python\nhost.submit_output(\n    {'summary': 'could not proceed: the reference genome was unavailable',\n     'limitations': ['no reference genome']},\n    ['Checked the reference availability'],\n    task_status='blocked',\n)\n```"
+          ],
+          "child_max_turns": 3,
+          "request": "call the variants against the reference"
+        }
+      },
+      "expect": {
+        "task_status": "blocked",
+        "durable_task_status": "blocked",
+        "stop_reason": "submitted",
+        "parent_may_treat_as_done__truthy": false
+      },
+      "notes": "生命周期是 done（它确实提交了），但 task_status 才是父代理该读的那一栏。"
+    },
+    {
+      "id": "delegation/completed-child-is-done",
+      "title": "真正完成的子代理：两处记录一致",
+      "outcome": "provenance",
+      "inputs": {
+        "run_delegation": {
+          "child_script": [
+            "```python\nhost.submit_output(\n    {'summary': 'counted the records'},\n    ['Counted the records'],\n)\n```"
+          ],
+          "child_max_turns": 3,
+          "request": "count the records"
+        }
+      },
+      "expect": {
+        "task_status": "completed",
+        "durable_task_status": "completed",
+        "stop_reason": "submitted",
+        "lifecycle_status": "done",
+        "parent_may_treat_as_done__truthy": true
+      }
+    },
+    {
+      "id": "delegation/max-turns-child-fails",
+      "title": "耗尽 max_turns 的子代理落到 failed 生命周期并持久记录 stop_reason",
+      "outcome": "provenance",
+      "inputs": {
+        "run_delegation": {
+          "child_script": [
+            "I think that is everything, so I will stop here."
+          ],
+          "child_max_turns": 2,
+          "request": "keep talking without acting"
+        }
+      },
+      "expect": {
+        "stop_reason": "max_turns",
+        "durable_stop_reason": "max_turns",
+        "lifecycle_status": "failed",
+        "parent_may_treat_as_done__truthy": false
+      }
+    }
+  ]
+}

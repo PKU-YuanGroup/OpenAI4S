@@ -58,12 +58,25 @@ def visible_session_clause(
     hidden rows into a phantom end-of-list — and for `search` and
     `frame_detail` the rows carry cell code and stdout, which a post-read
     filter would have already loaded.
+
+    **A delegate-frame key resolves through the frames table.** A delegated
+    child's rows are keyed under the child's own delegate frame
+    (`frame_id = root_frame_id = <child frame id>`), which never has a
+    `session_owners` row — resolving the raw key against `session_owners`
+    made every child-keyed row admin-only, invisible to the very owner whose
+    session spawned it. The frames table stores each frame's fully-resolved
+    session root, so one lookup maps a delegate-frame key to the parent
+    session; a key with no frames-table entry keeps the raw-key rule above.
     """
     # `session_expr` for a table that is not frames-shaped: `artifacts` has a
     # `root_frame_id` and no `frame_id`, and the ⌘K search needs the same rule
     # over it. Defaulted rather than required, so every existing caller keeps
     # the frames spelling.
-    session = session_expr or f"COALESCE({table}.root_frame_id, {table}.frame_id)"
+    key = session_expr or f"COALESCE({table}.root_frame_id, {table}.frame_id)"
+    session = (
+        "COALESCE((SELECT fr.root_frame_id FROM frames fr"
+        f" WHERE fr.frame_id = {key}), {key})"
+    )
     clause = (
         "(NOT EXISTS (SELECT 1 FROM users gu WHERE gu.id = ? AND gu.role = 'guest')"
         " AND EXISTS (SELECT 1 FROM session_owners so"
@@ -939,8 +952,11 @@ class FrameRepository:
                 (frame_id, page_size, page * page_size),
             ).fetchall()
             children = self._connection.execute(
+                # frame_id breaks created_at ties so same-millisecond delegate
+                # siblings keep one stable order (child export ordinals rely
+                # on this being deterministic across store generations).
                 "SELECT frame_id,kind,name,status,depth FROM frames "
-                "WHERE parent_id=? ORDER BY created_at ASC",
+                "WHERE parent_id=? ORDER BY created_at ASC, frame_id ASC",
                 (frame_id,),
             ).fetchall()
         page_count = max(1, (total + page_size - 1) // page_size)
@@ -1033,6 +1049,7 @@ class FrameRepository:
         figures: list | None = None,
         files_read: list | None = None,
         files_written: list | None = None,
+        generation_id: str | None = None,
     ) -> str:
         cell_id = result.get("id") or f"c-{uuid.uuid4().hex[:12]}"
         if visibility is None:
@@ -1097,8 +1114,9 @@ class FrameRepository:
             "status,origin,code,code_hash,visibility,pin,replay_policy,"
             "variable_reads,variable_writes,variable_deletes,"
             "mutation_uncertain,stdout,stderr,error,figures,files_read,"
-            "files_written,interrupted,wall_s,cpu_s,peak_rss_kb,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "files_written,interrupted,wall_s,cpu_s,peak_rss_kb,created_at,"
+            "generation_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 cell_id,
                 frame_id,
@@ -1131,6 +1149,7 @@ class FrameRepository:
                 usage.get("cpu_s"),
                 usage.get("peak_rss_kb"),
                 self._clock_ms(),
+                generation_id,
             ),
         )
         return cell_id
@@ -1162,10 +1181,12 @@ class FrameRepository:
                 "e.code_hash,e.visibility,e.pin,e.replay_policy,"
                 "e.variable_reads,e.variable_writes,e.variable_deletes,"
                 "e.mutation_uncertain,e.stderr,e.error,e.figures,e.files_read,e.files_written,"
-                "e.cpu_s,e.peak_rss_kb,e.created_at,(SELECT a.generation_id "
+                "e.interrupted,"
+                "e.cpu_s,e.peak_rss_kb,e.created_at,COALESCE((SELECT a.generation_id "
                 "FROM execution_attempts AS a WHERE a.producing_cell_id="
                 "e.producing_cell_id AND a.generation_id IS NOT NULL "
-                "ORDER BY a.attempt_ordinal DESC LIMIT 1) AS generation_id "
+                "ORDER BY a.attempt_ordinal DESC LIMIT 1),e.generation_id) "
+                "AS generation_id "
                 "FROM execution_log AS e WHERE e.root_frame_id=? " + branch_filter + " "
                 "ORDER BY COALESCE(e.state_revision,e.cell_index) ASC,"
                 "e.created_at ASC,e.producing_cell_id ASC",
@@ -1194,6 +1215,7 @@ class FrameRepository:
                 cell[key] = list(normalize_string_list(cell.get(key)))
             cell["pin"] = bool(cell.get("pin"))
             cell["mutation_uncertain"] = bool(cell.get("mutation_uncertain"))
+            cell["interrupted"] = bool(cell.get("interrupted"))
             if cell.get("state_revision") is None:
                 cell["state_revision"] = cell.get("cell_index")
             cells.append(cell)
@@ -1226,18 +1248,25 @@ class FrameRepository:
         return cells
 
     def cell_detail(self, producing_cell_id: str) -> dict | None:
+        # Aliased apart from the raw column: `e.*` now expands to a
+        # `generation_id` of its own, and sqlite3.Row resolves a duplicated
+        # name to the first (raw) column — which would shadow the
+        # attempt-derived binding for Web cells.
         with self._lock:
             row = self._connection.execute(
-                "SELECT e.*,(SELECT a.generation_id FROM execution_attempts AS a "
+                "SELECT e.*,COALESCE((SELECT a.generation_id "
+                "FROM execution_attempts AS a "
                 "WHERE a.producing_cell_id=e.producing_cell_id "
                 "AND a.generation_id IS NOT NULL ORDER BY a.attempt_ordinal DESC "
-                "LIMIT 1) AS generation_id FROM execution_log AS e "
+                "LIMIT 1),e.generation_id) AS resolved_generation_id "
+                "FROM execution_log AS e "
                 "WHERE e.producing_cell_id=?",
                 (producing_cell_id,),
             ).fetchone()
         if not row:
             return None
         cell = dict(row)
+        cell["generation_id"] = cell.pop("resolved_generation_id")
         for key in (
             "figures",
             "files_read",

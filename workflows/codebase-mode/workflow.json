@@ -1,0 +1,442 @@
+{
+  "id": "codebase-mode",
+  "version": "1.0.0",
+  "title": "代码交付模式：源码树、薄入口、真实测试证据",
+  "summary": "当交付物是可复用管线或代码变更时，运行必须把实现写成源码文件、保留一个薄入口、真正跑一遍测试，并在完成时逐项申报 source_files / entry_points / architecture_summary / test_evidence。Host 会对着文件系统、artifact 存储与execution_log 里那条 cell 的真实 stdout 逐项核验：文件被删、摘要对不上、入口无法编译、cell id 是伪造的、被指名的 cell 其实失败了、多文件写到一半就宣称完成——任何一条都必须被拒绝，而不是被相信。",
+  "steps": [
+    "open_session",
+    "produce_codebase",
+    "verify_codebase"
+  ],
+  "permissions": [
+    "workspace:read",
+    "workspace:write",
+    "kernel:execute"
+  ],
+  "artifacts": [
+    "seqpipe/domain.py",
+    "seqpipe/io.py",
+    "seqpipe/pipeline.py",
+    "run_pipeline.py",
+    "tests/test_domain.py"
+  ],
+  "failure_conditions": [
+    "被申报的源码文件不存在或不在证据根内却仍被采信",
+    "被申报的源码文件与其 sha256 不符却仍被采信",
+    "入口文件无法编译却仍被当作可运行入口",
+    "test_evidence 指向不存在的 cell 或本次运行之外的 cell 却仍被采信",
+    "被指名的 cell 记录的 stdout 明确报告失败，却被当成测试通过",
+    "多文件写入中途中断，只写了一半却按完整交付被接受",
+    "analysis_run 模式下的普通完成被这套要求误伤"
+  ],
+  "cases": [
+    {
+      "id": "codebase-mode/structured-pipeline-accepted",
+      "title": "结构化管线被验证并接受",
+      "outcome": "success",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "verify_codebase": {
+          "task_mode": "codebase_change"
+        }
+      },
+      "expect": {
+        "accepted__truthy": true,
+        "files_declared": 7,
+        "files_written": 7,
+        "test_cell_status": "ok",
+        "committed_source_files": 7,
+        "committed_entry_points": [
+          "run_pipeline.py"
+        ],
+        "test_stdout__contains": "OK"
+      }
+    },
+    {
+      "id": "codebase-mode/single-file-task-stays-single-file",
+      "title": "简单任务保持单文件，模式不强加文件数下限",
+      "outcome": "success",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "convert.py": "\"\"\"One honest module: the task really is this small.\"\"\"\n\nimport argparse\n\n\ndef celsius_to_fahrenheit(value):\n    return value * 9.0 / 5.0 + 32.0\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"celsius\", type=float)\n    args = parser.parse_args(argv)\n    print(celsius_to_fahrenheit(args.celsius))\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_convert.py": "import unittest\n\nfrom convert import celsius_to_fahrenheit\n\n\nclass Convert(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(celsius_to_fahrenheit(0), 32.0)\n\n    def test_boiling(self):\n        self.assertEqual(celsius_to_fahrenheit(100), 212.0)\n"
+          },
+          "order": [
+            "convert.py",
+            "tests/__init__.py",
+            "tests/test_convert.py"
+          ],
+          "entry_points": [
+            "convert.py"
+          ],
+          "architecture_summary": "convert.py owns the conversion and its CLI; the task is one function and splitting it further would only spread the reader out.",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "verify_codebase": {
+          "task_mode": "reusable_pipeline"
+        }
+      },
+      "expect": {
+        "accepted__truthy": true,
+        "files_written": 3,
+        "committed_entry_points": [
+          "convert.py"
+        ]
+      },
+      "notes": "没有文件数或行数门槛：诚实的单模块任务必须照样通过。"
+    },
+    {
+      "id": "codebase-mode/analysis-run-is-unaffected",
+      "title": "analysis_run 的普通完成不受这套要求影响",
+      "outcome": "success",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "verify_codebase": {
+          "task_mode": "analysis_run",
+          "omit_claim": true
+        }
+      },
+      "expect": {
+        "accepted__truthy": true,
+        "committed_source_files": 0
+      },
+      "notes": "向后兼容的另一半：默认模式既不要求这些字段，也不校验它们。"
+    },
+    {
+      "id": "codebase-mode/deleted-source-file",
+      "title": "被申报的源码文件已被删除",
+      "outcome": "failure",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "tamper_codebase": {
+          "mode": "delete_source",
+          "target": "seqpipe/io.py"
+        },
+        "verify_codebase": {
+          "task_mode": "codebase_change"
+        }
+      },
+      "expect": {
+        "error__contains": "does not exist",
+        "error_type": "RuntimeError"
+      },
+      "steps": [
+        "open_session",
+        "produce_codebase",
+        "tamper_codebase",
+        "verify_codebase"
+      ]
+    },
+    {
+      "id": "codebase-mode/corrupted-source-file",
+      "title": "文件内容被替换，sha256 对不上",
+      "outcome": "failure",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "tamper_codebase": {
+          "mode": "corrupt_source",
+          "target": "seqpipe/domain.py"
+        },
+        "verify_codebase": {
+          "task_mode": "codebase_change"
+        }
+      },
+      "expect": {
+        "error__contains": "declares sha256",
+        "error_type": "RuntimeError"
+      },
+      "steps": [
+        "open_session",
+        "produce_codebase",
+        "tamper_codebase",
+        "verify_codebase"
+      ]
+    },
+    {
+      "id": "codebase-mode/broken-entry-point",
+      "title": "入口被改坏，连摘要一起更新也救不了它",
+      "outcome": "failure",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "tamper_codebase": {
+          "mode": "break_entry_point"
+        },
+        "verify_codebase": {
+          "task_mode": "codebase_change"
+        }
+      },
+      "expect": {
+        "error__contains": "does not compile",
+        "error_type": "RuntimeError"
+      },
+      "steps": [
+        "open_session",
+        "produce_codebase",
+        "tamper_codebase",
+        "verify_codebase"
+      ],
+      "notes": "伪造者连 sha256 一起改了，声明内部自洽——编译器仍然抓住它。"
+    },
+    {
+      "id": "codebase-mode/forged-test-cell",
+      "title": "test_evidence 指向一个从未执行过的 cell",
+      "outcome": "failure",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "tamper_codebase": {
+          "mode": "forge_cell"
+        },
+        "verify_codebase": {
+          "task_mode": "codebase_change"
+        }
+      },
+      "expect": {
+        "error__contains": "never executed",
+        "error_type": "RuntimeError"
+      },
+      "steps": [
+        "open_session",
+        "produce_codebase",
+        "tamper_codebase",
+        "verify_codebase"
+      ]
+    },
+    {
+      "id": "codebase-mode/tests-actually-failed",
+      "title": "被指名的 cell 真的跑了，但它记录的输出是失败",
+      "outcome": "failure",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v"
+        },
+        "tamper_codebase": {
+          "mode": "failing_tests"
+        },
+        "verify_codebase": {
+          "task_mode": "codebase_change"
+        }
+      },
+      "expect": {
+        "error__contains": "did not pass",
+        "error_type": "RuntimeError"
+      },
+      "steps": [
+        "open_session",
+        "produce_codebase",
+        "tamper_codebase",
+        "verify_codebase"
+      ],
+      "notes": "通过与否只从存储的 stdout 读，模型说了什么不作数。"
+    },
+    {
+      "id": "codebase-mode/interrupted-multi-file-write",
+      "title": "多文件写入写到一半，却按完整交付申报",
+      "outcome": "failure",
+      "inputs": {
+        "produce_codebase": {
+          "files": {
+            "seqpipe/__init__.py": "from .pipeline import run\n\n__all__ = [\"run\"]\n",
+            "seqpipe/domain.py": "\"\"\"Scoring rules. No I/O here.\"\"\"\n\n\ndef gc_fraction(sequence):\n    if not sequence:\n        return 0.0\n    hits = sum(1 for base in sequence.upper() if base in \"GC\")\n    return hits / len(sequence)\n\n\ndef score(sequence, target=0.5):\n    return round(1.0 - abs(gc_fraction(sequence) - target), 6)\n",
+            "seqpipe/io.py": "\"\"\"Reading seeds and writing results. No scoring here.\"\"\"\n\nimport csv\nfrom pathlib import Path\n\n\ndef read_seeds(path):\n    rows = []\n    with Path(path).open(newline=\"\", encoding=\"utf-8\") as handle:\n        for row in csv.DictReader(handle):\n            rows.append(row[\"sequence\"])\n    return rows\n\n\ndef write_scores(path, scored):\n    with Path(path).open(\"w\", newline=\"\", encoding=\"utf-8\") as handle:\n        writer = csv.writer(handle)\n        writer.writerow([\"sequence\", \"score\"])\n        writer.writerows(scored)\n",
+            "seqpipe/pipeline.py": "\"\"\"Orchestration: the order the steps run in, and nothing else.\"\"\"\n\nfrom .domain import score\nfrom .io import read_seeds, write_scores\n\n\ndef run(seed_path, out_path, target=0.5):\n    scored = [(seq, score(seq, target)) for seq in read_seeds(seed_path)]\n    scored.sort(key=lambda item: item[1], reverse=True)\n    write_scores(out_path, scored)\n    return scored\n",
+            "run_pipeline.py": "\"\"\"Thin entry point: argument parsing and wiring only.\"\"\"\n\nimport argparse\n\nfrom seqpipe import run\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Score seed sequences.\")\n    parser.add_argument(\"seeds\")\n    parser.add_argument(\"out\")\n    parser.add_argument(\"--target\", type=float, default=0.5)\n    args = parser.parse_args(argv)\n    run(args.seeds, args.out, args.target)\n    return 0\n\n\nif __name__ == \"__main__\":\n    raise SystemExit(main())\n",
+            "tests/__init__.py": "",
+            "tests/test_domain.py": "import unittest\n\nfrom seqpipe.domain import gc_fraction, score\n\n\nclass Domain(unittest.TestCase):\n    def test_gc_fraction_of_an_empty_sequence_is_zero(self):\n        self.assertEqual(gc_fraction(\"\"), 0.0)\n\n    def test_gc_fraction_counts_both_cases(self):\n        self.assertEqual(gc_fraction(\"GgCcAT\"), 4 / 6)\n\n    def test_score_peaks_at_the_target(self):\n        self.assertEqual(score(\"GCAT\", 0.5), 1.0)\n        self.assertLess(score(\"GGGG\", 0.5), 1.0)\n"
+          },
+          "order": [
+            "seqpipe/__init__.py",
+            "seqpipe/domain.py",
+            "seqpipe/io.py",
+            "seqpipe/pipeline.py",
+            "run_pipeline.py",
+            "tests/__init__.py",
+            "tests/test_domain.py"
+          ],
+          "entry_points": [
+            "run_pipeline.py"
+          ],
+          "architecture_summary": "seqpipe.domain owns scoring with no I/O, seqpipe.io owns reading seeds and writing results, seqpipe.pipeline owns the order the steps run in, and run_pipeline.py is a thin CLI that parses arguments and calls run().",
+          "test_command": "python -m unittest discover -s tests -t . -v",
+          "stop_after": 3
+        },
+        "verify_codebase": {
+          "task_mode": "reusable_pipeline"
+        }
+      },
+      "expect": {
+        "error__contains": "does not exist",
+        "error_type": "RuntimeError",
+        "files_written": 3,
+        "files_declared": 7
+      }
+    }
+  ]
+}

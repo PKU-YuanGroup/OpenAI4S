@@ -750,6 +750,8 @@ class _Host:
         permissions: dict[str, str] | None = None,
         capabilities: list[str] | None = None,
         unrestricted: bool | None = None,
+        require_artifacts: list[str] | None = None,
+        retries: int | None = None,
         wait: bool = True,
     ) -> Any:
         """Spawn sub-agent(s). str/dict -> single; list -> list of results.
@@ -757,6 +759,11 @@ class _Host:
         wait=True (default) blocks for the result(s); wait=False returns child
         handle(s) immediately for later host.collect. output_schema, when
         given, forces each child to submit_output matching that schema.
+        require_artifacts names artifact files (exact names or trailing-star
+        globs) the child must have produced — missing ones downgrade its
+        task_status to at most partial. retries (0-2, clamped; wait=True only)
+        re-runs a partial/blocked/failed child with its previous limitations
+        appended to the request.
         """
         return self._call(
             "delegate",
@@ -773,6 +780,8 @@ class _Host:
                     "permissions": permissions,
                     "capabilities": capabilities,
                     "unrestricted": unrestricted,
+                    "require_artifacts": require_artifacts,
+                    "retries": retries,
                     "wait": wait,
                 }
             ],
@@ -809,14 +818,32 @@ class _Host:
         completion_bullets: list[str],
         *,
         output_schema: dict | None = None,
+        task_status: str | None = None,
+        source_files: list | None = None,
+        entry_points: list | None = None,
+        architecture_summary: str | None = None,
+        test_evidence: list | None = None,
     ) -> dict:
         """Submit the task's structured result + human-facing completion bullets.
 
         completion_bullets must be 1-4 completed-action strings. English uses
         past-tense, verb-first wording; CJK verb phrases are accepted without
         English tense morphology. If output_schema is given, `output` is
-        validated against it. A validation failure returns {"error":...} so
-        the model can retry.
+        validated against it. task_status optionally declares an honest
+        machine-readable status (completed|partial|blocked|failed; omitted
+        means completed) — a delegated parent reads it instead of parsing
+        prose. A validation failure returns {"error":...} so the model can
+        retry.
+
+        source_files ([{path, sha256?}]), entry_points ([path]),
+        architecture_summary (str) and test_evidence ([{command,
+        producing_cell_id}]) describe a code deliverable. They are optional for
+        an ordinary analysis run and REQUIRED — and verified against the
+        filesystem, the artifact store and the recorded cell output — when the
+        turn runs in reusable_pipeline or codebase_change mode. There is
+        deliberately no field for a test's output text: pass/fail is read off
+        the stored stdout of the cell you name, never from what you say it
+        printed.
         """
         return self._call(
             "submit_output",
@@ -825,6 +852,11 @@ class _Host:
                     "output": output,
                     "completion_bullets": completion_bullets,
                     "output_schema": output_schema,
+                    "task_status": task_status,
+                    "source_files": source_files,
+                    "entry_points": entry_points,
+                    "architecture_summary": architecture_summary,
+                    "test_evidence": test_evidence,
                 }
             ],
         )

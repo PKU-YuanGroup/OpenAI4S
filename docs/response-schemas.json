@@ -1700,7 +1700,7 @@
         "type": "object"
       }
     },
-    "DELETE /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
+    "DELETE /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -2471,6 +2471,56 @@
       }
     },
     "DELETE /frames/([^/]+)/execution-queue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/execution-sources [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/execution-sources/export [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -8689,7 +8739,7 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
+    "GET /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -8714,7 +8764,7 @@
         "type": "object"
       }
     },
-    "GET /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [ok]": {
+    "GET /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution) [ok]": {
       "schema": {
         "properties": {
           "active_count": {
@@ -11263,6 +11313,123 @@
             ]
           },
           "children": {
+            "items": {
+              "properties": {
+                "child_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "number"
+                },
+                "depth": {
+                  "type": "integer"
+                },
+                "error": {
+                  "type": "null"
+                },
+                "finished_at": {
+                  "type": "null"
+                },
+                "frame_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "output": {
+                  "type": "null"
+                },
+                "overrides": {
+                  "properties": {},
+                  "required": [],
+                  "type": "object"
+                },
+                "parent_child_id": {
+                  "type": "null"
+                },
+                "parent_frame_id": {
+                  "type": "null"
+                },
+                "progress": {
+                  "properties": {
+                    "last_progress_at": {
+                      "type": "null"
+                    },
+                    "max_turns": {
+                      "type": "null"
+                    },
+                    "turn_boundary": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "last_progress_at",
+                    "max_turns",
+                    "turn_boundary"
+                  ],
+                  "type": "object"
+                },
+                "result": {
+                  "type": "null"
+                },
+                "started_at": {
+                  "type": "null"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "steering": {
+                  "properties": {
+                    "delivered": {
+                      "type": "integer"
+                    },
+                    "discarded": {
+                      "type": "integer"
+                    },
+                    "messages": {
+                      "type": "array"
+                    },
+                    "queued": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "delivered",
+                    "discarded",
+                    "messages",
+                    "queued"
+                  ],
+                  "type": "object"
+                },
+                "stop_reason": {
+                  "type": "string"
+                },
+                "task_status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "child_id",
+                "created_at",
+                "depth",
+                "error",
+                "finished_at",
+                "frame_id",
+                "name",
+                "output",
+                "overrides",
+                "parent_child_id",
+                "parent_frame_id",
+                "progress",
+                "result",
+                "started_at",
+                "status",
+                "steering",
+                "stop_reason",
+                "task_status"
+              ],
+              "type": "object"
+            },
             "type": "array"
           },
           "initialized": {
@@ -12094,6 +12261,193 @@
           "queued_count",
           "root_frame_id",
           "session_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/execution-sources [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/execution-sources [ok]": {
+      "schema": {
+        "properties": {
+          "frames": {
+            "items": {
+              "properties": {
+                "cells": {
+                  "items": {
+                    "properties": {
+                      "artifacts": {
+                        "type": "array"
+                      },
+                      "environment": {
+                        "type": "null"
+                      },
+                      "generation_id": {
+                        "type": "null"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "interrupted": {
+                        "type": "boolean"
+                      },
+                      "language": {
+                        "type": "string"
+                      },
+                      "seq": {
+                        "type": "integer"
+                      },
+                      "source_sha256": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "artifacts",
+                      "environment",
+                      "generation_id",
+                      "id",
+                      "interrupted",
+                      "language",
+                      "seq",
+                      "source_sha256",
+                      "status"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "counts": {
+                  "properties": {
+                    "cells": {
+                      "type": "integer"
+                    },
+                    "error": {
+                      "type": "integer"
+                    },
+                    "interrupted": {
+                      "type": "integer"
+                    },
+                    "ok": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "cells",
+                    "error",
+                    "interrupted",
+                    "ok"
+                  ],
+                  "type": "object"
+                },
+                "depth": {
+                  "type": "integer"
+                },
+                "frame_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "order": {
+                  "type": "integer"
+                },
+                "parent_id": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "cells",
+                "counts",
+                "depth",
+                "frame_id",
+                "kind",
+                "name",
+                "order",
+                "parent_id",
+                "root_frame_id",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "root_frame_id": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "frames",
+          "root_frame_id",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/execution-sources/export [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -19390,7 +19744,7 @@
         "type": "object"
       }
     },
-    "PATCH /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
+    "PATCH /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -20310,6 +20664,56 @@
       }
     },
     "PATCH /frames/([^/]+)/execution-queue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/execution-sources [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/execution-sources/export [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -26020,7 +26424,7 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
+    "POST /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -26045,7 +26449,7 @@
         "type": "object"
       }
     },
-    "POST /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [ok]": {
+    "POST /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution) [ok]": {
       "schema": {
         "properties": {
           "action_cursor": {
@@ -29841,6 +30245,56 @@
       }
     },
     "POST /frames/([^/]+)/execution-queue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/execution-sources [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/execution-sources/export [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -37557,7 +38011,7 @@
         "type": "object"
       }
     },
-    "PUT /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution) [error]": {
+    "PUT /frames/([^/]+)/(?:action-timeline|execution-queue|context|security|delegations|recovery(?:/actions(?:/(?:restore|retry|restart_fresh))?)?|branches(?:/(?:checkpoints|fork|revert-preview|revert|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo|operations)|notebook/export|session/export|kernel/variables|execution-sources(?:/export)?|execution) [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -38328,6 +38782,56 @@
       }
     },
     "PUT /frames/([^/]+)/execution-queue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/execution-sources [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/execution-sources/export [error]": {
       "schema": {
         "properties": {
           "code": {

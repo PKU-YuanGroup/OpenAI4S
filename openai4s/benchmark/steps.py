@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -1181,6 +1183,356 @@ def telemetry_identity_cycle(ctx: Context, inputs: dict) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# codebase mode: a source deliverable, and whether the Host believes the claim
+# --------------------------------------------------------------------------
+
+
+def _local_python_command(command: str) -> str:
+    """Resolve a portable ``python`` test command to this benchmark runtime."""
+
+    try:
+        words = shlex.split(command, posix=True)
+    except ValueError:
+        return command
+    if words and words[0] in {"python", "python3"}:
+        return shlex.join([sys.executable, *words[1:]])
+    return command
+
+
+def _run_codebase_test(ctx: Context, command: str) -> tuple[str, dict, str]:
+    """Run one claimed test command through the real Host bash capability."""
+
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.kernel.manager import Kernel
+
+    store = ctx.store
+    root_frame_id = str(ctx.state["root_frame_id"])
+    project_id = str(ctx.state["project_id"])
+    branch_id = root_frame_id
+    turn_id = str(
+        ctx.state.setdefault("codebase_turn_id", f"benchmark-codebase-{root_frame_id}")
+    )
+    dispatcher = build_dispatcher(
+        ctx.config,
+        frame_id=root_frame_id,
+        workspace=ctx.workspace,
+    )
+    dispatcher.set_task_evidence_scope(turn_id=turn_id, branch_id=branch_id)
+    store.set_permission_rule(
+        scope="conversation",
+        scope_id=root_frame_id,
+        tool="bash",
+        pattern=command,
+        decision="allow",
+    )
+    group = store.append_action_group(
+        root_frame_id=root_frame_id,
+        branch_id=branch_id,
+        turn_id=turn_id,
+        kind="code",
+    )
+    group_id = str(group["group_id"])
+    cell_id = str(uuid.uuid4())
+    attempt = store.allocate_execution_attempt(
+        group_id=group_id,
+        producing_cell_id=cell_id,
+    )
+    attempt_id = str(attempt["attempt_id"])
+    store.mark_execution_attempt_started(attempt_id)
+    code = (
+        f"_test = host.bash({command!r})\n"
+        "print(_test.get('stdout', ''), end='')\n"
+        "print(_test.get('stderr', ''), end='')\n"
+        "print('exit', _test.get('exit_code'))\n"
+    )
+    kernel = Kernel(dispatcher=dispatcher, cwd=str(ctx.workspace))
+    finished = False
+    try:
+        with kernel.bind_action_context(
+            {
+                "action_group_id": group_id,
+                "action_id": f"{group_id}:action",
+                "tool_call_id": None,
+            }
+        ):
+            result = kernel.execute(code, cell_id=cell_id)
+        store.mark_execution_attempt_response(attempt_id)
+        logged_cell_id = store.log_cell(
+            frame_id=root_frame_id,
+            root_frame_id=root_frame_id,
+            project_id=project_id,
+            code=code,
+            result=result,
+            origin="agent",
+            language="python",
+        )
+        if logged_cell_id != cell_id:
+            raise RuntimeError("test Cell identity changed while it was recorded")
+        store.mark_execution_attempt_capture(attempt_id)
+        terminal_state = "failed" if result.get("error") else "completed"
+        store.finish_execution_attempt(attempt_id, terminal_state=terminal_state)
+        finished = True
+    finally:
+        if not finished:
+            try:
+                store.finish_execution_attempt(
+                    attempt_id,
+                    terminal_state="failed",
+                )
+            except Exception:  # noqa: BLE001 - preserve the execution failure
+                pass
+        kernel.shutdown()
+    if result.get("error"):
+        raise RuntimeError(
+            f"test cell failed: {result.get('error')}: "
+            f"{result.get('error_message')}"
+        )
+    return code, result, cell_id
+
+
+def produce_codebase(ctx: Context, inputs: dict) -> dict:
+    """Write a structured deliverable with the real kernel, then really test it.
+
+    One cell per file, executed in a real persistent Python kernel, so the
+    files exist because a cell wrote them. Each written file is registered as
+    an artifact version through the real Store. The tests then run as a real
+    subprocess launched from a real cell, and that cell is recorded in the real
+    ``execution_log`` -- which is the only thing the completion contract will
+    accept as evidence that they passed.
+
+    ``stop_after`` writes only the first N files while the claim still names
+    every one of them: the half-written set claimed complete, which is exactly
+    the shape an interrupted multi-file write leaves behind.
+    """
+    from openai4s.kernel.manager import Kernel
+
+    files: dict[str, str] = dict(inputs["files"])
+    order = [str(name) for name in (inputs.get("order") or files)]
+    missing = [name for name in order if name not in files]
+    if missing:
+        raise KeyError(f"order names files the case never declares: {missing}")
+    stop_after = inputs.get("stop_after")
+    limit = len(order) if stop_after is None else int(stop_after)
+
+    written: list[str] = []
+    kernel = Kernel(cwd=str(ctx.workspace))
+    try:
+        for name in order[:limit]:
+            code = (
+                "from pathlib import Path\n"
+                f"_p = Path({name!r})\n"
+                "_p.parent.mkdir(parents=True, exist_ok=True)\n"
+                f"_p.write_text({files[name]!r}, encoding='utf-8')\n"
+                f"print('wrote', {name!r})\n"
+            )
+            result = kernel.execute(code)
+            if result.get("error"):
+                raise RuntimeError(
+                    f"writing {name} failed: {result.get('error')}: "
+                    f"{result.get('error_message')}"
+                )
+            written.append(name)
+
+    finally:
+        kernel.shutdown()
+
+    command = _local_python_command(
+        str(inputs.get("test_command") or "python -m unittest discover -s tests -v")
+    )
+    test_code, test_result, cell_id = _run_codebase_test(ctx, command)
+
+    for name in written:
+        path = ctx.workspace / name
+        data = path.read_bytes()
+        ctx.store.save_artifact(
+            path=str(path),
+            filename=name,
+            content_type="text/x-python",
+            size_bytes=len(data),
+            checksum=hashlib.sha256(data).hexdigest(),
+            frame_id=ctx.state["root_frame_id"],
+            root_frame_id=ctx.state["root_frame_id"],
+            project_id=ctx.state["project_id"],
+        )
+
+    # The claim names every declared file, whether or not it got written: a
+    # run that stopped halfway is only interesting if it still says it is done.
+    claim = {
+        "source_files": [
+            {
+                "path": name,
+                **(
+                    {
+                        "sha256": hashlib.sha256(
+                            (ctx.workspace / name).read_bytes()
+                        ).hexdigest()
+                    }
+                    if (ctx.workspace / name).is_file()
+                    else {}
+                ),
+            }
+            for name in order
+        ],
+        "entry_points": [str(name) for name in inputs.get("entry_points") or []],
+        "architecture_summary": str(
+            inputs.get("architecture_summary")
+            or "One module per responsibility, with a thin entry point."
+        ),
+        "test_evidence": [{"command": command, "producing_cell_id": cell_id}],
+    }
+    ctx.state["codebase_claim"] = claim
+    ctx.state["codebase_files"] = order
+    ctx.state["codebase_written"] = written
+    ctx.state["codebase_test_cell"] = cell_id
+    return {
+        "files_declared": len(order),
+        "files_written": len(written),
+        "test_cell_status": "error" if test_result.get("error") else "ok",
+        "test_stdout": test_result.get("stdout", ""),
+    }
+
+
+def tamper_codebase(ctx: Context, inputs: dict) -> dict:
+    """Break one thing the completion claim depends on.
+
+    Each mode attacks a different check, and ``break_entry_point`` deliberately
+    refreshes the declared digest as well -- the forger who remembers to update
+    the hash is still caught, because a broken entry point does not compile.
+    """
+    mode = str(inputs.get("mode") or "")
+    claim = ctx.state["codebase_claim"]
+    if mode == "delete_source":
+        target = str(inputs.get("target") or ctx.state["codebase_written"][-1])
+        (ctx.workspace / target).unlink()
+        return {"tampered": mode, "target": target}
+    if mode == "corrupt_source":
+        target = str(inputs.get("target") or ctx.state["codebase_written"][-1])
+        (ctx.workspace / target).write_text("# swapped\n", encoding="utf-8")
+        return {"tampered": mode, "target": target}
+    if mode == "break_entry_point":
+        target = str(claim["entry_points"][0])
+        path = ctx.workspace / target
+        path.write_text("def main(:\n    pass\n", encoding="utf-8")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        for entry in claim["source_files"]:
+            if entry["path"] == target and "sha256" in entry:
+                entry["sha256"] = digest
+        return {"tampered": mode, "target": target}
+    if mode == "forge_cell":
+        claim["test_evidence"] = [
+            {
+                "command": claim["test_evidence"][0]["command"],
+                "producing_cell_id": str(inputs.get("cell_id") or "cell-never-ran"),
+            }
+        ]
+        return {"tampered": mode}
+    if mode == "failing_tests":
+        # A real cell, a real failing test run, a real execution_log row. The
+        # claim points at it and calls it evidence of a pass.
+        (ctx.workspace / "tests" / "test_broken.py").write_text(
+            "import unittest\n\n\n"
+            "class Broken(unittest.TestCase):\n"
+            "    def test_it(self):\n"
+            "        self.assertEqual(1, 2)\n",
+            encoding="utf-8",
+        )
+        command = str(claim["test_evidence"][0]["command"])
+        _code, _result, cell_id = _run_codebase_test(ctx, command)
+        claim["test_evidence"] = [{"command": command, "producing_cell_id": cell_id}]
+        return {"tampered": mode, "cell_id": cell_id}
+    raise KeyError(f"unknown codebase tamper mode {mode!r}")
+
+
+def verify_codebase(ctx: Context, inputs: dict) -> dict:
+    """The real completion contract decides, in the real task mode.
+
+    This drives ``host.submit_output`` through a real ``HostDispatcher``, so
+    the refusal (or the acceptance) is the product's own, not a re-implemented
+    check that happens to agree with it.
+    """
+    from openai4s.host_dispatch import build_dispatcher
+
+    mode = str(inputs.get("task_mode") or "codebase_change")
+    dispatcher = build_dispatcher(ctx.config, frame_id=ctx.state["root_frame_id"])
+    dispatcher.set_workspace(ctx.workspace)
+    dispatcher.set_task_mode(mode)
+    dispatcher.set_task_evidence_scope(
+        turn_id=ctx.state.get("codebase_turn_id"),
+        branch_id=ctx.state["root_frame_id"],
+    )
+    spec: dict[str, Any] = {
+        "output": {"summary": "built the pipeline"},
+        "completion_bullets": ["Wrote the pipeline package"],
+    }
+    if not inputs.get("omit_claim"):
+        spec.update(ctx.state["codebase_claim"])
+    result = dispatcher("submit_output", [spec])
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError("completion refused: " + str(result["error"]))
+    committed = dispatcher.last_output or {}
+    return {
+        "accepted": result == {"status": "ok"},
+        "task_mode": mode,
+        "committed_source_files": len(committed.get("source_files") or []),
+        "committed_entry_points": list(committed.get("entry_points") or []),
+    }
+
+
+# --------------------------------------------------------------------------
+# delegation: what the parent is told a child did
+# --------------------------------------------------------------------------
+
+
+def run_delegation(ctx: Context, inputs: dict) -> dict:
+    """One scripted child through the REAL DelegationRunner, Agent and Store.
+
+    Only the model is injected. Terminal states only -- no timing handshakes:
+    delegation timing is flaky on a loaded runner and a benchmark that waits on
+    it measures the runner, not the contract.
+    """
+    from unittest import mock
+
+    import openai4s.agent.loop as loop_mod
+    from openai4s.agent.delegation import DelegationRunner
+
+    script = [str(item) for item in inputs["child_script"]]
+    seen = {"n": 0}
+
+    def scripted_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        index = min(seen["n"], len(script) - 1)
+        seen["n"] += 1
+        return {"content": script[index], "usage": {}}
+
+    runner = DelegationRunner(
+        ctx.config,
+        child_max_turns=int(inputs.get("child_max_turns", 3)),
+        parent_frame_id=ctx.state["root_frame_id"],
+        store=ctx.store,
+        workspace=str(ctx.workspace),
+    )
+    with mock.patch.object(loop_mod, "chat", scripted_chat):
+        envelope = runner({"request": str(inputs.get("request") or "do the thing")})
+
+    projection = ctx.store.delegation_tree(ctx.state["root_frame_id"])
+    children = projection.get("children") or []
+    durable = children[-1] if children else {}
+    task_status = envelope.get("task_status")
+    return {
+        "task_status": task_status,
+        "stop_reason": envelope.get("stop_reason"),
+        "lifecycle_status": durable.get("status"),
+        "durable_task_status": durable.get("task_status"),
+        "durable_stop_reason": durable.get("stop_reason"),
+        # The one thing a parent must never get wrong: anything but
+        # `completed` means that child's task is not done.
+        "parent_may_treat_as_done": task_status == "completed",
+        "stats": projection.get("stats") or {},
+        "turns": envelope.get("turns"),
+    }
+
+
 class SkipCase(Exception):
     """This host cannot run the case; not a failure of the system under test."""
 
@@ -1215,6 +1567,10 @@ STEPS: dict[str, Callable[[Context, dict], dict]] = {
     "science_query": science_query,
     "connector_drift_check": connector_drift_check,
     "host_file_write": host_file_write,
+    "produce_codebase": produce_codebase,
+    "tamper_codebase": tamper_codebase,
+    "verify_codebase": verify_codebase,
+    "run_delegation": run_delegation,
     "telemetry_identity_cycle": telemetry_identity_cycle,
 }
 

@@ -10,9 +10,9 @@ skills/example_stats/
 
 Skills are consumed by **writing code**. The loader surfaces each `SKILL.md` to the model via *progressive disclosure* (only a one-line summary up front; the full doc is fetched on demand with `host.search_skills(query)`), the kernel bootstrap finder binds each permitted Skill package to its exact discovered directory, and the agent runs e.g. `from example_stats.kernel import summary`. A Skill's capability lands as **callable Python inside the kernel** — the same principle as the core paradigm, not another tool schema.
 
-## Bundled Skills (603)
+## Bundled Skills (604)
 
-The catalog has two maintenance tiers: 42 curated OpenAI4S Skills and a pinned,
+The catalog has two maintenance tiers: 43 curated OpenAI4S Skills and a pinned,
 read-only import of all 561 MIT-licensed
 [GPTomics/bioSkills](../skills/bioskills/) recipes. Every imported recipe is
 individually searchable and loadable, but the system prompt represents the
@@ -32,12 +32,13 @@ source commit, conversion rules, license, complete inventory, and per-file
 hashes live at its linked boundary; importing it installs no scientific
 packages and does not imply that every optional tool is ready locally.
 
-### Curated OpenAI4S Skills (42)
+### Curated OpenAI4S Skills (43)
 
 | category | Skills |
 |---|---|
 | **Structure prediction** (GPU) | `alphafold2` · `openfold3` · `boltz` · `chai1` · `esmfold2` |
 | **Sequence / omics / docking** (GPU) | `fair-esm2` · `evo2` · `borzoi` · `scgpt` · `scvi-tools` · `diffdock` |
+| **Single-cell analysis** (CPU) | `single-cell-rna-analysis` |
 | **Protein design** (GPU) | `rfdiffusion` · `proteinmpnn` · `ligandmpnn` · `solublempnn` · `protein-design-mcp` |
 | **Chemistry / materials** (GPU) | `catalyst_sar_screening` |
 | **Reaction chemistry** | `reaction-atom-mapping` · `reaction-condition-recommendation` · `reaction-forward-prediction` · `reaction-yield-estimation` · `single-step-retrosynthesis` |
@@ -62,6 +63,41 @@ treated as usable.
 3. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.
+
+## Three different things a Skill can give an agent
+
+These look alike in a step card and are mechanically unrelated. Telling them
+apart is what stops "the reference is unreadable" from being the wrong
+diagnosis.
+
+| | What it does | How | Where it lands |
+| --- | --- | --- | --- |
+| **SKILL.md loaded** | Pulls the whole recipe into the model's context | `load_skill` (native) / `host.load_skill(...)` | Model context. Step card: *Loading `<name>` skill guidance* |
+| **Reference read** | Returns the bytes of ONE file inside the Skill directory | `read_skill_file` (native) / `host.skills.read(name, path)` | Model context. Step card: *Reading `<name>/<path>`* |
+| **Sidecar imported** | Makes `kernel.py`'s functions callable | `import <name>.kernel` inside a Python cell | The kernel process, via the sealed import gate |
+
+A recipe that says "read `references/data_contracts.md` before running the
+pipeline" needs the second one. Until `read_skill_file` existed, the only route
+was `host.skills.read(...)` from inside a Python cell — so an agent working
+purely in the tool plane, and a delegated child that never runs a cell most of
+all, structurally could not follow that instruction. Its natural fallback,
+`read_text_file`, is confined to the session workspace and a Skill directory is
+not in it, so the failure surfaced as a path error that reads exactly like "the
+file does not exist".
+
+`read_skill_file` maps to the same `skills_read` host method, so nothing about
+the safety envelope changes: the Skill allowlist applies (a Skill this agent
+may not see is reported as "no such skill", indistinguishable from absent, so
+refusals cannot be used to enumerate), capability state applies, and the
+loader's containment guard refuses any path — symlinks included — that resolves
+outside the Skill directory. Output is bounded at 50,000 characters with an
+explicit truncation marker, matching `load_skill`, because a data contract
+silently cut mid-table is one the agent half-read while believing it had all of
+it.
+
+Only the sidecar import touches the kernel, only it needs a running worker of
+the right generation, and only it is invalidated by editing `kernel.py`
+mid-session.
 
 ## Writable Skill versions and rollback
 
@@ -141,7 +177,7 @@ zero-dependency Node CLI that copies it out of this repository:
 
 ```bash
 npx openai4s-skills list
-npx openai4s-skills install --all                  # the 42 curated Skills
+npx openai4s-skills install --all                  # the 43 curated Skills
 npx openai4s-skills install --collection bioskills # the 561 pinned recipes
 npx openai4s-skills install alphafold2 --target claude
 npx openai4s-skills installed
@@ -178,7 +214,7 @@ absolute paths, `..`, drive letters and NUL are rejected, and a link member
 aborts the extraction rather than being skipped.
 
 **For an OpenAI4S user this is mostly redundant.** The wheel already ships all
-603 Skills and a bundled Skill takes precedence over a same-named one in
+604 Skills and a bundled Skill takes precedence over a same-named one in
 `<data_dir>/user-skills`. The command exists to put these recipes in front of
 an agent that is not OpenAI4S.
 

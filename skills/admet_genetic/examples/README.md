@@ -16,3 +16,7 @@ A committed, regenerable demonstration of the data contracts and the reporting p
 | [`report.md`](report.md) | The generated human-readable write-up: run overview, configuration, generation summary, candidate table, interpretation, and limitations. |
 
 Regenerating from the committed records should be deterministic. If a scientific value changes, that is a signal to go and review where the number came from, not to rebuild the presentation files until they agree.
+
+## Using this as a template
+
+`build_example.py` is a rebuild fixture: it re-derives the committed dashboard and report from the committed records and runs neither the GA nor ADMET-AI. It shows what a thin entry point looks like, not what a whole run's source tree looks like. For a formal run — anything the user will act on, hand on, or ask you to repeat — see **Formal runs** and **Shaping a formal run's source tree** in [`../SKILL.md`](../SKILL.md): save the pipeline to source modules, keep the parameters in a config file, write a run manifest, and test the deterministic parts. Tailor that layout to the problem; it is a starting point, not a shape to reproduce.

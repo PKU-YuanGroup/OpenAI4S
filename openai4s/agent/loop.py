@@ -9,6 +9,7 @@ scientific execution. Structured finalization closes control-only work, while
 
 from __future__ import annotations
 
+import inspect
 import os
 import threading
 import uuid
@@ -17,19 +18,24 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
+from openai4s.agent.cell_record import DelegatedCellRecorder
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
+from openai4s.agent.models import KernelEnvSpec
 from openai4s.agent.runtime import (
     ChatModel,
     CompactionPolicy,
     CompletionSignal,
+    KernelGenerationRecorder,
     LocalActionExecutor,
     TranscriptEventSink,
     TranscriptTurn,
     format_observation,
 )
+from openai4s.agent.task_modes import resolve_task_mode, task_mode_prompt
 from openai4s.config import Config, get_config
+from openai4s.host.code_evidence import EVIDENCE_REQUIRED_MODES
 from openai4s.host_dispatch import HostDispatcher, build_dispatcher
 from openai4s.kernel import Kernel
 from openai4s.kernel.lazy import LazyKernel
@@ -110,6 +116,14 @@ finishing happen in python.
     host.env.list/use/create, host.load_skill(name)          # prebuilt envs + recipes
 - `host` is already injected into every python kernel. NEVER `import host` or \
 `from host import ...`; use the injected singleton directly.
+- `host.delegate(...)` and `host.collect(...)` results carry a machine-readable \
+`task_status` (completed | partial | blocked | failed) plus the child's \
+`limitations` and its store-verified `artifacts`. Read `task_status` — never \
+parse the child's prose for success: anything other than `completed` means \
+that child's task is NOT done; inspect its `limitations`/`error`, then rerun, \
+adjust, or report the gap honestly. When you are the delegated child, declare \
+your own honest status with `host.submit_output(..., task_status="partial")` \
+(or "blocked"/"failed") instead of dressing an incomplete result as done.
 - For ANY task touching external facts, datasets, accession numbers, sequences, or \
 literature, you MUST use science_search when a supported structured database fits, \
 or the native web tools (host.science/web_search/web_fetch from a cell), BEFORE \
@@ -261,6 +275,20 @@ class Agent:
     # session. Standalone CLI Agents leave this unset and preserve their
     # historical filesystem-read behavior.
     read_isolation: KernelReadIsolation | None = field(default=None, repr=False)
+    # Interpreter/environment selection for this Agent's kernels. Delegated
+    # children inherit the parent session's selection through the delegation
+    # runner; None preserves the historical contract (sys.executable, no env).
+    env: KernelEnvSpec | None = None
+    # Explicit task-mode selection (``openai4s run --mode``). None lets the run
+    # classify its own task text conservatively; the result decides which
+    # per-turn prompt fragment is appended and whether the Host demands
+    # verified source/entry-point/test evidence at completion.
+    task_mode: str | None = None
+    # Durable kernel-generation store handle (duck-typed Store). When set (or
+    # defaulted from the dispatcher's store), each worker lifetime writes a
+    # kernel_generations row under this Agent's frame so artifact environment
+    # provenance can resolve a real generation instead of the daemon fallback.
+    generations: Any | None = field(default=None, repr=False)
     # Optional runtime observation owned by the embedding Web session.  A
     # delegated Agent shares that session's workspace, so its Cell writes must
     # be captured under the child's frame before the parent's outer sweep.
@@ -278,6 +306,12 @@ class Agent:
         default_factory=threading.Lock, init=False, repr=False
     )
     _delegation_runner: object | None = field(default=None, init=False, repr=False)
+    # host.env.use() request recorded by the dispatcher callback, applied at
+    # the next Python-cell boundary (never mid-cell — the Web pending model).
+    _pending_env: str | None = field(default=None, init=False, repr=False)
+    _generation_recorder: KernelGenerationRecorder | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if self.max_turns is None:
@@ -296,35 +330,35 @@ class Agent:
                     kind="turn", model=self.cfg.llm.model, depth=self.delegate_depth
                 )
                 self.dispatcher.frame_id = self.frame_id
-        # Wire a real delegation runner unless this IS a leaf. It carries
-        # our depth/frame so children nest correctly and steering
-        # is scoped to our direct children.
-        if self.allow_delegate:
-            from openai4s.agent.delegation import MAX_DEPTH, DelegationRunner
-
-            # Defense in depth: depth-MAX_DEPTH Agents are leaves even when an
-            # embedder accidentally passes allow_delegate=True.
-            if self.delegate_depth < MAX_DEPTH:
-                runner = DelegationRunner(
-                    self.cfg,
-                    depth=self.delegate_depth,
-                    parent_frame_id=self.frame_id,
-                    store=self.dispatcher.store,
-                    workspace=self.workspace,
-                    read_isolation=self.read_isolation,
-                    cell_hooks_factory=self.delegated_cell_hooks_factory,
-                )
-                self._delegation_runner = runner
-                self.dispatcher._delegate_fn = runner
-                self.dispatcher.steer_fns = {
-                    "children": runner.children,
-                    "collect": runner.collect,
-                    "stop_child": runner.stop_child,
-                    "send_message": runner.send_message,
-                    "delegation_stats": runner.delegation_stats,
-                }
-            else:
-                self.allow_delegate = False
+        # Durable generation registration defaults to the dispatcher's store:
+        # the CLI root and every delegated child then record real kernel
+        # generations under their own frame with no extra wiring.
+        if self.generations is None:
+            self.generations = getattr(self.dispatcher, "store", None)
+        # A real env switch for Agent-owned sessions: validate against live
+        # discovery and record a pending switch applied between cells. Only a
+        # fresh dispatcher is wired — an embedder's own sink is preserved.
+        if self.dispatcher.on_env_switch is None:
+            self.dispatcher.on_env_switch = self._queue_env_switch
+        if self.env is not None:
+            # Seed the R channel pin so the child's ```r cells respawn against
+            # the parent session's R selection (existing retarget mechanism).
+            if self.env.r_env and self.dispatcher.active_r_env is None:
+                self.dispatcher.active_r_env = self.env.r_env
+            # env_list/env_use derive the "current" name from active_env_bin's
+            # parent directory, so only seed it when that projection is true
+            # (a conda-shaped root named after the env).
+            if (
+                self.env.env_root
+                and self.env.env_name
+                and self.dispatcher.active_env_bin is None
+                and Path(self.env.env_root).name == self.env.env_name
+            ):
+                self.dispatcher.active_env_bin = str(Path(self.env.env_root) / "bin")
+        # Wire a real delegation runner unless this IS a leaf. The runner owns
+        # a ThreadPoolExecutor and is therefore run-scoped; ``run()`` recreates
+        # it after teardown when this Agent instance is reused.
+        self._ensure_delegation_runner()
         # replay: only the ROOT agent records a tape (children replay as
         # part of the parent's flow, not independently).
         if is_root and self.cfg.record_tape:
@@ -473,6 +507,29 @@ class Agent:
         if readiness.get("ready") is not True:
             raise EnvironmentReadinessError(readiness)
 
+    def _install_cell_recorder(self) -> None:
+        """Give this Agent durable ``execution_log`` recording for its cells.
+
+        Delegated children get a recorder from the delegation runner; a root
+        CLI Agent historically recorded nothing, which made an explicit
+        code-mode completion contract unsatisfiable (its ``test_evidence``
+        must name a stored cell row). Idempotent: hooks handed in by an
+        embedder — or installed by a previous ``run`` — are left alone, and
+        the rows are keyed under this Agent's own frame with the same
+        ``origin="agent"`` the Web path records.
+        """
+
+        if self.cell_execution_hooks is not None or not self.frame_id:
+            return
+        store = getattr(self.dispatcher, "store", None)
+        if store is None:
+            return
+        recorder = DelegatedCellRecorder(
+            store, str(self.frame_id), origin="agent", log=self._log
+        )
+        recorder.bind_generation_source(self.current_kernel_generation_id)
+        self.cell_execution_hooks = recorder
+
     def run(self, task: str) -> dict:
         """Run one task through the shared engine and local runtime adapters."""
         assert self.dispatcher is not None
@@ -483,19 +540,58 @@ class Agent:
         if self._cancelled():
             self._close_run()
             return self._finish([], None, "cancelled")
+        self._ensure_delegation_runner()
+        # The per-turn seam the Web path already had and this one did not: the
+        # mode fragment rides on the USER message, never on the system prompt
+        # (which a delegated child and a reused Agent both compose once).
+        # Only an EXPLICIT selection (`openai4s run --mode`, or an embedder
+        # setting `task_mode`) arms the completion contract; a detected mode
+        # guides the prompt and stamps no binding mode, because a classifier
+        # over prose has false positives and each one that armed the
+        # requirement refused an honest completion. Delegated children run
+        # through this same path with task_mode=None, so a child whose request
+        # text trips a signal inherits only the guidance, never the gate.
+        explicit = bool(self.task_mode is not None and str(self.task_mode).strip())
+        mode = resolve_task_mode(task, explicit=self.task_mode)
+        set_mode = getattr(self.dispatcher, "set_task_mode", None)
+        if callable(set_mode):
+            set_mode(mode.value if explicit else None)
+        if explicit and mode.value in EVIDENCE_REQUIRED_MODES:
+            # The armed contract demands test_evidence naming real
+            # execution_log rows, and a root CLI Agent historically recorded
+            # none — which made the requirement unsatisfiable and the refusal
+            # ("this run never executed that cell") actively false. Recording
+            # rides the explicit contract only, so every other CLI run keeps
+            # its historical no-rows behaviour.
+            self._install_cell_recorder()
+        fragment = task_mode_prompt(mode, explicit=explicit)
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt()},
-            {"role": "user", "content": task},
+            {
+                "role": "user",
+                "content": (task + "\n\n" + fragment) if fragment else task,
+            },
         ]
         transcript: list[Turn] = []
         run_cwd = str(self.workspace) if self.workspace else os.getcwd()
         self.dispatcher.set_workspace(run_cwd)
         python_read_isolation = self._python_read_isolation()
-        self.dispatcher.background_kernel_factory = lambda: Kernel(
-            dispatcher=self.dispatcher,
-            cwd=run_cwd,
-            read_isolation=python_read_isolation,
-        )
+
+        def make_python_kernel() -> Kernel:
+            # `self.env` is read at spawn time, not captured, so a pending
+            # host.env.use() switch retargets both the foreground worker and
+            # any later background worker.
+            env = self.env
+            return Kernel(
+                dispatcher=self.dispatcher,
+                cwd=run_cwd,
+                python=(env.python if env is not None else None),
+                env_root=(env.env_root if env is not None else None),
+                env_name=(env.env_name if env is not None else None),
+                read_isolation=python_read_isolation,
+            )
+
+        self.dispatcher.background_kernel_factory = make_python_kernel
 
         def publish_foreground(kernel: object | None) -> None:
             with self._foreground_lock:
@@ -509,13 +605,14 @@ class Agent:
                 kernel.execute(boot, origin="system")
 
         lazy_kernel = LazyKernel(
-            lambda: Kernel(
-                dispatcher=self.dispatcher,
-                cwd=run_cwd,
-                read_isolation=python_read_isolation,
-            ),
+            make_python_kernel,
             bootstrap=bootstrap,
             publish=publish_foreground,
+        )
+        self._generation_recorder = (
+            KernelGenerationRecorder(self.generations, str(self.frame_id))
+            if self.generations is not None and self.frame_id
+            else None
         )
         try:
             with lazy_kernel:
@@ -567,6 +664,10 @@ class Agent:
                         tool_catalog=tool_catalog,
                         prose_nudge=prose_nudge,
                         action_ledger=action_ledger,
+                        apply_pending_env=(
+                            lambda: self._apply_pending_env(lazy_kernel)
+                        ),
+                        generation_recorder=self._generation_recorder,
                     ),
                     context_policy=(
                         self.context_policy or CompactionPolicy(self.cfg, log=self._log)
@@ -590,6 +691,7 @@ class Agent:
             final_reply,
             result.stop_reason,
             completion=result.completion,
+            turns=result.turns,
         )
 
     def _action_ledger(
@@ -611,10 +713,89 @@ class Agent:
             tool_resolver=tool_catalog.get,
             tool_policy_resolver=getattr(self.dispatcher, "control_tool_policy", None),
         )
+        bind_evidence_scope = getattr(self.dispatcher, "set_task_evidence_scope", None)
+        if callable(bind_evidence_scope):
+            bind_evidence_scope(
+                turn_id=ledger.turn_id,
+                branch_id=ledger.branch_id or str(root_frame_id),
+            )
         ledger.append_user({"role": "user", "content": task})
         return ledger
 
-    def _execute_r(self, code: str) -> dict:
+    def _queue_env_switch(self, name: str) -> None:
+        """``host.env.use()`` callback for Agent-owned (CLI/delegated) runs.
+
+        Validates the request against live discovery and records it to apply
+        at the next cell boundary. Raising here surfaces as the tool's
+        "env switch refused" error inside the calling cell.
+        """
+        from openai4s.kernel.environments import discover_environments, get_environment
+
+        environment = get_environment(name)
+        if environment is None:
+            available = ", ".join(env.name for env in discover_environments())
+            raise RuntimeError(f"unknown environment {name!r}; available: {available}")
+        if environment.interpreter is None:
+            # R-only env: the tool already retargeted active_r_env; the python
+            # kernel is untouched (same as the Web pending-env application),
+            # but the immutable selection carried to future descendants must
+            # still reflect the newly selected R channel.
+            current = self.env
+            self.env = KernelEnvSpec(
+                python=(current.python if current is not None else None),
+                env_root=(current.env_root if current is not None else None),
+                env_name=(current.env_name if current is not None else None),
+                r_env=environment.name,
+            )
+            runner = self._delegation_runner
+            if runner is not None:
+                runner.env = self.env
+            return
+        self._pending_env = name
+
+    def _apply_pending_env(self, lazy_kernel: Any) -> None:
+        """Apply a recorded env switch between cells, never mid-cell.
+
+        The worker is replaced build-lazily: the current kernel is shut down
+        and the next cell spawns against the new interpreter through the same
+        factory. The namespace reset is inherent and matches the Web session
+        model. A new durable generation row is written on the respawn.
+        """
+        name = self._pending_env
+        self._pending_env = None
+        if not name:
+            return
+        from openai4s.kernel.environments import get_environment
+
+        environment = get_environment(name)
+        if environment is None or environment.interpreter is None:
+            # Discovery changed between the request and this boundary; keep
+            # the current kernel rather than guessing.
+            return
+        current = self.env
+        current_name = (
+            current.env_name if current is not None and current.env_name else "base"
+        )
+        if environment.name == current_name:
+            return
+        self.env = KernelEnvSpec(
+            python=environment.interpreter,
+            env_root=(str(environment.root) if environment.is_conda else None),
+            env_name=environment.name,
+            r_env=(current.r_env if current is not None else None),
+        )
+        runner = self._delegation_runner
+        if runner is not None:
+            # Future (grand)children follow the switched selection.
+            runner.env = self.env
+        assert self.dispatcher is not None
+        self.dispatcher.active_env_bin = environment.bin_dir
+        if self._generation_recorder is not None:
+            self._generation_recorder.close(language="python", reason="env_switch")
+        self._log(f"[env] switching python kernel to '{environment.name}'")
+        lazy_kernel.shutdown()
+
+    def _execute_r(self, code: str, *, cell_id: str | None = None) -> dict:
         """Run one ```r cell on the persistent R kernel, spawning it lazily.
 
         The kernel is respawned when host.env.use() retargeted the R channel
@@ -642,6 +823,8 @@ class Agent:
             with self._foreground_lock:
                 self._r_kernel = k
                 self._r_kernel_env = want_env
+        if self._generation_recorder is not None:
+            self._generation_recorder.observe(k, language="r")
         if self.cancellation is not None:
             try:
                 if self.cancellation.cancelled():
@@ -649,7 +832,20 @@ class Agent:
             except Exception:  # noqa: BLE001 - cancellation probe is best effort
                 pass
         try:
-            return k.execute(code, origin="agent")
+            execute = k.execute
+            kwargs: dict[str, Any] = {"origin": "agent"}
+            if cell_id is not None:
+                try:
+                    parameters = inspect.signature(execute).parameters.values()
+                except (TypeError, ValueError):
+                    parameters = ()
+                if any(
+                    parameter.name == "cell_id"
+                    or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters
+                ):
+                    kwargs["cell_id"] = cell_id
+            return execute(code, **kwargs)
         except Exception as e:  # noqa: BLE001 — dead worker: drop it, soft-fail
             self._shutdown_r_kernel()
             return {"error": f"R kernel failed: {e}"}
@@ -664,6 +860,18 @@ class Agent:
                 k.shutdown()
             except Exception:  # noqa: BLE001
                 pass
+
+    def current_kernel_generation_id(self, language: str = "python") -> str | None:
+        """Durable generation id of this Agent's live worker, if registered.
+
+        The delegated-cell recorder reads this at each Cell boundary — the
+        same seam that registers the row — so a recorded child cell names the
+        exact worker generation that ran it.
+        """
+        recorder = self._generation_recorder
+        if recorder is None:
+            return None
+        return recorder.current(language)
 
     def interrupt_foreground(self) -> bool:
         """Interrupt only this Agent's current Python/R worker(s).
@@ -708,6 +916,7 @@ class Agent:
         reason: str,
         *,
         completion: Any = None,
+        turns: int = 0,
     ) -> dict:
         assert self.dispatcher is not None
         return {
@@ -716,12 +925,20 @@ class Agent:
             "submitted_output": (
                 completion if completion is not None else self.dispatcher.last_output
             ),
+            "turns": turns,
             "transcript": [{"role": t.role, "content": t.content} for t in transcript],
         }
 
     def _close_run(self) -> None:
         """Release run-scoped runtimes and persist the optional replay tape."""
         self._shutdown_r_kernel()
+        recorder = self._generation_recorder
+        self._generation_recorder = None
+        if recorder is not None:
+            try:
+                recorder.close(reason="run_finished")
+            except Exception:  # noqa: BLE001 - provenance cannot break teardown
+                pass
         runner = self._delegation_runner
         if runner is not None:
             cancelled = self._cancelled()
@@ -738,11 +955,56 @@ class Agent:
                 runner.close(cancel=cancelled)
             except Exception:  # noqa: BLE001 - pool teardown is best effort
                 pass
+            finally:
+                # A closed ThreadPoolExecutor is not reusable. Clear both the
+                # owned runner and the dispatcher's bound-method views so the
+                # next ``run()`` installs a fresh, consistently wired runner.
+                if self._delegation_runner is runner:
+                    self._delegation_runner = None
+                if (
+                    self.dispatcher is not None
+                    and self.dispatcher._delegate_fn is runner
+                ):
+                    self.dispatcher._delegate_fn = None
+                    self.dispatcher.steer_fns = {}
         if self._recorder is not None:
             try:
                 self._recorder.flush()  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 pass
+
+    def _ensure_delegation_runner(self) -> None:
+        """Install this run's delegation facade and executor when needed."""
+
+        if not self.allow_delegate or self._delegation_runner is not None:
+            return
+        from openai4s.agent.delegation import MAX_DEPTH, DelegationRunner
+
+        # Defense in depth: depth-MAX_DEPTH Agents are leaves even when an
+        # embedder accidentally passes allow_delegate=True.
+        if self.delegate_depth >= MAX_DEPTH:
+            self.allow_delegate = False
+            return
+        assert self.dispatcher is not None
+        runner = DelegationRunner(
+            self.cfg,
+            depth=self.delegate_depth,
+            parent_frame_id=self.frame_id,
+            store=self.dispatcher.store,
+            workspace=self.workspace,
+            read_isolation=self.read_isolation,
+            cell_hooks_factory=self.delegated_cell_hooks_factory,
+            env=self.env,
+        )
+        self._delegation_runner = runner
+        self.dispatcher._delegate_fn = runner
+        self.dispatcher.steer_fns = {
+            "children": runner.children,
+            "collect": runner.collect,
+            "stop_child": runner.stop_child,
+            "send_message": runner.send_message,
+            "delegation_stats": runner.delegation_stats,
+        }
 
 
 def _extract_code(text: str) -> str | None:

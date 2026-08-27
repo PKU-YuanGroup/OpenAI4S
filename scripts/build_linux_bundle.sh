@@ -153,8 +153,13 @@ if [ ! -f "$MANIFEST" ]; then
   echo "error: missing package manifest $MANIFEST" >&2
   exit 1
 fi
-# First column of every non-comment line = the pip name.
-PKGS=$(awk 'NF && $1 !~ /^#/ { print $1 }' "$MANIFEST")
+# First column of every non-comment line = the pip name; a `skip_arch=` column
+# drops the package for targets that have no wheel for it.
+PKGS=$(awk -v arch="$ARCH" 'NF && $1 !~ /^#/ {
+  keep = 1
+  for (i = 3; i <= NF; i++) if ($i == "skip_arch=" arch) keep = 0
+  if (keep) print $1
+}' "$MANIFEST")
 echo "   bundling $(printf '%s\n' "$PKGS" | grep -c .) packages from $(basename "$MANIFEST")"
 if [ "$CROSS" = 0 ]; then
   "$RUNPY" -m pip install --upgrade --no-warn-script-location pip >/dev/null

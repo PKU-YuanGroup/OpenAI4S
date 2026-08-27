@@ -43,6 +43,73 @@ PendingProvider = Callable[[str], Iterable[Mapping[str, Any]]]
 ToolSchemaProvider = Callable[[Any | None], Iterable[Mapping[str, Any]]]
 
 
+#: Fields of a live child snapshot the browser projection may carry. The
+#: documented delegation contract (docs/webapp-api.md, delegations row)
+#: excludes result/output bodies and steering text from the browser; that
+#: exclusion is owned HERE, server-side — the frontend sanitizer is a belt.
+_DELEGATION_EVENT_CHILD_KEYS = (
+    "child_id",
+    "name",
+    "status",
+    "task_status",
+    "error",
+    "depth",
+    "parent_child_id",
+    "parent_frame_id",
+    "frame_id",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "stop_reason",
+)
+
+
+def delegation_event_projection(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The browser-safe shape of one live ``delegation_child_event``.
+
+    The delegation tree's snapshot carries the child's full ``output``; this
+    normalizer rebuilds the event with an allowlisted child projection —
+    identity, lifecycle ``status``, machine-readable ``task_status``, progress,
+    steering counters (never message text), and the bounded override summary —
+    before the event reaches the session hub.
+    """
+
+    event: dict[str, Any] = {
+        key: value for key, value in payload.items() if key != "child"
+    }
+    child = payload.get("child")
+    projected: dict[str, Any] = {}
+    if isinstance(child, Mapping):
+        for key in _DELEGATION_EVENT_CHILD_KEYS:
+            if key in child:
+                projected[key] = child[key]
+        progress = child.get("progress")
+        if isinstance(progress, Mapping):
+            projected["progress"] = dict(progress)
+        steering = child.get("steering")
+        if isinstance(steering, Mapping):
+            projected["steering"] = {
+                key: steering.get(key, 0)
+                for key in ("queued", "delivered", "discarded")
+            }
+        overrides = child.get("overrides")
+        if isinstance(overrides, Mapping):
+            permissions = overrides.get("permissions")
+            capabilities = overrides.get("capabilities")
+            projected["overrides"] = {
+                "model": overrides.get("model"),
+                "steps": overrides.get("steps"),
+                "permission_count": (
+                    len(permissions) if isinstance(permissions, (list, tuple)) else 0
+                ),
+                "capability_count": (
+                    len(capabilities) if isinstance(capabilities, (list, tuple)) else 0
+                ),
+            }
+    event["child"] = projected
+    return event
+
+
 def _unattended_posture() -> str:
     """How an unanswered ask resolves right now, for the workbench banner."""
 

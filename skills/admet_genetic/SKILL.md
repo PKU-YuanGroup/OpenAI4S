@@ -42,7 +42,9 @@ python -m pip install admet-ai  # depends on torch; installation/import may take
 
 After creating the environment, select it with `host.env.use("admet-sa-ga")`
 before importing this skill's sidecar. Switching environments restarts the
-session kernel, so switch before constructing the in-memory pipeline.
+session kernel, so switch before constructing the pipeline. An in-kernel
+pipeline is fine while you are still exploring; see **Formal runs** below for
+what a run has to leave behind.
 
 See `references/admet.md` for ADMET-AI installation details, endpoint behavior, runtime notes, and troubleshooting.
 
@@ -73,6 +75,45 @@ from admet_genetic.kernel import (
 )
 ```
 
+## Formal runs
+
+There are two ways to run this skill, and they are not interchangeable.
+
+**Prototyping.** Assemble the GA in the kernel namespace, iterate on operators
+and weights, look at what comes out. Nothing here has to be saved. This is the
+right mode while you are still deciding what the search should do.
+
+**A formal run.** Anything the user will act on, hand to someone else, or ask
+you to repeat is a formal run, and a formal run's deliverable includes the code
+that produced it. A GA that exists only as cell history cannot be re-run, cannot
+be reviewed, and cannot be pointed at next month's seed set: the numbers in
+`report.md` are then unreproducible in the exact sense — nobody, including you,
+can regenerate them.
+
+For a formal run, save the pipeline to source modules before the final
+generation, run it from those modules, and record what ran:
+
+- **source modules** under the working directory, split by responsibility where
+  the responsibilities genuinely differ — GA operators, evaluation/ADMET
+  aggregation, filtering and scoring, I/O and reporting, and a thin entry point.
+  Do not split for the sake of splitting, and never add an empty module to look
+  organised: a single well-named module is better than five stubs.
+- **a config file** (YAML or JSON) holding population size, generation count,
+  operator and filter parameters, scoring weights, the diversity threshold, and
+  the random seed — everything a rerun needs and nothing the code should own.
+- **a run manifest** naming the entry point, the config file, the input CSV, the
+  random seed, the resolved dependency versions, and the stop reason.
+- **tests** over the parts that can be checked without a GPU or a network:
+  standardization and canonicalization round-trips, the hard-filter predicate,
+  the scoring function, and the lineage validator. Run them and keep the output.
+
+Save these as artifacts alongside the CSVs and the report — they are
+deliverables, not scratch. When the session is running in `reusable_pipeline` or
+`codebase_change` task mode, the completion contract additionally requires you
+to name them (`source_files`, `entry_points`, `architecture_summary`,
+`test_evidence`) and the Host verifies each claim before accepting the
+submission.
+
 ## Artifacts
 
 ### Lineage Requirements
@@ -100,6 +141,18 @@ When results are satisfactory, produce:
 - an optimization-history HTML dashboard via `render_optimization_history(log_path, out_path)` from `kernel.py`. The rendered HTML is self-contained and uses embedded SVG molecule depictions and matplotlib-generated SVG plots.
 - Other visualized artifacts suggested by system prompt or user requirements.
 
+For a **formal run** (see above), additionally produce:
+
+- the pipeline source modules that were actually executed,
+- the run configuration file they read,
+- a run manifest naming entry point, config, input, seed, dependency versions,
+  and stop reason,
+- the tests over the deterministic parts, and the recorded output of running
+  them.
+
+A prototyping run owes none of these; a run whose results the user will act on
+owes all of them.
+
 The visualization workflow expects `generation_log.csv` to follow the lineage contract; for visualization assumptions, see `references/data_contracts.md`.
 
 In `report.md`, include:
@@ -116,6 +169,44 @@ In `report.md`, include:
 - Next steps: better mutation templates, medicinal chemistry constraints, external validation, improved diversity, and route feasibility checks.
 
 State clearly when ADMET-AI failed or when a fallback was used. Do not present predicted ADMET, toxicity, conditions, or synthesizability as experimental fact.
+
+## Shaping a formal run's source tree
+
+`examples/build_example.py` is a *rebuild fixture*, not the template for your
+pipeline: it validates committed records and regenerates derived files, and it
+deliberately runs neither the GA nor ADMET-AI. Treat it as the shape of a
+single-responsibility entry point, not as the shape of the whole run.
+
+A formal run's tree usually looks something like this. Rename, merge, or drop
+parts of it to match the problem — this is a starting point to tailor, not a
+layout to reproduce:
+
+```text
+<working dir>/
+|-- admet_run/
+|   |-- operators.py        # mutation, crossover, validity repair
+|   |-- evaluate.py         # RDKit descriptors, QED, SA-Score, ADMET aggregation
+|   |-- selection.py        # hard filters, total score, diversity selection
+|   |-- report.py           # generation_log -> report.md + dashboard
+|   `-- pipeline.py         # the loop: seed -> generations -> final candidates
+|-- run_optimization.py     # thin entry point: parse args, load config, call pipeline
+|-- config.yaml             # population, generations, weights, filters, seed
+|-- tests/
+|   |-- test_operators.py
+|   `-- test_selection.py
+`-- (generation_log.csv, candidates_final.csv, report.md, dashboard.html, run_manifest.json)
+```
+
+Two things this is not. It is not a file-count target: a narrow single-objective
+search whose operators are ten lines each is honestly one module plus an entry
+point, and splitting it further only spreads the reader out. And it is not a
+place for placeholders — a module that exists so the tree looks organised is
+worse than no module, because it claims a responsibility nobody implemented.
+
+Import the sidecar helpers from your modules rather than copying them:
+`standardize_smiles`, `canonicalize_smiles`, `classify_admet_columns`,
+`aggregate_admet_predictions`, `operation_detail_json`, `validate_generation_log`,
+and `render_optimization_history` all live in this skill's `kernel.py`.
 
 ## Reproducible Example
 
