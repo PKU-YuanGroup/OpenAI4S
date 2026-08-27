@@ -386,6 +386,12 @@ _WEBUI_NAMED_HOSTS = {
     "identifier, never dereferenced by any browser",
     "api.tavily.com": "displayed as the default search endpoint in Customize. "
     "The call is made by the daemon; the client only renders the string",
+    "github.com": "opened in a new tab only when the user asks to install the "
+    "official Ark CLI; it is never fetched by the client",
+    "www.volcengine.com": "opened in a new tab only when the user asks to view "
+    "an Ark plan; it is never fetched by the client",
+    "console.volcengine.com": "opened in a new tab only when the user asks to "
+    "manage an Ark API key or endpoint; it is never fetched by the client",
 }
 
 #: Constructs that turn a URL into a request. An absolute URL on the same line
