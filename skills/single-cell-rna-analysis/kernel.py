@@ -1039,9 +1039,9 @@ def _load_data(
                 "Cross-sample gene intersection removed more than half of one gene space."
             )
 
-    ok, reason = _is_raw_counts(adata.X, np)
-    if not ok:
-        raise ValueError(reason)
+    # Raw counts were already validated per input above (with per-sample
+    # attribution on the sheet path); re-scanning the concatenated matrix
+    # would double a full pass over every stored value.
     # Input obs columns that collide with pipeline outputs must not survive:
     # a foreign confirmed_cell_type would become the DE grouping and foreign
     # leiden_* columns would be exported as this run's assignments.
@@ -1151,15 +1151,17 @@ def _run_qc(
                 qc["max_mt_pct"]
             )
 
-        reason_lists: list[list[str]] = [[] for _ in range(len(obs))]
-        for name, flags in reasons.items():
-            for index, flagged in enumerate(flags):
-                if bool(flagged):
-                    reason_lists[index].append(name)
+        # One boolean matrix instead of per-reason per-cell Python loops:
+        # ~1M interpreter iterations at 100k cells collapse to one pass.
+        reason_names = list(reasons)
+        flag_matrix = np.column_stack(
+            [np.asarray(reasons[name], dtype=bool) for name in reason_names]
+        )
         adata.obs.loc[mask, "qc_filter_reason"] = [
-            ";".join(items) for items in reason_lists
+            ";".join(name for name, flagged in zip(reason_names, row) if flagged)
+            for row in flag_matrix
         ]
-        adata.obs.loc[mask, "qc_fail"] = [bool(items) for items in reason_lists]
+        adata.obs.loc[mask, "qc_fail"] = flag_matrix.any(axis=1)
 
         if qc.get("doublet_detection", True) and int(mask.sum()) >= 50:
             subset = adata[mask].copy()
@@ -1226,7 +1228,9 @@ def _run_embedding(adata: Any, config: Mapping[str, Any], sc: Any) -> Any:
     clustering = config["clustering"]
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
-    adata.raw = adata.copy()
+    # Raw stores only X/var/varm; a full copy() would duplicate the counts
+    # layer and obsm/obsp at this stage's memory peak for nothing.
+    adata.raw = adata
     n_top = min(2000, max(10, adata.n_vars - 1))
     try:
         sc.pp.highly_variable_genes(
@@ -1329,8 +1333,32 @@ def _annotate(
         names = _gene_names(adata, config)
         lookup = {name: index for index, name in enumerate(names)}
         matrix = adata.X
+        # Slice the panel's columns once and average per cluster in one pass:
+        # per-gene fancy indexing repeated clusters x panel-genes times scans
+        # the full matrix thousands of times on real data.
+        panel_genes = sorted(
+            {
+                str(row.gene).strip()
+                for row in panel.itertuples(index=False)
+                if str(row.gene).strip() in lookup
+            }
+        )
+        cluster_labels = adata.obs["cluster"].astype(str).to_numpy()
+        panel_means: dict[str, dict[str, float]] = {}
+        if panel_genes:
+            columns = [lookup[gene] for gene in panel_genes]
+            sub = matrix[:, columns]
+            sub = sub.toarray() if hasattr(sub, "toarray") else np.asarray(sub)
+            for cluster in candidates:
+                cluster_means = sub[cluster_labels == cluster].mean(axis=0)
+                panel_means[cluster] = {
+                    gene: float(value)
+                    for gene, value in zip(
+                        panel_genes, np.asarray(cluster_means).ravel()
+                    )
+                }
         for cluster in candidates:
-            mask = adata.obs["cluster"].astype(str).to_numpy() == cluster
+            means = panel_means.get(cluster, {})
             scores = []
             for cell_type, group in panel.groupby("cell_type", sort=True):
                 score = 0.0
@@ -1339,11 +1367,10 @@ def _annotate(
                 missing = []
                 for row in group.itertuples(index=False):
                     gene = str(row.gene).strip()
-                    if gene not in lookup:
+                    if gene not in means:
                         missing.append(gene)
                         continue
-                    column = matrix[mask, lookup[gene]]
-                    mean = float(np.asarray(column.mean()).ravel()[0])
+                    mean = means[gene]
                     signed = (
                         mean
                         * float(row.weight)
@@ -1437,17 +1464,21 @@ def _pseudobulk(
         *design.get("covariates", []),
     ]
     matrix = adata.layers["counts"]
-    count_rows = []
+    summed_rows = []
+    unit_keys: list[tuple[str, str]] = []
     metadata_rows = []
     for (sample, group), indices in adata.obs.groupby(
         [sample_key, group_series], observed=True
     ).indices.items():
-        summed = np.asarray(matrix[indices].sum(axis=0)).ravel().astype(int)
-        row = {"sample_id": str(sample), "analysis_group": str(group)}
-        row.update(
-            {str(gene): int(value) for gene, value in zip(adata.var_names, summed)}
+        # Sum in float64: scipy keeps a float32 accumulator for float32
+        # inputs, which loses integer precision above 2**24.
+        summed = (
+            np.asarray(matrix[indices].sum(axis=0, dtype="float64"))
+            .ravel()
+            .astype("int64")
         )
-        count_rows.append(row)
+        summed_rows.append(summed)
+        unit_keys.append((str(sample), str(group)))
         first = adata.obs.iloc[int(indices[0])]
         meta = {
             "sample_id": str(sample),
@@ -1458,7 +1489,17 @@ def _pseudobulk(
             meta[str(key)] = str(first[key])
         meta["library_size"] = int(summed.sum())
         metadata_rows.append(meta)
-    return pd.DataFrame(count_rows), pd.DataFrame(metadata_rows), group_key
+    counts_frame = pd.DataFrame(
+        (
+            np.vstack(summed_rows)
+            if summed_rows
+            else np.empty((0, adata.n_vars), dtype="int64")
+        ),
+        columns=[str(gene) for gene in adata.var_names],
+    )
+    counts_frame.insert(0, "analysis_group", [group for _, group in unit_keys])
+    counts_frame.insert(0, "sample_id", [sample for sample, _ in unit_keys])
+    return counts_frame, pd.DataFrame(metadata_rows), group_key
 
 
 def _replication_status(
@@ -1606,7 +1647,7 @@ def _run_milo(adata: Any, config: Mapping[str, Any], output: Path) -> str:
         return "failed"
 
 
-def _plot_outputs(adata: Any, qc_summary: Any, output_dir: Path, pd: Any) -> list[str]:
+def _plot_outputs(adata: Any, output_dir: Path, pd: Any) -> list[str]:
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -1881,12 +1922,15 @@ def _run(
     *,
     _resume_stage: str | None = None,
     _prior_manifest: Mapping[str, Any] | None = None,
+    _preflight: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     tables = output / "tables"
     tables.mkdir(exist_ok=True)
-    check = preflight(config)
+    # resume() has already validated and fingerprinted the inputs; running
+    # preflight again would re-read and re-hash every input matrix.
+    check = dict(_preflight) if _preflight is not None else preflight(config)
     resolved = check.get("resolved_config")
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -1996,16 +2040,19 @@ def _run(
             qc_adata.write_h5ad(output / STAGE_FILES["qc"], compression="gzip")
             manifest["stages"]["qc"] = "completed"
             _checkpoint_manifest()
-        else:
+            del adata  # the pre-QC object is the largest transient of the run
+        elif resume_index == stage_order.index("embedding"):
+            # Load a checkpoint only when the next stage to re-run consumes
+            # it: resuming at statistics must not page three earlier
+            # full-matrix checkpoints through memory.
             qc_adata = sc.read_h5ad(output / STAGE_FILES["qc"])
-            qc_summary = pd.read_csv(tables / "qc_summary.csv")
 
         if resume_index <= stage_order.index("embedding"):
             embedded = _run_embedding(qc_adata, resolved, sc)
             embedded.write_h5ad(output / STAGE_FILES["embedding"], compression="gzip")
             manifest["stages"]["embedding"] = "completed"
             _checkpoint_manifest()
-        else:
+        elif resume_index == stage_order.index("clustering"):
             embedded = sc.read_h5ad(output / STAGE_FILES["embedding"])
 
         if resume_index <= stage_order.index("clustering"):
@@ -2025,7 +2072,7 @@ def _run(
             # markerless run as finished.
             manifest["stages"]["clustering"] = "completed"
             _checkpoint_manifest()
-        else:
+        elif resume_index == stage_order.index("annotation"):
             clustered = sc.read_h5ad(output / STAGE_FILES["clustering"])
 
         if resume_index <= stage_order.index("annotation"):
@@ -2126,7 +2173,7 @@ def _run(
             "statistics_status": manifest["statistics_status"],
         }
         annotated.write_h5ad(output / "analysis.h5ad", compression="gzip")
-        _plot_outputs(annotated, qc_summary, output, pd)
+        _plot_outputs(annotated, output, pd)
         _sync_warnings()
         manifest["status"] = (
             "completed_with_warnings" if manifest["warnings"] else "completed"
@@ -2319,4 +2366,5 @@ def resume(run_dir: str | os.PathLike[str]) -> dict[str, Any]:
         output,
         _resume_stage=earliest,
         _prior_manifest=prior_manifest,
+        _preflight=check,
     )
