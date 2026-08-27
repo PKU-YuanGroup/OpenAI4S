@@ -4106,7 +4106,10 @@ _ANDOR_TREE_SCRIPT = r"""
       return;
     }
     const text = String(value);
-    if (text.startsWith("http")) {
+    // Anchored scheme match, not a `startsWith("http")` prefix: the prefix form
+    // also accepts `httpfoo:` and anything else that merely begins with those
+    // four characters, and this value is assigned straight to `href`.
+    if (/^https?:\/\//.test(text)) {
       const a = document.createElement("a");
       a.href = text;
       a.textContent = text;

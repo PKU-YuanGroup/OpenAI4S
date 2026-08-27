@@ -35,7 +35,11 @@ class OnboardingResult:
             "provider": self.provider,
             "model": self.model,
             "base_url": self.base_url,
-            "has_api_key": self.has_api_key,
+            # `bool(...)` is not decoration. This projection is printed to
+            # stdout by `openai4s init --json`, and the coercion is what makes
+            # "this field is a flag, not the credential" a property of the
+            # value rather than of a comment -- a string could not survive it.
+            "has_api_key": bool(self.has_api_key),
             "complete": self.complete,
             "data_dir": self.data_dir,
             "platform": self.platform,

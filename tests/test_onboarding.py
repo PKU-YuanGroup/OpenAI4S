@@ -198,6 +198,34 @@ def test_configure_preserves_stored_model_and_base_url_when_only_touching_key(tm
     assert settings.values["llm_api_key"] == "fresh-key"
 
 
+def test_as_dict_projects_the_key_flag_as_a_real_boolean():
+    """`has_api_key` must be a `bool` in the printed projection, not whatever
+    the field happens to hold.
+
+    `openai4s init --json` prints this dict to stdout, so the coercion is the
+    barrier: a string assigned to the field cannot reach stdout through it.
+    That is also what stops CodeQL's name-based `py/clear-text-logging`
+    heuristic from tracking `has_api_key` into `print` -- a suppression
+    comment would not have, because code scanning does not honour them.
+    """
+    from openai4s.onboarding import OnboardingResult
+
+    leaked = OnboardingResult(
+        provider="alpha",
+        model="alpha-mini",
+        base_url="https://alpha.example",
+        has_api_key="sk-not-for-stdout",  # type: ignore[arg-type]
+        complete=True,
+        data_dir="/tmp/x",
+        platform="Linux",
+        native_runtime_supported=True,
+    )
+
+    projected = leaked.as_dict()["has_api_key"]
+    assert projected is True
+    assert "sk-not-for-stdout" not in json.dumps(leaked.as_dict())
+
+
 def test_cmd_init_json_stdout_is_a_secret_free_projection(
     tmp_path, monkeypatch, capsys
 ):
