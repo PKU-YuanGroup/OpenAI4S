@@ -180,7 +180,10 @@ from openai4s.server.recovery_runtime import (
 )
 from openai4s.server.reviews import ReviewPorts, ReviewService
 from openai4s.server.scientific_review import ScientificReviewService
-from openai4s.server.security_headers import security_headers
+from openai4s.server.security_headers import (
+    artifact_security_headers,
+    security_headers,
+)
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
     CursorCheckpointUnavailable,
@@ -12411,7 +12414,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- io helpers -------------------------------------------------
         def _send(
-            self, code: int, body: bytes, ctype: str, extra: dict | None = None
+            self,
+            code: int,
+            body: bytes,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
         ) -> None:
             self._last_status = code
             self.send_response(code)
@@ -12425,7 +12433,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.send_header("X-Request-Id", _sanitize_header_value(request_id))
             # Applied here rather than at the HTML route so no response can be
             # added later that quietly opts out.
-            for k, v in security_headers(WEBUI_DIR / "index.html").items():
+            hardened = security or security_headers(WEBUI_DIR / "index.html")
+            for k, v in hardened.items():
                 self.send_header(k, v)
             for k, v in (extra or {}).items():
                 self.send_header(k, _sanitize_header_value(v))
@@ -13506,13 +13515,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return True
             return False
 
-        def _serve_file(self, path: Path, ctype: str) -> None:
+        def _serve_file(
+            self,
+            path: Path,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
+        ) -> None:
             try:
                 body = path.read_bytes()
             except OSError:
                 self._json({"error": "not found"}, 404)
                 return
-            self._send(200, body, ctype)
+            self._send(200, body, ctype, extra=extra, security=security)
 
         def _stream_file(
             self, path: Path, ctype: str, extra: dict | None = None
@@ -13546,6 +13561,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- artifact bytes --------------------------------------------
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
+            # Artifact bytes are user/agent-authored and may be navigated to as
+            # a top-level document, outside the Workbench iframe's sandbox.
+            # Use an embeddable but inactive response profile instead of the UI
+            # shell's frame denial. The policy sandbox gives the document an
+            # opaque origin even when someone navigates to it directly.
+            artifact_headers = artifact_security_headers(WEBUI_DIR / "index.html")
             # Canonical trusted-delivery URLs live below the reserved
             # ``versions/`` sub-path.  They must resolve one exact version or
             # 404; the compatible Artifact-id/filename fallbacks below are
@@ -13581,7 +13602,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 if force_html:
                     ctype = "text/html; charset=utf-8"
-                self._send(200, body, ctype)
+                self._send(200, body, ctype, security=artifact_headers)
                 return
             path = store.resolve_artifact_path(decoded_ident)
             meta = None
@@ -13621,7 +13642,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ctype = (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
             if force_html:
                 ctype = "text/html; charset=utf-8"
-            self._serve_file(Path(path), ctype)
+            self._serve_file(Path(path), ctype, security=artifact_headers)
 
         def _serve_artifact_bundle(self, artifacts: list[dict], filename: str) -> None:
             """Download a frame/project's current artifact versions as one zip."""

@@ -918,6 +918,9 @@ def cmd_init(args) -> int:
 
     payload = result.as_dict()
     if args.json:
+        # OnboardingResult.as_dict() is an explicit secret-free projection:
+        # has_api_key is a boolean and the credential value never reaches it.
+        # codeql[py/clear-text-logging-sensitive-data]
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(f"Configured {result.provider} / {result.model}")

@@ -6,66 +6,58 @@ harvested over ssh, GPU model names from nvidia-smi, package names, connector
 metadata), and several still reach the DOM through innerHTML. A strict CSP is
 what stops an injected `<script>` from running or phoning home.
 
-The policy is hash-based rather than nonce-based on purpose: index.html is
-served straight off the working tree as a static file, so there is no render
-step in which to stamp a nonce. Its single inline <script> is a static theme
-bootstrap, and hashing it keeps `script-src` free of 'unsafe-inline' — the
-concession that would otherwise make the whole policy decorative.
-
-The hash is derived from the file at runtime rather than pinned as a constant
-so that editing the bootstrap cannot silently break the page: the header
-follows the file. `webui/` is served live from the tree with no build step,
-which is exactly the condition under which a hardcoded hash would drift.
+All executable UI scripts are same-origin static files. Keeping executable
+code out of HTML means the policy needs neither a nonce nor a dynamically
+derived hash, and avoids having a security decision depend on duplicating the
+browser's full HTML tokenizer.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import re
 from pathlib import Path
 
-_INLINE_SCRIPT_RE = re.compile(rb"<script>(.*?)</script>", re.DOTALL)
 
-# Keyed by (path, mtime, size), not path alone. webui/ is served live off the
-# working tree with no build step, so index.html can change under a running
-# daemon — and a stale hash does not degrade, it blanks the page by blocking
-# the very script the policy was built for. Re-hash when the file moves.
-_cache: dict[tuple[str, int, int], str] = {}
+def artifact_content_security_policy() -> str:
+    """Policy for untrusted, user- or agent-authored Artifact bytes.
 
-
-def _inline_script_hashes(index_html: Path) -> list[str]:
-    """CSP source-expressions for every inline <script> in the document.
-
-    The hash covers the element's exact text content, which is what the CSP
-    spec digests — including the surrounding newlines and indentation.
+    Artifact HTML may be opened directly as well as inside the Workbench's
+    sandboxed iframe. A response-level sandbox therefore keeps the document on
+    an opaque origin in either navigation mode, while the explicit script and
+    connection bans prevent it from composing executable sibling Artifacts.
     """
-    try:
-        raw = index_html.read_bytes()
-    except OSError:
-        return []
-    out = []
-    for body in _INLINE_SCRIPT_RE.findall(raw):
-        digest = base64.b64encode(hashlib.sha256(body).digest()).decode("ascii")
-        out.append(f"'sha256-{digest}'")
-    return out
+    return "; ".join(
+        [
+            "default-src 'none'",
+            "script-src 'none'",
+            "style-src 'unsafe-inline'",
+            "img-src data: blob:",
+            "font-src data:",
+            "media-src data: blob:",
+            "connect-src 'none'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'self'",
+            "sandbox",
+        ]
+    )
 
 
-def _cache_key(index_html: Path) -> tuple[str, int, int]:
-    try:
-        st = index_html.stat()
-        return (str(index_html), int(st.st_mtime_ns), int(st.st_size))
-    except OSError:
-        return (str(index_html), 0, 0)
+def artifact_security_headers(index_html: Path) -> dict[str, str]:
+    """Hardened headers for an embeddable, untrusted Artifact document."""
+    headers = security_headers(index_html)
+    headers["Content-Security-Policy"] = artifact_content_security_policy()
+    # The Workbench embeds same-origin previews. DENY would make that secure by
+    # rendering nothing; SAMEORIGIN preserves the product while the CSP sandbox
+    # removes the preview document's origin and active capabilities.
+    headers["X-Frame-Options"] = "SAMEORIGIN"
+    return headers
 
 
 def content_security_policy(index_html: Path) -> str:
-    key = _cache_key(index_html)
-    cached = _cache.get(key)
-    if cached is not None:
-        return cached
-
-    script_src = ["'self'", *_inline_script_hashes(index_html)]
+    """Return the static policy; ``index_html`` remains for API compatibility."""
+    _ = index_html
+    script_src = ["'self'"]
     # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
     # permits exactly that and nothing else — unlike 'unsafe-eval', it does not
     # re-enable eval()/new Function() for injected script.
@@ -94,7 +86,6 @@ def content_security_policy(index_html: Path) -> str:
             "frame-ancestors 'none'",
         ]
     )
-    _cache[key] = policy
     return policy
 
 
@@ -115,4 +106,9 @@ def security_headers(index_html: Path) -> dict[str, str]:
     }
 
 
-__all__ = ["content_security_policy", "security_headers"]
+__all__ = [
+    "artifact_content_security_policy",
+    "artifact_security_headers",
+    "content_security_policy",
+    "security_headers",
+]

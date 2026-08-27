@@ -109,6 +109,8 @@ class OnboardingService:
             raise ValueError("base URL must be an absolute http(s) URL")
         if parsed.username or parsed.password:
             raise ValueError("base URL must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("base URL must not contain a query or fragment")
         key: str | None = None
         if api_key is not None:
             key = api_key.strip()

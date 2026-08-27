@@ -4981,14 +4981,23 @@ def test_ws_read_frame_unmasks_and_roundtrips():
 
 
 # --- raw-bytes artifact routes ----------------------------------------------
-def _bytes_handler(cfg, runner, hub=None):
+def _bytes_handler(cfg, runner, hub=None, *, capture_security=False):
     """Handler with _send captured — bytes routes bypass _json entirely."""
     handler_cls = gateway_mod.make_handler(cfg, hub or _Hub(), runner)
     handler = object.__new__(handler_cls)
     sends = []
-    handler._send = lambda code, body, ctype, extra=None: sends.append(
-        (code, body, ctype)
-    )
+    if capture_security:
+        handler._send = (
+            lambda code, body, ctype, extra=None, security=None: sends.append(
+                (code, body, ctype, security)
+            )
+        )
+    else:
+        handler._send = (
+            lambda code, body, ctype, extra=None, security=None: sends.append(
+                (code, body, ctype)
+            )
+        )
     handler._query = lambda: {}
     handler._body = lambda: {}
     return handler, sends
@@ -5130,12 +5139,14 @@ def test_stage1_exact_get_rechecks_committed_snapshot_bytes(tmp_path):
         manifest=verified.value,
         expected_manifest_sha256=verified.sha256,
     )
-    handler, sends = _bytes_handler(cfg, runner)
+    handler, sends = _bytes_handler(cfg, runner, capture_security=True)
     exact_path = artifact_version_url(record["version_id"]).removeprefix("/api/v1")
 
     try:
         handler._api("GET", exact_path)
         assert sends[-1][:2] == (200, b"ORIGINAL")
+        assert "script-src 'none'" in sends[-1][3]["Content-Security-Policy"]
+        assert sends[-1][3]["X-Frame-Options"] == "SAMEORIGIN"
 
         version = store.version_meta(record["version_id"])
         assert version is not None
@@ -5154,7 +5165,7 @@ def test_preview_route_forces_html_content_type(tmp_path):
     """GET /preview/{ident} serves the same resolved bytes but ALWAYS stamps
     text/html, whatever the stored content_type says."""
     cfg, runner, store, fid, st = _runner_frame(tmp_path)
-    handler, sends = _bytes_handler(cfg, runner)
+    handler, sends = _bytes_handler(cfg, runner, capture_security=True)
     handler.headers = _auth_headers(cfg)  # _route consults Origin/Cookie headers
 
     f = st.workspace / "report.md"
@@ -5163,9 +5174,46 @@ def test_preview_route_forces_html_content_type(tmp_path):
 
     handler.path = f"/preview/{rec['artifact_id']}"
     handler._route("GET")
-    code, body, ctype = sends[-1]
+    code, body, ctype, security = sends[-1]
     assert (code, body) == (200, b"# hi")
     assert ctype == "text/html; charset=utf-8"
+    artifact_csp = security["Content-Security-Policy"]
+    assert "script-src 'none'" in artifact_csp
+    assert "connect-src 'none'" in artifact_csp
+    assert "sandbox" in artifact_csp
+    assert security["X-Frame-Options"] == "SAMEORIGIN"
+
+
+def test_send_serializes_only_the_artifact_security_profile(tmp_path):
+    """The final HTTP writer must not add the UI shell's DENY/CSP headers.
+
+    Artifact previews need the stricter inactive policy while remaining
+    embeddable by the same-origin Workbench. Duplicate global headers would
+    make that profile internally contradictory at the browser boundary.
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    emitted: list[tuple[str, str]] = []
+    handler.send_response = lambda code: None
+    handler.send_header = lambda key, value: emitted.append((key, value))
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+    profile = gateway_mod.artifact_security_headers(
+        gateway_mod.WEBUI_DIR / "index.html"
+    )
+
+    try:
+        handler._send(200, b"<html></html>", "text/html", security=profile)
+    finally:
+        runner.close()
+
+    assert [value for key, value in emitted if key == "Content-Security-Policy"] == [
+        profile["Content-Security-Policy"]
+    ]
+    assert [value for key, value in emitted if key == "X-Frame-Options"] == [
+        "SAMEORIGIN"
+    ]
 
 
 def test_upload_without_frame_id_stores_file_but_never_broadcasts(tmp_path):

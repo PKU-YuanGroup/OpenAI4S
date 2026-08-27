@@ -275,7 +275,11 @@ hardware and remain outside the secret-free default gate.
 
 The pipeline no longer starts after the release is public. `release.yml` is
 `workflow_dispatch` only: a maintainer creates the draft, then runs the
-workflow against that tag, and every step runs while nothing is visible.
+workflow against that tag, and every step runs while nothing is visible. In
+the Actions UI, select a branch whose tip is the tagged commit and enter the
+tag in the `tag` input; from the CLI, prefer passing both `--ref TAG` and
+`-f tag=TAG`. The workflow requires that the tag peel to the immutable
+`github.sha`, so repository code is never selected by the mutable input.
 
 It used to trigger on `release: [created]`. GitHub does not emit that event for
 a *draft*, so the intended entry point could never fire and the pipeline was

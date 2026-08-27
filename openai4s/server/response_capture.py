@@ -476,7 +476,7 @@ def install(gateway_module, recorder: Recorder):
             raw = self._send
             had_own_send = "_send" in self.__dict__
 
-            def observing_send(code, body, ctype, extra=None):
+            def observing_send(code, body, ctype, extra=None, security=None):
                 try:
                     recorder.observe_raw(
                         method,
@@ -488,7 +488,13 @@ def install(gateway_module, recorder: Recorder):
                     )
                 except Exception:  # noqa: BLE001 - never break a response
                     pass
-                return raw(code, body, ctype, extra)
+                if security is None:
+                    # Test and extension handlers may still provide the
+                    # compatible four-argument writer. Preserve that surface
+                    # unless the route selected a non-default security
+                    # profile that genuinely has to cross the boundary.
+                    return raw(code, body, ctype, extra)
+                return raw(code, body, ctype, extra=extra, security=security)
 
             self._json = observing
             self._send = observing_send
@@ -657,8 +663,10 @@ def _probe_handler(
         public_failure(value, code, _CAPTURE_REQUEST_ID),
         route=route,
     )
-    handler._send = lambda code, body, ctype, extra=None: recorder.observe_raw(
-        method, path, code, ctype, len(body or b""), route=route
+    handler._send = (
+        lambda code, body, ctype, extra=None, security=None: recorder.observe_raw(
+            method, path, code, ctype, len(body or b""), route=route
+        )
     )
 
     # The third writer, and the one whose absence published a lie.

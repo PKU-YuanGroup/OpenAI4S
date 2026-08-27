@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +52,9 @@ class MemorySettings:
         self.values[key] = value
         return value
 
+    def close(self) -> None:
+        pass
+
 
 def service(tmp_path: Path) -> tuple[OnboardingService, MemorySettings]:
     settings = MemorySettings()
@@ -92,6 +97,14 @@ def test_configure_uses_provider_defaults_and_returns_no_secret(tmp_path):
         (
             {"provider": "alpha", "base_url": "https://user:pass@alpha.example"},
             "must not contain credentials",
+        ),
+        (
+            {"provider": "alpha", "base_url": "https://alpha.example?token=x"},
+            "query or fragment",
+        ),
+        (
+            {"provider": "alpha", "base_url": "https://alpha.example#token=x"},
+            "query or fragment",
         ),
         ({"provider": "alpha", "api_key": "changeme"}, "placeholder"),
     ],
@@ -183,3 +196,44 @@ def test_configure_preserves_stored_model_and_base_url_when_only_touching_key(tm
     assert settings.values["llm_model"] == "alpha-custom"
     assert settings.values["llm_base_url"] == "https://corp.proxy/v1"
     assert settings.values["llm_api_key"] == "fresh-key"
+
+
+def test_cmd_init_json_stdout_is_a_secret_free_projection(
+    tmp_path, monkeypatch, capsys
+):
+    import importlib
+
+    main = importlib.import_module("openai4s.cli.main")
+
+    onboarding, settings = service(tmp_path)
+    secret = "not-for-stdout-7d4231"
+    monkeypatch.setattr(main, "_onboarding_service", lambda: (onboarding, settings))
+    monkeypatch.setattr(main.sys, "stdin", io.StringIO(f"{secret}\n"))
+    args = SimpleNamespace(
+        provider="alpha",
+        model=None,
+        base_url=None,
+        non_interactive=True,
+        api_key_stdin=True,
+        clear_api_key=False,
+        json=True,
+    )
+
+    assert main.cmd_init(args) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert set(payload) == {
+        "provider",
+        "model",
+        "base_url",
+        "has_api_key",
+        "complete",
+        "data_dir",
+        "platform",
+        "native_runtime_supported",
+    }
+    assert payload["has_api_key"] is True
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert settings.values["llm_api_key"] == secret

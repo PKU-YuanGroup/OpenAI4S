@@ -16,14 +16,28 @@ external script are blocked (`script-src-attr`/`script-src-elem` violations)
 and a cross-origin fetch/WebSocket is refused by `connect-src`.
 """
 
-import os
-import re
+from html.parser import HTMLParser
 
 import pytest
 
-from openai4s.server.security_headers import content_security_policy, security_headers
+from openai4s.server.security_headers import (
+    artifact_content_security_policy,
+    artifact_security_headers,
+    content_security_policy,
+    security_headers,
+)
 
 _WEBUI = None
+
+
+class _ScriptInventory(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sources: list[str | None] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script":
+            self.sources.append(dict(attrs).get("src"))
 
 
 @pytest.fixture
@@ -42,48 +56,64 @@ def _directive(policy: str, name: str) -> str:
 
 
 def test_script_src_never_allows_unsafe_inline(index_html):
-    """The load-bearing assertion. index.html has exactly one inline script (a
-    static theme bootstrap) and zero inline event handlers, so the policy can
-    hash that one script instead of opening the door to every injected one."""
+    """The load-bearing assertion: executable code lives in static files."""
     script_src = _directive(content_security_policy(index_html), "script-src")
     assert "'unsafe-inline'" not in script_src
     assert "'unsafe-eval'" not in script_src
+    assert "'sha256-" not in script_src
 
 
-def test_script_src_hashes_the_real_inline_script(index_html):
-    """Derived from the file, not pinned as a constant: webui/ is served live
-    off the working tree with no build step, so a hardcoded hash would drift
-    the moment someone edited the bootstrap — and a stale hash means a blank
-    page, not a loud failure."""
-    script_src = _directive(content_security_policy(index_html), "script-src")
-    hashes = re.findall(r"'sha256-[A-Za-z0-9+/=]+'", script_src)
-    assert len(hashes) == 1, f"expected one inline-script hash, got {hashes}"
+def test_index_html_has_only_same_origin_external_scripts(index_html):
+    parser = _ScriptInventory()
+    parser.feed(index_html.read_text(encoding="utf-8"))
+    parser.close()
+
+    assert parser.sources
+    assert None not in parser.sources
+    assert all(source.startswith("/static/") for source in parser.sources)
+    assert parser.sources[0] == "/static/theme-bootstrap.js"
 
 
-def test_the_hash_tracks_edits_to_the_inline_script(tmp_path):
-    original = tmp_path / "a.html"
-    original.write_text("<script>var a = 1;</script>")
-    edited = tmp_path / "b.html"
-    edited.write_text("<script>var a = 2;</script>")
-    assert content_security_policy(original) != content_security_policy(edited)
+def test_policy_never_parses_html_to_authorize_scripts(tmp_path):
+    """Escaped script tokenizer states cannot influence a static policy."""
+    adversarial = tmp_path / "escaped-script.html"
+    adversarial.write_text(
+        "<script><!--<script>window.x=1;</script>-->window.y=2;</script>"
+    )
+
+    assert content_security_policy(adversarial) == content_security_policy(
+        tmp_path / "missing.html"
+    )
 
 
-def test_editing_index_html_in_place_reissues_the_hash(tmp_path):
-    """webui/ is served live off the working tree — the same path's contents
-    change under a running daemon. A path-keyed cache would keep serving the
-    old hash and blank the page by blocking the very script it was built for,
-    with no error anywhere on the server.
-    """
-    page = tmp_path / "index.html"
-    page.write_text("<script>var a = 1;</script>")
-    before = content_security_policy(page)
+def test_untrusted_artifact_policy_cannot_execute_or_reach_same_origin():
+    policy = artifact_content_security_policy()
 
-    os.utime(page, ns=(0, 0))  # make the rewrite's mtime unambiguously different
-    page.write_text("<script>var a = 22;</script>")
-    after = content_security_policy(page)
+    assert _directive(policy, "default-src") == "default-src 'none'"
+    assert _directive(policy, "script-src") == "script-src 'none'"
+    assert _directive(policy, "connect-src") == "connect-src 'none'"
+    assert _directive(policy, "form-action") == "form-action 'none'"
+    assert _directive(policy, "frame-ancestors") == "frame-ancestors 'self'"
+    assert _directive(policy, "sandbox") == "sandbox"
 
-    assert before != after, "cache must invalidate when index.html changes"
-    assert _directive(after, "script-src") != _directive(before, "script-src")
+
+def test_untrusted_artifact_headers_remain_embeddable_same_origin(index_html):
+    headers = artifact_security_headers(index_html)
+
+    assert headers["Content-Security-Policy"] == artifact_content_security_policy()
+    assert headers["X-Frame-Options"] == "SAMEORIGIN"
+    assert headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_html_preview_iframe_does_not_reenable_artifact_capabilities(index_html):
+    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
+    preview_line = next(
+        line for line in app_js.splitlines() if 'rendererId === "html-preview"' in line
+    )
+
+    assert 'frame.setAttribute("sandbox", "")' in preview_line
+    assert "allow-scripts" not in preview_line
+    assert "allow-forms" not in preview_line
 
 
 def test_connect_src_is_same_origin_only(index_html):
@@ -134,8 +164,7 @@ def test_all_expected_headers_present(index_html):
 
 
 def test_missing_index_html_still_yields_a_usable_policy(tmp_path):
-    """A policy without the hash is wrong-but-closed (the page breaks loudly)
-    rather than absent — never fail open into no CSP at all."""
+    """The static policy does not depend on an HTML file being readable."""
     policy = content_security_policy(tmp_path / "nope.html")
     assert "default-src 'self'" in policy
     assert "'unsafe-inline'" not in _directive(policy, "script-src")

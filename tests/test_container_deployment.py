@@ -25,6 +25,7 @@ import importlib
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,8 @@ DOCKERIGNORE = ROOT / ".dockerignore"
 COMPOSE = ROOT / "compose.yaml"
 KUBERNETES = ROOT / "deploy" / "kubernetes.yaml"
 INGRESS = ROOT / "deploy" / "kubernetes-ingress.yaml"
+BUILD_REQUIREMENTS = ROOT / "deploy" / "container-requirements-build.txt"
+SCIENCE_REQUIREMENTS = ROOT / "deploy" / "container-requirements-science.txt"
 
 #: The container image's account, asserted from both ends: the Dockerfile
 #: creates it and the pod securityContext runs as it.
@@ -83,6 +86,59 @@ def _container() -> dict:
 
 def _container_env() -> dict[str, dict]:
     return {entry["name"]: entry for entry in _container().get("env", [])}
+
+
+def test_container_base_and_python_inputs_are_integrity_locked():
+    dockerfile = _dockerfile()
+    images = re.findall(r"^FROM\s+(python:[^\s]+)", dockerfile, flags=re.MULTILINE)
+
+    assert len(images) == 2
+    assert len(set(images)) == 1
+    assert re.fullmatch(r"python:3\.12-slim-bookworm@sha256:[0-9a-f]{64}", images[0])
+    requirements = SCIENCE_REQUIREMENTS.read_text(encoding="utf-8")
+    build_requirements = BUILD_REQUIREMENTS.read_text(encoding="utf-8")
+    assert "--hash=sha256:" in requirements
+    assert "setuptools==84.0.0" in build_requirements
+    assert "--hash=sha256:" in build_requirements
+    assert "--no-build-isolation" in dockerfile
+    assert dockerfile.count("--only-binary=:all:") == 2
+    assert "--require-hashes -r /tmp/container-requirements-science.txt" in dockerfile
+    assert "--no-index --no-deps /tmp/wheels/openai4s-*.whl" in dockerfile
+    assert "science)" in dockerfile and '"")' in dockerfile
+
+
+def test_science_requirements_match_locked_export(tmp_path):
+    exported = tmp_path / "science.txt"
+    subprocess.run(
+        [
+            "uv",
+            "export",
+            "--locked",
+            "--no-dev",
+            "--extra",
+            "science",
+            "--no-emit-project",
+            "--output-file",
+            str(exported),
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    # The generated command comment differs only in the caller-selected output
+    # path. Normalize that exact argument, then compare every byte so no header
+    # line can become an unverified pip input.
+    committed = SCIENCE_REQUIREMENTS.read_text(encoding="utf-8")
+    regenerated = exported.read_text(encoding="utf-8")
+    committed_output = "deploy/container-requirements-science.txt"
+    assert committed.count(f"--output-file {committed_output}") == 1
+    assert regenerated.count(f"--output-file {exported}") == 1
+    committed = committed.replace(committed_output, "<OUTPUT>", 1)
+    regenerated = regenerated.replace(str(exported), "<OUTPUT>", 1)
+    assert committed == regenerated
 
 
 # --------------------------------------------------------------------------

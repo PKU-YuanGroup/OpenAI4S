@@ -8659,7 +8659,7 @@ function renderArtifactDescriptor(body, a, descriptor) {
   const url = artUrl(a); const nm = String(a.filename || "").toLowerCase();
   if (rendererId === "image") renderAnnotatableImage(content, a, url);
   else if (rendererId === "pdf") { const frame = el("iframe"); frame.dataset.currentPage = "1"; frame.src = url + "#page=1"; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "pdf", frame); }
-  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", "allow-scripts allow-forms"); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
+  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", ""); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
   else if (rendererId === "molecule-3d") molecule(content, url, nm);
   else if (rendererId === "chemistry-2d") renderChemistry2D(content, a, url);
   else if (rendererId === "genome-track") renderGenomeTrack(content, a, url);

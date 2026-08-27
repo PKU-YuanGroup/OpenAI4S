@@ -24,8 +24,6 @@
 #     migrate. Choosing the backend that a server actually has removes the
 #     noise without weakening anything. See docs/docker.md.
 
-ARG PYTHON_VERSION=3.12
-
 # --- build stage: turn this tree into the same wheel CI builds ---------------
 #
 # Not a `pip install .` of the source tree, and not `pip install openai4s` from
@@ -33,14 +31,18 @@ ARG PYTHON_VERSION=3.12
 # string, so an image built from the index would be silently older than the
 # checkout it was built in. Building the wheel here is the path
 # `.github/workflows/ci.yml`'s release-artifacts job already proves installable.
-FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
+FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS builder
 
 WORKDIR /src
 COPY . /src
-RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels /src
+COPY deploy/container-requirements-build.txt /tmp/container-requirements-build.txt
+RUN python -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
+        -r /tmp/container-requirements-build.txt \
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation \
+        --wheel-dir /wheels /src
 
 # --- runtime stage -----------------------------------------------------------
-FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS runtime
 
 # `science` installs numpy/pandas/matplotlib/scikit-learn so agent cells can do
 # actual work. Pass `--build-arg OPENAI4S_EXTRAS=` for the stdlib-only control
@@ -75,12 +77,16 @@ RUN apt-get update \
 RUN groupadd --gid 1000 openai4s \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash openai4s
 
+COPY deploy/container-requirements-science.txt /tmp/container-requirements-science.txt
 COPY --from=builder /wheels/*.whl /tmp/wheels/
 RUN set -eu; \
-    wheel="$(ls /tmp/wheels/openai4s-*.whl)"; \
-    if [ -n "${OPENAI4S_EXTRAS}" ]; then wheel="${wheel}[${OPENAI4S_EXTRAS}]"; fi; \
-    python -m pip install --no-cache-dir "${wheel}"; \
-    rm -rf /tmp/wheels
+    case "${OPENAI4S_EXTRAS}" in \
+        science) python -m pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/container-requirements-science.txt ;; \
+        "") ;; \
+        *) echo "unsupported OPENAI4S_EXTRAS=${OPENAI4S_EXTRAS}; expected science or an empty value" >&2; exit 2 ;; \
+    esac; \
+    python -m pip install --no-cache-dir --no-index --no-deps /tmp/wheels/openai4s-*.whl; \
+    rm -rf /tmp/wheels /tmp/container-requirements-science.txt
 
 # The data directory: the SQLite store, artifacts, session workspaces, skills,
 # the checkpoint CAS, and the access token. Everything worth keeping is here

@@ -1,0 +1,9 @@
+name: OpenAI4S CodeQL configuration
+
+# This is one exact, non-executable upstream capture rather than a blanket tree
+# exclusion. It is a byte-exact arXiv page read only by parser tests. Executable
+# bioSkills examples remain scanned even when an individual alert is a false
+# positive; those alerts must be dismissed individually so a future re-pin does
+# not inherit an invisible path.
+paths-ignore:
+  - tests/fixtures/arxiv_abs_2503.06687.html

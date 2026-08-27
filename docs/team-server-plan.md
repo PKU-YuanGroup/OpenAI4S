@@ -107,7 +107,7 @@
 | 场景/故障/trace | `uv run python -m harness.cli run --tier pr --offline` |
 | 新目录 | `uv run python scripts/check_directory_readmes.py`(bash fence 内的 `#` 会被当标题计数,写 README 时注意) |
 | 涉密路径 | `python scripts/source_secret_scan.py` |
-| webui / kernel / gateway 流式 | `node tests/browser_smoke.mjs`(需先 `npm install --no-save --ignore-scripts playwright@1.54.1 && npx playwright install chromium`,daemon 必须**免凭据**——配了真 key 冒烟会超时;本地需 `OPENAI4S_NOTEBOOK_REPL=1`;8760 被占时用 `OPENAI4S_BROWSER_URL` + 独立 `OPENAI4S_DATA_DIR` 起副本) |
+| webui / kernel / gateway 流式 | `node tests/browser_smoke.mjs`(需先 `npm ci --ignore-scripts && ./node_modules/.bin/playwright install chromium`,daemon 必须**免凭据**——配了真 key 冒烟会超时;本地需 `OPENAI4S_NOTEBOOK_REPL=1`;8760 被占时用 `OPENAI4S_BROWSER_URL` + 独立 `OPENAI4S_DATA_DIR` 起副本) |
 | sandbox / subprocess / 平台探测 | 本地强制走 Linux 分支(mac 绿 ≠ CI 绿:sh exec、无 Seatbelt 有 bwrap) |
 | R interrupt 类测试偶发红 | 先单独、安静复跑定性,再决定是否与本工作有关 |
 

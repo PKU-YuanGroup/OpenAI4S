@@ -11,6 +11,20 @@ updates:
         update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+
   - package-ecosystem: "pre-commit"
     directory: "/"
     schedule:
