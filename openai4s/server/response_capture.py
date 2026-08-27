@@ -893,6 +893,13 @@ def _drive_seeded_downloads(
             {"language": ["python"]},
         ),
         (r"/frames/([^/]+)/session/export", f"/frames/{frame_id}/session/export", {}),
+        # The executed-code sources bundle is binary too; drive it on a real
+        # frame so the contract records the zip answer, not only the 404.
+        (
+            r"/frames/([^/]+)/execution-sources/export",
+            f"/frames/{frame_id}/execution-sources/export",
+            {},
+        ),
         # `(.+)`, because that is the entry that serves the bytes:
         # `gateway.py` dispatches the download from `/artifacts/(.+)` ->
         # `_serve_artifact`, while `/artifacts/([^/]+)` is DELETE and the
@@ -1160,6 +1167,7 @@ def _drive_session_surface(
         (r"/frames/([^/]+)/action-timeline", f"{base}/action-timeline"),
         (r"/frames/([^/]+)/execution", f"{base}/execution"),
         (r"/frames/([^/]+)/execution-queue", f"{base}/execution-queue"),
+        (r"/frames/([^/]+)/execution-sources", f"{base}/execution-sources"),
         (r"/frames/([^/]+)/context", f"{base}/context"),
         (r"/frames/([^/]+)/security", f"{base}/security"),
         (r"/frames/([^/]+)/delegations", f"{base}/delegations"),
@@ -1201,7 +1209,7 @@ def _drive_session_surface(
             r"|branches(?:/(?:checkpoints|fork|revert-preview|revert"
             r"|[^/]+/activate))?|checkpoints|revert/(?:preview|apply|undo"
             r"|operations)|notebook/export|session/export|kernel/variables"
-            r"|execution)",
+            r"|execution-sources(?:/export)?|execution)",
             f"{base}/execution",
         ),
     )

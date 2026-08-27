@@ -926,7 +926,7 @@ def cmd_run(args) -> int:
         # Before get_config(), which reads these at construction.
         auto_applied = enable_auto_run_environment()
     cfg = get_config()
-    agent = Agent(cfg=cfg, verbose=args.verbose)
+    agent = Agent(cfg=cfg, verbose=args.verbose, task_mode=getattr(args, "mode", None))
     try:
         with _foreground_cell_interrupt(agent):
             result = agent.run(args.task)
@@ -2064,6 +2064,21 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("task", help="the task description")
     pr.add_argument("--json", action="store_true", help="emit full JSON result")
     pr.add_argument("-v", "--verbose", action="store_true", help="stream turns")
+    from openai4s.agent.task_modes import TaskMode
+
+    pr.add_argument(
+        "--mode",
+        choices=[mode.value for mode in TaskMode],
+        default=None,
+        help=(
+            "task mode. Omitted, it is detected conservatively from the task "
+            "text (guidance only — detection never gates completion) and "
+            "defaults to analysis_run. Selecting reusable_pipeline or "
+            "codebase_change explicitly requires the run to save source "
+            "files, keep a thin entry point, and back its completion with "
+            "verified source/entry-point/test evidence"
+        ),
+    )
     pr.add_argument(
         "--auto",
         action="store_true",

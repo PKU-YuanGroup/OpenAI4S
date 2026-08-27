@@ -732,6 +732,95 @@ def test_compact_handoff_marks_restarted_generation_as_non_persistent(monkeypatc
 # ---- delegation ----------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "second_spec",
+    [
+        {"request": "async", "wait": False},
+        {"request": ["fanout-a", "fanout-b"], "wait": True},
+        {"request": "serial", "wait": True},
+    ],
+)
+def test_reused_agent_recreates_its_delegation_runner(monkeypatch, second_spec):
+    """Every Agent run gets a live pool, including parallel second runs."""
+
+    observed_runners = []
+    delegated_results = []
+    chat_calls = 0
+    agent = None
+
+    def fake_run_one(self, child):
+        assert child.begin(1)
+        out = {
+            "child_id": child.child_id,
+            "stop_reason": "submitted",
+            "task_status": "completed",
+            "output": {"task": child.spec["request"]},
+        }
+        assert child.finish_done(out)
+        return out
+
+    monkeypatch.setattr(deleg_mod.DelegationRunner, "_run_one", fake_run_one)
+
+    def finalize_reply(call_index):
+        arguments = {
+            "summary": f"run {call_index} complete",
+            "completion_bullets": [f"Completed run {call_index}"],
+        }
+        call = {
+            "id": f"final-{call_index}",
+            "wire_id": f"wire-final-{call_index}",
+            "name": "finalize_response",
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        return {
+            "content": "",
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            },
+        }
+
+    def chat_with_second_run_delegation(messages, cfg, **kwargs):
+        nonlocal chat_calls
+        del messages, cfg, kwargs
+        chat_calls += 1
+        assert agent is not None
+        runner = agent._delegation_runner
+        assert runner is not None
+        observed_runners.append(runner)
+        if chat_calls == 2:
+            result = runner(dict(second_spec))
+            if second_spec.get("wait") is False:
+                result = runner.collect({"child_ids": [result["child_id"]]})[0]
+            delegated_results.append(result)
+        return finalize_reply(chat_calls)
+
+    monkeypatch.setattr(loop_mod, "chat", chat_with_second_run_delegation)
+    agent = Agent(use_skills=False, allow_delegate=True, max_turns=1)
+
+    first = agent.run("first run")
+    assert first["stop_reason"] == "submitted"
+    assert agent._delegation_runner is None
+
+    second = agent.run("second run")
+
+    assert second["stop_reason"] == "submitted"
+    assert len(observed_runners) == 2
+    assert observed_runners[0] is not observed_runners[1]
+    assert all(runner._pool._shutdown for runner in observed_runners)
+    assert delegated_results
+    if isinstance(delegated_results[0], list):
+        assert len(delegated_results[0]) == 2
+    else:
+        assert delegated_results[0]["task_status"] == "completed"
+
+
 def test_delegate_fanout_cap():
     runner = DelegationRunner(get_config())
     with pytest.raises(DelegationError):

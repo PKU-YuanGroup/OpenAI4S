@@ -74,6 +74,7 @@ gateway.py
 | [`local_auth.py`](local_auth.py) | daemon 自己的访问令牌：在数据目录下只铸一次、仅属主可读、比较用恒定时间。是文件而非 Store 行，因为 CLI 必须在任何数据库存在之前读到它，而 `openai4s doctor` 恰恰要在数据库本身坏掉时还能工作。此前它活在闭包里、每次重启都换，已发出的每个 cookie 都因此失效。铸造时用 `os.link` 发布——这是唯一只可能成功一次的操作，于是并发启动的多个 daemon 会收敛到同一个令牌，而不是各自握着一个。|
 | [`errors.py`](errors.py) | `GatewayError`、稳定的机器错误码、追加式的公开失败信封，以及那个异常投影器：它把任意 `str(e)` 挡在响应体之外，而运维仍能从结构化日志里拿到原始异常。独立成模块，是因为 `GatewayError` 原本位于 gateway 自身 import 区块下方约 5800 行处，兄弟模块从那里 import 它构成循环导入，会让 daemon 在**启动时**就失败。从 `Handler._api` 里切出的每个路由组都要抛这个异常，否则每抽一次就要重新踩一次这个坑。gateway 仍然再导出原来的名字。 |
 | [`execution_coordinator.py`](execution_coordinator.py) | 会话级 FIFO 执行所有权的 Web 适配层。ticket 状态会被投影成 WebSocket 事件；已准入的 ticket 会绑定到它的取消事件和当时那把内核 lease 上；中断只会打到由那个执行 id 精确持有的那把 lease。 |
+| [`execution_sources.py`](execution_sources.py) | 把已执行代码的层级汇于一处：`GET /frames/{fid}/execution-sources` 投影根 frame 加上每个被委派的子 frame（递归；名称、深度、每 frame 计数，以及每个 Cell 的语言/状态/源码 SHA-256/generation/环境/Artifact 关联——从不内联代码文本本身），`…/execution-sources/export` 则把同一批行渲染成字节确定性的 `sources.zip`：真正执行过的源文件，失败的 Cell 一并包含并标注，附一份新的 manifest 与中英双语的"持久内核"警示。离开 store 的只有 `execution_log` 字段与公开元数据——不含提示词、host 载荷、输出或凭据。 |
 | [`execution_views.py`](execution_views.py) | 读不可变的 Cell 历史，回答 Notebook 想问的问题：这个 Cell 跑在哪个运行时 generation 上、依赖了什么、之后是否已经失效、重试过几次、数据从哪来。 |
 | [`gateway.py`](gateway.py) | HTTP/WebSocket 的主组合门面。协议 frame 的编解码、hub 与续传缓冲、`SessionState` 与 `SessionRunner`、REST 路由、静态资源和安全检查都落在这里，本表所列全部 service 的装配也在这里。 |
 | [`global_views.py`](global_views.py) | 组合跨会话的项目级研究 Timeline 与 Artifact 血缘视图。 |

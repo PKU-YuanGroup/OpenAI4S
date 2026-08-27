@@ -144,6 +144,11 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Exact Artifact inputs survive remote-job restart and are stamped on
         # harvested versions rather than inferred from a later poll.
         "compute_job_input_versions",
+        # Delegated child cells are recorded directly (no execution_attempts
+        # row), so the log row itself can name its kernel generation; and a
+        # child's derived completion contract lands beside its lifecycle
+        # status.
+        "delegation_generation_and_task_status",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -805,6 +810,215 @@ def test_partial_v25_repair_bindings_are_backfilled_and_rebuilt_canonically(
         )
     connection.rollback()
     store.close()
+
+
+_EXEC_V27_COLUMNS = (
+    "producing_cell_id,frame_id,root_frame_id,project_id,cell_seq,"
+    "cell_index,state_revision,kernel_id,language,status,origin,code,"
+    "code_hash,visibility,pin,replay_policy,variable_reads,"
+    "variable_writes,variable_deletes,mutation_uncertain,stdout,stderr,"
+    "error,figures,files_read,files_written,interrupted,wall_s,cpu_s,"
+    "peak_rss_kb,created_at"
+)
+
+_CHILD_V27_COLUMNS = (
+    "root_frame_id,child_id,parent_child_id,parent_frame_id,frame_id,"
+    "name,depth,status,owner_instance_id,runner_instance_id,"
+    "overrides_json,result_json,error,stop_reason,turn_boundary,"
+    "max_turns,last_progress_at,created_at,started_at,finished_at"
+)
+
+
+def _downgrade_current_store_to_v27(tmp_path, name="v27.db"):
+    """Build a real current Store, then remove only the v28 schema boundary.
+
+    Starting from a Store-produced database means every v1-v27 table and
+    migration record has the same shape as an actual installation. The
+    execution_log rows and the terminal delegation child are canaries for
+    data preservation across the one migration under test.
+    """
+
+    db = tmp_path / name
+    store = Store(db)
+    store.set_setting("v27-preservation-canary", "precious-data")
+    root = store.new_frame(kind="turn", project_id="science")
+    store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        code="print('v27 ok')",
+        result={"id": "cell-v27-ok", "stdout": "v27 ok\n"},
+        cell_index=1,
+    )
+    store.log_cell(
+        frame_id=root,
+        root_frame_id=root,
+        code="boom()",
+        result={"id": "cell-v27-err", "error": "NameError: boom"},
+        cell_index=2,
+    )
+    store.restore_delegation_tree(
+        root_frame_id=root,
+        owner_instance_id="owner-v27",
+        runner_instance_id="runner-v27",
+        budget_limit=4,
+    )
+    reserved = store.reserve_delegation_children(
+        root_frame_id=root,
+        owner_instance_id="owner-v27",
+        runner_instance_id="runner-v27",
+        count=1,
+        depth=1,
+        parent_child_id=None,
+    )
+    child_id = reserved["child_ids"][0]
+    store.persist_delegation_child(
+        root_frame_id=root,
+        owner_instance_id="owner-v27",
+        runner_instance_id="runner-v27",
+        child={
+            "child_id": child_id,
+            "name": "worker",
+            "status": "done",
+            "depth": 1,
+            "stop_reason": "submitted",
+            "result": {"output": "child result", "stop_reason": "submitted"},
+            "created_at": 1.0,
+        },
+    )
+    store.close()
+
+    connection = sqlite3.connect(str(db))
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=OFF")
+    # Rebuild instead of relying on ALTER TABLE DROP COLUMN: OpenAI4S supports
+    # Python/SQLite combinations old enough that the newer shorthand is not a
+    # portable way to manufacture a v27 fixture.
+    connection.execute("ALTER TABLE execution_log RENAME TO _v28_execution_log")
+    connection.execute("DROP INDEX ix_exec_frame")
+    connection.execute("DROP INDEX ix_exec_root")
+    connection.execute(
+        "CREATE TABLE execution_log ("
+        "producing_cell_id TEXT PRIMARY KEY,frame_id TEXT,root_frame_id TEXT,"
+        "project_id TEXT NOT NULL DEFAULT 'default',cell_seq INTEGER,"
+        "cell_index INTEGER,state_revision INTEGER,kernel_id TEXT,"
+        "language TEXT,status TEXT,origin TEXT,code TEXT NOT NULL,"
+        "code_hash TEXT NOT NULL,visibility TEXT NOT NULL DEFAULT 'scientific' "
+        "CHECK (visibility IN ('scientific','scratch','recovery','system')),"
+        "pin INTEGER NOT NULL DEFAULT 0 CHECK (pin IN (0,1)),"
+        "replay_policy TEXT NOT NULL DEFAULT 'conditional' "
+        "CHECK (replay_policy IN ('safe','conditional','never')),"
+        "variable_reads TEXT NOT NULL DEFAULT '[]',"
+        "variable_writes TEXT NOT NULL DEFAULT '[]',"
+        "variable_deletes TEXT NOT NULL DEFAULT '[]',"
+        "mutation_uncertain INTEGER NOT NULL DEFAULT 0 "
+        "CHECK (mutation_uncertain IN (0,1)),stdout TEXT,stderr TEXT,"
+        "error TEXT,figures TEXT,files_read TEXT,files_written TEXT,"
+        "interrupted INTEGER NOT NULL DEFAULT 0,wall_s REAL,cpu_s REAL,"
+        "peak_rss_kb INTEGER,created_at INTEGER NOT NULL)"
+    )
+    connection.execute(
+        f"INSERT INTO execution_log({_EXEC_V27_COLUMNS}) "
+        f"SELECT {_EXEC_V27_COLUMNS} FROM _v28_execution_log"
+    )
+    connection.execute("DROP TABLE _v28_execution_log")
+    connection.execute("CREATE INDEX ix_exec_frame ON execution_log(frame_id)")
+    connection.execute("CREATE INDEX ix_exec_root ON execution_log(root_frame_id)")
+
+    connection.execute(
+        "ALTER TABLE delegation_children RENAME TO _v28_delegation_children"
+    )
+    connection.execute("DROP INDEX ix_delegation_children_root")
+    connection.execute("DROP INDEX ix_delegation_children_live")
+    connection.execute(
+        "CREATE TABLE delegation_children ("
+        "root_frame_id TEXT NOT NULL,child_id TEXT NOT NULL,"
+        "parent_child_id TEXT,parent_frame_id TEXT,frame_id TEXT,name TEXT,"
+        "depth INTEGER NOT NULL CHECK (depth >= 0),"
+        "status TEXT NOT NULL CHECK (status IN "
+        "('pending','running','done','failed','stopped')),"
+        "owner_instance_id TEXT NOT NULL,runner_instance_id TEXT NOT NULL,"
+        "overrides_json TEXT NOT NULL DEFAULT '{}',result_json TEXT,"
+        "error TEXT,stop_reason TEXT,"
+        "turn_boundary INTEGER NOT NULL DEFAULT 0 CHECK (turn_boundary >= 0),"
+        "max_turns INTEGER,last_progress_at REAL,created_at REAL NOT NULL,"
+        "started_at REAL,finished_at REAL,PRIMARY KEY(root_frame_id,child_id))"
+    )
+    connection.execute(
+        f"INSERT INTO delegation_children({_CHILD_V27_COLUMNS}) "
+        f"SELECT {_CHILD_V27_COLUMNS} FROM _v28_delegation_children"
+    )
+    connection.execute("DROP TABLE _v28_delegation_children")
+    connection.execute(
+        "CREATE INDEX ix_delegation_children_root "
+        "ON delegation_children(root_frame_id, created_at, child_id)"
+    )
+    connection.execute(
+        "CREATE INDEX ix_delegation_children_live "
+        "ON delegation_children(root_frame_id, status, runner_instance_id)"
+    )
+    connection.execute("DELETE FROM schema_migrations WHERE version=28")
+    connection.execute("PRAGMA user_version=27")
+    connection.commit()
+    connection.close()
+    return db, root, child_id
+
+
+def test_v28_upgrades_a_real_v27_store_preserving_rows_and_new_columns(tmp_path):
+    db, root, child_id = _downgrade_current_store_to_v27(tmp_path)
+
+    with sqlite3.connect(str(db)) as probe:
+        assert "generation_id" not in {
+            r[1] for r in probe.execute("PRAGMA table_info(execution_log)")
+        }
+        assert "task_status" not in {
+            r[1] for r in probe.execute("PRAGMA table_info(delegation_children)")
+        }
+
+    upgraded = Store(db)
+    try:
+        assert "generation_id" in {
+            r[1] for r in upgraded._conn.execute("PRAGMA table_info(execution_log)")
+        }
+        assert "task_status" in {
+            r[1]
+            for r in upgraded._conn.execute("PRAGMA table_info(delegation_children)")
+        }
+        migration = upgraded._conn.execute(
+            "SELECT name FROM schema_migrations WHERE version=28"
+        ).fetchone()
+        assert migration["name"] == "delegation_generation_and_task_status"
+        assert upgraded.schema_state()["version"] == SCHEMA_VERSION
+
+        # Historical rows are preserved and keep NULL for both new columns:
+        # inventing a generation or a task status would be provenance that is
+        # wrong rather than absent.
+        ok = upgraded.cell_detail("cell-v27-ok")
+        assert ok["stdout"] == "v27 ok\n"
+        assert ok["generation_id"] is None
+        err = upgraded.cell_detail("cell-v27-err")
+        assert err["status"] == "error"
+        child = upgraded.delegation_tree(root)["children"][0]
+        assert child["child_id"] == child_id
+        assert child["status"] == "done"
+        assert child["stop_reason"] == "submitted"
+        assert child["task_status"] is None
+        assert upgraded.get_setting("v27-preservation-canary") == "precious-data"
+
+        # The upgraded database accepts the new provenance going forward.
+        upgraded.log_cell(
+            frame_id=root,
+            root_frame_id=root,
+            code="post()",
+            result={"id": "cell-post-upgrade"},
+            cell_index=3,
+            generation_id="gen-post-upgrade",
+        )
+        assert (
+            upgraded.cell_detail("cell-post-upgrade")["generation_id"]
+            == "gen-post-upgrade"
+        )
+    finally:
+        upgraded.close()
 
 
 # --------------------------------------------------------------------------

@@ -27,6 +27,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from openai4s.agent.cell_record import DelegatedCellRecorder, compose_cell_hooks
+from openai4s.agent.models import KernelEnvSpec
 from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
 from openai4s.host.delegation_policy import child_execution_policy
@@ -40,6 +42,20 @@ MAX_DEPTH = 4
 DELEGATION_PROCESS_INSTANCE_ID = f"delegation-{uuid.uuid4()}"
 
 _TERMINAL = frozenset({"done", "failed", "stopped"})
+
+#: Severity order for the machine-readable completion contract. A child's
+#: declaration is input to the envelope build, never the record: machine
+#: checks may move the status DOWN this ranking, never up.
+_TASK_STATUS_RANK = {"completed": 0, "partial": 1, "blocked": 2, "failed": 3}
+
+#: task_status values that mean "the task is not done" — the bounded retry
+#: option re-runs a child exactly when its envelope lands on one of these.
+_RETRYABLE_STATUS = frozenset({"partial", "blocked", "failed"})
+
+#: Alias keys under which a structured completion carries its limitations
+#: (mirrors the projection aliases in openai4s/server/completions.py without
+#: importing the server layer into the delegation core).
+_LIMITATION_ALIASES = ("limitations", "caveats", "限制", "局限性")
 
 
 class DelegationError(RuntimeError):
@@ -251,6 +267,27 @@ class _SteeringMessage:
         return {**self.snapshot(), "text_preview": self.text}
 
 
+class _RetryChain:
+    """Cancellation shared by every immutable attempt of one logical child.
+
+    Mutations happen while ``_DelegationTree.lock`` is held. The Event makes
+    cancellation visible to the child runtime without taking that tree lock.
+    """
+
+    def __init__(self, chain_id: str) -> None:
+        self.chain_id = chain_id
+        self.cancel_event = threading.Event()
+        self.reason = "child stopped"
+
+    def cancel(self, reason: str) -> None:
+        if not self.cancel_event.is_set():
+            self.reason = reason
+            self.cancel_event.set()
+
+    def cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
+
 class _Child:
     """Thread-safe state for one direct or nested sub-agent."""
 
@@ -266,6 +303,7 @@ class _Child:
         store: Any | None,
         budget: DelegationBudget,
         clock: Callable[[], float],
+        retry_chain: _RetryChain | None = None,
     ) -> None:
         self.child_id = child_id
         self.name = name
@@ -275,6 +313,7 @@ class _Child:
         self.parent_frame_id = parent_frame_id
         self.store = store
         self.budget = budget
+        self._retry_chain = retry_chain or _RetryChain(child_id)
         self.status = "pending"
         self.result: dict[str, Any] | None = None
         self.future: Future | None = None
@@ -410,6 +449,7 @@ class _Child:
                 "child_id": self.child_id,
                 "name": self.name,
                 "status": self.status,
+                "task_status": (self.result or {}).get("task_status"),
                 "output": output,
                 "error": self.error,
                 "depth": self.depth,
@@ -452,9 +492,15 @@ class _Child:
                 "overrides": _public_overrides(self.spec),
                 "result": self.result,
                 "error": self.error,
+                # Every terminal persists its stop_reason: the stopped reason
+                # text for stopped children (unchanged), the engine's
+                # stop_reason (submitted/max_turns/error) for the rest.
                 "stop_reason": (
-                    self._stop_reason if self.status == "stopped" else None
+                    self._stop_reason
+                    if self.status == "stopped"
+                    else (self.result or {}).get("stop_reason")
                 ),
+                "task_status": (self.result or {}).get("task_status"),
             }
 
     @classmethod
@@ -530,6 +576,9 @@ class _Child:
         self.status = "stopped"
         self.error = None
         self.finished_at = self.finished_at or self._clock()
+        # Deliberately no task_status: a stopped child's task was neither
+        # completed nor judged — the daemon-restart repair path leaves the
+        # column NULL for the same reason.
         self.result = {
             "child_id": self.child_id,
             "name": self.name,
@@ -539,6 +588,11 @@ class _Child:
             "error": None,
             "reason": reason,
             "frame_id": self.frame_id,
+            "turns": self.turn_boundary or None,
+            "max_turns": self.max_turns,
+            "environment": None,
+            "limitations": [],
+            "artifacts": [],
         }
         self._discard_queued_locked()
         if not was_terminal:
@@ -556,6 +610,137 @@ class _Child:
         self.budget.release()
 
 
+#: Child step kinds that are worth relaying into the parent Timeline: skill
+#: loads, environment switches/installs, artifact saves, nested delegation.
+#: Everything else (searches, fetches, reads…) is dropped unless it ends in an
+#: error — never per-chunk output.
+_CHILD_STEP_KINDS = frozenset({"skill", "env", "artifact", "delegate"})
+
+#: Per-child relay budget. A 48-way fan-out must not evict the turn's own
+#: prose and cards from the bounded WS replay buffer, so after this many
+#: forwarded steps the rest collapse into one "N more steps elided" marker.
+_CHILD_STEP_CAP = 200
+
+#: Bound on begin-events stashed for possible error escalation.
+_CHILD_STEP_STASH_CAP = 32
+
+
+class _ChildStepForwarder:
+    """Bounded relay of one child's meaningful semantic steps.
+
+    Installed as the child dispatcher's ``on_step`` by ``_run_one`` whenever
+    the tree carries a session step sink (Web only — the CLI has no sink and
+    is unchanged). Each begin event is decorated with the child identity under
+    ``input["delegation"]`` so the UI and the durable root-keyed
+    ``frame_steps`` rows can attribute it; end events ride the same step_id.
+    Steps of non-meaningful kinds are stashed and relayed only when they end
+    in an error, so failures stay visible without per-chunk noise.
+    """
+
+    def __init__(
+        self,
+        sink: Callable[[dict[str, Any]], None],
+        *,
+        child_id: str,
+        frame_id: str | None,
+        name: str | None,
+        depth: int,
+    ) -> None:
+        self._sink = sink
+        self._decoration = {
+            "delegation_child_id": child_id,
+            "child_frame_id": frame_id,
+            "child_name": name,
+            "depth": depth,
+        }
+        self._lock = threading.Lock()
+        self._forwarded_ids: set[str] = set()
+        self._pending_begin: dict[str, dict[str, Any]] = {}
+        self._forwarded = 0
+        self._elided = 0
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        try:
+            self._relay(event)
+        except Exception:  # noqa: BLE001 - observability must not break a child
+            pass
+
+    def _decorated(self, event: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(event)
+        base = payload.get("input")
+        merged = dict(base) if isinstance(base, dict) else {}
+        merged["delegation"] = dict(self._decoration)
+        payload["input"] = merged
+        return payload
+
+    def _emit_begin_locked(self, event: dict[str, Any]) -> bool:
+        if self._forwarded >= _CHILD_STEP_CAP:
+            self._elided += 1
+            return False
+        self._forwarded += 1
+        self._sink(self._decorated(event))
+        return True
+
+    def _relay(self, event: dict[str, Any]) -> None:
+        step_id = str(event.get("step_id") or "")
+        phase = event.get("phase")
+        if not step_id:
+            return
+        with self._lock:
+            if phase == "begin":
+                if event.get("kind") in _CHILD_STEP_KINDS:
+                    if self._emit_begin_locked(event):
+                        self._forwarded_ids.add(step_id)
+                elif len(self._pending_begin) < _CHILD_STEP_STASH_CAP:
+                    self._pending_begin[step_id] = dict(event)
+                return
+            if step_id in self._forwarded_ids:
+                self._forwarded_ids.discard(step_id)
+                self._sink(dict(event))
+                return
+            stashed = self._pending_begin.pop(step_id, None)
+            if stashed is not None and event.get("status") == "error":
+                # Errors are meaningful whatever their kind: relay the stashed
+                # begin so the end has a card to land on.
+                if self._emit_begin_locked(stashed):
+                    self._sink(dict(event))
+
+    def flush(self) -> None:
+        """Emit the single elision marker once the child run is over."""
+        with self._lock:
+            elided = self._elided
+            self._elided = 0
+            name = self._decoration.get("child_name") or self._decoration.get(
+                "delegation_child_id"
+            )
+        if not elided:
+            return
+        step_id = f"s-elide-{uuid.uuid4().hex[:12]}"
+        try:
+            self._sink(
+                self._decorated(
+                    {
+                        "phase": "begin",
+                        "step_id": step_id,
+                        "kind": "delegate",
+                        "title": f"{name}: further steps elided",
+                        "input": {},
+                    }
+                )
+            )
+            self._sink(
+                {
+                    "phase": "end",
+                    "step_id": step_id,
+                    "status": "done",
+                    "output": {"elided": elided},
+                    "summary": f"{elided} more steps elided",
+                }
+            )
+        except Exception:  # noqa: BLE001 - the marker is best effort
+            pass
+
+
 class _DelegationTree:
     """Shared identities, budget, lineage, and event projection for one tree."""
 
@@ -564,6 +749,7 @@ class _DelegationTree:
         *,
         budget: DelegationBudget | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        child_step_sink: Callable[[dict[str, Any]], None] | None = None,
         persistence_sink: Callable[[_Child], None] | None = None,
         trusted_capture_admission: Callable[[], str | None] | None = None,
         trusted_capture_lease: Callable[[], Any] | None = None,
@@ -580,6 +766,11 @@ class _DelegationTree:
         self.message_sequence = 0
         self.children: dict[str, _Child] = {}
         self.event_sink = event_sink
+        # The session step sink child dispatchers forward their meaningful
+        # steps into (root-keyed on the Web). Lives on the tree so nested
+        # runners — which adopt the tree through the contextvar — inherit it
+        # without per-level threading.
+        self.child_step_sink = child_step_sink
         self.persistence_sink = persistence_sink
         self.trusted_capture_admission = trusted_capture_admission
         self.trusted_capture_lease = trusted_capture_lease
@@ -609,6 +800,87 @@ class _DelegationTree:
         with self.lock:
             self.children[child.child_id] = child
         self.emit("registered", child)
+
+    def create_retry(
+        self,
+        previous: _Child,
+        *,
+        spec: dict[str, Any],
+        depth: int,
+        parent_child_id: str | None,
+        parent_frame_id: str | None,
+        store: Any | None,
+        direct_children: dict[str, _Child],
+    ) -> _Child | None:
+        """Atomically refuse cancellation or reserve and register one retry."""
+
+        with self.lock:
+            chain = previous._retry_chain
+            if chain.cancelled():
+                return None
+            child_ids = self.allocate(
+                parent_child_id=parent_child_id,
+                depth=depth,
+                count=1,
+            )
+            child = _Child(
+                child_ids[0],
+                spec.get("name"),
+                spec,
+                depth=depth + 1,
+                parent_child_id=parent_child_id,
+                parent_frame_id=parent_frame_id,
+                store=store,
+                budget=self.budget,
+                clock=self.clock,
+                retry_chain=chain,
+            )
+            self.children[child.child_id] = child
+            direct_children[child.child_id] = child
+            # Publish registration before cancellation can observe the child;
+            # otherwise a stopped event could race ahead of "registered".
+            self.emit("registered", child)
+            return child
+
+    def cancel_retry_subtrees(
+        self, child_ids: Sequence[str], reason: str
+    ) -> list[tuple[_Child, bool, Any | None, Future | None]]:
+        """Cancel attempts, their retry siblings, and all nested descendants.
+
+        Chain cancellation and child stop publication share the same tree lock
+        as ``create_retry``. Therefore a retry is either registered and stopped
+        here, or observes the cancelled chain before consuming another budget
+        slot; it cannot appear in the gap after a cancellation snapshot.
+        """
+
+        with self.lock:
+            affected: set[str] = set()
+            frontier = list(child_ids)
+            while frontier:
+                current = frontier.pop(0)
+                if current in affected:
+                    continue
+                child = self.children.get(current)
+                if child is None:
+                    continue
+                chain = child._retry_chain
+                chain.cancel(reason)
+                related = [
+                    candidate.child_id
+                    for candidate in self.children.values()
+                    if candidate._retry_chain is chain
+                    or candidate.parent_child_id == current
+                ]
+                affected.add(current)
+                frontier.extend(item for item in related if item not in affected)
+
+            stopped = []
+            for child in self.children.values():
+                if child.child_id not in affected:
+                    continue
+                first, agent, future = child.request_stop(reason)
+                stopped.append((child, first, agent, future))
+            return stopped
 
     def restore(self, children: Sequence[_Child]) -> None:
         with self.lock:
@@ -681,7 +953,7 @@ class _ChildCancellation:
         self._child = child
 
     def cancelled(self) -> bool:
-        return self._child.stop_event.is_set()
+        return self._child.stop_event.is_set() or self._child._retry_chain.cancelled()
 
 
 def _child_context_budget(cfg: Config):
@@ -767,6 +1039,7 @@ class DelegationRunner:
         store: Any | None = None,
         *,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        child_step_sink: Callable[[dict[str, Any]], None] | None = None,
         budget: DelegationBudget | None = None,
         delegation_tree: _DelegationTree | None = None,
         parent_child_id: str | None = None,
@@ -777,6 +1050,7 @@ class DelegationRunner:
         cell_hooks_factory: Callable[[str], object] | None = None,
         trusted_capture_admission: Callable[[], str | None] | None = None,
         trusted_capture_lease: Callable[[], Any] | None = None,
+        env: KernelEnvSpec | None = None,
     ) -> None:
         if depth < 0 or depth > MAX_DEPTH:
             raise ValueError(f"delegation depth must be between 0 and {MAX_DEPTH}")
@@ -800,6 +1074,12 @@ class DelegationRunner:
         # Carried unchanged through every nesting level. This is a process
         # boundary selected by the Web owner, not a child-model option.
         self.read_isolation = read_isolation
+        # Interpreter/environment inheritance: the parent session's selection,
+        # threaded into each child Agent (which threads it into ITS nested
+        # runner), so every descendant kernel runs the same environment. None
+        # preserves the CLI contract (sys.executable, no env). Re-stamped per
+        # Web turn alongside workspace/read_isolation.
+        self.env = env
         # Web embedding supplies the Artifact boundary.  The delegation core
         # only forwards this duck-typed hook and remains independent of server
         # storage or UI projections.
@@ -862,6 +1142,7 @@ class DelegationRunner:
         self._tree = delegation_tree or _DelegationTree(
             budget=(budget or DelegationBudget(parent_frame_id)),
             event_sink=event_sink,
+            child_step_sink=child_step_sink,
             persistence_sink=persistence_sink,
             trusted_capture_admission=trusted_capture_admission,
             trusted_capture_lease=trusted_capture_lease,
@@ -873,6 +1154,8 @@ class DelegationRunner:
         self.budget = self._tree.budget
         if event_sink is not None and self._tree.event_sink is None:
             self._tree.event_sink = event_sink
+        if child_step_sink is not None and self._tree.child_step_sink is None:
+            self._tree.child_step_sink = child_step_sink
         self._lock = self._tree.lock
         self._children: dict[str, _Child] = {}
         if restored is not None:
@@ -938,8 +1221,24 @@ class DelegationRunner:
                 f"leaf={child.depth >= MAX_DEPTH}"
             )
 
+        # Recording is unconditional whenever the child has a durable frame;
+        # the stage-1 Artifact capture hooks stay optional (their flag
+        # defaults off) and compose after the recorder so a capture failure
+        # can never lose the execution record.
+        recorder = (
+            DelegatedCellRecorder(self.store, child_frame_id)
+            if self.store is not None and child_frame_id
+            else None
+        )
+        capture_hooks = (
+            self.cell_hooks_factory(child_frame_id)
+            if self.cell_hooks_factory is not None and child_frame_id
+            else None
+        )
+
         token = _ACTIVE_DELEGATION.set((self._tree, child.child_id))
         agent: Any | None = None
+        step_forwarder: _ChildStepForwarder | None = None
         try:
             from openai4s.agent.loop import Agent
 
@@ -961,14 +1260,33 @@ class DelegationRunner:
                 context_policy=_SteeringContextPolicy(child_cfg, child, self._tree),
                 workspace=self.workspace,
                 read_isolation=self.read_isolation,
-                cell_execution_hooks=(
-                    self.cell_hooks_factory(child_frame_id)
-                    if self.cell_hooks_factory is not None and child_frame_id
-                    else None
-                ),
+                cell_execution_hooks=compose_cell_hooks(recorder, capture_hooks),
                 delegated_cell_hooks_factory=self.cell_hooks_factory,
+                env=self.env,
+                # Child kernel lifetimes become durable generation rows under
+                # the child frame, so artifact environment provenance resolves
+                # the child's real interpreter instead of assuming the daemon.
+                generations=self.store,
             )
             agent.dispatcher.set_child_execution_policy(execution_policy)
+            step_sink = self._tree.child_step_sink
+            if step_sink is not None:
+                # D8: relay the child's meaningful semantic steps (bounded,
+                # decorated with the child identity) into the parent session's
+                # step sink. Lives on the tree, so nested descendants forward
+                # too; the CLI has no sink and stays silent.
+                step_forwarder = _ChildStepForwarder(
+                    step_sink,
+                    child_id=child.child_id,
+                    frame_id=child_frame_id,
+                    name=child.name or spec.get("name"),
+                    depth=child.depth,
+                )
+                agent.dispatcher.on_step = step_forwarder
+            if recorder is not None:
+                # The Agent creates its generation registrar inside run(), so
+                # the reader is bound late and resolved per cell.
+                recorder.bind_generation_source(agent.current_kernel_generation_id)
             if child.attach_agent(agent):
                 return child.stopped_result()
             result = agent.run(_spec_to_task(spec))
@@ -982,10 +1300,16 @@ class DelegationRunner:
                 "child_id": child.child_id,
                 "name": child.name,
                 "stop_reason": "error",
+                "task_status": "failed",
                 "output": None,
                 "completion_bullets": [],
                 "error": detail,
                 "frame_id": child_frame_id,
+                "turns": None,
+                "max_turns": max_turns,
+                "environment": self._child_environment(child_frame_id),
+                "limitations": [],
+                "artifacts": self._child_artifacts(child_frame_id),
             }
             child.finish_failed(detail, failed)
             self._persist_status(child, "failed")
@@ -994,6 +1318,8 @@ class DelegationRunner:
         finally:
             if agent is not None:
                 child.detach_agent(agent)
+            if step_forwarder is not None:
+                step_forwarder.flush()
             _ACTIVE_DELEGATION.reset(token)
 
         # Cancellation wins every race, including a late host.submit_output.
@@ -1012,6 +1338,11 @@ class DelegationRunner:
             "completion_bullets": submitted.get("completion_bullets", []),
             "final_message": result.get("final_message"),
             "frame_id": child_frame_id,
+            "turns": result.get("turns"),
+            "max_turns": max_turns,
+            "environment": self._child_environment(child_frame_id),
+            "limitations": _completion_limitations(submitted.get("output")),
+            "artifacts": self._child_artifacts(child_frame_id),
         }
         schema = spec.get("output_schema")
         if schema is not None:
@@ -1021,10 +1352,34 @@ class DelegationRunner:
             if violation:
                 error = f"output_schema violation: {violation}"
                 out["error"] = error
+                out["task_status"] = "failed"
                 child.finish_failed(error, out)
                 self._persist_status(child, "failed")
                 self._tree.emit("failed", child)
                 return out
+
+        # Single-writer task_status derivation: the child's declaration is
+        # input; require_artifacts is verified against the store and can only
+        # downgrade the claim.
+        missing = _missing_required_artifacts(
+            _validated_require_artifacts(spec), out["artifacts"]
+        )
+        if missing is not None:
+            out["missing_artifacts"] = missing
+        out["task_status"] = _derive_task_status(
+            result.get("stop_reason"), submitted, result.get("final_message"), missing
+        )
+
+        if result.get("stop_reason") == "max_turns":
+            # A child that exhausted its turn budget did not finish its task;
+            # 'done' would launder exhaustion into success. The envelope keeps
+            # the raw stop_reason; the durable lifecycle records failure.
+            error = "max_turns exhausted before completion"
+            out["error"] = error
+            child.finish_failed(error, out)
+            self._persist_status(child, "failed")
+            self._tree.emit("failed", child)
+            return out
 
         # A stop arriving between schema validation and publication still wins.
         if not child.finish_done(out):
@@ -1034,6 +1389,97 @@ class DelegationRunner:
         self._persist_status(child, "done")
         self._tree.emit("done", child)
         return out
+
+    def _child_environment(self, child_frame_id: str | None) -> dict[str, Any]:
+        """The environment actually in effect for one child, honestly sourced.
+
+        The configured :class:`KernelEnvSpec` is the baseline; when the child
+        worker really spawned it registered a durable kernel generation under
+        the child frame, and that row (which also reflects a mid-run
+        ``env_use`` switch) overrides the configuration.
+        """
+        env = self.env
+        info: dict[str, Any] = {
+            "python": env.python if env is not None else None,
+            "env_name": env.env_name if env is not None else None,
+            "env_root": env.env_root if env is not None else None,
+            "r_env": env.r_env if env is not None else None,
+            "generation_id": None,
+        }
+        if self.store is None or not child_frame_id:
+            return info
+        reader = getattr(self.store, "latest_kernel_generation", None)
+        if not callable(reader):
+            return info
+        try:
+            row = reader(child_frame_id, "python")
+        except Exception:  # noqa: BLE001 - provenance must not fail the child
+            row = None
+        if isinstance(row, Mapping):
+            info["generation_id"] = row.get("generation_id")
+            environment = row.get("environment")
+            if isinstance(environment, Mapping):
+                if environment.get("interpreter"):
+                    info["python"] = environment["interpreter"]
+                if environment.get("environment_name") is not None:
+                    info["env_name"] = environment["environment_name"]
+                if environment.get("environment_root") is not None:
+                    info["env_root"] = environment["environment_root"]
+        return info
+
+    def _child_artifacts(self, child_frame_id: str | None) -> list[str]:
+        """Artifact names the store attributes to the child frame — never
+        the child's own claims."""
+        if self.store is None or not child_frame_id:
+            return []
+        reader = getattr(self.store, "artifact_names_for_frame", None)
+        if not callable(reader):
+            return []
+        try:
+            names = reader(child_frame_id)
+        except Exception:  # noqa: BLE001 - evidence lookup must not fail the child
+            return []
+        return [str(name) for name in names or ()]
+
+    def _run_with_retries(self, child: _Child) -> dict[str, Any]:
+        """Run one child, then apply its bounded ``retries`` option.
+
+        Each retry is a NEW child (a terminal delegation row is immutable and
+        every attempt consumes session budget normally), re-run with the
+        previous attempt's limitations appended to the request. The final
+        attempt's envelope is what the caller sees. There is no other
+        automatic retry anywhere in the delegation runtime.
+        """
+        result = self._run_one(child)
+        budget = _retry_budget(child.spec)
+        attempt = 0
+        while (
+            attempt < budget
+            and result.get("task_status") in _RETRYABLE_STATUS
+            and result.get("stop_reason") != "stopped"
+            and not child.stop_event.is_set()
+            and not child._retry_chain.cancelled()
+        ):
+            attempt += 1
+            retry_spec = _retry_spec(child.spec, result, attempt)
+            try:
+                retry_child = self._tree.create_retry(
+                    child,
+                    spec=retry_spec,
+                    parent_child_id=self.parent_child_id,
+                    depth=self.depth,
+                    parent_frame_id=self.parent_frame_id,
+                    store=self.store,
+                    direct_children=self._children,
+                )
+            except DelegationError:
+                # Budget exhausted: the honest last result stands.
+                break
+            if retry_child is None:
+                break
+            child = retry_child
+            result = self._run_one(retry_child)
+        return result
 
     def __call__(self, spec: dict[str, Any]) -> Any:
         if self.depth >= MAX_DEPTH:
@@ -1145,6 +1591,14 @@ class DelegationRunner:
                 raise DelegationError(
                     f"invalid child execution policy: {error}"
                 ) from error
+            _validated_require_artifacts(child_spec)
+            if _retry_budget(child_spec) > 0 and not wait:
+                # An asynchronous child is collected once through its own
+                # handle; a retry's replacement result would be unobservable.
+                raise DelegationError(
+                    "retries requires wait: true — collect an asynchronous "
+                    "child and re-delegate explicitly instead"
+                )
         child_ids = self._reserve(len(items))
 
         children: list[_Child] = []
@@ -1185,10 +1639,10 @@ class DelegationRunner:
 
         if len(children) == 1:
             # On the caller's own thread, which already has the context.
-            results = [self._run_one(children[0])]
+            results = [self._run_with_retries(children[0])]
         else:
             futures = [
-                self._pool.submit(carry_context(self._run_one), child)
+                self._pool.submit(carry_context(self._run_with_retries), child)
                 for child in children
             ]
             for child, future in zip(children, futures):
@@ -1200,6 +1654,18 @@ class DelegationRunner:
         with self._tree.lock:
             direct = list(self._children.values())
         return [child.snapshot() for child in direct]
+
+    def set_event_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
+        """(Re)point the shared tree's live delegation event sink."""
+
+        self._tree.event_sink = sink
+
+    def set_child_step_sink(
+        self, sink: Callable[[dict[str, Any]], None] | None
+    ) -> None:
+        """(Re)point the shared tree's child step relay target."""
+
+        self._tree.child_step_sink = sink
 
     def set_trusted_capture_admission(
         self, admission: Callable[[], str | None] | None
@@ -1240,6 +1706,7 @@ class DelegationRunner:
                     failed = {
                         "child_id": child.child_id,
                         "stop_reason": "error",
+                        "task_status": "failed",
                         "output": None,
                         "error": detail,
                     }
@@ -1257,9 +1724,19 @@ class DelegationRunner:
         with self._tree.lock:
             if child_id not in self._children:
                 raise KeyError(f"no such child {child_id!r}")
-        affected = self._tree.descendants(child_id)
-        for child in affected:
-            first, agent, future = child.request_stop(reason)
+            stopped = self._tree.cancel_retry_subtrees([child_id], reason)
+        self._signal_stopped(stopped, direct_ids={child_id})
+        return self._children[child_id].snapshot()
+
+    def _signal_stopped(
+        self,
+        stopped: Sequence[tuple[_Child, bool, Any | None, Future | None]],
+        *,
+        direct_ids: set[str],
+    ) -> None:
+        """Signal runtime handles after atomic tree cancellation is published."""
+
+        for child, first, agent, future in stopped:
             if future is not None:
                 future.cancel()
             if first and agent is not None:
@@ -1269,8 +1746,11 @@ class DelegationRunner:
                     pass
             if child.snapshot()["status"] == "stopped":
                 self._persist_status(child, "stopped")
-                self._tree.emit("stopped", child, propagated=child.child_id != child_id)
-        return self._children[child_id].snapshot()
+                self._tree.emit(
+                    "stopped",
+                    child,
+                    propagated=child.child_id not in direct_ids,
+                )
 
     def send_message(self, spec: dict[str, Any]) -> dict[str, Any]:
         child_id = spec["child_id"]
@@ -1328,9 +1808,10 @@ class DelegationRunner:
     def cancel_all(self, reason: str = "parent cancelled") -> list[str]:
         """Cancel every descendant owned by this runner's subtree."""
 
-        direct_ids = [child["child_id"] for child in self.children()]
-        for child_id in direct_ids:
-            self._stop_subtree(child_id, reason)
+        with self._tree.lock:
+            direct_ids = list(self._children)
+            stopped = self._tree.cancel_retry_subtrees(direct_ids, reason)
+        self._signal_stopped(stopped, direct_ids=set(direct_ids))
         return direct_ids
 
     def close(self, *, cancel: bool = False) -> None:
@@ -1347,6 +1828,154 @@ class DelegationRunner:
             child.store.update_frame(frame_id, status=status)
         except Exception:  # noqa: BLE001 - state remains observable in memory
             pass
+
+
+def _derive_task_status(
+    stop_reason: Any,
+    submitted: Mapping[str, Any],
+    final_message: Any,
+    missing_artifacts: list[str] | None,
+) -> str:
+    """The single authoritative task_status derivation for one child envelope.
+
+    The child's declaration (``submit_output``'s top-level ``task_status`` or
+    ``finalize_response``'s property, which lands inside ``output``) is input;
+    machine checks can only DOWNGRADE it. ``max_turns`` is at best partial —
+    failed when the child produced literally nothing. A terminated child that
+    never submitted is failed regardless of what its transport said.
+    """
+    if stop_reason == "max_turns":
+        return "partial" if (submitted or final_message) else "failed"
+    if not submitted and stop_reason != "submitted":
+        return "failed"
+    declared = submitted.get("task_status")
+    if declared is None:
+        output = submitted.get("output")
+        if isinstance(output, Mapping):
+            declared = output.get("task_status")
+    if not isinstance(declared, str) or declared not in _TASK_STATUS_RANK:
+        declared = "completed"
+    status = declared
+    if missing_artifacts:
+        # Required artifacts the store cannot attribute to this child cap the
+        # status at partial; a declared blocked/failed already ranks lower.
+        if _TASK_STATUS_RANK[status] < _TASK_STATUS_RANK["partial"]:
+            status = "partial"
+    return status
+
+
+def _completion_limitations(output: Any) -> list[str]:
+    """The child's own structured limitations, normalized to a string list."""
+    if not isinstance(output, Mapping):
+        return []
+    for key in _LIMITATION_ALIASES:
+        value = output.get(key)
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        if isinstance(value, (list, tuple)):
+            items = [str(item).strip() for item in value if str(item).strip()]
+            if items:
+                return items
+    return []
+
+
+def _validated_require_artifacts(spec: Mapping[str, Any]) -> list[str] | None:
+    """Parse ``require_artifacts``: exact names or trailing-star globs only."""
+    raw = spec.get("require_artifacts")
+    if raw is None:
+        return None
+    if isinstance(raw, str) or not isinstance(raw, Sequence):
+        raise DelegationError(
+            "require_artifacts must be a list of artifact filenames "
+            "(exact names or trailing-star globs)"
+        )
+    patterns: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if not name:
+            raise DelegationError(
+                "require_artifacts must contain only non-empty filenames"
+            )
+        if "*" in name[:-1]:
+            raise DelegationError(
+                f"require_artifacts pattern {name!r} is invalid: '*' is only "
+                "supported as a trailing glob"
+            )
+        patterns.append(name)
+    return patterns
+
+
+def _missing_required_artifacts(
+    patterns: list[str] | None, produced: list[str]
+) -> list[str] | None:
+    """Which required names/globs no store-attributed artifact satisfies."""
+    if patterns is None:
+        return None
+    missing: list[str] = []
+    for pattern in patterns:
+        if pattern.endswith("*"):
+            prefix = pattern[:-1]
+            if not any(name.startswith(prefix) for name in produced):
+                missing.append(pattern)
+        elif pattern not in produced:
+            missing.append(pattern)
+    return missing
+
+
+def _retry_budget(spec: Mapping[str, Any]) -> int:
+    """The clamped 0..2 bounded-retry option; malformed values are refused."""
+    raw = spec.get("retries")
+    if raw is None:
+        return 0
+    if isinstance(raw, bool):
+        raise DelegationError("retries must be an integer (clamped to 0-2)")
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        raise DelegationError("retries must be an integer (clamped to 0-2)") from None
+    return max(0, min(2, parsed))
+
+
+def _retry_spec(
+    spec: Mapping[str, Any], previous: Mapping[str, Any], attempt: int
+) -> dict[str, Any]:
+    """The re-run spec: same task, previous limitations appended as context."""
+    retry = dict(spec)
+    # The retry loop owns the budget; a nested reading of the option must not
+    # multiply it.
+    retry.pop("retries", None)
+    lines = [
+        f"[Retry {attempt}] The previous attempt ended with "
+        f"task_status={previous.get('task_status')}."
+    ]
+    if previous.get("error"):
+        lines.append(f"Previous error: {previous['error']}")
+    limitations = previous.get("limitations") or []
+    if limitations:
+        lines.append("Previous limitations:")
+        lines.extend(f"- {item}" for item in limitations)
+    if previous.get("missing_artifacts"):
+        lines.append(
+            "Missing required artifacts: "
+            + ", ".join(str(item) for item in previous["missing_artifacts"])
+        )
+    note = "\n".join(lines)
+    request = retry.get("request")
+    if isinstance(request, str):
+        retry["request"] = request + "\n\n" + note
+    elif isinstance(request, Mapping):
+        inner = dict(request)
+        for key in ("task", "prompt"):
+            if inner.get(key):
+                inner[key] = f"{inner[key]}\n\n{note}"
+                break
+        else:
+            inner["task"] = note
+        retry["request"] = inner
+    else:
+        summary = str(retry.get("context_summary") or "")
+        retry["context_summary"] = (summary + "\n\n" + note).strip()
+    return retry
 
 
 def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
@@ -1367,12 +1996,19 @@ def _normalize_item(item: Any, parent_spec: dict[str, Any]) -> dict[str, Any]:
             "skill_names",
             "connectors",
             "unrestricted",
+            "require_artifacts",
+            "retries",
         )
         if (value := parent_spec.get(key)) is not None
     }
     if isinstance(item, str):
         return {"request": item, **inherited}
     if isinstance(item, dict):
+        # Explicit null == absent == default, on the nested door too: the
+        # top-level wire codec already drops None values, so a None inside a
+        # fan-out item must inherit rather than clobber the inherited value
+        # (or crash the turn-budget parser on a present-but-None steps).
+        item = {key: value for key, value in item.items() if value is not None}
         normalized = dict(inherited)
         normalized.update(item)
         # `update` lets a child REPLACE what it inherited, which for a resource
@@ -1549,6 +2185,8 @@ def _public_overrides(spec: Mapping[str, Any]) -> dict[str, Any]:
             "skill_names",
             "connectors",
             "unrestricted",
+            "require_artifacts",
+            "retries",
         )
         if key in spec
     }

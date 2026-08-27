@@ -1,9 +1,9 @@
 """The benchmark, run — not merely present.
 
-The proposal is explicit about what would make eleven workflows and thirty-four
-cases worthless: a directory of fixtures nobody executes, or cases that pass
-because the thing they exercise is a mock. So this file runs every case
-against the real subsystems and asserts the outcome each case declared.
+The proposal is explicit about what would make thirteen workflows and
+forty-six cases worthless: a directory of fixtures nobody executes, or cases
+that pass because the thing they exercise is a mock. So this file runs every
+case against the real subsystems and asserts the outcome each case declared.
 
 The declared outcome is the point. A case that says `failure` and completes
 cleanly has failed exactly as much as one that says `success` and raises — a
@@ -46,10 +46,10 @@ CASE_PARAMS = [
 # --------------------------------------------------------------------------
 
 
-def test_eleven_workflows_are_frozen():
+def test_thirteen_workflows_are_frozen():
     """The number is the commitment. Dropping one to make a run green is the
     failure mode this asserts against."""
-    assert len(WORKFLOWS) == 11, [w.id for w in WORKFLOWS]
+    assert len(WORKFLOWS) == 13, [w.id for w in WORKFLOWS]
 
 
 def test_every_workflow_carries_at_least_two_cases():
@@ -57,8 +57,24 @@ def test_every_workflow_carries_at_least_two_cases():
     assert not thin, f"a single case cannot represent a workflow: {thin}"
 
 
-def test_thirty_four_versioned_cases_are_frozen():
-    assert len(CASES) == 34
+def test_forty_six_versioned_cases_are_frozen():
+    assert len(CASES) == 46
+
+
+def test_the_engineering_deliverable_workflows_are_present_and_refuse():
+    """`codebase-mode` and `delegation` are the two workflows whose subject is
+    a claim rather than a computation, and both would be vacuous as
+    happy-path-only suites: the point is what the Host refuses to believe."""
+    by_id = {w.id: w for w in WORKFLOWS}
+    codebase = by_id["codebase-mode"]
+    assert len(codebase.cases) == 9
+    refusing = [c.id for c in codebase.cases if c.outcome == "failure"]
+    assert len(refusing) == 6, refusing
+    delegation = by_id["delegation"]
+    assert len(delegation.cases) == 3
+    # Terminal states only. A delegation case that waits on timing measures the
+    # runner, not the contract.
+    assert {c.outcome for c in delegation.cases} == {"provenance"}
 
 
 def test_tool_bringup_carries_fourteen_cases():

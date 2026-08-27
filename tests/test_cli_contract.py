@@ -388,8 +388,8 @@ def test_stage1_run_allows_control_only_agent_before_any_readiness_probe(
     calls: list[tuple[str, object]] = []
 
     class Agent:
-        def __init__(self, *, cfg, verbose):
-            calls.append(("construct", (cfg, verbose)))
+        def __init__(self, *, cfg, verbose, task_mode=None):
+            calls.append(("construct", (cfg, verbose, task_mode)))
 
         def run(self, task):
             calls.append(("run", task))
@@ -418,7 +418,7 @@ def test_stage1_run_allows_control_only_agent_before_any_readiness_probe(
 
     assert status == 0
     assert calls == [
-        ("construct", (cfg, False)),
+        ("construct", (cfg, False, None)),
         ("run", "analyze data"),
     ]
     payload = __import__("json").loads(capsys.readouterr().out)
@@ -451,8 +451,8 @@ def test_stage1_run_projects_typed_first_cell_readiness_refusal(
     }
 
     class Agent:
-        def __init__(self, *, cfg, verbose):
-            del cfg, verbose
+        def __init__(self, *, cfg, verbose, task_mode=None):
+            del cfg, verbose, task_mode
 
         def run(self, task):
             del task
@@ -487,8 +487,8 @@ def test_flag_off_run_preserves_agent_execution_without_readiness_probe(
     calls: list[tuple[str, object]] = []
 
     class Agent:
-        def __init__(self, *, cfg, verbose):
-            calls.append(("construct", (cfg, verbose)))
+        def __init__(self, *, cfg, verbose, task_mode=None):
+            calls.append(("construct", (cfg, verbose, task_mode)))
 
         def run(self, task):
             calls.append(("run", task))
@@ -513,7 +513,7 @@ def test_flag_off_run_preserves_agent_execution_without_readiness_probe(
     )
 
     assert status == 0
-    assert calls == [("construct", (cfg, True)), ("run", "legacy task")]
+    assert calls == [("construct", (cfg, True, None)), ("run", "legacy task")]
     assert "final: done" in capsys.readouterr().out
 
 
