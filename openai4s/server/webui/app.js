@@ -577,6 +577,75 @@ Object.assign(I18N.zh, {
   "cust.models.subtitle": "配置 LLM 兼容协议、Base URL、模型与 API Key（保存后立即生效）",
   "cust.models.subtitle2": "配置多套 LLM API（兼容协议 / Base URL / 模型 / Key），随时新增、切换或删除，方便对接不同接口",
   "cust.models.updateBtn": "更新",
+  "cust.volc.title": "火山方舟",
+  "cust.volc.notInstalled": "Ark Connector 未安装",
+  "cust.volc.getConnector": "获取 Ark Connector",
+  "cust.volc.disconnected": "未连接",
+  "cust.volc.expired": "登录已过期",
+  "cust.volc.connect": "使用火山引擎登录",
+  "cust.volc.loginPrep": "点击登录后会在浏览器打开火山官方授权页。完成授权后，复制页面显示的完整授权字符串（不要只复制其中的 code），再粘贴回这里；OpenAI4S 不会打开系统终端。",
+  "cust.volc.reconnectPrep": "点击重新登录后会在浏览器打开火山官方授权页。完成授权后，复制页面显示的完整授权字符串（不要只复制其中的 code），再粘贴回这里；已有 Project 通常会继续复用。",
+  "cust.volc.connecting": "正在提交授权并检查账号…",
+  "cust.volc.authTitle": "火山授权已准备好",
+  "cust.volc.authBody": "授权页会在浏览器新标签页打开。完成火山账号授权后，复制页面显示的完整授权字符串（通常是一段 Base64 文本，包含 code 和 state），再粘贴回这里；不要只复制其中的 code。如果没有看到新页面，请点击下方按钮重新打开。",
+  "cust.volc.projectHint": "Project 决定 OpenAI4S 可访问的火山资源。已有 Profile 会继续复用；首次登录如果存在多个 Project，Ark CLI 会要求选择一次。",
+  "cust.volc.cancel": "取消",
+  "cust.volc.failed": "连接失败，请重试",
+  "cust.volc.projectRequiredTitle": "账号授权已完成，还差 Project 设置",
+  "cust.volc.projectRequiredBody": "授权已完成，但当前 Ark CLI 还需要 Project 设置。请在本机终端运行 arkcli auth login volc-sso，完成后返回这里重新检查。",
+  "cust.volc.cliSetupTitle": "需要完成一次 Ark CLI 设置",
+  "cust.volc.cliSetupBody": "请在本机终端运行 arkcli auth login volc-sso，完成授权和 Project 设置后再重新检查。",
+  "cust.volc.retrySetup": "重新开始登录",
+  "cust.volc.openAuth": "打开授权页面",
+  "cust.volc.codePlaceholder": "粘贴完整授权码",
+  "cust.volc.complete": "完成授权",
+  "cust.volc.connected": "已连接",
+  "cust.volc.project": "Project：{0}",
+  "cust.volc.connectedNoAccessTitle": "火山账号已连接，但还不能调用模型",
+  "cust.volc.noPlanBody": "当前账号没有 Agent Plan、Coding Plan 或可用的 API Key。可以购买套餐，或创建平台 API Key；创建后 OpenAI4S 会自动检查。",
+  "cust.volc.keyMissingTitle": "账号已连接，套餐尚未准备好",
+  "cust.volc.keyMissingBody": "已找到套餐，但没有可用于模型调用的 API Key。请在火山控制台创建 Key，返回后 OpenAI4S 会自动继续；不需要复制 Key。",
+  "cust.volc.keyWaiting": "正在等待新的 API Key…创建完成后会自动继续。",
+  "cust.volc.keyChoiceTitle": "选择用于 OpenAI4S 的 API Key",
+  "cust.volc.keyChoiceBody": "当前 Profile 中有多把可用 Key，且没有唯一的默认项。选择一次即可，Key 内容不会发送到浏览器。",
+  "cust.volc.apiKey": "API Key",
+  "cust.volc.keyName": "{0}（末四位 {1}）",
+  "cust.volc.profileMissingTitle": "账号已连接，Ark 配置尚未完成",
+  "cust.volc.profileMissingBody": "套餐存在，但 Ark CLI 没有对应的 Profile。重新进行一次登录设置即可补齐。",
+  "cust.volc.planInactiveTitle": "账号已连接，但套餐当前不可用",
+  "cust.volc.planInactiveBody": "检测到套餐，但它尚未生效或已经过期。处理套餐状态后重新检查即可，无需重新登录。",
+  "cust.volc.seatTitle": "账号已连接，还需要团队席位",
+  "cust.volc.seatBody": "检测到团队套餐，但当前用户没有可用席位。请让管理员分配席位后重新检查。",
+  "cust.volc.quotaTitle": "套餐额度已用尽",
+  "cust.volc.quotaBody": "登录和配置仍然有效。额度恢复、续费或切换套餐后重新检查即可，无需重新登录。",
+  "cust.volc.platformTitle": "已找到平台 API Key，还需要模型 Endpoint",
+  "cust.volc.platformBody": "这个账号可以走按量调用，但需要先在方舟控制台选择模型并创建 Endpoint。完成后再返回配置。",
+  "cust.volc.platformReadyTitle": "已找到可用 Endpoint",
+  "cust.volc.platformReadyBody": "OpenAI4S 已找到当前 Project 下唯一可调用的 Endpoint，可以直接完成配置。",
+  "cust.volc.endpointChoiceTitle": "选择用于 OpenAI4S 的 Endpoint",
+  "cust.volc.endpointChoiceBody": "当前 Project 下有多个可调用 Endpoint。选择一个后，OpenAI4S 会将它设为当前模型。",
+  "cust.volc.endpoint": "Endpoint",
+  "cust.volc.useEndpoint": "使用此 Endpoint",
+  "cust.volc.choiceTitle": "选择要用于 OpenAI4S 的套餐",
+  "cust.volc.choiceBody": "这个账号有多个可用套餐。请选择一个，OpenAI4S 只会配置所选套餐。",
+  "cust.volc.checkFailedTitle": "账号已连接，但资源检查未完成",
+  "cust.volc.checkFailedBody": "暂时无法读取套餐或 API Key 状态。可以重新检查；登录状态不会受影响。",
+  "cust.volc.viewPlans": "查看套餐",
+  "cust.volc.createKey": "创建 API Key",
+  "cust.volc.openEndpoints": "打开 Endpoint 控制台",
+  "cust.volc.recheck": "重新检查",
+  "cust.volc.rechecking": "正在检查账号资源…",
+  "cust.volc.rechecked": "检查完成，已同步最新资源",
+  "cust.volc.plan": "套餐",
+  "cust.volc.usePlan": "使用此套餐",
+  "cust.volc.ready": "已可使用",
+  "cust.volc.switch": "切换账号",
+  "cust.volc.disconnect": "从 OpenAI4S 断开",
+  "cust.volc.disconnectConfirm": "从 OpenAI4S 移除此火山配置？Ark CLI 本身仍会保持登录。",
+  "cust.volc.quota": "套餐额度",
+  "cust.volc.reset": "重置：{0}",
+  "cust.volc.configureFailed": "自动配置失败：{0}",
+  "cust.volc.refreshFailed": "刷新失败：{0}",
   "cust.network.allowName": "允许联网",
   "cust.network.desc": "联网访问（智能体的 web_search / web_fetch / bash 与代码请求）",
   "cust.network.disabledDesc": "已禁用 — 智能体仅用本地知识与已有文件",
@@ -1716,6 +1785,75 @@ Object.assign(I18N.en, {
   "cust.models.subtitle": "Configure the LLM-compatible protocol, Base URL, model, and API Key (takes effect immediately after saving)",
   "cust.models.subtitle2": "Configure multiple LLM APIs (compatible protocol / Base URL / model / key); add, switch, or remove anytime to work with different endpoints",
   "cust.models.updateBtn": "Update",
+  "cust.volc.title": "Volcengine Ark",
+  "cust.volc.notInstalled": "Ark Connector is not installed",
+  "cust.volc.getConnector": "Get Ark Connector",
+  "cust.volc.disconnected": "Not connected",
+  "cust.volc.expired": "Login expired",
+  "cust.volc.connect": "Continue with Volcengine",
+  "cust.volc.loginPrep": "Clicking sign-in opens official Volcengine authorization in your browser. After authorization, copy the complete authorization string shown there (do not copy only the inner code), then paste it back here; OpenAI4S will not open a system terminal.",
+  "cust.volc.reconnectPrep": "Clicking sign-in again opens official Volcengine authorization in your browser. After authorization, copy the complete authorization string shown there (do not copy only the inner code), then paste it back here; the existing Project is normally reused.",
+  "cust.volc.connecting": "Submitting authorization and checking the account…",
+  "cust.volc.authTitle": "Volcengine authorization is ready",
+  "cust.volc.authBody": "The authorization page opens in a new browser tab. Finish Volcengine sign-in, then copy the complete authorization string shown there (usually Base64 text containing code and state) and paste it here; do not copy only the inner code. If you do not see a new page, use the button below to open it again.",
+  "cust.volc.projectHint": "The Project controls which Volcengine resources OpenAI4S can access. Existing profiles are reused; Ark CLI asks once when a first login has multiple Projects.",
+  "cust.volc.cancel": "Cancel",
+  "cust.volc.failed": "Connection failed. Try again.",
+  "cust.volc.projectRequiredTitle": "Account authorized; Project setup remains",
+  "cust.volc.projectRequiredBody": "Authorization is complete, but this Ark CLI still needs Project setup. Run arkcli auth login volc-sso locally, then return here and recheck.",
+  "cust.volc.cliSetupTitle": "One Ark CLI setup step is required",
+  "cust.volc.cliSetupBody": "Run arkcli auth login volc-sso in a local terminal, finish authorization and Project setup, then recheck here.",
+  "cust.volc.retrySetup": "Start sign-in again",
+  "cust.volc.openAuth": "Open authorization page",
+  "cust.volc.codePlaceholder": "Full authorization string",
+  "cust.volc.complete": "Complete login",
+  "cust.volc.connected": "Connected",
+  "cust.volc.project": "Project: {0}",
+  "cust.volc.connectedNoAccessTitle": "Volcengine is connected, but model access is not ready",
+  "cust.volc.noPlanBody": "This account has no Agent Plan, Coding Plan, or usable API key. Buy a plan or create a platform API key; OpenAI4S checks automatically after creation.",
+  "cust.volc.keyMissingTitle": "Account connected; the plan is not ready yet",
+  "cust.volc.keyMissingBody": "A plan was found, but it has no API key for model calls. Create one in the Volcengine console and return; OpenAI4S continues automatically, with no copy and paste.",
+  "cust.volc.keyWaiting": "Waiting for a new API key… Setup continues automatically after it is created.",
+  "cust.volc.keyChoiceTitle": "Choose an API key for OpenAI4S",
+  "cust.volc.keyChoiceBody": "This profile has multiple usable keys and no unique default. Choose once; the key value is never sent to the browser.",
+  "cust.volc.apiKey": "API key",
+  "cust.volc.keyName": "{0} (ending in {1})",
+  "cust.volc.profileMissingTitle": "Account connected; Ark setup is incomplete",
+  "cust.volc.profileMissingBody": "The plan exists, but Ark CLI has no matching Profile. Run sign-in setup again to complete it.",
+  "cust.volc.planInactiveTitle": "Account connected; the plan is not active",
+  "cust.volc.planInactiveBody": "A plan was found, but it is pending or expired. Resolve the plan state and recheck without signing in again.",
+  "cust.volc.seatTitle": "Account connected; a team seat is required",
+  "cust.volc.seatBody": "A team plan was found, but this user has no usable seat. Ask an administrator to assign one, then recheck.",
+  "cust.volc.quotaTitle": "Plan quota is exhausted",
+  "cust.volc.quotaBody": "Your login and configuration remain valid. Recheck after the quota resets, renewing, or switching plans; no new sign-in is needed.",
+  "cust.volc.platformTitle": "Platform API key found; a model Endpoint is still required",
+  "cust.volc.platformBody": "This account can use pay-as-you-go calls, but it first needs a model Endpoint in the Ark console.",
+  "cust.volc.platformReadyTitle": "A usable Endpoint was found",
+  "cust.volc.platformReadyBody": "OpenAI4S found the only invocable Endpoint in this Project and can finish setup now.",
+  "cust.volc.endpointChoiceTitle": "Choose an Endpoint for OpenAI4S",
+  "cust.volc.endpointChoiceBody": "This Project has multiple invocable Endpoints. Choose the one OpenAI4S should use as its active model.",
+  "cust.volc.endpoint": "Endpoint",
+  "cust.volc.useEndpoint": "Use this Endpoint",
+  "cust.volc.choiceTitle": "Choose a plan for OpenAI4S",
+  "cust.volc.choiceBody": "This account has multiple active plans. Select one; OpenAI4S configures only the chosen plan.",
+  "cust.volc.checkFailedTitle": "Account connected; resource check is incomplete",
+  "cust.volc.checkFailedBody": "Plan or API-key status could not be read. Recheck without signing in again.",
+  "cust.volc.viewPlans": "View plans",
+  "cust.volc.createKey": "Create API key",
+  "cust.volc.openEndpoints": "Open Endpoint console",
+  "cust.volc.recheck": "Recheck",
+  "cust.volc.rechecking": "Checking account resources…",
+  "cust.volc.rechecked": "Check complete; resources are up to date",
+  "cust.volc.plan": "Plan",
+  "cust.volc.usePlan": "Use this plan",
+  "cust.volc.ready": "Ready",
+  "cust.volc.switch": "Switch account",
+  "cust.volc.disconnect": "Disconnect from OpenAI4S",
+  "cust.volc.disconnectConfirm": "Remove this Volcengine configuration from OpenAI4S? Ark CLI will remain signed in.",
+  "cust.volc.quota": "Plan quota",
+  "cust.volc.reset": "Resets: {0}",
+  "cust.volc.configureFailed": "Automatic setup failed: {0}",
+  "cust.volc.refreshFailed": "Refresh failed: {0}",
   "cust.network.allowName": "Allow network access",
   "cust.network.desc": "Network access (the agent's web_search / web_fetch / bash and code requests)",
   "cust.network.disabledDesc": "Disabled — the agent uses only local knowledge and existing files",
@@ -12008,6 +12146,430 @@ function modelProtocolOptions(served) {
   // tOptional, not t: a missing translation must not put a dot-key in a menu.
   return list.map(id => ({ value: id, label: tOptional(labelKeys[id] || "") || id }));
 }
+
+function volcCommand(label, iconName, className = "outline-btn small") {
+  const button = el("button", className);
+  button.appendChild(iconEl(iconName, 14));
+  button.appendChild(el("span", null, label));
+  return button;
+}
+
+function volcPercent(period) {
+  const direct = Number(period && period.percent);
+  if (Number.isFinite(direct)) return Math.max(0, Math.min(100, direct));
+  const used = Number(period && period.used), total = Number(period && period.total);
+  return Number.isFinite(used) && Number.isFinite(total) && total > 0
+    ? Math.max(0, Math.min(100, used * 100 / total)) : 0;
+}
+
+function volcQuotaValue(period) {
+  const used = Number(period && period.used), total = Number(period && period.total);
+  if (Number.isFinite(used) && Number.isFinite(total)) {
+    return `${used.toLocaleString()} / ${total.toLocaleString()}`;
+  }
+  return `${Math.round(volcPercent(period))}%`;
+}
+
+function volcNotice(root, tone, title, body) {
+  const notice = el("div", `volc-notice ${tone || ""}`.trim());
+  notice.appendChild(iconEl(tone === "ok" ? "check" : tone === "warn" ? "alert-triangle" : "terminal", 17));
+  const copy = el("div", "volc-notice-copy");
+  copy.appendChild(el("div", "volc-notice-title", title));
+  if (body) copy.appendChild(el("div", "volc-notice-body", body));
+  notice.appendChild(copy); root.appendChild(notice);
+  return notice;
+}
+
+function volcExternal(label, url, iconName = "globe", onOpen = null) {
+  const button = volcCommand(label, iconName);
+  button.onclick = () => {
+    openVolcengineAuthorization(url);
+    if (typeof onOpen === "function") onOpen();
+  };
+  return button;
+}
+
+function volcApiKeyUrl(state) {
+  const raw = String((((state || {}).identity || {}).region) || "cn-beijing").toLowerCase();
+  const region = /^[a-z0-9-]{2,64}$/.test(raw) ? raw : "cn-beijing";
+  return `https://console.volcengine.com/ark/region:ark+${region}/apiKey`;
+}
+
+function stopVolcengineKeyPolling(root) {
+  if (root._volcKeyPollTimer) clearTimeout(root._volcKeyPollTimer);
+  root._volcKeyPollTimer = null;
+  root._volcKeyPollAttempts = 0;
+}
+
+function startVolcengineKeyPolling(root) {
+  stopVolcengineKeyPolling(root);
+  const poll = async () => {
+    if (!root.isConnected) return;
+    root._volcKeyPollAttempts = Number(root._volcKeyPollAttempts || 0) + 1;
+    try {
+      const next = await refreshVolcengine(root);
+      const accessState = ((next || {}).access || {}).state;
+      if (!["key_missing", "no_plan", "key_check_failed"].includes(accessState)) {
+        stopVolcengineKeyPolling(root);
+        return;
+      }
+    } catch (_) { /* Keep the explicit recheck action available. */ }
+    if (root._volcKeyPollAttempts < 24) {
+      root._volcKeyPollTimer = setTimeout(poll, 5000);
+    } else {
+      stopVolcengineKeyPolling(root);
+      if (root.isConnected && root._volcState) renderVolcenginePanel(root, root._volcState);
+    }
+  };
+  root._volcKeyPollAttempts = 0;
+  root._volcKeyPollTimer = setTimeout(poll, 2500);
+  if (root._volcState) renderVolcenginePanel(root, root._volcState);
+}
+
+function openVolcengineAuthorization(url, popup = null) {
+  if (!url) return null;
+  let target = popup;
+  try {
+    if (target && !target.closed) target.location.href = url;
+    else target = window.open(url, "_blank", "noopener,noreferrer");
+    if (target && typeof target.focus === "function") target.focus();
+  } catch (_) { /* The fallback button remains available if the browser blocks it. */ }
+  return target;
+}
+
+async function refreshVolcengine(root, { autoConfigure = true, announce = false } = {}) {
+  const next = await api("/volcengine/refresh", { method: "POST" });
+  const plans = (next.plans || []).filter(plan => plan && plan.available !== false);
+  const accessState = (next.access || {}).state;
+  const checkFailed = ["check_failed", "key_check_failed", "endpoint_check_failed"].includes(accessState);
+  root._volcRefreshMessage = announce && !checkFailed ? t("cust.volc.rechecked") : "";
+  renderVolcenginePanel(root, next);
+  // Auto-configure only while never linked: once the Volcengine profile
+  // exists, `!configured` means the user deliberately activated a different
+  // profile, and a read-labeled Recheck (or a poll tick) must not switch the
+  // instance back to Ark behind their back.
+  if (autoConfigure && !next.configured && !next.linked && plans.length === 1 && accessState === "ready") {
+    await configureVolcengine(root, next, plans[0].key);
+  } else if (autoConfigure && !next.configured && !next.linked && accessState === "platform_ready") {
+    await configureVolcengine(root, next, "platform", "", (next.access || {}).endpoint_choice || "");
+  }
+  return next;
+}
+
+function renderVolcenginePanel(root, raw) {
+  const state = raw && typeof raw === "object" ? raw : {};
+  root._volcState = state;
+  root.innerHTML = "";
+  const login = state.login || {}, identity = state.identity || {};
+  const top = el("div", "volc-head"), identityBox = el("div", "info");
+  identityBox.appendChild(el("div", "nm", t("cust.volc.title")));
+  let statusText = t("cust.volc.disconnected"), statusClass = "";
+  if (state.state === "connected") { statusText = t("cust.volc.connected"); statusClass = " ok"; }
+  else if (state.state === "expired") statusText = t("cust.volc.expired");
+  else if (state.state === "not_installed") statusText = t("cust.volc.notInstalled");
+  if (identity.name) {
+    const detail = [identity.name, identity.project_name ? t("cust.volc.project", identity.project_name) : ""].filter(Boolean).join(" / ");
+    identityBox.appendChild(el("div", "ds", detail));
+  }
+  top.appendChild(identityBox); top.appendChild(el("span", "volc-status" + statusClass, statusText)); root.appendChild(top);
+
+  const actions = el("div", "volc-actions");
+  if (state.state === "not_installed") {
+    const install = volcCommand(t("cust.volc.getConnector"), "globe", "solid-btn small");
+    install.onclick = () => window.open("https://github.com/volcengine/ark-cli", "_blank", "noopener");
+    actions.appendChild(install); root.appendChild(actions); return;
+  }
+
+  if (login.state === "connecting") {
+    volcNotice(root, "info", t("cust.volc.authTitle"), t("cust.volc.connecting"));
+    root.appendChild(el("div", "volc-project-hint", t("cust.volc.projectHint")));
+    const cancel = volcCommand(t("cust.volc.cancel"), "x");
+    cancel.onclick = async () => {
+      try { const next = await api("/volcengine/login/cancel", { method: "POST" }); renderVolcenginePanel(root, { ...state, login: next }); }
+      catch (error) { hint(apiErrorText(error), true); }
+    };
+    actions.appendChild(cancel); root.appendChild(actions); return;
+  }
+
+  if (login.state === "awaiting_code") {
+    volcNotice(root, "info", t("cust.volc.authTitle"), t("cust.volc.authBody"));
+    if (state._error) root.appendChild(el("div", "timeline-error", publicText(state._error, 240)));
+    root.appendChild(el("div", "volc-project-hint", t("cust.volc.projectHint")));
+    const auth = volcCommand(t("cust.volc.openAuth"), "globe", "solid-btn small");
+    auth.onclick = () => openVolcengineAuthorization(login.authorize_url);
+    const code = el("input", "cust-input volc-code"); code.placeholder = t("cust.volc.codePlaceholder"); code.autocomplete = "off";
+    const complete = volcCommand(t("cust.volc.complete"), "link");
+    const abandon = volcCommand(t("cust.volc.cancel"), "x");
+    abandon.onclick = async () => {
+      try { const next = await api("/volcengine/login/cancel", { method: "POST" }); renderVolcenginePanel(root, { ...state, login: next }); }
+      catch (error) { hint(apiErrorText(error), true); }
+    };
+    complete.onclick = async () => {
+      const value = code.value.trim(); if (!value) { code.focus(); return; }
+      complete.disabled = true;
+      try {
+        await api("/volcengine/login/complete", { method: "POST", body: JSON.stringify({ code: value }) });
+        code.value = "";
+        await refreshVolcengine(root);
+      } catch (error) {
+        complete.disabled = false;
+        try {
+          const next = await api("/volcengine/connection");
+          renderVolcenginePanel(root, { ...next, _error: apiErrorText(error) });
+        } catch (_) { hint(apiErrorText(error), true); }
+      }
+    };
+    actions.appendChild(auth); actions.appendChild(code); actions.appendChild(complete); actions.appendChild(abandon); root.appendChild(actions); return;
+  }
+
+  if (login.state === "failed") {
+    const code = login.error_code || "";
+    const detail = login.error_detail || state._error || code;
+    if (code === "project_selection_required") {
+      volcNotice(root, "warn", t("cust.volc.projectRequiredTitle"), `${t("cust.volc.projectRequiredBody")} ${detail && detail !== code ? detail : ""}`.trim());
+    } else if (code === "interactive_terminal_unavailable") {
+      volcNotice(root, "warn", t("cust.volc.cliSetupTitle"), `${t("cust.volc.cliSetupBody")} ${detail && detail !== code ? detail : ""}`.trim());
+    } else {
+      volcNotice(root, "warn", t("cust.volc.failed"), detail);
+    }
+    const retry = volcCommand(t("cust.volc.retrySetup"), "refresh", "solid-btn small");
+    retry.onclick = () => startVolcengineLogin(root);
+    actions.appendChild(retry);
+    if (state.state !== "connected") {
+      const recheck = volcCommand(t("cust.volc.recheck"), "refresh");
+      recheck.onclick = async () => {
+        recheck.disabled = true;
+        try { await refreshVolcengine(root); }
+        catch (error) { recheck.disabled = false; hint(t("cust.volc.refreshFailed", apiErrorText(error)), true); }
+      };
+      actions.appendChild(recheck); root.appendChild(actions); return;
+    }
+  }
+  if (state._error) root.appendChild(el("div", "timeline-error", publicText(state._error, 240)));
+
+  if (state.state !== "connected") {
+    const prepKey = identity.project_name ? "cust.volc.reconnectPrep" : "cust.volc.loginPrep";
+    root.appendChild(el("div", "volc-login-prep", t(prepKey)));
+    const connect = volcCommand(t("cust.volc.connect"), "link", "solid-btn small");
+    connect.onclick = () => startVolcengineLogin(root);
+    actions.appendChild(connect); root.appendChild(actions); return;
+  }
+
+  const plans = Array.isArray(state.plans) ? state.plans.filter(plan => plan && plan.available !== false) : [];
+  const access = state.access || {};
+  let selected = root.dataset.planKey || state.configured_plan_key || access.plan_key || "";
+  if (plans.length) {
+    if (!plans.some(plan => plan.key === selected)) selected = plans[0].key;
+    root.dataset.planKey = selected;
+    if (plans.length > 1) {
+      volcNotice(root, "info", t("cust.volc.choiceTitle"), t("cust.volc.choiceBody"));
+      const chooser = el("div", "volc-plan-row"); chooser.appendChild(el("label", "skill-lbl", t("cust.volc.plan")));
+      const select = el("select", "cust-input");
+      plans.forEach(plan => {
+        const option = el("option"); option.value = plan.key;
+        option.textContent = [plan.name || plan.key, plan.tier, plan.scope].filter(Boolean).join(" / ");
+        select.appendChild(option);
+      });
+      select.value = selected; select.onchange = () => { root.dataset.planKey = select.value; renderVolcenginePanel(root, state); };
+      chooser.appendChild(select); root.appendChild(chooser);
+    }
+
+    const usageItems = ((state.usage || {}).items || []).filter(item => !item.product || item.product === selected);
+    const periods = usageItems.flatMap(item => Array.isArray(item.periods) ? item.periods : []);
+    if (periods.length) {
+      root.appendChild(el("div", "cust-subhead volc-quota-title", t("cust.volc.quota")));
+      const quotas = el("div", "volc-quotas");
+      periods.forEach(period => {
+        const row = el("div", "volc-quota");
+        const labels = el("div", "volc-quota-labels"); labels.appendChild(el("span", null, publicText(period.label, 24))); labels.appendChild(el("span", null, volcQuotaValue(period)));
+        const progress = el("div", "volc-progress"); const fill = el("span"); fill.style.width = `${volcPercent(period)}%`; progress.appendChild(fill);
+        row.appendChild(labels); row.appendChild(progress);
+        if (period.reset_at) {
+          const parsed = new Date(period.reset_at); const reset = Number.isNaN(parsed.getTime()) ? period.reset_at : parsed.toLocaleString();
+          row.appendChild(el("div", "volc-reset", t("cust.volc.reset", publicText(reset, 80))));
+        }
+        quotas.appendChild(row);
+      });
+      root.appendChild(quotas);
+    }
+  }
+
+  const selectedPlan = plans.find(plan => plan.key === selected) || null;
+  const accessState = access.state === "plan_choice_required" && selectedPlan
+    ? selectedPlan.key_state
+    : (access.state || (plans.length ? "key_check_failed" : "no_plan"));
+  const pollingForKey = Boolean(root._volcKeyPollTimer);
+  const configuredForSelection = Boolean(state.configured && state.configured_plan_key === (selected || access.plan_key));
+  const resourceCheckFailed = ["check_failed", "key_check_failed", "endpoint_check_failed"].includes(accessState);
+  if (accessState === "no_plan") {
+    volcNotice(root, "warn", t("cust.volc.connectedNoAccessTitle"), t("cust.volc.noPlanBody"));
+    actions.appendChild(volcExternal(t("cust.volc.viewPlans"), "https://www.volcengine.com/activity/agentplan"));
+    if (pollingForKey) actions.appendChild(el("span", "volc-key-wait", t("cust.volc.keyWaiting")));
+    else actions.appendChild(volcExternal(t("cust.volc.createKey"), volcApiKeyUrl(state), "lock", () => startVolcengineKeyPolling(root)));
+  } else if (accessState === "key_missing") {
+    volcNotice(root, "warn", t("cust.volc.keyMissingTitle"), t("cust.volc.keyMissingBody"));
+    if (pollingForKey) actions.appendChild(el("span", "volc-key-wait", t("cust.volc.keyWaiting")));
+    else actions.appendChild(volcExternal(t("cust.volc.createKey"), volcApiKeyUrl(state), "lock", () => startVolcengineKeyPolling(root)));
+  } else if (accessState === "key_choice_required" && configuredForSelection) {
+    actions.appendChild(el("span", "volc-ready", t("cust.volc.ready")));
+  } else if (accessState === "key_choice_required") {
+    volcNotice(root, "info", t("cust.volc.keyChoiceTitle"), t("cust.volc.keyChoiceBody"));
+    const choices = Array.isArray(selectedPlan && selectedPlan.key_choices)
+      ? selectedPlan.key_choices : (Array.isArray(access.key_choices) ? access.key_choices : []);
+    const chooser = el("div", "volc-plan-row"); chooser.appendChild(el("label", "skill-lbl", t("cust.volc.apiKey")));
+    const select = el("select", "cust-input");
+    choices.forEach(choice => {
+      const option = el("option"); option.value = choice.id;
+      const name = choice.name || t("cust.volc.apiKey");
+      option.textContent = choice.suffix ? t("cust.volc.keyName", name, choice.suffix) : name;
+      select.appendChild(option);
+    });
+    let keyChoice = root.dataset.keyChoice || "";
+    if (!choices.some(choice => choice.id === keyChoice)) keyChoice = choices[0] ? choices[0].id : "";
+    root.dataset.keyChoice = keyChoice; select.value = keyChoice;
+    select.onchange = () => { root.dataset.keyChoice = select.value; };
+    chooser.appendChild(select); root.appendChild(chooser);
+    // A platform profile can need an endpoint choice at the same time; render
+    // it here and submit both, or the two 409s ping-pong forever.
+    const endpointChoices = Array.isArray(access.endpoint_choices) ? access.endpoint_choices : [];
+    if (endpointChoices.length) {
+      const endpointRow = el("div", "volc-plan-row"); endpointRow.appendChild(el("label", "skill-lbl", t("cust.volc.endpoint")));
+      const endpointSelect = el("select", "cust-input");
+      endpointChoices.forEach(choice => {
+        const option = el("option"); option.value = choice.id;
+        option.textContent = choice.name || choice.suffix || t("cust.volc.endpoint");
+        endpointSelect.appendChild(option);
+      });
+      let endpointChoice = root.dataset.endpointChoice || "";
+      if (!endpointChoices.some(choice => choice.id === endpointChoice)) endpointChoice = endpointChoices[0] ? endpointChoices[0].id : "";
+      root.dataset.endpointChoice = endpointChoice; endpointSelect.value = endpointChoice;
+      endpointSelect.onchange = () => { root.dataset.endpointChoice = endpointSelect.value; };
+      endpointRow.appendChild(endpointSelect); root.appendChild(endpointRow);
+    }
+    const use = volcCommand(t("cust.volc.usePlan"), "check", "solid-btn small");
+    use.disabled = !keyChoice;
+    use.onclick = () => configureVolcengine(root, state, selected || access.plan_key, root.dataset.keyChoice, endpointChoices.length ? root.dataset.endpointChoice : "");
+    actions.appendChild(use);
+  } else if (["profile_missing", "profile_ambiguous"].includes(accessState)) {
+    volcNotice(root, "warn", t("cust.volc.profileMissingTitle"), t("cust.volc.profileMissingBody"));
+    const setup = volcCommand(t("cust.volc.retrySetup"), "refresh", "solid-btn small");
+    setup.onclick = () => startVolcengineLogin(root); actions.appendChild(setup);
+  } else if (accessState === "plan_inactive") {
+    volcNotice(root, "warn", t("cust.volc.planInactiveTitle"), t("cust.volc.planInactiveBody"));
+    actions.appendChild(volcExternal(t("cust.volc.viewPlans"), "https://www.volcengine.com/activity/agentplan"));
+  } else if (accessState === "seat_required") {
+    volcNotice(root, "warn", t("cust.volc.seatTitle"), t("cust.volc.seatBody"));
+    actions.appendChild(volcExternal(t("cust.volc.viewPlans"), "https://console.volcengine.com/ark"));
+  } else if (accessState === "quota_exhausted") {
+    volcNotice(root, "warn", t("cust.volc.quotaTitle"), t("cust.volc.quotaBody"));
+    actions.appendChild(volcExternal(t("cust.volc.viewPlans"), "https://www.volcengine.com/activity/agentplan"));
+  } else if (configuredForSelection && resourceCheckFailed) {
+    volcNotice(root, "warn", t("cust.volc.checkFailedTitle"), t("cust.volc.checkFailedBody"));
+    actions.appendChild(el("span", "volc-ready", t("cust.volc.ready")));
+  } else if (configuredForSelection) {
+    actions.appendChild(el("span", "volc-ready", t("cust.volc.ready")));
+  } else if (accessState === "platform_ready") {
+    volcNotice(root, "ok", t("cust.volc.platformReadyTitle"), t("cust.volc.platformReadyBody"));
+    const use = volcCommand(t("cust.volc.useEndpoint"), "check", "solid-btn small");
+    use.onclick = () => configureVolcengine(root, state, "platform", "", access.endpoint_choice || "");
+    actions.appendChild(use);
+  } else if (accessState === "endpoint_choice_required") {
+    volcNotice(root, "info", t("cust.volc.endpointChoiceTitle"), t("cust.volc.endpointChoiceBody"));
+    const choices = Array.isArray(access.endpoint_choices) ? access.endpoint_choices : [];
+    const chooser = el("div", "volc-plan-row"); chooser.appendChild(el("label", "skill-lbl", t("cust.volc.endpoint")));
+    const select = el("select", "cust-input");
+    choices.forEach(choice => {
+      const option = el("option"); option.value = choice.id;
+      option.textContent = choice.name || choice.suffix || t("cust.volc.endpoint");
+      select.appendChild(option);
+    });
+    let endpointChoice = root.dataset.endpointChoice || "";
+    if (!choices.some(choice => choice.id === endpointChoice)) endpointChoice = choices[0] ? choices[0].id : "";
+    root.dataset.endpointChoice = endpointChoice; select.value = endpointChoice;
+    select.onchange = () => { root.dataset.endpointChoice = select.value; };
+    chooser.appendChild(select); root.appendChild(chooser);
+    const use = volcCommand(t("cust.volc.useEndpoint"), "check", "solid-btn small");
+    use.disabled = !endpointChoice;
+    use.onclick = () => configureVolcengine(root, state, "platform", "", root.dataset.endpointChoice);
+    actions.appendChild(use);
+  } else if (accessState === "platform_endpoint_required") {
+    volcNotice(root, "info", t("cust.volc.platformTitle"), t("cust.volc.platformBody"));
+    actions.appendChild(volcExternal(t("cust.volc.openEndpoints"), "https://console.volcengine.com/ark"));
+  } else if (resourceCheckFailed) {
+    volcNotice(root, "warn", t("cust.volc.checkFailedTitle"), t("cust.volc.checkFailedBody"));
+  } else if (plans.length) {
+    const use = volcCommand(t("cust.volc.usePlan"), "check", "solid-btn small");
+    use.onclick = () => configureVolcengine(root, state, selected); actions.appendChild(use);
+  }
+
+  const refresh = volcCommand(t("cust.volc.recheck"), "refresh");
+  refresh.onclick = async () => {
+    refresh.disabled = true;
+    root._volcRefreshMessage = "";
+    const label = refresh.querySelector("span"); if (label) label.textContent = t("cust.volc.rechecking");
+    const icon = refresh.querySelector("svg"); if (icon) icon.classList.add("spin");
+    try { await refreshVolcengine(root, { announce: true }); }
+    catch (error) { renderVolcenginePanel(root, { ...(root._volcState || state), _error: t("cust.volc.refreshFailed", apiErrorText(error)) }); }
+    finally { refresh.disabled = false; }
+  };
+  actions.appendChild(refresh);
+  if (root._volcRefreshMessage) actions.appendChild(el("span", "volc-key-wait", root._volcRefreshMessage));
+  const change = volcCommand(t("cust.volc.switch"), "refresh"); change.onclick = () => startVolcengineLogin(root); actions.appendChild(change);
+  if (state.linked) {
+    const disconnect = volcCommand(t("cust.volc.disconnect"), "x");
+    disconnect.onclick = async () => {
+      if (!confirm(t("cust.volc.disconnectConfirm"))) return;
+      disconnect.disabled = true;
+      try { await api("/volcengine/disconnect", { method: "POST", body: JSON.stringify({ confirm: true }) }); await loadModels(); refreshKeyBanner(); custTab("models"); }
+      catch (error) { disconnect.disabled = false; hint(apiErrorText(error), true); }
+    };
+    actions.appendChild(disconnect);
+  }
+  root.appendChild(actions);
+}
+
+async function configureVolcengine(root, state, planKey, apiKeyChoice = "", endpointChoice = "") {
+  // One configure at a time: the poll timer and a user click can otherwise
+  // race two POSTs from a single browser.
+  if (root._volcConfiguring) return;
+  root._volcConfiguring = true;
+  root.classList.add("busy");
+  try {
+    const result = await api("/volcengine/configure", { method: "POST", body: JSON.stringify({ plan_key: planKey, api_key_choice: apiKeyChoice || undefined, endpoint_choice: endpointChoice || undefined }) });
+    await loadModels(); refreshKeyBanner();
+    renderVolcenginePanel(root, result.connection || state);
+    custTab("models");
+  } catch (error) {
+    root.classList.remove("busy");
+    if (["ark_key_missing", "ark_key_choice_required", "ark_key_choice_invalid", "ark_endpoint_missing", "ark_endpoint_choice_required", "ark_endpoint_choice_invalid", "ark_profile_missing", "ark_profile_ambiguous", "plan_not_available"].includes(error.code)) {
+      try { await refreshVolcengine(root, { autoConfigure: false }); return; }
+      catch (_) { /* Fall through to the original actionable error. */ }
+    }
+    renderVolcenginePanel(root, { ...state, _error: t("cust.volc.configureFailed", apiErrorText(error)) });
+  } finally {
+    root._volcConfiguring = false;
+  }
+}
+
+async function startVolcengineLogin(root) {
+  // Reserve a tab during the user gesture so popup blockers do not swallow the
+  // later navigation while the local API prepares the authorization URL.
+  let authWindow = null;
+  try { authWindow = window.open("about:blank", "_blank"); } catch (_) { /* Use the fallback button. */ }
+  // Sever the reverse handle: the SSO tab (and whatever its redirect chain
+  // lands on) must not keep a window.opener onto the workbench.
+  try { if (authWindow) authWindow.opener = null; } catch (_) { /* Best effort. */ }
+  try {
+    const login = await api("/volcengine/login", { method: "POST", body: JSON.stringify({ mode: "device" }) });
+    authWindow = openVolcengineAuthorization(login.authorize_url, authWindow);
+    const state = { ...(root._volcState || {}), login };
+    renderVolcenginePanel(root, state);
+  } catch (error) {
+    try { if (authWindow && !authWindow.closed) authWindow.close(); } catch (_) { /* Ignore blocked popups. */ }
+    renderVolcenginePanel(root, { ...(root._volcState || {}), _error: apiErrorText(error) });
+  }
+}
+
 async function custModels(c) {
   c.innerHTML = ""; c.appendChild(hdr(t("cust.tab.models"), t("cust.models.subtitle2")));
   let data = { profiles: [], active_id: "", protocols: [] };
@@ -12019,6 +12581,13 @@ async function custModels(c) {
     const match = protocols.find(item => item.value === provider);
     return match ? match.label : provider;
   };
+
+  c.appendChild(el("div", "cust-subhead", t("cust.volc.title")));
+  const volcRoot = el("div", "volc-panel"); c.appendChild(volcRoot);
+  volcRoot.appendChild(el("div", "dock-empty", t("common.loading")));
+  api("/volcengine/connection")
+    .then(result => { if (volcRoot.isConnected) renderVolcenginePanel(volcRoot, result); })
+    .catch(error => { if (volcRoot.isConnected) renderVolcenginePanel(volcRoot, { state: "error", _error: apiErrorText(error) }); });
 
   // Local discovery is a read-only, fixed-loopback scan. The endpoint must be
   // explicitly added before it can affect model settings.

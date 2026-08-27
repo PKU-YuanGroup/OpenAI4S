@@ -704,6 +704,12 @@ def test_a_member_cannot_mutate_the_shared_instance(daemon):
         ("/api/v1/skills", {"name": "x", "body": "# x"}),
         ("/api/v1/skills/import", {"url": "http://example.invalid"}),
         ("/api/v1/permissions/reset", {}),
+        ("/api/v1/volcengine/login", {"mode": "browser"}),
+        ("/api/v1/volcengine/login/complete", {"code": "not-a-real-code"}),
+        ("/api/v1/volcengine/login/cancel", {}),
+        ("/api/v1/volcengine/refresh", {}),
+        ("/api/v1/volcengine/configure", {"plan_key": "agent-plan"}),
+        ("/api/v1/volcengine/disconnect", {"confirm": True}),
     ):
         status, raw = _post(daemon.port, path, body, cookie=bob)
         assert status == 403, f"{path}: {status} {raw[:160]}"
