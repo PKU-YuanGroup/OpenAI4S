@@ -58,6 +58,8 @@ audit = audit_routes(routes)
 
 [`model_deployment.py`](model_deployment.py) makes RetroChimera checkpoint setup reproducible without adding a package dependency: it records the three public upstream archives, routes optional downloads through the guarded Host capability, validates the reviewed byte count and MD5 plus a locally computed SHA-256, rejects unsafe ZIP members, extracts through an atomic staging directory, and writes the path-free manifest consumed by the backend.
 
+Verification is bound to the bytes it actually read. The archive must be a regular file, it is hashed twice against the same open inode and refused if the path or the content moves in between, and the recorded digest is explicitly scoped: `checkpoint_sha256_scope` says `source_archive`, so nobody mistakes it for a hash of the extracted tree. The published directory is then re-checked, entry by entry, against what came out of the archive before it is handed to the backend.
+
 Automatic checkpoint downloading is disabled by default. A model run can carry a path-free manifest containing model version, checkpoint identifier and SHA-256, training dataset and license information. Returned model scores remain raw model outputs and are always accompanied by a scientific disclaimer; they are not converted into experimental success probabilities.
 
 See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) for installation, manifest, protocol, failure handling and Harness replay details.
@@ -72,7 +74,7 @@ See [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) and [`MODEL_BACKENDS_zh.md`](MODEL_
 | [`route_review.py`](route_review.py) | Stable route signatures, duplicate provenance and diversity-aware route selection based on reaction, product, precursor and terminal-material features. |
 | [`structural_audit.py`](structural_audit.py) | Deterministic route-tree checks before LLM interpretation. It remains stdlib-only and adds RDKit parse/element checks only when RDKit is installed. |
 | [`external_backends.py`](external_backends.py) | Versioned external-model request/response validation, path-free model manifests, timeout and size enforcement, and the `SyntheseusBackend` subprocess adapter. |
-| [`model_deployment.py`](model_deployment.py) | Pure-stdlib RetroChimera checkpoint registry, guarded Host download, archive verification, safe atomic extraction and path-free manifest generation. |
+| [`model_deployment.py`](model_deployment.py) | Pure-stdlib RetroChimera checkpoint registry, guarded Host download, inode-pinned archive verification with an explicit digest scope, safe atomic extraction with the published tree verified against the archive, and path-free manifest generation. |
 | [`syntheseus_worker.py`](syntheseus_worker.py) | The isolated optional-dependency worker for RetroChimera and supported Syntheseus model classes. It moves descriptor 1 onto stderr before handling a request — so native model output cannot corrupt the protocol — strips filesystem paths out of model metadata, and emits one structured JSON response. |
 | [`MODEL_BACKENDS.md`](MODEL_BACKENDS.md) | English guide to isolated model installation, provenance manifests, usage, wire errors, scientific limits and offline replay verification. |
 | [`MODEL_BACKENDS_zh.md`](MODEL_BACKENDS_zh.md) | Chinese version of the external-model backend and trust guide. |

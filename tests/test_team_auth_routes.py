@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import socket
 import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -21,6 +20,7 @@ from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
 from openai4s.storage import team as team_mod
 from openai4s.store import get_store
+from tests._ports import bound_gateway_server
 
 
 class _Hub:
@@ -51,6 +51,11 @@ class _Hub:
 
 
 def _free_port() -> int:
+    # Not used for the daemon's own bind any more (that goes through
+    # tests._ports.bound_gateway_server, which keeps the socket it probes).
+    # Still imported by test_compute_session_routes and
+    # test_cluster_session_production_wiring for OPENAI4S_WORKER_LISTEN,
+    # where the number goes into config and is never rebound.
     sock = socket.socket()
     try:
         sock.bind(("127.0.0.1", 0))
@@ -77,7 +82,7 @@ class _TeamDaemon:
         trusted_proxy_origins: tuple[str, ...] = (),
     ) -> None:
         self.data_dir = data_dir
-        self.port = _free_port()
+        self._httpd, self.port = bound_gateway_server()
         self.cfg = Config(
             data_dir=data_dir,
             llm=LLMConfig(provider="deepseek", api_key="test-key"),
@@ -96,8 +101,7 @@ class _TeamDaemon:
         self.hub = gateway_mod.WSHub()
         self.runner = gateway_mod.SessionRunner(self.cfg, self.hub)
         handler_cls = gateway_mod.make_handler(self.cfg, self.hub, self.runner)
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", self.port), handler_cls)
-        self._httpd.daemon_threads = True
+        self._httpd.RequestHandlerClass = handler_cls
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 

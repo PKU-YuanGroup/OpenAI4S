@@ -8,7 +8,7 @@
 
 ## 在架构中的位置
 
-该服务器作为外部子进程运行，不会加载进科学内核。[`../mcp_client.py`](../mcp_client.py) 负责把它拉起来并持有 Host 侧连接；模型看到的是 [`../tools/mcp.py`](../tools/mcp.py)，它把 connector 的发现、资源读取和工具调用暴露给原生控制平面，走的仍是常规的权限、审计与不可信输出策略。
+该服务器作为外部子进程运行，不会加载进科学内核。[`../mcp_client.py`](../mcp_client.py) 负责把它拉起来并持有 Host 侧连接；模型看到的是 [`../tools/mcp.py`](../tools/mcp.py)，它把 connector 的发现、资源读取和工具调用暴露给原生控制平面，走的仍是常规的权限、审计与不可信输出策略。这里的两个 server 都只走 stdio：客户端的 Streamable HTTP 传输是给远程 connector 用的，本包里的任何东西都不经由它。
 
 ## 文件
 

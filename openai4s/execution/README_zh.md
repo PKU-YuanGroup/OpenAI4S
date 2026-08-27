@@ -14,11 +14,11 @@ FIFO coordinator 覆盖 Agent、用户 REPL、lifecycle 和 recovery 这几类�
 
 | 文件 | 职责 |
 | --- | --- |
-| [`__init__.py`](./__init__.py) | 对外重新导出 coordinator 的 ticket 与错误类型、Cell 请求/结果与捕获相关的取值，以及 watchdog 策略。 |
+| [`__init__.py`](./__init__.py) | 对外重新导出 coordinator 的 ticket 与错误类型、Cell 请求/结果与捕获相关的取值，以及 watchdog 策略连同它的各类取消结果。 |
 | [`coordinator.py`](./coordinator.py) | 逐 session 的 FIFO 准入，以及一个 ticket 从排队到终止的整个可观测生命周期：队列位置、只有其精确持有者能看到的取消信号、供 UI 与持久化使用的快照，还有关闭与恢复时的状态转换。它只放行和释放写入方，自己不执行代码，也不发送进程信号；信号由调用方通过绑定到该 ticket 的内核 lease 发出。等待中的队列按 session 设了上限，并且在提交时就拒绝——拒绝发生在登记任何东西之前，好让调用方当场知道，而不是攥着一张本来就不可能被放行的 ticket 干等。这是每一个执行写入方都要经过的唯一准入路径：worker、内核 frame、任务缓冲区都封了顶，唯独让它的 `deque` 无界，只是把增长挪到堆积的 ticket 上，而不是止住它。这个上限数的是在等的，不是在跑的；并且是按 session 算的——一个忙碌的 session 不该去拒绝另一个 session 的活。 |
 | [`dependencies.py`](./dependencies.py) | 用 Python 的 `ast` 和一个刻意写得很小的 R lexer，记录每个 Cell 读了什么、写了什么、删了什么，并据此投影出哪些早先的 Cell 已经失效。`visibility` 与 `replay_policy` 的默认值也由它给出。遇到会改动命名空间却给不出稳定变量名的写法，它会标成 uncertain，而不是猜一个结果：这是一份保守投影，不是安全边界。 |
-| [`models.py`](./models.py) | 跨边界传递的三个数据类：`CellRequest`、`CaptureResult` 和 `CellExecutionResult`，里面不出现任何 provider 或 UI 类型。 |
-| [`watchdog.py`](./watchdog.py) | 针对一个冻结的内核 lease 的协议中立超时阶梯：先等待，超时后中断精确的 owner，中断不奏效就 kill，然后按策略重启或放弃。等待人工权限决策期间，超时预算会冻结，但取消仍然能穿透。 |
+| [`models.py`](./models.py) | 跨边界传递的三个数据类：`CellRequest`、`CaptureResult` 和 `CellExecutionResult`，里面不出现任何 provider 或 UI 类型。`CaptureResult` 除了写出的文件还记录 Cell 读过的文件；`CellExecutionResult.executed` 则说明这个 Cell 是否真的被某个内核执行过——安全门拒绝或 runtime 不可用时合成的结果，与真实失败逐字节相同，而 Agent 循环的证据台账绝不能把一个被拒绝的 Cell 算作 finalize 时的执行证据。 |
+| [`watchdog.py`](./watchdog.py) | 针对一个冻结的内核 lease 的协议中立超时阶梯：先等待，超时后中断精确的 owner，中断不奏效就 kill，然后按策略重启或放弃。等待人工权限决策期间，超时预算会冻结，但取消仍然能穿透。阶梯的结局是被报告出来的，不是被假定的：中断的送达裁定说「谁也没够到」时，宽限等待直接跳过；终局异常会区分「内核真的被重置了」、「从这个 daemon 无法重置」（`KernelNotReset…`——远端 worker 没法在这里重新拉起，集群上的活可能还在跑）和「重置了但替代内核初始化失败」（`KernelResetUnavailable…`）这几种情况，每种都各有超时与取消两个拼写——把一次并没有发生的重置报告成发生了，会让用户就此不再去找那份还在跑的工作。 |
 | [`process_group.py`](./process_group.py) | 停止一个被派生的进程**组**并确认它真的停了：TERM、宽限、KILL，然后探测整个组而不是组长。与内核侧的 `host.bash` 执行器共用——后者此前把 `timeout=` 交给 `shell=True` 的 `subprocess.run`，只杀掉 shell，而 shell 启动的工作照常运行。两份实现会恰好在这个情形上产生分歧。 |
 | [`budget.py`](./budget.py) | 一条有界通道必须报告的四个数字：`seen`、`retained`、`dropped`、`truncated`。树里有七个缓冲区会为守住预算而丢弃输入，这套账目却有四种写法、其中两处干脆什么都不报——一个被执行却不被报告的上界，产生的不是缺失的信息，而是一个自信的错误答案。它是函数而非 dataclass，以免又变成一个没人填写的声明形状；放在这里而不是 `kernel/`，理由与 `process_group.py` 自己写明的相同：`sdk/bash.py` 在 worker 内部要 import 它。 |
 

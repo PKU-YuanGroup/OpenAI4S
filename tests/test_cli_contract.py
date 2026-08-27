@@ -213,6 +213,15 @@ def test_root_help_lists_every_supported_subcommand_through_python_m():
         assert command in proc.stdout
 
 
+def test_root_version_prints_the_declared_package_version(capsys):
+    from openai4s import __version__
+
+    with pytest.raises(SystemExit) as stopped:
+        _cli_module().main(["--version"])
+    assert stopped.value.code == 0
+    assert capsys.readouterr().out.strip() == f"openai4s {__version__}"
+
+
 def test_cli_rejects_unknown_commands_and_missing_run_task(capsys):
     for argv in (["unknown"], ["run"]):
         with pytest.raises(SystemExit) as stopped:

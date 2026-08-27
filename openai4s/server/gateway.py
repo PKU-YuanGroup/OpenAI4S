@@ -357,7 +357,12 @@ _UNAUTHENTICATED_PATHS = frozenset({"/health", _API_ROOT + "/auth/status"})
 #: without the deadline it was granted on. `tests/test_auth_exit_matrix.py`
 #: fails once `openai4s.__version__` reaches this, which puts the decision in
 #: front of a person instead of leaving it to nobody's memory.
-LEGACY_TOKEN_OPT_OUT_REMOVED_IN = "0.2.0"
+#:
+#: The original deadline was 0.2.0. Bumping the package to 0.2.0 for the first
+#: multi-platform desktop ship would have failed that test; the opt-out itself
+#: is unchanged, and the deadline moved to 0.3.0 so a person still has to
+#: decide rather than the hatch becoming permanent by inattention.
+LEGACY_TOKEN_OPT_OUT_REMOVED_IN = "0.3.0"
 
 
 def _wants_html(headers) -> bool:

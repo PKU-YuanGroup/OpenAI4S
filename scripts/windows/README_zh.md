@@ -24,14 +24,14 @@ Windows 发布包用作入口的三个文件。[`../build_windows_zip.sh`](../bu
 WSL2 报告自己是 `linux`，属于受支持平台，所以这个包跑的就是其他平台跑的同一个程序，而不是
 它的近似版。平台支持矩阵见 [`../../docs/platforms.md`](../../docs/platforms.md)。
 
-面向用户的完整步骤见 [`../../docs/windows-wsl.md`](../../docs/windows-wsl.md)。当前启动链路会优先选择 Ubuntu 24.04，使用与真实 Cell 一致的生命周期、IPC、UTS 和 network namespace 参数验证 bubblewrap 0.8.0+，写入国内镜像配置和 `~/.local/bin/openai4s`，以 `enforce` 沙箱后台启动，并只打开 `openai4s url` 返回的安全地址。
+面向用户的完整步骤见 [`../../docs/windows-wsl.md`](../../docs/windows-wsl.md)。当前启动链路会优先沿用已存有 OpenAI4S 数据的发行版、其次才是 Ubuntu 24.04，使用与真实 Cell 一致的生命周期、IPC、UTS 和 network namespace 参数验证 bubblewrap 0.8.0+，写入国内镜像配置（只覆盖带有其托管标记的文件——用户自行编辑过的 `pip.conf`/condarc 会被保留）和 `~/.local/bin/openai4s`，以 `enforce` 沙箱后台启动，并只打开 `openai4s url` 返回的安全地址。
 
 ## 文件
 
 | 文件 | 职责 |
 | --- | --- |
 | `OpenAI4S.cmd` | 可双击的入口。资源管理器双击 `.ps1` 是用编辑器打开而不是运行，默认执行策略连命令行调用也会拦，所以这层包装只对这一个进程加 `-ExecutionPolicy Bypass` 调起 PowerShell，并原样透传参数与退出码。以 CRLF 发布。 |
-| `openai4s.ps1` | Windows 这一半：找到一个 WSL **2** 发行版（拒绝 WSL 1——它没有 user namespace，也就没有沙箱），用 `wslpath` 翻译包路径，安装 payload，启动 daemon，轮询转发出来的端口，然后打开浏览器。每一处拒绝都同时说明原因和那条能解决它的确切命令。以 CRLF 发布。 |
+| `openai4s.ps1` | Windows 这一半：挑选一个 WSL **2** 发行版（拒绝 WSL 1——它没有 user namespace，也就没有沙箱）——已经存有 OpenAI4S 数据的发行版会钉住选择，这样为别的原因安装 Ubuntu 24.04 不会让既有会话看似被删，否则优先 Ubuntu 24.04——传递国内软件源镜像（设为 `off` 恢复官方源）与可选的 WSL 可达代理，用 `wslpath` 翻译包路径，安装 payload，把 OpenAI4S 与占着端口的无关进程区分开，从 `openai4s url` 拿到带鉴权的地址，然后打开 Windows 浏览器。每一处拒绝都同时说明原因和那条能解决它的确切命令。以 CRLF 发布。 |
 | `bootstrap.sh` | Linux 这一半，在发行版内部运行。它在解包前先校验 payload 的 checksum（归档要跨 9p/DrvFs 边界，那里的短读会给出一个被截断的文件而不是一个错误），幂等安装，并把 daemon 完全脱离终端地拉起。以 LF 发布——这里出现回车符会让它在 WSL 里以 `bad interpreter` 失败，而 `../verify_windows_zip.py` 会直接拒绝这样的包。 |
 
 bootstrap 还会用与真实 Cell 相同的 lifecycle、IPC、UTS 和 network namespace

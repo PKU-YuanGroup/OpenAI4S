@@ -14,13 +14,13 @@ import json
 import socket
 import threading
 import time
-from http.server import ThreadingHTTPServer
 
 import pytest
 
 from openai4s.config import Config, LLMConfig
 from openai4s.server import gateway as gateway_mod
 from openai4s.server import local_auth
+from tests._ports import bound_gateway_server
 
 
 class _Hub:
@@ -81,7 +81,7 @@ def test_two_concurrent_resume_posts_start_exactly_one_turn(tmp_path):
     row, both were accepted, and both turns executed the same steps -- twice
     the compute, and two agents writing the same deliverables.
     """
-    port = _free_port()
+    httpd, port = bound_gateway_server()
     cfg = Config(
         data_dir=tmp_path,
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
@@ -132,7 +132,7 @@ def test_two_concurrent_resume_posts_start_exactly_one_turn(tmp_path):
     store.get_plan_by_frame = _synchronised_lookup
 
     handler_cls = gateway_mod.make_handler(cfg, hub, runner)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+    httpd.RequestHandlerClass = handler_cls
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     token = local_auth.load_or_mint(cfg.data_dir)
     replies: list[tuple[int, dict]] = []
@@ -305,7 +305,7 @@ def test_two_concurrent_approve_posts_start_exactly_one_turn(tmp_path):
     Counted rather than inferred, for the reason this file exists: asserting on
     status codes alone would not notice two jobs running the same plan.
     """
-    port = _free_port()
+    httpd, port = bound_gateway_server()
     cfg = Config(
         data_dir=tmp_path,
         llm=LLMConfig(provider="deepseek", api_key="test-key"),
@@ -355,7 +355,7 @@ def test_two_concurrent_approve_posts_start_exactly_one_turn(tmp_path):
     store.get_plan_by_frame = _synchronised_lookup
 
     handler_cls = gateway_mod.make_handler(cfg, hub, runner)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+    httpd.RequestHandlerClass = handler_cls
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     token = local_auth.load_or_mint(cfg.data_dir)
     replies: list[tuple[int, dict]] = []

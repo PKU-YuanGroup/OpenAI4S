@@ -35,17 +35,17 @@ The end-user walkthrough is [`../../docs/windows-wsl.md`](../../docs/windows-wsl
 | File | Purpose |
 | --- | --- |
 | `OpenAI4S.cmd` | The double-clickable entry point. Explorer opens a `.ps1` in an editor rather than running it, and the default execution policy blocks it even from a prompt, so this wrapper invokes PowerShell with `-ExecutionPolicy Bypass` for that one process and forwards its arguments and exit code. Ships CRLF. |
-| `openai4s.ps1` | The Windows half: prefer Ubuntu 24.04 on WSL **2**, propagate mainland package mirrors and an optional WSL-reachable proxy, install the payload, distinguish OpenAI4S from an unrelated port occupant, obtain the authenticated URL from `openai4s url`, and open the Windows browser. Every refusal names both the cause and the exact command that fixes it. Ships CRLF. |
+| `openai4s.ps1` | The Windows half: pick the WSL **2** distribution — one already holding OpenAI4S data pins the choice, so installing Ubuntu 24.04 for any other reason cannot strand existing sessions; otherwise Ubuntu 24.04 is preferred — propagate mainland package mirrors (`off` restores the official indexes) and an optional WSL-reachable proxy, install the payload, distinguish OpenAI4S from an unrelated port occupant, obtain the authenticated URL from `openai4s url`, and open the Windows browser. Every refusal names both the cause and the exact command that fixes it. Ships CRLF. |
 | `bootstrap.sh` | The Linux half, run inside the distribution. It verifies the payload's checksum before unpacking (the archive crosses the 9p/DrvFs boundary, where a short read yields a truncated file rather than an error), installs idempotently, and starts the daemon fully detached. Ships LF — a carriage return here fails inside WSL with `bad interpreter`, and `../verify_windows_zip.py` refuses a package that has one. |
 
 The bootstrap additionally proves bubblewrap 0.8.0+ accepts the same lifecycle,
-IPC, UTS, and network namespace flags used by real Cells, writes the selected mirror configuration and
-`~/.local/bin/openai4s` link, and starts the daemon with
-`OPENAI4S_KERNEL_SANDBOX=enforce` and browser auto-open disabled.
-Setting either mirror selector to `off` explicitly restores the corresponding
-official index. Only files carrying the launcher's management marker are
-changed; removing that marker transfers ownership to the user and preserves the
-complete file on later launches.
+IPC, UTS, and network namespace flags used by real Cells, writes the selected
+mirror configuration — only over files carrying its managed marker, so a
+user-edited `pip.conf` or condarc is preserved — and the `~/.local/bin/openai4s`
+link, and starts the daemon with `OPENAI4S_KERNEL_SANDBOX=enforce` and browser
+auto-open disabled. Setting either mirror selector to `off` explicitly restores
+the corresponding official index; removing the management marker transfers
+ownership to the user and preserves the complete file on later launches.
 When WSL localhost forwarding is explicitly disabled, a wildcard
 `OPENAI4S_HOST=0.0.0.0` remains the daemon bind while Windows uses the current
 WSL IPv4 as its client address. IPv6 hosts are rejected up front because the
