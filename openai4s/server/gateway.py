@@ -12432,10 +12432,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if request_id:
                 self.send_header("X-Request-Id", _sanitize_header_value(request_id))
             # Applied here rather than at the HTML route so no response can be
-            # added later that quietly opts out.
-            hardened = security or security_headers(WEBUI_DIR / "index.html")
+            # added later that quietly opts out. `is None` rather than
+            # truthiness: an empty profile is a caller that computed one and
+            # got nothing, and silently answering that with the permissive UI
+            # shell policy is the one direction this must never fail in.
+            hardened = (
+                security
+                if security is not None
+                else security_headers(WEBUI_DIR / "index.html")
+            )
             for k, v in hardened.items():
-                self.send_header(k, v)
+                self.send_header(k, _sanitize_header_value(v))
             for k, v in (extra or {}).items():
                 self.send_header(k, _sanitize_header_value(v))
             self.end_headers()
@@ -13530,7 +13537,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self._send(200, body, ctype, extra=extra, security=security)
 
         def _stream_file(
-            self, path: Path, ctype: str, extra: dict | None = None
+            self,
+            path: Path,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
         ) -> None:
             """Send a potentially large local file without loading it into RAM."""
             try:
@@ -13547,9 +13558,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # This path streams artifact bytes — agent-authored content, so
                 # the one that most needs nosniff and a closed CSP. It builds
                 # its own headers instead of going through _send, so it has to
-                # opt in explicitly.
-                for key, value in security_headers(WEBUI_DIR / "index.html").items():
-                    self.send_header(key, value)
+                # opt in explicitly — and it takes the same `security` profile
+                # as `_serve_file`, or the two writers of one fact drift.
+                profile = (
+                    security
+                    if security is not None
+                    else security_headers(WEBUI_DIR / "index.html")
+                )
+                for key, value in profile.items():
+                    self.send_header(key, _sanitize_header_value(value))
                 for key, value in (extra or {}).items():
                     self.send_header(key, _sanitize_header_value(value))
                 self.end_headers()
@@ -13565,8 +13582,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             # a top-level document, outside the Workbench iframe's sandbox.
             # Use an embeddable but inactive response profile instead of the UI
             # shell's frame denial. The policy sandbox gives the document an
-            # opaque origin even when someone navigates to it directly.
-            artifact_headers = artifact_security_headers(WEBUI_DIR / "index.html")
+            # opaque origin even when someone navigates to it directly. Built
+            # only on the two paths that actually send bytes; the 404 exits
+            # below have no use for it.
             # Canonical trusted-delivery URLs live below the reserved
             # ``versions/`` sub-path.  They must resolve one exact version or
             # 404; the compatible Artifact-id/filename fallbacks below are
@@ -13602,7 +13620,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 if force_html:
                     ctype = "text/html; charset=utf-8"
-                self._send(200, body, ctype, security=artifact_headers)
+                self._send(
+                    200,
+                    body,
+                    ctype,
+                    security=artifact_security_headers(WEBUI_DIR / "index.html"),
+                )
                 return
             path = store.resolve_artifact_path(decoded_ident)
             meta = None
@@ -13642,7 +13665,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ctype = (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
             if force_html:
                 ctype = "text/html; charset=utf-8"
-            self._serve_file(Path(path), ctype, security=artifact_headers)
+            self._serve_file(
+                Path(path),
+                ctype,
+                security=artifact_security_headers(WEBUI_DIR / "index.html"),
+            )
 
         def _serve_artifact_bundle(self, artifacts: list[dict], filename: str) -> None:
             """Download a frame/project's current artifact versions as one zip."""
@@ -13687,6 +13714,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     tmp_path,
                     "application/zip",
                     {"Content-Disposition": f'attachment; filename="{safe_name}"'},
+                    security=artifact_security_headers(WEBUI_DIR / "index.html"),
                 )
             finally:
                 try:

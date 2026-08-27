@@ -1722,6 +1722,25 @@ def _canonical_structure_src(source: Any) -> str:
     return source
 
 
+def _structure_src(smiles: str, width: int = 260, height: int = 180) -> str:
+    """One canonical depiction for `smiles`, degrading to the placeholder.
+
+    `_canonical_structure_src` fails closed, and its one production-reachable
+    rejection is the 1 MiB cap -- which a large peptide or polymer depiction
+    really does hit. Falling through to the labelled placeholder keeps that a
+    *labelled* absence instead of a missing element, which is what the
+    `onerror` attribute used to buy before it was removed as a URL sink.
+    """
+    primary = _canonical_structure_src(
+        build_molecule_structure_src(smiles, width=width, height=height)
+    )
+    if primary:
+        return primary
+    return _canonical_structure_src(
+        build_molecule_fallback_structure_src(smiles, width=width, height=height)
+    )
+
+
 @functools.lru_cache(maxsize=1024)
 def build_molecule_structure_src(
     smiles: str, width: int = 260, height: int = 180
@@ -2233,18 +2252,26 @@ def _render_molecule_briefs_panel(
     for brief in briefs:
         annotation = _annotation_for_molecule(annotations, str(brief["smiles"]))
         note = annotation or _molecule_panel_note(brief)
-        structure_src = _canonical_structure_src(
-            build_molecule_structure_src(str(brief["smiles"]))
-        )
+        structure_src = _structure_src(str(brief["smiles"]))
         alt = f'alt="Structure of {html.escape(str(brief["smiles"]))}"'
-        img = f'<img class="mol-structure" src="{html.escape(structure_src)}" '
+        # `_structure_src` still returns "" if even the placeholder is
+        # rejected. An empty `src` selects no source at all, so the element
+        # renders as the browser's broken-image glyph with nothing to explain
+        # it; `_svg_node` and the graph script both drop their element in that
+        # case. Say why instead of showing a broken one.
+        if structure_src:
+            figure = (
+                f'<img class="mol-structure" src="{html.escape(structure_src)}" {alt}>'
+            )
+        else:
+            figure = '<p class="muted">Structure depiction unavailable.</p>'
         cards.append(
             "\n".join(
                 [
                     '<article class="molecule-card">',
                     f"<h3><code>{html.escape(str(brief['smiles']))}</code></h3>",
                     '<div class="structure-frame">',
-                    img + alt + ">",
+                    figure,
                     "</div>",
                     "<dl>",
                     f"<dt>Role</dt><dd>{html.escape(str(brief['role']))}</dd>",
@@ -2388,9 +2415,7 @@ def _interactive_andor_payload(
             "label": _short_label(smiles, 34),
             "meta": role,
             "smiles": smiles,
-            "structureSrc": _canonical_structure_src(
-                build_molecule_structure_src(smiles, width=240, height=160)
-            ),
+            "structureSrc": _structure_src(smiles, width=240, height=160),
             "depth": depth,
             "routes": [route_rank],
             "details": {
@@ -3436,9 +3461,7 @@ def _layout_svg_tree(
             leaf_index += 1
 
         structure_src = (
-            _canonical_structure_src(
-                build_molecule_structure_src(_node_smiles(item), width=180, height=110)
-            )
+            _structure_src(_node_smiles(item), width=180, height=110)
             if _is_molecule_node(item) and _node_smiles(item)
             else None
         )

@@ -25,7 +25,7 @@ def test_security_scanners_pin_every_action_to_a_commit(name):
     assert all("pull_request_target" not in line for line in lines)
 
 
-def test_codeql_ignores_only_the_two_exact_upstream_captures():
+def test_codeql_ignores_only_the_one_exact_upstream_capture():
     yaml = pytest.importorskip("yaml")
     config = yaml.safe_load(
         (ROOT / ".github" / "codeql-config.yml").read_text(encoding="utf-8")

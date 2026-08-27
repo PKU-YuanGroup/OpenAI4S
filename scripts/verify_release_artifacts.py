@@ -23,6 +23,7 @@ _WHEEL_REQUIRED = frozenset(
         "openai4s/compute/templates/run.sh.tmpl",
         "openai4s/compute/templates/wrapper.sh.tmpl",
         "openai4s/server/webui/index.html",
+        "openai4s/server/webui/theme-bootstrap.js",
         "openai4s/server/webui/app.js",
         "openai4s/server/webui/style.css",
         "openai4s/server/webui/vendor/3Dmol-min.js",

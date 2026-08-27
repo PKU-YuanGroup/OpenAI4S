@@ -6,6 +6,13 @@ on:
     - cron: "17 4 * * 6"
   workflow_dispatch:
 
+# A review cycle pushes to a PR branch many times; without this each push
+# starts another full 60-second fuzz run against a commit already obsolete.
+# ci.yml cancels superseded runs the same way.
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

@@ -4981,23 +4981,19 @@ def test_ws_read_frame_unmasks_and_roundtrips():
 
 
 # --- raw-bytes artifact routes ----------------------------------------------
-def _bytes_handler(cfg, runner, hub=None, *, capture_security=False):
-    """Handler with _send captured — bytes routes bypass _json entirely."""
+def _bytes_handler(cfg, runner, hub=None):
+    """Handler with _send captured — bytes routes bypass _json entirely.
+
+    Every send is recorded as ``(code, body, ctype, security)``: the selected
+    header profile is part of what a bytes route answers, so recording it is
+    not a mode the caller has to ask for.
+    """
     handler_cls = gateway_mod.make_handler(cfg, hub or _Hub(), runner)
     handler = object.__new__(handler_cls)
     sends = []
-    if capture_security:
-        handler._send = (
-            lambda code, body, ctype, extra=None, security=None: sends.append(
-                (code, body, ctype, security)
-            )
-        )
-    else:
-        handler._send = (
-            lambda code, body, ctype, extra=None, security=None: sends.append(
-                (code, body, ctype)
-            )
-        )
+    handler._send = lambda code, body, ctype, extra=None, security=None: sends.append(
+        (code, body, ctype, security)
+    )
     handler._query = lambda: {}
     handler._body = lambda: {}
     return handler, sends
@@ -5020,7 +5016,7 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
 
     # version_id → that version's own snapshot bytes + its stored content_type
     handler._api("GET", f"/artifacts/{rec1['version_id']}")
-    code, body, ctype = sends[-1]
+    code, body, ctype, _security = sends[-1]
     assert (code, body) == (200, b"v1")
     assert ctype == store.version_meta(rec1["version_id"])["content_type"]
 
@@ -5094,7 +5090,7 @@ def test_serve_artifact_three_way_resolution_and_bytes_contract(tmp_path):
 
     # the wart: unknown ident answers this bytes route with a JSON envelope
     handler._api("GET", "/artifacts/no-such-ident")
-    code, body, ctype = sends[-1]
+    code, body, ctype, _security = sends[-1]
     assert code == 404
     envelope = json.loads(body)
     assert envelope["error"] == "artifact not found"
@@ -5139,7 +5135,7 @@ def test_stage1_exact_get_rechecks_committed_snapshot_bytes(tmp_path):
         manifest=verified.value,
         expected_manifest_sha256=verified.sha256,
     )
-    handler, sends = _bytes_handler(cfg, runner, capture_security=True)
+    handler, sends = _bytes_handler(cfg, runner)
     exact_path = artifact_version_url(record["version_id"]).removeprefix("/api/v1")
 
     try:
@@ -5165,7 +5161,7 @@ def test_preview_route_forces_html_content_type(tmp_path):
     """GET /preview/{ident} serves the same resolved bytes but ALWAYS stamps
     text/html, whatever the stored content_type says."""
     cfg, runner, store, fid, st = _runner_frame(tmp_path)
-    handler, sends = _bytes_handler(cfg, runner, capture_security=True)
+    handler, sends = _bytes_handler(cfg, runner)
     handler.headers = _auth_headers(cfg)  # _route consults Origin/Cookie headers
 
     f = st.workspace / "report.md"
@@ -5214,6 +5210,96 @@ def test_send_serializes_only_the_artifact_security_profile(tmp_path):
     assert [value for key, value in emitted if key == "X-Frame-Options"] == [
         "SAMEORIGIN"
     ]
+
+
+def test_an_empty_security_profile_is_not_read_as_no_profile(tmp_path):
+    """`security={}` means "the caller computed a profile and it was empty".
+
+    Selecting the header profile by truthiness answers that with the permissive
+    UI-shell policy — `X-Frame-Options: DENY`, `script-src 'self'` — which is
+    the one direction this must never fail in, and it does so with no error
+    anywhere. `response_capture.observing_send` already tests `is None`; the
+    two layers have to agree about what "no profile selected" means.
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    emitted: list[tuple[str, str]] = []
+    handler.send_response = lambda code: None
+    handler.send_header = lambda key, value: emitted.append((key, value))
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+
+    try:
+        handler._send(200, b"{}", "application/json", security={})
+    finally:
+        runner.close()
+
+    assert [key for key, _ in emitted if key == "Content-Security-Policy"] == []
+    assert [key for key, _ in emitted if key == "X-Frame-Options"] == []
+
+
+def test_streamed_artifact_bytes_carry_the_same_profile_as_served_ones(tmp_path):
+    """`_stream_file` is the other artifact-bytes writer.
+
+    It builds its headers by hand instead of going through `_send`, so it has
+    its own copy of the "what headers do agent-authored bytes get" decision.
+    Two writers of one fact, allowed to disagree, is how the bundle download
+    kept the UI shell's policy while `/artifacts/<id>` moved off it.
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    emitted: list[tuple[str, str]] = []
+    handler.send_response = lambda code: None
+    handler.send_header = lambda key, value: emitted.append((key, value))
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+    payload = tmp_path / "bundle.zip"
+    payload.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    profile = gateway_mod.artifact_security_headers(
+        gateway_mod.WEBUI_DIR / "index.html"
+    )
+
+    try:
+        handler._stream_file(payload, "application/zip", security=profile)
+    finally:
+        runner.close()
+
+    assert [value for key, value in emitted if key == "Content-Security-Policy"] == [
+        profile["Content-Security-Policy"]
+    ]
+    assert [value for key, value in emitted if key == "X-Frame-Options"] == [
+        "SAMEORIGIN"
+    ]
+
+
+def test_the_artifact_bundle_route_selects_the_hardened_profile(tmp_path):
+    """The zip is agent-authored bytes too, and it is the only `_stream_file`
+    artifact caller — so the route, not just the writer, has to opt in."""
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    streamed: list[dict] = []
+    handler._stream_file = (
+        lambda path, ctype, extra=None, security=None: streamed.append(
+            {"ctype": ctype, "security": security}
+        )
+    )
+    source = tmp_path / "report.txt"
+    source.write_text("hi", encoding="utf-8")
+
+    try:
+        handler._serve_artifact_bundle(
+            [{"path": str(source), "filename": "report.txt"}], "frame.zip"
+        )
+    finally:
+        runner.close()
+
+    assert len(streamed) == 1
+    policy = streamed[0]["security"]["Content-Security-Policy"]
+    assert "script-src 'none'" in policy
+    assert streamed[0]["security"]["X-Frame-Options"] == "SAMEORIGIN"
 
 
 def test_upload_without_frame_id_stores_file_but_never_broadcasts(tmp_path):

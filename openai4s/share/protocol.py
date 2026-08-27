@@ -97,6 +97,12 @@ def decode_control(payload: bytes) -> dict[str, Any]:
         obj = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
         raise ProtocolError("control frame is not valid JSON") from error
+    except RecursionError as error:
+        # `[` repeated a few thousand times is well under MAX_CONTROL_JSON and
+        # is not a ValueError, so it escaped as a RecursionError -- which both
+        # tunnel and relay readers let through, killing the reader instead of
+        # taking the documented drop-this-frame path.
+        raise ProtocolError("control frame nests too deeply") from error
     if not isinstance(obj, dict):
         raise ProtocolError("control frame must be a JSON object")
     kind = obj.get("type")

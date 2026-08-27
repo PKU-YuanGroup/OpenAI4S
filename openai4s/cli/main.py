@@ -919,9 +919,12 @@ def cmd_init(args) -> int:
     payload = result.as_dict()
     if args.json:
         # OnboardingResult.as_dict() is an explicit secret-free projection:
-        # has_api_key is a boolean and the credential value never reaches it.
-        # codeql[py/clear-text-logging-sensitive-data]
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        # has_api_key is a boolean and the credential value never reaches it,
+        # which tests/test_onboarding.py asserts against a live secret. The
+        # suppression has to ride the alert's own line -- a CodeQL suppression
+        # scope is that one line, so a comment above it suppresses nothing.
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+        print(rendered)  # codeql[py/clear-text-logging-sensitive-data]
     else:
         print(f"Configured {result.provider} / {result.model}")
         print(f"Settings stored in {result.data_dir}")

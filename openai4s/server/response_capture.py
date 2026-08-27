@@ -684,7 +684,7 @@ def _probe_handler(
     #
     # Mirrors the real method exactly, including its own 404: a file it
     # cannot open is a JSON error there too, not a stream.
-    def _stub_stream(file_path, ctype, extra=None):
+    def _stub_stream(file_path, ctype, extra=None, security=None):
         try:
             size = file_path.stat().st_size
         except OSError:

@@ -82,13 +82,12 @@ def _svg_source_text(source):
     return base64.b64decode(source.removeprefix(prefix)).decode("utf-8")
 
 
-def _assert_structure_uris_are_canonical(html, *, check_runtime=True):
+def _assert_structure_uris_are_canonical(html):
     """Every depiction is one canonical, self-contained SVG data URI.
 
     The producer already substitutes a placeholder if RDKit is unavailable, so
     a second DOM-loaded fallback only duplicates bytes and creates a URL sink.
     """
-    del check_runtime  # retained for committed-example call-site compatibility
     assert "data-fallback-src" not in html
     assert "dataset.fallbackSrc" not in html
     sources = re.findall(r'(?:src|href)="(data:image/svg\+xml;base64,[^"]+)"', html)
@@ -300,7 +299,7 @@ def test_aspirin_example_dashboard_is_documented():
         "structure renderer fallback" not in _svg_source_text(source)
         for source in molecule_sources
     )
-    _assert_structure_uris_are_canonical(html, check_runtime=False)
+    _assert_structure_uris_are_canonical(html)
 
 
 def test_normalize_and_rank_routes():
@@ -1031,6 +1030,29 @@ def test_structure_source_allowlist_is_exact_and_canonical():
         "data:image/svg+xml;base64,not padding",
     ):
         assert guard(invalid) == ""
+
+
+def test_an_oversized_depiction_degrades_to_the_labelled_placeholder():
+    """`_canonical_structure_src`'s 1 MiB cap is production-reachable.
+
+    A ~2 kB peptide SMILES renders to a >1 MiB RDKit data URI, which the guard
+    rejects. Without a fallback the briefs panel emitted `<img src="">`, which
+    resolves to the document's own URL and re-requests the whole dashboard as
+    an image; the SVG tree and the graph payload dropped the depiction with no
+    explanation at all.
+    """
+    pytest.importorskip("rdkit")
+    funcs = _import_skill()
+    module = funcs["render_route_tree_html"].__globals__
+    oversized = "N" + "C(=O)C(N)Cc1ccccc1" * 120 + "O"
+
+    raw = module["build_molecule_structure_src"](oversized)
+    assert len(raw) > (1 << 20), "the cap is no longer reachable; revisit this test"
+    assert module["_canonical_structure_src"](raw) == ""
+
+    src = module["_structure_src"](oversized)
+    assert src.startswith("data:image/svg+xml;base64,")
+    assert "structure renderer fallback" in _svg_source_text(src)
 
 
 def test_molecule_briefs_warn_when_truncated():

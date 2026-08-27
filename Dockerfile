@@ -34,11 +34,14 @@
 FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS builder
 
 WORKDIR /src
-COPY . /src
+# The build backend first, in its own layer: it changes only when the pin in
+# `pyproject.toml` does, so every source edit reuses it instead of re-fetching
+# the wheel from PyPI on each build.
 COPY deploy/container-requirements-build.txt /tmp/container-requirements-build.txt
 RUN python -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
-        -r /tmp/container-requirements-build.txt \
-    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation \
+        -r /tmp/container-requirements-build.txt
+COPY . /src
+RUN python -m pip wheel --no-cache-dir --no-deps --no-build-isolation \
         --wheel-dir /wheels /src
 
 # --- runtime stage -----------------------------------------------------------

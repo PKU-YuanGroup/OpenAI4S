@@ -16,6 +16,14 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    groups:
+      # Grouped for the same reason the pre-commit hooks are: the only thing
+      # tracked here is the browser-gate tooling, and one PR per package is
+      # one full CI matrix per package. Majors stay outside the group — a
+      # Playwright major moves the engine builds the browser gates run on.
+      browser-tooling:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 3
 
   - package-ecosystem: "docker"
@@ -23,6 +31,12 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    groups:
+      # The base image is digest-pinned and upstream rebuilds it for security
+      # patches roughly weekly, so this would otherwise open a PR per rebuild.
+      base-image:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 3
 
   - package-ecosystem: "pre-commit"

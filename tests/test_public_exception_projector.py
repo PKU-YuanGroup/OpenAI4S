@@ -155,7 +155,9 @@ def _handler(runner):
     handler._request_body_ready = False
     handler._request_body_payload = b""
     sent: list[tuple] = []
-    handler._send = lambda code, body, ctype, extra=None: sent.append((code, body))
+    handler._send = lambda code, body, ctype, extra=None, security=None: sent.append(
+        (code, body)
+    )
     handler._close_on_unread_request_body = lambda: None
     return handler, sent
 

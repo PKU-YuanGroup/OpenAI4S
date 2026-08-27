@@ -68,8 +68,10 @@ class _Client:
         handler = object.__new__(self._handler)
         handler._correlation_id = "req-paging"
         sent: dict = {}
-        handler._send = lambda code, body, ctype, extra=None: sent.update(
-            code=code, body=body, ctype=ctype
+        handler._send = (
+            lambda code, body, ctype, extra=None, security=None: sent.update(
+                code=code, body=body, ctype=ctype
+            )
         )
         handler.command = "GET"
         handler.path = f"/api/v1{path}"
