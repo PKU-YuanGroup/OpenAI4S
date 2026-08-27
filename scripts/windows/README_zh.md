@@ -34,6 +34,18 @@ WSL2 报告自己是 `linux`，属于受支持平台，所以这个包跑的就�
 | `openai4s.ps1` | Windows 这一半：找到一个 WSL **2** 发行版（拒绝 WSL 1——它没有 user namespace，也就没有沙箱），用 `wslpath` 翻译包路径，安装 payload，启动 daemon，轮询转发出来的端口，然后打开浏览器。每一处拒绝都同时说明原因和那条能解决它的确切命令。以 CRLF 发布。 |
 | `bootstrap.sh` | Linux 这一半，在发行版内部运行。它在解包前先校验 payload 的 checksum（归档要跨 9p/DrvFs 边界，那里的短读会给出一个被截断的文件而不是一个错误），幂等安装，并把 daemon 完全脱离终端地拉起。以 LF 发布——这里出现回车符会让它在 WSL 里以 `bad interpreter` 失败，而 `../verify_windows_zip.py` 会直接拒绝这样的包。 |
 
+bootstrap 还会用与真实 Cell 相同的 lifecycle、IPC、UTS 和 network namespace
+参数验证 bubblewrap 0.8.0+，写入所选镜像配置和 `~/.local/bin/openai4s`
+链接，并以 `OPENAI4S_KERNEL_SANDBOX=enforce`、禁止自动开浏览器的方式启动
+daemon。把任一镜像变量设为 `off` 会明确恢复相应官方源。只有带启动器管理
+标记的文件会被修改；删除标记即把文件交给用户管理，之后启动器会完整保留。
+当 WSL 明确关闭 localhost 转发时，`OPENAI4S_HOST=0.0.0.0` 仍作为 daemon
+的通配监听地址，Windows 端则使用当前 WSL IPv4 访问。随包 HTTP 服务只支持
+IPv4，因此启动器会在启动前直接拒绝 IPv6 host 并给出修正提示。
+Clash 一类代理在 WSL 中使用 Fake-IP DNS 时，启动器会自动识别；RFC 2544
+合成地址只对内置或经用户批准的公开域名放行，IP 字面量及其他私网地址仍受
+SSRF 防护拒绝。
+
 ## 在架构中的位置
 
 这些都不属于 daemon，运行中的应用永远不会 import 或调用它们。它们只存在于「用户双击下载

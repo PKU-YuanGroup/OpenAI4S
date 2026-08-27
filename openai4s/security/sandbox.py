@@ -550,6 +550,7 @@ def wrap_bwrap_command(
     deny_read: Sequence[tuple[str, str]] = (),
     read_isolation: KernelReadIsolation | None = None,
     info_fd: int | None = None,
+    new_session: bool = True,
 ) -> list[str]:
     """Wrap ``command`` in a read-only-root bubblewrap mount namespace."""
 
@@ -561,7 +562,6 @@ def wrap_bwrap_command(
     wrapped = [
         str(executable),
         "--die-with-parent",
-        "--new-session",
         # Single-user mode keeps the host PID namespace: KernelSandbox's pidfd
         # path can then deliver SIGINT to bubblewrap's direct worker child.
         # Team read isolation instead gets a private PID namespace below; that
@@ -569,6 +569,8 @@ def wrap_bwrap_command(
         "--unshare-ipc",
         "--unshare-uts",
     ]
+    if new_session:
+        wrapped.insert(2, "--new-session")
     if info_fd is not None:
         if int(info_fd) < 0:
             raise SandboxConfigurationError("bubblewrap info fd must be non-negative")
@@ -1017,6 +1019,14 @@ class KernelSandbox:
                 deny_read=self._deny_read,
                 read_isolation=self._read_isolation,
                 info_fd=info_fd,
+                # PipeTransport starts the bwrap launcher in a new session.
+                # Asking bwrap to create another session for its command splits
+                # the wrapper and Cell subprocesses into different process
+                # groups, so a watchdog kill reaches only the wrapper and
+                # leaves the actual work alive. Inheriting the Popen-created
+                # session preserves terminal isolation and gives the transport
+                # one group that contains the complete worker tree.
+                new_session=False,
             )
         raise SandboxUnavailableError(
             f"unknown enabled sandbox backend: {self.status.backend!r}"

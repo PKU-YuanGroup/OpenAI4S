@@ -45,6 +45,8 @@ _HARDLINK_UNSUPPORTED = frozenset(
         getattr(errno, "EOPNOTSUPP", errno.EPERM),
     }
 )
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 def network_allowed() -> bool:
@@ -65,6 +67,35 @@ def _require_network() -> None:
             "networking is disabled (enable it in Customize → Network / set "
             "OPENAI4S_ALLOW_NETWORK=1)"
         )
+
+
+def _fake_ip_address_allowed(
+    host: str, addr: ipaddress.IPv4Address | ipaddress.IPv6Address
+) -> bool:
+    """Accept a proxy-synthetic address only across a narrow trust boundary.
+
+    Clash-style Fake-IP DNS maps public names into RFC 2544's
+    ``198.18.0.0/15`` benchmarking range and a TUN adapter translates the
+    subsequent connection back to the original hostname.  Treating that range
+    as generally public would create an SSRF hole, so compatibility requires
+    all three conditions below: an explicit process opt-in, a hostname rather
+    than an IP literal, and a built-in or user-approved egress domain.
+    """
+
+    enabled = (
+        os.environ.get("OPENAI4S_ALLOW_FAKE_IP_DNS", "").strip().lower() in _TRUE_VALUES
+    )
+    if not enabled or addr.version != 4 or addr not in _FAKE_IP_NETWORK:
+        return False
+    try:
+        ipaddress.ip_address(host.rstrip("."))
+    except ValueError:
+        pass
+    else:
+        return False
+    from openai4s import egress
+
+    return egress.domain_in_allowlist(host)
 
 
 def _host_is_private(host: str) -> bool:
@@ -90,6 +121,8 @@ def _host_is_private(host: str) -> bool:
             or addr.is_multicast
             or addr.is_unspecified
         ):
+            if _fake_ip_address_allowed(host, addr):
+                continue
             return True
     return False
 
@@ -113,7 +146,8 @@ def _guard_url(url: str) -> None:
     if _host_is_private(host):
         raise SSRFBlocked(
             f"refusing to fetch a private/loopback/metadata address: {host!r} "
-            "(set OPENAI4S_ALLOW_PRIVATE_FETCH=1 to allow)"
+            "(the Windows launcher auto-detects trusted Fake-IP DNS; set "
+            "OPENAI4S_ALLOW_PRIVATE_FETCH=1 only for a trusted local target)"
         )
 
 

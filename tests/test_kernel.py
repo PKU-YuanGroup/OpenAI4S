@@ -1182,10 +1182,10 @@ def test_the_worker_runs_in_its_own_session():
     """A signal aimed at the daemon's process group must not also be aimed at
     every cell running under it.
 
-    Linux + bubblewrap has had this since the wrapped argv started carrying
-    `--new-session`; without bwrap the worker sat in the parent's group, so the
-    two configurations had different signal semantics and the one nobody
-    develops on was the isolated one."""
+    ``PipeTransport`` owns this session for both the direct worker and the
+    bubblewrap wrapper path. The latter must not create a second, nested
+    session or its Cell children become unreachable to the watchdog's group
+    stop."""
 
     with Kernel(dispatcher=_echo_dispatcher) as k:
         worker_pid = k._proc.pid

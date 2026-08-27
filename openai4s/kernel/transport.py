@@ -153,11 +153,11 @@ class PipeTransport:
         if os.name == "posix":
             # The kernel worker gets its own session, so a signal aimed at the
             # daemon's process group is not also aimed at every cell running
-            # under it. Linux + bubblewrap has had exactly this since the
-            # wrapped argv started carrying `--new-session`; without bwrap the
-            # worker sat in the daemon's group, so the two configurations had
-            # different signal semantics -- and the one nobody develops on was
-            # the isolated one. None of this product's own paths are
+            # under it. The Popen boundary owns this one session for both the
+            # bubblewrap launcher and its command. Letting bwrap create a
+            # second session would split the wrapper from the Cell's process
+            # group, making the watchdog unable to stop the whole tree. None
+            # of this product's own paths are
             # group-scoped: every interrupt, kill, restart and abandon here
             # targets exactly one pid.
             #

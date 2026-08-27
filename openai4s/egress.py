@@ -58,6 +58,7 @@ EGRESS_GROUPS: list[dict] = [
         "domains": [
             "arxiv.org",  # arXiv (+ export.arxiv.org)
             "biorxiv.org",  # bioRxiv / medRxiv (+ api.biorxiv.org)
+            "doi.org",  # DOI resolver used by literature-review HEAD probes
             "pubmed.ncbi.nlm.nih.gov",
             "europepmc.org",
             "semanticscholar.org",  # (+ api.semanticscholar.org)
@@ -112,9 +113,11 @@ EGRESS_GROUPS: list[dict] = [
             # than feedcoopapi.com so the Agent Plan credential cannot be sent
             # to sibling services through an allowlist match.
             "open.feedcoopapi.com",
+            "bing.com",
             "duckduckgo.com",
             "html.duckduckgo.com",
             "lite.duckduckgo.com",
+            "mojeek.com",
         ],
     },
 ]
@@ -205,6 +208,27 @@ def granted_domains() -> frozenset[str]:
         return frozenset(_RUNTIME_GRANTS)
 
 
+def domain_in_allowlist(host_or_url: str) -> bool:
+    """Whether a host is in the built-in or explicitly granted catalog.
+
+    Unlike :func:`domain_allowed`, this answer does not depend on whether
+    allowlist enforcement is currently enabled.  The distinction matters for
+    WSL Fake-IP DNS compatibility: accepting a synthetic 198.18.0.0/15 answer
+    is safe only for a domain the host already knows or the user explicitly
+    granted, even when the general egress policy is otherwise ``off``.
+    """
+
+    host = domain_of(host_or_url)
+    if not host:
+        return False
+    exact = exact_builtin_domains()
+    if host in exact:
+        return True
+    runtime = granted_domains()
+    allowed = (builtin_domains() - exact) | (runtime - exact)
+    return any(_host_matches(host, item) for item in allowed)
+
+
 def grant_domain(domain: str) -> str:
     """Widen the allowlist with `domain` (called AFTER the permission broker
     approves a request_network_access). Returns the normalized domain stored."""
@@ -234,18 +258,7 @@ def domain_allowed(host_or_url: str) -> bool:
     request fail on its own rather than mis-block)."""
     if egress_mode() != "allowlist":
         return True
-    host = domain_of(host_or_url)
-    if not host:
-        return True
-    exact = exact_builtin_domains()
-    if host in exact:
-        return True
-    # Re-approving an exact managed origin at runtime must not silently turn
-    # that same string back into a suffix grant for attacker-controlled child
-    # labels. Other user grants retain the documented base-domain semantics.
-    runtime = granted_domains()
-    allowed = (builtin_domains() - exact) | (runtime - exact)
-    return any(_host_matches(host, a) for a in allowed)
+    return domain_in_allowlist(host_or_url)
 
 
 def blocked_message(domain: str) -> str:

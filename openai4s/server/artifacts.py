@@ -36,6 +36,13 @@ _EMBEDDED_IMAGE_TYPES = frozenset(
 )
 _MAX_EMBEDDED_FIGURE_BYTES = 8 * 1024 * 1024
 _MAX_ARTIFACT_RECEIPTS = 512
+# WSL's ext4/VHD metadata can report the same ctime tick immediately after a
+# same-length rewrite whose mtime was restored. Hash bounded files so that
+# common text/tabular outputs cannot disappear from provenance merely because
+# the metadata cache has not advanced yet. Large scientific inputs retain the
+# constant-I/O metadata path; capture must not reread multi-gigabyte datasets
+# before and after every Cell.
+_MAX_WORKSPACE_FINGERPRINT_BYTES = 8 * 1024 * 1024
 EventSink = Callable[[dict[str, Any]], None]
 Broadcast = Callable[[str, dict[str, Any]], None]
 
@@ -112,7 +119,7 @@ class ArtifactSession(Protocol):
     workspace: Path
 
 
-WorkspaceFileState = tuple[int, int, int, int, int]
+WorkspaceFileState = tuple[int, int, int, int, int, str | None]
 WorkspaceSnapshot = dict[str, WorkspaceFileState]
 
 
@@ -3023,9 +3030,10 @@ class ArtifactManager:
 
         An mtime alone is caller-controlled: ``os.utime`` and ``copy2`` can
         restore it after replacing bytes. Device/inode/size plus kernel-owned
-        ctime detects both replacement and same-length in-place writes while
-        keeping the Cell boundary proportional to directory entries rather
-        than hashing every potentially multi-gigabyte scientific input.
+        ctime detects replacement and ordinary in-place writes. WSL can defer
+        that ctime update within one filesystem tick, so bounded files also
+        carry a content digest. Multi-gigabyte scientific inputs retain the
+        constant-I/O metadata path rather than being hashed for every Cell.
         """
         try:
             repo_roots = {git_dir.parent for git_dir in workspace.rglob(".git")}
@@ -3047,18 +3055,40 @@ class ArtifactManager:
         """Identity of the exact regular live file a child already captured."""
 
         try:
-            status = path.stat(follow_symlinks=False)
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            status = os.fstat(descriptor)
         except OSError:
             return None
-        if not stat.S_ISREG(status.st_mode):
+        try:
+            if not stat.S_ISREG(status.st_mode):
+                return None
+            digest = None
+            if int(status.st_size) <= _MAX_WORKSPACE_FINGERPRINT_BYTES:
+                hasher = hashlib.sha256()
+                # Duplicate the descriptor so the buffered wrapper owns only
+                # its copy. The original remains available for the final close
+                # on every success and exception path.
+                with os.fdopen(os.dup(descriptor), "rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                digest = hasher.hexdigest()
+            return (
+                int(status.st_dev),
+                int(status.st_ino),
+                int(status.st_size),
+                int(status.st_mtime_ns),
+                int(status.st_ctime_ns),
+                digest,
+            )
+        except OSError:
             return None
-        return (
-            int(status.st_dev),
-            int(status.st_ino),
-            int(status.st_size),
-            int(status.st_mtime_ns),
-            int(status.st_ctime_ns),
-        )
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _claim_key(path: Path | str) -> str:

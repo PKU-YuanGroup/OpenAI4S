@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import ipaddress
+import socket
 import sys
 from pathlib import Path
 
@@ -47,6 +49,26 @@ class _Response(io.BytesIO):
 @pytest.fixture(autouse=True)
 def _network_on(monkeypatch):
     monkeypatch.setenv("OPENAI4S_ALLOW_NETWORK", "1")
+    monkeypatch.setenv("OPENAI4S_ALLOW_FAKE_IP_DNS", "0")
+
+    def _offline_dns(host, port, *_args, **_kwargs):
+        if host == "localhost":
+            address = "127.0.0.1"
+        else:
+            try:
+                address = str(ipaddress.ip_address(host))
+            except ValueError:
+                address = "93.184.216.34"
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        return [
+            (family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, port or 0))
+        ]
+
+    # Every HTTP upstream in this module is already intercepted below. DNS has
+    # to be deterministic too: Clash-style host DNS may synthesize 198.18/15
+    # answers before the fake opener is reached, turning an offline contract
+    # into a machine-dependent SSRF failure.
+    monkeypatch.setattr(socket, "getaddrinfo", _offline_dns)
 
 
 def _stub_urlopen(monkeypatch, response_factory, recorder=None):
@@ -184,6 +206,50 @@ def test_a_caller_supplied_user_agent_actually_reaches_the_request(monkeypatch):
 # --------------------------------------------------------------------------
 # the guards still apply to the new paths
 # --------------------------------------------------------------------------
+
+
+def _fake_ip_dns(host, port, *_args, **_kwargs):
+    try:
+        address = str(ipaddress.ip_address(host))
+    except ValueError:
+        address = "198.18.0.42"
+    return [
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            "",
+            (address, port or 0),
+        )
+    ]
+
+
+def test_fake_ip_dns_needs_the_narrow_opt_in(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_ip_dns)
+    monkeypatch.setenv("OPENAI4S_ALLOW_FAKE_IP_DNS", "0")
+
+    with pytest.raises(webtools.SSRFBlocked):
+        webtools.guard_url("https://api.openalex.org/works")
+
+
+def test_fake_ip_dns_allows_only_catalogued_hostnames(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_ip_dns)
+    monkeypatch.setenv("OPENAI4S_ALLOW_FAKE_IP_DNS", "1")
+    _stub_urlopen(monkeypatch, lambda _r: _Response(b"{}"))
+
+    body, _url, _ctype = webtools._http_get("https://api.openalex.org/works")
+    assert body == b"{}"
+    assert webtools.guard_url("https://open.feedcoopapi.com/search_api") is None
+
+    for target in (
+        "https://example.test/not-approved",
+        "https://child.open.feedcoopapi.com/credential-trap",
+        "http://198.18.0.42/literal",
+        "http://10.0.0.7/private",
+        "http://169.254.169.254/latest/meta-data",
+    ):
+        with pytest.raises(webtools.SSRFBlocked):
+            webtools.guard_url(target)
 
 
 @pytest.mark.parametrize("method", ["GET", "HEAD"])

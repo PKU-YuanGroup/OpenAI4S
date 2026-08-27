@@ -6,6 +6,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -1230,11 +1233,27 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     assert "Test-DistroHasInstall" in launcher
     assert "if ($PypiIndex -eq 'off') { $PypiIndex = '' }" in launcher
     assert "if ($CondaMirror -eq 'off') { $CondaMirror = '' }" in launcher
+    assert "$PypiIndexOff = $PypiIndex -eq 'off'" in launcher
+    assert "$CondaMirrorOff = $CondaMirror -eq 'off'" in launcher
+    assert "'OPENAI4S_PYPI_INDEX_URL=off'" in launcher
+    assert "'OPENAI4S_CONDA_MIRROR=off'" in launcher
+    assert "$name = @($fields[0..($fields.Count - 3)]) -join ' '" in launcher
+    assert "Get-WslLogCommand" in launcher
+    assert 'wsl --set-version `"$($named.Name)`" 2' in launcher
+    assert "$BindHost" in launcher
+    assert "$ClientHost" in launcher
+    assert "Get-AppBaseUrl" in launcher
+    assert "BeginConnect($ClientHost" in launcher
+    assert "$BindHost -eq '0.0.0.0'" in launcher
+    assert "if ($BindHost -ne '0.0.0.0')" in launcher
+    assert "must be an IPv4 address or IPv4-capable hostname" in launcher
     assert "'dev', 'eth0', 'scope', 'global'" in launcher
     assert "'route', 'get', '192.0.2.1'" in launcher
     assert '$proxyBypass = "127.0.0.1,localhost,$AppHost"' in launcher
     assert '"NO_PROXY=$proxyBypass"' in launcher
     assert '"no_proxy=$proxyBypass"' in launcher
+    assert "$FakeIpDnsMode" in launcher
+    assert '"OPENAI4S_FAKE_IP_DNS_MODE=$FakeIpDnsMode"' in launcher
     assert "if (-not (Test-SandboxIndependentCli $Arguments))" in launcher
     for command in ("status", "url", "stop", "doctor", "verify-package"):
         assert f"'{command}'" in launcher
@@ -1251,12 +1270,18 @@ def test_the_windows_launcher_opens_the_authenticated_url_and_requires_sandbox()
     assert "--uid 0" not in bootstrap
     assert "--gid 0" not in bootstrap
     assert "OPENAI4S_KERNEL_SANDBOX" in bootstrap
+    assert "configure_fake_ip_dns" in bootstrap
+    assert "OPENAI4S_ALLOW_FAKE_IP_DNS" in bootstrap
+    assert "198.18.*|198.19.*" in bootstrap
     assert "--no-browser" in bootstrap
     assert "--detached" in bootstrap
-    # User-edited mirror files survive relaunch: only marker-carrying files are
-    # rewritten, and a foreign pip.conf that names an index-url is preserved.
+    # User-edited mirror files survive relaunch, and explicit `off` has a real
+    # state transition instead of leaving the old managed mirror in place.
     assert 'MANAGED_MARK="managed-by-openai4s-windows-launcher"' in bootstrap
-    assert "grep -q '^index-url'" in bootstrap
+    assert 'FRESH_INSTALL="${2:-0}"' in bootstrap
+    assert 'if [ "$PYPI_INDEX" = "off" ]' in bootstrap
+    assert 'if [ "$CONDA_MIRROR" = "off" ]' in bootstrap
+    assert 'rm -f -- "$CONDARC_FILE"' in bootstrap
 
 
 def test_the_windows_launcher_does_not_leak_native_stdout_into_its_return_value():
@@ -1338,7 +1363,14 @@ def test_the_windows_launcher_sources_stay_pure_ascii():
 
 
 def test_the_wsl_bootstrap_never_acquires_carriage_returns():
-    """A CRLF shell script fails inside WSL, on the user's machine, not here."""
+    """A Windows checkout must not corrupt shell entry points before build."""
+    attributes = (ROOT / ".gitattributes").read_text("utf-8")
+    shell_rule = "*.sh text eol=lf"
+    pinned_rule = "skills/bioskills/** -text -whitespace"
+    assert shell_rule in attributes
+    assert pinned_rule in attributes
+    assert attributes.index(shell_rule) < attributes.index(pinned_rule)
+
     assert b"\r" not in (ROOT / "scripts" / "windows" / "bootstrap.sh").read_bytes()
     build = (ROOT / "scripts" / "build_windows_zip.sh").read_text("utf-8")
     assert 'to_lf "$SOURCES/bootstrap.sh"' in build
@@ -1371,6 +1403,192 @@ def _write_fake_linux_payload(path: Path, version: str, arch: str) -> str:
             info.mode = 0o755 if relative in executable else 0o644
             archive.addfile(info, io.BytesIO(payload))
     return top
+
+
+def _run_windows_bootstrap_install(
+    tmp_path: Path,
+    tarball: Path,
+    digest: str,
+    bundle_dir: str,
+    **overrides: str,
+) -> subprocess.CompletedProcess[str]:
+    shell = shutil.which("sh")
+    if shell is None:
+        pytest.skip("the Windows bootstrap integration contract needs a POSIX sh")
+    data_dir = tmp_path / "data"
+    env = os.environ.copy()
+    for name in (
+        "OPENAI4S_PYPI_INDEX_URL",
+        "OPENAI4S_CONDA_MIRROR",
+        "OPENAI4S_DATA_DIR",
+        "XDG_BIN_HOME",
+    ):
+        env.pop(name, None)
+    env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "XDG_BIN_HOME": str(tmp_path / "bin"),
+            "OPENAI4S_DATA_DIR": str(data_dir),
+            **overrides,
+        }
+    )
+    return subprocess.run(
+        [
+            shell,
+            str(ROOT / "scripts" / "windows" / "bootstrap.sh"),
+            "install",
+            str(tarball),
+            digest,
+            bundle_dir,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_windows_launcher_off_restores_official_indexes(tmp_path):
+    tarball = tmp_path / "OpenAI4S-9.9.9-linux-x86_64.tar.gz"
+    bundle_dir = _write_fake_linux_payload(tarball, "9.9.9", "x86_64")
+    digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+    mirror = "https://mirror.example.invalid"
+
+    installed = _run_windows_bootstrap_install(
+        tmp_path,
+        tarball,
+        digest,
+        bundle_dir,
+        OPENAI4S_PYPI_INDEX_URL=f"{mirror}/simple",
+        OPENAI4S_CONDA_MIRROR=f"{mirror}/anaconda",
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    data_dir = tmp_path / "data"
+    pip_conf = data_dir / "app" / bundle_dir / "runtime" / "pip.conf"
+    condarc = data_dir / "network" / "condarc"
+    assert mirror in pip_conf.read_text("utf-8")
+    assert mirror in condarc.read_text("utf-8")
+
+    disabled = _run_windows_bootstrap_install(
+        tmp_path,
+        tarball,
+        digest,
+        bundle_dir,
+        OPENAI4S_PYPI_INDEX_URL="off",
+        OPENAI4S_CONDA_MIRROR="off",
+    )
+    assert disabled.returncode == 0, disabled.stderr
+    restored = pip_conf.read_text("utf-8")
+    assert "managed-by-openai4s-windows-launcher" in restored
+    assert "index-url" not in restored
+    assert "user = true" in restored
+    assert "break-system-packages = true" in restored
+    assert not condarc.exists()
+
+
+def test_windows_launcher_never_rewrites_user_owned_network_files(tmp_path):
+    tarball = tmp_path / "OpenAI4S-9.9.9-linux-x86_64.tar.gz"
+    bundle_dir = _write_fake_linux_payload(tarball, "9.9.9", "x86_64")
+    digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+    initial = _run_windows_bootstrap_install(
+        tmp_path,
+        tarball,
+        digest,
+        bundle_dir,
+        OPENAI4S_PYPI_INDEX_URL="https://first.example.invalid/simple",
+        OPENAI4S_CONDA_MIRROR="https://first.example.invalid/anaconda",
+    )
+    assert initial.returncode == 0, initial.stderr
+
+    data_dir = tmp_path / "data"
+    pip_conf = data_dir / "app" / bundle_dir / "runtime" / "pip.conf"
+    condarc = data_dir / "network" / "condarc"
+    user_pip = b"[global]\ntimeout = 19\n"
+    user_conda = b"channels:\n  - private\n"
+    pip_conf.write_bytes(user_pip)
+    condarc.write_bytes(user_conda)
+
+    for overrides in (
+        {
+            "OPENAI4S_PYPI_INDEX_URL": "off",
+            "OPENAI4S_CONDA_MIRROR": "off",
+        },
+        {
+            "OPENAI4S_PYPI_INDEX_URL": "https://second.example.invalid/simple",
+            "OPENAI4S_CONDA_MIRROR": "https://second.example.invalid/anaconda",
+        },
+    ):
+        result = _run_windows_bootstrap_install(
+            tmp_path, tarball, digest, bundle_dir, **overrides
+        )
+        assert result.returncode == 0, result.stderr
+        assert pip_conf.read_bytes() == user_pip
+        assert condarc.read_bytes() == user_conda
+
+
+def test_windows_bootstrap_fake_ip_dns_auto_detection_is_narrow(tmp_path):
+    shell = shutil.which("sh")
+    if shell is None:
+        pytest.skip("the Windows bootstrap integration contract needs a POSIX sh")
+
+    data_dir = tmp_path / "data"
+    bundle_dir = "OpenAI4S-test-linux-x86_64"
+    executable = data_dir / "app" / bundle_dir / "bin" / "openai4s"
+    executable.parent.mkdir(parents=True)
+    executable.write_text(
+        "#!/bin/sh\nprintf 'fake-ip=%s\\n' \"${OPENAI4S_ALLOW_FAKE_IP_DNS:-missing}\"\n",
+        encoding="ascii",
+    )
+    executable.chmod(0o755)
+
+    resolv_conf = tmp_path / "resolv.conf"
+    resolv_conf.write_text("nameserver 198.18.0.2\n", encoding="ascii")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    getent = fake_bin / "getent"
+
+    def run(mode: str, answer: str) -> subprocess.CompletedProcess[str]:
+        getent.write_text(
+            f"#!/bin/sh\nprintf '%s\\n' '{answer} STREAM api.openalex.org'\n",
+            encoding="ascii",
+        )
+        getent.chmod(0o755)
+        env = os.environ.copy()
+        env.update(
+            {
+                "OPENAI4S_DATA_DIR": str(data_dir),
+                "OPENAI4S_FAKE_IP_DNS_MODE": mode,
+                "OPENAI4S_WSL_RESOLV_CONF": str(resolv_conf),
+                "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+            }
+        )
+        return subprocess.run(
+            [
+                shell,
+                str(ROOT / "scripts" / "windows" / "bootstrap.sh"),
+                "cli",
+                bundle_dir,
+                "print-env",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    detected = run("auto", "198.18.0.112")
+    assert detected.returncode == 0, detected.stderr
+    assert detected.stdout.strip() == "fake-ip=1"
+    assert "restricted public-domain compatibility" in detected.stderr
+
+    ordinary_dns = run("auto", "93.184.216.34")
+    assert ordinary_dns.returncode == 0, ordinary_dns.stderr
+    assert ordinary_dns.stdout.strip() == "fake-ip=0"
+
+    disabled = run("off", "198.18.0.112")
+    assert disabled.returncode == 0, disabled.stderr
+    assert disabled.stdout.strip() == "fake-ip=0"
 
 
 def _stage_windows_package(root: Path, version: str = "9.9.9") -> Path:

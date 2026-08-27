@@ -42,6 +42,17 @@ The bootstrap additionally proves bubblewrap 0.8.0+ accepts the same lifecycle,
 IPC, UTS, and network namespace flags used by real Cells, writes the selected mirror configuration and
 `~/.local/bin/openai4s` link, and starts the daemon with
 `OPENAI4S_KERNEL_SANDBOX=enforce` and browser auto-open disabled.
+Setting either mirror selector to `off` explicitly restores the corresponding
+official index. Only files carrying the launcher's management marker are
+changed; removing that marker transfers ownership to the user and preserves the
+complete file on later launches.
+When WSL localhost forwarding is explicitly disabled, a wildcard
+`OPENAI4S_HOST=0.0.0.0` remains the daemon bind while Windows uses the current
+WSL IPv4 as its client address. IPv6 hosts are rejected up front because the
+bundled HTTP server is IPv4-only.
+Clash-style WSL Fake-IP DNS is detected automatically; RFC 2544 synthetic
+answers are accepted only for built-in or explicitly approved public domains,
+while literal and other private addresses remain behind the SSRF guard.
 
 ## Where this fits
 

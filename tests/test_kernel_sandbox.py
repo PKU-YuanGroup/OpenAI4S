@@ -214,6 +214,43 @@ def test_bwrap_mounts_only_workspace_and_private_temp_writable():
     assert wrapped[wrapped.index("--") + 1 :] == command
 
 
+def test_runtime_bwrap_inherits_the_pipe_transport_session(tmp_path):
+    """One process group must contain bwrap, the worker, and Cell children.
+
+    ``PipeTransport`` already uses ``start_new_session=True``. A second
+    ``bwrap --new-session`` moved the worker into another group, so the
+    transport's watchdog group kill stopped only bwrap and leaked Cell work.
+    The standalone wrapper keeps its default flag for self-tests and other
+    callers; the runtime adapter deliberately omits the duplicate boundary.
+    """
+
+    sandbox = KernelSandbox(
+        status=SandboxStatus(
+            state="enabled",
+            mode="enforce",
+            backend="bubblewrap",
+            enforced=True,
+            self_test_passed=True,
+            network_policy="blocked",
+            workspace=str(tmp_path),
+            temp_dir=str(tmp_path / "private"),
+            detail="test",
+        ),
+        executable="/usr/bin/bwrap",
+        temp_dir=str(tmp_path / "private"),
+    )
+
+    wrapped = sandbox.wrap_command(["/bin/true"])
+
+    assert "--new-session" not in wrapped
+    assert "--new-session" in wrap_bwrap_command(
+        ["/bin/true"],
+        executable="/usr/bin/bwrap",
+        workspace=tmp_path,
+        temp_dir=tmp_path / "private",
+    )
+
+
 def test_bwrap_raw_network_compatibility_switch_only_removes_network_namespace():
     wrapped = wrap_bwrap_command(
         ["/bin/true"],

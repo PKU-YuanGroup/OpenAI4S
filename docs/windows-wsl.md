@@ -119,6 +119,9 @@ openai4s url
 openai4s stop
 ```
 
+`status` 和 `url` 会读取当前守护进程记录的实际监听地址，因此显式关闭
+`localhostForwarding` 后改用 WSL IPv4 时也不需要重复设置 `OPENAI4S_HOST`。
+
 也可以从 PowerShell 直接让 WSL 后台启动：
 
 ```powershell
@@ -137,10 +140,11 @@ $env:OPENAI4S_WSL_CONDA_MIRROR = 'https://mirrors.tuna.tsinghua.edu.cn/anaconda'
 ```
 
 不在大陆或想直接使用官方源时，把变量设为 `off`（Windows 无法表达
-「空值」环境变量，`off` 即显式停用镜像）。启动器只重写自己带有
-`managed-by-openai4s-windows-launcher` 标记的配置文件；你手工编辑过的
-`pip.conf` / condarc（去掉该标记行，或自行指定了 `index-url`）会原样
-保留。
+「空值」环境变量，`off` 即显式停用镜像）。这会从启动器管理的
+`pip.conf` 中移除镜像地址，并删除启动器管理的 condarc；pip 的用户目录
+安装设置仍会保留。启动器只重写带有
+`managed-by-openai4s-windows-launcher` 标记的配置文件；如果要自己管理
+`pip.conf` / condarc，请先删除该标记行，之后启动器会逐字保留整个文件。
 
 若要使用 Windows 上的 `127.0.0.1:7897`，需要注意网络方向：Windows 访问
 WSL 服务时，`localhost` 通常会自动转发；但 NAT 模式下，WSL 访问 Windows
@@ -153,6 +157,17 @@ OpenAI4S 启动器会读取当前 WSL IPv4，并让 Windows 浏览器直接连�
 地址在 WSL 重启后变化也没关系，下次启动会重新解析。这个回退只解决
 Windows 访问 OpenAI4S，不会让 WSL 能通过 `127.0.0.1:7897` 反向访问
 Windows 代理；代理方向仍按下面的 mirrored 或网关方案配置。
+显式设置 `OPENAI4S_HOST=0.0.0.0` 时，服务仍监听所有 IPv4 接口，但启动器
+会用可路由的 WSL IPv4 探测并打开页面。当前服务端不支持 IPv6；Windows
+启动器会直接拒绝 IPv6 `OPENAI4S_HOST` 并给出 IPv4 修正提示。
+
+Clash 等 TUN 代理启用 Fake-IP DNS 时，公开域名在 WSL 中可能解析成 RFC
+2544 的 `198.18.0.0/15`，旧版本会把它当成私网地址并被 SSRF 防护拒绝。
+启动器的默认 `auto` 模式会同时确认 WSL DNS 服务器和一个内置公开科学域名
+都落在该区间后，启用受限兼容：只允许内置或经用户明确批准的域名使用这种
+合成地址；IP 字面量、未知域名、回环/元数据地址及其他私网段仍然拒绝。
+可用 `$env:OPENAI4S_WSL_FAKE_IP_DNS='off'` 禁用自动检测，或在已确认代理
+使用 Fake-IP 时设为 `on` 强制启用这条受限路径。
 
 推荐在 Windows 11 22H2+ 的 `%USERPROFILE%\.wslconfig` 中启用镜像网络：
 
@@ -204,6 +219,7 @@ $env:OPENAI4S_WSL_PROXY = 'http://172.24.128.1:7897'
 | 浏览器打不开 | 先运行 `.\OpenAI4S.cmd status`，再运行 `.\OpenAI4S.cmd url`；启动器可自动处理显式的 `localhostForwarding=false`，其他转发故障可删除该配置后运行 `wsl --shutdown`。 |
 | 服务启动后退出 | 查看 `wsl -d Ubuntu-24.04 -- tail -80 ~/.openai4s/logs/app.out`。 |
 | WSL 提示 localhost 代理未镜像 | 按上一节启用 mirrored networking，或使用允许局域网连接的 Windows 网关地址。 |
+| 公开域名被报为 `private/loopback` | 重新通过 Windows 启动器启动；默认 Fake-IP `auto` 模式会安全识别 `198.18.0.0/15`。若曾显式关闭，可清除 `OPENAI4S_WSL_FAKE_IP_DNS` 或设为 `auto`。 |
 
 ## English
 
@@ -233,6 +249,10 @@ starts an enforced-sandbox daemon, obtains the authenticated URL from
 `openai4s url`, and opens that URL in the Windows browser. In NAT mode, an
 explicit `localhostForwarding=false` is detected and handled by using the
 current WSL IPv4; ordinary and mirrored configurations keep using loopback.
+With an explicit `OPENAI4S_HOST=0.0.0.0`, the daemon keeps its wildcard IPv4
+bind while the launcher probes and opens the routable WSL IPv4 address. The
+server is IPv4-only; the Windows launcher rejects an IPv6 `OPENAI4S_HOST` with
+an actionable message instead of letting the daemon fail during bind.
 
 Distribution choice: `OPENAI4S_WSL_DISTRO` wins; otherwise a distribution that
 already holds OpenAI4S data (`~/.openai4s/app`) is kept, so an upgrade never
@@ -241,10 +261,12 @@ prefer Ubuntu 24.04 over the Windows default.
 
 The launcher defaults pip/Conda to the Tsinghua mirrors for later package
 installs. Set `OPENAI4S_WSL_PYPI_INDEX` / `OPENAI4S_WSL_CONDA_MIRROR` to
-another mirror, or to `off` to keep the official indexes. Files the launcher
-writes carry a `managed-by-openai4s-windows-launcher` marker; a `pip.conf` or
-condarc you edited yourself (marker removed, or your own `index-url`) is left
-unchanged on the next launch.
+another mirror, or to `off` to restore the official indexes. `off` removes the
+index from the launcher-managed pip config while retaining its user-install
+settings, and removes the launcher-managed condarc. Files the launcher writes
+carry a `managed-by-openai4s-windows-launcher` marker. Remove that marker before
+taking ownership of either file; later launches then preserve the complete
+file byte for byte.
 
 ### Lifecycle commands
 
@@ -265,6 +287,10 @@ openai4s url
 openai4s stop
 ```
 
+`status` and `url` read the live endpoint recorded by the daemon, so the WSL
+IPv4 fallback for an explicit `localhostForwarding=false` needs no repeated
+`OPENAI4S_HOST` setting.
+
 ### Proxy note
 
 In default NAT mode, a Windows service on `127.0.0.1:7897` is not at WSL's
@@ -282,3 +308,11 @@ Run `wsl --shutdown`, then set
 the proxy to the Windows host address shown by `ip route show default` instead.
 See the official
 [WSL networking documentation](https://learn.microsoft.com/windows/wsl/networking).
+
+Clash-style TUN proxies may return RFC 2544 `198.18.0.0/15` Fake-IP answers in
+WSL. The launcher defaults `OPENAI4S_WSL_FAKE_IP_DNS` to `auto`: it requires
+both the WSL resolver and a known public science endpoint to use that range,
+then enables a restricted bridge. Only built-in or explicitly user-approved
+hostnames may use a synthetic answer; literal IPs and all other private or
+metadata ranges remain blocked. Set the variable to `off` to disable detection
+or `on` to force the restricted mode for a trusted Fake-IP proxy.
