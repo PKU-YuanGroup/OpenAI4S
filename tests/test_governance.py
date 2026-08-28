@@ -95,7 +95,7 @@ def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
 
 
 def test_protocol_fuzzing_is_real_bounded_execution():
-    target = (ROOT / "fuzz" / "protocol_fuzzer.py").read_text("utf-8")
+    target = (ROOT / "scripts" / "protocol_fuzzer.py").read_text("utf-8")
     workflow = (WORKFLOWS / "fuzz.yml").read_text("utf-8")
 
     assert "import atheris" in target
