@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · 面向科学家的开源 AI" width="480"/>
+<img src="assets/readme-gifs-hd/openai4s_penta.gif" alt="OpenAI4S · 面向科学家的开源 AI" width="480"/>
 
 ### 面向科学家的开源 AI
 
@@ -116,16 +116,16 @@ host.save_artifact(plot(frames))             # ……上下文里只留 "<DataFr
 
 <table>
 <tr>
-  <td width="50%"><b>Live API 工作流</b>:从 UniProt / RCSB 到 3D 结构和报告<br/><img src="readme-gifs-hd/demo-01-hd.gif" alt="Live API 工作流:从 UniProt / RCSB 到 3D 结构和报告"></td>
-  <td width="50%"><b>真实数据分析</b>:人胰岛素 INS 从 UniProt / RCSB 到可复现报告<br/><img src="readme-gifs-hd/demo-05-hd.gif" alt="真实数据分析:人胰岛素 INS 从 UniProt / RCSB 到可复现报告"></td>
+  <td width="50%"><b>Live API 工作流</b>:从 UniProt / RCSB 到 3D 结构和报告<br/><img src="assets/readme-gifs-hd/demo-01-hd.gif" alt="Live API 工作流:从 UniProt / RCSB 到 3D 结构和报告"></td>
+  <td width="50%"><b>真实数据分析</b>:人胰岛素 INS 从 UniProt / RCSB 到可复现报告<br/><img src="assets/readme-gifs-hd/demo-05-hd.gif" alt="真实数据分析:人胰岛素 INS 从 UniProt / RCSB 到可复现报告"></td>
 </tr>
 <tr>
-  <td width="50%"><b>可视化 Artifact 编辑</b>:一句话把 confidence 阈值线抬到 75<br/><img src="readme-gifs-hd/demo-02-hd.gif" alt="可视化 Artifact 编辑:一句话把 confidence 阈值线抬到 75"></td>
-  <td width="50%"><b>注释驱动图表编辑</b>:圈选区域并重绘图例配色<br/><img src="readme-gifs-hd/demo-06-hd.gif" alt="注释驱动图表编辑:圈选区域并重绘图例配色"></td>
+  <td width="50%"><b>可视化 Artifact 编辑</b>:一句话把 confidence 阈值线抬到 75<br/><img src="assets/readme-gifs-hd/demo-02-hd.gif" alt="可视化 Artifact 编辑:一句话把 confidence 阈值线抬到 75"></td>
+  <td width="50%"><b>注释驱动图表编辑</b>:圈选区域并重绘图例配色<br/><img src="assets/readme-gifs-hd/demo-06-hd.gif" alt="注释驱动图表编辑:圈选区域并重绘图例配色"></td>
 </tr>
 <tr>
-  <td width="50%"><b>计划模式科研分析</b>:青蒿素与紫杉醇溶解度预测<br/><img src="readme-gifs-hd/demo-03-hd.gif" alt="计划模式科研分析:青蒿素与紫杉醇溶解度预测"></td>
-  <td width="50%"><b>蛋白质工程</b>:从序列到突变候选与结构解释<br/><img src="readme-gifs-hd/demo-04-hd.gif" alt="蛋白质工程:从序列到突变候选与结构解释"></td>
+  <td width="50%"><b>计划模式科研分析</b>:青蒿素与紫杉醇溶解度预测<br/><img src="assets/readme-gifs-hd/demo-03-hd.gif" alt="计划模式科研分析:青蒿素与紫杉醇溶解度预测"></td>
+  <td width="50%"><b>蛋白质工程</b>:从序列到突变候选与结构解释<br/><img src="assets/readme-gifs-hd/demo-04-hd.gif" alt="蛋白质工程:从序列到突变候选与结构解释"></td>
 </tr>
 </table>
 
@@ -270,7 +270,7 @@ npx openai4s-skills uninstall --all
 
 OpenAI4S 是一个让 **Code-as-Action** 范式保持开源的社区项目。
 
-提 PR 前请先阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
+提 PR 前请先阅读 [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md) —— 它定义了分支命名、PR 检查清单([`.github/pull_request_template.md`](.github/pull_request_template.md))、代码所有权([`.github/CODEOWNERS`](.github/CODEOWNERS))、评审与发布政策,以及离线测试政策。
 
 ### 开发环境配置
 

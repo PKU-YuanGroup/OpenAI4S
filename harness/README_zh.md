@@ -81,4 +81,4 @@ uv run python -m harness.cli characterize --write  # 审阅后重新生成
 
 ## 治理
 
-Harness 的改动遵循项目维护的 [Harness invariant](../CONTRIBUTING.md#harness-invariants) 与离线测试策略。新行为应当有确定性的场景契约兜底；有意改动 golden 时，必须显式审阅。
+Harness 的改动遵循项目维护的 [Harness invariant](../.github/CONTRIBUTING.md#harness-invariants) 与离线测试策略。新行为应当有确定性的场景契约兜底；有意改动 golden 时，必须显式审阅。
