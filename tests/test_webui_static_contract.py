@@ -1202,6 +1202,7 @@ def test_execution_interrupts_send_the_exact_cached_identity() -> None:
     owner = _extract_js_function(APP_JS, "identityForOwner")
     scoped = _extract_js_function(APP_JS, "scopedExecutionRequest")
     cancel = _extract_js_function(APP_JS, "cancelTurn")
+    stopping = _extract_js_function(APP_JS, "markTurnStopping")
     notebook = _extract_js_function(APP_JS, "renderNotebook")
 
     assert "execution_id" in queue and "owner.kind" in queue and "owner.id" in queue
@@ -1210,7 +1211,12 @@ def test_execution_interrupts_send_the_exact_cached_identity() -> None:
     assert "execution_id: identity.execution_id" in scoped
     assert "owner: identity.owner" in scoped
     assert "owner_id: identity.owner.id" in scoped
-    assert 'scopedExecutionRequest(S.currentId, "cancel"' in cancel
+    assert "const fid = S.currentId" in cancel
+    assert 'scopedExecutionRequest(fid, "cancel"' in cancel
+    assert "markTurnStopping(fid)" in cancel
+    assert "turnDone(" not in cancel
+    assert 'hint(t("turn.stopping")' in stopping
+    assert "resumeWatch(fid, S._openGen)" in stopping
     assert 'scopedExecutionRequest(S.currentId, "kernel/interrupt"' in notebook
     assert '"user_repl"' in notebook
     assert 'identityForOwner(S.executionQueue, "user_repl")' in notebook
@@ -1640,6 +1646,33 @@ def test_customize_skills_exposes_scoped_version_history_and_safe_rollback() -> 
     assert ".skill-version-card" in STYLE_CSS
 
 
+def test_customize_entry_clicks_cannot_leave_the_panel_stuck_loading() -> None:
+    opener = _extract_js_function(APP_JS, "openCust")
+    loader = _extract_js_function(APP_JS, "custTab")
+    init = _extract_js_function(APP_JS, "init")
+
+    # Direct onclick assignment passes a MouseEvent.  Only explicit string tab
+    # names may reach the dispatcher, and both user-facing entry points wrap
+    # their click instead of forwarding the event object.
+    assert 'typeof tab === "string" ? tab : "general"' in opener
+    assert '$("#customize-btn").onclick = () => openCust();' in init
+    assert '$("#settings-gear").onclick = () => openCust();' in init
+    assert "Object.prototype.hasOwnProperty.call(loaders, tab)" in loader
+
+    # Each request owns a replaceable content node, so a late tab cannot paint
+    # over a newer one.  Unexpected renderer failures must also replace the
+    # loading label with an actionable error and clear the busy state.
+    assert 'old = $("#cust-content"), c = old.cloneNode(false)' in loader
+    assert "old.replaceWith(c)" in loader
+    assert "S._custReq" in loader
+    assert "Promise.race([loaders[selected](c), deadline])" in loader
+    assert "CUST_LOAD_TIMEOUT_MS" in loader
+    assert "custLoadFailure(c, selected, request" in loader
+    assert 'c.setAttribute("aria-busy", "false")' in loader
+    assert APP_JS.count('"cust.load.timeout"') >= 3
+    assert APP_JS.count('"common.retry"') >= 3
+
+
 def test_send_loads_the_skill_catalog_only_for_slash_token_candidates() -> None:
     send = _extract_js_function(APP_JS, "send")
 
@@ -1654,6 +1687,63 @@ def test_send_loads_the_skill_catalog_only_for_slash_token_candidates() -> None:
         send,
     )
     assert send.count("await loadSkillsCatalog()") == 1
+
+
+def test_send_waits_for_bound_upload_batches_before_starting_a_turn() -> None:
+    send = _extract_js_function(APP_JS, "send")
+    upload = _extract_js_function(APP_JS, "uploadFiles")
+    wait = _extract_js_function(APP_JS, "waitForPendingUploads")
+    create = _extract_js_function(APP_JS, "createUploadSession")
+    read = _extract_js_function(APP_JS, "readUploadFile")
+    new_session = _extract_js_function(APP_JS, "newSession")
+    open_project = _extract_js_function(APP_JS, "openProject")
+    init = _extract_js_function(APP_JS, "init")
+
+    upload_wait = send.index("await waitForPendingUploads(")
+    assert upload_wait < send.index("openTurnTicket()")
+    assert upload_wait < send.index("await api(`/frames/${dispatchFrameId}/message`")
+    assert upload_wait < send.index("composer.value === composerDraft")
+    assert "if (!uploadReady.ok)" in send
+    assert "const priorFailure = [...UPLOAD_STATE.failures]" in send
+    assert "S.currentId !== dispatchFrameId" in send
+    assert "(S._openGen || 0) !== sourceOpenGen" in send
+    assert "(S._openGen || 0) !== dispatchOpenGen" in send
+    assert "composer.value === composerDraft" in send
+    assert "dispatchCreation = createUploadSession(sendProjectId)" in send
+    assert (
+        "waitForPendingUploads(dispatchFrameId, sendProjectId, dispatchCreation)"
+        in send
+    )
+
+    # A batch captures its destination once. FileReader finishing after a
+    # conversation switch must not retarget the bytes to the new S.currentId.
+    assert "const frameId = S.currentId || null" in upload
+    assert "const projectId = effProject() || S.project" in upload
+    assert "frame_id: targetFrame" in upload
+    assert "frame_id: S.currentId" not in upload
+    assert "UPLOAD_STATE.pending.add(batch)" in upload
+    assert "frameAtSelection: frameId" in upload
+    assert "targetFrameId: frameId" in upload
+    assert "batch.targetSource = target" in upload
+    assert "batch.targetFrameId = targetFrame" in upload
+    assert "UPLOAD_STATE.failures.add" in upload
+    assert "return Promise.all(tasks)" not in upload
+    assert "return batch.promise" in upload
+
+    assert "await Promise.all(pending.map(batch => batch.promise))" in wait
+    assert "results.length === 0" in wait
+    assert "UPLOAD_STATE.failures.delete(failure)" not in wait
+    assert "batch.targetSource === creationPromise" in APP_JS
+    assert "UPLOAD_STATE.creations.get(key)" in create
+    assert "navigationGen" in create and "workspaceVisible" in create
+    assert "reader.onerror" in read and "reader.onabort" in read
+    assert "createUploadSession(targetProject)" in new_session
+    assert 'typeof projectId === "string" ? projectId : undefined' in new_session
+    assert 'api("/frames"' not in new_session
+    assert "await newSession(id)" in open_project
+    assert '$("#new-session").onclick = () => newSession();' in init
+    assert '$("#tab-new").onclick = () => newSession();' in init
+    assert 'e.target.value = ""' in APP_JS
 
 
 def test_no_tabular_parser_hardcodes_a_delimiter() -> None:
@@ -2140,12 +2230,12 @@ def test_send_captures_the_ticket_the_202_named() -> None:
     # Taken BEFORE the message POST is awaited, or the guard has nothing to
     # compare against. Anchored to that POST specifically: `send` awaits other
     # calls first (creating the frame, reconciling annotations).
-    post = body.index("await api(`/frames/${S.currentId}/message`")
+    post = body.index("await api(`/frames/${dispatchFrameId}/message`")
     assert body.index("openTurnTicket()") < post, body[max(0, post - 400) : post]
     # From the awaited POST, not from some other object that happens to carry
     # the name.
     assert re.search(
-        r"const accepted = await api\(`/frames/\$\{S\.currentId\}/message`", body
+        r"const accepted = await api\(`/frames/\$\{dispatchFrameId\}/message`", body
     ), body[:800]
 
 

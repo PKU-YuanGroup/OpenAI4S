@@ -304,6 +304,7 @@ Object.assign(I18N.zh, {
   "common.edit": "编辑",
   "common.loading": "加载中…",
   "common.nameRequired": "请填写名称",
+  "common.retry": "重试",
   "common.save": "保存",
   "common.saving": "保存中…",
   "common.settings": "设置",
@@ -494,6 +495,7 @@ Object.assign(I18N.zh, {
   "cust.general.layoutName": "布局密度",
   "cust.general.modelKeyName": "模型与 API Key",
   "cust.general.title": "通用",
+  "cust.load.timeout": "设置加载超时。请检查本地服务后重试。",
   "cust.importing": "导入中…",
   "cust.jobs.cmdPlaceholder": "bash: 如 \"for i in 1 2 3; do echo $i; sleep 1; done\"；python: 一段脚本",
   "cust.jobs.desc": "把长命令/脚本作为后台任务运行，可查看输出、取消",
@@ -1407,6 +1409,7 @@ Object.assign(I18N.zh, {
   "toolLabel.searchSkills": "搜索技能中",
   "toolLabel.writeFile": "写入文件中",
   "turn.failed": "这一轮失败了，请重试。",
+  "turn.stopping": "正在停止…",
   "turn.failedCommitted": "这一轮失败了，但它已经产出了输出或执行过工具——直接重试会重复已经发生的操作。请先检查结果再决定。",
   "turn.failure.llmRequestBurst": "模型服务触发了突发流量保护。这不是 API Key 配置问题，请稍后在当前会话继续，或临时切换模型。",
   "turn.failure.llmRateLimited": "模型服务正在限流。请稍后在当前会话继续，或临时切换模型。",
@@ -1513,6 +1516,7 @@ Object.assign(I18N.en, {
   "common.edit": "Edit",
   "common.loading": "Loading…",
   "common.nameRequired": "Please enter a name",
+  "common.retry": "Retry",
   "common.save": "Save",
   "common.saving": "Saving…",
   "common.settings": "Settings",
@@ -1703,6 +1707,7 @@ Object.assign(I18N.en, {
   "cust.general.layoutName": "Layout density",
   "cust.general.modelKeyName": "Model and API Key",
   "cust.general.title": "General",
+  "cust.load.timeout": "Settings took too long to load. Check the local service and retry.",
   "cust.importing": "Importing…",
   "cust.jobs.cmdPlaceholder": "bash: e.g. \"for i in 1 2 3; do echo $i; sleep 1; done\"; python: a script",
   "cust.jobs.desc": "Run long commands/scripts as background jobs; view output and cancel",
@@ -2616,6 +2621,7 @@ Object.assign(I18N.en, {
   "toolLabel.searchSkills": "Searching skills",
   "toolLabel.writeFile": "Writing file",
   "turn.failed": "This turn failed. Please try again.",
+  "turn.stopping": "Stopping…",
   "turn.failedCommitted": "This turn failed after it had already produced output or run a tool — retrying would repeat work that already happened. Check the result before deciding.",
   "turn.failure.llmRequestBurst": "The model provider's burst-traffic protection was triggered. This is not an API-key configuration problem. Continue this session later or temporarily switch models.",
   "turn.failure.llmRateLimited": "The model provider is rate-limiting requests. Continue this session later or temporarily switch models.",
@@ -2682,7 +2688,7 @@ function navURL(path, replace) {
     history[replace ? "replaceState" : "pushState"]({ path }, "", path);
   } catch { /* history API unavailable (e.g. file://) — navigation still works, just not addressable */ }
 }
-function showDashboard() { navURL("/"); $("#workspace").classList.add("hidden"); $("#dashboard").classList.remove("hidden"); S.currentId = null; loadDashboard(); startDashPoll(); }
+function showDashboard() { navURL("/"); S._openGen = (S._openGen || 0) + 1; $("#workspace").classList.add("hidden"); $("#dashboard").classList.remove("hidden"); S.currentId = null; loadDashboard(); startDashPoll(); }
 function showWorkspace() { stopDashPoll(); $("#dashboard").classList.add("hidden"); $("#workspace").classList.remove("hidden"); showConv(); syncMobileChrome(false); }
 function showConv() { $("#conv-view").classList.remove("hidden"); }
 
@@ -6860,13 +6866,14 @@ function renderProjMenu() {
 const projName = (id) => { const p = S.projects.find(x => (x.project_id || x.id) === id); return p ? (p.name || t("proj.fallbackName")) : t("proj.fallbackName"); };
 function selectProject(id) { S.project = id; $("#proj-menu").classList.add("hidden"); renderProjMenu(); loadSessions(); }
 async function openProject(id) {
+  S._openGen = (S._openGen || 0) + 1;
   await loadProjects(); S.project = id; showWorkspace(); await loadSessions(); renderProjMenu();
   const ss = S.sessions.filter(f => f.project_id === id);
-  if (ss.length) openConversation(ss[0].id, id); else newSession();
+  if (ss.length) await openConversation(ss[0].id, id); else await newSession(id);
 }
 async function createProject(name, description, context) {
   const p = await api("/projects", { method: "POST", body: JSON.stringify({ name, description, context }) });
-  await loadProjects(); openProject(p.project_id || p.id);
+  await loadProjects(); await openProject(p.project_id || p.id);
 }
 function closeProjectModal() {
   closeModalEl($("#proj-modal"));
@@ -7084,9 +7091,24 @@ function folderMenu(anchor, fold) {
   ]);
 }
 async function assignFolder(fid, folder_id) { try { await api(`/frames/${fid}/folder`, { method: "POST", body: JSON.stringify({ folder_id }) }); await loadSessions(); hint(folder_id ? t("folder.assigned.in") : t("folder.assigned.out")); } catch (e) { hint(t("folder.move.failed", apiErrorText(e)), true); } }
-async function newSession() {
-  try { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) });
-    await loadSessions(); openConversation(f.id, S.project); $("#composer").focus();
+async function newSession(projectId) {
+  // onclick passes a MouseEvent.  Only an explicit string is a project
+  // override; user clicks create the new conversation in the active project.
+  const requestedProject = typeof projectId === "string" ? projectId : undefined;
+  const targetProject = requestedProject === undefined ? (S.project || null) : (requestedProject || null);
+  try {
+    // Empty-project auto creation, Attach, and the first Send all share this
+    // promise. They cannot create sibling frames and split bytes from text.
+    const frameId = await createUploadSession(targetProject);
+    if ((S.project || null) !== targetProject) return;
+    if (S.currentId !== frameId) {
+      // Publish the destination before awaiting the sidebar refresh, so a file
+      // selected in that interval binds to this exact new conversation.
+      S.currentId = frameId; sub(frameId); await loadSessions();
+      if (S.currentId !== frameId || (S.project || null) !== targetProject) return;
+      await openConversation(frameId, targetProject);
+    }
+    if (S.currentId === frameId) $("#composer").focus();
   } catch (e) { hint(t("folder.create.failed", apiErrorText(e)), true); }
 }
 // Safety net for the "recovering" (resume) state. We lock the composer while a
@@ -7489,7 +7511,7 @@ function sessionMenu(anchor, fid) {
   const frame = S.sessions.find(x => x.id === fid) || {};
   const items = [{ label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameFrame(fid) }];
   if (frame.running || (fid === S.currentId && S.running)) items.push({ label: t("sessionMenu.cancel"), icon: "stop", onClick: async () => {
-    try { const result = await scopedExecutionRequest(fid, "cancel", "session menu cancel"); if (result && result.ok && fid === S.currentId) turnDone("cancelled"); }
+    try { const result = await scopedExecutionRequest(fid, "cancel", "session menu cancel"); if (result && result.ok) markTurnStopping(fid); }
     catch (error) { hint(t("nb.action.failed", apiErrorText(error)), true); }
     loadSessions();
   } });
@@ -7787,8 +7809,19 @@ function sendFeedback(key, rating) {
 }
 async function cancelTurn() {
   if (!S.currentId) return;
-  try { const result = await scopedExecutionRequest(S.currentId, "cancel", "composer cancel"); if (result && result.ok) turnDone("cancelled"); }
+  const fid = S.currentId;
+  try { const result = await scopedExecutionRequest(fid, "cancel", "composer cancel"); if (result && result.ok) markTurnStopping(fid); }
   catch (error) { hint(t("nb.action.failed", apiErrorText(error)), true); }
+}
+function markTurnStopping(fid) {
+  if (!fid || fid !== S.currentId) return;
+  // Accepted is not terminal. Keep the authoritative running episode open
+  // until frame_update (or the status watchdog) confirms the owner was
+  // released; otherwise a reload can resurrect "Running" immediately after
+  // this client claimed the turn had stopped.
+  $("#cancel-btn").classList.add("hidden");
+  hint(t("turn.stopping"), false, true);
+  resumeWatch(fid, S._openGen);
 }
 
 /* ---------- standard environment readiness ---------- */
@@ -7920,6 +7953,21 @@ async function send(text, opts) {
   }
   const anns = openAnnotations();                 // pinned image comments to ride along
   if (!text && !anns.length) return;              // nothing to send
+  const composerAtStart = $("#composer");
+  const composerDraft = composerAtStart ? composerAtStart.value : "";
+  const sourceFrameId = S.currentId || null;
+  const sourceProjectId = effProject() || S.project || null;
+  const sourceOpenGen = S._openGen || 0;
+  // One preparation owner. Repeated Enter while FileReader is still working
+  // must not wake two identical sends when the same upload promise settles.
+  const activePreparation = S._sendPreparing;
+  if (activePreparation
+      && activePreparation.frameId === sourceFrameId
+      && activePreparation.projectId === sourceProjectId
+      && activePreparation.openGen === sourceOpenGen) return;
+  const preparation = { frameId: sourceFrameId, projectId: sourceProjectId, openGen: sourceOpenGen };
+  S._sendPreparing = preparation;
+  const sendProjectId = sourceProjectId;
   const planNow = S.planMode && !opts.execute;
   const exploreNow = S.exploreMode && !planNow && !opts.execute;
   // Readiness is visible before send, but admission belongs to the first Code
@@ -7942,7 +7990,56 @@ async function send(text, opts) {
       if (hits.length) skillDirective = "\n\n" + hits.map(n => t("skill.invokeDirective", n)).join("\n");
     } catch {}
   }
-  if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) }); S.currentId = f.id; sub(f.id); await loadSessions(); }
+  let dispatchFrameId = sourceFrameId;
+  let dispatchCreation = null;
+  let dispatchOpenGen = sourceOpenGen;
+  try {
+    // Catalog preflight can be cold. A draft and its pinned annotations belong
+    // to the composer that started this function, not whichever session is
+    // visible after that await (including an A→B→A same-id ABA switch).
+    if (S.currentId !== sourceFrameId
+        || (S._openGen || 0) !== sourceOpenGen
+        || (effProject() || S.project || null) !== sourceProjectId) return;
+    // Upload and send share the same first-session creation promise. Without
+    // that single flight, selecting a file and pressing Enter can create two
+    // frames and bind the bytes and message to different workspaces.
+    if (!dispatchFrameId) {
+      // A failed initial upload has no frame to bind to because creating that
+      // frame may itself have failed. Keep it latched to the empty composer so
+      // a second Enter cannot silently create a clean frame and ask the agent
+      // to list files that never arrived. Selecting files again clears/replaces
+      // this failure.
+      const priorFailure = [...UPLOAD_STATE.failures].find(failure =>
+        uploadFailureMatches(failure, null, sendProjectId));
+      if (priorFailure) {
+        const failed = priorFailure.results && priorFailure.results[0];
+        hint(t("upload.failed", apiErrorText(failed && failed.error)), true);
+        return;
+      }
+      dispatchCreation = createUploadSession(sendProjectId);
+      dispatchFrameId = await dispatchCreation;
+    }
+    dispatchOpenGen = S._openGen || 0;
+    // This is the LAST await before the message POST. A FileReader/upload
+    // batch that starts during any earlier preflight is therefore included;
+    // after this barrier JavaScript runs synchronously through fetch().
+    const uploadReady = await waitForPendingUploads(dispatchFrameId, sendProjectId, dispatchCreation);
+    if (!uploadReady.ok) {
+      const failure = uploadReady.failures[0];
+      hint(t("upload.failed", apiErrorText(failure && failure.error)), true);
+      return;
+    }
+    // Navigation while preparation was in flight changes who owns the
+    // composer. Never send the old draft into the newly opened conversation.
+    if (!dispatchFrameId
+        || S.currentId !== dispatchFrameId
+        || (S._openGen || 0) !== dispatchOpenGen) return;
+  } catch (error) {
+    hint(t("toast.sendFailed", apiErrorText(error)), true);
+    return;
+  } finally {
+    if (S._sendPreparing === preparation) S._sendPreparing = null;
+  }
   const g = $(".generated"); if (g) g.remove();
   const es = $(".empty-session"); if (es) es.remove();
   const w = el("div", "msg user"); const b = el("div", "bubble"); b.textContent = text || t("send.imageAnnotationFallback"); w.appendChild(b);
@@ -7976,7 +8073,12 @@ async function send(text, opts) {
   // block-scoped `const` would have made that a ReferenceError.
   if (!turnTicket) hint(t("queue.accepted"));
   else { S.running = true; enableComposer(false); $("#cancel-btn").classList.remove("hidden"); hint(t("toast.running"), false, true); }
-  $("#composer").value = ""; grow(); renderComposerRefChips();
+  // The textarea remains editable while FileReader/upload is pending. Clear
+  // only the draft that this invocation captured; text typed during that wait
+  // belongs to the next message and must survive.
+  const composer = $("#composer");
+  if (composer && composer.value === composerDraft) composer.value = "";
+  grow(); renderComposerRefChips();
   const annIds = anns.map(x => x.id);
   // The admission id is generated HERE and stored BEFORE the request goes out.
   //
@@ -7994,15 +8096,15 @@ async function send(text, opts) {
     const bytes = new Uint8Array(16);
     (self.crypto || window.crypto).getRandomValues(bytes);
     admissionId = "resv-" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
-    rememberAdmission(S.currentId, admissionId);
+    rememberAdmission(dispatchFrameId, admissionId);
     // Optimistically "pending", never "sent". The server decides whether a pin
     // was consumed, and it can answer `pending` -- accepted, but the consume
     // did not confirm -- in which case the comment is neither gone nor
     // available and must not be shown as either.
     setLocalAnnotationStatus(annIds, "pending"); refreshAllStages(); updateAnnotBadge();
   }
-  sub(S.currentId);  // guarantee this client is subscribed BEFORE the POST spawns the
-                     // turn thread. On the FIRST turn opened via newSession(), S.currentId
+  sub(dispatchFrameId);  // guarantee this client is subscribed BEFORE the POST spawns the
+                     // turn thread. On the FIRST turn opened via newSession(), dispatchFrameId
                      // is already set so the block above is skipped and openConversation's
                      // late sub() may not have run yet — without this, run_message() emits
                      // text_reset/text_chunk before rid is in conn.subs and broadcast()
@@ -8014,7 +8116,7 @@ async function send(text, opts) {
     // so provider, endpoint and credential came from the pin while the model name
     // came from here, a configuration that exists in no profile. Changing model is
     // now activating a profile (PUT /models/default), which the session then binds.
-    const accepted = await api(`/frames/${S.currentId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, annotation_reservation_id: admissionId || undefined, wait: false }) });
+    const accepted = await api(`/frames/${dispatchFrameId}/message`, { method: "POST", body: JSON.stringify({ input_data: { request: payload }, plan: planNow, explore: exploreNow, annotation_ids: annIds, annotation_reservation_id: admissionId || undefined, wait: false }) });
     // Tie the optimistic bubble to the ticket the 202 named, so cancelling that
     // exact queued item can mark the message the user is looking at. Nothing
     // else in the transcript carries an execution id.
@@ -8045,8 +8147,8 @@ async function send(text, opts) {
       // The answer arrived, so there is nothing left to reconcile. Removing it
       // here rather than on the next reload keeps storage to what is genuinely
       // outstanding -- and only a decided answer removes anything.
-      if (admissionId && admissionSettled(said)) forgetAdmission(S.currentId, admissionId);
-      try { await loadAnnotations(S.currentId); } catch {}
+      if (admissionId && admissionSettled(said)) forgetAdmission(dispatchFrameId, admissionId);
+      try { await loadAnnotations(dispatchFrameId); } catch {}
       refreshAllStages(); updateAnnotBadge();
     }
   }
@@ -8081,8 +8183,8 @@ async function send(text, opts) {
       // the reservation and said so, so there is nothing to ask it later. A
       // transport failure with no status is the ambiguous case this mechanism
       // exists for, and its id is kept.
-      if (admissionId && refused) forgetAdmission(S.currentId, admissionId);
-      const reloaded = await loadAnnotations(S.currentId);
+      if (admissionId && refused) forgetAdmission(dispatchFrameId, admissionId);
+      const reloaded = await loadAnnotations(dispatchFrameId);
       if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       refreshAllStages(); updateAnnotBadge();
     }
@@ -8134,7 +8236,7 @@ async function send(text, opts) {
               || e.code === "model_revision_ambiguous")) {
       if (confirm(t("model.rebind.confirm"))) {
         try {
-          await api(`/frames/${encodeURIComponent(S.currentId)}/model-binding`, { method: "POST" });
+          await api(`/frames/${encodeURIComponent(dispatchFrameId)}/model-binding`, { method: "POST" });
           hint(t("model.rebind.done"));
           // Ownership, not the dispatch snapshot: the rebind prompt is modal
           // and the user can sit on it for a long time, which is more than
@@ -8163,7 +8265,9 @@ async function send(text, opts) {
   // The async POST returns as soon as the job is accepted. Keep the composer
   // locked until the authoritative WebSocket frame_update arrives; the status
   // watchdog covers a missed terminal event after reconnects.
-  resumeWatch(S.currentId, S._openGen);
+  if (S.currentId === dispatchFrameId && (S._openGen || 0) === dispatchOpenGen) {
+    resumeWatch(dispatchFrameId, dispatchOpenGen);
+  }
   loadSessions();
 }
 /* compact "N annotations attached" block under a user message bubble */
@@ -10897,12 +11001,135 @@ function renderLocatorComments(container, a, kind, viewer) {
 }
 
 /* ---------- upload ---------- */
+const UPLOAD_STATE = { pending: new Set(), failures: new Set(), creations: new Map() };
+
+function readUploadFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      if (comma < 0) { reject(new Error("file could not be encoded")); return; }
+      resolve(result.slice(comma + 1));
+    };
+    reader.onerror = () => reject(reader.error || new Error("file could not be read"));
+    reader.onabort = () => reject(new Error("file read was cancelled"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function createUploadSession(projectId) {
+  const key = projectId ? `project:${projectId}` : "project:<none>";
+  const existing = UPLOAD_STATE.creations.get(key);
+  if (existing) return existing;
+  const navigationGen = S._openGen || 0;
+  const creating = (async () => {
+    const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: projectId || undefined, model: S.defaultModelName }) });
+    const frameId = f && f.id;
+    if (!frameId) throw new Error("session creation returned no id");
+    // The upload began with no conversation. Open the one it created only if
+    // the user has not navigated to another conversation OR another empty
+    // project while the request was in flight. The upload remains bound to
+    // frameId either way.
+    const workspace = $("#workspace");
+    const workspaceVisible = !!workspace && !workspace.classList.contains("hidden");
+    if (!S.currentId
+        && (S.project || null) === (projectId || null)
+        && (S._openGen || 0) === navigationGen
+        && workspaceVisible) {
+      S.currentId = frameId; sub(frameId); await loadSessions();
+      if (S.currentId === frameId && (S.project || null) === (projectId || null)) await openConversation(frameId, projectId);
+    }
+    return frameId;
+  })();
+  UPLOAD_STATE.creations.set(key, creating);
+  creating.finally(() => {
+    if (UPLOAD_STATE.creations.get(key) === creating) UPLOAD_STATE.creations.delete(key);
+  }).catch(() => {});
+  return creating;
+}
+
+function uploadBatchMatches(batch, frameId, projectId, creationPromise) {
+  return batch.frameAtSelection === frameId
+    || batch.targetFrameId === frameId
+    || (!batch.frameAtSelection
+        && !!creationPromise
+        && batch.targetSource === creationPromise
+        && batch.projectId === projectId);
+}
+
+function uploadFailureMatches(failure, frameId, projectId) {
+  return frameId
+    ? failure.frameId === frameId
+    : !failure.frameId && failure.projectId === projectId;
+}
+
 function uploadFiles(files) {
-  [...files].forEach(file => { const rd = new FileReader(); rd.onload = async () => { const b64 = (rd.result.split(",")[1]) || "";
-    try { if (!S.currentId) { const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: S.project || undefined, model: S.defaultModelName }) }); S.currentId = f.id; sub(f.id); await loadSessions(); await openConversation(f.id, S.project); }
-      await api("/uploads", { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: b64, project_id: S.project || undefined, frame_id: S.currentId }) });
-      loadArtifacts(S.currentId); hint(t("upload.uploaded", file.name));
-    } catch (e) { hint(t("upload.failed", apiErrorText(e)), true); } }; rd.readAsDataURL(file); });
+  const selected = [...(files || [])];
+  if (!selected.length) return Promise.resolve([]);
+  const frameId = S.currentId || null;
+  const projectId = effProject() || S.project || null;
+  // A deliberate retry supersedes a settled result for the same destination.
+  // Otherwise yesterday's fast failure can block today's successful upload on
+  // the next Enter even though the replacement bytes are already present.
+  [...UPLOAD_STATE.failures].forEach(previous => {
+    if (uploadFailureMatches(previous, frameId, projectId)) UPLOAD_STATE.failures.delete(previous);
+  });
+  const batch = { frameAtSelection: frameId, targetFrameId: frameId, projectId, targetSource: null, targetPromise: null, promise: null };
+  // Start (and share) first-session creation synchronously with registration,
+  // before FileReader can finish and before Enter can dispatch a message.
+  const target = frameId ? Promise.resolve(frameId) : createUploadSession(projectId);
+  batch.targetSource = target;
+  batch.targetPromise = target.then(targetFrame => {
+    batch.targetFrameId = targetFrame;
+    return targetFrame;
+  });
+  const tasks = selected.map(file => {
+    return (async () => {
+      let targetFrame = null;
+      try {
+        const prepared = await Promise.all([batch.targetPromise, readUploadFile(file)]);
+        targetFrame = prepared[0]; const b64 = prepared[1];
+        await api("/uploads", { method: "POST", body: JSON.stringify({ filename: file.name, content_base64: b64, project_id: projectId || undefined, frame_id: targetFrame }) });
+        if (S.currentId === targetFrame) loadArtifacts(targetFrame);
+        hint(t("upload.uploaded", file.name));
+        return { ok: true, frameId: targetFrame, filename: file.name };
+      } catch (error) {
+        // FileReader can fail before the shared frame request settles. Wait for
+        // that target only to bind the failure to the right composer; no bytes
+        // are written on this path.
+        if (!targetFrame) try { targetFrame = await batch.targetPromise; } catch {}
+        hint(t("upload.failed", apiErrorText(error)), true);
+        return { ok: false, frameId: targetFrame, filename: file.name, error };
+      }
+    })();
+  });
+  batch.promise = Promise.all(tasks).then(results => {
+    const failed = results.filter(result => !result.ok);
+    if (failed.length) {
+      UPLOAD_STATE.failures.add({
+        frameId: (results.find(result => result.frameId) || {}).frameId || null,
+        projectId,
+        results: failed,
+      });
+      // Bound abandoned UI state even when a user never presses Enter again.
+      while (UPLOAD_STATE.failures.size > 64) UPLOAD_STATE.failures.delete(UPLOAD_STATE.failures.values().next().value);
+    }
+    return results;
+  }).finally(() => UPLOAD_STATE.pending.delete(batch));
+  UPLOAD_STATE.pending.add(batch);
+  return batch.promise;
+}
+
+async function waitForPendingUploads(frameId, projectId, creationPromise) {
+  while (true) {
+    const pending = [...UPLOAD_STATE.pending].filter(batch => uploadBatchMatches(batch, frameId, projectId, creationPromise));
+    if (!pending.length) break;
+    await Promise.all(pending.map(batch => batch.promise));
+  }
+  const failures = [...UPLOAD_STATE.failures].filter(failure => uploadFailureMatches(failure, frameId, projectId));
+  const results = failures.reduce((all, failure) => all.concat(failure.results), []);
+  return { ok: results.length === 0, frameId, failures: results };
 }
 
 /* ---------- notes ---------- */
@@ -11119,15 +11346,63 @@ function trapModalKeydown(e) {
   else if (!box.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
 }
 
-function openCust(tab) { openModalEl($("#cust")); custTab(tab || "general"); }
-function custTab(tab) {
+function openCust(tab) {
+  // DOM onclick handlers receive a MouseEvent as their first argument.  Two
+  // settings entry points used to pass that object through as the tab name,
+  // so custTab() painted "Loading…", failed to find a renderer, and threw --
+  // leaving the modal stuck on the text it had already painted.
+  openModalEl($("#cust"));
+  return custTab(typeof tab === "string" ? tab : "general");
+}
+const CUST_LOAD_TIMEOUT_MS = 30000;
+function custLoadFailure(c, selected, request, message) {
+  if (request !== S._custReq || !c.isConnected) return;
+  // Invalidate the original loader before detaching its node.  If the request
+  // eventually settles, every late write lands on `c`, which is no longer the
+  // visible panel, and its finally block cannot change the replacement.
+  S._custReq = request + 1;
+  const failed = c.cloneNode(false);
+  c.replaceWith(failed);
+  failed.setAttribute("aria-busy", "false");
+  failed.appendChild(el("div", "timeline-error", message));
+  const actions = el("div", "form-actions");
+  const retry = el("button", "outline-btn small", t("common.retry"));
+  retry.onclick = () => custTab(selected);
+  actions.appendChild(retry); failed.appendChild(actions);
+}
+async function custTab(tab) {
+  const loaders = { general: custGeneral, skills: custSkills, specialists: custSpecialists, connectors: custConnectors, agents: custSpecialists, permissions: custPermissions, compute: custCompute, network: custNetwork, memory: custMemory, models: custModels };
+  const selected = typeof tab === "string" && Object.prototype.hasOwnProperty.call(loaders, tab) ? tab : "general";
   document.querySelectorAll(".cust-tab").forEach(btn => {
-    const on = btn.dataset.tab === tab;
+    const on = btn.dataset.tab === selected;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
   });
-  const c = $("#cust-content"); c.innerHTML = t("common.loading");
-  ({ general: custGeneral, skills: custSkills, specialists: custSpecialists, connectors: custConnectors, agents: custSpecialists, permissions: custPermissions, compute: custCompute, network: custNetwork, memory: custMemory, models: custModels }[tab])(c);
+  // Give every load its own connected content node.  A slow response from a
+  // tab that has already been left can then only update its detached node,
+  // never overwrite the newer tab.  Replacing the node also resets scroll
+  // position without adding a wrapper that would change Customize layout.
+  const old = $("#cust-content"), c = old.cloneNode(false);
+  old.replaceWith(c);
+  const request = S._custReq = (S._custReq || 0) + 1;
+  c.setAttribute("aria-busy", "true");
+  c.textContent = t("common.loading");
+  let deadlineTimer = null;
+  const deadline = new Promise((_, reject) => {
+    deadlineTimer = setTimeout(() => {
+      const error = new Error(t("cust.load.timeout"));
+      error.settingsLoadTimeout = true;
+      reject(error);
+    }, CUST_LOAD_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([loaders[selected](c), deadline]);
+  } catch (error) {
+    custLoadFailure(c, selected, request, error && error.settingsLoadTimeout ? t("cust.load.timeout") : t("versions.load.err", apiErrorText(error)));
+  } finally {
+    clearTimeout(deadlineTimer);
+    if (request === S._custReq && c.isConnected) c.setAttribute("aria-busy", "false");
+  }
 }
 // Permissions — manage the opencode-style tool-call approval rules per scope.
 async function custPermissions(c) {
@@ -13346,8 +13621,8 @@ async function init() {
   };
   $("#back-home").onclick = showDashboard;
   $("#search-btn").onclick = openPalette;
-  $("#new-session").onclick = newSession;
-  $("#tab-new").onclick = newSession;
+  $("#new-session").onclick = () => newSession();
+  $("#tab-new").onclick = () => newSession();
   $("#tab-close").onclick = (e) => { e.stopPropagation(); showDashboard(); };
   $("#sidebar-collapse").onclick = () => setSidebar(true);
   $("#sidebar-reopen").onclick = () => setSidebar(false);
@@ -13356,7 +13631,7 @@ async function init() {
   const dt = $("#dash-theme"); if (dt) dt.onclick = themeClick;
   const wt = $("#ws-theme"); if (wt) wt.onclick = themeClick;
   $("#dash-settings").onclick = () => openCust("general");
-  $("#customize-btn").onclick = openCust;
+  $("#customize-btn").onclick = () => openCust();
   $("#files-btn").onclick = () => { loadNotes(); $("#notes-block").classList.remove("hidden"); dockTab("files"); };
   { const fscope = $("#files-scope"); if (fscope) fscope.querySelectorAll(".seg-btn").forEach(b => b.onclick = () => setFilesScope(b.dataset.scope)); }
   $("#proj-btn").onclick = () => $("#proj-menu").classList.toggle("hidden");
@@ -13383,7 +13658,7 @@ async function init() {
   $("#jump-pill").onclick = () => down(true);
   $("#messages").addEventListener("scroll", updateJumpPill);
   $("#cancel-btn").onclick = cancelTurn;
-  $("#settings-gear").onclick = openCust;
+  $("#settings-gear").onclick = () => openCust();
   $("#cust-close").onclick = () => closeModalEl($("#cust"));
   $("#cust").onclick = (e) => { if (e.target.id === "cust") closeModalEl($("#cust")); };
   document.querySelectorAll(".cust-tab").forEach(t => t.onclick = () => custTab(t.dataset.tab));
@@ -13391,7 +13666,11 @@ async function init() {
   $("#modal").onclick = (e) => { if (e.target.id === "modal") closeModalEl($("#modal")); };
   $("#attach-btn").onclick = (e) => addToMessageMenu(e.currentTarget);
   $("#session-options-btn").onclick = (e) => sessionOptionsMenu(e.currentTarget);
-  $("#file-input").onchange = (e) => uploadFiles(e.target.files);
+  $("#file-input").onchange = (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = "";  // choosing the same file again is an explicit retry
+    uploadFiles(files);
+  };
   $("#plan-toggle").onclick = () => { S.planMode = !S.planMode; if (S.planMode) { S.exploreMode = false; $("#explore-toggle").classList.remove("on"); } $("#plan-toggle").classList.toggle("on", S.planMode); hint(S.planMode ? t("plan.toggle.on") : ""); };
   $("#explore-toggle").onclick = () => { S.exploreMode = !S.exploreMode; if (S.exploreMode) { S.planMode = false; $("#plan-toggle").classList.remove("on"); } $("#explore-toggle").classList.toggle("on", S.exploreMode); hint(S.exploreMode ? t("explore.toggle.on") : ""); };
   $("#note-save").onclick = addNote;

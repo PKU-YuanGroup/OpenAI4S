@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import queue
+import threading
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from openai4s.observability import carry_context
 from openai4s.tools import (
     MAX_TOOL_CALLS_PER_TURN,
     execute_tool_call,
@@ -60,6 +64,13 @@ from .models import ExecutionOutcome, ModelReply, RunState
 
 LogFn = Callable[..., None]
 
+_LOG = logging.getLogger(__name__)
+# A cancelled urllib call may remain blocked until its socket timeout. Bound
+# those detached calls so repeated Stop presses cannot grow threads/sockets
+# without limit. The delegation fan-out cap is 48, so 128 leaves headroom for
+# concurrent roots while still providing a hard process boundary.
+_PROVIDER_CALL_SLOTS = threading.BoundedSemaphore(128)
+
 
 def _null_log(*args: object) -> None:
     del args
@@ -67,6 +78,17 @@ def _null_log(*args: object) -> None:
 
 def _allow_cell(_action: CodeCell) -> None:
     return None
+
+
+def _cancelled_model_reply() -> dict[str, Any]:
+    """Return a normalized no-op reply for an abandoned provider call."""
+
+    return {
+        "content": "",
+        "tool_calls": [],
+        "assistant_message": {"role": "assistant", "content": ""},
+        "finish_reason": "cancelled",
+    }
 
 
 @dataclass(frozen=True)
@@ -96,6 +118,9 @@ class ChatModel:
     #: raises to refuse. None (the default and the CLI's value) is a no-op,
     #: so single-user behavior is untouched (INV-1).
     quota_gate: Callable[[], None] | None = None
+    #: Optional accounting-only sink for a provider reply which arrives after
+    #: the owning turn was cancelled. It must never project content/actions.
+    abandoned_reply: Callable[[Mapping[str, Any]], None] | None = None
 
     def complete(
         self,
@@ -115,14 +140,140 @@ class ChatModel:
         else:
             source = self.tools
         kwargs: dict[str, Any] = {"tools": tuple(source)}
+        copied_messages = [dict(message) for message in messages]
+        if self.cancellation is None:
+            if self.stream:
+                kwargs["on_delta"] = on_delta
+            return self.chat_fn(copied_messages, self.cfg, **kwargs)
+
+        # ``urllib`` cannot close a response which is blocked in another
+        # thread. Running the provider call in a daemon thread still lets the
+        # owning Agent turn stop immediately: the request may finish against
+        # its normal network timeout, but its result is detached and inert.
+        #
+        # The per-call Event is deliberately monotonic. The Web coordinator
+        # clears its shared cancellation Event when it admits the next queued
+        # turn. If a detached old request continued to read that shared Event
+        # directly, it could be ABA-revived and emit late deltas into the new
+        # turn. Once this call has observed cancellation, it stays cancelled.
+        cancelled = threading.Event()
+        finished = threading.Event()
+        abandoned = threading.Event()
+        abandoned_reported = threading.Event()
+        abandoned_report_lock = threading.Lock()
+        outcome: dict[str, Any] = {}
+        deltas: queue.Queue[str] = queue.Queue()
+
+        def is_cancelled() -> bool:
+            if cancelled.is_set():
+                return True
+            try:
+                requested = bool(self.cancellation.cancelled())
+            except Exception:  # noqa: BLE001 - cancellation telemetry is fail-soft
+                requested = False
+            if requested:
+                cancelled.set()
+            return requested
+
+        if is_cancelled():
+            return _cancelled_model_reply()
+
+        provider_slots = _PROVIDER_CALL_SLOTS
+        if not provider_slots.acquire(blocking=False):
+            raise RuntimeError(
+                "too many model requests are still in flight; wait for a "
+                "cancelled request to close before retrying"
+            )
+
+        def report_abandoned_reply() -> None:
+            if (
+                not abandoned.is_set()
+                or self.abandoned_reply is None
+                or "reply" not in outcome
+            ):
+                return
+            with abandoned_report_lock:
+                if abandoned_reported.is_set():
+                    return
+                abandoned_reported.set()
+                try:
+                    self.abandoned_reply(outcome["reply"])
+                except Exception:  # noqa: BLE001 - accounting is fail-soft
+                    _LOG.exception("failed to account for an abandoned model reply")
+
+        def abandon() -> Mapping[str, Any]:
+            # Mark this before inspecting outcome: the provider may be between
+            # storing its reply and running its accounting callback.
+            cancelled.set()
+            abandoned.set()
+            report_abandoned_reply()
+            return _cancelled_model_reply()
+
         if self.stream:
-            kwargs["on_delta"] = on_delta
-        if self.cancellation is not None:
-            # The engine checks cancellation between turns, which does nothing
-            # while a rate-limited provider holds this call through a full
-            # retry budget. The transport polls this during backoff.
-            kwargs["should_cancel"] = self.cancellation.cancelled
-        return self.chat_fn([dict(message) for message in messages], self.cfg, **kwargs)
+
+            def emit_delta(text: str) -> None:
+                # WebEventSink and the action ledger are single-threaded state
+                # machines. The provider thread only queues bytes; the owning
+                # Agent thread below is the sole caller of on_delta.
+                if not is_cancelled():
+                    deltas.put(text)
+
+            kwargs["on_delta"] = emit_delta
+        kwargs["should_cancel"] = is_cancelled
+
+        def invoke() -> None:
+            try:
+                outcome["reply"] = self.chat_fn(
+                    copied_messages,
+                    self.cfg,
+                    **kwargs,
+                )
+            except BaseException as error:  # propagate on the owning turn
+                outcome["error"] = error
+            finally:
+                try:
+                    report_abandoned_reply()
+                finally:
+                    finished.set()
+                    provider_slots.release()
+
+        provider_thread = threading.Thread(
+            target=carry_context(invoke),
+            name="openai4s-provider-call",
+            daemon=True,
+        )
+        try:
+            provider_thread.start()
+        except BaseException:
+            provider_slots.release()
+            raise
+        while True:
+            if is_cancelled():
+                return abandon()
+            if self.stream:
+                try:
+                    delta = deltas.get(timeout=0.05)
+                except queue.Empty:
+                    if finished.is_set():
+                        break
+                    continue
+                if is_cancelled():
+                    return abandon()
+                try:
+                    on_delta(delta)
+                except BaseException:
+                    cancelled.set()
+                    abandoned.set()
+                    report_abandoned_reply()
+                    raise
+                continue
+            if finished.wait(0.05):
+                break
+        if is_cancelled():
+            return abandon()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["reply"]
 
 
 @dataclass

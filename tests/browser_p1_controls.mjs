@@ -276,6 +276,167 @@ try {
     `${composerChips.unresolved} unresolved chips`,
   );
 
+  // ---- Upload/send barrier: bytes are admitted before the turn -----------
+  // The old FileReader callback returned immediately, so pressing Enter after
+  // choosing a file could start list_dir while /uploads was still pending.
+  // The upload was then refused as trusted_capture_busy and the truthful but
+  // premature tool result was "0 items". Hold the real page request here and
+  // prove that no optimistic bubble or message POST can cross it.
+  const uploadRoute = "**/api/v1/uploads";
+  const sendRoute = `**/api/v1/frames/${frameId}/message`;
+  const order = [];
+  let releaseUpload;
+  let signalUploadStarted;
+  let signalMessageStarted;
+  const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+  const uploadStarted = new Promise((resolve) => { signalUploadStarted = resolve; });
+  const messageStarted = new Promise((resolve) => { signalMessageStarted = resolve; });
+  let messageCount = 0;
+  await page.route(uploadRoute, async (route) => {
+    order.push("upload-start"); signalUploadStarted();
+    await uploadGate;
+    order.push("upload-finish");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ artifact_id: "a-upload-order", filename: "upload-order.txt" }),
+    });
+  });
+  await page.route(sendRoute, async (route) => {
+    messageCount += 1; order.push("message"); signalMessageStarted();
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "accepted", request_id: "req-upload-order",
+        execution_id: "exec-upload-order", queue_position: 0,
+        owner: { kind: "agent", id: "job-upload-order" },
+      }),
+    });
+  });
+  const uploadPrompt = "__upload_barrier_list_files__";
+  const beforeUploadRelease = await page.evaluate((prompt) => {
+    const box = document.querySelector("#composer");
+    window.__uploadBarrierSavedDraft = box.value;
+    box.value = prompt;
+    const file = new File(["alpha,beta\n1,2\n"], "upload-order.txt", { type: "text/plain" });
+    window.__uploadBarrier = {
+      upload: uploadFiles([file]),
+      send: send(prompt),
+      duplicate: send(prompt),
+    };
+    return {
+      draft: box.value,
+      running: S.running,
+      preparing: !!S._sendPreparing,
+      bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+        .filter((node) => node.textContent === prompt).length,
+    };
+  }, uploadPrompt);
+  await Promise.race([
+    uploadStarted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("upload request did not start")), 5000)),
+  ]);
+  check(
+    "send waits behind an in-flight upload",
+    beforeUploadRelease.draft === uploadPrompt
+      && beforeUploadRelease.running === false
+      && beforeUploadRelease.preparing === true
+      && beforeUploadRelease.bubbles === 0
+      && messageCount === 0,
+    JSON.stringify({ beforeUploadRelease, messageCount, order }),
+  );
+  releaseUpload();
+  await Promise.race([
+    messageStarted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("message request did not start")), 5000)),
+  ]);
+  await page.evaluate(async () => {
+    await Promise.all([
+      window.__uploadBarrier.upload,
+      window.__uploadBarrier.send,
+      window.__uploadBarrier.duplicate,
+    ]);
+  });
+  const afterUploadRelease = await page.evaluate((prompt) => ({
+    draft: document.querySelector("#composer").value,
+    bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+      .filter((node) => node.textContent === prompt).length,
+  }), uploadPrompt);
+  check(
+    "one successful upload releases exactly one message",
+    JSON.stringify(order) === JSON.stringify(["upload-start", "upload-finish", "message"])
+      && messageCount === 1
+      && afterUploadRelease.draft === ""
+      && afterUploadRelease.bubbles === 1,
+    JSON.stringify({ order, messageCount, afterUploadRelease }),
+  );
+  await page.evaluate((prompt) => {
+    document.querySelectorAll(".msg.user").forEach((node) => {
+      const bubble = node.querySelector(".bubble");
+      if (bubble && bubble.textContent === prompt) node.remove();
+    });
+    turnDone("cancelled");
+    const box = document.querySelector("#composer");
+    box.value = window.__uploadBarrierSavedDraft || "";
+    delete window.__uploadBarrier; delete window.__uploadBarrierSavedDraft;
+    grow(); renderComposerRefChips(); hint("");
+  }, uploadPrompt);
+  await page.unroute(sendRoute);
+  await page.unroute(uploadRoute);
+
+  // A failed upload is a persistent admission latch, not a one-shot toast.
+  // A second Enter must still preserve the draft and must not run list_dir;
+  // reselecting a file is the explicit retry that replaces this state.
+  let failedMessageCount = 0;
+  await page.route(uploadRoute, (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "injected upload failure" }),
+  }));
+  await page.route(sendRoute, (route) => {
+    failedMessageCount += 1;
+    return route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "accepted", request_id: "must-not-send", queue_position: 0 }),
+    });
+  });
+  const failedPrompt = "__failed_upload_must_not_list__";
+  const failedUpload = await page.evaluate(async (prompt) => {
+    const box = document.querySelector("#composer");
+    window.__failedUploadSavedDraft = box.value;
+    box.value = prompt;
+    const file = new File(["not admitted"], "failed-upload.txt", { type: "text/plain" });
+    await Promise.all([uploadFiles([file]), send(prompt)]);
+    await send(prompt);
+    return {
+      draft: box.value,
+      running: S.running,
+      failures: UPLOAD_STATE.failures.size,
+      bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+        .filter((node) => node.textContent === prompt).length,
+    };
+  }, failedPrompt);
+  check(
+    "a failed upload keeps later Enter from listing an empty workspace",
+    failedMessageCount === 0
+      && failedUpload.draft === failedPrompt
+      && failedUpload.running === false
+      && failedUpload.failures > 0
+      && failedUpload.bubbles === 0,
+    JSON.stringify({ failedMessageCount, failedUpload }),
+  );
+  await page.evaluate(() => {
+    UPLOAD_STATE.failures.clear(); S._sendPreparing = null;
+    const box = document.querySelector("#composer");
+    box.value = window.__failedUploadSavedDraft || "";
+    delete window.__failedUploadSavedDraft;
+    grow(); renderComposerRefChips(); hint("");
+  });
+  await page.unroute(sendRoute);
+  await page.unroute(uploadRoute);
+
   // ---- P1-A: the two problem cards, which are deliberately not one -------
   // Ref problems carry {ref, code, message} and the server owns the wording;
   // attachment problems carry {name, reason, limit, bytes} and the client owns
@@ -658,6 +819,67 @@ try {
   // rather than assumed: a daemon with no profiles configured renders an empty
   // panel *correctly*, and a check that passed on whatever the developer's
   // database held would be measuring the database.
+  for (const entry of ["#customize-btn", "#settings-gear"]) {
+    await page.locator(entry).click();
+    await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
+    await page.locator('#cust-content[aria-busy="false"] .cust-h').waitFor({ state: "visible" });
+    const opened = await page.evaluate(() => ({
+      active: document.querySelector(".cust-tab.active")?.dataset.tab || "",
+      heading: document.querySelector("#cust-content .cust-h")?.textContent || "",
+      content: document.querySelector("#cust-content")?.textContent || "",
+    }));
+    check(
+      `${entry} opens the General settings panel instead of forwarding its click event`,
+      opened.active === "general" && opened.heading.length > 0 && !/^(Loading|加载中)/.test(opened.content.trim()),
+      JSON.stringify(opened),
+    );
+    await page.locator("#cust-close").click();
+  }
+
+  // A tab owns the DOM node it started with.  Hold the Skills response, move
+  // to Models, then release the stale response: the late renderer must only
+  // update its detached node and cannot replace the visible Models panel.
+  const skillsCatalogRoute = "**/api/v1/skills/catalog";
+  let releaseSkills;
+  let signalSkillsStarted;
+  let signalSkillsFulfilled;
+  const skillsGate = new Promise((resolve) => { releaseSkills = resolve; });
+  const skillsStarted = new Promise((resolve) => { signalSkillsStarted = resolve; });
+  const skillsFulfilled = new Promise((resolve) => { signalSkillsFulfilled = resolve; });
+  await page.route(skillsCatalogRoute, async (route) => {
+    signalSkillsStarted();
+    await skillsGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ skills: [{ name: "__stale_skill__", displayName: "__stale_skill__", description: "must stay detached" }] }),
+    });
+    signalSkillsFulfilled();
+  });
+  await page.locator("#customize-btn").click();
+  await page.locator('.cust-tab[data-tab="skills"]').click();
+  await Promise.race([
+    skillsStarted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Skills request did not start")), 5000)),
+  ]);
+  await page.locator('.cust-tab[data-tab="models"]').click();
+  await page.locator("#cust-content .prof-row").first().waitFor({ state: "visible" });
+  releaseSkills();
+  await skillsFulfilled;
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const afterStaleSkills = await page.evaluate(() => ({
+    active: document.querySelector(".cust-tab.active")?.dataset.tab || "",
+    profiles: document.querySelectorAll("#cust-content .prof-row").length,
+    staleSkillVisible: (document.querySelector("#cust-content")?.textContent || "").includes("__stale_skill__"),
+  }));
+  check(
+    "a late Settings response cannot overwrite the newer tab",
+    afterStaleSkills.active === "models" && afterStaleSkills.profiles > 0 && !afterStaleSkills.staleSkillVisible,
+    JSON.stringify(afterStaleSkills),
+  );
+  await page.unroute(skillsCatalogRoute);
+  await page.locator("#cust-close").click();
+
   {
     await page.evaluate(() => openCust("models"));
     await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
@@ -705,6 +927,45 @@ try {
   });
   check("the memory panel renders rows", memory.rows > 0, `${memory.rows} rows`);
   check("the memory master switch is drawn", memory.toggles > 0, `${memory.toggles} toggles`);
+
+  // Both New session controls are real onclick entry points.  A parameterized
+  // newSession() must not mistake the PointerEvent for a project id; each click
+  // should POST the active project's scalar id, never a serialized event.
+  await page.locator("#cust-close").click();
+  const frameCreateRoute = "**/api/v1/frames";
+  let signalFrameCreate = null;
+  await page.route(frameCreateRoute, async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON();
+      if (signalFrameCreate) signalFrameCreate(body);
+    }
+    await route.continue();
+  });
+  for (const entry of ["#new-session", "#tab-new"]) {
+    const before = await page.evaluate(() => S.currentId);
+    const posted = new Promise((resolve) => { signalFrameCreate = resolve; });
+    await page.locator(entry).click();
+    const body = await Promise.race([
+      posted,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${entry} did not create a frame`)), 5000)),
+    ]);
+    signalFrameCreate = null;
+    check(
+      `${entry} creates a session in the active project instead of forwarding its click event`,
+      body.project_id === projectId,
+      JSON.stringify(body),
+    );
+    // onclick does not await its async handler.  Let this project's single-
+    // flight creation fully drain before clicking the second entry; otherwise
+    // the second click can correctly reuse the first promise and emit no POST,
+    // making the test (not the product) race its own 5-second assertion.
+    await page.waitForFunction(
+      (beforeId) => S.currentId !== beforeId && UPLOAD_STATE.creations.size === 0,
+      before,
+      { timeout: 8000 },
+    );
+  }
+  await page.unroute(frameCreateRoute);
 
   if (pageErrors.length) failures.push(`page errors: ${pageErrors.join(" | ")}`);
   if (failures.length) {

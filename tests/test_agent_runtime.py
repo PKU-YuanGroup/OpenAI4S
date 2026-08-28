@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
+
+import pytest
 
 import openai4s.agent.runtime as runtime
 from openai4s.agent.actions import CodeCell, NativeToolBatch, NativeToolCall
@@ -117,6 +120,133 @@ def test_chat_model_refreshes_callable_session_catalog_each_turn():
     model.complete([], lambda _delta: None)
 
     assert seen == [("first",), ("first", "second")]
+
+
+def test_chat_model_cancel_releases_owner_and_quarantines_late_provider_output():
+    entered = threading.Event()
+    release = threading.Event()
+    provider_done = threading.Event()
+    shared_cancel = threading.Event()
+    late_cancel_checks = []
+    deltas = []
+    abandoned = []
+    accounted = threading.Event()
+    result = {}
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        entered.set()
+        assert release.wait(5), "test did not release the fake provider"
+        late_cancel_checks.append(kwargs["should_cancel"]())
+        kwargs["on_delta"]("must not escape after Stop")
+        provider_done.set()
+        return {
+            "content": "late reply",
+            "usage": {"prompt_tokens": 17, "completion_tokens": 3},
+        }
+
+    def account(reply):
+        abandoned.append(reply["usage"])
+        accounted.set()
+
+    model = ChatModel(
+        object(),
+        fake_chat,
+        stream=True,
+        cancellation=SimpleNamespace(cancelled=shared_cancel.is_set),
+        abandoned_reply=account,
+    )
+    owner = threading.Thread(
+        target=lambda: result.setdefault("reply", model.complete([], deltas.append))
+    )
+    owner.start()
+    assert entered.wait(2), "fake provider call did not start"
+
+    shared_cancel.set()
+    owner.join(1)
+    assert not owner.is_alive(), "Stop waited for the blocked provider request"
+    assert result["reply"]["finish_reason"] == "cancelled"
+
+    # Admission of the next queued turn clears this shared Event. The old
+    # request's private latch must remain cancelled, or it can ABA-revive and
+    # stream its late response into the new turn.
+    shared_cancel.clear()
+    release.set()
+    assert provider_done.wait(2), "detached fake provider did not finish"
+    assert accounted.wait(2), "late provider usage was not accounted"
+    assert late_cancel_checks == [True]
+    assert deltas == []
+    assert abandoned == [{"prompt_tokens": 17, "completion_tokens": 3}]
+
+
+def test_chat_model_projects_stream_deltas_on_the_owning_thread():
+    shared_cancel = threading.Event()
+    provider_threads = []
+    callback_threads = []
+    deltas = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        provider_threads.append(threading.get_ident())
+        kwargs["on_delta"]("one")
+        kwargs["on_delta"]("two")
+        return {"content": "one two"}
+
+    owner_thread = threading.get_ident()
+    model = ChatModel(
+        object(),
+        fake_chat,
+        stream=True,
+        cancellation=SimpleNamespace(cancelled=shared_cancel.is_set),
+    )
+
+    def collect_delta(text):
+        callback_threads.append(threading.get_ident())
+        deltas.append(text)
+
+    reply = model.complete([], collect_delta)
+
+    assert reply["content"] == "one two"
+    assert provider_threads and provider_threads != [owner_thread]
+    assert callback_threads == [owner_thread, owner_thread]
+    assert deltas == ["one", "two"]
+
+
+def test_chat_model_bounds_detached_provider_calls(monkeypatch):
+    monkeypatch.setattr(runtime, "_PROVIDER_CALL_SLOTS", threading.BoundedSemaphore(1))
+    entered = threading.Event()
+    release = threading.Event()
+    shared_cancel = threading.Event()
+
+    def blocked_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        entered.set()
+        assert release.wait(5)
+        return {"content": "late"}
+
+    model = ChatModel(
+        object(),
+        blocked_chat,
+        cancellation=SimpleNamespace(cancelled=shared_cancel.is_set),
+    )
+    owner = threading.Thread(target=lambda: model.complete([], lambda _text: None))
+    owner.start()
+    assert entered.wait(2)
+    shared_cancel.set()
+    owner.join(1)
+    assert not owner.is_alive()
+
+    second = ChatModel(
+        object(),
+        blocked_chat,
+        cancellation=SimpleNamespace(cancelled=lambda: False),
+    )
+    with pytest.raises(RuntimeError, match="too many model requests"):
+        second.complete([], lambda _text: None)
+
+    release.set()
+    assert runtime._PROVIDER_CALL_SLOTS.acquire(timeout=2)
+    runtime._PROVIDER_CALL_SLOTS.release()
 
 
 def test_native_batch_returns_one_canonical_tool_message_per_call(monkeypatch):

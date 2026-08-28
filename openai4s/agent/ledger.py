@@ -490,6 +490,22 @@ class RuntimeActionLedger:
 
         record_session_llm_usage(self.store, self.root_frame_id, usage)
 
+    def record_abandoned_usage(self, usage: Mapping[str, Any] | None) -> None:
+        """Meter a cancelled provider call whose late reply cannot be replayed.
+
+        No action group is appended: the reply was deliberately quarantined
+        and must never become conversation history. Only the provider counters
+        are retained so Stop cannot bypass the team quota ledger.
+        """
+
+        if not isinstance(usage, Mapping):
+            return
+        normalized: dict[str, int] = {}
+        for key, value in usage.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                normalized[key] = max(0, int(value))
+        self._record_team_usage(normalized)
+
     def _reply_accounting(
         self, reply: ModelReply
     ) -> tuple[dict[str, int] | None, float | None]:

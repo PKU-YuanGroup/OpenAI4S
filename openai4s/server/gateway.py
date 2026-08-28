@@ -10257,9 +10257,22 @@ class SessionRunner:
         def add_usage(usage: dict) -> None:
             self.store.add_frame_tokens(
                 rid,
-                input_tokens=usage.get("prompt_tokens", 0) or 0,
-                output_tokens=usage.get("completion_tokens", 0) or 0,
+                input_tokens=(
+                    usage.get("prompt_tokens") or usage.get("input_tokens", 0) or 0
+                ),
+                output_tokens=(
+                    usage.get("completion_tokens") or usage.get("output_tokens", 0) or 0
+                ),
             )
+
+        def account_abandoned_reply(reply: Mapping[str, Any]) -> None:
+            usage = reply.get("usage")
+            if not isinstance(usage, Mapping) or not usage:
+                return
+            canonical = dict(usage)
+            add_usage(canonical)
+            if action_ledger is not None:
+                action_ledger.record_abandoned_usage(canonical)
 
         latest_user_text = next(
             (
@@ -10339,6 +10352,7 @@ class SessionRunner:
                 # retry backoff rather than only the gap between turns.
                 cancellation=EventCancellation(st.cancel),
                 quota_gate=_llm_quota_gate,
+                abandoned_reply=account_abandoned_reply,
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,
