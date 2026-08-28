@@ -8,6 +8,7 @@ HTML/Markdown artifacts for human review.
 from __future__ import annotations
 
 import base64
+import binascii
 import functools
 import hashlib
 import html
@@ -1702,6 +1703,44 @@ def _svg_data_uri(svg: str) -> str:
     return f"data:image/svg+xml;base64,{payload}"
 
 
+def _canonical_structure_src(source: Any) -> str:
+    """Return one canonical SVG data URI, or an empty fail-closed value."""
+    prefix = "data:image/svg+xml;base64,"
+    if not isinstance(source, str) or not source.startswith(prefix):
+        return ""
+    if len(source) > 1 << 20:
+        return ""
+    encoded = source.removeprefix(prefix)
+    if not encoded:
+        return ""
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        return ""
+    if base64.b64encode(decoded).decode("ascii") != encoded:
+        return ""
+    return source
+
+
+def _structure_src(smiles: str, width: int = 260, height: int = 180) -> str:
+    """One canonical depiction for `smiles`, degrading to the placeholder.
+
+    `_canonical_structure_src` fails closed, and its one production-reachable
+    rejection is the 1 MiB cap -- which a large peptide or polymer depiction
+    really does hit. Falling through to the labelled placeholder keeps that a
+    *labelled* absence instead of a missing element, which is what the
+    `onerror` attribute used to buy before it was removed as a URL sink.
+    """
+    primary = _canonical_structure_src(
+        build_molecule_structure_src(smiles, width=width, height=height)
+    )
+    if primary:
+        return primary
+    return _canonical_structure_src(
+        build_molecule_fallback_structure_src(smiles, width=width, height=height)
+    )
+
+
 @functools.lru_cache(maxsize=1024)
 def build_molecule_structure_src(
     smiles: str, width: int = 260, height: int = 180
@@ -1746,21 +1785,6 @@ def build_molecule_fallback_structure_src(
   <text x="{cx:.1f}" y="{h - 8:.1f}" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="9" fill="#687482">structure renderer fallback</text>
 </svg>"""
     return _svg_data_uri(svg)
-
-
-def _molecule_structure_sources(
-    smiles: str, width: int = 260, height: int = 180
-) -> dict[str, str]:
-    """Primary structure source, plus an `onerror` fallback only when it differs.
-
-    `build_molecule_structure_src` already degrades to the placeholder when RDKit
-    is missing, so carrying the placeholder a second time would embed the same
-    base64 payload twice. The fallback is only meaningful as a safety net behind
-    a real RDKit depiction.
-    """
-    primary = build_molecule_structure_src(smiles, width=width, height=height)
-    fallback = build_molecule_fallback_structure_src(smiles, width=width, height=height)
-    return {"primary": primary, "fallback": "" if primary == fallback else fallback}
 
 
 def build_llm_annotation_prompt(
@@ -2228,21 +2252,26 @@ def _render_molecule_briefs_panel(
     for brief in briefs:
         annotation = _annotation_for_molecule(annotations, str(brief["smiles"]))
         note = annotation or _molecule_panel_note(brief)
-        structure_sources = _molecule_structure_sources(str(brief["smiles"]))
+        structure_src = _structure_src(str(brief["smiles"]))
         alt = f'alt="Structure of {html.escape(str(brief["smiles"]))}"'
-        img = f'<img class="mol-structure" src="{html.escape(structure_sources["primary"])}" '
-        if structure_sources["fallback"]:
-            img += (
-                f'data-fallback-src="{html.escape(structure_sources["fallback"])}" '
-                "onerror=\"this.onerror=null;this.src=this.dataset.fallbackSrc;this.classList.add('structure-fallback');\" "
+        # `_structure_src` still returns "" if even the placeholder is
+        # rejected. An empty `src` selects no source at all, so the element
+        # renders as the browser's broken-image glyph with nothing to explain
+        # it; `_svg_node` and the graph script both drop their element in that
+        # case. Say why instead of showing a broken one.
+        if structure_src:
+            figure = (
+                f'<img class="mol-structure" src="{html.escape(structure_src)}" {alt}>'
             )
+        else:
+            figure = '<p class="muted">Structure depiction unavailable.</p>'
         cards.append(
             "\n".join(
                 [
                     '<article class="molecule-card">',
                     f"<h3><code>{html.escape(str(brief['smiles']))}</code></h3>",
                     '<div class="structure-frame">',
-                    img + alt + ">",
+                    figure,
                     "</div>",
                     "<dl>",
                     f"<dt>Role</dt><dd>{html.escape(str(brief['role']))}</dd>",
@@ -2283,13 +2312,23 @@ def _render_interactive_andor_tree(
     # Escaping only "</" would still let a "<!--<script" sequence in LLM-authored
     # annotation text push the parser into the double-escaped state, where the
     # closing </script> no longer terminates the block. Escape < > & outright;
-    # in JSON these only ever occur inside strings, and JSON.parse restores them.
+    # in JSON these only ever occur inside strings, and JavaScript literals restore them.
     data_json = (
         json.dumps(payload, ensure_ascii=False)
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
     )
+    data_token = "__OPENAI4S_ANDOR_PAYLOAD__"
+    if _ANDOR_TREE_SCRIPT.count(data_token) != 1:
+        raise RuntimeError("interactive graph template lost its data placeholder")
+    # Keep JSON's own-property semantics for keys such as ``__proto__`` while
+    # avoiding the old DOM textContent source. A JSON string literal is embedded
+    # directly in trusted script and parsed without consulting mutable DOM state.
+    data_literal = json.dumps(data_json, ensure_ascii=False)
+    tree_script = _ANDOR_TREE_SCRIPT.replace(data_token, data_literal)
     return "\n".join(
         [
             '<section class="panel andor-panel">',
@@ -2304,8 +2343,7 @@ def _render_interactive_andor_tree(
             '<div class="andor-canvas"><svg id="andor-svg" class="andor-svg" role="img" aria-label="Interactive retrosynthesis knowledge graph"></svg></div>',
             '<aside id="andor-detail" class="andor-detail"><h3>Node details</h3><p class="muted">Select a molecule or reaction node.</p></aside>',
             "</div>",
-            f'<script type="application/json" id="andor-data">{data_json}</script>',
-            f"<script>{_ANDOR_TREE_SCRIPT}</script>",
+            f'<script id="andor-data">{tree_script}</script>',
             "</section>",
         ]
     )
@@ -2370,7 +2408,6 @@ def _interactive_andor_payload(
             item, depth, bool(_children(item)), is_target=(role == "target")
         )
         annotation = _annotation_for_molecule(annotations, smiles)
-        structure_sources = _molecule_structure_sources(smiles, width=240, height=160)
         node: dict[str, Any] = {
             "id": "mol:" + smiles,
             "kind": "molecule",
@@ -2378,7 +2415,7 @@ def _interactive_andor_payload(
             "label": _short_label(smiles, 34),
             "meta": role,
             "smiles": smiles,
-            "structureSrc": structure_sources["primary"],
+            "structureSrc": _structure_src(smiles, width=240, height=160),
             "depth": depth,
             "routes": [route_rank],
             "details": {
@@ -2392,8 +2429,6 @@ def _interactive_andor_payload(
                 "PubChem": build_pubchem_query_url(smiles),
             },
         }
-        if structure_sources["fallback"]:
-            node["structureFallbackSrc"] = structure_sources["fallback"]
         return add_node(node)
 
     def reaction_node(
@@ -3425,8 +3460,8 @@ def _layout_svg_tree(
             y = 86 + leaf_index * 140
             leaf_index += 1
 
-        structure_sources = (
-            _molecule_structure_sources(_node_smiles(item), width=180, height=110)
+        structure_src = (
+            _structure_src(_node_smiles(item), width=180, height=110)
             if _is_molecule_node(item) and _node_smiles(item)
             else None
         )
@@ -3438,12 +3473,7 @@ def _layout_svg_tree(
             "meta": _node_meta_label(item, depth),
             "class": _node_visual_class(item, depth, bool(children)),
             "full": _node_display_label(item),
-            "structure_src": (
-                structure_sources["primary"] if structure_sources else None
-            ),
-            "structure_fallback_src": (
-                structure_sources["fallback"] if structure_sources else None
-            ),
+            "structure_src": structure_src,
         }
         nodes.append(layout_node)
         if parent:
@@ -3464,17 +3494,11 @@ def _svg_node(item: dict[str, Any]) -> str:
     lines = _split_label(item["label"], max_len=24, max_lines=2)
     text_lines = []
     if has_structure:
-        fallback = html.escape(str(item.get("structure_fallback_src") or ""))
         well = (
             f'<rect class="structure-well" x="{item["x"] - 90:.1f}" y="{item["y"] - 50:.1f}" '
             'width="180" height="78" rx="6" />'
         )
         image = f'<image href="{html.escape(str(item["structure_src"]))}" '
-        if fallback:
-            image += (
-                f'data-fallback-src="{fallback}" '
-                "onerror=\"this.onerror=null;this.setAttribute('href', this.dataset.fallbackSrc);this.classList.add('structure-fallback');\" "
-            )
         image += (
             f'x="{item["x"] - 84:.1f}" y="{item["y"] - 49:.1f}" '
             'width="168" height="74" preserveAspectRatio="xMidYMid meet" />'
@@ -3751,13 +3775,27 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 _ANDOR_TREE_SCRIPT = r"""
 (function () {
-  const dataEl = document.getElementById("andor-data");
   const svg = document.getElementById("andor-svg");
   const detail = document.getElementById("andor-detail");
-  if (!dataEl || !svg || !detail) return;
+  if (!svg || !detail) return;
 
   const ns = "http://www.w3.org/2000/svg";
-  const graph = JSON.parse(dataEl.textContent).graph;
+  function safeStructureSource(source) {
+    const prefix = "data:image/svg+xml;base64,";
+    if (typeof source !== "string" || !source.startsWith(prefix) || source.length > 1048576) return "";
+    const encoded = source.slice(prefix.length);
+    if (!encoded || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return "";
+    try {
+      if (btoa(atob(encoded)) !== encoded) return "";
+    } catch (_error) {
+      return "";
+    }
+    return encodeURI(source);
+  }
+  const graph = JSON.parse(/* openai4s-andor-data */ __OPENAI4S_ANDOR_PAYLOAD__).graph;
+  graph.nodes.forEach(node => {
+    node.structureSrc = safeStructureSource(node.structureSrc);
+  });
   const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
   const out = new Map();
   const linked = new Map();
@@ -3977,14 +4015,6 @@ _ANDOR_TREE_SCRIPT = r"""
         height: 78,
         preserveAspectRatio: "xMidYMid meet"
       });
-      if (node.structureFallbackSrc) moleculeImage.setAttribute("data-fallback-src", node.structureFallbackSrc);
-      moleculeImage.addEventListener("error", () => {
-        const fallback = moleculeImage.getAttribute("data-fallback-src");
-        if (fallback && moleculeImage.getAttribute("href") !== fallback) {
-          moleculeImage.setAttribute("href", fallback);
-          moleculeImage.classList.add("structure-fallback");
-        }
-      });
       group.appendChild(moleculeImage);
       splitText(node.label, 24, 2).forEach((line, idx) => group.appendChild(textNode(size.w / 2, 123 + idx * 13, line)));
       group.appendChild(textNode(size.w / 2, size.h - 9, node.meta || "", "node-meta"));
@@ -4027,15 +4057,6 @@ _ANDOR_TREE_SCRIPT = r"""
     if (node.structureSrc) {
       const img = document.createElement("img");
       img.src = node.structureSrc;
-      if (node.structureFallbackSrc) {
-        img.dataset.fallbackSrc = node.structureFallbackSrc;
-        img.addEventListener("error", () => {
-          if (img.dataset.fallbackSrc && img.src !== img.dataset.fallbackSrc) {
-            img.src = img.dataset.fallbackSrc;
-            img.classList.add("structure-fallback");
-          }
-        });
-      }
       img.alt = `Structure of ${node.smiles || node.label}`;
       detail.appendChild(img);
     }
@@ -4085,7 +4106,10 @@ _ANDOR_TREE_SCRIPT = r"""
       return;
     }
     const text = String(value);
-    if (text.startsWith("http")) {
+    // Anchored scheme match, not a `startsWith("http")` prefix: the prefix form
+    // also accepts `httpfoo:` and anything else that merely begins with those
+    // four characters, and this value is assigned straight to `href`.
+    if (/^https?:\/\//.test(text)) {
       const a = document.createElement("a");
       a.href = text;
       a.textContent = text;

@@ -62,6 +62,12 @@ singlecell = [
 chemistry = [
     "rdkit>=2024.9",
 ]
+# Coverage-guided parser fuzzing is a separate Linux-only gate. Keeping Atheris
+# out of dev preserves ordinary macOS/Windows setup and the dependency-free
+# runtime while uv.lock still pins the exact CI environment.
+fuzz = [
+    "atheris==3.1.0; python_version >= '3.12' and python_version < '3.15' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 
 [dependency-groups]
 # Dev/test tooling (uv installs these by default with `uv sync`).
@@ -94,7 +100,7 @@ dev = [
 openai4s = "openai4s.cli:main"
 
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

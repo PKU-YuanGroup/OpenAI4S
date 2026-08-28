@@ -35,5 +35,8 @@
   "scripts": {
     "test": "node tools/skills-installer/selftest.mjs"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
 }

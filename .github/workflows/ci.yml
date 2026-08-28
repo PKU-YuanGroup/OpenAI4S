@@ -451,8 +451,8 @@ jobs:
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked
-          npm install --no-save --ignore-scripts playwright@1.54.1
-          npx playwright install --with-deps ${{ matrix.engine }}
+          npm ci --ignore-scripts
+          ./node_modules/.bin/playwright install --with-deps ${{ matrix.engine }}
       - name: Start the daemon and open the real workbench
         env:
           OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-browser-smoke
@@ -555,8 +555,8 @@ jobs:
         run: OPENAI4S_STAGE0_SELF_TEST=1 node tests/browser_stage0_acceptance.mjs
       - name: Install the browser driver
         run: |
-          npm install --no-save --ignore-scripts playwright@1.54.1
-          npx playwright install --with-deps chromium
+          npm ci --ignore-scripts
+          ./node_modules/.bin/playwright install --with-deps chromium
       - name: Accept Stage 0 against a disposable daemon
         env:
           OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-stage0
@@ -632,8 +632,8 @@ jobs:
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked
-          npm install --no-save --ignore-scripts playwright@1.54.1
-          npx playwright install --with-deps chromium
+          npm ci --ignore-scripts
+          ./node_modules/.bin/playwright install --with-deps chromium
       - name: Seed two accounts and run the team-mode walk
         env:
           OPENAI4S_DATA_DIR: ${{ runner.temp }}/openai4s-team-mode

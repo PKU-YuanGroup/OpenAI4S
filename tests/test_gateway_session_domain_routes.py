@@ -75,8 +75,10 @@ def _call(handler, method, path, *, body=None, query=None):
     handler._query = lambda: query or {}
     handler._body = lambda: body or {}
     handler._json = lambda value, code=200: replies.append((code, value))
-    handler._send = lambda code, data, content_type, extra=None: replies.append(
-        (code, data, content_type, extra or {})
+    handler._send = (
+        lambda code, data, content_type, extra=None, security=None: replies.append(
+            (code, data, content_type, extra or {})
+        )
     )
     handler._api(method, path)
     assert replies

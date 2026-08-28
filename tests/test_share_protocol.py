@@ -60,6 +60,23 @@ def test_control_requires_object_with_type():
         p.decode_control(b"not json")
 
 
+def test_deeply_nested_control_json_is_a_protocol_rejection_not_a_crash():
+    """`[` a few thousand times is a valid, in-budget frame that CPython's
+    JSON decoder answers with `RecursionError` -- which is a `RuntimeError`,
+    not a `ValueError`, so it escaped `decode_control` entirely. Both readers
+    (`share/tunnel.py`, `share/relay.py`) catch only `ProtocolError`, so an
+    untrusted peer could kill the reader with a ~1 KB frame; the new
+    `fuzz/protocol_fuzzer.py` reports it as a crash for the same reason.
+    """
+    nested = b"[" * 20000
+    assert len(nested) < p.MAX_CONTROL_JSON
+
+    with pytest.raises(p.ProtocolError):
+        p.decode_control(nested)
+    with pytest.raises(p.ProtocolError):
+        p.decode_control(b'{"a":' * 20000 + b"1" + b"}" * 20000)
+
+
 def test_control_size_limit():
     huge = {"type": p.ERROR, "message": "x" * (p.MAX_CONTROL_JSON + 10)}
     with pytest.raises(p.ProtocolError):

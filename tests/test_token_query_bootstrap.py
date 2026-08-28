@@ -85,7 +85,7 @@ def gate(tmp_path, monkeypatch):
             setattr(out, "status", code),
             setattr(out, "body", obj),
         )
-        handler._send = lambda code, body, ctype, extra=None: (
+        handler._send = lambda code, body, ctype, extra=None, security=None: (
             setattr(out, "status", code),
             setattr(out, "body", body),
         )

@@ -1,0 +1,44 @@
+name: Protocol fuzzing
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 6"
+  workflow_dispatch:
+
+# A review cycle pushes to a PR branch many times; without this each push
+# starts another full 60-second fuzz run against a commit already obsolete.
+# ci.yml cancels superseded runs the same way.
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-fuzz:
+    name: Bounded protocol fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the immutable revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Python toolchain
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install the locked fuzz environment
+        run: uv sync --locked --extra fuzz
+      - name: Exercise bounded untrusted protocol inputs
+        env:
+          FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '600' || '60' }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/openai4s-fuzz-corpus"
+          uv run --locked --extra fuzz python fuzz/protocol_fuzzer.py \
+            "${RUNNER_TEMP}/openai4s-fuzz-corpus" \
+            -max_total_time="${FUZZ_SECONDS}" \
+            -max_len=1048576

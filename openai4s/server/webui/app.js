@@ -1447,6 +1447,7 @@ Object.assign(I18N.zh, {
   "viewer.renderer.error": "无法预览此产物，可继续下载原文件。",
   "viewer.renderer.matched": "匹配：{0}",
   "viewer.renderer.version": "版本 {0}",
+  "viewer.renderer.noscript": "预览不执行脚本。交互式报表请下载后在本地打开。",
   "viewer.sequence.omitted": "为保持界面流畅，其余 {0} 个残基未展开。",
   "viewer.sequence.summary": "{0} 条序列 · {1} 个残基 · {2}",
   "viewer.table.shape": "共 {0} 行 × {1} 列",
@@ -2655,6 +2656,7 @@ Object.assign(I18N.en, {
   "viewer.renderer.error": "This artifact could not be previewed. You can still download the original file.",
   "viewer.renderer.matched": "Matched by {0}",
   "viewer.renderer.version": "Version {0}",
+  "viewer.renderer.noscript": "This preview runs no scripts. Download an interactive report to use it.",
   "viewer.sequence.omitted": "{0} additional residues are collapsed to keep the viewer responsive.",
   "viewer.sequence.summary": "{0} sequences · {1} residues · {2}",
   "viewer.table.shape": "{0} rows × {1} columns",
@@ -8659,7 +8661,7 @@ function renderArtifactDescriptor(body, a, descriptor) {
   const url = artUrl(a); const nm = String(a.filename || "").toLowerCase();
   if (rendererId === "image") renderAnnotatableImage(content, a, url);
   else if (rendererId === "pdf") { const frame = el("iframe"); frame.dataset.currentPage = "1"; frame.src = url + "#page=1"; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "pdf", frame); }
-  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", "allow-scripts allow-forms"); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
+  else if (rendererId === "html-preview") { const frame = el("iframe"); frame.setAttribute("sandbox", ""); frame.src = (S.sandboxOrigin || "") + `/preview/${encodeURIComponent(a.id)}`; content.appendChild(frame); const note = el("p", "muted renderer-noscript", t("viewer.renderer.noscript")); content.appendChild(note); if (artifactWorkbenchOn()) renderLocatorComments(content, a, "html"); }
   else if (rendererId === "molecule-3d") molecule(content, url, nm);
   else if (rendererId === "chemistry-2d") renderChemistry2D(content, a, url);
   else if (rendererId === "genome-track") renderGenomeTrack(content, a, url);

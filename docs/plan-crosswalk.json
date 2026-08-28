@@ -190,7 +190,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "4c238f2ca1bedf0023572619e6a7d7a126e183b4397a58197b79e3db20d7ee30"
+      "evidence_digest": "be1477a1812bbba455540dc485c1b9ef6b2604400e90760353bf7cbbadc9a407"
     },
     {
       "source": "R2",
@@ -245,7 +245,7 @@
       "tests": "tests/test_auth_exit_matrix.py,tests/test_gateway_host_allowlist.py,tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1eb2c4191b040db52fe93ff71ac9952594a6772a3207a7e4abb9eeee5f72f51f"
+      "evidence_digest": "ad0077f1e614e75ab80285555d9a81619f1a076815825b33efcd6be33a06df6a"
     },
     {
       "source": "R3",
@@ -286,7 +286,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "ca751a1f7147b44bf4970287a27856ccdb00b9daeffc156634957c51e10895c4"
+      "evidence_digest": "dbd35e6338e8d5aea5ccd50b420b147ff472cdd03aa0272a6d77678e82501db3"
     },
     {
       "source": "R3",
@@ -439,7 +439,7 @@
       "tests": "tests/test_token_query_bootstrap.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "66d0aa6e406c80b9ccd643f0df625071a5e20622091f801412e3304428442a9e"
+      "evidence_digest": "027f42a082e7e4e9796cf50562ea3a0f01688ddec565d541914163c82fdb7753"
     },
     {
       "source": "R4",
@@ -523,7 +523,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a1c4ee00b2fa242b2e44332b9485963b1be54ac3f9dfd49a7065f94b8b27543d"
+      "evidence_digest": "58b4e953f7e7571aadcc1d78503dab126b67f2431bd822541d942471f3b5d9c3"
     },
     {
       "source": "R5",
@@ -537,7 +537,7 @@
       "tests": "tests/test_model_profile_identity.py,tests/test_model_revision_binding.py,tests/test_model_binding_recovery.py,tests/test_model_catalog.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "89274c78c714cb30e2515b3a2626fb97119ebac085ac468f05173094a1e8843a"
+      "evidence_digest": "940f4fa61d20d32bec7a07a385f456439c3aa0fb363dcbb4ea8b9ce6f08ca854"
     },
     {
       "source": "R5",
@@ -717,7 +717,7 @@
       "tests": "tests/test_public_exception_projector.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a1c4ee00b2fa242b2e44332b9485963b1be54ac3f9dfd49a7065f94b8b27543d"
+      "evidence_digest": "58b4e953f7e7571aadcc1d78503dab126b67f2431bd822541d942471f3b5d9c3"
     },
     {
       "source": "R7",
@@ -759,7 +759,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "ca751a1f7147b44bf4970287a27856ccdb00b9daeffc156634957c51e10895c4"
+      "evidence_digest": "dbd35e6338e8d5aea5ccd50b420b147ff472cdd03aa0272a6d77678e82501db3"
     },
     {
       "source": "R7",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "6ee033426db4ee3f9161d41d6d5d395d687034e2a5a467e9af4032ef6390bc3d"
+      "evidence_digest": "11eddf43340b9f8ede8e036b21ee2048aff87bd60471cd3fe36fc0be03ec0589"
     },
     {
       "source": "R7",

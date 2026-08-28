@@ -63,8 +63,10 @@ def crowded(tmp_path):
         handler = object.__new__(handler_class)
         handler._correlation_id = "req-1"
         sent: dict = {}
-        handler._send = lambda code, body, ctype, extra=None: sent.update(
-            code=code, body=json.loads(body.decode("utf-8"))
+        handler._send = (
+            lambda code, body, ctype, extra=None, security=None: sent.update(
+                code=code, body=json.loads(body.decode("utf-8"))
+            )
         )
         handler.command = "GET"
         handler.path = f"/api/v1{path}"

@@ -693,47 +693,138 @@ def _checkout_refs(job):
     return refs
 
 
-def test_every_release_job_checks_out_the_one_frozen_sha():
-    """Item 1. Five jobs used to resolve `inputs.tag || github.ref` independently.
+def test_every_release_job_checks_out_the_immutable_workflow_sha():
+    """Item 1. No checkout may resolve a dispatch input or step output.
 
     A tag is mutable, so the gates could run on one commit while the wheel came
-    from a second and the DMG from a third, with nothing recording or comparing
-    where any of them came from.
+    from a second and the DMG from a third. ``github.sha`` is fixed when the run
+    is created; the freeze job separately proves it belongs to ``origin/main``.
     """
     workflow = _workflow("release.yml")
     jobs = workflow["jobs"]
-    assert "freeze" in jobs, "no job freezes the source SHA"
-    assert jobs["freeze"]["outputs"]["sha"], "the frozen SHA is not a job output"
-    # The freeze job is the one place allowed to touch the mutable ref.
-    assert any("inputs.tag" in ref for ref in _checkout_refs(jobs["freeze"]))
+    assert "freeze" in jobs, "no job validates the source SHA"
 
     offenders = {}
     for name, job in jobs.items():
-        if name == "freeze":
-            continue
         for ref in _checkout_refs(job):
-            if "needs.freeze.outputs.sha" not in ref:
+            if ref != "${{ github.sha }}":
                 offenders.setdefault(name, []).append(ref)
     assert (
         not offenders
-    ), f"these jobs check out something other than the frozen SHA: {offenders}"
+    ), f"these jobs check out something other than github.sha: {offenders}"
+
+    validation_step = next(
+        step
+        for step in jobs["freeze"].get("steps") or []
+        if step.get("name") == "Validate the workflow SHA and optional release tag"
+    )
+    validation = str(validation_step.get("run") or "")
+    assert 'git merge-base --is-ancestor "$SHA" origin/main' in validation
+    assert '"$TAG_SHA" != "$SHA"' in validation
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in validation
+    assert validation_step["env"]["PYPI_ONLY"] == "${{ inputs.pypi_only }}"
+    assert 'if [ "$PUBLISH" = "true" ] || [ "$PYPI_ONLY" = "true" ]; then' in validation
+    assert 'git cat-file -t "$TAG"' in validation
 
 
-def test_every_job_that_checks_out_the_frozen_sha_declares_the_dependency():
-    """A `needs.freeze.outputs.sha` reference in a job that does not `need` freeze
-    resolves to the empty string, which `actions/checkout` reads as the default
-    branch -- a silent, much worse version of the original defect."""
+def test_every_downstream_checkout_waits_for_source_validation():
+    """A trusted ref is not enough unless validation happens before execution."""
     jobs = _workflow("release.yml")["jobs"]
     for name, job in jobs.items():
         if name == "freeze":
             continue
-        if any("needs.freeze" in ref for ref in _checkout_refs(job)):
+        if _checkout_refs(job):
             needs = job.get("needs") or []
             needs = [needs] if isinstance(needs, str) else needs
-            assert "freeze" in needs, (
-                f"{name} uses needs.freeze.outputs.sha without needing freeze, so "
-                f"the ref would resolve to an empty string"
+            assert (
+                "freeze" in needs
+            ), f"{name} executes a checkout without waiting for the freeze job"
+
+
+def test_every_publication_boundary_revalidates_the_remote_annotated_tag():
+    """A tag can move after ``freeze`` while a long platform build is running.
+
+    Each outward-facing boundary must fetch the current remote ref into a fixed
+    local name immediately before it mutates GitHub or PyPI, then prove both the
+    annotated object type and its peeled commit. The frozen checkout alone only
+    proves which source built the artifacts; it says nothing about a later ref
+    rewrite.
+    """
+    jobs = _workflow("release.yml")["jobs"]
+    for job_name in ("attach", "pypi", "finalize"):
+        candidates = [
+            step
+            for step in jobs[job_name].get("steps") or []
+            if str(step.get("name") or "").startswith(
+                "Revalidate the remote annotated tag"
             )
+        ]
+        assert len(candidates) == 1, f"{job_name} has no unique remote-tag check"
+        step = candidates[0]
+        assert step["env"] == {
+            "TAG": "${{ inputs.tag }}",
+            "SHA": "${{ github.sha }}",
+        }
+        # Each boundary *calls* the one implementation. Asserting substrings of
+        # three inline copies made the gate mirror the copy-paste instead of
+        # removing the need for it: three copies can drift apart and still
+        # satisfy four substring checks each.
+        assert (
+            str(step.get("run") or "").strip()
+            == 'bash scripts/revalidate_release_tag.sh "$TAG" "$SHA"'
+        )
+
+    assert jobs["pypi"]["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+    }, "the PyPI tag revalidation needs read access without widening OIDC"
+
+
+def test_the_tag_revalidation_is_one_implementation_with_teeth():
+    """The checks that used to be inline, asserted once against the script."""
+    script = (ROOT / "scripts" / "revalidate_release_tag.sh").read_text("utf-8")
+
+    assert "set -euo pipefail" in script
+    assert '"refs/tags/${TAG}:${LOCAL_REF}"' in script
+    assert 'git cat-file -t "$LOCAL_REF"' in script
+    assert '"${LOCAL_REF}^{commit}"' in script
+    assert '"$TAG_SHA" != "$SHA"' in script
+    assert script.count("exit 1") == 2, "both refusals must still be refusals"
+
+
+def test_the_container_publication_boundary_is_held_to_the_same_rule():
+    """`publish-image.yml` pushes to ghcr with `packages: write`.
+
+    It is the other publication workflow, and the release-workflow assertions
+    above cannot see it -- which is how it kept a mutable-tag checkout with the
+    token left in git config long after release.yml stopped.
+    """
+    job = _workflow("publish-image.yml")["jobs"]["publish"]
+    steps = job.get("steps") or []
+
+    checkouts = [s for s in steps if "actions/checkout" in str(s.get("uses") or "")]
+    assert checkouts, "no checkout to hold to the rule"
+    for step in checkouts:
+        with_ = step.get("with") or {}
+        assert with_.get("ref") == "${{ github.sha }}"
+        assert with_.get("persist-credentials") is False
+
+    revalidations = [
+        s for s in steps if "revalidate_release_tag.sh" in str(s.get("run") or "")
+    ]
+    assert len(revalidations) == 2, (
+        "the tag must be proved against the frozen SHA before the build and "
+        "again immediately before the outward-facing push"
+    )
+    names = [str(s.get("name") or "") for s in steps]
+    assert names.index("Push the smoke-passing image") > names.index(
+        "Revalidate the remote annotated tag before pushing"
+    )
+
+    resolve = next(s for s in steps if s.get("name") == "Resolve the release tag")
+    # Anchored: the `v[0-9]*.[0-9]*.[0-9]*` glob it replaces also matched
+    # `v1.2.3;anything`, and the value reaches later steps.
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in str(resolve.get("run") or "")
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release.yml"])

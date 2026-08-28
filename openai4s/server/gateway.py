@@ -180,7 +180,11 @@ from openai4s.server.recovery_runtime import (
 )
 from openai4s.server.reviews import ReviewPorts, ReviewService
 from openai4s.server.scientific_review import ScientificReviewService
-from openai4s.server.security_headers import security_headers
+from openai4s.server.security_headers import (
+    artifact_security_headers,
+    embeddable_security_headers,
+    security_headers,
+)
 from openai4s.server.session_deletion import SessionDeletionService
 from openai4s.server.session_domain import (
     CursorCheckpointUnavailable,
@@ -221,6 +225,10 @@ from openai4s.tools import control_tool_specs, get_tool
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
+#: The only `/static/` path served as a framed document rather than a
+#: subresource: `/ketcher` embeds it, so it needs `frame-ancestors 'self'`
+#: while every other static file keeps the shell's frame denial.
+_FRAMED_STATIC_DOCUMENT = "vendor/ketcher/index.html"
 _SHARE_ASSET_DIR = WEBUI_DIR / "share"
 # Files the read-only share viewer is allowed to serve from memory (loaded once).
 _SHARE_ASSET_NAMES = (
@@ -12411,7 +12419,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- io helpers -------------------------------------------------
         def _send(
-            self, code: int, body: bytes, ctype: str, extra: dict | None = None
+            self,
+            code: int,
+            body: bytes,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
         ) -> None:
             self._last_status = code
             self.send_response(code)
@@ -12424,9 +12437,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if request_id:
                 self.send_header("X-Request-Id", _sanitize_header_value(request_id))
             # Applied here rather than at the HTML route so no response can be
-            # added later that quietly opts out.
-            for k, v in security_headers(WEBUI_DIR / "index.html").items():
-                self.send_header(k, v)
+            # added later that quietly opts out. `is None` rather than
+            # truthiness: an empty profile is a caller that computed one and
+            # got nothing, and silently answering that with the permissive UI
+            # shell policy is the one direction this must never fail in.
+            hardened = security if security is not None else security_headers()
+            for k, v in hardened.items():
+                self.send_header(k, _sanitize_header_value(v))
             for k, v in (extra or {}).items():
                 self.send_header(k, _sanitize_header_value(v))
             self.end_headers()
@@ -13415,10 +13432,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._serve_artifact(path[len("/preview/") :], force_html=True)
                     return
                 if method == "GET" and path == "/ketcher":
+                    # `app.js` reaches this document only as a child frame of
+                    # the workbench, so the shell's DENY / frame-ancestors
+                    # 'none' meant the editor rendered nothing at all. Its own
+                    # script stays same-origin-only.
                     self._send(
                         200,
                         ketcher_document(cfg, parse_qs(parsed.query)),
                         "text/html; charset=utf-8",
+                        security=embeddable_security_headers(),
                     )
                     return
                 # unknown non-API GET -> SPA shell (deep-linking)
@@ -13500,22 +13522,40 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 target = Path(target_s)
                 if target.is_file():
                     ctype = _guess_ctype(target.name)
-                    self._serve_file(target, ctype)
+                    # The one static document that is itself framed: `/ketcher`
+                    # embeds the vendored editor's entry page. Everything else
+                    # under /static/ keeps the shell's frame denial.
+                    security = (
+                        embeddable_security_headers()
+                        if rel == _FRAMED_STATIC_DOCUMENT
+                        else None
+                    )
+                    self._serve_file(target, ctype, security=security)
                 else:
                     self._json({"error": "not found"}, 404)
                 return True
             return False
 
-        def _serve_file(self, path: Path, ctype: str) -> None:
+        def _serve_file(
+            self,
+            path: Path,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
+        ) -> None:
             try:
                 body = path.read_bytes()
             except OSError:
                 self._json({"error": "not found"}, 404)
                 return
-            self._send(200, body, ctype)
+            self._send(200, body, ctype, extra=extra, security=security)
 
         def _stream_file(
-            self, path: Path, ctype: str, extra: dict | None = None
+            self,
+            path: Path,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
         ) -> None:
             """Send a potentially large local file without loading it into RAM."""
             try:
@@ -13532,9 +13572,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # This path streams artifact bytes — agent-authored content, so
                 # the one that most needs nosniff and a closed CSP. It builds
                 # its own headers instead of going through _send, so it has to
-                # opt in explicitly.
-                for key, value in security_headers(WEBUI_DIR / "index.html").items():
-                    self.send_header(key, value)
+                # opt in explicitly — and it takes the same `security` profile
+                # as `_serve_file`, or the two writers of one fact drift.
+                profile = security if security is not None else security_headers()
+                for key, value in profile.items():
+                    self.send_header(key, _sanitize_header_value(value))
                 for key, value in (extra or {}).items():
                     self.send_header(key, _sanitize_header_value(value))
                 self.end_headers()
@@ -13546,6 +13588,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- artifact bytes --------------------------------------------
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
+            # Artifact bytes are user/agent-authored and may be navigated to as
+            # a top-level document, outside the Workbench iframe's sandbox.
+            # Use an embeddable but inactive response profile instead of the UI
+            # shell's frame denial. The policy sandbox gives the document an
+            # opaque origin even when someone navigates to it directly. Built
+            # only on the two paths that actually send bytes; the 404 exits
+            # below have no use for it.
             # Canonical trusted-delivery URLs live below the reserved
             # ``versions/`` sub-path.  They must resolve one exact version or
             # 404; the compatible Artifact-id/filename fallbacks below are
@@ -13581,7 +13630,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 if force_html:
                     ctype = "text/html; charset=utf-8"
-                self._send(200, body, ctype)
+                self._send(
+                    200,
+                    body,
+                    ctype,
+                    security=artifact_security_headers(),
+                )
                 return
             path = store.resolve_artifact_path(decoded_ident)
             meta = None
@@ -13621,7 +13675,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             ctype = (meta or {}).get("content_type") or _guess_ctype(Path(path).name)
             if force_html:
                 ctype = "text/html; charset=utf-8"
-            self._serve_file(Path(path), ctype)
+            self._serve_file(
+                Path(path),
+                ctype,
+                security=artifact_security_headers(),
+            )
 
         def _serve_artifact_bundle(self, artifacts: list[dict], filename: str) -> None:
             """Download a frame/project's current artifact versions as one zip."""
@@ -13666,6 +13724,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     tmp_path,
                     "application/zip",
                     {"Content-Disposition": f'attachment; filename="{safe_name}"'},
+                    security=artifact_security_headers(),
                 )
             finally:
                 try:

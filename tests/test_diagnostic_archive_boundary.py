@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -321,7 +322,9 @@ def test_a_credential_in_a_url_fragment_is_redacted():
 
     cleaned = redact_url(FRAGMENT_URL)
     assert FRAGMENT_TOKEN not in cleaned, cleaned
-    assert "idp.example.org" in cleaned
+    parsed = urlsplit(cleaned)
+    assert parsed.scheme == "https"
+    assert parsed.hostname == "idp.example.org"
 
 
 # --------------------------------------------------------------------------
