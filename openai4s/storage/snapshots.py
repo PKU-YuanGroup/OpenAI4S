@@ -597,6 +597,95 @@ class WorkspaceCAS:
                 pass
         return {**preview, "applied": True}
 
+    def materialize(
+        self,
+        tree_id: str,
+        destination: str | Path,
+        *,
+        paths: Iterable[str] | None = None,
+        file_mode: int | None = None,
+    ) -> dict[str, Any]:
+        """Write a tree (or selected paths) into ``destination``.
+
+        Unlike :meth:`restore`, this does not delete extra files in the
+        destination and never consults a baseline. It is the child-scratch and
+        parent-materialize primitive: published Artifact versions are not
+        touched.
+        """
+
+        with self._lock:
+            return self._materialize_locked(
+                tree_id, destination, paths=paths, file_mode=file_mode
+            )
+
+    def _materialize_locked(
+        self,
+        tree_id: str,
+        destination: str | Path,
+        *,
+        paths: Iterable[str] | None = None,
+        file_mode: int | None = None,
+    ) -> dict[str, Any]:
+        base = Path(destination).expanduser().resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        tree = self.get_tree(tree_id)
+        wanted = None if paths is None else {_safe_relative(item) for item in paths}
+        written: list[str] = []
+        for entry in tree.get("entries") or []:
+            relative = _safe_relative(str(entry.get("path") or ""))
+            if wanted is not None and relative not in wanted:
+                continue
+            target = (base / relative).resolve()
+            if base not in target.parents and target != base:
+                raise ValueError(f"materialize escaped destination: {relative}")
+            mode = (
+                int(file_mode)
+                if file_mode is not None
+                else int(entry.get("mode") or 0o600)
+            )
+            self._atomic_write(
+                target,
+                self.get_blob(str(entry["blob"])),
+                mode=mode & 0o777,
+            )
+            written.append(relative)
+        return {
+            "tree_id": tree_id,
+            "destination": str(base),
+            "written": written,
+            "deleted_versions": 0,
+        }
+
+    def diff_trees(self, before_tree_id: str, after_tree_id: str) -> dict[str, Any]:
+        """Compare two captured trees. Used to isolate a child's outputs."""
+
+        with self._lock:
+            before = self._entry_map(self.get_tree(before_tree_id))
+            after = self._entry_map(self.get_tree(after_tree_id))
+        added: list[str] = []
+        changed: list[str] = []
+        removed: list[str] = []
+        unchanged: list[str] = []
+        for path in sorted(set(before) | set(after)):
+            left = before.get(path)
+            right = after.get(path)
+            if left is None:
+                added.append(path)
+            elif right is None:
+                removed.append(path)
+            elif self._same_entry(left, right):
+                unchanged.append(path)
+            else:
+                changed.append(path)
+        return {
+            "before_tree_id": before_tree_id,
+            "after_tree_id": after_tree_id,
+            "added": added,
+            "changed": changed,
+            "removed": removed,
+            "unchanged": unchanged,
+        }
+
     def _blob_path(self, blob_id: str) -> Path:
         if len(blob_id) != 64 or any(ch not in "0123456789abcdef" for ch in blob_id):
             raise ValueError("invalid snapshot blob id")

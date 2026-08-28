@@ -28,12 +28,23 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.cell_record import DelegatedCellRecorder, compose_cell_hooks
+from openai4s.agent.delegation_workspace import (
+    materialize_outputs_into_parent,
+    prepare_child_scratch,
+    private_scratch_enabled,
+    publish_child_outputs,
+)
 from openai4s.agent.models import KernelEnvSpec
 from openai4s.agent.runtime import CompactionPolicy
 from openai4s.config import Config
 from openai4s.host.delegation_policy import child_execution_policy
 from openai4s.observability import carry_context
 from openai4s.security.sandbox import KernelReadIsolation
+from openai4s.storage.delegation_attempts import (
+    DelegationRequestConflict,
+    delegation_identity,
+    request_sha256,
+)
 
 FANOUT_CAP = 48
 SESSION_CAP = 1000
@@ -60,6 +71,12 @@ _LIMITATION_ALIASES = ("limitations", "caveats", "限制", "局限性")
 
 class DelegationError(RuntimeError):
     pass
+
+
+class DelegationConflictError(DelegationError):
+    """Same durable request key, different digest — HTTP 409."""
+
+    http_status = 409
 
 
 class DelegationBudget:
@@ -95,6 +112,7 @@ class DelegationBudget:
         self._store = store
         self._owner_instance_id = owner_instance_id
         self._runner_instance_id = runner_instance_id
+        self._request_index: dict[tuple[str, str], dict[str, Any]] = {}
 
     def reserve(
         self,
@@ -132,6 +150,109 @@ class DelegationBudget:
                 self._sequence += 1
                 child_ids.append(f"child-{depth}-{self._sequence}")
             return child_ids
+
+    def reserve_request(
+        self,
+        *,
+        depth: int,
+        parent_child_id: str | None,
+        parent_action_group_id: str,
+        native_call_id: str,
+        request_sha256: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Reserve one child under a durable request identity."""
+
+        group = str(parent_action_group_id or "").strip()
+        call = str(native_call_id or "").strip()
+        digest = str(request_sha256 or "").strip()
+        if not group or not call or not digest:
+            raise ValueError("delegation request identity is incomplete")
+        with self._lock:
+            if self._durable:
+                try:
+                    reservation = self._store.reserve_delegation_children(
+                        root_frame_id=self.root_frame_id,
+                        owner_instance_id=self._owner_instance_id,
+                        runner_instance_id=self._runner_instance_id,
+                        count=1,
+                        depth=depth,
+                        parent_child_id=parent_child_id,
+                        parent_action_group_id=group,
+                        native_call_id=call,
+                        request_sha256=digest,
+                        payload=payload,
+                    )
+                except DelegationRequestConflict as error:
+                    raise DelegationConflictError(str(error)) from error
+                except (RuntimeError, KeyError) as error:
+                    raise DelegationError(str(error)) from error
+                self._sync_usage_locked(reservation.get("budget") or {})
+                return reservation
+            key = (group, call)
+            existing = self._request_index.get(key)
+            if existing is not None:
+                if existing["request_sha256"] != digest:
+                    raise DelegationConflictError(
+                        f"delegation request digest conflict for native_call_id {call!r}"
+                    )
+                return {**existing, "reused": True}
+            if self._spawned + 1 > self.limit:
+                raise DelegationError(
+                    f"session spawn cap reached ({self.limit}); "
+                    f"already spawned {self._spawned}, requested 1"
+                )
+            self._spawned += 1
+            self._active += 1
+            self._sequence += 1
+            child_id = f"child-{depth}-{self._sequence}"
+            record = {
+                "child_ids": [child_id],
+                "child_id": child_id,
+                "request_id": f"dreq-mem-{self._sequence}",
+                "attempt_id": f"datm-mem-{self._sequence}",
+                "attempt_no": 1,
+                "request_sha256": digest,
+                "reused": False,
+                "payload": dict(payload or {}),
+                "budget": {
+                    "root_frame_id": self.root_frame_id,
+                    "limit": self.limit,
+                    "spawned": self._spawned,
+                    "active": self._active,
+                    "remaining": max(0, self.limit - self._spawned),
+                },
+            }
+            self._request_index[key] = record
+            return record
+
+    def continue_request(
+        self,
+        *,
+        child_id: str,
+        depth: int,
+        parent_child_id: str | None,
+    ) -> dict[str, Any]:
+        """Spawn the next attempt. Restore never calls this."""
+
+        if self._durable:
+            try:
+                reservation = self._store.continue_delegation_request(
+                    root_frame_id=self.root_frame_id,
+                    owner_instance_id=self._owner_instance_id,
+                    runner_instance_id=self._runner_instance_id,
+                    child_id=child_id,
+                    depth=depth,
+                    parent_child_id=parent_child_id,
+                )
+            except DelegationRequestConflict as error:
+                raise DelegationConflictError(str(error)) from error
+            except (RuntimeError, KeyError) as error:
+                raise DelegationError(str(error)) from error
+            with self._lock:
+                self._sync_usage_locked(reservation.get("budget") or {})
+            return reservation
+        raise DelegationError("continue requires durable delegation storage")
 
     def release(self, count: int = 1) -> None:
         """Release active slots without refunding cumulative spawn usage."""
@@ -333,6 +454,10 @@ class _Child:
         self._lock = threading.RLock()
         self._inbox: deque[_SteeringMessage] = deque()
         self._messages: list[_SteeringMessage] = []
+        self.request_id: str | None = None
+        self.attempt_id: str | None = None
+        self.artifact_refs: list[dict[str, Any]] = []
+        self.completion = threading.Event()
 
     def begin(self, max_turns: int) -> bool:
         with self._lock:
@@ -395,6 +520,7 @@ class _Child:
             self.finished_at = self._clock()
             self._discard_queued_locked()
             self._release_budget_locked()
+            self.completion.set()
             return True
 
     def finish_failed(self, error: str, result: dict[str, Any]) -> bool:
@@ -408,6 +534,7 @@ class _Child:
             self.finished_at = self._clock()
             self._discard_queued_locked()
             self._release_budget_locked()
+            self.completion.set()
             return True
 
     def stopped_result(self) -> dict[str, Any]:
@@ -456,6 +583,9 @@ class _Child:
                 "parent_child_id": self.parent_child_id,
                 "parent_frame_id": self.parent_frame_id,
                 "frame_id": self.frame_id,
+                "request_id": self.request_id,
+                "attempt_id": self.attempt_id,
+                "artifact_refs": list(self.artifact_refs),
                 "created_at": self.created_at,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
@@ -492,6 +622,9 @@ class _Child:
                 "overrides": _public_overrides(self.spec),
                 "result": self.result,
                 "error": self.error,
+                "request_id": self.request_id,
+                "attempt_id": self.attempt_id,
+                "artifact_refs": list(self.artifact_refs),
                 # Every terminal persists its stop_reason: the stopped reason
                 # text for stopped children (unchanged), the engine's
                 # stop_reason (submitted/max_turns/error) for the rest.
@@ -569,6 +702,14 @@ class _Child:
         if child.status == "stopped":
             child.stop_event.set()
         child._budget_released = True
+        child.request_id = value.get("request_id")
+        child.attempt_id = value.get("attempt_id")
+        refs = value.get("artifact_refs")
+        child.artifact_refs = (
+            [dict(item) for item in refs] if isinstance(refs, list) else []
+        )
+        if child.status in _TERMINAL:
+            child.completion.set()
         return child
 
     def _mark_stopped_locked(self, reason: str) -> None:
@@ -597,6 +738,7 @@ class _Child:
         self._discard_queued_locked()
         if not was_terminal:
             self._release_budget_locked()
+        self.completion.set()
 
     def _discard_queued_locked(self) -> None:
         self._inbox.clear()
@@ -1051,6 +1193,7 @@ class DelegationRunner:
         trusted_capture_admission: Callable[[], str | None] | None = None,
         trusted_capture_lease: Callable[[], Any] | None = None,
         env: KernelEnvSpec | None = None,
+        private_scratch: bool | None = None,
     ) -> None:
         if depth < 0 or depth > MAX_DEPTH:
             raise ValueError(f"delegation depth must be between 0 and {MAX_DEPTH}")
@@ -1080,6 +1223,14 @@ class DelegationRunner:
         # preserves the CLI contract (sys.executable, no env). Re-stamped per
         # Web turn alongside workspace/read_isolation.
         self.env = env
+        # Feature-flagged child-private scratch. Default follows the strict
+        # env flag (off). Tests pass an explicit bool so they do not mutate
+        # process environment.
+        self.private_scratch = (
+            bool(private_scratch)
+            if private_scratch is not None
+            else private_scratch_enabled()
+        )
         # Web embedding supplies the Artifact boundary.  The delegation core
         # only forwards this duck-typed hook and remains independent of server
         # storage or UI projections.
@@ -1193,6 +1344,89 @@ class DelegationRunner:
             count=n,
         )
 
+    def _child_from_reservation(
+        self, reservation: Mapping[str, Any], spec: dict[str, Any]
+    ) -> tuple[_Child, bool]:
+        child_id = str((reservation.get("child_ids") or [""])[0])
+        reused = bool(reservation.get("reused"))
+        existing = self._tree.children.get(child_id) or self._children.get(child_id)
+        if reused:
+            child = existing or self._restore_one_child(child_id)
+            if child is None:
+                raise DelegationError(
+                    f"reused delegation child {child_id!r} is not available"
+                )
+            if reservation.get("request_id"):
+                child.request_id = str(reservation["request_id"])
+            if reservation.get("attempt_id"):
+                child.attempt_id = str(reservation["attempt_id"])
+            return child, True
+        child = _Child(
+            child_id,
+            spec.get("name"),
+            spec,
+            depth=self.depth + 1,
+            parent_child_id=self.parent_child_id,
+            parent_frame_id=self.parent_frame_id,
+            store=self.store,
+            budget=self.budget,
+            clock=self._tree.clock,
+        )
+        child.request_id = (
+            str(reservation["request_id"]) if reservation.get("request_id") else None
+        )
+        child.attempt_id = (
+            str(reservation["attempt_id"]) if reservation.get("attempt_id") else None
+        )
+        self._children[child.child_id] = child
+        self._tree.register(child)
+        return child, False
+
+    def _restore_one_child(self, child_id: str) -> _Child | None:
+        if self.store is None or not self.parent_frame_id:
+            return None
+        tree = self.store.delegation_tree(self.parent_frame_id)
+        for item in tree.get("children") or ():
+            if str(item.get("child_id") or "") != child_id:
+                continue
+            child = _Child.from_persisted(
+                item,
+                store=self.store,
+                budget=self.budget,
+                clock=self._tree.clock,
+            )
+            self._tree.children[child.child_id] = child
+            if child.parent_child_id == self.parent_child_id:
+                self._children[child.child_id] = child
+            return child
+        return None
+
+    def _reuse_child(self, child: _Child, *, wait: bool, is_list: bool) -> Any:
+        """Return an existing child without spawning and without charging budget."""
+
+        if child.status in _TERMINAL:
+            result = self._enrich_result(child.result or child.snapshot(), child)
+            return [result] if is_list else result
+        if wait:
+            child.completion.wait()
+            result = self._enrich_result(child.result or child.snapshot(), child)
+            return [result] if is_list else result
+        handle = self._enrich_result(child.snapshot(), child)
+        return [handle] if is_list else handle
+
+    @staticmethod
+    def _enrich_result(
+        result: Mapping[str, Any] | None, child: _Child
+    ) -> dict[str, Any]:
+        payload = dict(result or {})
+        payload.setdefault("child_id", child.child_id)
+        payload["request_id"] = child.request_id
+        payload["attempt_id"] = child.attempt_id
+        payload["artifact_refs"] = list(
+            payload.get("artifact_refs") or child.artifact_refs or []
+        )
+        return payload
+
     def _run_one(self, child: _Child) -> dict[str, Any]:
         spec = child.spec
         child_cfg = _child_config(self.cfg, spec)
@@ -1239,6 +1473,16 @@ class DelegationRunner:
         token = _ACTIVE_DELEGATION.set((self._tree, child.child_id))
         agent: Any | None = None
         step_forwarder: _ChildStepForwarder | None = None
+        scratch = None
+        child_workspace = self.workspace
+        if self.private_scratch and self.workspace:
+            scratch = prepare_child_scratch(
+                data_dir=self.cfg.data_dir,
+                root_frame_id=str(self.parent_frame_id or "cli"),
+                child_id=child.child_id,
+                parent_workspace=self.workspace,
+            )
+            child_workspace = str(scratch.directory)
         try:
             from openai4s.agent.loop import Agent
 
@@ -1258,7 +1502,7 @@ class DelegationRunner:
                 delegate_depth=child.depth,
                 cancellation=_ChildCancellation(child),
                 context_policy=_SteeringContextPolicy(child_cfg, child, self._tree),
-                workspace=self.workspace,
+                workspace=child_workspace,
                 read_isolation=self.read_isolation,
                 cell_execution_hooks=compose_cell_hooks(recorder, capture_hooks),
                 delegated_cell_hooks_factory=self.cell_hooks_factory,
@@ -1310,6 +1554,7 @@ class DelegationRunner:
                 "environment": self._child_environment(child_frame_id),
                 "limitations": [],
                 "artifacts": self._child_artifacts(child_frame_id),
+                "artifact_refs": self._publish_scratch(child, scratch, child_frame_id),
             }
             child.finish_failed(detail, failed)
             self._persist_status(child, "failed")
@@ -1330,6 +1575,7 @@ class DelegationRunner:
             return child.stopped_result()
 
         submitted = result.get("submitted_output") or {}
+        artifact_refs = self._publish_scratch(child, scratch, child_frame_id)
         out = {
             "child_id": child.child_id,
             "name": spec.get("name"),
@@ -1343,6 +1589,9 @@ class DelegationRunner:
             "environment": self._child_environment(child_frame_id),
             "limitations": _completion_limitations(submitted.get("output")),
             "artifacts": self._child_artifacts(child_frame_id),
+            "artifact_refs": artifact_refs,
+            "request_id": child.request_id,
+            "attempt_id": child.attempt_id,
         }
         schema = spec.get("output_schema")
         if schema is not None:
@@ -1440,6 +1689,23 @@ class DelegationRunner:
         except Exception:  # noqa: BLE001 - evidence lookup must not fail the child
             return []
         return [str(name) for name in names or ()]
+
+    def _publish_scratch(
+        self,
+        child: _Child,
+        scratch: Any,
+        child_frame_id: str | None,
+    ) -> list[dict[str, Any]]:
+        if scratch is None:
+            return list(child.artifact_refs)
+        refs = publish_child_outputs(
+            scratch,
+            store=self.store,
+            child_frame_id=child_frame_id,
+            root_frame_id=self.parent_frame_id,
+        )
+        child.artifact_refs = refs
+        return refs
 
     def _run_with_retries(self, child: _Child) -> dict[str, Any]:
         """Run one child, then apply its bounded ``retries`` option.
@@ -1599,25 +1865,52 @@ class DelegationRunner:
                     "retries requires wait: true — collect an asynchronous "
                     "child and re-delegate explicitly instead"
                 )
-        child_ids = self._reserve(len(items))
-
-        children: list[_Child] = []
-        for child_id, child_spec in zip(child_ids, child_specs):
-            child = _Child(
-                child_id,
-                child_spec.get("name"),
-                child_spec,
-                depth=self.depth + 1,
-                parent_child_id=self.parent_child_id,
-                parent_frame_id=self.parent_frame_id,
-                store=self.store,
-                budget=self.budget,
-                clock=self._tree.clock,
-            )
+        identity = delegation_identity(spec)
+        if identity is not None and len(child_specs) == 1:
             with self._tree.lock:
-                self._children[child.child_id] = child
-            self._tree.register(child)
-            children.append(child)
+                if self.parent_child_id is not None:
+                    parent = self._tree.children.get(self.parent_child_id)
+                    if (
+                        parent is None
+                        or parent.stop_event.is_set()
+                        or parent.snapshot()["status"] != "running"
+                    ):
+                        raise DelegationError(
+                            "cannot delegate from a stopped or finished child"
+                        )
+                reservation = self.budget.reserve_request(
+                    depth=self.depth,
+                    parent_child_id=self.parent_child_id,
+                    parent_action_group_id=identity[0],
+                    native_call_id=identity[1],
+                    request_sha256=request_sha256(child_specs[0]),
+                    payload=child_specs[0],
+                )
+                child, reused = self._child_from_reservation(
+                    reservation, child_specs[0]
+                )
+            if reused:
+                return self._reuse_child(child, wait=wait, is_list=is_list)
+            children = [child]
+        else:
+            child_ids = self._reserve(len(items))
+            children = []
+            for child_id, child_spec in zip(child_ids, child_specs):
+                child = _Child(
+                    child_id,
+                    child_spec.get("name"),
+                    child_spec,
+                    depth=self.depth + 1,
+                    parent_child_id=self.parent_child_id,
+                    parent_frame_id=self.parent_frame_id,
+                    store=self.store,
+                    budget=self.budget,
+                    clock=self._tree.clock,
+                )
+                with self._tree.lock:
+                    self._children[child.child_id] = child
+                self._tree.register(child)
+                children.append(child)
 
         # A pooled thread starts with whatever context it was created in --
         # `ThreadPoolExecutor.submit` copies nothing -- so a child would run
@@ -1711,8 +2004,68 @@ class DelegationRunner:
                         "error": detail,
                     }
                     child.finish_failed(detail, failed)
-            output.append(child.result or child.snapshot())
+            output.append(self._enrich_result(child.result or child.snapshot(), child))
         return output
+
+    def continue_child(self, child_id: str, *, wait: bool = True) -> dict[str, Any]:
+        """Create the next attempt for a durable request.
+
+        Restore never calls this. After a daemon restart the original child
+        stays stopped until the caller continues it explicitly.
+        """
+
+        if self.cell_hooks_factory is not None and not wait:
+            raise DelegationError(
+                "parallel delegation is unavailable while trusted Artifact "
+                "capture is enabled; delegate one child with wait=true"
+            )
+        reservation = self.budget.continue_request(
+            child_id=child_id,
+            depth=self.depth,
+            parent_child_id=self.parent_child_id,
+        )
+        payload = dict(reservation.get("payload") or {})
+        if not payload.get("request"):
+            payload["request"] = payload.get("task") or payload.get("name") or child_id
+        with self._tree.lock:
+            child, _reused = self._child_from_reservation(reservation, payload)
+        if wait:
+            return self._enrich_result(self._run_with_retries(child), child)
+        child.set_future(self._pool.submit(carry_context(self._run_one), child))
+        return self._enrich_result(child.snapshot(), child)
+
+    def materialize_child(
+        self,
+        child_id: str,
+        *,
+        paths: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        """Copy published child Artifact versions into the parent workspace.
+
+        Never deletes Artifact versions.
+        """
+
+        if not self.workspace:
+            raise DelegationError("materialize requires a parent workspace")
+        with self._tree.lock:
+            child = self._children.get(child_id) or self._tree.children.get(child_id)
+        if child is None:
+            child = self._restore_one_child(child_id)
+        if child is None:
+            raise KeyError(f"no such child {child_id!r}")
+        refs = list(child.artifact_refs)
+        if (
+            not refs
+            and child.result
+            and isinstance(child.result.get("artifact_refs"), list)
+        ):
+            refs = list(child.result["artifact_refs"])
+        return materialize_outputs_into_parent(
+            parent_workspace=self.workspace,
+            artifact_refs=refs,
+            store=self.store,
+            paths=paths,
+        )
 
     def stop_child(self, child_id: str) -> dict[str, Any]:
         return self._stop_subtree(
@@ -2209,6 +2562,7 @@ def _public_overrides(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "DelegationBudget",
+    "DelegationConflictError",
     "DelegationError",
     "DelegationRunner",
     "FANOUT_CAP",

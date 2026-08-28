@@ -152,6 +152,10 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # Atomic Auto Mode budget reservations and the persistent progress
         # circuit. Additive; existing runs stay legacy/read-only.
         "auto_mode_budget_admission",
+        # Durable request identity separate from attempt identity. Restore
+        # does not auto-resume; only an explicit continue creates the next
+        # attempt. Additive; rollback does not delete Artifact versions.
+        "delegation_requests_and_attempts",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

@@ -236,6 +236,47 @@ def test_session_deletion_removes_delegation_projection(monkeypatch):
     store.delete_frame(root)
 
     assert store.delegation_tree(root)["initialized"] is False
+    leftover = store._conn.execute(
+        "SELECT COUNT(*) FROM delegation_requests WHERE root_frame_id=?",
+        (root,),
+    ).fetchone()[0]
+    assert leftover == 0
+
+
+def test_restore_does_not_create_a_new_attempt(monkeypatch):
+    monkeypatch.setattr(loop_mod.Agent, "run", lambda self, task: _submitted())
+    cfg, store, root = _root_store()
+    first = DelegationRunner(
+        cfg,
+        parent_frame_id=root,
+        store=store,
+        owner_instance_id="daemon-a",
+        runner_instance_id="runner-a",
+    )
+    first(
+        {
+            "request": "durable identity",
+            "parent_action_group_id": "g",
+            "native_call_id": "c",
+        }
+    )
+    first.close()
+    before = store._conn.execute("SELECT COUNT(*) FROM delegation_attempts").fetchone()[
+        0
+    ]
+    reopened = DelegationRunner(
+        cfg,
+        parent_frame_id=root,
+        store=store,
+        owner_instance_id="daemon-b",
+        runner_instance_id="runner-b",
+    )
+    after = store._conn.execute("SELECT COUNT(*) FROM delegation_attempts").fetchone()[
+        0
+    ]
+    assert after == before == 1
+    assert reopened.children()[0]["status"] == "done"
+    reopened.close()
 
 
 def _seeded_child(store, root, child):

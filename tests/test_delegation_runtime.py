@@ -11,6 +11,9 @@ import pytest
 import openai4s.agent.delegation as deleg_mod
 import openai4s.agent.loop as loop_mod
 from openai4s.agent.delegation import (
+    FANOUT_CAP,
+    MAX_DEPTH,
+    SESSION_CAP,
     DelegationBudget,
     DelegationError,
     DelegationRunner,
@@ -907,3 +910,30 @@ def test_cli_runner_without_step_sink_leaves_child_dispatcher_unwired(monkeypatc
         runner.close()
 
     assert observed["on_step"] is None
+
+
+def test_collect_is_additive_with_request_attempt_and_artifact_refs(monkeypatch):
+    monkeypatch.setattr(loop_mod.Agent, "run", lambda self, task: _submitted(task))
+    runner = DelegationRunner(get_config())
+    try:
+        handle = runner({"request": "collect me", "wait": False})
+        collected = runner.collect({"child_ids": [handle["child_id"]]})
+    finally:
+        runner.close()
+    assert set(collected[0]) >= {"request_id", "attempt_id", "artifact_refs"}
+    assert collected[0]["artifact_refs"] == []
+
+
+def test_private_scratch_does_not_lift_trusted_capture_parallel_limit():
+    runner = DelegationRunner(
+        get_config(),
+        cell_hooks_factory=lambda _frame_id: object(),
+        private_scratch=True,
+    )
+    try:
+        with pytest.raises(DelegationError, match="trusted Artifact capture"):
+            runner({"request": ["a", "b"]})
+        assert runner.delegation_stats()["spawned_session"] == 0
+        assert (FANOUT_CAP, SESSION_CAP, MAX_DEPTH) == (48, 1000, 4)
+    finally:
+        runner.close()
