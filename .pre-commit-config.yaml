@@ -46,4 +46,4 @@ repos:
 
 # Never reformat: vendored third-party assets and Skills, plus captured test
 # fixtures. These trees preserve byte-exact upstream or real-world payloads.
-exclude: '^(openai4s/server/webui/vendor/|skills/bioskills/|tests/fixtures/)'
+exclude: '^(openai4s/server/webui/vendor/|openai4s/server/webui/dist/|skills/bioskills/|tests/fixtures/)'
