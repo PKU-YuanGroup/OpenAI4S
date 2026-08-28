@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "collections": {
+    "bioskills": {
+      "declaration": "legacy",
+      "mode": "unknown",
+      "domains": []
+    }
+  },
+  "skills": {}
+}

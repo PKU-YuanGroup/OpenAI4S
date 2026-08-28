@@ -14,6 +14,10 @@ from typing import Any
 
 from openai4s import execution_principal
 from openai4s.skills_loader import SkillLoader, SkillVersionService, frontmatter_edit
+from openai4s.skills_loader.capabilities import (
+    compose_readiness,
+    unknown_capability,
+)
 from openai4s.skills_loader.loader import skill_readiness
 
 #: Every domain failure this service can report, as a stable machine-readable
@@ -393,6 +397,7 @@ class SkillCustomizationService:
                 else []
             )
             readiness = item.get("readiness") if isinstance(item, dict) else None
+            capabilities = item.get("capabilities") if isinstance(item, dict) else None
             if not isinstance(readiness, dict):
                 # A loader that answers without a readiness block still gets
                 # one, from the same function the loader uses -- not a
@@ -400,7 +405,22 @@ class SkillCustomizationService:
                 # Local-only by construction: `skill_readiness` looks for
                 # `nvidia-smi` on PATH and never runs it, so building a row
                 # costs no subprocess and no socket.
+                network = unknown_capability(source="projection")
+                if isinstance(item, dict) and isinstance(item.get("network"), object):
+                    network = getattr(item, "network", network)
+                readiness = compose_readiness(requirements, network)
+            if not isinstance(readiness, dict):
                 readiness = skill_readiness(requirements)
+            if "blocked_on" not in readiness:
+                readiness = {
+                    **readiness,
+                    "blocked_on": list(readiness.get("blocked_on") or []),
+                    "checked_locally": True,
+                    "probed": False,
+                    "ready": str(readiness.get("state") or "") == "ready",
+                }
+            if not isinstance(capabilities, dict):
+                capabilities = unknown_capability(source="projection").public_dict()
             installation = None
             if self.versions is not None and item_scope == self.scope:
                 try:
@@ -437,6 +457,12 @@ class SkillCustomizationService:
                     # the toggle that they made the Skill work.
                     "requirements": requirements,
                     "readiness": readiness,
+                    "ready": (
+                        bool(readiness.get("ready"))
+                        if "ready" in readiness
+                        else str(readiness.get("state") or "") == "ready"
+                    ),
+                    "capabilities": capabilities,
                     "versioned": bool(installation),
                     "activeVersionId": (
                         installation.get("active_version_id")

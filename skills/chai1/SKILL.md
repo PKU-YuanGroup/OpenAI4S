@@ -11,6 +11,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: Chai-1
   # github.com/chaidiscovery/chai-lab/blob/main/LICENSE: Apache-2.0

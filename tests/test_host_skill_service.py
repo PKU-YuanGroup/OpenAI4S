@@ -37,6 +37,8 @@ def test_skill_service_keeps_load_and_lookup_failure_contracts(tmp_path):
     loaded = service.load("Fourier signal")
     assert loaded["name"] == "spectral"
     assert "Fourier analysis" in loaded["content"]
+    assert loaded["capabilities"]["network"]["mode"] == "unknown"
+    assert loaded["network_manifest_digest"]
     assert service.load("no matching quantum lattice skill") == {
         "error": "no such skill: 'no matching quantum lattice skill'"
     }

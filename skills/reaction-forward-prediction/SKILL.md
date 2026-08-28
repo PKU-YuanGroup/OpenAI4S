@@ -3,6 +3,10 @@ name: reaction-forward-prediction
 description: Predict ranked products from reactants and reagents with ReactionT5v2-forward; use for outcome prediction or round-trip recovery. Product rank is not reaction feasibility.
 license: MIT
 origin: openai4s
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   third_party:
     - kind: weights

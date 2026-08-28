@@ -9,6 +9,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: ESM-2
   # github.com/facebookresearch/esm/blob/main/LICENSE: MIT (© Meta Platforms,

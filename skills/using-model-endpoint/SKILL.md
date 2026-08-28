@@ -3,6 +3,11 @@ name: using-model-endpoint
 description: Call a registered model endpoint over its native HTTP API from the endpoint's scoped inference kernel (BASE_URL preloaded). Load once a task needs predictions from a registered model endpoint.
 license: Apache-2.0
 origin: openai4s
+capabilities:
+  network:
+    mode: host_only
+    domains: []
+
 ---
 
 You are a **pure HTTP client of `BASE_URL`**. Each registered model endpoint

@@ -118,6 +118,11 @@ def test_the_catalogue_route_carries_requirements_and_readiness(bundled, monkeyp
     assert plain["readiness"]["state"] == READY
     # Said by the payload itself, so no reader has to assume it.
     assert plain["readiness"]["checked_locally"] is True
+    assert plain["readiness"]["probed"] is False
+    assert "blocked_on" in plain["readiness"]
+    assert isinstance(plain["ready"], bool)
+    assert "network" in plain["capabilities"]
+    assert rows["bio-example"]["capabilities"]["network"]["declaration"] == "legacy"
 
     assert plain["collection"] is None
     assert rows["bio-example"]["collection"] == "bioskills"

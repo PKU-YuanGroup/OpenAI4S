@@ -783,6 +783,7 @@ class Kernel:
                 "enforced": False,
                 "backend": "remote",
                 "self_test_passed": False,
+                "network_policy": "unproven",
                 "reason": (
                     "this kernel runs on a remote node; the daemon's OS "
                     "sandbox does not apply to it"
@@ -930,20 +931,37 @@ class Kernel:
         try:
             bind_generation = getattr(self.dispatcher, "bind_bash_generation", None)
             bind_action = getattr(self.dispatcher, "bind_action_context", None)
+            bind_sandbox = getattr(self.dispatcher, "bind_sandbox_status", None)
             action_context = getattr(self, "_active_action_context", None)
+            sandbox_status = self.sandbox_status
             if callable(bind_generation) and callable(bind_action):
                 with bind_generation(self.authorization_generation):
                     with bind_action(action_context):
-                        data = self.dispatcher(method, args)
+                        if callable(bind_sandbox):
+                            with bind_sandbox(sandbox_status):
+                                data = self.dispatcher(method, args)
+                        else:
+                            data = self.dispatcher(method, args)
             elif callable(bind_generation):
                 # HostDispatcher is shared by the session and can service a
                 # main and background worker on different reader threads.  A
                 # thread-local binding prevents either worker from borrowing
                 # the other's shell capability generation.
                 with bind_generation(self.authorization_generation):
-                    data = self.dispatcher(method, args)
+                    if callable(bind_sandbox):
+                        with bind_sandbox(sandbox_status):
+                            data = self.dispatcher(method, args)
+                    else:
+                        data = self.dispatcher(method, args)
             elif callable(bind_action):
                 with bind_action(action_context):
+                    if callable(bind_sandbox):
+                        with bind_sandbox(sandbox_status):
+                            data = self.dispatcher(method, args)
+                    else:
+                        data = self.dispatcher(method, args)
+            elif callable(bind_sandbox):
+                with bind_sandbox(sandbox_status):
                     data = self.dispatcher(method, args)
             else:
                 data = self.dispatcher(method, args)

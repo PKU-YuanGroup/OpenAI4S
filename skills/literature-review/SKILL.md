@@ -3,6 +3,15 @@ name: literature-review
 description: Find, verify, and synthesize scientific literature — from "what's the seminal paper for X" through full multi-source reviews. Covers grounding claims in real retrieved sources, avoiding fabricated citations, handling retractions, and calibrating confidence to evidence strength.
 origin: openai4s
 license: Apache-2.0
+capabilities:
+  network:
+    mode: host_only
+    domains:
+      - api.crossref.org
+      - api.openalex.org
+      - doi.org
+      - pubmed.ncbi.nlm.nih.gov
+      - europepmc.org
 metadata:
   # Non-biomodel: sends user's query (and contact email when configured) to
   # Crossref and OpenAlex for literature lookup.
