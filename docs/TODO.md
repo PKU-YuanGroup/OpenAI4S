@@ -9,7 +9,7 @@ registry account, a machine — belongs here rather than in a comment nobody
 greps for.
 
 Work that is *planned* rather than pending lives in
-[`docs/next-version-progress.md`](docs/next-version-progress.md); that document
+[`docs/next-version-progress.md`](next-version-progress.md); that document
 is a factual record of the v0.3 plan and is validated by
 `tests/test_progress_document.py`. This file is for loose ends.
 

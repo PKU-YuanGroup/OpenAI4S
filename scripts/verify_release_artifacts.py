@@ -59,11 +59,11 @@ REQUIRED_COLLECTIONS: dict[str, dict[str, str | int]] = {
 }
 _SDIST_REQUIRED = frozenset(
     {
-        "CODE_OF_CONDUCT.md",
+        ".github/CODE_OF_CONDUCT.md",
         "LICENSE",
         "MANIFEST.in",
         "README.md",
-        "SECURITY.md",
+        ".github/SECURITY.md",
         "docs/release-validation.md",
         "pyproject.toml",
         "scripts/import_bioskills.py",

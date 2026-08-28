@@ -126,4 +126,4 @@ Tests are the floor, not the ceiling — much of what matters here is runtime be
 
 ## Docs
 
-`docs/architecture.md` (dual loop, host API) · `docs/skills.md` · `docs/compute.md` (BYOC/`host.fold`) · `docs/webapp.md` + `docs/webapp-api.md` · `docs/configuration.md` · `docs/security.md` · `docs/jupyter.md` (KernelSpec bridge) · `docs/webshare.md` · `docs/platforms.md` (per-OS support tiers) · `docs/science-connectors.md` · `docs/release-validation.md` · `docs/backend-extension-guide.md`. Governance — branch/PR/review/release policy and the numbered harness invariants — lives in `CONTRIBUTING.md`, not here.
+`docs/architecture.md` (dual loop, host API) · `docs/skills.md` · `docs/compute.md` (BYOC/`host.fold`) · `docs/webapp.md` + `docs/webapp-api.md` · `docs/configuration.md` · `docs/security.md` · `docs/jupyter.md` (KernelSpec bridge) · `docs/webshare.md` · `docs/platforms.md` (per-OS support tiers) · `docs/science-connectors.md` · `docs/release-validation.md` · `docs/backend-extension-guide.md`. Governance — branch/PR/review/release policy and the numbered harness invariants — lives in `.github/CONTRIBUTING.md`, not here.

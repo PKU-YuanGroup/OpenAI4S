@@ -3,8 +3,8 @@
 Thank you for helping keep the **Code-as-Action** paradigm open. This document
 defines the minimal governance rules for multi-person contribution: branch
 naming, the PR checklist, review policy, release policy, and the offline-test
-policy. The technical conventions live in [`CLAUDE.md`](CLAUDE.md) /
-[`AGENTS.md`](AGENTS.md) and are binding for all contributors, human or agent.
+policy. The technical conventions live in [`CLAUDE.md`](../CLAUDE.md) /
+[`AGENTS.md`](../AGENTS.md) and are binding for all contributors, human or agent.
 Community participation is also governed by
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md); suspected vulnerabilities follow
 the private process in [`SECURITY.md`](SECURITY.md).
@@ -25,13 +25,13 @@ the private process in [`SECURITY.md`](SECURITY.md).
 5. **External PRs never receive secrets.** CI for pull requests must run
    without API keys, tokens, or credentials of any kind, and must not run
    live LLM / network / GPU / SSH / lab jobs.
-6. **A deferred follow-up goes in [`TODO.md`](TODO.md), not in a comment.**
+6. **A deferred follow-up goes in [`docs/TODO.md`](../docs/TODO.md), not in a comment.**
    Anything this repository has decided to do and has not done — especially
    when the blocker is outside the codebase, like a registry account or a
    machine — belongs there with a "done when" line. A loose end recorded only
    in a code comment or a merged PR description is a loose end nobody will find
    again. Planned work with a status still lives in
-   [`docs/next-version-progress.md`](docs/next-version-progress.md).
+   [`docs/next-version-progress.md`](../docs/next-version-progress.md).
 
 ## Harness invariants
 
@@ -117,7 +117,7 @@ the opt-in pytest markers registered in `pyproject.toml` (`external`,
 ## PR checklist
 
 Every PR description must confirm (the template in
-[`.github/pull_request_template.md`](.github/pull_request_template.md) asks
+[`.github/pull_request_template.md`](pull_request_template.md) asks
 for each of these):
 
 - Offline tests pass: `uv run pytest` with no network and no secrets.
@@ -143,7 +143,7 @@ for each of these):
 ## Review policy
 
 - Every PR needs at least **one approving review from a code owner** of the
-  touched paths (see [`.github/CODEOWNERS`](.github/CODEOWNERS)) before merge.
+  touched paths (see [`.github/CODEOWNERS`](CODEOWNERS)) before merge.
 - Changes to security-sensitive paths (`openai4s/security/`,
   `openai4s/permissions.py`, `openai4s/egress.py`, `openai4s/store.py`,
   `openai4s/host_dispatch.py`, `openai4s_compute_provider/`) additionally
@@ -186,7 +186,7 @@ instead of silently weakening the review rule.
 - Releases are cut from `main` only, as annotated tags `vMAJOR.MINOR.PATCH`.
 - A release requires: green `uv run pytest`, green
   `uv run pre-commit run --all-files`, green source/artifact/install gates
-  described in [`docs/release-validation.md`](docs/release-validation.md), and
+  described in [`docs/release-validation.md`](../docs/release-validation.md), and
   docs that match behavior.
 - PyPI publication is performed only by `.github/workflows/release.yml` from a
   non-prerelease GitHub Release. The protected `pypi` environment and PyPI
@@ -205,7 +205,7 @@ GitHub settings by an admin:
 
 - Branch protection on `main`: require PR review, require status checks,
   forbid force pushes and deletions.
-- Mark the CI workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+- Mark the CI workflow ([`.github/workflows/ci.yml`](workflows/ci.yml))
   as a required status check.
 - Keep `.github/CODEOWNERS` usernames current (owners need write access) and
   enable "Require review from Code Owners".

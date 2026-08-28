@@ -7,7 +7,7 @@
 一台机器——都该记在这里，而不是记在一句没人会去 grep 的注释里。
 
 *已规划*而非待办的工作在
-[`docs/next-version-progress.md`](docs/next-version-progress.md)；那份文档是
+[`docs/next-version-progress.md`](next-version-progress.md)；那份文档是
 v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本文件收的是线头。
 
 ## 发布

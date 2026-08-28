@@ -66,7 +66,7 @@ def test_deeply_nested_control_json_is_a_protocol_rejection_not_a_crash():
     not a `ValueError`, so it escaped `decode_control` entirely. Both readers
     (`share/tunnel.py`, `share/relay.py`) catch only `ProtocolError`, so an
     untrusted peer could kill the reader with a ~1 KB frame; the new
-    `fuzz/protocol_fuzzer.py` reports it as a crash for the same reason.
+    `scripts/protocol_fuzzer.py` reports it as a crash for the same reason.
     """
     nested = b"[" * 20000
     assert len(nested) < p.MAX_CONTROL_JSON
