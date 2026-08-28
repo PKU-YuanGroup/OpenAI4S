@@ -36,6 +36,7 @@
 
 | 目录 | 职责 |
 | --- | --- |
+| `dist/` | [`../../../frontend/`](../../../frontend/) 提交进来的 Vite 构建产物（F-03 空壳）。F-04 接上 `OPENAI4S_WEBUI_NEXT=1` 之前 daemon 不会端出它。在 `frontend/` 里 `npm run build` 重建；不要手改带哈希的资源。脚本全部是带 `src=` 的外链，这棵树仍落在 CSP `script-src 'self'` 里。 |
 | `share/` | 独立的只读分享查看器（`share.html`/`share.js`/`share.css`），由 relay 隧道的 ShareRouter 提供，与主单页应用分开，而且是自成一体的，不是主应用的裁剪版。它的外壳只加载 `share.js` 和 `share.css`，别的一概不加载：没有 WebSocket，不与 `app.js` 共享任何状态，Markdown 和 CSV 也由它自带的极简渲染器处理，而不是 `scientific_renderers.js`。ShareRouter 的资产白名单确实放行了 `scientific_renderers.js` 和自带的 3Dmol，好让更完整的查看器可以取用，但当前这套外壳两者都不请求。 |
 | `vendor/` | 从上游取来的第三方资产：压缩版 3Dmol 运行时、`ketcher/` 下钉住的 Ketcher 3.7.0 独立版，以及字体文件。3Dmol 是 `app.js` 唯一会注入自己页面的第三方 JavaScript，而且只有在打开分子 Artifact 时才注入；自带的那份如果加载不上，Artifact 直接退回纯文本展示，不存在 CDN 回退（见 [`app.js`](app.js) 里注入 `3Dmol-min.js` 的那处 script 标签）。Ketcher 从不加入主文档：Gateway 把它作为独立的 `/ketcher` 页面提供，Stage 9 打开时由 workbench 用 iframe 加载。把它们当作上游的、逐字节敏感的资产：不参与格式化，本 README 也不逐个文件说明。 |
 
