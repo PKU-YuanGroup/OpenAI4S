@@ -9,7 +9,11 @@ def test_public_recognition_is_appended_after_commit_contributors():
         [{"login": "MostCommits", "type": "User", "contributions": 10}]
     )
 
-    assert [person["login"] for person in merged] == ["MostCommits", "EQSTLab"]
+    assert [person["login"] for person in merged] == [
+        "MostCommits",
+        "EQSTLab",
+        "difficulttopickaname",
+    ]
 
 
 def test_a_recognized_login_the_api_already_lists_is_not_duplicated():
@@ -20,7 +24,13 @@ def test_a_recognized_login_the_api_already_lists_is_not_duplicated():
 
     merged = update_contributors.include_recognized_contributors(commit_people)
 
-    assert [person["login"] for person in merged] == ["MostCommits", "eqstlab"]
+    # `difficulttopickaname` is still appended: the claim here is only that
+    # the login the API already returned is not repeated.
+    assert [person["login"] for person in merged] == [
+        "MostCommits",
+        "eqstlab",
+        "difficulttopickaname",
+    ]
 
 
 def test_a_recognized_login_that_is_excluded_is_still_refused(monkeypatch):

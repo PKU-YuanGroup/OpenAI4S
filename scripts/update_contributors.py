@@ -47,7 +47,16 @@ DISPLAY = 64  # rendered avatar size in px, close to the original wall
 EXCLUDE = {"github-actions[bot]", "dependabot[bot]", "actions-user"}
 # Publicly accepted contributions that are not represented in the commit graph.
 # Keep this list limited to GitHub logins whose recognition is already public.
-RECOGNIZED_CONTRIBUTORS = ("EQSTLab",)
+#
+# `difficulttopickaname` is a maintainer (CODEOWNERS: /openai4s/server/,
+# /tests/browser_smoke.mjs) whose commits ARE in the history -- authored as
+# `minhan.tang <minhan.tang19@gmail.com>` -- but the /contributors API returns
+# them with no linked account, so the graph cannot see them. The durable fix is
+# on their side: adding that address to their GitHub account retroactively
+# links every past commit. This entry carries the recognition until then, and
+# `include_recognized_contributors` drops it automatically the moment the API
+# starts returning the login, so nothing has to be cleaned up afterwards.
+RECOGNIZED_CONTRIBUTORS = ("EQSTLab", "difficulttopickaname")
 _UA = {"User-Agent": "openai4s-contributors-script"}
 
 
