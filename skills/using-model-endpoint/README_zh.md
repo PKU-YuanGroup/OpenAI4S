@@ -4,6 +4,38 @@
 
 Skill 本身仍然是能被发现的——loader 会扫描每一个 `skills/<name>/SKILL.md`，这一份也在内，所以 agent 依然可以通过渐进披露列出并加载它；只是跑不起来而已。因此，[`SKILL.md`](SKILL.md) 要当成写在实现之前的 runbook 来读，几个 provider 文件则是休眠的实现资产。它们摆在这里，并不能证明 `compute_provider({'provider': ...})` 眼下能用。在发现、生命周期与路由接通并测试完成之前，不得把这些东西说成一项已经存在的端到端能力。
 
+## 安装
+
+一个 Skill 就是一个文件目录，所谓安装，就是把这个目录复制到 Agent 会去读的地方。
+有 Node 18+ 即可，无需先克隆仓库：
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install using-model-endpoint --target claude
+```
+
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入
+`./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则
+写到你指定的任意位置；`--dry-run` 只打印解析出的绝对路径，不写任何文件。重装时
+若目标副本被你改过则拒绝覆盖，`uninstall` 也只删除它自己写过的文件。同一条命令
+的发布名写法是 `npx openai4s-skills install using-model-endpoint`，只是这个包还
+没有发布到 npm。
+
+没有 Node 时，直接取这个目录——需要 `.zip` 上传时再打包：
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/using-model-endpoint
+python3 -m zipfile -c using-model-endpoint.zip using-model-endpoint
+```
+
+同一份内容的图形界面版本是点击下载整个
+[仓库 zip 包](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip)：解压
+后把 `skills/using-model-endpoint/` 拷出来即可。如果你本来就在跑 OpenAI4S，那这
+里没有任何东西需要安装——wheel 自带全部内置 Skill，且内置 Skill 优先于
+`<data_dir>/user-skills` 里的同名副本。目标目录、来源记录，以及安装器拒绝去做的
+那些事：
+[`tools/skills-installer/`](../../tools/skills-installer/README_zh.md)。
+
 ## 文件
 
 | 文件 | 职责 |

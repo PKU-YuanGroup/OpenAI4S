@@ -4,6 +4,38 @@
 
 LigandMPNN 是围着你交给它的那份配体坐标做设计的，而且它把这个位姿当成事实。要是喂进去的是对接或建模摆上去、位置有偏差的配体，设计出来的口袋就是照着一个可能并不真实的配体位置长的——而这一次运行看上去和一次正确的运行毫无分别。每条序列头里的 `ligand_confidence`，是模型给自己刚写出来的序列打的分，不是对结合的测量。链怎么选、固定哪些残基、带不带上下文原子、用哪种 model type，都必须对着真实的输入结构核对；生成的序列和贴回坐标得到的结构，在实验给出结论之前都只是设计候选。
 
+## 安装
+
+一个 Skill 就是一个文件目录，所谓安装，就是把这个目录复制到 Agent 会去读的地方。
+有 Node 18+ 即可，无需先克隆仓库：
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install ligandmpnn --target claude
+```
+
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入
+`./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则
+写到你指定的任意位置；`--dry-run` 只打印解析出的绝对路径，不写任何文件。重装时
+若目标副本被你改过则拒绝覆盖，`uninstall` 也只删除它自己写过的文件。同一条命令
+的发布名写法是 `npx openai4s-skills install ligandmpnn`，只是这个包还没有发布到
+npm。
+
+没有 Node 时，直接取这个目录——需要 `.zip` 上传时再打包：
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/ligandmpnn
+python3 -m zipfile -c ligandmpnn.zip ligandmpnn
+```
+
+同一份内容的图形界面版本是点击下载整个
+[仓库 zip 包](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip)：解压
+后把 `skills/ligandmpnn/` 拷出来即可。如果你本来就在跑 OpenAI4S，那这里没有任何
+东西需要安装——wheel 自带全部内置 Skill，且内置 Skill 优先于
+`<data_dir>/user-skills` 里的同名副本。目标目录、来源记录，以及安装器拒绝去做的
+那些事：
+[`tools/skills-installer/`](../../tools/skills-installer/README_zh.md)。
+
 ## 文件
 
 | 文件 | 职责 |

@@ -10,6 +10,42 @@ the large third-party collection receives one line total and expands through
 search or exact loading. Only a selected Skill's `SKILL.md` and optional
 `kernel.py` sidecar are loaded.
 
+## Install
+
+These recipes are not OpenAI4S-specific, and every Skill page below repeats
+this section with its own name filled in. With Node 18+ and nothing cloned:
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --all --target claude
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --dir ./my-skills
+```
+
+`--target claude` writes to `~/.claude/skills`, `claude-project` to
+`./.claude/skills`, `openai4s` to `<data_dir>/user-skills`, and `--dir <path>`
+to anywhere you name; `--dry-run` prints the resolved absolute path and writes
+nothing. A reinstall refuses to overwrite a copy you have edited, and
+`uninstall` removes only the files it wrote. The same commands under the
+package's published name, which is not on npm yet, read
+`npx openai4s-skills …`.
+
+Without Node, one directory comes out of the source tarball on its own, and
+`python3 -m zipfile -c <name>.zip <name>` turns it into something an upload
+field will take:
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/alphafold2
+```
+
+The click-through form of that same download is the
+[repository zip](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip).
+If you already run OpenAI4S there is nothing to install — the wheel ships every
+Skill in this tree, and a bundled Skill takes precedence over a same-named copy
+in `<data_dir>/user-skills`. Targets, provenance, and what the installer
+refuses to do:
+[`../tools/skills-installer/`](../tools/skills-installer/README.md).
+
 ## Subdirectories
 
 | Directory | Responsibility |

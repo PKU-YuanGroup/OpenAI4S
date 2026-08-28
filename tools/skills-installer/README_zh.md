@@ -1,4 +1,4 @@
-# Skills 安装器（`npx openai4s-skills`）
+# Skills 安装器（`openai4s-skills`）
 
 [English](README.md)
 
@@ -6,16 +6,17 @@
 目录，或装进命令行指定的任意目录。
 
 ```bash
-npx openai4s-skills list
-npx openai4s-skills install --all                 # 43 个精选 Skill
-npx openai4s-skills install --collection bioskills # 561 个固定版第三方配方
-npx openai4s-skills install alphafold2 boltz --target claude
-npx openai4s-skills installed
-npx openai4s-skills uninstall --all
+npx github:PKU-YuanGroup/OpenAI4S list
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # 43 个精选 Skill
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # 561 个固定版第三方配方
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
+npx github:PKU-YuanGroup/OpenAI4S installed
+npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
 
-`npx github:PKU-YuanGroup/OpenAI4S <command>` 直接从仓库运行同一个 CLI，不需要
-先发布到 npm。
+今天能用的就是这种写法：直接从仓库运行 CLI，不需要先发布到 npm。这个包自己的名
+字是 `openai4s-skills`，一旦发布，`npx openai4s-skills <command>` 跑的就是同一
+份代码——在那之前这个名字解析不到。
 
 ## 文件
 

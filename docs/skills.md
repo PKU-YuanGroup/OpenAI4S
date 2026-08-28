@@ -169,21 +169,24 @@ state uses `/api/projects/<project_id>/skills/<name>/versions` and
 `.../rollback`. Project IDs are path-scoped and checked against the Store;
 bundled Skills never expose a rollback action.
 
-## Installing the Skill library elsewhere (`npx openai4s-skills`)
+## Installing the Skill library elsewhere (`npx`)
 
 A Skill is a recipe, not an OpenAI4S API object, so the library is useful to
 any agent that reads Markdown instructions. `tools/skills-installer/` is a
 zero-dependency Node CLI that copies it out of this repository:
 
 ```bash
-npx openai4s-skills list
-npx openai4s-skills install --all                  # the 43 curated Skills
-npx openai4s-skills install --collection bioskills # the 561 pinned recipes
-npx openai4s-skills install alphafold2 --target claude
-npx openai4s-skills installed
-npx openai4s-skills uninstall --all
-npx github:PKU-YuanGroup/OpenAI4S install --all    # straight from the repo
+npx github:PKU-YuanGroup/OpenAI4S list
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 --target claude
+npx github:PKU-YuanGroup/OpenAI4S installed
+npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
+
+`npx openai4s-skills <command>` is the same CLI under the package's published
+name. It is not on npm yet, so the `github:` form above is the one that
+resolves today; `docs/TODO.md` tracks the publication.
 
 **Targets.** `--target claude` → `~/.claude/skills`, `--target claude-project`
 → `./.claude/skills`, `--target openai4s` → `<data_dir>/user-skills` (honouring

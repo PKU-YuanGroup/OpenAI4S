@@ -8,6 +8,38 @@ GPTomics/bioSkills 全部 561 份配方。Skill 是一份 recipe——代码，�
 第三方集合合计只占一行，再通过搜索或精确名称展开。只有被选中的 `SKILL.md` 和可选
 `kernel.py` sidecar 才会加载。
 
+## 安装
+
+这些配方并不依赖 OpenAI4S，下面每个 Skill 页面都会重复这一节，并换上它自己的名
+字。有 Node 18+ 即可，无需先克隆仓库：
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --all --target claude
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --dir ./my-skills
+```
+
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入
+`./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则
+写到你指定的任意位置；`--dry-run` 只打印解析出的绝对路径，不写任何文件。重装时
+若目标副本被你改过则拒绝覆盖，`uninstall` 也只删除它自己写过的文件。同一组命令
+的发布名写法是 `npx openai4s-skills …`，只是这个包还没有发布到 npm。
+
+没有 Node 时，可以只从源码 tarball 里取出一个目录，再用
+`python3 -m zipfile -c <name>.zip <name>` 打成上传框认的压缩包：
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/alphafold2
+```
+
+同一份内容的图形界面版本是点击下载整个
+[仓库 zip 包](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip)。如果
+你本来就在跑 OpenAI4S，那这里没有任何东西需要安装——wheel 自带本目录树中的全部
+Skill，且内置 Skill 优先于 `<data_dir>/user-skills` 里的同名副本。目标目录、来
+源记录，以及安装器拒绝去做的那些事：
+[`../tools/skills-installer/`](../tools/skills-installer/README_zh.md)。
+
 ## 子目录
 
 | 目录 | 职责 |
