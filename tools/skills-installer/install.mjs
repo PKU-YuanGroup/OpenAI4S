@@ -27,7 +27,7 @@ const MANIFEST_VERSION = 1;
  * `OPENAI4S_DATA_DIR` override, so a Skill installed here is the one the daemon
  * loads. Note the precedence the loader applies: a bundled Skill of the same
  * name wins and stays read-only, so installing a *bundled* Skill into this
- * target is a no-op for an OpenAI4S user who already ships all 602.
+ * target is a no-op for an OpenAI4S user who already ships every one.
  */
 export const TARGETS = {
   openai4s: () =>
