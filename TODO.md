@@ -57,6 +57,29 @@ is a factual record of the v0.3 plan and is validated by
       *Done when:* a single Dependabot PR carries updates from more than one
       ecosystem, and the following Monday's run still opens PRs normally.
 
+- [ ] **The offline suite does not pass on CPython 3.14, which is now the
+      container's interpreter.** `Dockerfile` moved to `python:3.14-slim-bookworm`
+      while `ci.yml`'s matrix is `["3.10", "3.12", "3.13"]`, so nothing in CI
+      runs the suite there; `Container image builds and serves` boots the
+      daemon in the built image but does not run tests. Run by hand on 3.14:
+      **6 failed, 7855 passed**. All six share one cause, and it is a CPython
+      change rather than a defect here — invoked through a **bare symlink**,
+      3.13 reports the symlink path in `sys.executable` while 3.14 reports the
+      resolved real binary. `_real_python_prefix` in
+      `tests/test_env_kernel_binding.py` builds `prefix/bin/python` as exactly
+      such a symlink, and the fixtures observe the env binding through that
+      self-report (`test_env_kernel_binding.py` ×2,
+      `test_delegation_env_inheritance.py` ×3, `test_benchmark_bringup.py` ×1).
+      A control run of the same tests on 3.13 in the same worktree passes, so
+      this is 3.14-specific. The kernel execs the interpreter it is handed
+      either way; what moved is what the cell reports about itself — which is
+      also what artifact provenance records as `interpreter`.
+      *Done when:* the suite is green on 3.14 — most likely by giving the
+      fixture a real prefix (a `pyvenv.cfg`) instead of a bare symlink, so the
+      assertion keeps its strength on both versions rather than being relaxed
+      to accept a resolved path — and 3.14 is in the `ci.yml` matrix so it
+      cannot regress again.
+
 ## Closed recently, recorded so it is not re-investigated
 
 The local kernel worker now spawns into its own session, so a signal aimed at

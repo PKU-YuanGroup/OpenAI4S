@@ -47,6 +47,23 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
       *做完的标准：* 有一个 Dependabot PR 同时带着不止一个 ecosystem 的更新，
       且下一个周一的运行照常开 PR。
 
+- [ ] **离线套件在 CPython 3.14 上不通过，而容器现在正跑在 3.14 上。**
+      `Dockerfile` 已改为 `python:3.14-slim-bookworm`，但 `ci.yml` 的矩阵是
+      `["3.10", "3.12", "3.13"]`，CI 里没有任何地方在 3.14 上跑套件；
+      `Container image builds and serves` 只在构建出的镜像里启动 daemon，不跑测试。
+      手工在 3.14 上跑过：**6 失败 / 7855 通过**。六个失败同源，而且是 CPython
+      自身的变化、不是本仓库的缺陷——通过**裸符号链接**启动时，3.13 的
+      `sys.executable` 报告符号链接路径，3.14 报告解析后的真实二进制。
+      `tests/test_env_kernel_binding.py` 里的 `_real_python_prefix` 正是用这种
+      裸符号链接造 `prefix/bin/python`，而那些夹具就是靠这个自我报告来观察环境绑定的
+      （`test_env_kernel_binding.py` ×2、`test_delegation_env_inheritance.py` ×3、
+      `test_benchmark_bringup.py` ×1）。同一个 worktree 换回 3.13 跑同样这批测试全过，
+      所以是 3.14 特有。两种情况下 kernel 都 exec 了交给它的解释器；变的是 cell
+      对自己的报告——而那也正是 artifact provenance 记录成 `interpreter` 的东西。
+      *做完的标准：* 套件在 3.14 上转绿——更可能的做法是给夹具一个真实前缀
+      （带 `pyvenv.cfg`）而不是裸符号链接，这样断言在两个版本上都保持强度，
+      而不是放宽到接受解析后的路径——并且把 3.14 加进 `ci.yml` 矩阵，防止再次回归。
+
 ## 最近关掉的，记下来免得再查一遍
 
 本地 kernel worker 现在会 spawn 进自己的 session，因此投向 daemon 进程组的信号
