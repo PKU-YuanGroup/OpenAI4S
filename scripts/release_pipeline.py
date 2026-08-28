@@ -56,8 +56,12 @@ same version.
   this job cannot replace the bytes GitHub and PyPI are both meant to receive.
 
 This pipeline does not submit an image to Apple's notary service or staple a
-ticket. It reports notarization as verified only when image-bound evidence from
-``xcrun stapler validate`` establishes that a ticket is already attached.
+ticket. ``scripts/notarize_macos_dmg.sh`` does that in the macOS job when the
+workflow input ``macos_asset=notarized``. The pipeline reports notarization as
+verified only when image-bound evidence from ``xcrun stapler validate`` plus
+the post-staple digest establishes that a ticket is already attached to *these*
+bytes. The default workflow input is ``macos_asset=omit``: no preview DMG is
+uploaded.
 """
 
 from __future__ import annotations
@@ -678,12 +682,19 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
         # and it is required to agree with the digest just like the signature is,
         # so a stapler result copied from another image proves nothing here.
         stapler_rc = payload.get("stapler_returncode")
+        spctl_rc = payload.get("spctl_returncode")
+        post_staple = str(payload.get("post_staple_sha256") or "")
+        post_staple_matches = bool(post_staple) and post_staple == actual_digest
+        # A stapled ticket is bound to the post-staple digest of *this* image.
+        # stapler_returncode==0 copied from another build is a stale ticket:
+        # without a matching post_staple_sha256 it does not notarize these bytes.
         notarized = (
             bool(payload.get("notarized"))
             and stapler_rc == 0
             and names_developer_id
             and verify_rc == 0
             and digest_matches
+            and post_staple_matches
         )
         return {
             "source": "receipt",
@@ -694,6 +705,9 @@ def read_signature(dmg: Path, runner: Callable[..., Any] = _run) -> dict[str, An
             "adhoc": bool(payload.get("adhoc")),
             "notarized": notarized,
             "stapler_returncode": stapler_rc,
+            "spctl_returncode": spctl_rc,
+            "post_staple_sha256": post_staple,
+            "post_staple_digest_matches": post_staple_matches,
         }
     if not shutil.which("codesign"):
         return {
@@ -884,6 +898,14 @@ class Pipeline:
                         for row in receipt.get("checks", [])
                     ],
                     "platform_checks": receipt.get("platform_checks", []),
+                    "linux_sandbox_full_check_run_id": next(
+                        (
+                            str(row.get("check_run_id") or "")
+                            for row in receipt.get("checks", [])
+                            if row.get("name") == "ci-linux-sandbox-full"
+                        ),
+                        "",
+                    ),
                 },
             )
         if self.mode == "release":
@@ -1499,10 +1521,24 @@ class Pipeline:
                     name: bool(info.get("notarized"))
                     for name, info in signatures.items()
                 },
+                "post_staple_sha256": {
+                    name: str(info.get("post_staple_sha256") or "")
+                    for name, info in signatures.items()
+                },
+                "stapler_returncode": {
+                    name: info.get("stapler_returncode")
+                    for name, info in signatures.items()
+                },
+                "spctl_returncode": {
+                    name: info.get("spctl_returncode")
+                    for name, info in signatures.items()
+                },
                 # An absent DMG is a release with no macOS asset, which is a
                 # supported outcome and the honest one while notarization
                 # credentials do not exist. Named so a reader learns it here
-                # rather than by noticing an absence.
+                # rather than by noticing an absence. The workflow input
+                # `macos_asset=omit` (default) is how that absence is produced
+                # without uploading a preview image.
                 "macos_asset": "present" if dmgs else "omitted",
                 "macos_publishable": bool(dmgs)
                 and all(state == "verified" for state in states.values()),
@@ -1828,6 +1864,13 @@ class Pipeline:
         # often after an approval delay, so it cannot trust in-process state from
         # staging: a draft asset deleted or replaced since attach would otherwise
         # be made public unverified. SHA256SUMS is the persisted digest manifest.
+        #
+        # Never rebuild here. A version number on a package index is taken
+        # forever; different bytes under the same version are the failure
+        # `pypi_digests` is about to catch. The macOS image's published digest
+        # is the post-staple digest recorded at staging. A missing macOS or
+        # Linux platform proof omits that platform's public asset rather than
+        # labelling a preview.
         checked = self._revalidate_draft_from_checksums()
         # ...but that manifest comes from the same *mutable* draft, so a second
         # staging run for this tag that clobbered both the assets and SHA256SUMS

@@ -41,6 +41,8 @@ python scripts/source_secret_scan.py                        # no credential-shap
 bash scripts/container_smoke.sh                             # the image builds AND the daemon runs inside it
 OPENAI4S_KERNEL_SANDBOX=enforce OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1 \
   uv run python -m harness.smoke.linux_bwrap_interrupt      # Linux+bwrap: Python/R persistent SIGINT
+OPENAI4S_KERNEL_SANDBOX=enforce \
+  uv run python -m harness.smoke.linux_sandbox              # Linux+bwrap: full filesystem/egress boundary
 node tests/browser_smoke.mjs                                # workbench E2E, needs a daemon on :8760
 node tests/browser_admission_fault.mjs                      # pinned-comment admission survives a lost response
 node tests/browser_matrix.mjs --browser=firefox             # cross-engine breadth (chromium/firefox/webkit)
@@ -54,7 +56,10 @@ node tools/skills-installer/check_package.mjs               # `npm pack` still c
 The hosted-Linux interrupt smoke deliberately allows raw worker networking so
 its private-PID evidence is independent of network-namespace setup. It proves
 the team info-fd/procfs/pidfd signal path and post-interrupt kernel reuse, not
-the full Linux filesystem-and-egress boundary.
+the full Linux filesystem-and-egress boundary. That full boundary is a separate
+independent job (`harness.smoke.linux_sandbox`) that refuses the raw-network
+override; it is attested at the frozen SHA and stays out of the release
+workflow's `platform-checks` matrix until multiple scheduled greens land.
 
 The browser jobs need `npm ci --ignore-scripts && ./node_modules/.bin/playwright install <engine>` plus a daemon already serving on `127.0.0.1:8760`. They need **Node 20+**: `package.json`'s `engines` floor is `>=18` for the published Skill installer, but the pinned Playwright devDependency refuses anything older, and `npm ci` only warns.
 

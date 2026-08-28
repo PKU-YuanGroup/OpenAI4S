@@ -951,6 +951,208 @@ def test_the_recovery_path_for_a_failed_flip_is_written_down():
         assert "do not rebuild" in text.lower()
 
 
+def test_release_workflow_macos_asset_defaults_to_omit_and_never_uploads_preview():
+    """`macos_asset=omit` is the default; a preview DMG must not be uploaded.
+
+    `macos_asset=notarized` without credentials is a hard failure, not a
+    silent omission — that mutation is `缺凭据未省略`.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    )
+    # PyYAML 1.1 treats the key `on` as boolean True.
+    macos_input = workflow[True]["workflow_dispatch"]["inputs"]["macos_asset"]
+    assert macos_input["default"] == "omit"
+    assert macos_input["type"] == "choice"
+    assert macos_input["options"] == ["omit", "notarized"]
+
+    jobs = workflow["jobs"]
+    macos = jobs["macos-app"]
+    assert macos.get("continue-on-error") is not True
+    steps = macos["steps"]
+    for step in steps:
+        assert step.get("continue-on-error") is not True, step.get("name")
+
+    omit = next(
+        step
+        for step in steps
+        if step.get("name") == "Omit the macOS asset rather than upload a preview DMG"
+    )
+    assert omit["if"] == "${{ inputs.macos_asset != 'notarized' }}"
+
+    precheck = next(
+        step
+        for step in steps
+        if step.get("name")
+        == "Fail fast when notarization was requested without credentials"
+    )
+    assert precheck["if"] == "${{ inputs.macos_asset == 'notarized' }}"
+    assert "describe_macos_image.py --check-notary-credentials" in str(
+        precheck.get("run") or ""
+    )
+    assert precheck.get("continue-on-error") is not True
+
+    notarize = next(
+        step
+        for step in steps
+        if step.get("name") == "Notarize and staple the disk image"
+    )
+    assert notarize["if"] == "${{ inputs.macos_asset == 'notarized' }}"
+    assert "scripts/notarize_macos_dmg.sh" in str(notarize.get("run") or "")
+    assert notarize.get("continue-on-error") is not True
+
+    upload = next(
+        step for step in steps if "upload-artifact" in str(step.get("uses") or "")
+    )
+    assert upload["if"] == "${{ inputs.macos_asset == 'notarized' }}"
+
+    attach = jobs["attach"]
+    downloads = [
+        step
+        for step in attach["steps"]
+        if (step.get("with") or {}).get("name") == "macos-app-image"
+    ]
+    assert len(downloads) == 1
+    assert downloads[0]["if"] == "${{ inputs.macos_asset == 'notarized' }}"
+
+
+def test_notarize_script_is_sign_submit_staple_validate_spctl_and_fail_fast():
+    script = (ROOT / "scripts" / "notarize_macos_dmg.sh").read_text("utf-8")
+    assert "set -euo pipefail" in script
+    assert not any(
+        line.strip()
+        and not line.lstrip().startswith("#")
+        and "continue-on-error" in line
+        for line in script.splitlines()
+    )
+    for needle in (
+        "codesign --force --sign",
+        "notarytool submit",
+        "--wait",
+        "stapler staple",
+        "stapler validate",
+        "spctl --assess",
+        "post_staple_sha256=",
+        "--check-notary-credentials",
+        "--precheck",
+    ):
+        assert needle in script, needle
+    # Order: sign, submit, staple, validate, assess — on executable lines,
+    # not the header comment that names the same sequence.
+    body = "\n".join(
+        line
+        for line in script.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    assert body.index("codesign --force --sign") < body.index("notarytool submit")
+    assert body.index("notarytool submit") < body.index("stapler staple")
+    assert body.index("stapler staple") < body.index("stapler validate")
+    assert body.index("stapler validate") < body.index("spctl --assess")
+
+
+def test_notary_credentials_fail_fast_and_do_not_contact_apple(monkeypatch):
+    """Default unit tests never reach the notary. Missing secrets refuse
+    notarized-without-omit rather than uploading a preview."""
+    describe = _load_script("describe_macos_image")
+
+    with pytest.raises(RuntimeError, match="macos_asset=omit"):
+        describe.require_notary_credentials({})
+    with pytest.raises(RuntimeError, match="OPENAI4S_MACOS_SIGNING_IDENTITY"):
+        describe.require_notary_credentials(
+            {
+                "APPLE_ID": "dev@example.invalid",
+                "APPLE_TEAM_ID": "TEAMID",
+                "APPLE_NOTARY_PASSWORD": "app-specific",
+            }
+        )
+    # Identity without a complete notary set is still not ready.
+    with pytest.raises(RuntimeError, match="APPLE_ID"):
+        describe.require_notary_credentials(
+            {"OPENAI4S_MACOS_SIGNING_IDENTITY": "Developer ID Application: Example"}
+        )
+    apple_id = describe.require_notary_credentials(
+        {
+            "OPENAI4S_MACOS_SIGNING_IDENTITY": "Developer ID Application: Example",
+            "APPLE_ID": "dev@example.invalid",
+            "APPLE_TEAM_ID": "TEAMID",
+            "APPLE_NOTARY_PASSWORD": "app-specific",
+        }
+    )
+    assert apple_id["ready"] is True
+    assert apple_id["apple_id_set"] is True
+    api_key = describe.require_notary_credentials(
+        {
+            "OPENAI4S_MACOS_SIGNING_IDENTITY": "Developer ID Application: Example",
+            "APPLE_API_KEY_ID": "KEYID",
+            "APPLE_API_ISSUER": "issuer-uuid",
+            "APPLE_API_KEY": "-----BEGIN PRIVATE KEY-----\nMII\n-----END PRIVATE KEY-----",
+        }
+    )
+    assert api_key["api_key_set"] is True
+
+
+def test_notarize_precheck_exits_nonzero_without_credentials(tmp_path, monkeypatch):
+    """The shell entry point is what the workflow runs. Missing secrets must
+    fail before `notarytool` / `xcrun` would be invoked."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "REPO_ROOT": str(ROOT),
+    }
+    completed = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "notarize_macos_dmg.sh"), "--precheck"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(ROOT),
+    )
+    assert completed.returncode != 0
+    combined = (completed.stdout or "") + (completed.stderr or "")
+    assert "omit" in combined.lower() or "missing" in combined.lower()
+    assert "notarytool" not in combined.lower() or "notarytool submit" not in combined
+
+
+def test_notarize_precheck_is_quiet_when_credentials_are_present(tmp_path):
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "REPO_ROOT": str(ROOT),
+        "OPENAI4S_MACOS_SIGNING_IDENTITY": "Developer ID Application: Example",
+        "APPLE_ID": "dev@example.invalid",
+        "APPLE_TEAM_ID": "TEAMID",
+        "APPLE_NOTARY_PASSWORD": "app-specific",
+    }
+    completed = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "notarize_macos_dmg.sh"), "--precheck"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(ROOT),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "ready" in completed.stdout
+    assert "notarytool submit" not in (completed.stdout + completed.stderr)
+
+
+def test_ci_and_release_platform_jobs_never_continue_on_error():
+    yaml = pytest.importorskip("yaml")
+    for name, job_ids in (
+        ("ci.yml", ("linux-sandbox-full", "linux-bwrap-kernel-interrupt")),
+        ("release.yml", ("macos-app", "platform-checks", "attach", "finalize")),
+    ):
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / name).read_text("utf-8")
+        )
+        for job_id in job_ids:
+            job = workflow["jobs"][job_id]
+            assert job.get("continue-on-error") is not True, f"{name}:{job_id}"
+            for step in job.get("steps") or []:
+                assert (
+                    step.get("continue-on-error") is not True
+                ), f"{name}:{job_id}:{step.get('name')}"
+
+
 def test_the_signing_identity_reaches_the_build_that_can_use_it():
     """Passing it only to the staging job meant configuring the secret changed
     nothing about the image and everything about what the gate believed."""
@@ -958,6 +1160,7 @@ def test_the_signing_identity_reaches_the_build_that_can_use_it():
     macos = workflow[workflow.index("  macos-app:") : workflow.index("  attach:")]
     assert "OPENAI4S_MACOS_SIGNING_IDENTITY" in macos
     assert "scripts/build_macos_dmg.sh" in macos
+    assert "scripts/notarize_macos_dmg.sh" in macos
     assert "describe_macos_image.py" in macos
 
     build = (ROOT / "scripts" / "build_macos_dmg.sh").read_text("utf-8")
@@ -973,7 +1176,10 @@ def test_the_signing_identity_reaches_the_build_that_can_use_it():
     # presence is surfaced at job level and the import conditions on that env
     # value, or the step is silently unreachable in a real signed run.
     assert "HAS_SIGNING_CERT" in macos
-    assert "if: ${{ env.HAS_SIGNING_CERT == 'true' }}" in macos
+    assert (
+        "if: ${{ inputs.macos_asset == 'notarized' && env.HAS_SIGNING_CERT == 'true' }}"
+        in macos
+    )
 
     attach = workflow[workflow.index("  attach:") : workflow.index("  pypi:")]
     assert "OPENAI4S_MACOS_SIGNING_IDENTITY" not in attach, (

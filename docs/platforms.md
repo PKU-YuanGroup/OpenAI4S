@@ -6,9 +6,9 @@ a support claim nobody has to take on faith is the only kind worth publishing.
 
 | Platform | Tier | Kernel | OS sandbox | Gate |
 | --- | --- | --- | --- | --- |
-| macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization — **not yet done** |
+| macOS (Apple Silicon) | **stable** | runs | Seatbelt, enforced and smoke-tested nightly | Developer ID signing + notarization via `scripts/notarize_macos_dmg.sh`; public DMG requires `macos_asset=notarized`, otherwise omitted |
 | macOS (Intel) | stable | runs | Seatbelt | the `.dmg` is Apple Silicon only; install from PyPI |
-| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | full boundary E2E remains manual; private-PID Python/R interrupt and persistence run in every CI (`harness/smoke/linux_bwrap_interrupt.py`; see below) |
+| Linux (x86_64 / arm64) | **beta** | runs | bubblewrap, enforced | full filesystem/egress boundary runs in every CI (`harness/smoke/linux_sandbox.py`); private-PID Python/R interrupt is a separate job that allows raw networking; the release workflow does not re-execute the full smoke until multiple scheduled greens pass |
 | Windows (native) | **unsupported** | **refused** | none exists | not planned; use WSL2, which reports as Linux |
 | Anything else | unsupported | **refused** | — | — |
 
@@ -21,7 +21,7 @@ because that package does not run OpenAI4S on Windows.
 
 | Download | Built by | Verified by | What it is |
 | --- | --- | --- | --- |
-| `OpenAI4S-<v>-macos-arm64.dmg` | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh) | `verify_macos_bundle.py` | An `.app` with an embedded relocatable CPython and the pre-baked science stack. Ad-hoc signed, not notarized. |
+| `OpenAI4S-<v>-macos-arm64.dmg` | [`scripts/build_macos_dmg.sh`](../scripts/build_macos_dmg.sh) then [`scripts/notarize_macos_dmg.sh`](../scripts/notarize_macos_dmg.sh) | `verify_macos_bundle.py` | An `.app` with an embedded relocatable CPython and the pre-baked science stack. A public release only uploads this image when `macos_asset=notarized` (sign → notarytool → staple); the default is `omit`. |
 | `OpenAI4S-<v>-linux-x86_64.tar.gz` | [`scripts/build_linux_bundle.sh`](../scripts/build_linux_bundle.sh) | `verify_linux_bundle.py` | The same payload as a relocatable directory, plus a `.desktop` template and a per-user `install.sh`. Unpack anywhere and run `./OpenAI4S`. |
 | `OpenAI4S-<v>-windows-x86_64.zip` | [`scripts/build_windows_zip.sh`](../scripts/build_windows_zip.sh) | `verify_windows_zip.py` | A Windows launcher wrapped around **that exact Linux tarball**. It requires WSL2 + working bubblewrap 0.8.0+, installs offline, and opens the authenticated URL returned by the WSL CLI. Not a native Windows build; see below and the [Windows/WSL2 guide](windows-wsl.md). |
 | `openai4s-<v>-py3-none-any.whl` | `uv build` | `verify_release_artifacts.py` | The zero-dependency wheel, for any supported platform with its own Python. |
@@ -127,17 +127,21 @@ Not a difference in the code — the same kernel and the same host RPC run on
 both. The tiers differ in what has been *proven*:
 
 - macOS ships as a signed, notarized `.dmg`, which is a distribution promise on
-  top of a technical one. **That signing and notarization has not happened
-  yet**, so the stable tier is the target, not the current state.
+  top of a technical one. `scripts/notarize_macos_dmg.sh` is the sign →
+  `notarytool submit --wait` → staple → `stapler validate` → `spctl` path.
+  The release workflow input `macos_asset` defaults to `omit` so a preview DMG
+  is never uploaded; `notarized` fail-fasts if the Developer ID + notary secret
+  set is incomplete.
 - Linux is gated on a real enforced-bubblewrap end-to-end test rather than on a
-  probe that degrades. The full boundary test exists and asserts the backend
-  really is bubblewrap, so a host that silently fell back cannot report a pass
-  for a boundary it never tested. **That full test is not running in CI**
-  because the complete filesystem-and-egress path has not yet been
-  re-evaluated on the runner with the packaged AppArmor profile loaded. The
-  broad Linux tier therefore still rests on manual runs. A narrower CI smoke
-  now proves the private-PID interrupt path with real persistent Python and R
-  workers on every change.
+  probe that degrades. The full boundary test exists, asserts the backend
+  really is bubblewrap, and now runs as an independent Ubuntu 24.04 CI job
+  (`linux-sandbox-full`) under `OPENAI4S_KERNEL_SANDBOX=enforce` with the
+  packaged AppArmor profile loaded. A raw-network override is a hard failure
+  there. The narrower interrupt smoke still allows raw networking so its
+  private-PID evidence does not depend on network-namespace setup. The release
+  workflow's `platform-checks` matrix does **not** re-execute the full smoke
+  until multiple scheduled greens plus a candidate SHA have passed
+  (`PLATFORM_CHECKS_UNAVAILABLE`).
 
 Both smokes check the same four boundaries, from one shared implementation
 ([`harness/smoke/sandbox_boundary.py`](../harness/smoke/sandbox_boundary.py)):
@@ -159,30 +163,25 @@ allows bwrap to construct the namespace and strips capabilities from the
 executed worker. It does not disable the runner's host-wide unprivileged-userns
 restriction.
 
-## Why the full Linux boundary smoke is not in CI
+## Why the full Linux boundary smoke is not a release-workflow platform check yet
 
-An earlier GitHub-hosted run failed while bringing up loopback in bubblewrap's
-private network namespace. The current interrupt job now loads Ubuntu 24.04's
-packaged `bwrap-userns-restrict` AppArmor profile, which may also change that
-network-namespace behavior, but the complete filesystem-and-egress smoke has
-not yet been re-evaluated under that profile. The interrupt job deliberately
-allows raw networking so its process-identity evidence does not depend on
-network setup; that exception necessarily removes the network-denial assertion
-carried by the full boundary smoke.
+The full filesystem-and-egress smoke now runs as its own CI job on Ubuntu
+24.04, independent of the interrupt job, with the packaged
+`bwrap-userns-restrict` AppArmor profile loaded and **without**
+`OPENAI4S_KERNEL_ALLOW_RAW_NETWORK`. The check run is attested at the frozen
+SHA (`ci-linux-sandbox-full`). That is not the same as re-executing it inside
+the release workflow's `platform-checks` matrix: an unproven matrix leg once
+made every publication unreachable. The row stays in
+`release_gates.PLATFORM_CHECKS_UNAVAILABLE` until multiple scheduled greens
+plus a candidate SHA have passed.
 
-The broader Linux claim therefore remains manual and explicitly unproven in
-CI. To establish it for a release, run the full smoke on a compatible Linux
-host:
+The interrupt job still deliberately allows raw networking so its
+process-identity evidence does not depend on network setup; that exception is
+why a green interrupt check is not this check.
 
 ```bash
 OPENAI4S_KERNEL_SANDBOX=enforce uv run python -m harness.smoke.linux_sandbox
 ```
-
-Adding it to CI requires first re-evaluating the full smoke on the profiled
-hosted runner, using a compatible self-hosted Linux runner, or using a
-container with the namespace permissions bwrap needs. Until one of those paths
-is verified, "beta" here means the boundary is implemented and asserted by a test
-someone has to run, not one that runs itself.
 
 ## Degraded sandboxes
 
