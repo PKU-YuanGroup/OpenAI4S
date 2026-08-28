@@ -21,6 +21,13 @@ from openai4s.scientific_reviewer import (
     model_fingerprint,
     review_snapshot,
 )
+from openai4s.server.auto_budget import (
+    TERMINAL_USER_TRUTH,
+    AutoBudgetAdmission,
+    AutoBudgetDenied,
+    token_upper_bound,
+    verifiable_token_usage,
+)
 from openai4s.server.evidence_snapshot import (
     collect_turn_evidence,
     freeze_evidence_snapshot,
@@ -654,6 +661,8 @@ class ScientificReviewService:
         chat_call: ChatCall | None = None,
         allow_same_model: bool = False,
         cancel: Callable[[], bool] | None = None,
+        run_id: str | None = None,
+        action_group_id: str | None = None,
     ) -> dict[str, Any]:
         """Evaluate one frozen snapshot. This is the shipped Stage 3 entry."""
 
@@ -701,6 +710,7 @@ class ScientificReviewService:
         invoke = chat_call or self.chat_call
         attempts = 0
         last_error: Exception | None = None
+        budget = self._auto_budget()
         while attempts < 2:
             if self._cancel_requested(cancel):
                 return {
@@ -718,15 +728,82 @@ class ScientificReviewService:
                     "cancelled": True,
                 }
             attempts += 1
+            admission_id = None
             try:
+                if budget is not None and run_id:
+                    group_id = str(
+                        action_group_id
+                        or f"{run_id}:review:{uuid.uuid4().hex[:16]}:{attempts}"
+                    )
+                    admission_id = f"{run_id}:review:{group_id}"
+                    budget.reserve(
+                        run_id=str(run_id),
+                        admission_id=admission_id,
+                        consumer="review",
+                        action_group_id=group_id,
+                        amount=1,
+                    )
+                    bound = token_upper_bound(reviewer_cfg)
+                    if bound is None:
+                        budget.release(admission_id, started=False)
+                        budget.fail_measurement(str(run_id))
+                        return self._budget_terminal(
+                            frozen,
+                            identity,
+                            findings,
+                            "budget_measurement_unavailable",
+                            attempts=attempts,
+                        )
+                    budget.reserve(
+                        run_id=str(run_id),
+                        admission_id=f"{admission_id}:token",
+                        consumer="token",
+                        action_group_id=f"{group_id}:token",
+                        amount=bound,
+                        token_upper_bound=bound,
+                    )
                 model_result = review_snapshot(
                     dict(frozen), reviewer_cfg, chat_call=invoke
                 )
                 last_error = None
+                if budget is not None and run_id and admission_id:
+                    usage_total = verifiable_token_usage(
+                        (model_result or {}).get("usage")
+                    )
+                    if usage_total is None:
+                        budget.fail_measurement(str(run_id), f"{admission_id}:token")
+                        budget.mark_unknown(admission_id)
+                        return self._budget_terminal(
+                            frozen,
+                            identity,
+                            findings,
+                            "budget_measurement_unavailable",
+                            attempts=attempts,
+                        )
+                    budget.commit(admission_id, committed_amount=1)
+                    budget.commit(f"{admission_id}:token", committed_amount=usage_total)
                 break
+            except AutoBudgetDenied as denied:
+                if budget is not None and admission_id:
+                    try:
+                        budget.release(admission_id, started=False)
+                    except Exception:  # noqa: BLE001 - denial already fail-closed
+                        pass
+                return self._budget_terminal(
+                    frozen,
+                    identity,
+                    findings,
+                    denied.reason,
+                    attempts=attempts,
+                )
             except Exception as exc:  # noqa: BLE001 - bounded retry then unavailable
                 last_error = exc
                 error = str(exc)[:500]
+                if budget is not None and admission_id:
+                    try:
+                        budget.mark_unknown(admission_id)
+                    except Exception:  # noqa: BLE001 - unknown is fail-closed
+                        pass
         if last_error is not None:
             return {
                 "verdict": "review_unavailable",
@@ -777,6 +854,40 @@ class ScientificReviewService:
             "same_model_independent_session": not identity["independent"],
             "gates_completion": False,
             "usage": model_result.get("usage") or {},
+            "attempts": attempts,
+        }
+
+    def _auto_budget(self) -> AutoBudgetAdmission | None:
+        store = self.store
+        if store is None or not callable(
+            getattr(store, "reserve_auto_mode_budget", None)
+        ):
+            return None
+        budgets = getattr(getattr(self.config, "auto_mode", None), "budgets", None)
+        return AutoBudgetAdmission(store, budgets)
+
+    def _budget_terminal(
+        self,
+        frozen: Mapping[str, Any],
+        identity: Mapping[str, Any],
+        findings: list[dict[str, Any]],
+        reason: str,
+        *,
+        attempts: int,
+    ) -> dict[str, Any]:
+        summary = TERMINAL_USER_TRUTH.get(reason, reason)
+        return {
+            "verdict": "review_unavailable",
+            "status": "unavailable",
+            "reason": reason,
+            "stop_reason": reason,
+            "summary": summary,
+            "findings": findings,
+            "snapshot": frozen,
+            "reviewer": identity,
+            "same_model_independent_session": not identity["independent"],
+            "gates_completion": False,
+            "usage": {},
             "attempts": attempts,
         }
 
@@ -915,6 +1026,11 @@ class ScientificReviewService:
                 reviewer_cfg=reviewer_cfg,
                 reviewer_profile=profile,
                 cancel=cancel,
+                run_id=(
+                    str(handle.get("run_id") or "") or None
+                    if isinstance(handle, Mapping)
+                    else None
+                ),
             )
         except Exception as error:  # noqa: BLE001 - durable owner must be closed
             result = self._unavailable_result(
