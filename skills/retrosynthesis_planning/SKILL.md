@@ -100,8 +100,17 @@ This skill implements multi-step search plus route-review support:
 6. call the configured conversation LLM (`host.llm`) for route, molecule, and
    reaction annotations
 7. render a self-contained HTML dashboard with route ranking, molecule
-   structures, an interactive retrosynthesis knowledge graph, route cards, and
-   a Markdown analyst report
+   structures, a retrosynthesis knowledge graph (interactive in a downloaded
+   copy — see below), route cards, and a Markdown analyst report
+
+**The knowledge graph is interactive only in a downloaded copy.** Artifact
+HTML is model-authored, so the daemon serves it with `script-src 'none'` inside
+a sandbox with no `allow-scripts`, and the Workbench frames previews the same
+way — running it on the origin that holds the session cookie is the one thing
+that policy exists to prevent. In the Workbench and at `/preview/<id>` the
+dashboard renders its panels, tables and SVG trees but the graph does not draw;
+download the file and open it from the filesystem to expand, collapse and
+inspect nodes. The preview says so rather than showing an empty canvas.
 
 The dashboard is intended for chemist review and route triage. It does not
 claim experimental validation. Conditions, yield ranges, route verdicts, and
@@ -361,7 +370,7 @@ verification status before using it in execution scoring.
 ### Phase 4 — Visualize and report
 
 The HTML artifact is a self-contained dashboard: KPI summary, ranked route
-table, an interactive retrosynthesis knowledge graph, molecule briefs,
+table, a retrosynthesis knowledge graph, molecule briefs,
 color-coded SVG route trees with molecule structure thumbnails, stock precursor
 chips, and a text outline for audit/debugging. The knowledge graph merges
 identical molecule nodes across displayed routes, preserves AND-OR route
@@ -434,8 +443,8 @@ http://127.0.0.1:9876/examples/aspirin_retrosynthesis.html
 The aspirin example demonstrates:
 
 - Route X cards with embedded route-level LLM analysis
-- an interactive retrosynthesis knowledge graph with merged molecule and
-  reaction nodes
+- a retrosynthesis knowledge graph with merged molecule and reaction nodes,
+  interactive in a downloaded copy
 - reaction detail panels with LLM reaction type, proposed conditions, yield
   caveats, selectivity risks, safety notes, and validation steps
 - Molecule Briefs using RDKit/local SVG visualization rather than PubChem PNGs

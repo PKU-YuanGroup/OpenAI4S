@@ -66,8 +66,10 @@ def api(tmp_path):
         handler = object.__new__(handler_class)
         handler._correlation_id = "req-1"
         sent: dict = {}
-        handler._send = lambda code, payload, ctype, extra=None: sent.update(
-            code=code, body=json.loads(payload.decode("utf-8"))
+        handler._send = (
+            lambda code, payload, ctype, extra=None, security=None: sent.update(
+                code=code, body=json.loads(payload.decode("utf-8"))
+            )
         )
         handler.command = method
         handler.path = f"/api/v1{path}"

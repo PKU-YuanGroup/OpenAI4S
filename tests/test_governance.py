@@ -13,9 +13,9 @@ PINNED_ACTION = re.compile(r"^\s*uses:\s*[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$")
 
 
 # CodeQL scanning is provided by the repository's CodeQL default setup, not an
-# advanced workflow file (the two are mutually exclusive on GitHub). Only the
-# scorecard workflow is a repo-managed security scanner here.
-@pytest.mark.parametrize("name", ["scorecard.yml"])
+# advanced workflow file (the two are mutually exclusive on GitHub). Scorecard
+# and the bounded protocol fuzzer are the repo-managed scanners here.
+@pytest.mark.parametrize("name", ["scorecard.yml", "fuzz.yml"])
 def test_security_scanners_pin_every_action_to_a_commit(name):
     lines = (WORKFLOWS / name).read_text(encoding="utf-8").splitlines()
     uses = [line for line in lines if line.lstrip().startswith("uses:")]
@@ -23,6 +23,38 @@ def test_security_scanners_pin_every_action_to_a_commit(name):
     assert uses
     assert all(PINNED_ACTION.fullmatch(line) for line in uses)
     assert all("pull_request_target" not in line for line in lines)
+
+
+def test_no_captured_web_page_is_extracted_as_executable_source():
+    """Byte-exact captures must not carry a source extension.
+
+    An `.html` capture is analysed by CodeQL's JavaScript extractor, so a
+    fixture that is only ever *parsed* raises alerts about code that never
+    runs. The previous answer was `.github/codeql-config.yml`, which default
+    setup honours only when the repository property `github-codeql-config-file`
+    names it -- unset here, so the exclusion did nothing and the alert stayed
+    open while an offline test asserting the file's own bytes reported success.
+    The extension is the fix that needs no repository setting, and it is
+    verifiable: identical bytes under `.html` and `.html.capture` produce an
+    alert for the first name only.
+    """
+    fixtures = ROOT / "tests" / "fixtures"
+    source_suffixes = {".html", ".htm", ".js", ".mjs", ".ts", ".jsx", ".tsx"}
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for path in fixtures.rglob("*")
+        if path.is_file() and path.suffix in source_suffixes
+    ]
+
+    assert offenders == [], (
+        "these captures will be extracted as source; append a non-source "
+        f"suffix such as .capture: {offenders}"
+    )
+    assert (fixtures / "arxiv_abs_2503.06687.html.capture").is_file()
+    assert not (ROOT / ".github" / "codeql-config.yml").exists(), (
+        "the inert config is gone; if it comes back it needs the repository "
+        "property set, and a test that can see whether it is"
+    )
 
 
 def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
@@ -62,31 +94,54 @@ def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
         assert not (ROOT / gone).exists() and not (WORKFLOWS / gone).exists()
 
 
+def test_protocol_fuzzing_is_real_bounded_execution():
+    target = (ROOT / "fuzz" / "protocol_fuzzer.py").read_text("utf-8")
+    workflow = (WORKFLOWS / "fuzz.yml").read_text("utf-8")
+
+    assert "import atheris" in target
+    for parser in ("ws_read_frame", "decode_control", "decode_data"):
+        assert parser in target
+    assert "uv sync --locked --extra fuzz" in workflow
+    assert "-max_total_time=" in workflow
+    assert "-max_len=1048576" in workflow
+
+
 def test_release_workflow_pins_every_action_to_a_commit():
     workflow = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     uses = [line for line in workflow.splitlines() if line.lstrip().startswith("uses:")]
 
     assert uses
     # Every action is SHA-pinned so a mutable upstream branch cannot inject code.
-    # The one documented exception is pypa/gh-action-pypi-publish: it is a
-    # Docker-container action whose image PyPA publishes tagged by RELEASE ref
-    # only (never by commit SHA), so a SHA pin fails the image pull with
-    # `manifest unknown` before the OIDC exchange starts. It must stay on PyPA's
-    # documented `release/v1` image-backed ref — and nothing else may move.
-    moving = [
-        line
-        for line in uses
-        if not PINNED_ACTION.fullmatch(line)
-        and line.strip() != "uses: pypa/gh-action-pypi-publish@release/v1"
+    assert all(PINNED_ACTION.fullmatch(line) for line in uses)
+
+
+def test_release_setup_uv_never_persists_a_cross_run_cache():
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load((WORKFLOWS / "release.yml").read_text("utf-8"))
+    setup_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps") or []
+        if "astral-sh/setup-uv" in str(step.get("uses") or "")
     ]
-    assert moving == []
+
+    assert setup_steps
+    assert all(
+        (step.get("with") or {}).get("enable-cache") is False for step in setup_steps
+    )
 
 
 def test_dependabot_tracks_uv_hooks_and_workflow_actions():
     config = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
 
-    assert config.count("package-ecosystem:") == 3
-    for ecosystem in ('"uv"', '"pre-commit"', '"github-actions"'):
+    assert config.count("package-ecosystem:") == 5
+    for ecosystem in (
+        '"uv"',
+        '"npm"',
+        '"docker"',
+        '"pre-commit"',
+        '"github-actions"',
+    ):
         assert f"package-ecosystem: {ecosystem}" in config
 
 

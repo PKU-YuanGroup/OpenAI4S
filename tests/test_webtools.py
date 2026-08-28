@@ -23,7 +23,12 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _arxiv_abs_html() -> str:
-    return (_FIXTURES / "arxiv_abs_2503.06687.html").read_text(encoding="utf-8")
+    # `.html.capture`, not `.html`: CodeQL's JavaScript extractor analyses
+    # `.html` files, and this byte-exact arXiv page contains a CDN <script>
+    # tag, so as `.html` it raised a permanent `js/functionality-from-
+    # untrusted-source` alert on a file that is parsed and never executed.
+    # The extension is the whole fix -- the bytes are untouched.
+    return (_FIXTURES / "arxiv_abs_2503.06687.html.capture").read_text(encoding="utf-8")
 
 
 def test_arxiv_abs_keeps_abstract():

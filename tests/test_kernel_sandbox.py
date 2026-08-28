@@ -933,27 +933,72 @@ def test_kernel_interrupt_lets_the_sandbox_own_bwrap_signal_delivery():
     assert calls == [("sandbox", 4100, signal.SIGINT)]
 
 
-def test_kernel_interrupt_signals_the_direct_process_outside_bwrap():
-    calls = []
-
+def _fake_worker(calls, *, alive=True):
     class Process:
         pid = 4100
 
         @staticmethod
         def poll():
-            return None
+            return None if alive else 1
 
         @staticmethod
         def send_signal(signum):
             calls.append(("direct", signum))
 
+    return Process()
+
+
+def test_kernel_interrupt_signals_the_direct_process_outside_bwrap(monkeypatch):
+    """The `Popen.send_signal` fallback, with the tgkill attempt forced to fail.
+
+    `interrupt()` aims at the main thread first, and on Linux that is a real
+    `tgkill(pid, pid, SIGINT)` against whatever process holds `Process.pid` --
+    a number this fake invents. On a runner where PID 4100 happened to be live
+    the syscall succeeded, `interrupt()` returned before reaching the fake, and
+    this test failed with `assert [] == [('direct', SIGINT)]` while an
+    unrelated process took the signal. It passed on macOS every time, because
+    `_signal_worker_main_thread` returns False off Linux before any syscall.
+    Pin the branch instead of depending on which PIDs a host happens to hold.
+    """
+    calls = []
+    monkeypatch.setattr(
+        manager_module, "_signal_worker_main_thread", lambda pid, signum: False
+    )
+
     kernel = Kernel.__new__(Kernel)
-    kernel._proc = Process()
+    kernel._proc = _fake_worker(calls)
     kernel._sandbox = SimpleNamespace(send_interrupt=lambda _pid, _signum: False)
 
     delivery = kernel.interrupt()
 
     assert calls == [("direct", signal.SIGINT)]
+    assert (delivery.delivered, delivery.target) == (True, "local-process")
+
+
+def test_a_delivered_main_thread_signal_is_not_sent_a_second_time(monkeypatch):
+    """The other half of the same branch, which nothing covered.
+
+    When tgkill reaches the main thread the process-directed `send_signal` must
+    not also fire: the worker's SIGINT handler is one-shot and self-disarming,
+    so a second signal would land on a disarmed handler and take the default
+    action -- killing the kernel the interrupt exists to keep alive.
+    """
+    calls = []
+    aimed = []
+    monkeypatch.setattr(
+        manager_module,
+        "_signal_worker_main_thread",
+        lambda pid, signum: bool(aimed.append((pid, signum))) or True,
+    )
+
+    kernel = Kernel.__new__(Kernel)
+    kernel._proc = _fake_worker(calls)
+    kernel._sandbox = SimpleNamespace(send_interrupt=lambda _pid, _signum: False)
+
+    delivery = kernel.interrupt()
+
+    assert aimed == [(4100, int(signal.SIGINT))]
+    assert calls == [], "the one-shot handler must not be signalled twice"
     assert (delivery.delivered, delivery.target) == (True, "local-process")
 
 

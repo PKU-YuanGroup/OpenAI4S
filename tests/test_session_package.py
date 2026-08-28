@@ -2812,8 +2812,10 @@ def test_http_session_export_waits_for_revert_fifo_and_keeps_head_workspace_alig
     handler = object.__new__(handler_class)
     replies = []
     handler._query = lambda: {}
-    handler._send = lambda code, data, content_type, extra=None: replies.append(
-        (code, data, content_type, extra or {})
+    handler._send = (
+        lambda code, data, content_type, extra=None, security=None: replies.append(
+            (code, data, content_type, extra or {})
+        )
     )
     handler._json = lambda value, code=200: replies.append((code, value))
 
@@ -2892,8 +2894,10 @@ def test_session_package_gateway_routes_use_binary_export_and_raw_import(tmp_pat
     handler = object.__new__(handler_class)
     replies = []
     handler._query = lambda: {}
-    handler._send = lambda code, data, content_type, extra=None: replies.append(
-        (code, data, content_type, extra or {})
+    handler._send = (
+        lambda code, data, content_type, extra=None, security=None: replies.append(
+            (code, data, content_type, extra or {})
+        )
     )
     handler._json = lambda value, code=200: replies.append((code, value))
     try:
@@ -2998,8 +3002,10 @@ def test_a_real_export_carries_reproduction_notes_and_still_verifies(tmp_path):
     handler = object.__new__(handler_class)
     replies = []
     handler._query = lambda: {}
-    handler._send = lambda code, data, content_type, extra=None: replies.append(
-        (code, data, content_type, extra or {})
+    handler._send = (
+        lambda code, data, content_type, extra=None, security=None: replies.append(
+            (code, data, content_type, extra or {})
+        )
     )
     handler._json = lambda value, code=200: replies.append((code, value))
     try:
@@ -3060,8 +3066,10 @@ def test_the_verify_route_answers_without_importing(tmp_path):
     handler = object.__new__(handler_class)
     replies = []
     handler._query = lambda: {}
-    handler._send = lambda code, data, content_type, extra=None: replies.append(
-        (code, data, content_type, extra or {})
+    handler._send = (
+        lambda code, data, content_type, extra=None, security=None: replies.append(
+            (code, data, content_type, extra or {})
+        )
     )
     handler._json = lambda value, code=200: replies.append((code, value))
     try:

@@ -876,47 +876,13 @@ _KETCHER_WRAPPER = """<!doctype html>
   </style>
 </head>
 <body>
-  <div id="openai4s-artifact" data-ketcher-core="ketcher-core" data-ketcher-js="ketcher.js">
+  <div id="openai4s-artifact" data-ketcher-core="ketcher-core" data-ketcher-js="ketcher.js" data-artifact-id="__ARTIFACT__">
     <strong>Ketcher v3.7.0</strong>
     <button type="button" id="ketcher-save">Save artifact version</button>
     <span id="ketcher-status">loading real editor assets</span>
   </div>
   <iframe id="ketcher-frame" title="Ketcher" src="/static/vendor/ketcher/index.html"></iframe>
-  <script>
-    const artifactId = "__ARTIFACT__";
-    const status = document.getElementById("ketcher-status");
-    const frame = document.getElementById("ketcher-frame");
-    function ketcher() {
-      try { return frame.contentWindow && frame.contentWindow.ketcher; } catch (e) { return null; }
-    }
-    async function loadArtifact() {
-      if (!artifactId) { status.textContent = "ready"; return; }
-      const response = await fetch("/api/v1/artifacts/" + encodeURIComponent(artifactId));
-      if (!response.ok) { status.textContent = "artifact load failed"; return; }
-      const text = await response.text();
-      const editor = ketcher();
-      if (editor && editor.setMolecule) await editor.setMolecule(text);
-      status.textContent = "loaded " + artifactId;
-    }
-    window.addEventListener("message", (event) => {
-      if (event.data && event.data.eventType === "init") loadArtifact();
-    });
-    frame.addEventListener("load", () => setTimeout(loadArtifact, 400));
-    document.getElementById("ketcher-save").onclick = async () => {
-      const editor = ketcher();
-      if (!editor || !artifactId) { status.textContent = "nothing to save"; return; }
-      const mol = editor.getMolfile ? await editor.getMolfile() : "";
-      const response = await fetch("/api/v1/artifacts/" + encodeURIComponent(artifactId) + "/structure", {
-        method: "POST",
-        headers: {"content-type": "application/json"},
-        body: JSON.stringify({content: mol, format: "mol"})
-      });
-      const payload = await response.json().catch(() => ({}));
-      status.textContent = response.ok
-        ? ("saved " + (payload.version_id || "") + (payload.unchanged ? " (unchanged)" : ""))
-        : ("save failed: " + (payload.error || response.status));
-    };
-  </script>
+  <script src="/static/ketcher-page.js"></script>
 </body>
 </html>
 """

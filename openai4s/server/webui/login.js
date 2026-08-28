@@ -1,5 +1,5 @@
 /* Team-mode login page (docs/team-server-plan.md M1-9).
- * External file rather than inline: the CSP hashes only index.html's inline
+ * External file rather than inline: the shared CSP authorizes only same-origin
  * scripts, so an inline <script> here would be blocked. */
 (function () {
   "use strict";

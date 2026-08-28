@@ -6,66 +6,97 @@ harvested over ssh, GPU model names from nvidia-smi, package names, connector
 metadata), and several still reach the DOM through innerHTML. A strict CSP is
 what stops an injected `<script>` from running or phoning home.
 
-The policy is hash-based rather than nonce-based on purpose: index.html is
-served straight off the working tree as a static file, so there is no render
-step in which to stamp a nonce. Its single inline <script> is a static theme
-bootstrap, and hashing it keeps `script-src` free of 'unsafe-inline' — the
-concession that would otherwise make the whole policy decorative.
-
-The hash is derived from the file at runtime rather than pinned as a constant
-so that editing the bootstrap cannot silently break the page: the header
-follows the file. `webui/` is served live from the tree with no build step,
-which is exactly the condition under which a hardcoded hash would drift.
+All executable UI scripts are same-origin static files. Keeping executable
+code out of HTML means the policy needs neither a nonce nor a dynamically
+derived hash, and avoids having a security decision depend on duplicating the
+browser's full HTML tokenizer. Nothing here reads a file: the policies are
+constants, and the one directive that varies — `frame-ancestors` — varies by
+who embeds a document rather than by what the document contains.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import re
-from pathlib import Path
 
-_INLINE_SCRIPT_RE = re.compile(rb"<script>(.*?)</script>", re.DOTALL)
+def artifact_content_security_policy() -> str:
+    """Policy for untrusted, user- or agent-authored Artifact bytes.
 
-# Keyed by (path, mtime, size), not path alone. webui/ is served live off the
-# working tree with no build step, so index.html can change under a running
-# daemon — and a stale hash does not degrade, it blanks the page by blocking
-# the very script the policy was built for. Re-hash when the file moves.
-_cache: dict[tuple[str, int, int], str] = {}
+    Artifact HTML may be opened directly as well as inside the Workbench's
+    sandboxed iframe, so the sandbox rides the response and applies in either
+    navigation mode.
 
+    **Artifact HTML never executes script in the product.** `script-src 'none'`
+    says so, the sandbox has no `allow-scripts`, and `app.js` frames previews
+    with `sandbox=""`; all three agree on purpose. A skill that emits an
+    interactive dashboard — `retrosynthesis_planning`, `admet_genetic` — gets a
+    static rendering in the Workbench and in a `/preview/` tab, and its
+    interactivity only on a downloaded copy opened from the filesystem. That is
+    a deliberate trade, not an oversight: these bytes are model-authored, and
+    the alternative is executing them on the origin that holds the session
+    cookie. Say it here rather than leaving a reader to infer it from three
+    separate files.
 
-def _inline_script_hashes(index_html: Path) -> list[str]:
-    """CSP source-expressions for every inline <script> in the document.
-
-    The hash covers the element's exact text content, which is what the CSP
-    spec digests — including the surrounding newlines and indentation.
+    `allow-same-origin` is the one sandbox token granted, and it buys back the
+    sub-resources a report needs. Without it the document is on an opaque
+    origin, where `'self'` matches nothing and `<img src="figure.png">` — the
+    standard Code-as-Action pair, which `store.artifact_by_unique_filename`
+    exists to resolve — fails to load even on a top-level View. It grants no
+    active capability while `script-src 'none'` and the missing `allow-scripts`
+    stand: with no script there is nothing to read a cookie or a sibling
+    document with.
     """
-    try:
-        raw = index_html.read_bytes()
-    except OSError:
-        return []
-    out = []
-    for body in _INLINE_SCRIPT_RE.findall(raw):
-        digest = base64.b64encode(hashlib.sha256(body).digest()).decode("ascii")
-        out.append(f"'sha256-{digest}'")
-    return out
+    return "; ".join(
+        [
+            "default-src 'none'",
+            "script-src 'none'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "media-src 'self' data: blob:",
+            "connect-src 'none'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'self'",
+            "sandbox allow-same-origin",
+        ]
+    )
 
 
-def _cache_key(index_html: Path) -> tuple[str, int, int]:
-    try:
-        st = index_html.stat()
-        return (str(index_html), int(st.st_mtime_ns), int(st.st_size))
-    except OSError:
-        return (str(index_html), 0, 0)
+def artifact_security_headers() -> dict[str, str]:
+    """Hardened headers for an embeddable, untrusted Artifact document."""
+    headers = security_headers()
+    headers["Content-Security-Policy"] = artifact_content_security_policy()
+    # The Workbench embeds same-origin previews. DENY would make that secure by
+    # rendering nothing; SAMEORIGIN preserves the product while the CSP sandbox
+    # removes the preview document's active capabilities.
+    headers["X-Frame-Options"] = "SAMEORIGIN"
+    return headers
 
 
-def content_security_policy(index_html: Path) -> str:
-    key = _cache_key(index_html)
-    cached = _cache.get(key)
-    if cached is not None:
-        return cached
+def embeddable_security_headers() -> dict[str, str]:
+    """Headers for a UI-owned document the Workbench loads in an iframe.
 
-    script_src = ["'self'", *_inline_script_hashes(index_html)]
+    `/ketcher` and the vendored editor it frames are first-party documents, not
+    Artifact bytes: they keep the shell's `script-src 'self'` and same-origin
+    `connect-src`. What they cannot keep is the shell's frame denial, because
+    the product's only way to reach them is an iframe of the workbench page.
+    `DENY` there is not a policy, it is the editor never rendering.
+    """
+    headers = security_headers()
+    headers["Content-Security-Policy"] = content_security_policy(
+        frame_ancestors="'self'"
+    )
+    headers["X-Frame-Options"] = "SAMEORIGIN"
+    return headers
+
+
+def content_security_policy(*, frame_ancestors: str = "'none'") -> str:
+    """Return the static UI-shell policy.
+
+    ``frame_ancestors`` is the one directive that varies by document, and it
+    varies because of who embeds it, not because of what it contains.
+    """
+    script_src = ["'self'"]
     # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
     # permits exactly that and nothing else — unlike 'unsafe-eval', it does not
     # re-enable eval()/new Function() for injected script.
@@ -91,17 +122,16 @@ def content_security_policy(index_html: Path) -> str:
             "object-src 'none'",
             "base-uri 'none'",
             "form-action 'self'",
-            "frame-ancestors 'none'",
+            f"frame-ancestors {frame_ancestors}",
         ]
     )
-    _cache[key] = policy
     return policy
 
 
-def security_headers(index_html: Path) -> dict[str, str]:
+def security_headers() -> dict[str, str]:
     """Headers applied to every response the gateway emits."""
     return {
-        "Content-Security-Policy": content_security_policy(index_html),
+        "Content-Security-Policy": content_security_policy(),
         # The gateway serves user/agent-authored artifacts; sniffing turns a
         # text/plain artifact into an executable document.
         "X-Content-Type-Options": "nosniff",
@@ -115,4 +145,10 @@ def security_headers(index_html: Path) -> dict[str, str]:
     }
 
 
-__all__ = ["content_security_policy", "security_headers"]
+__all__ = [
+    "artifact_content_security_policy",
+    "artifact_security_headers",
+    "content_security_policy",
+    "embeddable_security_headers",
+    "security_headers",
+]

@@ -56,7 +56,7 @@ its private-PID evidence is independent of network-namespace setup. It proves
 the team info-fd/procfs/pidfd signal path and post-interrupt kernel reuse, not
 the full Linux filesystem-and-egress boundary.
 
-The browser jobs need `npm install --no-save --ignore-scripts playwright@1.54.1 && npx playwright install <engine>` plus a daemon already serving on `127.0.0.1:8760`.
+The browser jobs need `npm ci --ignore-scripts && ./node_modules/.bin/playwright install <engine>` plus a daemon already serving on `127.0.0.1:8760`. They need **Node 20+**: `package.json`'s `engines` floor is `>=18` for the published Skill installer, but the pinned Playwright devDependency refuses anything older, and `npm ci` only warns.
 
 Tests are **offline**: `tests/conftest.py` redirects `~/.openai4s` to a tmp dir per test, sets a fake `deepseek` provider + key, and pins the deny-by-default posture (`OPENAI4S_UNATTENDED_APPROVAL=deny`, `OPENAI4S_SECRET_STORE=plaintext`, a loopback telemetry endpoint, share vars cleared). Don't add tests that require live LLM/network calls to the default suite.
 

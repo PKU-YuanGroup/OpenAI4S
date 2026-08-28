@@ -887,7 +887,7 @@ def test_project_artifact_zip_contains_current_files_and_deduplicates_names(tmp_
     sends: list[tuple] = []
     handler._query = lambda: {}
     handler._body = lambda: {}
-    handler._stream_file = lambda path, ctype, extra=None: sends.append(
+    handler._stream_file = lambda path, ctype, extra=None, security=None: sends.append(
         (200, path.read_bytes(), ctype, extra or {})
     )
 

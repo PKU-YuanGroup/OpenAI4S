@@ -1046,6 +1046,9 @@ def cmd_init(args) -> int:
 
     payload = result.as_dict()
     if args.json:
+        # OnboardingResult.as_dict() is an explicit secret-free projection:
+        # has_api_key is a boolean and the credential value never reaches it,
+        # which tests/test_onboarding.py asserts against a live secret.
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(f"Configured {result.provider} / {result.model}")

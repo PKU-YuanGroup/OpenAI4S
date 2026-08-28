@@ -83,8 +83,10 @@ def _call(handler, method, path, *, body=None, query=None):
     handler._query = lambda: query or {}
     handler._body = lambda: body or {}
     handler._json = lambda value, code=200: replies.append((code, value))
-    handler._send = lambda code, data, content_type, extra=None: replies.append(
-        (code, data, content_type, extra or {})
+    handler._send = (
+        lambda code, data, content_type, extra=None, security=None: replies.append(
+            (code, data, content_type, extra or {})
+        )
     )
     handler._api(method, path)
     return replies[-1]
@@ -370,6 +372,40 @@ def test_ketcher_is_placeholder_off_and_real_assets_on():
         / "static"
         / "js"
         / "main.8617f334.js"
+    ).is_file()
+
+
+def test_the_ketcher_page_carries_no_inline_script():
+    """The editor's own code has to be a same-origin file, not inline source.
+
+    The shared CSP is `script-src 'self' 'wasm-unsafe-eval'` with no hash and
+    no nonce, so the inline `<script>` this document used to carry was refused
+    outright: the frame rendered its chrome and the editor never initialized.
+    The artifact id rides a data attribute for the same reason -- it is data,
+    and it should not be interpolated into executable source.
+
+    Inventoried with the real HTML parser rather than a tag regex: this test
+    asserts an *absence*, so a pattern that misses `<SCRIPT>` -- or a tag split
+    across a newline -- would report the very thing it exists to catch as
+    fixed. `HTMLParser` lower-cases tag names for free.
+    """
+    from tests.test_security_headers import _ScriptInventory
+
+    document = ketcher_document(
+        Config(roadmap_features=RoadmapFeatureFlags(stage9_artifact_workbench=True)),
+        {"artifact_id": ["art-1"]},
+    ).decode("utf-8")
+
+    inventory = _ScriptInventory()
+    inventory.feed(document)
+    inventory.close()
+
+    assert None not in inventory.sources, "an inline <script> cannot be authorized"
+    assert inventory.sources == ["/static/ketcher-page.js"]
+    assert 'data-artifact-id="art-1"' in document
+    assert (
+        Path(ketcher_document.__globals__["KETCHER_VENDOR"]).parents[1]
+        / "ketcher-page.js"
     ).is_file()
 
 

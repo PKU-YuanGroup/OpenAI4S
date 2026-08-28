@@ -92,8 +92,10 @@ class _Client:
         payload = json.dumps(body or {}).encode("utf-8") if body is not None else b""
         handler = object.__new__(self._handler)
         sent: dict = {}
-        handler._send = lambda code, data, ctype, extra=None: sent.update(
-            code=code, body=data, ctype=ctype
+        handler._send = (
+            lambda code, data, ctype, extra=None, security=None: sent.update(
+                code=code, body=data, ctype=ctype
+            )
         )
         handler.command = method
         handler.path = f"/api/v1{path}"
