@@ -38,7 +38,7 @@ concurrency:
 jobs:
   branch-name:
     name: Branch naming policy
-    # Enforces the CONTRIBUTING.md branch-naming table on PR head branches.
+    # Enforces the .github/CONTRIBUTING.md branch-naming table on PR head branches.
     # dependabot branches (dependabot/...) are exempt. `main` is allowed so
     # casual contributors can PR from their fork's main branch.
     #
@@ -64,7 +64,7 @@ jobs:
           if printf '%s' "$HEAD_REF" | grep -Eq "$policy"; then
             echo "ok: $HEAD_REF"
           else
-            echo "::error::Branch name '$HEAD_REF' violates the naming policy in CONTRIBUTING.md (expected main, next, or <prefix>/<name> with prefix one of feat|fix|docs|test|refactor|chore|ui|harness|science|release|hotfix)"
+            echo "::error::Branch name '$HEAD_REF' violates the naming policy in .github/CONTRIBUTING.md (expected main, next, or <prefix>/<name> with prefix one of feat|fix|docs|test|refactor|chore|ui|harness|science|release|hotfix)"
             exit 1
           fi
 
