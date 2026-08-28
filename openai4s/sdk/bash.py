@@ -353,6 +353,9 @@ class BashExecutor:
             "timeout": timeout_s,
         }
         try:
+            # Skill network admission runs on the Host in authorize_bash;
+            # the worker never decides whether a loaded Skill may use the
+            # network and cannot widen egress by omitting that check.
             raw_capability = self._authorization_call("authorize_bash", [binding])
         except Exception as exc:  # noqa: BLE001 — legacy dispatcher: deny
             raise RuntimeError(

@@ -3,6 +3,10 @@ name: reaction-yield-estimation
 description: Estimate yield for a fully specified reactant/reagent/product record with ReactionT5v2-yield. Use for in-domain screening, not route success; flag domain shift and uncalibrated uncertainty.
 license: MIT
 origin: openai4s
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   third_party:
     - kind: weights

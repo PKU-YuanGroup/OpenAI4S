@@ -13,6 +13,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: none
+    domains: []
 metadata:
   display-name: scGPT
   # scGPT checkpoints are distributed as unlabeled Google Drive directories

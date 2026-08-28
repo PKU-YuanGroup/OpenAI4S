@@ -3,6 +3,10 @@ name: reaction-atom-mapping
 description: Map atoms and changed bonds for a complete reaction with RXNMapper. Use for reactant/product correspondence and reaction-centre audits, not target-only retrosynthesis or feasibility.
 license: MIT
 origin: openai4s
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   third_party:
     - kind: model

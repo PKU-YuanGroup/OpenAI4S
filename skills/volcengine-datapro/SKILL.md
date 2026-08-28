@@ -2,6 +2,12 @@
 name: volcengine-datapro
 description: Discover and call the configured Volcengine DataPro dataPro_search(query:string) MCP tool for professional-dataset queries.
 origin: openai4s
+capabilities:
+  network:
+    mode: host_only
+    domains:
+      - datapro.hqd.cn-beijing.volces.com
+
 ---
 
 # Volcengine DataPro

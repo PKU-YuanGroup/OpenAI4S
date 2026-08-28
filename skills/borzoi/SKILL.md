@@ -10,6 +10,10 @@ license: Apache-2.0
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   # SKILL.md loads `johahi/borzoi-replicate-0` — a PyTorch port of Calico's
   # Borzoi ("ported weights (with permission)"). The HuggingFace model card

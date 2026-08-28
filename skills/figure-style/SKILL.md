@@ -3,6 +3,11 @@ origin: openai4s
 name: figure-style
 description: "Publication-grade figure correctness and legibility rules. Load before drawing any plot and call `apply_figure_style()` — sets a role-mapped font-size ladder, outward ticks, frameless legends, and 300-dpi output. The skill is a checklist, not a house look: data fidelity (claim-titles tested against every row, excluded data never enters summaries), label economy (floor and ceiling), colour threading, chart-choice-by-data-shape, layout, and a render-then-verify QA loop (bbox collision + per-panel perceptual check). Ships helpers: focal_palette, bar_with_points, strip_with_median, end_of_line_labels, panel_letter, set_frame, panel_crops. For multi-panel figures load `figure-composer`; for whole-paper figure arc load `paper-narrative`."
 license: Apache-2.0
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 

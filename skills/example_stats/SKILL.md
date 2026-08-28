@@ -2,6 +2,11 @@
 name: example_stats
 description: descriptive-statistics helpers — summary (mean/std/median), quantile, zscore normalization, and Pearson correlation on plain Python number lists (no pandas/numpy).
 origin: personal
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 # Skill: stats
 

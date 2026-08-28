@@ -11,6 +11,10 @@ description: >
  Tangram methods instead.
 license: Apache-2.0
 requirements: [gpu]
+capabilities:
+  network:
+    mode: none
+    domains: []
 metadata:
  display-name: scvi-tools
 ---

@@ -1075,6 +1075,11 @@ class HostDispatcher:
         # it is populated.
         self._bash_generation_local = threading.local()
         self._bash_generation_default: str | int | None = None
+        # Measured OS-sandbox posture of the worker that is currently in a
+        # host_call, bound by Kernel._service_host_call. Cell admission reads
+        # the same status off the supervisor; shell authorization must not
+        # guess from env when a live worker has already reported.
+        self._sandbox_status_local = threading.local()
         # Canonical action attribution is bound by the engine/kernel manager
         # at the actual invocation boundary.  Thread-local storage matters for
         # parallel read-only native tools: each approval must point back to its
@@ -1094,6 +1099,7 @@ class HostDispatcher:
             allowed_roots=_configured_bash_allowed_roots,
             audit=self._audit_bash_result,
             step_sink=lambda: self.on_step,
+            sandbox_status=self._current_sandbox_status,
         )
         self._data_service = HostDataService(
             store=lambda: self.store,
@@ -1325,6 +1331,30 @@ class HostDispatcher:
     def _current_action_context(self) -> dict[str, Any]:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
+
+    @contextmanager
+    def bind_sandbox_status(self, status: Mapping[str, Any] | None) -> Iterator[None]:
+        """Bind the calling worker's measured sandbox posture for one host_call."""
+
+        marker = object()
+        previous = getattr(self._sandbox_status_local, "value", marker)
+        self._sandbox_status_local.value = (
+            dict(status) if isinstance(status, Mapping) else None
+        )
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del self._sandbox_status_local.value
+                except AttributeError:
+                    pass
+            else:
+                self._sandbox_status_local.value = previous
+
+    def _current_sandbox_status(self) -> dict[str, Any] | None:
+        value = getattr(self._sandbox_status_local, "value", None)
+        return dict(value) if isinstance(value, dict) else None
 
     @contextmanager
     def bind_native_artifact_committer(
@@ -1722,6 +1752,10 @@ class HostDispatcher:
         args = decode_args(args)
         args = self._canonical_mcp_server(method, args)
         action_context = self._current_action_context()
+        from openai4s.server.skill_network_admission import frame_scope
+
+        skill_frame = frame_scope(self.frame_id)
+        skill_frame.__enter__()
         try:
             audit_resources = (
                 list(control_tool.resource_keys(args[0] if args else {}))
@@ -1923,6 +1957,7 @@ class HostDispatcher:
             raised_error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            skill_frame.__exit__(None, None, None)
             self.store.log_host_call(
                 method=method,
                 args=args,
@@ -2463,7 +2498,69 @@ class HostDispatcher:
     def _m_load_skill(self, name: str) -> dict:
         """Return a skill's full guidance (SKILL.md) — the reference's
         'Loading <skill> skill guidance → loaded' step."""
-        return self._skill_service.load(name)
+        loaded = self._skill_service.load(name)
+        if isinstance(loaded, dict) and loaded.get("error"):
+            return loaded
+        self._bind_loaded_skill(loaded, source="load_skill")
+        return loaded
+
+    def _bind_loaded_skill(self, loaded: Mapping[str, Any], *, source: str) -> None:
+        """Record the load-event and bind the manifest for later admission.
+
+        The manifest is stored as a requirement. Binding it never grants
+        egress or raw kernel network.
+        """
+
+        if not isinstance(loaded, Mapping) or not loaded.get("name"):
+            return
+        skill_name = str(loaded.get("name") or "")
+        skill = self._skill_service.loader.get(skill_name, include_disabled=True)
+        if skill is None:
+            return
+        from openai4s.server.skill_network_admission import (
+            bind_skill_load,
+            load_event_metadata,
+        )
+
+        context = self._current_action_context()
+        action_group_id = context.get("action_group_id")
+        capability = getattr(skill, "network", None)
+        if capability is None:
+            return
+        bind_skill_load(
+            frame_id=self.frame_id,
+            action_group_id=str(action_group_id) if action_group_id else None,
+            skill_id=skill.name,
+            version=str(getattr(skill, "version", "") or ""),
+            document_digest=str(getattr(skill, "document_sha256", "") or ""),
+            capability=capability,
+            source=source,
+        )
+        metadata = load_event_metadata(
+            skill_id=skill.name,
+            version=str(getattr(skill, "version", "") or ""),
+            document_digest=str(getattr(skill, "document_sha256", "") or ""),
+            capability=capability,
+            action_group_id=str(action_group_id) if action_group_id else None,
+            source=source,
+        )
+        try:
+            self._skill_service.loader.capabilities.record_event(
+                "skill",
+                skill.name,
+                "skill_loaded",
+                metadata=metadata,
+            )
+        except (
+            Exception
+        ):  # noqa: BLE001 - load still succeeds if the ledger write fails
+            pass
+        loaded_dict = loaded if isinstance(loaded, dict) else None
+        if loaded_dict is not None:
+            loaded_dict["skill_id"] = skill.name
+            loaded_dict["action_group_id"] = metadata["action_group_id"]
+            loaded_dict["manifest_digest"] = metadata["manifest_digest"]
+            loaded_dict["document_digest"] = metadata["document_digest"]
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions
