@@ -90,6 +90,7 @@ from openai4s.storage.datapro_index import (
     create_datapro_index_schema,
 )
 from openai4s.storage.delegation import DelegationProjectionRepository
+from openai4s.storage.delegation_attempts import create_delegation_request_schema
 from openai4s.storage.delivery import (
     CompletionDeliveryRepository,
     create_completion_delivery_schema,
@@ -758,6 +759,8 @@ QUERY_DENYLIST = frozenset(
         "delegation_sessions",
         "delegation_children",
         "delegation_steering",
+        "delegation_requests",
+        "delegation_attempts",
         "session_branches",
         "session_branch_selection",
         "session_checkpoints",
@@ -1602,6 +1605,10 @@ class Store:
                         "delegation_generation_and_task_status",
                         self._apply_delegation_generation_and_task_status,
                     ),
+                    29: (
+                        "delegation_requests_and_attempts",
+                        self._apply_delegation_requests_and_attempts,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1748,6 +1755,16 @@ class Store:
             except sqlite3.OperationalError as error:
                 if not _is_duplicate_column(error):
                     raise
+
+    def _apply_delegation_requests_and_attempts(self, conn: sqlite3.Connection) -> None:
+        """Version 29: durable request identity separate from attempt identity.
+
+        Additive. Existing children keep no request row, so a replay without
+        an explicit identity stays a new spawn. Rollback does not delete
+        published Artifact versions.
+        """
+
+        create_delegation_request_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -3741,6 +3758,12 @@ class Store:
 
     def persist_delegation_child(self, **fields: Any) -> dict | None:
         return self._delegations.persist_child(**fields)
+
+    def continue_delegation_request(self, **fields: Any) -> dict:
+        return self._delegations.continue_request(**fields)
+
+    def delegation_request_for_child(self, **fields: Any) -> dict | None:
+        return self._delegations.request_for_child(**fields)
 
     def delegation_tree(self, root_frame_id: str) -> dict:
         return self._delegations.project(root_frame_id)

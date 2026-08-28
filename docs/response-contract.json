@@ -975,6 +975,18 @@
         404
       ]
     },
+    "/frames/([^/]+)/delegations/([^/]+)/continue": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404,
+        409
+      ]
+    },
     "/frames/([^/]+)/environments": {
       "content_types": [
         "application/json"

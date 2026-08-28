@@ -2949,6 +2949,45 @@ class SessionRunner:
             )
         return result
 
+    def continue_delegation_child(self, root_frame_id: str, child_id: str) -> dict:
+        """Create the next attempt. Restore never auto-runs a stopped child."""
+
+        from openai4s.agent.delegation import DelegationConflictError, DelegationError
+
+        tree = self.store.delegation_tree(root_frame_id) or {}
+        record = next(
+            (
+                child
+                for child in (tree.get("children") or [])
+                if str(child.get("child_id") or "") == child_id
+            ),
+            None,
+        )
+        if record is None:
+            raise GatewayError(404, f"no such sub-agent {child_id}", "not_found")
+        state = self._existing_state(root_frame_id)
+        runner = state.delegation_runner if state is not None else None
+        if runner is None:
+            raise GatewayError(
+                409,
+                "this sub-agent belongs to a run that is no longer active; "
+                "open the session and continue explicitly — restart does not "
+                "auto-resume delegated children",
+                "delegation_record_stale",
+            )
+        try:
+            return runner.continue_child(child_id)
+        except DelegationConflictError as error:
+            raise GatewayError(
+                getattr(error, "http_status", 409),
+                str(error),
+                "delegation_conflict",
+            ) from error
+        except KeyError as error:
+            raise GatewayError(404, str(error), "not_found") from error
+        except DelegationError as error:
+            raise GatewayError(409, str(error), "delegation_error") from error
+
     def refresh_compute_task(self, root_frame_id: str, job_id: str) -> dict:
         """Contact the remote for ONE job, because a person asked.
 
@@ -17022,6 +17061,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         fid, child_id, (self._body() or {}).get("message") or ""
                     )
                 )
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/delegations/([^/]+)/continue", sub)
+            if m and method == "POST":
+                fid, child_id = m.groups()
+                self._json(runner.continue_delegation_child(fid, child_id))
                 return
             m = re.fullmatch(r"/frames/([^/]+)/compute/tasks", sub)
             if m and method == "GET":
