@@ -146,6 +146,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_gateway_lazy_runtime.py`](test_gateway_lazy_runtime.py) | 惰性在这里是承重性质，不是优化。plan 的一轮、只用原生 Tool 的一轮、只用 Tool 的结构化完成，全都能在内核进程压根不存在的情况下走完；真正拉起 worker 的是第一个 Cell 或第一次 REPL。 |
 | [`test_gateway_session_domain_routes.py`](test_gateway_session_domain_routes.py) | 建立在同一份组合之上的 session-domain HTTP 路由。读 UI 代码之前值得先知道：`fork_from_cell` 是刻意失败即拒绝的，因为它还没被支持；变量检查的路由则从不启动 worker。 |
 | [`test_gateway_session_lifecycle.py`](test_gateway_session_lifecycle.py) | 跨 daemon 自身生命周期的持久 generation 与 attempt 身份：TTL 清扫、启动时对上一个已死 daemon 留下的 generation 做对账，以及挡住新工作进入正在删除的 project 的准入检查。 |
+| [`test_gateway_static_cache.py`](test_gateway_static_cache.py) | `/static/` 与 SPA 外壳的弱 ETag、304、gzip 协商与 immutable Cache-Control。在真实连接上断言：命中 If-None-Match 是无体 304 且仍带安全头；gzip 只给 >1KB 的文本类并带 Vary、否则 identity 回退；immutable 仅限指纹名；>8MB 走流式发送；出树的 symlink 在 realpath 之后 403。 |
 | [`test_global_research_views.py`](test_global_research_views.py) | 两个跨会话的读模型。project Timeline 把它们合并起来，且不携带任何原始 payload；血缘视图把 Artifact 版本连回产出它的那些 cell。 |
 | [`test_governance.py`](test_governance.py) | 用测试写出来的仓库治理。每一个安全扫描与发布用的 action 都固定到具体 commit，secret 扫描用一个校验和固定的二进制扫全部历史，Dependabot 盯着 hook 与 workflow action。 |
 | [`test_harness_characterization.py`](test_harness_characterization.py) | 一份特征化 golden，因此它刻意记录的是当前行为，已知 bug 也照记不误，并且标注出来。重新生成 golden 必须是一个显式动作——正是这一点拦得住无声的漂移。 |

@@ -20,6 +20,7 @@ cell's figures / written files are captured as versioned artifacts.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -35,6 +36,7 @@ import time
 import traceback
 import uuid
 import zipfile
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -624,6 +626,148 @@ def _sanitize_header_value(value: str) -> str:
     """Remove CR/LF from an HTTP header value so a user-influenced value cannot
     inject extra headers or split the response (CWE-113)."""
     return str(value).replace("\r", "").replace("\n", "")
+
+
+# Static UI transport (ETag / 304 / gzip / fingerprint Cache-Control). These
+# apply only to `_serve_index` / `_serve_static` / the large-file branch of
+# `_stream_file`. `_send` stays `Cache-Control: no-cache` so API JSON and
+# Artifact bytes keep the same headers they always had.
+_STATIC_STREAM_BYTES = 8 * 1024 * 1024
+_GZIP_MIN_BYTES = 1024
+_GZIP_CACHE_MAX_BYTES = 48 * 1024 * 1024
+_GZIP_LEVEL = 6
+_GZIP_SUFFIXES = (".js", ".css", ".html", ".htm", ".svg", ".json")
+_FINGERPRINT_CACHE_CONTROL = "public, max-age=31536000, immutable"
+# Webpack `name.<8 hex>[.chunk].ext` (Ketcher) and Vite/font
+# `name-<8 url-safe>.ext` (vendored woff2). Unhashed names stay no-cache.
+_FINGERPRINT_NAME_RE = re.compile(
+    r"(?:\.[0-9a-f]{8}(?:\.chunk)?(?:\.[A-Za-z0-9]+)+$)"
+    r"|(?:-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$)",
+    re.IGNORECASE,
+)
+_GZIP_CACHE: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+_GZIP_CACHE_BYTES = 0
+_GZIP_CACHE_LOCK = threading.Lock()
+
+
+def _is_fingerprinted_name(name: str) -> bool:
+    return bool(_FINGERPRINT_NAME_RE.search(name))
+
+
+def _gzip_eligible(name: str, size: int) -> bool:
+    if size <= _GZIP_MIN_BYTES:
+        return False
+    lower = name.lower()
+    return any(lower.endswith(suffix) for suffix in _GZIP_SUFFIXES)
+
+
+def _weak_etag(mtime_ns: int, size: int, *, gzip_body: bool) -> str:
+    tag = f"{mtime_ns:x}-{size:x}"
+    if gzip_body:
+        tag += "-gz"
+    return f'W/"{tag}"'
+
+
+def _etag_key(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[:2].upper() == "W/":
+        value = value[2:].strip()
+    return value
+
+
+def _if_none_match(headers: Any, etag: str) -> bool:
+    if headers is None:
+        return False
+    raw = headers.get("If-None-Match")
+    if not raw:
+        return False
+    raw = str(raw).strip()
+    if raw == "*":
+        return True
+    want = _etag_key(etag)
+    return any(_etag_key(part) == want for part in raw.split(",") if part.strip())
+
+
+def _accepts_gzip(headers: Any) -> bool:
+    if headers is None:
+        return False
+    raw = headers.get("Accept-Encoding")
+    if not raw:
+        return False
+    for part in str(raw).split(","):
+        token, _, params = part.strip().partition(";")
+        if token.strip().casefold() != "gzip":
+            continue
+        q = 1.0
+        if params:
+            for param in params.split(";"):
+                name, _, value = param.strip().partition("=")
+                if name.strip().casefold() != "q":
+                    continue
+                try:
+                    q = float(value.strip() or "0")
+                except ValueError:
+                    q = 0.0
+        return q > 0.0
+    return False
+
+
+def _gzip_cached_bytes(path: Path, st: os.stat_result) -> bytes:
+    """Compress a static file, keyed by (path, mtime_ns, size), LRU ~48MB."""
+    global _GZIP_CACHE_BYTES
+    key = (str(path), int(st.st_mtime_ns), int(st.st_size))
+    with _GZIP_CACHE_LOCK:
+        cached = _GZIP_CACHE.get(key)
+        if cached is not None:
+            _GZIP_CACHE.move_to_end(key)
+            return cached
+    raw = path.read_bytes()
+    compressed = gzip.compress(raw, compresslevel=_GZIP_LEVEL, mtime=0)
+    del raw
+    with _GZIP_CACHE_LOCK:
+        cached = _GZIP_CACHE.get(key)
+        if cached is not None:
+            _GZIP_CACHE.move_to_end(key)
+            return cached
+        while (
+            _GZIP_CACHE and _GZIP_CACHE_BYTES + len(compressed) > _GZIP_CACHE_MAX_BYTES
+        ):
+            _, old = _GZIP_CACHE.popitem(last=False)
+            _GZIP_CACHE_BYTES -= len(old)
+            if _GZIP_CACHE_BYTES < 0:
+                _GZIP_CACHE_BYTES = 0
+        if len(compressed) <= _GZIP_CACHE_MAX_BYTES:
+            _GZIP_CACHE[key] = compressed
+            _GZIP_CACHE_BYTES += len(compressed)
+    return compressed
+
+
+def _resolve_static_file(rel: str) -> tuple[Path | None, int | None]:
+    """Resolve `/static/<rel>` inside WEBUI_DIR.
+
+    `join` + `normpath` alone does not follow a symlink, so a link planted
+    under the tree used to be served. realpath the target too, then
+    commonpath, before treating it as a file.
+    """
+    base = os.path.realpath(str(WEBUI_DIR))
+    candidate = os.path.normpath(os.path.join(base, rel))
+    try:
+        if os.path.commonpath((base, candidate)) != base:
+            return None, 403
+    except ValueError:
+        return None, 403
+    try:
+        real = os.path.realpath(candidate)
+    except OSError:
+        return None, 404
+    try:
+        if os.path.commonpath((base, real)) != base:
+            return None, 403
+    except ValueError:
+        return None, 403
+    if not os.path.isfile(real):
+        return None, 404
+    return Path(real), None
 
 
 def _sha256(path: Path) -> str:
@@ -13503,7 +13647,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
-            self._serve_file(WEBUI_DIR / "index.html", "text/html; charset=utf-8")
+            self._serve_ui_file(WEBUI_DIR / "index.html", "text/html; charset=utf-8")
 
         def _serve_static(self, path: str) -> bool:
             if path in ("/", "/index.html"):
@@ -13511,30 +13655,116 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return True
             if path.startswith("/static/"):
                 rel = path[len("/static/") :]
-                # Normalize the requested path and require it to share the web-UI
-                # root as a common path prefix, so it cannot escape via ".." or an
-                # absolute path.
-                base = os.path.realpath(str(WEBUI_DIR))
-                target_s = os.path.normpath(os.path.join(base, rel))
-                if os.path.commonpath((base, target_s)) != base:
-                    self._json({"error": "forbidden"}, 403)
-                    return True
-                target = Path(target_s)
-                if target.is_file():
-                    ctype = _guess_ctype(target.name)
-                    # The one static document that is itself framed: `/ketcher`
-                    # embeds the vendored editor's entry page. Everything else
-                    # under /static/ keeps the shell's frame denial.
-                    security = (
-                        embeddable_security_headers()
-                        if rel == _FRAMED_STATIC_DOCUMENT
-                        else None
+                target, status = _resolve_static_file(rel)
+                if status is not None:
+                    self._json(
+                        {"error": "forbidden" if status == 403 else "not found"},
+                        status,
                     )
-                    self._serve_file(target, ctype, security=security)
-                else:
-                    self._json({"error": "not found"}, 404)
+                    return True
+                assert target is not None
+                ctype = _guess_ctype(target.name)
+                # The one static document that is itself framed: `/ketcher`
+                # embeds the vendored editor's entry page. Everything else
+                # under /static/ keeps the shell's frame denial.
+                security = (
+                    embeddable_security_headers()
+                    if rel == _FRAMED_STATIC_DOCUMENT
+                    else None
+                )
+                self._serve_ui_file(target, ctype, security=security)
                 return True
             return False
+
+        def _send_static_bytes(
+            self,
+            code: int,
+            body: bytes,
+            ctype: str,
+            extra: dict | None,
+            security: dict[str, str] | None,
+        ) -> None:
+            """Write a static response whose Cache-Control `_send` cannot express.
+
+            `_send` hard-wires `no-cache`. Fingerprint names need
+            `public, max-age=31536000, immutable`; sending both would combine
+            into a contradictory policy. 304 still applies the security
+            profile — an empty body is not an opt-out.
+            """
+            extra = dict(extra or {})
+            cache_control = extra.pop("Cache-Control", "no-cache")
+            self._last_status = code
+            self.send_response(code)
+            self.send_header("Content-Type", _sanitize_header_value(ctype))
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", _sanitize_header_value(cache_control))
+            request_id = getattr(self, "_correlation_id", "")
+            if request_id:
+                self.send_header("X-Request-Id", _sanitize_header_value(request_id))
+            profile = security if security is not None else security_headers()
+            for key, value in profile.items():
+                self.send_header(key, _sanitize_header_value(value))
+            for key, value in extra.items():
+                self.send_header(key, _sanitize_header_value(value))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def _serve_ui_file(
+            self,
+            path: Path,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
+        ) -> None:
+            try:
+                st = path.stat()
+            except OSError:
+                self._json({"error": "not found"}, 404)
+                return
+            headers_out = dict(extra or {})
+            gzip_ok = _gzip_eligible(path.name, st.st_size) and _accepts_gzip(
+                getattr(self, "headers", None)
+            )
+            headers_out["ETag"] = _weak_etag(
+                st.st_mtime_ns, st.st_size, gzip_body=gzip_ok
+            )
+            fingerprinted = _is_fingerprinted_name(path.name)
+            if fingerprinted:
+                headers_out["Cache-Control"] = _FINGERPRINT_CACHE_CONTROL
+            if _gzip_eligible(path.name, st.st_size):
+                headers_out["Vary"] = "Accept-Encoding"
+            if gzip_ok:
+                headers_out["Content-Encoding"] = "gzip"
+            if _if_none_match(getattr(self, "headers", None), headers_out["ETag"]):
+                if fingerprinted:
+                    self._send_static_bytes(304, b"", ctype, headers_out, security)
+                else:
+                    self._send(304, b"", ctype, extra=headers_out, security=security)
+                return
+            if gzip_ok:
+                try:
+                    body = _gzip_cached_bytes(path, st)
+                except OSError:
+                    self._json({"error": "not found"}, 404)
+                    return
+                if fingerprinted:
+                    self._send_static_bytes(200, body, ctype, headers_out, security)
+                else:
+                    self._send(200, body, ctype, extra=headers_out, security=security)
+                return
+            if st.st_size > _STATIC_STREAM_BYTES:
+                self._stream_file(path, ctype, extra=headers_out, security=security)
+                return
+            if fingerprinted:
+                try:
+                    body = path.read_bytes()
+                except OSError:
+                    self._json({"error": "not found"}, 404)
+                    return
+                self._send_static_bytes(200, body, ctype, headers_out, security)
+                return
+            self._serve_file(path, ctype, extra=headers_out, security=security)
 
         def _serve_file(
             self,
@@ -13558,17 +13788,44 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             security: dict[str, str] | None = None,
         ) -> None:
             """Send a potentially large local file without loading it into RAM."""
+            extra = dict(extra or {})
             try:
-                source = path.open("rb")
                 size = path.stat().st_size
             except OSError:
                 self._json({"error": "not found"}, 404)
                 return
+            etag = extra.get("ETag")
+            if etag and _if_none_match(getattr(self, "headers", None), etag):
+                # 304 must still carry the security profile: an empty body is
+                # not an opt-out. `_send` is not used here because fingerprint
+                # names pass a Cache-Control `_send` would contradict.
+                self._last_status = 304
+                self.send_response(304)
+                self.send_header("Content-Type", _sanitize_header_value(ctype))
+                self.send_header("Content-Length", "0")
+                cache_control = extra.get("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", _sanitize_header_value(cache_control))
+                profile = security if security is not None else security_headers()
+                for key, value in profile.items():
+                    self.send_header(key, _sanitize_header_value(value))
+                for key, value in extra.items():
+                    if key == "Cache-Control":
+                        continue
+                    self.send_header(key, _sanitize_header_value(value))
+                self.end_headers()
+                return
+            try:
+                source = path.open("rb")
+            except OSError:
+                self._json({"error": "not found"}, 404)
+                return
+            cache_control = extra.pop("Cache-Control", "no-cache")
             with source:
+                self._last_status = 200
                 self.send_response(200)
                 self.send_header("Content-Type", _sanitize_header_value(ctype))
                 self.send_header("Content-Length", str(size))
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", _sanitize_header_value(cache_control))
                 # This path streams artifact bytes — agent-authored content, so
                 # the one that most needs nosniff and a closed CSP. It builds
                 # its own headers instead of going through _send, so it has to
@@ -13577,7 +13834,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 profile = security if security is not None else security_headers()
                 for key, value in profile.items():
                     self.send_header(key, _sanitize_header_value(value))
-                for key, value in (extra or {}).items():
+                for key, value in extra.items():
                     self.send_header(key, _sanitize_header_value(value))
                 self.end_headers()
                 while True:
