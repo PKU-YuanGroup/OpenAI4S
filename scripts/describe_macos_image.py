@@ -25,16 +25,86 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import plistlib
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
 #: What a real Apple distribution signature says. Kept in step with
 #: ``release_pipeline.DEVELOPER_ID_AUTHORITY``.
 DEVELOPER_ID_AUTHORITY = "Developer ID Application"
+
+#: Signing identity the builder and the notary script both require.
+SIGNING_IDENTITY_VAR = "OPENAI4S_MACOS_SIGNING_IDENTITY"
+
+#: One complete Apple-ID notary set. An app-specific password, not the
+#: account password.
+APPLE_ID_NOTARY_VARS = ("APPLE_ID", "APPLE_TEAM_ID", "APPLE_NOTARY_PASSWORD")
+
+#: One complete App Store Connect API-key notary set. ``APPLE_API_KEY_PATH``
+#: *or* ``APPLE_API_KEY`` (the PEM body) is the third member.
+API_KEY_NOTARY_VARS = ("APPLE_API_KEY_ID", "APPLE_API_ISSUER")
+
+
+def _present(env: Mapping[str, str], name: str) -> bool:
+    return bool(str(env.get(name) or "").strip())
+
+
+def notary_credential_status(
+    env: Mapping[str, str] | None = None,
+) -> dict:
+    """Whether the smallest secret set for sign-and-notarize is present.
+
+    Does not contact Apple. Default unit tests call this and
+    ``require_notary_credentials``; they never invoke ``notarytool``.
+    """
+    source = os.environ if env is None else env
+    identity = _present(source, SIGNING_IDENTITY_VAR)
+    apple_id_set = all(_present(source, name) for name in APPLE_ID_NOTARY_VARS)
+    api_key_material = _present(source, "APPLE_API_KEY_PATH") or _present(
+        source, "APPLE_API_KEY"
+    )
+    api_key_set = (
+        all(_present(source, name) for name in API_KEY_NOTARY_VARS) and api_key_material
+    )
+    missing: list[str] = []
+    if not identity:
+        missing.append(SIGNING_IDENTITY_VAR)
+    if not apple_id_set and not api_key_set:
+        missing.append(
+            "APPLE_ID+APPLE_TEAM_ID+APPLE_NOTARY_PASSWORD or "
+            "APPLE_API_KEY_ID+APPLE_API_ISSUER+APPLE_API_KEY[_PATH]"
+        )
+    return {
+        "signing_identity": identity,
+        "apple_id_set": apple_id_set,
+        "api_key_set": api_key_set,
+        "ready": identity and (apple_id_set or api_key_set),
+        "missing": missing,
+    }
+
+
+def require_notary_credentials(env: Mapping[str, str] | None = None) -> dict:
+    """Fail fast when ``macos_asset=notarized`` was requested without secrets.
+
+    The remedy is to configure the credentials, or to set ``macos_asset=omit``
+    (the workflow default) so a preview DMG is not uploaded. Silently omitting
+    after a notarized request, or uploading an ad-hoc image, is refused.
+    """
+    status = notary_credential_status(env)
+    if not status["ready"]:
+        raise RuntimeError(
+            "macos_asset=notarized requires a Developer ID identity and a "
+            "complete notary credential set; missing: "
+            + ", ".join(status["missing"])
+            + ". Set macos_asset=omit (the default) to skip the DMG rather "
+            "than uploading a preview image."
+        )
+    return status
 
 
 def _run(argv: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
@@ -132,7 +202,9 @@ def describe_notarization(dmg: Path) -> dict:
         "notarized": stapler.returncode == 0,
         "note": (
             "xcrun stapler validate on the built image; a non-zero result means no "
-            "notarization ticket is stapled and Gatekeeper will refuse the image"
+            "notarization ticket is stapled and Gatekeeper will refuse the image. "
+            "post_staple_sha256 is filled after this document is bound to the "
+            "image digest: a ticket copied from another image cannot match."
         ),
     }
 
@@ -214,6 +286,11 @@ def describe(dmg: Path) -> tuple[dict, dict]:
     # a staging host and pass the signing gate. The gate re-hashes the image and
     # requires this to match.
     signature["image_sha256"] = image_digest
+    # Stapling rewrites the DMG. The digest the release publishes is the
+    # post-staple one, recorded only when a ticket actually validated against
+    # *this* image. A stale ticket from a previous build has a different
+    # digest and must not notarize the current bytes.
+    signature["post_staple_sha256"] = image_digest if signature.get("notarized") else ""
     components["image"] = dmg.name
     # The component inventory needs the same binding: a `.components.json` left
     # by an earlier rebuild with the same filename must not describe a different
@@ -225,8 +302,20 @@ def describe(dmg: Path) -> tuple[dict, dict]:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "--check-notary-credentials":
+        try:
+            require_notary_credentials()
+        except RuntimeError as error:
+            print(str(error), file=sys.stderr)
+            return 2
+        print("notary credentials: ready")
+        return 0
     if not argv:
-        print("usage: describe_macos_image.py <image.dmg> [...]", file=sys.stderr)
+        print(
+            "usage: describe_macos_image.py [--check-notary-credentials] "
+            "<image.dmg> [...]",
+            file=sys.stderr,
+        )
         return 2
     for target in argv:
         dmg = Path(target)

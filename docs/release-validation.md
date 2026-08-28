@@ -24,16 +24,19 @@ Developer-ID-signed):
 | `preview` | ad-hoc signature — verifies happily, says nothing about who produced it | no |
 | `not_configured` | no signature evidence, or none that could be read | no |
 
-**`verified` is currently unreachable.** `build_macos_dmg.sh` uses a Developer
-ID certificate when `OPENAI4S_MACOS_SIGNING_IDENTITY` names one that is
-available in the keychain; otherwise it falls back to an ad-hoc signature.
-Neither the build script nor the release workflow submits the image to Apple's
-notary service or staples a ticket. `describe_macos_image.py` can validate an
-already-stapled ticket, but it cannot create one. Consequently the current
-workflow can produce `preview` or `not_notarized`, never `verified`, and
-`--mode release` refuses the image. That is a stated limitation, not an
-untested path, and the verify step records it in `macos_publishable` rather than
-leaving a reader to infer it from an absence.
+**`verified` is reachable only through `scripts/notarize_macos_dmg.sh`.**
+`build_macos_dmg.sh` uses a Developer ID certificate when
+`OPENAI4S_MACOS_SIGNING_IDENTITY` names one that is available in the keychain;
+otherwise it falls back to an ad-hoc signature. It never submits to Apple.
+The release workflow input `macos_asset` defaults to `omit` and does not
+upload a preview DMG. With `macos_asset=notarized` the macOS job fail-fast
+prechecks the smallest Developer ID + notary secret set, then runs sign →
+`notarytool submit --wait` → staple → `stapler validate` → `spctl`.
+`describe_macos_image.py` records `developer_id`, `notarized`, stapler/spctl
+return codes, and the **post-staple** digest bound to this image. A stale
+ticket whose digest does not match is not notarized. `--mode release` still
+refuses any image that is not both Developer-ID-signed and stapled; the
+supported path without credentials is to omit the asset.
 
 ## The evidence bundle
 
@@ -318,16 +321,18 @@ published.
   once let an ad-hoc image pass the gate as Developer-ID-signed. The build
   script may use the named identity, but configuration is not evidence; the
   verifier inspects the resulting image instead.
-* Consequence worth stating plainly: **no DMG produced entirely by the current
-  workflow can pass `--mode release` today**. Without a certificate it lacks a
-  Developer ID signature; with one it still lacks notarization and a stapled
-  ticket. A release must omit the DMG or gain a separate notarization/stapling
-  stage before this asset has a publishable path.
+* Consequence worth stating plainly: a DMG produced by `build_macos_dmg.sh`
+  alone cannot pass `--mode release`. The publishable path is
+  `macos_asset=notarized` with a complete credential set, which runs
+  `scripts/notarize_macos_dmg.sh` and records the post-staple digest. Without
+  those credentials the supported path is `macos_asset=omit` (the default),
+  not uploading a preview image labelled as signed.
 * `describe_macos_image.py` runs `xcrun stapler validate` and records the
-  boolean result and return code in the receipt. It validates existing
-  notarization evidence; it does not submit the image or staple a ticket. The
-  current workflow therefore records notarization as false and refuses release
-  mode rather than claiming an unperformed Apple service step succeeded.
+  boolean result, stapler/spctl return codes, and `post_staple_sha256`. It
+  validates existing notarization evidence; it does not submit the image or
+  staple a ticket. The notary script is what creates that evidence. Default
+  unit tests never contact Apple's notary: they cover credentials, ticket
+  digest binding, and omission.
 
 The provenance statement is **unsigned** and says so: it binds the listed
 digests to the build's parameters, and it does not establish who produced them.

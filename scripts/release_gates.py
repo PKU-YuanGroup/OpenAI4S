@@ -30,13 +30,18 @@ Two kinds of gate:
     records the exit code.
 `check_suite`
     Proven by GitHub's own check runs *at that exact SHA* rather than re-executed.
-    The browser matrix, Python support matrix, and real Linux private-PID
-    interrupt smoke already ran on the push to `main` that the tag points at,
-    so re-running them would buy nothing but latency (and, for bubblewrap, a
+    The browser matrix, Python support matrix, the real Linux private-PID
+    interrupt smoke, and the independent Linux full filesystem/egress boundary
+    smoke already ran on the push to `main` that the tag points at, so
+    re-running them would buy nothing but latency (and, for bubblewrap, a
     different host). What makes this evidence rather than an assumption is that
     the attestation is pinned to `head_sha`: a check run for a different commit
     does not count, and the check-run and workflow-run IDs are recorded so a
-    reader can go look.
+    reader can go look. The interrupt smoke allows raw networking; the full
+    boundary smoke refuses that override. The full smoke is attested here as
+    `ci-linux-sandbox-full` and is still listed in
+    `PLATFORM_CHECKS_UNAVAILABLE` until multiple scheduled runs plus a
+    candidate SHA are green.
 
 Deliberately *not* a gate: the nightly macOS/Linux sandbox jobs. They only run on
 `schedule`/`workflow_dispatch`, so no check run for them exists at a release SHA
@@ -56,7 +61,7 @@ from typing import Any, Iterable, Mapping, Sequence
 #: Bumped whenever the receipt's shape or the gate list changes. The consumer
 #: requires an exact match rather than `>=`: an older producer cannot know about
 #: a gate added later, so accepting its receipt would silently drop that gate.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 RECEIPT_FORMAT = "openai4s-quality-receipt"
 
@@ -175,6 +180,11 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
         check_name="Linux bubblewrap Python/R persistent interrupt",
     ),
     Gate(
+        "ci-linux-sandbox-full",
+        CHECK_SUITE_KIND,
+        check_name="Linux bubblewrap full filesystem/egress boundary",
+    ),
+    Gate(
         "ci-singlecell-skill",
         CHECK_SUITE_KIND,
         check_name="Single-cell workflow (Python 3.11)",
@@ -194,25 +204,32 @@ PLATFORM_CHECK_COMMANDS: dict[str, tuple[str, ...]] = {
 #: opposite things.
 #:
 #: `linux-sandbox` was in `PLATFORM_CHECK_COMMANDS`, but its hosted run failed
-#: during network-namespace setup. The targeted CI gate now loads Ubuntu's
-#: restricted bwrap profile, which may change that old result, but deliberately
-#: allows raw networking and therefore does not prove the complete boundary.
-#: Until the full smoke is re-evaluated, `build` must not depend on an unproven
-#: platform leg: doing so made every publication unreachable rather than
-#: blocking only a bad release.
+#: during network-namespace setup. CI now has an independent Ubuntu 24.04
+#: full-boundary job (`ci-linux-sandbox-full` / harness.smoke.linux_sandbox)
+#: that is attested as a check run at the frozen SHA. The interrupt job still
+#: allows raw networking and therefore does not prove this boundary.
+#:
+#: That CI check-suite attestation is not the same as re-executing the smoke
+#: inside the release workflow's `platform-checks` matrix. `build` must not
+#: grow an unproven matrix leg: doing so made every publication unreachable
+#: rather than blocking only a bad release. Multiple scheduled greens plus a
+#: candidate SHA must pass before this row moves into
+#: `PLATFORM_CHECK_COMMANDS`. Until then the evidence bundle still has to say
+#: the release-workflow platform check was not run, rather than omit the row
+#: and look like a pass.
 #:
 #: Removing it silently would have been worse than leaving it red: an absent row
 #: reads as "checked, fine". The plan's rollback clause is explicit -- a platform
 #: whose evidence is missing is degraded to preview, never recorded as passed.
-#: Once the full smoke is re-evaluated under a suitable enforced setup, it moves
-#: back into `PLATFORM_CHECK_COMMANDS` and out of here.
 PLATFORM_CHECKS_UNAVAILABLE: dict[str, str] = {
     "linux-sandbox": (
-        "harness.smoke.linux_sandbox is not currently a CI or release gate. "
-        "The targeted hosted check loads Ubuntu's restricted bwrap profile but "
-        "deliberately allows raw networking, so it does not prove the complete "
-        "Linux filesystem-and-egress boundary. That full smoke remains "
-        "verified by hand and must be re-evaluated separately."
+        "harness.smoke.linux_sandbox now runs as the independent CI job "
+        "'Linux bubblewrap full filesystem/egress boundary' and is attested "
+        "as check-suite gate ci-linux-sandbox-full at the frozen SHA. It is "
+        "not yet a release-workflow platform-checks matrix leg: multiple "
+        "scheduled greens plus a candidate SHA must pass before it leaves "
+        "this dict. The interrupt smoke still allows raw networking and does "
+        "not prove the complete Linux filesystem-and-egress boundary."
     ),
 }
 

@@ -10,7 +10,8 @@ Tool，`openai4s/` 下也没有任何模块会导入它们。
 
 | 文件 | 职责 |
 | --- | --- |
-| `build_macos_dmg.sh` | 打包 macOS `.app` 与 `.dmg`。内核要靠 `sys.executable` 拉起 worker，一旦把应用 freeze 掉就会坏，所以这里改成内嵌一份可重定位的独立 CPython，源码以散装 `.py` 的形式原样带上，并把 CORE 科学栈预装进运行时，首次启动不需要联网。签名跟随发布环境：配置了 `OPENAI4S_MACOS_SIGNING_IDENTITY` 就真正用它签（并做 `codesign --verify`），否则回退到 ad-hoc 签名；构建器本身从不做公证——那份证据由发布闸门单独校验。 |
+| `build_macos_dmg.sh` | 打包 macOS `.app` 与 `.dmg`。内核要靠 `sys.executable` 拉起 worker，一旦把应用 freeze 掉就会坏，所以这里改成内嵌一份可重定位的独立 CPython，源码以散装 `.py` 的形式原样带上，并把 CORE 科学栈预装进运行时，首次启动不需要联网。签名跟随发布环境：配置了 `OPENAI4S_MACOS_SIGNING_IDENTITY` 就真正用它签（并做 `codesign --verify`），否则回退到 ad-hoc 签名；构建器本身从不做公证——只有 `notarize_macos_dmg.sh` 会联系 Apple，那份证据由发布闸门单独校验。 |
+| `notarize_macos_dmg.sh` | 给 DMG 签名，然后 `notarytool submit --wait`、staple、`stapler validate`、`spctl`。在联系任何 Apple 服务之前，对最小 Developer ID + 公证凭据集做 fail-fast 预检。默认单测从不访问公证服务，只覆盖凭据、ticket/digest 绑定与省略。release workflow 的 `macos_asset` 输入为 `notarized` 或 `omit`（默认 omit：不上传 preview DMG）。 |
 | `build_linux_bundle.sh` | 打包 Linux `.tar.gz`：同一份内嵌的可重定位 CPython、同一份预装科学栈、同样原样带上的源码树，外加一个自定位启动器、一份 `.desktop` 模板和面向单用户的 `install.sh`。刻意不做 AppImage——一个靠 FUSE 挂载的 squashfs，对于「本职就是在 bubblewrap 下拉起子进程」的程序是错误的宿主，而且它会在执行 cell 的时候才坏，不是在启动的时候。可以在 macOS 上交叉构建（全程不编译），只跳过那些必须**运行**目标才能做的检查，并且明说跳过了。 |
 | `build_windows_zip.sh` | 打包 Windows `.zip`。这不是原生 Windows 构建：`platform_support.py` 在 win32 上拒绝启动内核，所以这里发的是一个包着 Linux bundle 的 Windows 启动器——首次运行把它装进 WSL2，再用 Windows 浏览器打开转发出来的端口。它消费的就是同一次发布里那个 Linux 制品本身，而不是另起一次「理应一致」的构建。源文件在 `windows/`。 |
 | `bundle_contract.py` | 把「每个发出去的桌面包都必须满足什么」写在一处：预装包清单、只在运行时才暴露缺失的资源（Web UI、R worker、compute 模板）、精选 Skill 与固定 bioSkills 集合各自不可省略的数量下限、hash-based 字节码规则，以及凭据扫描。三个校验器共用它，理由和两个沙箱冒烟测试共用一份实现是同一个：两份拷贝迟早会漂移，直到某个平台悄悄不再检查别人还在检查的东西——而那个平台正是会把坏镜像发出去的那个。 |

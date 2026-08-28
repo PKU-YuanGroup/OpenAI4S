@@ -35,6 +35,14 @@ on:
         type: boolean
         required: false
         default: false
+      macos_asset:
+        description: "notarized = sign, notarytool submit --wait, staple, and upload the DMG; omit (default) = do not upload a preview DMG"
+        type: choice
+        required: false
+        options:
+          - omit
+          - notarized
+        default: omit
 
 # Two dispatches naming the same tag could interleave, and both `attach` jobs
 # would `gh release upload --clobber` onto the same draft. The pipeline detects
@@ -313,13 +321,53 @@ jobs:
     # allowed — the import step then conditions on this env value instead.
     env:
       HAS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERTIFICATE != '' }}
+      HAS_NOTARY_APPLE_ID: ${{ secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_NOTARY_PASSWORD != '' }}
+      HAS_NOTARY_API_KEY: ${{ secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' && (secrets.APPLE_API_KEY != '' || secrets.APPLE_API_KEY_PATH != '') }}
+      MACOS_ASSET: ${{ inputs.macos_asset || 'omit' }}
     steps:
+      - name: Reject an unknown macos_asset value
+        env:
+          MACOS_ASSET: ${{ inputs.macos_asset || 'omit' }}
+        run: |
+          set -euo pipefail
+          case "$MACOS_ASSET" in
+            omit) echo "macos_asset=omit" ;;
+            notarized) echo "macos_asset=notarized" ;;
+            *)
+              echo "::error::macos_asset must be omit or notarized, got '$MACOS_ASSET'"
+              exit 1
+              ;;
+          esac
+      - name: Omit the macOS asset rather than upload a preview DMG
+        if: ${{ inputs.macos_asset != 'notarized' }}
+        run: echo "macos_asset=omit; not building or uploading a preview DMG"
       - name: Checkout the frozen release SHA
+        if: ${{ inputs.macos_asset == 'notarized' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Fail fast when notarization was requested without credentials
+        if: ${{ inputs.macos_asset == 'notarized' }}
+        env:
+          OPENAI4S_MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
+          HAS_SIGNING_CERT: ${{ env.HAS_SIGNING_CERT }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_SIGNING_CERT" != "true" ]; then
+            echo "::error::macos_asset=notarized requires MACOS_SIGNING_CERTIFICATE; set macos_asset=omit (the default) instead of uploading a preview DMG"
+            exit 1
+          fi
+          python3 scripts/describe_macos_image.py --check-notary-credentials
       - name: Install uv
+        if: ${{ inputs.macos_asset == 'notarized' }}
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: false
@@ -332,7 +380,7 @@ jobs:
         # separate secrets; when they are absent the build ad-hoc signs and the
         # release gate is what refuses to publish it, which is the correct
         # fail-closed behaviour rather than a green build.
-        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
+        if: ${{ inputs.macos_asset == 'notarized' && env.HAS_SIGNING_CERT == 'true' }}
         env:
           MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
           MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
@@ -358,13 +406,30 @@ jobs:
         # the secret changed nothing about how the image was signed while
         # making the gate believe it had been. The certificate the identity
         # names was imported into the keychain above.
+        if: ${{ inputs.macos_asset == 'notarized' }}
         env:
           OPENAI4S_MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: bash scripts/build_macos_dmg.sh
+      - name: Notarize and staple the disk image
+        # sign → notarytool submit --wait → staple → stapler validate → spctl.
+        # Credentials were fail-fast checked above; missing secrets never
+        # reach Apple and never fall back to uploading a preview DMG.
+        if: ${{ inputs.macos_asset == 'notarized' }}
+        env:
+          OPENAI4S_MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
+        run: bash scripts/notarize_macos_dmg.sh dist/*.dmg
       - name: Verify the image
         # Fails closed on a runtime that did not relocate, an incomplete science
         # stack, a missing Web UI / R worker, a broken signature, or any
         # credential material swept into the bundle.
+        if: ${{ inputs.macos_asset == 'notarized' }}
         run: python3 scripts/verify_macos_bundle.py dist/*.dmg
       - name: Record what actually signed the image, whether it is notarized, and what is inside it
         # The staging job runs on Linux and has neither `codesign` nor `xcrun`, so
@@ -374,14 +439,17 @@ jobs:
         # `notarized` was hardcoded `None` in the pipeline and gated nothing, so a
         # Developer-ID-signed image with no stapled ticket passed -- and Gatekeeper
         # refuses exactly that image on a user's machine.
+        if: ${{ inputs.macos_asset == 'notarized' }}
         run: python3 scripts/describe_macos_image.py dist/*.dmg
       - name: Receipt the image against the frozen SHA
+        if: ${{ inputs.macos_asset == 'notarized' }}
         env:
           SHA: ${{ github.sha }}
         run: |
           python3 scripts/release_receipts.py \
             --kind macos --source-sha "$SHA" dist/*.dmg
       - name: Upload the verified app image
+        if: ${{ inputs.macos_asset == 'notarized' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-app-image
@@ -595,6 +663,7 @@ jobs:
           name: python-package-distributions
           path: assets/
       - name: Download the verified app image
+        if: ${{ inputs.macos_asset == 'notarized' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: macos-app-image
