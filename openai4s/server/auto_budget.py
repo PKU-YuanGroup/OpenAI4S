@@ -540,9 +540,9 @@ class AutoBudgetAdmission:
         ):
             return []
         try:
-            from openai4s.permissions import _guardian_denial_history
+            from openai4s.permissions import guardian_denial_history
 
-            return list(_guardian_denial_history(self.store, root_frame_id))
+            return list(guardian_denial_history(self.store, root_frame_id))
         except Exception:  # noqa: BLE001 - projection must not fail the GET
             return []
 

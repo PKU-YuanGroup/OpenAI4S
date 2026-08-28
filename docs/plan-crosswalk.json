@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "5e44f90dab9b6fcd7f062a23f880a15c07b7829844babc1b9303189dc070cc22"
+      "evidence_digest": "d2d7d5f889cc1ea76eec8d9071bda90bab2647b5c6d3b3226a30dab41cd80ba4"
     },
     {
       "source": "R1",
@@ -95,7 +95,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
+      "evidence_digest": "2f9aa117b024396ea360d0cb678b5626e4ff541d2fd6184f24462f6c946108e5"
     },
     {
       "source": "R1",
@@ -328,7 +328,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
+      "evidence_digest": "2f9aa117b024396ea360d0cb678b5626e4ff541d2fd6184f24462f6c946108e5"
     },
     {
       "source": "R3",
@@ -648,7 +648,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_queued_followups.py,tests/test_specialist_connector_allowlist.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1bf59d5a7237146fe02e028ff1cc9fec9fef37740ef85d546e3e8013c9539b01"
+      "evidence_digest": "71bb8860433f850d2d0b45e574477918656be607676bd6eabab6025d75f8d322"
     },
     {
       "source": "R6",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "11eddf43340b9f8ede8e036b21ee2048aff87bd60471cd3fe36fc0be03ec0589"
+      "evidence_digest": "11d0a6580b573c596e4ef9cd6414ff0ddd3a58c42a8c1eeedfdeea5d11bf7aa6"
     },
     {
       "source": "R7",

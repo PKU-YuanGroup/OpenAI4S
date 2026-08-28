@@ -5,8 +5,11 @@ origin: openai4s
 capabilities:
   network:
     mode: host_only
-    domains:
-      - datapro.hqd.cn-beijing.volces.com
+    # Deliberately empty. The destination is the connector's configuration,
+    # not this Skill's to declare, and the guidance below never names the
+    # endpoint or its auth headers so the agent cannot reach around the
+    # managed connector.
+    domains: []
 
 ---
 
