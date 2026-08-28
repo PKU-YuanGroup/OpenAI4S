@@ -150,6 +150,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_governance.py`](test_governance.py) | 用测试写出来的仓库治理。每一个安全扫描与发布用的 action 都固定到具体 commit，secret 扫描用一个校验和固定的二进制扫全部历史，Dependabot 盯着 hook 与 workflow action。 |
 | [`test_harness_characterization.py`](test_harness_characterization.py) | 一份特征化 golden，因此它刻意记录的是当前行为，已知 bug 也照记不误，并且标注出来。重新生成 golden 必须是一个显式动作——正是这一点拦得住无声的漂移。 |
 | [`test_harness_contract.py`](test_harness_contract.py) | harness 自身：场景 schema、脚本化 provider、故障时刻表，以及一个保留事件顺序、而不是排序的规范化器。声明了却从未触发的故障，会让这个场景判失败。 |
+| [`test_auto_budget.py`](test_auto_budget.py) | 对着真实 SQLite repository 的 Auto Mode 原子预算准入：最后名额竞态、相同 admission_id 合并、不乐观返还、重启后 remaining 不增加、same-action/no-progress 熔断、不可验证 token fail closed，以及每个公开字段恰好一个权威计量器。 |
 | [`test_auto_mode_faults.py`](test_auto_mode_faults.py) | Stage 2 的崩溃、回滚、过期、多连接与副作用 ledger 恢复契约。它证明已提交事实能幂等重放、部分提交的 phase 不会逸出、repair action group 在使用前已绑定，且丢失 WebSocket 永远不会变成事实源。 |
 | [`test_auto_mode_portability_regressions.py`](test_auto_mode_portability_regressions.py) | 对抗式 package/share 可移植性覆盖：按 run 隔离的身份重映射、按 start cursor 稳定排序、direct/shared 图验证一致性、常数事件查询次数，以及始终惰性的多跳来源声明。 |
 | [`test_auto_mode_recovery_regressions.py`](test_auto_mode_recovery_regressions.py) | 提交后证明篡改、重放、finding owner、事件顺序、终态完整性、历史前缀、fork 与 revert 的恢复回归。 |

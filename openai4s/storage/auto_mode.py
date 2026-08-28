@@ -361,6 +361,109 @@ CREATE INDEX IF NOT EXISTS ix_permission_review_run
     ON permission_review_assessments(run_id,started_at);
 """
 
+AUTO_MODE_BUDGET_SCHEMA = """
+CREATE TABLE IF NOT EXISTS auto_mode_budget_state (
+    run_id TEXT PRIMARY KEY,
+    root_run_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision >= 1),
+    started_at INTEGER NOT NULL,
+    initial_turn_tokens INTEGER NOT NULL DEFAULT 0 CHECK(initial_turn_tokens >= 0),
+    computed_extra_token_limit INTEGER NOT NULL DEFAULT 0 CHECK(computed_extra_token_limit >= 0),
+    review_rounds INTEGER NOT NULL DEFAULT 0 CHECK(review_rounds >= 0),
+    repair_rounds INTEGER NOT NULL DEFAULT 0 CHECK(repair_rounds >= 0),
+    repair_turns INTEGER NOT NULL DEFAULT 0 CHECK(repair_turns >= 0),
+    extra_cells INTEGER NOT NULL DEFAULT 0 CHECK(extra_cells >= 0),
+    same_action_streak INTEGER NOT NULL DEFAULT 0 CHECK(same_action_streak >= 0),
+    no_progress_turns INTEGER NOT NULL DEFAULT 0 CHECK(no_progress_turns >= 0),
+    last_action_sha256 TEXT,
+    last_delta_cursor TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_auto_mode_budget_state_root
+    ON auto_mode_budget_state(root_run_id, run_id);
+
+CREATE TABLE IF NOT EXISTS auto_mode_budget_reservations (
+    admission_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    root_run_id TEXT NOT NULL,
+    consumer TEXT NOT NULL,
+    action_group_id TEXT NOT NULL,
+    reserved_amount INTEGER NOT NULL CHECK(reserved_amount >= 0),
+    committed_amount INTEGER NOT NULL DEFAULT 0 CHECK(committed_amount >= 0),
+    state TEXT NOT NULL CHECK(state IN ('reserved','committed','released','unknown','consumed')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(run_id,consumer,action_group_id)
+);
+CREATE INDEX IF NOT EXISTS ix_auto_mode_budget_reservations_root
+    ON auto_mode_budget_reservations(root_run_id, consumer, state);
+
+CREATE TABLE IF NOT EXISTS auto_mode_budget_events (
+    event_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    root_run_id TEXT NOT NULL,
+    admission_id TEXT,
+    type TEXT NOT NULL CHECK(type IN ('reserve','commit','release','unknown','reconcile','circuit_trip','delta','freeze')),
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_auto_mode_budget_events_run
+    ON auto_mode_budget_events(run_id, created_at, event_id);
+"""
+
+_BUDGET_CONSUMERS = frozenset(
+    {
+        "model",
+        "review",
+        "repair",
+        "repair_turn",
+        "extra_cell",
+        "native_tool",
+        "token",
+        "repeated_finding",
+    }
+)
+_BUDGET_SETTLED = frozenset({"committed", "consumed", "unknown"})
+_BUDGET_COUNTERS = {
+    "review": ("review_rounds", "max_review_rounds"),
+    "repair": ("repair_rounds", "max_repair_rounds"),
+    "repair_turn": ("repair_turns", "repair_turns_per_round"),
+    "extra_cell": ("extra_cells", "max_extra_cells"),
+}
+_ACTION_CONSUMERS = frozenset({"extra_cell", "native_tool"})
+_DURABLE_DELTA_KINDS = frozenset(
+    {
+        "artifact_version",
+        "plan",
+        "checkpoint",
+        "evidence",
+        "remote_receipt",
+        "completion_delivery",
+    }
+)
+
+
+class AutoBudgetConflictError(AutoModeConflictError):
+    """A budget identity or idempotency contract was violated."""
+
+
+class AutoBudgetDenied(ValueError):
+    """Fail-closed refusal before a metered Auto Mode sink starts."""
+
+    def __init__(self, reason: str, message: str, *, field: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = str(reason)
+        self.field = field
+        self.status = "paused"
+
+
+def create_auto_mode_budget_schema(connection: sqlite3.Connection) -> None:
+    """Install the additive Auto Budget tables without committing the caller."""
+
+    for statement in AUTO_MODE_BUDGET_SCHEMA.split(";"):
+        statement = statement.strip()
+        if statement:
+            connection.execute(statement)
+
 
 def create_auto_mode_schema(connection: sqlite3.Connection) -> None:
     """Install the complete v25 schema without committing the caller."""
@@ -599,6 +702,7 @@ def create_auto_mode_schema(connection: sqlite3.Connection) -> None:
         "ON repair_execution_groups(repair_run_id,binding_ordinal)"
     )
     install_auto_mode_action_guards(connection)
+    create_auto_mode_budget_schema(connection)
 
 
 def install_auto_mode_action_guards(connection: sqlite3.Connection) -> None:
@@ -1051,6 +1155,11 @@ class AutoModeRepository:
                         "budgets": budgets_value,
                     },
                     created_at=timestamp,
+                )
+                self._ensure_budget_state_locked(
+                    run_id,
+                    root_run_id=run_id,
+                    started_at=timestamp,
                 )
                 self._connection.commit()
             except Exception:
@@ -8516,10 +8625,964 @@ class AutoModeRepository:
             run["recovery_state"] = "committed_phase_requires_reconciliation"
         return run
 
+    # ---------------------------------------------------------------- auto budget
+    def ensure_budget_state(
+        self,
+        run_id: str,
+        *,
+        root_run_id: str | None = None,
+        initial_turn_tokens: int = 0,
+        started_at: int | None = None,
+    ) -> dict[str, Any] | None:
+        run_id = _text("run_id", run_id)
+        root_run_id = _text("root_run_id", root_run_id or run_id)
+        initial_turn_tokens = _integer("initial_turn_tokens", initial_turn_tokens)
+        timestamp = self._time(started_at)
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                row = self._ensure_budget_state_locked(
+                    run_id,
+                    root_run_id=root_run_id,
+                    started_at=timestamp,
+                    initial_turn_tokens=initial_turn_tokens,
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return row
+
+    def get_budget_state(self, run_id: str) -> dict[str, Any] | None:
+        run_id = _text("run_id", run_id)
+        with self._lock:
+            if not self._budget_table_ready_locked():
+                return None
+            row = self._connection.execute(
+                "SELECT * FROM auto_mode_budget_state WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        return self._decode_budget_state(row) if row is not None else None
+
+    def list_budget_reservations(self, run_id: str) -> list[dict[str, Any]]:
+        run_id = _text("run_id", run_id)
+        with self._lock:
+            if not self._budget_table_ready_locked():
+                return []
+            state = self._connection.execute(
+                "SELECT root_run_id FROM auto_mode_budget_state WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            root_run_id = str(state["root_run_id"]) if state is not None else run_id
+            rows = self._connection.execute(
+                "SELECT * FROM auto_mode_budget_reservations "
+                "WHERE root_run_id=? ORDER BY created_at, admission_id",
+                (root_run_id,),
+            ).fetchall()
+        return [self._decode_budget_reservation(row) for row in rows]
+
+    def reserve_budget(
+        self,
+        *,
+        run_id: str,
+        admission_id: str,
+        consumer: str,
+        action_group_id: str,
+        amount: int = 1,
+        action_sha256: str | None = None,
+        enforce_field_limit: bool = True,
+        token_upper_bound: int | None = None,
+    ) -> dict[str, Any]:
+        run_id = _text("run_id", run_id)
+        admission_id = _text("admission_id", admission_id, maximum=1024)
+        consumer = _text("consumer", consumer)
+        if consumer not in _BUDGET_CONSUMERS:
+            raise ValueError("invalid Auto Budget consumer")
+        action_group_id = _text("action_group_id", action_group_id, maximum=1024)
+        amount = _integer("amount", amount)
+        if action_sha256 is not None:
+            action_sha256 = str(_sha("action_sha256", action_sha256))
+        if token_upper_bound is not None:
+            token_upper_bound = _integer("token_upper_bound", token_upper_bound)
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                result = self._reserve_budget_locked(
+                    run_id=run_id,
+                    admission_id=admission_id,
+                    consumer=consumer,
+                    action_group_id=action_group_id,
+                    amount=amount,
+                    action_sha256=action_sha256,
+                    enforce_field_limit=enforce_field_limit,
+                    token_upper_bound=token_upper_bound,
+                    now=now,
+                )
+                self._connection.commit()
+            except AutoBudgetDenied:
+                try:
+                    self._connection.commit()
+                except Exception:
+                    self._connection.rollback()
+                    raise
+                raise
+            except Exception:
+                self._connection.rollback()
+                raise
+        return result
+
+    def commit_budget(
+        self,
+        admission_id: str,
+        *,
+        committed_amount: int,
+    ) -> dict[str, Any]:
+        admission_id = _text("admission_id", admission_id, maximum=1024)
+        committed_amount = _integer("committed_amount", committed_amount)
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                result = self._settle_budget_locked(
+                    admission_id,
+                    new_state="committed",
+                    committed_amount=committed_amount,
+                    now=now,
+                    event_type="commit",
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return result
+
+    def release_budget(self, admission_id: str, *, started: bool) -> dict[str, Any]:
+        admission_id = _text("admission_id", admission_id, maximum=1024)
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                if started:
+                    result = self._settle_budget_locked(
+                        admission_id,
+                        new_state="unknown",
+                        committed_amount=None,
+                        now=now,
+                        event_type="unknown",
+                    )
+                else:
+                    result = self._release_budget_locked(admission_id, now=now)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return result
+
+    def mark_budget_unknown(self, admission_id: str) -> dict[str, Any]:
+        return self.release_budget(admission_id, started=True)
+
+    def reconcile_budget(
+        self,
+        admission_id: str,
+        *,
+        committed_amount: int,
+    ) -> dict[str, Any]:
+        admission_id = _text("admission_id", admission_id, maximum=1024)
+        committed_amount = _integer("committed_amount", committed_amount)
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                result = self._settle_budget_locked(
+                    admission_id,
+                    new_state="committed",
+                    committed_amount=committed_amount,
+                    now=now,
+                    event_type="reconcile",
+                    allow_from=_BUDGET_SETTLED | {"reserved"},
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return result
+
+    def record_budget_delta(
+        self,
+        run_id: str,
+        *,
+        kind: str,
+        cursor: str,
+    ) -> dict[str, Any]:
+        run_id = _text("run_id", run_id)
+        kind = _text("kind", kind)
+        if kind not in _DURABLE_DELTA_KINDS:
+            raise ValueError("invalid Auto Budget durable delta kind")
+        cursor = _text("cursor", cursor, maximum=1024)
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                state = self._budget_root_locked(run_id)
+                if state is None:
+                    raise AutoBudgetDenied(
+                        "legacy_run_readonly",
+                        "legacy Auto Mode run is read-only for budget mutation",
+                    )
+                root_id = str(state["run_id"])
+                self._connection.execute(
+                    "UPDATE auto_mode_budget_state SET last_delta_cursor=?,"
+                    "same_action_streak=0,no_progress_turns=0,"
+                    "revision=revision+1 WHERE run_id=?",
+                    (cursor, root_id),
+                )
+                self._append_budget_event_locked(
+                    run_id=run_id,
+                    root_run_id=root_id,
+                    admission_id=None,
+                    event_type="delta",
+                    payload={"kind": kind, "cursor": cursor},
+                    created_at=now,
+                )
+                refreshed = self._budget_root_locked(run_id)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return self._decode_budget_state(refreshed)
+
+    def freeze_budget_initial_tokens(
+        self,
+        run_id: str,
+        tokens: int,
+        *,
+        extra_token_multiplier: float | None = None,
+    ) -> dict[str, Any]:
+        run_id = _text("run_id", run_id)
+        tokens = _integer("tokens", tokens)
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                state = self._budget_root_locked(run_id)
+                if state is None:
+                    raise AutoBudgetDenied(
+                        "legacy_run_readonly",
+                        "legacy Auto Mode run is read-only for budget mutation",
+                    )
+                frozen = self._connection.execute(
+                    "SELECT 1 FROM auto_mode_budget_events "
+                    "WHERE root_run_id=? AND type='freeze' LIMIT 1",
+                    (state["run_id"],),
+                ).fetchone()
+                if frozen is None:
+                    multiplier = extra_token_multiplier
+                    if multiplier is None:
+                        budgets = self._run_budgets_locked(run_id)
+                        multiplier = budgets.get("extra_token_multiplier", 0.0)
+                    try:
+                        multiplier_value = float(multiplier)
+                    except (TypeError, ValueError):
+                        multiplier_value = 0.0
+                    if (
+                        isinstance(multiplier, bool)
+                        or not math.isfinite(multiplier_value)
+                        or multiplier_value < 0
+                    ):
+                        multiplier_value = 0.0
+                    extra_limit = int(tokens * multiplier_value)
+                    self._connection.execute(
+                        "UPDATE auto_mode_budget_state SET initial_turn_tokens=?,"
+                        "computed_extra_token_limit=?,revision=revision+1 "
+                        "WHERE run_id=?",
+                        (tokens, extra_limit, state["run_id"]),
+                    )
+                    self._append_budget_event_locked(
+                        run_id=run_id,
+                        root_run_id=str(state["run_id"]),
+                        admission_id=None,
+                        event_type="freeze",
+                        payload={
+                            "initial_turn_tokens": tokens,
+                            "computed_extra_token_limit": extra_limit,
+                        },
+                        created_at=now,
+                    )
+                refreshed = self._budget_root_locked(run_id)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return self._decode_budget_state(refreshed)
+
+    def trip_budget_circuit(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        field: str | None = None,
+    ) -> dict[str, Any]:
+        run_id = _text("run_id", run_id)
+        reason = _text("reason", reason)
+        now = self._clock_ms()
+        with self._lock:
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                result = self._trip_budget_locked(
+                    run_id, reason=reason, field=field, now=now
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return result
+
+    def project_budget(self, run_id: str) -> dict[str, Any] | None:
+        run_id = _text("run_id", run_id)
+        with self._lock:
+            if not self._budget_table_ready_locked():
+                return None
+            state_row = self._connection.execute(
+                "SELECT * FROM auto_mode_budget_state WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if state_row is None:
+                return None
+            root_id = str(state_row["root_run_id"])
+            root_row = state_row
+            if root_id != run_id:
+                found = self._connection.execute(
+                    "SELECT * FROM auto_mode_budget_state WHERE run_id=?",
+                    (root_id,),
+                ).fetchone()
+                if found is not None:
+                    root_row = found
+            reservations = [
+                self._decode_budget_reservation(row)
+                for row in self._connection.execute(
+                    "SELECT * FROM auto_mode_budget_reservations WHERE root_run_id=?",
+                    (root_id,),
+                ).fetchall()
+            ]
+            trip = self._connection.execute(
+                "SELECT payload_json FROM auto_mode_budget_events "
+                "WHERE root_run_id=? AND type='circuit_trip' "
+                "ORDER BY created_at DESC, event_id DESC LIMIT 1",
+                (root_id,),
+            ).fetchone()
+            freeze = self._connection.execute(
+                "SELECT 1 FROM auto_mode_budget_events "
+                "WHERE root_run_id=? AND type='freeze' LIMIT 1",
+                (root_id,),
+            ).fetchone()
+            run = self._connection.execute(
+                "SELECT budgets_json FROM auto_mode_runs WHERE run_id=?",
+                (root_id,),
+            ).fetchone()
+            if run is None:
+                run = self._connection.execute(
+                    "SELECT budgets_json FROM auto_mode_runs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
+        trip_payload = _load(trip["payload_json"], {}) if trip is not None else {}
+        return {
+            "legacy": False,
+            "state": self._decode_budget_state(root_row),
+            "reservations": reservations,
+            "budgets": _load(run["budgets_json"], {}) if run is not None else {},
+            "circuit_reason": (
+                trip_payload.get("reason")
+                if isinstance(trip_payload, Mapping)
+                else None
+            ),
+            "circuit_field": (
+                trip_payload.get("field") if isinstance(trip_payload, Mapping) else None
+            ),
+            "tokens_frozen": freeze is not None,
+        }
+
+    def _budget_table_ready_locked(self) -> bool:
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='auto_mode_budget_state'"
+            ).fetchone()
+            is not None
+        )
+
+    def _ensure_budget_state_locked(
+        self,
+        run_id: str,
+        *,
+        root_run_id: str,
+        started_at: int,
+        initial_turn_tokens: int = 0,
+    ) -> dict[str, Any] | None:
+        if not self._budget_table_ready_locked():
+            return None
+        existing = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_state WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if existing is not None:
+            return self._decode_budget_state(existing)
+        self._connection.execute(
+            "INSERT INTO auto_mode_budget_state("
+            "run_id,root_run_id,revision,started_at,initial_turn_tokens,"
+            "computed_extra_token_limit,review_rounds,repair_rounds,repair_turns,"
+            "extra_cells,same_action_streak,no_progress_turns,"
+            "last_action_sha256,last_delta_cursor) "
+            "VALUES(?,?,?,?,?,?,0,0,0,0,0,0,NULL,NULL)",
+            (run_id, root_run_id, 1, started_at, initial_turn_tokens, 0),
+        )
+        row = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_state WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        return self._decode_budget_state(row)
+
+    def _budget_root_locked(self, run_id: str) -> sqlite3.Row | None:
+        if not self._budget_table_ready_locked():
+            return None
+        row = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_state WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        root_id = str(row["root_run_id"])
+        if root_id == run_id:
+            return row
+        root = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_state WHERE run_id=?",
+            (root_id,),
+        ).fetchone()
+        return root if root is not None else row
+
+    def _run_budgets_locked(self, run_id: str) -> dict[str, Any]:
+        lookup = run_id
+        root = self._budget_root_locked(run_id)
+        if root is not None:
+            lookup = str(root["run_id"])
+        row = self._connection.execute(
+            "SELECT budgets_json FROM auto_mode_runs WHERE run_id=?",
+            (lookup,),
+        ).fetchone()
+        if row is None and lookup != run_id:
+            row = self._connection.execute(
+                "SELECT budgets_json FROM auto_mode_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        budgets = _load(row["budgets_json"], {}) if row is not None else {}
+        return budgets if isinstance(budgets, dict) else {}
+
+    def _circuit_reason_locked(self, root_run_id: str) -> str | None:
+        trip = self._connection.execute(
+            "SELECT payload_json FROM auto_mode_budget_events "
+            "WHERE root_run_id=? AND type='circuit_trip' "
+            "ORDER BY created_at DESC, event_id DESC LIMIT 1",
+            (root_run_id,),
+        ).fetchone()
+        if trip is None:
+            return None
+        payload = _load(trip["payload_json"], {})
+        reason = payload.get("reason") if isinstance(payload, Mapping) else None
+        return str(reason) if reason else None
+
+    def _trip_budget_locked(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        field: str | None,
+        now: int,
+    ) -> dict[str, Any]:
+        state = self._budget_root_locked(run_id)
+        if state is None:
+            raise AutoBudgetDenied(
+                "legacy_run_readonly",
+                "legacy Auto Mode run is read-only for budget mutation",
+            )
+        root_id = str(state["run_id"])
+        existing = self._circuit_reason_locked(root_id)
+        if existing is None:
+            self._append_budget_event_locked(
+                run_id=run_id,
+                root_run_id=root_id,
+                admission_id=None,
+                event_type="circuit_trip",
+                payload={"reason": reason, "field": field},
+                created_at=now,
+            )
+            self._connection.execute(
+                "UPDATE auto_mode_budget_state SET revision=revision+1 WHERE run_id=?",
+                (root_id,),
+            )
+        return {
+            "circuit": {
+                "state": "tripped",
+                "reason": existing or reason,
+                "last_delta_cursor": state["last_delta_cursor"],
+            }
+        }
+
+    def _in_flight_locked(self, root_run_id: str, consumer: str) -> int:
+        row = self._connection.execute(
+            "SELECT COALESCE(SUM(reserved_amount),0) FROM auto_mode_budget_reservations "
+            "WHERE root_run_id=? AND consumer=? AND state='reserved'",
+            (root_run_id, consumer),
+        ).fetchone()
+        return int(row[0] or 0)
+
+    def _token_used_locked(self, root_run_id: str) -> tuple[int, int]:
+        used_row = self._connection.execute(
+            "SELECT COALESCE(SUM(CASE WHEN state IN ('committed','consumed','unknown') "
+            "THEN CASE WHEN committed_amount>0 THEN committed_amount "
+            "ELSE reserved_amount END ELSE 0 END),0), "
+            "COALESCE(SUM(CASE WHEN state='reserved' THEN reserved_amount ELSE 0 END),0) "
+            "FROM auto_mode_budget_reservations WHERE root_run_id=? AND consumer='token'",
+            (root_run_id,),
+        ).fetchone()
+        return int(used_row[0] or 0), int(used_row[1] or 0)
+
+    def _finding_count_locked(self, root_run_id: str, digest: str) -> int:
+        prefix = str(digest)
+        rows = self._connection.execute(
+            "SELECT action_group_id, reserved_amount, committed_amount, state "
+            "FROM auto_mode_budget_reservations "
+            "WHERE root_run_id=? AND consumer='repeated_finding' AND state!='released'",
+            (root_run_id,),
+        ).fetchall()
+        total = 0
+        for row in rows:
+            group = str(row["action_group_id"] or "")
+            if group == prefix or group.startswith(prefix + ":"):
+                amount = int(row["committed_amount"] or 0)
+                if amount <= 0:
+                    amount = int(row["reserved_amount"] or 0)
+                total += amount
+        return total
+
+    def _append_budget_event_locked(
+        self,
+        *,
+        run_id: str,
+        root_run_id: str,
+        admission_id: str | None,
+        event_type: str,
+        payload: Mapping[str, Any],
+        created_at: int,
+    ) -> None:
+        event_id = f"abgt-{uuid.uuid4().hex[:20]}"
+        self._connection.execute(
+            "INSERT INTO auto_mode_budget_events("
+            "event_id,run_id,root_run_id,admission_id,type,payload_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                event_id,
+                run_id,
+                root_run_id,
+                admission_id,
+                event_type,
+                _canonical(dict(payload)),
+                created_at,
+            ),
+        )
+
+    def _reserve_budget_locked(
+        self,
+        *,
+        run_id: str,
+        admission_id: str,
+        consumer: str,
+        action_group_id: str,
+        amount: int,
+        action_sha256: str | None,
+        enforce_field_limit: bool,
+        token_upper_bound: int | None,
+        now: int,
+    ) -> dict[str, Any]:
+        existing = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        if existing is not None:
+            if (
+                str(existing["consumer"]) != consumer
+                or str(existing["action_group_id"]) != action_group_id
+            ):
+                raise AutoBudgetConflictError(
+                    "admission_id is bound to a different budget consumer"
+                )
+            return {
+                "reservation": self._decode_budget_reservation(existing),
+                "created": False,
+            }
+        state = self._budget_root_locked(run_id)
+        if state is None:
+            raise AutoBudgetDenied(
+                "legacy_run_readonly",
+                "legacy Auto Mode run is read-only for budget mutation",
+            )
+        root_id = str(state["run_id"])
+        tripped = self._circuit_reason_locked(root_id)
+        if tripped:
+            raise AutoBudgetDenied(tripped, f"Auto Budget circuit is open: {tripped}")
+        budgets = self._run_budgets_locked(run_id)
+        wall_limit = self._budget_int(budgets, "wall_time_s", default=0)
+        if wall_limit > 0:
+            elapsed = max(0, (now - int(state["started_at"])) // 1000)
+            if elapsed >= wall_limit:
+                self._trip_budget_locked(
+                    run_id,
+                    reason="budget_exhausted",
+                    field="wall_time_s",
+                    now=now,
+                )
+                raise AutoBudgetDenied(
+                    "budget_exhausted",
+                    "Auto Mode wall-time budget exhausted",
+                    field="wall_time_s",
+                )
+        same_limit = self._budget_int(budgets, "same_action_no_delta_limit", default=0)
+        if (
+            consumer in _ACTION_CONSUMERS
+            and action_sha256
+            and same_limit > 0
+            and state["last_action_sha256"] == action_sha256
+            and int(state["same_action_streak"]) >= same_limit
+        ):
+            self._trip_budget_locked(
+                run_id,
+                reason="loop_detected",
+                field="same_action_no_delta_limit",
+                now=now,
+            )
+            raise AutoBudgetDenied(
+                "loop_detected",
+                "same Auto Mode action repeated without a durable delta",
+                field="same_action_no_delta_limit",
+            )
+        progress_limit = self._budget_int(budgets, "no_progress_turn_limit", default=0)
+        if consumer == "model" and progress_limit > 0:
+            previous_cursor = None
+            saw_model = False
+            previous_rows = self._connection.execute(
+                "SELECT payload_json FROM auto_mode_budget_events "
+                "WHERE root_run_id=? AND type='reserve' "
+                "ORDER BY created_at DESC, event_id DESC LIMIT 32",
+                (root_id,),
+            ).fetchall()
+            for previous in previous_rows:
+                payload = _load(previous["payload_json"], {})
+                if isinstance(payload, Mapping) and payload.get("consumer") == "model":
+                    previous_cursor = payload.get("last_delta_cursor")
+                    saw_model = True
+                    break
+            if saw_model and previous_cursor == state["last_delta_cursor"]:
+                next_progress = int(state["no_progress_turns"]) + 1
+                self._connection.execute(
+                    "UPDATE auto_mode_budget_state SET no_progress_turns=?,"
+                    "revision=revision+1 WHERE run_id=?",
+                    (next_progress, root_id),
+                )
+                state = self._budget_root_locked(run_id)
+                if int(state["no_progress_turns"]) >= progress_limit:
+                    self._trip_budget_locked(
+                        run_id,
+                        reason="loop_detected",
+                        field="no_progress_turn_limit",
+                        now=now,
+                    )
+                    raise AutoBudgetDenied(
+                        "loop_detected",
+                        "Auto Mode made no durable progress",
+                        field="no_progress_turn_limit",
+                    )
+        finding_limit = self._budget_int(budgets, "repeated_finding_limit", default=0)
+        if consumer == "repeated_finding" and finding_limit > 0:
+            finding_digest = action_group_id.split(":", 1)[0]
+            if self._finding_count_locked(root_id, finding_digest) >= finding_limit:
+                self._trip_budget_locked(
+                    run_id,
+                    reason="loop_detected",
+                    field="repeated_finding_limit",
+                    now=now,
+                )
+                raise AutoBudgetDenied(
+                    "loop_detected",
+                    "repeated Auto Mode findings without progress",
+                    field="repeated_finding_limit",
+                )
+        reserve_amount = amount
+        if consumer == "token":
+            if token_upper_bound is None:
+                self._trip_budget_locked(
+                    run_id,
+                    reason="budget_measurement_unavailable",
+                    field="extra_token_multiplier",
+                    now=now,
+                )
+                raise AutoBudgetDenied(
+                    "budget_measurement_unavailable",
+                    "adapter did not supply a verifiable token upper bound",
+                    field="extra_token_multiplier",
+                )
+            reserve_amount = token_upper_bound
+            freeze = self._connection.execute(
+                "SELECT 1 FROM auto_mode_budget_events "
+                "WHERE root_run_id=? AND type='freeze' LIMIT 1",
+                (root_id,),
+            ).fetchone()
+            if freeze is not None:
+                used, in_flight = self._token_used_locked(root_id)
+                limit = int(state["computed_extra_token_limit"])
+                if used + in_flight + reserve_amount > limit:
+                    self._trip_budget_locked(
+                        run_id,
+                        reason="budget_exhausted",
+                        field="extra_token_multiplier",
+                        now=now,
+                    )
+                    raise AutoBudgetDenied(
+                        "budget_exhausted",
+                        "Auto Mode extra-token budget exhausted",
+                        field="extra_token_multiplier",
+                    )
+        elif enforce_field_limit and consumer in _BUDGET_COUNTERS:
+            counter_name, limit_name = _BUDGET_COUNTERS[consumer]
+            limit = self._budget_int(budgets, limit_name, default=0)
+            used = int(state[counter_name])
+            in_flight = self._in_flight_locked(root_id, consumer)
+            if used + in_flight + reserve_amount > limit:
+                self._trip_budget_locked(
+                    run_id,
+                    reason="budget_exhausted",
+                    field=limit_name,
+                    now=now,
+                )
+                raise AutoBudgetDenied(
+                    "budget_exhausted",
+                    f"Auto Mode {limit_name} budget exhausted",
+                    field=limit_name,
+                )
+        try:
+            self._connection.execute(
+                "INSERT INTO auto_mode_budget_reservations("
+                "admission_id,run_id,root_run_id,consumer,action_group_id,"
+                "reserved_amount,committed_amount,state,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,0,'reserved',?,?)",
+                (
+                    admission_id,
+                    run_id,
+                    root_id,
+                    consumer,
+                    action_group_id,
+                    reserve_amount,
+                    now,
+                    now,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            conflict = self._connection.execute(
+                "SELECT * FROM auto_mode_budget_reservations "
+                "WHERE run_id=? AND consumer=? AND action_group_id=?",
+                (run_id, consumer, action_group_id),
+            ).fetchone()
+            if conflict is None:
+                raise
+            return {
+                "reservation": self._decode_budget_reservation(conflict),
+                "created": False,
+            }
+        if consumer in _ACTION_CONSUMERS and action_sha256:
+            if state["last_action_sha256"] == action_sha256:
+                streak = int(state["same_action_streak"]) + 1
+            else:
+                streak = 1
+            self._connection.execute(
+                "UPDATE auto_mode_budget_state SET last_action_sha256=?,"
+                "same_action_streak=?,revision=revision+1 WHERE run_id=?",
+                (action_sha256, streak, root_id),
+            )
+        if consumer == "repair":
+            self._connection.execute(
+                "UPDATE auto_mode_budget_state SET repair_turns=0,"
+                "revision=revision+1 WHERE run_id=?",
+                (root_id,),
+            )
+        self._append_budget_event_locked(
+            run_id=run_id,
+            root_run_id=root_id,
+            admission_id=admission_id,
+            event_type="reserve",
+            payload={
+                "consumer": consumer,
+                "action_group_id": action_group_id,
+                "reserved_amount": reserve_amount,
+                "action_sha256": action_sha256,
+                "last_delta_cursor": state["last_delta_cursor"],
+            },
+            created_at=now,
+        )
+        row = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        return {
+            "reservation": self._decode_budget_reservation(row),
+            "created": True,
+        }
+
+    def _settle_budget_locked(
+        self,
+        admission_id: str,
+        *,
+        new_state: str,
+        committed_amount: int | None,
+        now: int,
+        event_type: str,
+        allow_from: frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        row = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError("unknown Auto Budget admission_id")
+        current = str(row["state"])
+        allowed = allow_from or frozenset({"reserved", "unknown", "consumed"})
+        if current == new_state and (
+            committed_amount is None or int(row["committed_amount"]) == committed_amount
+        ):
+            return {
+                "reservation": self._decode_budget_reservation(row),
+                "created": False,
+            }
+        if current not in allowed and current != new_state:
+            if current in _BUDGET_SETTLED:
+                return {
+                    "reservation": self._decode_budget_reservation(row),
+                    "created": False,
+                }
+            raise AutoBudgetConflictError("Auto Budget reservation cannot settle")
+        amount = (
+            int(row["reserved_amount"])
+            if committed_amount is None
+            else committed_amount
+        )
+        already_counted = current in _BUDGET_SETTLED
+        self._connection.execute(
+            "UPDATE auto_mode_budget_reservations SET state=?,"
+            "committed_amount=?,updated_at=? WHERE admission_id=?",
+            (new_state, amount, now, admission_id),
+        )
+        consumer = str(row["consumer"])
+        root_id = str(row["root_run_id"])
+        if not already_counted and consumer in _BUDGET_COUNTERS:
+            counter_name, _limit_name = _BUDGET_COUNTERS[consumer]
+            self._connection.execute(
+                f"UPDATE auto_mode_budget_state SET {counter_name}={counter_name}+?,"
+                "revision=revision+1 WHERE run_id=?",
+                (int(row["reserved_amount"]), root_id),
+            )
+        self._append_budget_event_locked(
+            run_id=str(row["run_id"]),
+            root_run_id=root_id,
+            admission_id=admission_id,
+            event_type=event_type,
+            payload={
+                "state": new_state,
+                "committed_amount": amount,
+                "refunded": (
+                    0 if new_state != "released" else int(row["reserved_amount"])
+                ),
+            },
+            created_at=now,
+        )
+        updated = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        return {
+            "reservation": self._decode_budget_reservation(updated),
+            "created": True,
+        }
+
+    def _release_budget_locked(self, admission_id: str, *, now: int) -> dict[str, Any]:
+        row = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError("unknown Auto Budget admission_id")
+        if str(row["state"]) == "released":
+            return {
+                "reservation": self._decode_budget_reservation(row),
+                "created": False,
+            }
+        if str(row["state"]) != "reserved":
+            raise AutoBudgetConflictError(
+                "Auto Budget reservation may have started and cannot be refunded"
+            )
+        self._connection.execute(
+            "UPDATE auto_mode_budget_reservations SET state='released',"
+            "committed_amount=0,updated_at=? WHERE admission_id=?",
+            (now, admission_id),
+        )
+        self._append_budget_event_locked(
+            run_id=str(row["run_id"]),
+            root_run_id=str(row["root_run_id"]),
+            admission_id=admission_id,
+            event_type="release",
+            payload={
+                "state": "released",
+                "committed_amount": 0,
+                "refunded": int(row["reserved_amount"]),
+            },
+            created_at=now,
+        )
+        updated = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        return {
+            "reservation": self._decode_budget_reservation(updated),
+            "created": True,
+        }
+
+    @staticmethod
+    def _budget_int(budgets: Mapping[str, Any], name: str, *, default: int) -> int:
+        value = budgets.get(name, default)
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return default
+        if isinstance(value, bool) or number < 0:
+            return default
+        return number
+
+    @staticmethod
+    def _decode_budget_state(row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        return {key: row[key] for key in row.keys()}
+
+    @staticmethod
+    def _decode_budget_reservation(row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        return {key: row[key] for key in row.keys()}
+
 
 __all__ = [
     "AUTO_MODE_SCHEMA",
+    "AUTO_MODE_BUDGET_SCHEMA",
+    "AutoBudgetConflictError",
+    "AutoBudgetDenied",
     "AutoModeConflictError",
     "AutoModeRepository",
+    "create_auto_mode_budget_schema",
     "create_auto_mode_schema",
 ]

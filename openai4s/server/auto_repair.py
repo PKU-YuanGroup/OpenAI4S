@@ -14,6 +14,12 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from openai4s.server.auto_budget import (
+    TERMINAL_USER_TRUTH,
+    AutoBudgetAdmission,
+    AutoBudgetDenied,
+    finding_set_digest,
+)
 from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
 from openai4s.storage.auto_mode import AutoModeConflictError
 
@@ -176,6 +182,7 @@ class AutoRepairService:
         previous_prints: list[tuple[str, ...]] = [
             _fingerprint_set(current.get("findings") or [])
         ]
+        budget = self._auto_budget()
         for round_index in range(max_rounds):
             if cancel is not None and cancel():
                 current["cancelled"] = True
@@ -192,8 +199,36 @@ class AutoRepairService:
                 current["stop_reason"] = "loop_detected"
                 current["verdict"] = "issues"
                 return current
+            admission_id = None
+            if budget is not None and run_id:
+                admission_id = f"{run_id}:repair:{round_index}"
+                digest = finding_set_digest(prints)
+                try:
+                    budget.reserve(
+                        run_id=str(run_id),
+                        admission_id=f"{run_id}:finding:{digest}:{round_index}",
+                        consumer="repeated_finding",
+                        action_group_id=f"{digest}:{round_index}",
+                        amount=1,
+                    )
+                    budget.reserve(
+                        run_id=str(run_id),
+                        admission_id=admission_id,
+                        consumer="repair",
+                        action_group_id=admission_id,
+                        amount=1,
+                    )
+                except AutoBudgetDenied as denied:
+                    return self._budget_stop(current, denied.reason)
             snapshot = dict(current.get("snapshot") or {})
-            repair_payload = dict(self.repair_fn(snapshot, material))
+            try:
+                repair_payload = dict(self.repair_fn(snapshot, material))
+            except Exception:
+                if budget is not None and admission_id:
+                    budget.mark_unknown(admission_id)
+                raise
+            if budget is not None and admission_id:
+                budget.commit(admission_id, committed_amount=1)
             if repair_payload.get("self_certified"):
                 raise RuntimeError("Repair Agent cannot certify its own review")
             if run_id and checkpoint_id:
@@ -224,13 +259,41 @@ class AutoRepairService:
                 agent_cfg=agent_cfg,
                 reviewer_cfg=reviewer_cfg,
                 cancel=cancel,
+                run_id=run_id,
             )
             previous_prints.append(_fingerprint_set(current.get("findings") or []))
         current["stop_reason"] = current.get("stop_reason") or "budget_exhausted"
         if current.get("verdict") == "pass":
             return current
+        if budget is not None and run_id:
+            return self._budget_stop(
+                current, str(current.get("stop_reason") or "budget_exhausted")
+            )
         current["verdict"] = "issues"
         return current
+
+    def _auto_budget(self) -> AutoBudgetAdmission | None:
+        store = self.store
+        if store is None or not callable(
+            getattr(store, "reserve_auto_mode_budget", None)
+        ):
+            return None
+        budgets = getattr(getattr(self.config, "auto_mode", None), "budgets", None)
+        return AutoBudgetAdmission(store, budgets)
+
+    @staticmethod
+    def _budget_stop(current: dict[str, Any], reason: str) -> dict[str, Any]:
+        stopped = dict(current)
+        stopped["stop_reason"] = reason
+        stopped["reason"] = reason
+        if stopped.get("verdict") == "pass":
+            stopped["verdict"] = "review_unavailable"
+        elif reason in TERMINAL_USER_TRUTH:
+            stopped["verdict"] = "review_unavailable"
+            stopped["summary"] = TERMINAL_USER_TRUTH[reason]
+        else:
+            stopped["verdict"] = "issues"
+        return stopped
 
     def _reuse_identical_versions(
         self, before: Sequence[Any], after: Sequence[Any] | None

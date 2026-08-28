@@ -72,6 +72,7 @@ from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.auto_mode import (
     AutoModeRepository,
+    create_auto_mode_budget_schema,
     create_auto_mode_schema,
     install_auto_mode_action_guards,
 )
@@ -771,6 +772,9 @@ QUERY_DENYLIST = frozenset(
         "auto_mode_selections",
         "auto_mode_runs",
         "auto_mode_events",
+        "auto_mode_budget_state",
+        "auto_mode_budget_reservations",
+        "auto_mode_budget_events",
         "review_runs",
         "review_findings",
         "repair_runs",
@@ -1602,6 +1606,10 @@ class Store:
                         "delegation_generation_and_task_status",
                         self._apply_delegation_generation_and_task_status,
                     ),
+                    29: (
+                        "auto_mode_budget_admission",
+                        self._apply_auto_mode_budget_admission,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1684,6 +1692,17 @@ class Store:
         """
 
         create_auto_mode_schema(conn)
+
+    def _apply_auto_mode_budget_admission(self, conn: sqlite3.Connection) -> None:
+        """Version 29: atomic Auto Mode budget reservations and circuit state.
+
+        Additive, repeatable CREATE TABLE IF NOT EXISTS. Existing runs get no
+        budget_state row and project as read-only ``legacy=true``; new runs
+        create the row in the same start_run transaction. Guardian counters
+        are not copied into these tables.
+        """
+
+        create_auto_mode_budget_schema(conn)
 
     def _apply_annotation_locators(self, conn: sqlite3.Connection) -> None:
         """Version 26: PDF/HTML annotation locators next to image pins."""
@@ -3535,6 +3554,44 @@ class Store:
         self, source: dict, **context: Any
     ) -> dict:
         return self._auto_mode.import_quarantined_projection(source, **context)
+
+    def ensure_auto_mode_budget_state(self, run_id: str, **fields: Any) -> dict | None:
+        return self._auto_mode.ensure_budget_state(run_id, **fields)
+
+    def get_auto_mode_budget_state(self, run_id: str) -> dict | None:
+        return self._auto_mode.get_budget_state(run_id)
+
+    def list_auto_mode_budget_reservations(self, run_id: str) -> list[dict]:
+        return self._auto_mode.list_budget_reservations(run_id)
+
+    def reserve_auto_mode_budget(self, **fields: Any) -> dict:
+        return self._auto_mode.reserve_budget(**fields)
+
+    def commit_auto_mode_budget(self, admission_id: str, **fields: Any) -> dict:
+        return self._auto_mode.commit_budget(admission_id, **fields)
+
+    def release_auto_mode_budget(self, admission_id: str, **fields: Any) -> dict:
+        return self._auto_mode.release_budget(admission_id, **fields)
+
+    def mark_auto_mode_budget_unknown(self, admission_id: str) -> dict:
+        return self._auto_mode.mark_budget_unknown(admission_id)
+
+    def reconcile_auto_mode_budget(self, admission_id: str, **fields: Any) -> dict:
+        return self._auto_mode.reconcile_budget(admission_id, **fields)
+
+    def record_auto_mode_budget_delta(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.record_budget_delta(run_id, **fields)
+
+    def freeze_auto_mode_budget_initial_tokens(
+        self, run_id: str, tokens: int, **fields: Any
+    ) -> dict:
+        return self._auto_mode.freeze_budget_initial_tokens(run_id, tokens, **fields)
+
+    def trip_auto_mode_budget_circuit(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.trip_budget_circuit(run_id, **fields)
+
+    def project_auto_mode_budget(self, run_id: str) -> dict | None:
+        return self._auto_mode.project_budget(run_id)
 
     # --- immutable session checkpoints / branches ----------------------
     def ensure_session_branch(self, **fields: Any) -> dict:

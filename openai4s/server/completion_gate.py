@@ -14,6 +14,7 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from openai4s.server.auto_budget import TERMINAL_USER_TRUTH
 from openai4s.server.auto_mode import public_auto_event
 from openai4s.server.auto_repair import AutoRepairService
 from openai4s.server.scientific_review import durable_review_matches
@@ -33,6 +34,9 @@ def terminal_for_review(result: Mapping[str, Any]) -> tuple[str, str]:
         item for item in (result.get("findings") or []) if isinstance(item, Mapping)
     ]
     material = [item for item in findings if item.get("severity") in {"high", "medium"}]
+    budget_reason = str(result.get("stop_reason") or result.get("reason") or "")
+    if budget_reason in TERMINAL_USER_TRUTH:
+        return "review_unavailable", TERMINAL_USER_TRUTH[budget_reason]
     if verdict == "review_unavailable" or result.get("status") == "unavailable":
         reason = str(result.get("reason") or "reviewer_inference_failed")
         return "review_unavailable", f"Unavailable · not verified ({reason})"

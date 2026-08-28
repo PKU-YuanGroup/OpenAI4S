@@ -125,6 +125,13 @@ from openai4s.server.artifacts import (
     WorkspaceSnapshot,
     artifact_receipt_map,
 )
+from openai4s.server.auto_budget import (
+    AutoBudgetAdmission,
+    AutoBudgetDenied,
+    canonical_action_fingerprint,
+    token_upper_bound,
+    verifiable_token_usage,
+)
 from openai4s.server.auto_mode import AutoModeService, resolve_effective_selection
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
 from openai4s.server.completion_gate import (
@@ -1788,6 +1795,7 @@ class SessionState:
         # closure that a dispatcher created on an earlier turn cannot see.
         self.active_auto_mode_run_id: str | None = None
         self.guardian_blocked_reason: str | None = None
+        self.auto_budget_terminal_reason: str | None = None
         # Per-session model override (from the composer dropdown) + plan flag.
         self.model: str | None = None
         self.plan: bool = False
@@ -5706,6 +5714,11 @@ class SessionRunner:
                 reason = "blocked_by_guardian"
                 stop_reason = "loop_detected"
                 key = f"guardian-terminal:{run_id}"
+            elif st.auto_budget_terminal_reason:
+                terminal = "paused"
+                reason = str(st.auto_budget_terminal_reason)
+                stop_reason = reason
+                key = f"budget-terminal:{run_id}"
             elif status == "cancelled":
                 terminal = "cancelled"
                 reason = "cancelled"
@@ -5756,6 +5769,150 @@ class SessionRunner:
             self.auto_mode.publish_committed(transition)
         finally:
             st.active_auto_mode_run_id = None
+
+    def _auto_budget(self) -> AutoBudgetAdmission:
+        return AutoBudgetAdmission(self.store, self.cfg.auto_mode.budgets)
+
+    def _auto_budget_extra_phase(self, st: SessionState) -> bool:
+        run_id = str(st.active_auto_mode_run_id or "")
+        if not run_id:
+            return False
+        raw = self.store.project_auto_mode_budget(run_id)
+        if not isinstance(raw, Mapping):
+            return False
+        state = raw.get("state") if isinstance(raw.get("state"), Mapping) else {}
+        return bool(
+            raw.get("tokens_frozen")
+            or int(state.get("review_rounds") or 0)
+            or int(state.get("repair_rounds") or 0)
+        )
+
+    def _admit_auto_budget(
+        self,
+        st: SessionState,
+        *,
+        consumer: str,
+        action_group_id: str,
+        action_sha256: str | None = None,
+        amount: int = 1,
+        enforce_field_limit: bool = True,
+        token_upper_bound: int | None = None,
+    ) -> dict | None:
+        run_id = str(st.active_auto_mode_run_id or "")
+        if not run_id:
+            return None
+        admission_id = f"{run_id}:{consumer}:{action_group_id}"
+        return self._auto_budget().reserve(
+            run_id=run_id,
+            admission_id=admission_id,
+            consumer=consumer,
+            action_group_id=action_group_id,
+            amount=amount,
+            action_sha256=action_sha256,
+            enforce_field_limit=enforce_field_limit,
+            token_upper_bound=token_upper_bound,
+        )
+
+    def _settle_auto_budget(
+        self,
+        admission: Mapping[str, Any] | None,
+        *,
+        started: bool,
+        unknown: bool = False,
+        committed_amount: int = 1,
+    ) -> None:
+        if not isinstance(admission, Mapping):
+            return
+        reservation = admission.get("reservation")
+        if not isinstance(reservation, Mapping):
+            return
+        admission_id = str(reservation.get("admission_id") or "")
+        if not admission_id:
+            return
+        budget = self._auto_budget()
+        if unknown or (started and reservation.get("state") == "reserved"):
+            if unknown:
+                budget.mark_unknown(admission_id)
+            elif started:
+                budget.commit(admission_id, committed_amount=committed_amount)
+        elif not started:
+            budget.release(admission_id, started=False)
+
+    def _note_auto_budget_trip(
+        self, st: SessionState, denied: AutoBudgetDenied
+    ) -> None:
+        st.auto_budget_terminal_reason = denied.reason
+        run_id = str(st.active_auto_mode_run_id or "")
+        if run_id:
+            try:
+                self._auto_budget().trip(
+                    run_id, reason=denied.reason, field=denied.field
+                )
+            except Exception:  # noqa: BLE001 - trip is already fail-closed
+                pass
+        st.cancel.set()
+
+    def _freeze_auto_budget_tokens(self, st: SessionState) -> None:
+        run_id = str(st.active_auto_mode_run_id or "")
+        if not run_id:
+            return
+        frame = self.store.get_frame(st.root_frame_id) or {}
+        tokens = int(frame.get("input_tokens") or 0) + int(
+            frame.get("output_tokens") or 0
+        )
+        try:
+            self._auto_budget().freeze_initial_tokens(run_id, tokens)
+        except Exception:  # noqa: BLE001 - freeze is best-effort after the turn
+            pass
+
+    def _note_auto_budget_delta(
+        self, st: SessionState, *, kind: str, cursor: str
+    ) -> None:
+        run_id = str(getattr(st, "active_auto_mode_run_id", None) or "")
+        if not run_id:
+            return
+        try:
+            self._auto_budget().record_delta(run_id, kind=kind, cursor=cursor)
+        except Exception:  # noqa: BLE001 - delta must not fail the producing write
+            pass
+
+    def _invoke_control_with_auto_budget(self, st, call, emit, invoke):
+        # auto_budget sink: native tool admission before invoke.
+        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+        arguments = (
+            call.get("arguments")
+            if isinstance(call, dict)
+            else getattr(call, "arguments", None)
+        )
+        ledger = getattr(st, "active_action_ledger", None)
+        group_id = str(
+            getattr(ledger, "current_group_id", None)
+            or getattr(call, "id", None)
+            or name
+            or "native"
+        )
+        admission = None
+        try:
+            admission = self._admit_auto_budget(
+                st,
+                consumer="native_tool",
+                action_group_id=group_id,
+                action_sha256=canonical_action_fingerprint(
+                    kind="tool",
+                    name=str(name or ""),
+                    arguments=arguments,
+                ),
+            )
+        except AutoBudgetDenied as denied:
+            self._note_auto_budget_trip(st, denied)
+            raise
+        try:
+            result = self._invoke_control_with_artifacts(st, call, emit, invoke)
+            self._settle_auto_budget(admission, started=True)
+            return result
+        except Exception:
+            self._settle_auto_budget(admission, started=True, unknown=True)
+            raise
 
     def _release_bound_compute_in_execution(
         self,
@@ -9019,6 +9176,7 @@ class SessionRunner:
         ) as execution:
             st.active_auto_mode_run_id = None
             st.guardian_blocked_reason = None
+            st.auto_budget_terminal_reason = None
             self._bind_execution_to_turn(getattr(execution, "execution_id", ""))
             self.recovery.touch(st)
             # Tool-only and plan turns need the control plane and provider
@@ -10289,17 +10447,47 @@ class SessionRunner:
                 action_ledger.current_group_id if action_ledger else None
             )
             try:
-                # The full outcome (not just ["result"]): the executor needs
-                # the "executed" bit to keep refused cells out of the
-                # finalize-evidence ledger, and unwraps "result" itself.
-                return self._execute_and_log(
-                    st,
-                    action.code,
-                    "agent",
-                    emit,
-                    stream=True,
-                    language=action.language,
-                )
+                # auto_budget sink: Python/R Cell admission before execution.
+                cell_admission = None
+                try:
+                    cell_admission = self._admit_auto_budget(
+                        st,
+                        consumer="extra_cell",
+                        action_group_id=str(
+                            st.active_action_group_id
+                            or f"cell:{st.cell_index}:{action.language}"
+                        ),
+                        action_sha256=canonical_action_fingerprint(
+                            kind="cell",
+                            name=str(action.language or "python"),
+                            source=str(action.code or ""),
+                        ),
+                        enforce_field_limit=self._auto_budget_extra_phase(st),
+                    )
+                except AutoBudgetDenied as denied:
+                    self._note_auto_budget_trip(st, denied)
+                    return {
+                        "executed": False,
+                        "error": str(denied),
+                        "result": "",
+                    }
+                try:
+                    # The full outcome (not just ["result"]): the executor needs
+                    # the "executed" bit to keep refused cells out of the
+                    # finalize-evidence ledger, and unwraps "result" itself.
+                    result = self._execute_and_log(
+                        st,
+                        action.code,
+                        "agent",
+                        emit,
+                        stream=True,
+                        language=action.language,
+                    )
+                    self._settle_auto_budget(cell_admission, started=True)
+                    return result
+                except Exception:
+                    self._settle_auto_budget(cell_admission, started=True, unknown=True)
+                    raise
             finally:
                 st.active_action_group_id = None
 
@@ -10329,10 +10517,55 @@ class SessionRunner:
         def _llm_quota_gate() -> None:
             self.enforce_llm_quota(st.root_frame_id)
 
+        def _auto_budget_chat(messages, cfg, **kwargs):
+            # auto_budget sink: model inference admission before provider call.
+            admission = None
+            try:
+                admission = self._admit_auto_budget(
+                    st,
+                    consumer="model",
+                    action_group_id=str(
+                        getattr(st, "active_action_group_id", None)
+                        or f"model:{st.cell_index}"
+                    ),
+                    amount=1,
+                    enforce_field_limit=False,
+                )
+            except AutoBudgetDenied as denied:
+                self._note_auto_budget_trip(st, denied)
+                raise
+            try:
+                result = chat(messages, cfg, **kwargs)
+            except Exception:
+                self._settle_auto_budget(admission, started=True, unknown=True)
+                raise
+            extra = self._auto_budget_extra_phase(st)
+            if extra and admission is not None:
+                bound = token_upper_bound(cfg)
+                usage_total = verifiable_token_usage(
+                    result.get("usage") if isinstance(result, Mapping) else None
+                )
+                if bound is None or usage_total is None:
+                    self._settle_auto_budget(admission, started=True, unknown=True)
+                    run_id = str(st.active_auto_mode_run_id or "")
+                    if run_id:
+                        AutoBudgetAdmission(
+                            self.store, self.cfg.auto_mode.budgets
+                        ).fail_measurement(run_id)
+                    denied = AutoBudgetDenied(
+                        "budget_measurement_unavailable",
+                        "adapter token usage is not verifiable",
+                        field="extra_token_multiplier",
+                    )
+                    self._note_auto_budget_trip(st, denied)
+                    raise denied
+            self._settle_auto_budget(admission, started=True)
+            return result
+
         engine = AgentEngine(
             ChatModel(
                 llm_cfg,
-                chat,
+                _auto_budget_chat,
                 tools=model_tools,
                 stream=True,
                 # Same signal the engine gets below, so Stop also interrupts a
@@ -10349,7 +10582,7 @@ class SessionRunner:
                 explore_nudge=_EXPLORE_NUDGE,
                 admit_cell=lambda _action: (self.require_standard_profile_readiness()),
                 native_wrapper=lambda call, invoke: (
-                    self._invoke_control_with_artifacts(st, call, emit, invoke)
+                    self._invoke_control_with_auto_budget(st, call, emit, invoke)
                 ),
                 explore_mode=st.explore,
                 plan_mode=st.plan,
@@ -10389,10 +10622,16 @@ class SessionRunner:
             max_turns=max_turns,
         )
         state = RunState(st.messages, max_turns=max_turns)
-        result = engine.run(state)
+        try:
+            result = engine.run(state)
+        except AutoBudgetDenied as denied:
+            self._note_auto_budget_trip(st, denied)
+            self._freeze_auto_budget_tokens(st)
+            return denied.reason
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
         self._telemetry_turn(st, result)
+        self._freeze_auto_budget_tokens(st)
         return result.stop_reason
 
     def _telemetry_turn(self, st: SessionState, result: Any) -> None:
@@ -10580,7 +10819,7 @@ class SessionRunner:
         """Never turn snapshot infrastructure failure into source failure."""
 
         try:
-            return self.session_domain.capture_cursor_checkpoint(
+            captured = self.session_domain.capture_cursor_checkpoint(
                 root_frame_id,
                 source_kind=source_kind,
                 source_id=source_id,
@@ -10590,6 +10829,20 @@ class SessionRunner:
             )
         except Exception:  # noqa: BLE001 - Cell/message persistence already won
             return None
+        if isinstance(captured, Mapping):
+            state = self._existing_state(str(root_frame_id))
+            if state is not None:
+                cursor = str(
+                    captured.get("checkpoint_id")
+                    or captured.get("id")
+                    or source_id
+                    or ""
+                )
+                if cursor:
+                    self._note_auto_budget_delta(
+                        state, kind="checkpoint", cursor=cursor
+                    )
+        return captured
 
     def _record_cell_with_cursor_checkpoint(self, **record: Any) -> str:
         cell_id = self.store.log_cell(**record)
@@ -10785,6 +11038,13 @@ class SessionRunner:
     # -- structured plan: capture / persist / approve / revise / discard ----
     def _finalize_plan(self, st: SessionState, reply: str, prose: str, emit) -> None:
         self.plans.finalize(st, reply, prose, emit)
+        plan = self.plans.get_state(st.root_frame_id)
+        cursor = ""
+        if isinstance(plan, Mapping):
+            cursor = str(plan.get("plan_id") or plan.get("id") or "")
+        self._note_auto_budget_delta(
+            st, kind="plan", cursor=cursor or f"plan:{st.root_frame_id}"
+        )
 
     def _write_plan_artifact(
         self, st: SessionState, plan: dict, artifact_id: str | None, emit

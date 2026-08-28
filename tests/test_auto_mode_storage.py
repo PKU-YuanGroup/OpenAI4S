@@ -163,7 +163,7 @@ def test_v25_installs_all_auto_mode_tables_and_repository_constructor_is_passive
     tmp_path,
 ):
     store = _store(tmp_path)
-    assert store.schema_state()["version"] == SCHEMA_VERSION == 28
+    assert store.schema_state()["version"] == SCHEMA_VERSION == 29
     tables = {
         row["name"]
         for row in store._conn.execute(
@@ -174,6 +174,9 @@ def test_v25_installs_all_auto_mode_tables_and_repository_constructor_is_passive
         "auto_mode_selections",
         "auto_mode_runs",
         "auto_mode_events",
+        "auto_mode_budget_state",
+        "auto_mode_budget_reservations",
+        "auto_mode_budget_events",
         "review_runs",
         "review_findings",
         "repair_runs",
@@ -197,6 +200,21 @@ def test_v25_installs_all_auto_mode_tables_and_repository_constructor_is_passive
     assert statements == []
     assert "executescript" not in inspect.getsource(AutoModeRepository.__init__)
     connection.close()
+
+
+def test_start_run_creates_budget_state_and_missing_row_is_legacy(tmp_path):
+    store = _store(tmp_path)
+    started = _start(store)
+    assert started["run_id"] == "auto-run-1"
+    state = store.get_auto_mode_budget_state("auto-run-1")
+    assert state is not None
+    assert state["root_run_id"] == "auto-run-1"
+    assert state["review_rounds"] == 0
+    store._conn.execute("DELETE FROM auto_mode_budget_state WHERE run_id='auto-run-1'")
+    store._conn.commit()
+    assert store.get_auto_mode_budget_state("auto-run-1") is None
+    assert store.project_auto_mode_budget("auto-run-1") is None
+    store.close()
 
 
 def test_selection_is_nullable_revisioned_and_compare_and_swap(tmp_path):
