@@ -13,6 +13,7 @@ directory.
 | File | Purpose |
 | --- | --- |
 | `ClarenceYC.png` | Render-ready avatar for contributor `ClarenceYC`. |
+| `Devin-jun.png` | Render-ready avatar for contributor `Devin-jun`. |
 | `EQSTLab.png` | Render-ready avatar for contributor `EQSTLab`. |
 | `Grace-xyx.png` | Render-ready avatar for contributor `Grace-xyx`. |
 | `HowardLi1984.png` | Render-ready avatar for contributor `HowardLi1984`. |
@@ -20,6 +21,8 @@ directory.
 | `Lyu6PosHao.png` | Render-ready avatar for contributor `Lyu6PosHao`. |
 | `Nobody-Zhang.png` | Render-ready avatar for contributor `Nobody-Zhang`. |
 | `YuyangSunshine.png` | Render-ready avatar for contributor `YuyangSunshine`. |
+| `cursoragent.png` | Render-ready avatar for contributor `cursoragent`. |
+| `difficulttopickaname.png` | Render-ready avatar for contributor `difficulttopickaname`. |
 | `jiangzx25.png` | Render-ready avatar for contributor `jiangzx25`. |
 | `riiiiiiin.png` | Render-ready avatar for contributor `riiiiiiin`. |
 | `stau-7001.png` | Render-ready avatar for contributor `stau-7001`. |

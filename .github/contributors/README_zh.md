@@ -11,6 +11,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `ClarenceYC.png` | 贡献者 `ClarenceYC` 的可直接渲染头像。 |
+| `Devin-jun.png` | 贡献者 `Devin-jun` 的可直接渲染头像。 |
 | `EQSTLab.png` | 贡献者 `EQSTLab` 的可直接渲染头像。 |
 | `Grace-xyx.png` | 贡献者 `Grace-xyx` 的可直接渲染头像。 |
 | `HowardLi1984.png` | 贡献者 `HowardLi1984` 的可直接渲染头像。 |
@@ -18,6 +19,8 @@
 | `Lyu6PosHao.png` | 贡献者 `Lyu6PosHao` 的可直接渲染头像。 |
 | `Nobody-Zhang.png` | 贡献者 `Nobody-Zhang` 的可直接渲染头像。 |
 | `YuyangSunshine.png` | 贡献者 `YuyangSunshine` 的可直接渲染头像。 |
+| `cursoragent.png` | 贡献者 `cursoragent` 的可直接渲染头像。 |
+| `difficulttopickaname.png` | 贡献者 `difficulttopickaname` 的可直接渲染头像。 |
 | `jiangzx25.png` | 贡献者 `jiangzx25` 的可直接渲染头像。 |
 | `riiiiiiin.png` | 贡献者 `riiiiiiin` 的可直接渲染头像。 |
 | `stau-7001.png` | 贡献者 `stau-7001` 的可直接渲染头像。 |

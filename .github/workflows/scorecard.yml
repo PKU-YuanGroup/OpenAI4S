@@ -8,9 +8,27 @@ on:
 
 permissions: read-all
 
+# Code scanning treats each `upload-sarif` for an analysis key as the COMPLETE
+# result set for that tool, so two overlapping runs do not merge -- the one
+# that finishes last wins, which may be the one that started against the older
+# commit. This workflow triggers on every push to main as well as weekly, so
+# two merges minutes apart (or one landing near the Saturday cron) is enough to
+# close and reopen Scorecard alerts nondeterministically and to double-post the
+# same nominal commit to the OpenSSF API.
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analysis:
     name: Scorecard analysis
+    # Every other job in the repository caps itself; without this one the
+    # fallback is GitHub's 360-minute default. scorecard-action paginates
+    # commits for the Maintained/Contributors checks and `publish_results`
+    # posts to a third-party host, so a hung call would burn six hours -- and
+    # because this workflow also runs on push to main, it would leave the next
+    # PR's merge commit carrying a six-hour pending check.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -26,13 +44,31 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
+      # Code scanning first, artifact second. The artifact is a debugging
+      # convenience; the SARIF upload is the point of the workflow. With the
+      # other order, every step inherits `if: success()`, so a transient
+      # artifact-storage 5xx or a quota limit SKIPS the code-scanning upload:
+      # the job goes red for a storage reason and the Security tab silently
+      # keeps last week's Scorecard alerts. Same anti-pattern
+      # `tests/test_ci_gate_independence.py` pins for ci.yml, which is scoped
+      # to that file and cannot see this one.
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        with:
+          sarif_file: results.sarif
+      # `always()` so the run that failed is the one whose SARIF you can still
+      # read afterwards -- with `success()` the post-mortem artifact is
+      # produced on exactly the runs that do not need it. `continue-on-error`
+      # so artifact storage cannot redden a job whose real work already
+      # succeeded.
       - name: Upload SARIF artifact
+        if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-sarif
           path: results.sarif
-          retention-days: 5
-      - name: Upload to code scanning
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
-        with:
-          sarif_file: results.sarif
+          # Two full cycles of the Saturday cron, so consecutive weeks' SARIFs
+          # can be diffed against each other; at 5 the previous run's artifact
+          # has always expired before the next one lands.
+          retention-days: 14

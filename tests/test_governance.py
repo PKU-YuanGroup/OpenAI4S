@@ -9,7 +9,28 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
-PINNED_ACTION = re.compile(r"^\s*uses:\s*[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$")
+
+# `- uses:` is as common as `uses:` in these files, and a pattern anchored on
+# the bare form collects nothing at all from a workflow written in list style:
+# ci.yml's 42 pins were invisible to this module until the `-?` went in.
+USES_LINE = re.compile(r"^\s*-?\s*uses:")
+
+# The trailing version comment is REQUIRED, not optional. A 40-hex SHA is
+# unreadable, so `# vX.Y.Z` is the only part of the pin a reviewer actually
+# reads -- leaving it optional let an action merge with no human-readable
+# identity at all, and let a bumped SHA keep a stale comment that tells every
+# future reader the wrong version.
+#
+# What this deliberately does NOT claim: that the comment names the SHA it sits
+# beside. Dereferencing a tag needs the network and this suite is offline by
+# design, so the identity check stays a human step -- what is mechanised here
+# is that there is always a claim to check.
+PINNED_ACTION = re.compile(r"^\s*-?\s*uses:\s*[^@\s]+@[0-9a-f]{40}\s+#\s*\S.*$")
+
+
+def _uses_lines(name):
+    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    return [line for line in text.splitlines() if USES_LINE.match(line)]
 
 
 # CodeQL scanning is provided by the repository's CodeQL default setup, not an
@@ -18,7 +39,7 @@ PINNED_ACTION = re.compile(r"^\s*uses:\s*[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$")
 @pytest.mark.parametrize("name", ["scorecard.yml", "fuzz.yml"])
 def test_security_scanners_pin_every_action_to_a_commit(name):
     lines = (WORKFLOWS / name).read_text(encoding="utf-8").splitlines()
-    uses = [line for line in lines if line.lstrip().startswith("uses:")]
+    uses = _uses_lines(name)
 
     assert uses
     assert all(PINNED_ACTION.fullmatch(line) for line in uses)
@@ -55,6 +76,42 @@ def test_no_captured_web_page_is_extracted_as_executable_source():
         "the inert config is gone; if it comes back it needs the repository "
         "property set, and a test that can see whether it is"
     )
+
+
+def test_every_workflow_pins_every_action_to_a_commit():
+    """The sweep the scoped tests above cannot perform.
+
+    Those name scorecard.yml, fuzz.yml and release.yml. ci.yml -- 42 `uses:`
+    lines, the file every contributor's code and every fork PR passes through
+    -- and publish-image.yml were pinned by convention only, named by no test
+    at all. Dependabot's `workflow-actions` group rewrites `uses:` lines in
+    every one of them, so a grouped bump landing a mutable tag in an uncovered
+    file reads exactly like a covered one and passes every gate.
+
+    Discovery is a glob rather than a list so a workflow added later is covered
+    the day it lands, instead of the day someone remembers to extend a
+    parametrize -- fuzz.yml is the case in point.
+
+    There is deliberately no exception list. pypa/gh-action-pypi-publish was
+    the last entry that needed one and it is SHA-pinned now, so an escape hatch
+    here would only be a place for the next unpinned action to hide.
+    """
+    workflows = sorted(
+        p.name for p in [*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml")]
+    )
+    assert workflows
+
+    moving = {}
+    for name in workflows:
+        offenders = [
+            line.strip()
+            for line in _uses_lines(name)
+            if not PINNED_ACTION.fullmatch(line)
+        ]
+        if offenders:
+            moving[name] = offenders
+
+    assert moving == {}
 
 
 def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
@@ -107,8 +164,7 @@ def test_protocol_fuzzing_is_real_bounded_execution():
 
 
 def test_release_workflow_pins_every_action_to_a_commit():
-    workflow = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
-    uses = [line for line in workflow.splitlines() if line.lstrip().startswith("uses:")]
+    uses = _uses_lines("release.yml")
 
     assert uses
     # Every action is SHA-pinned so a mutable upstream branch cannot inject code.
