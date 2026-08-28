@@ -952,6 +952,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/delegations/([^/]+)/continue": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/delegations/([^/]+)/steer": {
       "content_types": [
         "application/json"
@@ -973,18 +984,6 @@
       ],
       "statuses": [
         404
-      ]
-    },
-    "/frames/([^/]+)/delegations/([^/]+)/continue": {
-      "content_types": [
-        "application/json"
-      ],
-      "kinds": [
-        "json"
-      ],
-      "statuses": [
-        404,
-        409
       ]
     },
     "/frames/([^/]+)/environments": {

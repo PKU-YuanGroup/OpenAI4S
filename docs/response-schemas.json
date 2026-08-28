@@ -2313,6 +2313,39 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/delegations/([^/]+)/steer [error]": {
       "schema": {
         "properties": {
@@ -10067,6 +10100,429 @@
               "branch_id": {
                 "type": "string"
               },
+              "budget_usage": {
+                "properties": {
+                  "extra_token_multiplier": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_consecutive_denial_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_timeout_s": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_window_denial_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_window_size": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "max_extra_cells": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "max_repair_rounds": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "max_review_rounds": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "no_progress_turn_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "repair_turns_per_round": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "repeated_finding_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "same_action_no_delta_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "wall_time_s": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "extra_token_multiplier",
+                  "guardian_consecutive_denial_limit",
+                  "guardian_timeout_s",
+                  "guardian_window_denial_limit",
+                  "guardian_window_size",
+                  "max_extra_cells",
+                  "max_repair_rounds",
+                  "max_review_rounds",
+                  "no_progress_turn_limit",
+                  "repair_turns_per_round",
+                  "repeated_finding_limit",
+                  "same_action_no_delta_limit",
+                  "wall_time_s"
+                ],
+                "type": "object"
+              },
               "budgets": {
                 "properties": {
                   "max_repair_rounds": {
@@ -10085,6 +10541,25 @@
               "candidate_version_ids": {
                 "type": "array"
               },
+              "circuit": {
+                "properties": {
+                  "last_delta_cursor": {
+                    "type": "null"
+                  },
+                  "reason": {
+                    "type": "null"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "last_delta_cursor",
+                  "reason",
+                  "state"
+                ],
+                "type": "object"
+              },
               "evidence_snapshot_sha256": {
                 "type": "string"
               },
@@ -10099,6 +10574,9 @@
               },
               "last_event_ordinal": {
                 "type": "integer"
+              },
+              "legacy": {
+                "type": "boolean"
               },
               "mode": {
                 "type": "string"
@@ -10141,6 +10619,7 @@
               "execution_id",
               "last_event_id",
               "last_event_ordinal",
+              "legacy",
               "mode",
               "recovery_required",
               "root_frame_id",
@@ -11315,6 +11794,12 @@
           "children": {
             "items": {
               "properties": {
+                "artifact_refs": {
+                  "type": "array"
+                },
+                "attempt_id": {
+                  "type": "null"
+                },
                 "child_id": {
                   "type": "string"
                 },
@@ -11369,6 +11854,9 @@
                   ],
                   "type": "object"
                 },
+                "request_id": {
+                  "type": "null"
+                },
                 "result": {
                   "type": "null"
                 },
@@ -11409,6 +11897,8 @@
                 }
               },
               "required": [
+                "artifact_refs",
+                "attempt_id",
                 "child_id",
                 "created_at",
                 "depth",
@@ -11421,6 +11911,7 @@
                 "parent_child_id",
                 "parent_frame_id",
                 "progress",
+                "request_id",
                 "result",
                 "started_at",
                 "status",
@@ -11476,6 +11967,39 @@
           "initialized",
           "root_frame_id",
           "stats"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -15819,6 +16343,65 @@
                 "activeVersionId": {
                   "type": "string"
                 },
+                "capabilities": {
+                  "properties": {
+                    "network": {
+                      "properties": {
+                        "declaration": {
+                          "type": "string"
+                        },
+                        "digest": {
+                          "type": "string"
+                        },
+                        "domains": {
+                          "type": "array"
+                        },
+                        "explicit": {
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "ui": {
+                          "properties": {
+                            "label_en": {
+                              "type": "string"
+                            },
+                            "label_zh": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label_en",
+                            "label_zh",
+                            "state"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "declaration",
+                        "digest",
+                        "domains",
+                        "explicit",
+                        "mode",
+                        "source",
+                        "ui"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "network"
+                  ],
+                  "type": "object"
+                },
                 "collection": {
                   "type": "null"
                 },
@@ -15842,11 +16425,20 @@
                 },
                 "readiness": {
                   "properties": {
+                    "blocked_on": {
+                      "type": "array"
+                    },
                     "checked_locally": {
                       "type": "boolean"
                     },
                     "missing": {
                       "type": "array"
+                    },
+                    "probed": {
+                      "type": "boolean"
+                    },
+                    "ready": {
+                      "type": "boolean"
                     },
                     "state": {
                       "type": "string"
@@ -15856,12 +16448,18 @@
                     }
                   },
                   "required": [
+                    "blocked_on",
                     "checked_locally",
                     "missing",
+                    "probed",
+                    "ready",
                     "state",
                     "unverifiable"
                   ],
                   "type": "object"
+                },
+                "ready": {
+                  "type": "boolean"
                 },
                 "requirements": {
                   "type": "array"
@@ -15875,6 +16473,7 @@
               },
               "required": [
                 "activeVersionId",
+                "capabilities",
                 "collection",
                 "description",
                 "displayName",
@@ -15883,6 +16482,7 @@
                 "name",
                 "origin",
                 "readiness",
+                "ready",
                 "requirements",
                 "scope",
                 "versioned"
@@ -16962,6 +17562,68 @@
                     "string"
                   ]
                 },
+                "capabilities": {
+                  "properties": {
+                    "network": {
+                      "properties": {
+                        "declaration": {
+                          "type": "string"
+                        },
+                        "digest": {
+                          "type": "string"
+                        },
+                        "domains": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "explicit": {
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "ui": {
+                          "properties": {
+                            "label_en": {
+                              "type": "string"
+                            },
+                            "label_zh": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label_en",
+                            "label_zh",
+                            "state"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "declaration",
+                        "digest",
+                        "domains",
+                        "explicit",
+                        "mode",
+                        "source",
+                        "ui"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "network"
+                  ],
+                  "type": "object"
+                },
                 "collection": {
                   "type": [
                     "null",
@@ -16988,6 +17650,12 @@
                 },
                 "readiness": {
                   "properties": {
+                    "blocked_on": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "checked_locally": {
                       "type": "boolean"
                     },
@@ -16996,6 +17664,12 @@
                         "type": "string"
                       },
                       "type": "array"
+                    },
+                    "probed": {
+                      "type": "boolean"
+                    },
+                    "ready": {
+                      "type": "boolean"
                     },
                     "state": {
                       "type": "string"
@@ -17008,12 +17682,18 @@
                     }
                   },
                   "required": [
+                    "blocked_on",
                     "checked_locally",
                     "missing",
+                    "probed",
+                    "ready",
                     "state",
                     "unverifiable"
                   ],
                   "type": "object"
+                },
+                "ready": {
+                  "type": "boolean"
                 },
                 "requirements": {
                   "items": {
@@ -17030,6 +17710,7 @@
               },
               "required": [
                 "activeVersionId",
+                "capabilities",
                 "collection",
                 "description",
                 "displayName",
@@ -17038,6 +17719,7 @@
                 "name",
                 "origin",
                 "readiness",
+                "ready",
                 "requirements",
                 "scope",
                 "versioned"
@@ -20500,6 +21182,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -30103,6 +30818,31 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/delegations/([^/]+)/steer [error]": {
       "schema": {
         "properties": {
@@ -38618,6 +39358,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
