@@ -12,3 +12,9 @@
 | [`app.tsx`](app.tsx) | 空壳 `App`。真正的视图落地后会替换它。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。后续工作项可以在这里加一行模块 import。 |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite 客户端类型（`import.meta.env`）。 |
+
+## 子目录
+
+| 目录 | 职责 |
+| --- | --- |
+| [`features/`](features/) | F 系列领域内核。F-08 放下 markdown / 高亮 / CSV / 流截断 / 涂抹这些纯函数模块。 |
