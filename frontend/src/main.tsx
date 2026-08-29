@@ -1,3 +1,4 @@
+import "./compat/window-exports";
 import { render } from "preact";
 import { App } from "./app";
 

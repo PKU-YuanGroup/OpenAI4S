@@ -10,5 +10,12 @@
 | --- | --- |
 | [`app.test.ts`](app.test.ts) | 脚手架 Vitest：`@preact/signals` 能更新。 |
 | [`app.tsx`](app.tsx) | 空壳 `App`。真正的视图落地后会替换它。 |
-| [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。后续工作项可以在这里加一行模块 import。 |
+| [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。后续工作项可以再加一行模块 import。 |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite 客户端类型（`import.meta.env`）。 |
+
+## 子目录
+
+| 目录 | 职责 |
+| --- | --- |
+| [`compat/`](compat/) | F-05 的 window 导出层和 `window.S` Proxy。后续车道只允许在标记区 append。 |
+| [`stores/`](stores/) | F-05 的 signal 模块。后续车道只 import 这些文件，不改本体。 |
