@@ -121,3 +121,4 @@ export {
 // F-13: fetchAllMessages / fetchOlderMessages / fetchRecentMessages / openConversation / renderMessageRefChips / renderComposerRefChips / hint are assigned by features/sessions (imported from main.tsx).
 // F-14: window.highlightTraceback / window.notebookExportLink are assigned by features/notebook (imported from main.tsx).
 // F-15: timeline contract names are assigned by features/timeline (imported from main.tsx).
+// F-17: window.parseTable / window.renderSheet are assigned by bootArtifacts() in features/artifacts.

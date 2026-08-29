@@ -11,6 +11,7 @@
 | [`app.test.ts`](app.test.ts) | 脚手架 Vitest：`@preact/signals` 能更新。 |
 | [`app.tsx`](app.tsx) | 工作台 `App`。F-13 挂载仪表盘/工作台 `Shell`。 |
 | [`app.tsx`](app.tsx) | 空壳 `App`。真正的视图落地后会替换它。 |
+| [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-17 import `features/artifacts`（`bootArtifacts`）。后续工作项可以再加一行模块 import。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-14 import `features/notebook`（`installNotebook`）。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-13 import `features/sessions`。后续工作项可以再加一行模块 import。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-10 import `features/messages`。 |
@@ -21,6 +22,7 @@
 | 目录 | 职责 |
 | --- | --- |
 | [`compat/`](compat/) | F-05 的 window 导出层和 `window.S` Proxy。后续车道只允许在标记区 append。 |
+| [`components/`](components/) | 按车道划分的 Preact 视图。F-17 加入 `artifacts/`（Files dock）。 |
 | [`components/`](components/) | 按车道划分的 Preact 视图。F-13 加入 `dashboard/`。 |
 | [`features/`](features/) | 按车道划分的功能。F-09 加入 `theme/`。 |
 | [`features/`](features/) | F 系列领域内核。F-08 放下 markdown / 高亮 / CSV / 流截断 / 涂抹这些纯函数模块。 |

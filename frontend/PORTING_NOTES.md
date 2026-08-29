@@ -102,6 +102,27 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
 
+## F-17 artifacts + Files (M-03)
+
+Version cache, Files grid, renderer catalog, and the ten scientific renderer glues. Files search/filter/pagination/deep link is the M-03 surface (not a later rewrite of a legacy grid). `scientific_renderers.js` stays a classic UMD script.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `artifactCacheKey` 8353-8357 | `features/artifacts/cache.ts` `artifactCacheKey` | `_artVer[id]` then `version_id` / `latest_version_id` / `checksum` / `"unknown"`. Missing id → `"_live"`. |
+| `syncArtifactVersion` 8359-8378 | `cache.ts` `syncArtifactVersion` | In-place `Object.assign` on matching `openTabs` items and `dockArtifact`. Force or version change busts `lineage` / `_envSnapById[artifactCacheKey]`. |
+| `loadArtifacts` 8380-8401 | `load.ts` `loadArtifacts` | `_artifactLoadReq` generation; drop if `id !== S.currentId`. Bust `_artBust` when the seen version changes. |
+| `loadProjectArtifacts` 8510-8516 | `load.ts` + `files-index.ts` `browseFiles` | Project Files walks `GET .../artifact-index` (50/page, cap 100). TODO fallback onto the legacy array route when the index 404s. Late responses after a Project switch are dropped (`filesIndexReq`). |
+| `visibleArtifacts` / `filesGridArtifacts` 8492-8502 | `files-index.ts` | `priority < 0` hidden; frame scope still priority-sorts. Project scope keeps server keyset order so pages do not reshuffle. Same-name rows are not merged. |
+| `artUrl` 8577 | `cache.ts` `artUrl` | Unpinned: `/artifacts/{id}?_={bust}`. `_exactVersion`: `/artifacts/versions/{vid}` — never latest. |
+| `scientificRenderers` 8578 | `catalog.ts` `scientificRenderers` | `window.OpenAI4SScientificRenderers \|\| null`. Empty-value defense kept. |
+| `loadRendererCatalog` / `artifactRendererDescriptor` / `compatibilityRendererDescriptor` 8580-8635 | `catalog.ts` | Descriptor `version_id` must match the requested version or the promise rejects (no silent latest). Missing runtime → `renderer_id: "download"`. |
+| `renderArtifactBody` + 10 renderer glues 8637-8962 | `renderers.ts` | Sequence / MSA / genome / chemistry-2d / latex / markdown / table / text / download / sheet. image / pdf / html-preview / molecule-3d call later islands through `isReady` (F-18). PDF iframe still has no sandbox (F-18). html-preview `sandbox=""`. |
+| `renderSheet` / `sheetShape` / `appendSheetShape` 8771-8802 | `sheet.ts` | Cap 5000×100; union of keys; `nb.table.*` hidden-copy reused. Window export for smoke. |
+| `parseMolPoints` / `molSvg` / thumbs 8414-8490 | `thumbs.ts` | CA backbone preference, 500-point cap, spectrum XY SVG. |
+| `artifact_created` 5314-5346 | `events.ts` `artifactCreatedSideEffects` | After F-06 upsert: `syncArtifactVersion(art, true)`, open-Viewer refresh, live-cell `figures` push, project Files reload. `nbRender` only if `isReady`. |
+| `openViewer` 9437 | `ui.ts` `openViewer` | Sets `dockArtifact`, clears `provMode`, `addOpenTab`, `setActiveTab(a.id)`. |
+| Files search / filter / Load more / deep link (M-03, new) | `files-index.ts` `deeplink.ts` `components/artifacts/FilesPanel.tsx` | Filename `q`, `content_type`, `origin=uploaded\|generated`, page 50. `?artifact=&version_id=`: omit version → latest; provided version **never** silent-falls-back to latest; missing exact → stale/not-found. ⌘K uses `openArtifactFromHit` (open session, then exact Viewer). |
+| `parseTable` / `renderSheet` window globals | `boot.ts` `installArtifacts` | Overwrites the F-05 stubs. `parseTable` is F-08's kernel, published here because smoke/E2E read it as a bare global next to `renderSheet`. |
 ## F-15 Timeline
 
 Verbatim port of the Action Timeline kernel. The Preact component only hosts `#dock-timeline`; the ledger is an imperative island so `_timelineView` identity, function names, 46px rows, overscan, signature reuse, `translateY`, and the SVG overview stay byte-equivalent for smoke:559-1658.

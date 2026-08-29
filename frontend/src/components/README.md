@@ -9,5 +9,6 @@ Lane-owned Preact views. Each F-series item adds `components/<area>/` and does n
 
 | Directory | Responsibility |
 | --- | --- |
+| [`artifacts/`](artifacts/) | F-17 Files dock (M-03 search / filter / pagination / deep link). |
 | [`dashboard/`](dashboard/) | F-13 dashboard / workspace chrome (frozen ids, `#composer-hint`, disconnect banner). |
 | [`timeline/`](timeline/) | F-15 `#dock-timeline` host. The ledger itself is the imperative island in `features/timeline/island.ts`. |
