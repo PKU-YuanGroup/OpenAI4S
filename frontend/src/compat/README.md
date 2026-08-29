@@ -8,5 +8,6 @@ F-05 E2E compatibility layer. `tests/webui-contract.md` is the input inventory. 
 
 | File | Responsibility |
 | --- | --- |
+| [`stub.ts`](stub.ts) | Reserved-placeholder marking and the `isReady` capability guard. No side effects, so asking does not install anything. |
 | [`window-exports.ts`](window-exports.ts) | F-01 globals on `window`, `window.S` Proxy (get/set ↔ signals), lane-additions marker. |
 | [`window-exports.test.ts`](window-exports.test.ts) | Proxy read/write, identity of `_timelineView` / `actionTimeline` / `executionQueue`, nested writes. |

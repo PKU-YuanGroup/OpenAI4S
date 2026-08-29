@@ -1,3 +1,6 @@
+import { contractStub } from "./stub";
+export { contractStub, isContractStub, isReady } from "./stub";
+
 import {
   ACTION_TIMELINE_OVERSCAN,
   ACTION_TIMELINE_OVERVIEW_WIDTH,
@@ -79,16 +82,6 @@ const TIMELINE_CONSTANTS: Record<string, number> = {
   ACTION_TIMELINE_ROW_HEIGHT,
 };
 
-function contractStub(name: string): (..._args: unknown[]) => never {
-  const fn = (..._args: unknown[]): never => {
-    throw new Error(
-      `F-05 stub: window.${name} is reserved for a later lane; assign the real implementation in the lane-additions region of window-exports.ts`,
-    );
-  };
-  Object.defineProperty(fn, "name", { value: name });
-  return fn;
-}
-
 /**
  * Install the F-01 window export surface onto `target` (browser `window`,
  * or a fresh object in Vitest). Always writes `S` and the four
@@ -123,3 +116,4 @@ export {
 // Later F-series lanes may append one window export assignment per line below.
 // Do not edit anything above this marker.
 // F-06: window.onEvent is assigned by bootWs() in features/ws (imported from main.tsx).
+// F-07: window.t / window.tOptional are assigned by the i18n module.

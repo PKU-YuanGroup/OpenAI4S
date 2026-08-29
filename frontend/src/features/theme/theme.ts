@@ -16,6 +16,7 @@ type HostWindow = Window & {
   hint?: (message: string) => void;
 };
 
+import { isReady } from "../../compat/stub";
 let theme: ThemeMode | undefined;
 let watchingSystem = false;
 
@@ -70,7 +71,7 @@ export function refreshThemeToggle(): void {
   const dark = themeIsDark();
   const name = dark ? "sun" : "moon";
   const translate = hostWindow().t;
-  const title = typeof translate === "function" ? translate("theme.toggle") : "";
+  const title = isReady(translate) ? translate("theme.toggle") : "";
   for (const sel of ["#dash-theme", "#ws-theme"]) {
     const button = document.querySelector(sel);
     if (button === null) continue;
@@ -107,7 +108,7 @@ export function applyTheme(mode: string, opts?: ApplyThemeOpts): void {
 
 function toastTheme(mode: ThemeMode): void {
   const { t, hint } = hostWindow();
-  if (typeof t !== "function" || typeof hint !== "function") return;
+  if (!isReady(t) || !isReady(hint)) return;
   hint(t("toast.theme", t("theme." + mode)));
 }
 
