@@ -9,6 +9,7 @@ import { installNotebook } from "./features/notebook";
 import { bootWs } from "./features/ws";
 import "./features/sessions";
 import "./i18n";
+import "./features/md";
 import "./features/messages";
 import "./features/timeline";
 
