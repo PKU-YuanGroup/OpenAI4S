@@ -8,4 +8,6 @@ Committed output of `frontend/` (`npm run build`). The gateway serves this tree 
 
 | File | Responsibility |
 | --- | --- |
-| `index-BrA3alX6.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `en-DtuUOBlM.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `index-4aH2Bnph.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `zh-gS0NfuQ7.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |

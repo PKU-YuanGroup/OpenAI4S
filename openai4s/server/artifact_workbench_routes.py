@@ -27,7 +27,7 @@ _TABLE_PROFILE = contract.RouteSpec(
 _TABLE_EXPORT = contract.RouteSpec(
     "artifact.table_export",
     "GET",
-    r"/artifacts/([^/]+)/table/export.csv",
+    r"/artifacts/([^/]+)/table/export\.csv",
     mutates=False,
 )
 _DIFF = contract.RouteSpec(

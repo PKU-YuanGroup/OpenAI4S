@@ -63,7 +63,7 @@ def _api(tmp_path):
 
 
 def test_get_onboarding_is_redacted_and_contacts_nobody(tmp_path, monkeypatch):
-    secret = "sk-onboarding-must-not-leak-9f3a"
+    secret = "sk-fake-onboarding-must-not-leak-9f3a"
     monkeypatch.setattr(
         "openai4s.llm.chat",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("GET contacted LLM")),
@@ -171,7 +171,7 @@ def test_web_status_never_returns_the_key(tmp_path):
     from openai4s.llm.registry import provider_specs
     from openai4s.store import get_store
 
-    secret = "sk-web-status-canary-aabbcc"
+    secret = "sk-fake-web-status-canary-aabbcc"
     cfg = Config(data_dir=tmp_path / "data", llm=LLMConfig(provider="chatgpt"))
     store = get_store(cfg.db_path)
     service = OnboardingService(cfg, store, provider_specs())
