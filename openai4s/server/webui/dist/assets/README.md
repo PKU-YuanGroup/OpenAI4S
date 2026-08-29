@@ -9,5 +9,6 @@ Committed output of `frontend/` (`npm run build`). The gateway serves this tree 
 | File | Responsibility |
 | --- | --- |
 | `en-DtuUOBlM.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
-| `index-iBVntU9i.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `index-COKZYIyZ.css` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `index-b9JZzQU9.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
 | `zh-gS0NfuQ7.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |

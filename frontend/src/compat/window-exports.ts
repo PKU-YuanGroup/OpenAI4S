@@ -117,8 +117,13 @@ export {
 // Do not edit anything above this marker.
 // F-06: window.onEvent is assigned by bootWs() in features/ws (imported from main.tsx).
 // F-07: window.t / window.tOptional are assigned by the i18n module.
-// F-10: window.openConversation / fetch*Messages / down assigned by features/messages.
-// F-13: fetchAllMessages / fetchOlderMessages / fetchRecentMessages / openConversation / renderMessageRefChips / renderComposerRefChips / hint are assigned by features/sessions (imported from main.tsx).
+// F-10: window.openConversation / down assigned by features/messages.
+// F-13: fetchAllMessages / fetchOlderMessages / fetchRecentMessages /
+//   renderMessageRefChips / renderComposerRefChips / hint assigned by
+//   features/sessions. Both lanes ported openConversation and the fetch
+//   trio independently; integration split them so each name has one owner
+//   (main.tsx imports sessions before messages, so a shared name would
+//   have been silently overwritten rather than reported).
 // F-14: window.highlightTraceback / window.notebookExportLink are assigned by features/notebook (imported from main.tsx).
 // F-15: timeline contract names are assigned by features/timeline (imported from main.tsx).
 // F-17: window.parseTable / window.renderSheet are assigned by bootArtifacts() in features/artifacts.

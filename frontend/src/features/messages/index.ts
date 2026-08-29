@@ -10,11 +10,6 @@
 import { isReady } from "../../compat/stub";
 import "./messages.css";
 import { ensureMessageDom } from "./dom";
-import {
-  fetchAllMessages,
-  fetchOlderMessages,
-  fetchRecentMessages,
-} from "./fetch";
 import { registerMessageHandlers } from "./handlers";
 import { insertMessageByTime, renderStored } from "./list";
 import { openConversation } from "./open";
@@ -91,10 +86,11 @@ export function installMessages(
   target: MessagesTarget = globalThis as unknown as MessagesTarget,
 ): void {
   registerMessageHandlers();
+  // openConversation is owned here: F-13's is otherwise identical but paints
+  // its first page with a synchronous forEach, which is the 640-message
+  // stall this lane exists to remove. The fetch* names stay with F-13,
+  // whose copies also drive the earlier-messages store and its hint.
   target.openConversation = openConversation;
-  target.fetchRecentMessages = fetchRecentMessages;
-  target.fetchOlderMessages = fetchOlderMessages;
-  target.fetchAllMessages = fetchAllMessages;
   target.down = down;
   target.updateJumpPill = updateJumpPill;
   target.insertMessageByTime = insertMessageByTime;

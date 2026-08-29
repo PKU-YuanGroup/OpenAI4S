@@ -14,7 +14,7 @@ import {
   sessionOptionsMenu,
 } from "./actions";
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
-import { newSession, openConversation, routeInitialView } from "./conversation";
+import { newSession, routeInitialView } from "./conversation";
 import { showDashboard } from "./dashboard";
 import { $, down, grow, setSidebar, setTitle, updateJumpPill } from "./dom";
 import { paintIcons } from "./icon";
@@ -38,7 +38,8 @@ export function installSessionExports(
   target.fetchAllMessages = fetchAllMessages;
   target.fetchOlderMessages = fetchOlderMessages;
   target.fetchRecentMessages = fetchRecentMessages;
-  target.openConversation = openConversation;
+  // openConversation is assigned by features/messages (F-10): same reset
+  // surface, but its first paint is framed rather than one forEach.
   target.renderMessageRefChips = renderMessageRefChips;
   target.renderComposerRefChips = renderComposerRefChips;
   target.hint = hint;
