@@ -101,3 +101,25 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_created` `loadArtifacts` 5343 | `upsertArtifactFromEvent` + 150ms trailing debounce | Nested / flat / bare payloads; `_artBust` + `_tbl` filename bust. REST fetch is `setLoadArtifactsImpl` (F-17). Remaining 32-line side effects via `setArtifactCreatedSideEffects`. |
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
+
+## F-19 Customize
+
+Nine-tab modal plus isolated vendor cards. Polls (jobs 1500ms, job output 1200ms, copy restore 1200ms, Volcengine key 2500 then 5000×24) are bound to a per-mount timer lease and die on tab unmount / `closeCust`. Window exports `openCust` / `custTab` / `telemetryRow` are assigned by `bootCustomize()`, the same way F-06 assigns `onEvent`. Capability checks use `isReady` from `compat/stub.ts`.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `openCust` / `custTab` 11122-11131 | `features/customize/actions.ts` | Default tab `general`. `agents` aliases `specialists`. `#cust` loses `.hidden`. `.cust-tab` `active` + `aria-selected`. Every `custTab` remounts the pane (generation key). |
+| `#cust` shell, 9 tabs in index.html:162-163 | `components/customize/Customize.tsx` | Frozen ids/classes: `#cust`, `#cust-close`, `#cust-content`, `.cust-tab[data-tab]`, `.prof-row`, `.cust-row`, `.toggle`. Esc / backdrop close. |
+| `custGeneral` 11194-11224; `setLayout` 11225 / 10936 | `GeneralTab.tsx` + `layout.ts` | Theme via F-09 `setTheme`. `os-layout` comfortable/compact/wide. Language via F-07 `setLang`. LLM key row `GET /config/llm`. |
+| `custPermissions` 11133-11192 | `PermissionsTab.tsx` | Conversation/project/global scopes; add/update/delete/reset. |
+| `custSkills` 11241-11370 | `SkillsTab.tsx` + `NestedEditor.tsx` | Personal+project catalogs; collection collapse; insert `/name` mention; editor/import/history. |
+| `custSpecialists` 11371-11391 | `SpecialistsTab.tsx` | Custom CRUD; builtin `PUT /agents/{name}/enabled`. |
+| DataPro 11393-11546 | `vendors/datapro.tsx` + `vendors.ts` | Index-complete requires matching leaf counts and digests. Connector id `volcengine-datapro`. |
+| `custConnectors` 11574-11589 | `ConnectorsTab.tsx` | DataPro card first; directory add; custom add; probe/toggle/delete. |
+| `custCompute` 11590-11797 | `ComputeTab.tsx` | Host/GPU/remote rows are DOM text (no innerHTML). Job poll 1500ms on the lease. Copy restore 1200ms on the lease. |
+| Doubao 11798-11887; `custNetwork` 11891-11985 | `vendors/doubao.tsx` + `NetworkTab.tsx` + `telemetry.ts` | Dedicated `source === "doubao"`. Telemetry drain loop (desired/confirmed, one in-flight PUT). `telemetryRow(host)` remains an imperative contract export. |
+| `custMemory` 11986-12063 | `MemoryTab.tsx` + `memory.ts` | Scope is always sent; never the literal `"default"`. |
+| Local discovery 12064-12123; protocols 12132-12150 | `models.ts` | Loopback-only chatgpt endpoints. Protocol list generated from the served catalogue. |
+| Volcengine 12152-12574 | `volcengine.ts` + `vendors/volcengine.tsx` | Key poll 2500ms then 5000ms × 24, stopped on unmount. Auto-configure only while never linked. SSO popup severs `opener`. |
+| `custModels` 12575-12707 | `ModelsTab.tsx` | Probe is a button, never a render-time call. Readiness is local-only. B-04 `capability_receipt` shown as tri-state badges (`true`/`false`/`unknown` + stale). Full M-01 wizard is later. |
+| `window.openCust` / `custTab` / `telemetryRow` | `bootCustomize()` in `features/customize/index.ts` | Overwrites the F-05 stubs. `main.tsx` adds one import. |

@@ -1,0 +1,71 @@
+/* Lane-local Customize chrome. Class names match the frozen contract so F-21
+   style.css can take over tokens; these rules keep the modal usable before
+   that lane lands. */
+#cust.modal.hidden {
+  display: none !important;
+}
+#cust.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 18, 14, 0.34);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+#cust .cust-box {
+  background: var(--panel, #fff);
+  border-radius: 12px;
+  width: min(920px, 94vw);
+  height: min(680px, 86vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#cust .cust-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+#cust .cust-tabs {
+  width: 160px;
+  border-right: 0.5px solid var(--border, #0002);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#cust .cust-tab.active {
+  background: var(--bg-300, #0001);
+}
+#cust .cust-content {
+  flex: 1;
+  overflow: auto;
+  padding: 18px 22px;
+}
+#cust .cust-nested {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 18, 14, 0.34);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+#cust .cust-nested-box {
+  background: var(--panel, #fff);
+  border-radius: 12px;
+  width: min(640px, 90%);
+  max-height: 80%;
+  overflow: auto;
+  padding: 16px 18px;
+}
+.prof-cap[data-state="true"] {
+  color: var(--success-text, inherit);
+}
+.prof-cap[data-state="false"] {
+  color: var(--danger, inherit);
+}
+.prof-cap[data-stale="true"] {
+  opacity: 0.65;
+}
