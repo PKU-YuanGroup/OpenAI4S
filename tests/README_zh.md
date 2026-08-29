@@ -41,6 +41,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_action_ledger_runtime.py`](test_action_ledger_runtime.py) | Ledger 的另一半：运行中的循环究竟往里写了什么。参数在落库之前就已脱敏，分支只继承 checkpoint 过的父前缀，被中断的原生 group 会被原子地收尾，重开 store 之后历史还能重建回来。 |
 | [`test_action_routing_eval.py`](test_action_routing_eval.py) | 与其说是断言套件，不如说是一个打分器。它把离线的路由 fixture 送进 Tool/Code/Finalize 路由，再输出一份供人工审阅的失败与混淆报告。 |
 | [`test_action_timeline_service.py`](test_action_timeline_service.py) | 当 Timeline 把不该给用户看的东西显示出来时，来看这个文件。这个投影是公开的，所以测试大多在讲它扣下了什么——原始 payload、秘密、provider ID——以及它不许扣下什么，比如更早的那次 Tool 失败。 |
+| [`test_attention_view.py`](test_attention_view.py) | 跨 Session「需要处理」聚合。只读 GET 把 running/queued 执行、待批准、可恢复失败、view-only/blocked 会话，以及 live/unknown 远程计算合成固定 shape 的卡片；team 可见性在聚合、排序、limit 之前生效；服务端不返回任意 URL。六类 fixture 各一张卡，跨用户零泄漏，cursor 绑调用方 scope，冻结的 50-Session 页 p95 < 200ms，GET 不 spawn kernel、不打 provider、不 retry/approve/harvest。 |
 | [`test_actions.py`](test_actions.py) | 两个外层循环共用的这一份回复解析。优先级规则钉在这里：原生调用压过代码 fence，没有闭合的 fence 永远不可执行，文档顺序里只有第一个 Cell 会跑。 |
 | [`test_admet_genetic.py`](test_admet_genetic.py) | 内置的 ADMET genetic Skill：能被发现、helper 的聚合是确定性的，以及它生成的 dashboard 会转义脚本和 HTML 定界符。 |
 | [`test_agent.py`](test_agent.py) | 全套里覆盖面最宽的一个模块——离线外层循环的完整链路。Code-as-Action 循环、没有 R 时 R Cell 软失败成一条 observation、token 估算、把一个 Cell 和它的 observation 压在同一个原子段里的 compaction，以及委派的上限。改坏了循环，通常先在这里露馅。 |

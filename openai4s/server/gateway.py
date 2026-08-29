@@ -96,6 +96,7 @@ from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
     artifact_refs,
     artifact_workbench_routes,
+    attention_routes,
     auto_mode_routes,
     compute_session_routes,
     compute_tasks,
@@ -14352,6 +14353,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if compute_session_routes.handle(self, method, sub, q, store, runner):
                 return
             if file_routes.handle(self, method, sub, q, _file_area, _team_auth):
+                return
+            # Cross-session attention (B-05). Visibility is applied inside
+            # the aggregator, before sort/limit, so a handler-level frame
+            # guard cannot see the fan-out. GET is a read of existing
+            # projections; retry/approve/restore stay on their mutation
+            # routes.
+            if attention_routes.handle(self, method, sub, q, runner):
                 return
             # Session visibility toggle (M2-2, D4): owner-only.
             m = re.fullmatch(r"/frames/([^/]+)/visibility", sub)
