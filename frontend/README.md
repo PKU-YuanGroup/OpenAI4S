@@ -12,7 +12,7 @@ The next workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vit
 
 | File | Responsibility |
 | --- | --- |
-| [`index.html`](index.html) | SPA shell. The only script is an external `type="module"` `src=` tag so CSP `script-src 'self'` never has to authorize inline script. |
+| [`index.html`](index.html) | SPA shell. Head loads `/static/theme-bootstrap.js` as a classic (non-module) script so the first paint has `data-theme`. The app entry is an external `type="module"` `src=` tag so CSP `script-src 'self'` never has to authorize inline script. |
 | [`package.json`](package.json) | Frontend package: Preact 10, `@preact/signals`, Vite, Vitest, TypeScript. `private: true`. |
 | [`package-lock.json`](package-lock.json) | Lockfile for a deterministic `npm ci` rebuild (F-23 diffs `webui/dist` against this). |
 | [`PORTING_NOTES.md`](PORTING_NOTES.md) | Per-item map of old `app.js` line ranges onto new modules. F-03 has no domain kernel. |

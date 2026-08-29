@@ -2,6 +2,7 @@
 
 [中文说明](README_zh.md)
 
+Lane-owned feature modules. Each F-series item adds its own subdirectory and does not edit another lane's files.
 Per-lane domain modules. F-08 adds the pure-function kernels; later items add `components/<area>/` and `islands/` beside this tree, and only import `stores/` (F-05) rather than editing it.
 
 ## Subdirectories
@@ -12,3 +13,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`md/`](md/) | renderMd / mdInline / esc chain and the unified mdHighlight scanner. |
 | [`scrub/`](scrub/) | publicText credential redaction. |
 | [`stream/`](stream/) | appendLiveOutput 1MB cap. |
+| [`theme/`](theme/) | Light/dark/system preference. `data-theme` is the only runtime source of truth. |

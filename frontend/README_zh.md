@@ -12,7 +12,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`index.html`](index.html) | SPA 外壳。唯一的脚本是带 `src=` 的外链 `type="module"`，CSP `script-src 'self'` 不必放行内联脚本。 |
+| [`index.html`](index.html) | SPA 外壳。head 以经典脚本（非 module）加载 `/static/theme-bootstrap.js`，第一次绘制就带上 `data-theme`。应用入口是带 `src=` 的外链 `type="module"`，CSP `script-src 'self'` 不必放行内联脚本。 |
 | [`package.json`](package.json) | 前端包：Preact 10、`@preact/signals`、Vite、Vitest、TypeScript。`private: true`。 |
 | [`package-lock.json`](package-lock.json) | 锁文件，保证 `npm ci` 重建确定（F-23 拿它对照 `webui/dist`）。 |
 | [`PORTING_NOTES.md`](PORTING_NOTES.md) | 逐项把旧 `app.js` 行号映射到新模块。F-03 没有领域内核。 |

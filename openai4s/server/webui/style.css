@@ -1682,7 +1682,7 @@ html[data-theme="dark"] .composer-wrap{background:linear-gradient(180deg,transpa
 
 /* ---- theme toggle active affordance ---- */
 #dash-theme,#ws-theme{position:relative}
-body.theme-dark #dash-theme,body.theme-dark #ws-theme{color:var(--accent-fill)}
+html[data-theme="dark"] #dash-theme,html[data-theme="dark"] #ws-theme{color:var(--accent-fill)}
 
 /* Unresolved @references. Deliberately not styled as an error: the turn ran,
    and referencing four files with one typo should answer about the other
