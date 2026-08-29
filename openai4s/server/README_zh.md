@@ -55,6 +55,8 @@ gateway.py
 | [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。trusted 路径会在登记前流式复制、fsync、原子冻结并验证字节；遇到相同 head 时复用 version，同时保留 observation。 |
 | [`artifact_workbench.py`](artifact_workbench.py) | Stage 9 正式 Artifact workbench：完整数据集表格查询、版本 diff、PDF/HTML locator、结构摘要，以及 Ketcher 3.7.0 包装页。flag 关闭时不生效。 |
 | [`artifact_workbench_routes.py`](artifact_workbench_routes.py) | Stage 9 的五条 Artifact workbench 路由（`/table`、`/diff`、`/structure`、`/pdf-text`、`/html-outline`）。flag 关闭时返回 403。 |
+| [`artifact_index.py`](artifact_index.py) | 按 project 分页的 Artifact 索引：`(created_at, artifact_id)` keyset、绑定 `project_id + q + content_type + origin + team scope` 的不透明 cursor，以及只搜 filename 的转义 `LIKE`。旧的 `/projects/{pid}/artifacts` 数组 route 保持不变。 |
+| [`artifact_index_routes.py`](artifact_index_routes.py) | `GET /projects/{pid}/artifact-index`。`RouteSpec` 进入契约清单；filter 变化后沿用旧 cursor 返回 `400 invalid_cursor`。 |
 | [`auto_budget.py`](auto_budget.py) | Auto Mode 原子预算准入：consumer 注册表、canonical 动作指纹、durable-delta 闭集，以及不可验证 token 的 fail-closed。各 sink 在动作前用稳定 `admission_id` 预留；只有明确未开始的调用才可释放。Guardian 字段只投影既有权威状态，不复制计数。 |
 | [`auto_mode.py`](auto_mode.py) | 按冻结的「导入隔离 → frame → project → 显式 deployment → 旧 result-review → 内建默认」顺序解析 Stage 2 Auto Mode 选择；对 durable run/audit 状态做有界白名单投影；只把新建且已提交的规范事件作为尽力而为的 WebSocket 提示转发。它不会调用模型、Reviewer、Repair Agent 或权限路径。 |
 | [`auto_mode_portability.py`](auto_mode_portability.py) | Session package 与只读 share 共用的“不信任输入也安全”reducer。它验证 Auto Mode 的 scope/reference 闭包，只输出闭合的审计 DTO，把 portable evidence 无法独立证明的结论降级，而且绝不恢复执行或权限能力。 |

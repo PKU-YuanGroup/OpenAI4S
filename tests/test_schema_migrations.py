@@ -156,6 +156,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # does not auto-resume; only an explicit continue creates the next
         # attempt. Additive; rollback does not delete Artifact versions.
         "delegation_requests_and_attempts",
+        # Keyset browse index for GET /projects/{pid}/artifact-index.
+        # Additive CREATE INDEX IF NOT EXISTS; DROP INDEX is the reverse.
+        "artifact_browse_index",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
