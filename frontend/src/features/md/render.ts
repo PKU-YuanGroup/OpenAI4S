@@ -253,7 +253,7 @@ export function renderMd(src: string | null | undefined): string {
           "</tr>";
         i++;
       }
-      html += t + "</tbody></table>";
+      html += '<div class="md-table-wrap">' + t + "</tbody></table></div>";
       continue;
     }
     if (listRe.test(line)) {

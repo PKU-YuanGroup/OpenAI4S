@@ -81,6 +81,9 @@ jobs:
         run: uv sync --locked
       - name: pre-commit (black, isort, ruff, mypy, hygiene hooks)
         run: uv run pre-commit run --all-files
+      - name: CSS custom-property references must be defined
+        if: success() || failure()
+        run: uv run python scripts/check_css_tokens.py
 
   # Its own job, not a second step in `lint`. As a step it could only ever run
   # when pre-commit had already passed, so a branch that failed formatting and

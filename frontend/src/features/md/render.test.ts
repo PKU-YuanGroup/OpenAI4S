@@ -104,4 +104,10 @@ describe("renderMd esc-then-markup chain", () => {
     expect(mdInline("![x](data:image/png;base64,aaa)")).toContain("<img ");
     expect(mdInline("![x](data:image/svg+xml;base64,aaa)")).not.toContain("<img ");
   });
+
+  it("wraps markdown tables in an overflow-x container", () => {
+    const html = renderMd("| a | b |\n| --- | --- |\n| 1 | 2 |");
+    expect(html).toContain('<div class="md-table-wrap"><table>');
+    expect(html).toContain("</table></div>");
+  });
 });
