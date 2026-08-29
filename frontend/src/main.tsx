@@ -7,6 +7,7 @@ import { bootWs } from "./features/ws";
 import "./features/sessions";
 import "./i18n";
 import "./features/messages";
+import "./features/timeline";
 
 installTheme();
 bootWs();

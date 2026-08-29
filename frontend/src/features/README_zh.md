@@ -18,3 +18,4 @@
 | [`theme/`](theme/) | 浅色/深色/跟随系统。运行时的唯一真值源是 `data-theme`。 |
 | [`ws/`](ws/) | WebSocket 游标协议、handler 注册表、`connectWS`。 |
 | [`notebook/`](notebook/) | Notebook 面板：cell 合并/live 协议、按 producing_cell_id 键控的 CellList、kernel chips/REPL。 |
+| [`timeline/`](timeline/) | F-15 Action Timeline：sanitize* / merge、虚拟化 ledger 孤岛、工作台 WS。 |

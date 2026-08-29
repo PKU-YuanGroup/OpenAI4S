@@ -102,6 +102,42 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
 
+## F-15 Timeline
+
+Verbatim port of the Action Timeline kernel. The Preact component only hosts `#dock-timeline`; the ledger is an imperative island so `_timelineView` identity, function names, 46px rows, overscan, signature reuse, `translateY`, and the SVG overview stay byte-equivalent for smoke:559-1658.
+
+Signal updates are **not** rAF-batched across WS types: smoke reads the DOM immediately after `onEvent({ type: "action_timeline" })`. The island already rAF-coalesces window reconcile (`scheduleActionTimelineWindow`) and overview path redraws.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `publicList` / `publicArtifacts` 2769-2782 | `features/timeline/sanitize.ts` | Same limits; `publicText` from F-08 `scrub.ts`. |
+| `ACTION_TIMELINE_PAGE_SIZE/ROW_HEIGHT/OVERSCAN/OVERVIEW_WIDTH` 2784-2789 | F-05 `stores/timeline.ts` (unchanged) + island | 500 / 46 / 8 / 1000. Extra: `TOP_THRESHOLD`, `BOTTOM_THRESHOLD=2`, overview height 112, hover delay 500. |
+| `timelineOrdinal` 2792 | `sanitize.ts` | Finite number or numeric string; empty → null. |
+| `sanitizeActionTimeline` 2795-2855 | `sanitize.ts` | Last PAGE_SIZE groups; events not sliced; attempts `-50`; `has_earlier`/`has_more` aliases; usage integers ≥0. |
+| `mergeActionTimelines` 2856-2888 | `sanitize.ts` | Frame/branch mismatch → incoming; Map dedupe; no slice; `before` vs `latest` concat order. |
+| `queueMetadata` / `sanitizeExecutionQueue` 2890-2918 | `sanitize.ts` | Frozen ticket metadata; queue cap 100. |
+| `rememberExecutionQueue` / `renderQueueStrip` 2920-2967 | `island.ts` | Writes `S.executionQueue` / `S.executionIdentity` by reference; `#queue-strip` no-op if missing. |
+| `rememberExecutionState` 2984-3005 | `island.ts` | Identity lifecycle; pending REPL uses notebook store + `isReady` later-lane calls. |
+| `sanitizeRecovery` / `sanitizeRecoveryActions` 3032-3068 | `sanitize.ts` | Allowlist ids `restore`/`retry`/`restart_fresh`. |
+| `sanitizeBranches` / `branchUndoFromProjection` / `sanitizeRevertPreview` / `sanitizeRevertMutationResult` 3070-3148 | `sanitize.ts` | Capability enabled/reason; undo from head `undo_checkpoint_id`. |
+| `sanitizeVariableInspection` 3150-3178 | `sanitize.ts` | Reads `branchState` for exact-scope; fail closed otherwise. |
+| `sanitizeContext` / `sanitizeSecurity` / `sanitizeDelegations` 3180-3276 | `sanitize.ts` | Omitted reasons; sandbox-typed events; children without `child_id` dropped. |
+| `mergeDelegationChildEvent` 3277-3298 | `island.ts` | In-place child upsert + stats rebuild; identity of `S.delegationState` kept. |
+| `sanitizeComputeTasks` 4925-4946 | `sanitize.ts` | `polled` is server-said, never inferred. |
+| `loadEarlierActionTimeline` 3314-3353 | `island.ts` | `before_ordinal` + `branch_id`; prependSnapshot scrollHeight/scrollTop; stale request drop. |
+| `loadWorkbenchState` / `scheduleWorkbenchRefresh` 3354-3389 | `island.ts` | `optionalApi` fan-out; `_workbenchReq` generation. |
+| `actionTimelineSpan` / overview model / `timelineOverviewTimeToX` / `actionTimelineOverviewVisualExtent` / `actionTimelineSelectionOverlaps` 3573-3820 | `features/timeline/model.ts` | Epoch parser `timelineEpochMs`; unfinished attempts are markers only; non-span groups still overlap via `created_at`. |
+| `actionTimelineEntryKey` / `actionTimelineLedgerEntries` 3871-3899 | `model.ts` | `turn:` / `group:` keys; search temporarily reveals collapsed turns. |
+| Overview SVG + gestures 3692-4245 | `island.ts` | Constant-size SVG; drag-select / right-drag pan / wheel zoom; 500ms hover. |
+| Virtualizer `reconcileActionTimelineWindow` 4574-4634 | `island.ts` | 46px, overscan 8, signature row reuse, `translateY(index * 46)`, aria-rowindex. |
+| `updateActionTimelineLedger` 4635-4708 | `island.ts` | Prepend scrollTop compensation; followTail; filter restore; `_timelineView` identity. |
+| `toggleActionTimelineTurn` 4447-4457 | `island.ts` | Mutates `collapsedTurns` Set in place. |
+| `createActionTimelineView` 4458-4549 | `island.ts` | Same `_timelineView` fields (searchQuery/searchNeedle/collapsedTurns/autoLoadArmed/…). |
+| `renderActionTimeline` 5097-5154 | `island.ts` | `#dock-timeline`; five side panels + recovery card + ledger. |
+| Sidebar panels 4835-5066 | `island.ts` `renderBranchPanel` / `renderDelegationPanel` / `renderComputeTasksPanel` / `renderContextPanel` / `renderSecurityPanel` | Class names `.branch-panel` `.recovery-action-list` `.delegation-child` frozen. Recovery is a card above the ledger, not a sixth side panel. |
+| WS `action_timeline` … `security_status` 5225-5269 | `features/timeline/ws.ts` | One handler per type via F-06 registry; delayed other-branch deltas dropped. |
+| Window names | `features/timeline/index.ts` `bootTimeline` | Overwrites F-05 stubs. Uses `isReady` from `compat/stub.ts` (not `typeof === "function"`, not `window-exports.ts`). |
+| `#dock-timeline` host | `components/timeline/Timeline.tsx` | Container + lifecycle only. |
 ## F-14 Notebook
 
 Rendering shell rewrite of the Notebook dock. The live protocol, `_seenChunks` dedup, `_kc` invalidate timings, and scroll-follow/reading-delay gate are verbatim; the `innerHTML=""` full rebuild at `renderNotebook` 10352 is not.
