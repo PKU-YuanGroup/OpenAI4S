@@ -12,6 +12,7 @@
 | [`csv/`](csv/) | RFC-4180 风格 CSV/TSV 解析。收敛 parseDelimited / csvFields / parseTable。 |
 | [`md/`](md/) | renderMd / mdInline / esc 全链，以及统一的 mdHighlight 扫描器。 |
 | [`scrub/`](scrub/) | publicText 凭证涂抹。 |
+| [`sessions/`](sessions/) | F-13 仪表盘 / 项目 / 会话、分页、分享/导入导出、hint + 断连横幅。 |
 | [`stream/`](stream/) | appendLiveOutput 的 1MB 截断。 |
 | [`theme/`](theme/) | 浅色/深色/跟随系统。运行时的唯一真值源是 `data-theme`。 |
 | [`ws/`](ws/) | WebSocket 游标协议、handler 注册表、`connectWS`。 |

@@ -101,3 +101,22 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_created` `loadArtifacts` 5343 | `upsertArtifactFromEvent` + 150ms trailing debounce | Nested / flat / bare payloads; `_artBust` + `_tbl` filename bust. REST fetch is `setLoadArtifactsImpl` (F-17). Remaining 32-line side effects via `setArtifactCreatedSideEffects`. |
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
+
+## F-13 dashboard / projects / sessions
+
+Sidebar, paging, share/import-export, hint a11y, disconnect banner. Later-lane names are called through `isReady` (`compat/stub.ts`); this lane does not import `window-exports.ts`.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| dashboard 6616-6764 (`paintDashSkeleton` / `loadDashboard` / `renderDash*` / example CTA 6672-6694 / dash poll) | `features/sessions/dashboard.ts` | Running-count annotation, recent cap 10, example CTA poll **stopped** with the view (`stopDashPoll`). Dashboard rows / run-cards get `role=button` + tabIndex + Enter/Space. |
+| projects 6765-6913 (`sanitizeProjectLineage` / research view / proj menu / modal) | `features/sessions/projects.ts` | publicText caps, 5000/10000 slice, modal mode token. `sanitizeActionTimeline` / `actionTimelineCard` via `isReady`. |
+| sessions + paging 6914-7410 (`MESSAGE_PAGE_SIZE=300`, `SESSION_MAX_PAGES=50`, newest-first then seq-sort, cursor walk, `sessionRow` 7030-7032) | `features/sessions/paging.ts` + `messages.ts` + `load.ts` | Newest-first fetch, sort back into reading order. Session walk is keyset + root-frame + id-dedupe. `has_more` at the page cap is a sentence, not a dead button. |
+| `openConversation` 7121-7219 / `resumeWatch` 7103-7120 / `newSession` | `features/sessions/conversation.ts` | Generation token, unsub previous, history + steps interleaved by time, later-lane loads via `isReady`. `sub`/`unsub` from F-06. |
+| `renderStored` / earlier bar / ref chips 7226-7409 | `features/sessions/transcript.ts` + `messages.ts` | `renderMd` from F-08. `renderMessageRefChips` / `renderComposerRefChips` assigned on `window`. |
+| session actions / share / import-export 7411-7793 | `features/sessions/actions.ts` | Verify-before-import; 128 MiB client cap; markdown export walks `fetchAllMessages` and names truncation. |
+| `openMenu` 7744-7763 | `features/sessions/chrome.ts` | Esc closes, `role=menu` / `menuitem`, focus moves into the first item. |
+| `hint` 12920 | `chrome.ts` `hint` | `#composer-hint` `role=status aria-live=polite`. Err branch prefixes `错误：` / `Error: ` from `LANG` (no new i18n key). |
+| `#conn-dot` 5183 (element missing) | `#conn-banner` + wrap of F-06 socket `onopen`/`onclose` | Banner + hint on close; clear on open. Socket wrap is a microtask so F-06 handlers are assigned first. |
+| `index.html` `#composer-hint` / `#tab-close` span | `components/dashboard/Shell.tsx` | Frozen ids. Close-tab is a real `<button>`. `.tile` / `.art` / `.t-close` get Enter/Space via a MutationObserver for later lanes. |
+| routing 2678-2687 / 13231-13248 | `dom.ts` `framePath`/`navURL` + `routeInitialView` | Dashboard `/`, conversation `/projects/{pid}/frames/{fid}`. |
+| window contract names | `boot.ts` `installSessionExports` | Overwrites F-05 stubs for this lane's names. `setLoadSessionsImpl(loadSessions)` for F-06's 300ms debounce. |

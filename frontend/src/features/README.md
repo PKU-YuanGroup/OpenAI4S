@@ -12,6 +12,7 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`csv/`](csv/) | RFC-4180-ish CSV/TSV parser. Converges parseDelimited / csvFields / parseTable. |
 | [`md/`](md/) | renderMd / mdInline / esc chain and the unified mdHighlight scanner. |
 | [`scrub/`](scrub/) | publicText credential redaction. |
+| [`sessions/`](sessions/) | F-13 dashboard / projects / sessions, paging, share/import-export, hint + disconnect banner. |
 | [`stream/`](stream/) | appendLiveOutput 1MB cap. |
 | [`theme/`](theme/) | Light/dark/system preference. `data-theme` is the only runtime source of truth. |
 | [`ws/`](ws/) | WebSocket cursor protocol, handler registry, `connectWS`. |
