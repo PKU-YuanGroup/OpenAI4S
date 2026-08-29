@@ -1,6 +1,7 @@
 import "./compat/window-exports";
 import { render } from "preact";
 import { App } from "./app";
+import { bootChrome } from "./features/chrome";
 import { installTheme } from "./features/theme/theme";
 import { bootWs } from "./features/ws";
 import "./i18n";
@@ -13,3 +14,4 @@ if (mount === null) {
   throw new Error("frontend: missing #app mount node");
 }
 render(<App />, mount);
+bootChrome();

@@ -14,4 +14,5 @@
 | [`scrub/`](scrub/) | publicText 凭证涂抹。 |
 | [`stream/`](stream/) | appendLiveOutput 的 1MB 截断。 |
 | [`theme/`](theme/) | 浅色/深色/跟随系统。运行时的唯一真值源是 `data-theme`。 |
+| [`chrome/`](chrome/) | F-20：团队面、模态焦点陷阱、⌘K palette、上传/笔记/麦克风、布局、列宽拖拽。 |
 | [`ws/`](ws/) | WebSocket 游标协议、handler 注册表、`connectWS`。 |

@@ -10,7 +10,7 @@
 | --- | --- |
 | [`app.test.ts`](app.test.ts) | 脚手架 Vitest：`@preact/signals` 能更新。 |
 | [`app.tsx`](app.tsx) | 空壳 `App`。真正的视图落地后会替换它。 |
-| [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。后续工作项可以再加一行模块 import。 |
+| [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-20 import `features/chrome`（`bootChrome`）。后续工作项可以再加一行模块 import。 |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite 客户端类型（`import.meta.env`）。 |
 
 ## 子目录

@@ -14,4 +14,5 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`scrub/`](scrub/) | publicText credential redaction. |
 | [`stream/`](stream/) | appendLiveOutput 1MB cap. |
 | [`theme/`](theme/) | Light/dark/system preference. `data-theme` is the only runtime source of truth. |
+| [`chrome/`](chrome/) | F-20: team mode, modal focus trap, ⌘K palette, upload/notes/mic, layout, column resizers. |
 | [`ws/`](ws/) | WebSocket cursor protocol, handler registry, `connectWS`. |

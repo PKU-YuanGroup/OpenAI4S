@@ -117,3 +117,6 @@ export {
 // Do not edit anything above this marker.
 // F-06: window.onEvent is assigned by bootWs() in features/ws (imported from main.tsx).
 // F-07: window.t / window.tOptional are assigned by the i18n module.
+// F-20: window.openModalEl / closeModalEl / trapModalKeydown / openPalette /
+// closePalette / applyLayout / setLayout / uploadFiles / micDictate / loadNotes
+// are assigned by bootChrome() in features/chrome (imported from main.tsx).

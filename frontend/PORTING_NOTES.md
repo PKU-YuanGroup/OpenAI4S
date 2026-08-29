@@ -101,3 +101,22 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_created` `loadArtifacts` 5343 | `upsertArtifactFromEvent` + 150ms trailing debounce | Nested / flat / bare payloads; `_artBust` + `_tbl` filename bust. REST fetch is `setLoadArtifactsImpl` (F-17). Remaining 32-line side effects via `setArtifactCreatedSideEffects`. |
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
+
+## F-20 team surface + workbench chrome
+
+Team IIFEs, the modal focus trap kernel, ⌘K palette, upload / notes / mic, layout density, column resizers. Team modals now go through the trap (the old IIFEs bypassed it). Palette Artifact hits follow M-03.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| upload 10899-10907; paste 13414-13418; drop 13420-13423 | `features/chrome/upload.ts` `uploadFiles` | FileReader → `/uploads`; creates a frame if `currentId` is empty (`sub` + `loadSessions` + `openConversation` gated with `isReady`). |
+| notes 10909-10914 | `features/chrome/notes.ts` | `effProject` from `S.project` else the current session's `project_id`. Empty / no-project copy via existing i18n keys. |
+| micDictate 10919-10932 | `features/chrome/mic.ts` | `SpeechRecognition` / `webkitSpeechRecognition`; toggle stop; `interimResults` + `continuous`; append onto `#composer`. |
+| applyLayout 10936-10937; setLayout 11225 | `features/chrome/layout.ts` | Body classes `layout-compact` / `layout-wide`; key `os-layout`; comfortable is the absence of both. |
+| ⌘K palette 10940-11057 | `features/chrome/palette.ts` | Overlay / input / list, Arrow/Enter/Esc, `PAL.gen` discard. **Artifact hit (11030) is M-03, not the old `dockTab("files")`:** open owning session then `openViewer` with `version_id` forwarded as-is (never rewritten to latest). If `openViewer` is a F-05 stub, open the Files tab. `?artifact=&version_id=` parser exported as `parseArtifactQuery`. |
+| dataproPaletteSummary / openDataproSearchHit 10973-11014 | `palette.ts` | Session-then-viewer; dashboard-only hit uses `openArtifact`; no artifact id opens Customize connectors. All later-lane names gated with `isReady`. |
+| focus trap 11059-11120 | `features/chrome/modal.ts` | **Verbatim** stack / Tab cycle / Esc / focus restore. `_modalFocus.stack`, `_focusables`, `openModalEl` / `closeModalEl` / `trapModalKeydown`. Fallback selectors add `#team-admin-modal` and `#team-files-modal` so a bypassed team modal is still trapped. Palette Esc via `addModalEscapeBlocker`; `window.ac.open` still skips Esc. |
+| column resizers 13250-13319 | `features/chrome/resizer.ts` | Keys `os-side-w` / `os-dock-w`; side clamp 200–520; dock ≥360 and viewport cap; `window._colClampBound` → module flag. |
+| teamBootstrap IIFE 13450-13589 | `features/chrome/team.ts` | `/auth/me` 401 → `/login`; chip + sign-out; `/files` probe unhides Team files. **`openPanel` uses `openModalEl`.** |
+| teamGovernance IIFE 13592-13682 | `team.ts` (same `/auth/me`) | Guest `/` → `/replay`; admin/service unhides `#team-admin`. **`openAdmin` uses `openModalEl`; closes use `closeModalEl`.** Five sections Users/Usage/Quotas/Invites/Audit, `.team-admin-table`. Two IIFEs share one `/auth/me` fetch. |
+| init keydown 13370-13378 | `index.ts` `bootChrome` | Trap first, then ⌘K, ⌘B (`setSidebar` if `isReady`), ⌘Shift+L `cycleTheme`. |
+| window names | `bootChrome()` assigns `openModalEl` / `closeModalEl` / `trapModalKeydown` / `openPalette` / `closePalette` / `applyLayout` / `setLayout` / `uploadFiles` / `micDictate` / `loadNotes` | Same pattern as F-06 `bootWs()` → `onEvent`. Not F-01 contract names; later lanes consume them. |
