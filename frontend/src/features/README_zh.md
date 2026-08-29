@@ -17,6 +17,7 @@
 | [`sessions/`](sessions/) | F-13 仪表盘 / 项目 / 会话、分页、分享/导入导出、hint + 断连横幅。 |
 | [`stream/`](stream/) | appendLiveOutput 的 1MB 截断。 |
 | [`theme/`](theme/) | 浅色/深色/跟随系统。运行时的唯一真值源是 `data-theme`。 |
+| [`chrome/`](chrome/) | F-20：团队面、模态焦点陷阱、⌘K palette、上传/笔记/麦克风、布局、列宽拖拽。 |
 | [`ws/`](ws/) | WebSocket 游标协议、handler 注册表、`connectWS`。 |
 | [`artifacts/`](artifacts/) | F-17 Files + 版本缓存 + 科学渲染器胶水（M-03）。 |
 | [`notebook/`](notebook/) | Notebook 面板：cell 合并/live 协议、按 producing_cell_id 键控的 CellList、kernel chips/REPL。 |

@@ -123,3 +123,6 @@ export {
 // F-15: timeline contract names are assigned by features/timeline (imported from main.tsx).
 // F-17: window.parseTable / window.renderSheet are assigned by bootArtifacts() in features/artifacts.
 // F-19: window.openCust / window.custTab / window.telemetryRow are assigned by bootCustomize() in features/customize.
+// F-20: window.openModalEl / closeModalEl / trapModalKeydown / openPalette /
+// closePalette / applyLayout / setLayout / uploadFiles / micDictate / loadNotes
+// are assigned by bootChrome() in features/chrome (imported from main.tsx).

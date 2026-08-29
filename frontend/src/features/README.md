@@ -17,6 +17,7 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`sessions/`](sessions/) | F-13 dashboard / projects / sessions, paging, share/import-export, hint + disconnect banner. |
 | [`stream/`](stream/) | appendLiveOutput 1MB cap. |
 | [`theme/`](theme/) | Light/dark/system preference. `data-theme` is the only runtime source of truth. |
+| [`chrome/`](chrome/) | F-20: team mode, modal focus trap, ⌘K palette, upload/notes/mic, layout, column resizers. |
 | [`ws/`](ws/) | WebSocket cursor protocol, handler registry, `connectWS`. |
 | [`artifacts/`](artifacts/) | F-17 Files + version cache + scientific renderer glue (M-03). |
 | [`notebook/`](notebook/) | Notebook dock: cell merge/live protocol, CellList keyed by producing_cell_id, kernel chips/REPL. |

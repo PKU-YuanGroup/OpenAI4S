@@ -3,6 +3,7 @@ import { render } from "preact";
 import { App } from "./app";
 import { bootArtifacts } from "./features/artifacts";
 import { bootCustomize } from "./features/customize";
+import { bootChrome } from "./features/chrome";
 import { installTheme } from "./features/theme/theme";
 import { installNotebook } from "./features/notebook";
 import { bootWs } from "./features/ws";
@@ -22,3 +23,4 @@ if (mount === null) {
   throw new Error("frontend: missing #app mount node");
 }
 render(<App />, mount);
+bootChrome();
