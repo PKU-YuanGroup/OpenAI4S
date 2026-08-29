@@ -1086,7 +1086,7 @@ def test_notary_credentials_fail_fast_and_do_not_contact_apple(monkeypatch):
             "OPENAI4S_MACOS_SIGNING_IDENTITY": "Developer ID Application: Example",
             "APPLE_API_KEY_ID": "KEYID",
             "APPLE_API_ISSUER": "issuer-uuid",
-            "APPLE_API_KEY": "-----BEGIN PRIVATE KEY-----\nMII\n-----END PRIVATE KEY-----",
+            "APPLE_API_KEY": "notary-api-key-material",
         }
     )
     assert api_key["api_key_set"] is True

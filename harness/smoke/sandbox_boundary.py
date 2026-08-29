@@ -38,14 +38,26 @@ try:
 except Exception:
     checks["outside_write_blocked"] = True
 try:
+    # Deliberately an unroutable *external* address (RFC 5737 TEST-NET-1), not
+    # loopback. The two backends deny egress by different mechanisms, and only
+    # an outward destination is refused by both. Seatbelt rejects the syscall
+    # itself, so loopback answers EPERM there and the check appears to work;
+    # bubblewrap's --unshare-net instead gives the cell a private network
+    # namespace whose own loopback is up, so connecting to 127.0.0.1 returns
+    # ECONNREFUSED -- a refusal by the absent listener, not by the boundary --
+    # and the probe read a confined cell as unconfined. Unreachable-network
+    # errnos mean the boundary held; a timeout (errno None) means the syscall
+    # was allowed and packets simply went nowhere, which is not confinement.
     sock = socket.socket()
     sock.settimeout(0.2)
-    sock.connect(("127.0.0.1", 9))
+    sock.connect(("192.0.2.1", 9))
     checks["network_blocked"] = False
 except PermissionError:
     checks["network_blocked"] = True
 except OSError as error:
-    checks["network_blocked"] = getattr(error, "errno", None) in (1, 13, 45, 65, 101)
+    checks["network_blocked"] = getattr(error, "errno", None) in (
+        1, 13, 45, 65, 100, 101, 113,
+    )
 finally:
     try: sock.close()
     except Exception: pass
