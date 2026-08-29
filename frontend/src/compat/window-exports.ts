@@ -119,3 +119,4 @@ export {
 // F-07: window.t / window.tOptional are assigned by the i18n module.
 // F-10: window.openConversation / fetch*Messages / down assigned by features/messages.
 // F-13: fetchAllMessages / fetchOlderMessages / fetchRecentMessages / openConversation / renderMessageRefChips / renderComposerRefChips / hint are assigned by features/sessions (imported from main.tsx).
+// F-14: window.highlightTraceback / window.notebookExportLink are assigned by features/notebook (imported from main.tsx).

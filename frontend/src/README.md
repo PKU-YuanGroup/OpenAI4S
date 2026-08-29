@@ -11,6 +11,7 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 | [`app.test.ts`](app.test.ts) | Scaffold Vitest: `@preact/signals` updates. |
 | [`app.tsx`](app.tsx) | Workbench `App`. F-13 mounts the dashboard/workspace `Shell`. |
 | [`app.tsx`](app.tsx) | Empty-shell `App`. Replaced as real views land. |
+| [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-14 imports `features/notebook` (`installNotebook`). |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-13 imports `features/sessions`. Later items may add one module import here. |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-10 imports `features/messages`. |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite client types (`import.meta.env`). |

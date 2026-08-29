@@ -17,3 +17,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`stream/`](stream/) | appendLiveOutput 1MB cap. |
 | [`theme/`](theme/) | Light/dark/system preference. `data-theme` is the only runtime source of truth. |
 | [`ws/`](ws/) | WebSocket cursor protocol, handler registry, `connectWS`. |
+| [`notebook/`](notebook/) | Notebook dock: cell merge/live protocol, CellList keyed by producing_cell_id, kernel chips/REPL. |
