@@ -15,3 +15,4 @@
 | [`stream/`](stream/) | appendLiveOutput 的 1MB 截断。 |
 | [`theme/`](theme/) | 浅色/深色/跟随系统。运行时的唯一真值源是 `data-theme`。 |
 | [`ws/`](ws/) | WebSocket 游标协议、handler 注册表、`connectWS`。 |
+| [`artifacts/`](artifacts/) | F-17 Files + 版本缓存 + 科学渲染器胶水（M-03）。 |

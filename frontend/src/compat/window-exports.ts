@@ -117,3 +117,4 @@ export {
 // Do not edit anything above this marker.
 // F-06: window.onEvent is assigned by bootWs() in features/ws (imported from main.tsx).
 // F-07: window.t / window.tOptional are assigned by the i18n module.
+// F-17: window.parseTable / window.renderSheet are assigned by bootArtifacts() in features/artifacts.

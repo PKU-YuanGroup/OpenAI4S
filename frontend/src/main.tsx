@@ -1,12 +1,14 @@
 import "./compat/window-exports";
 import { render } from "preact";
 import { App } from "./app";
+import { bootArtifacts } from "./features/artifacts";
 import { installTheme } from "./features/theme/theme";
 import { bootWs } from "./features/ws";
 import "./i18n";
 
 installTheme();
 bootWs();
+bootArtifacts();
 
 const mount = document.getElementById("app");
 if (mount === null) {
