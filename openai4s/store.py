@@ -253,6 +253,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS ix_artifacts_project_created
+    ON artifacts(project_id, created_at DESC, artifact_id DESC);
 
 CREATE TABLE IF NOT EXISTS artifact_versions (
     version_id    TEXT PRIMARY KEY,
@@ -1634,6 +1636,10 @@ class Store:
                         "model_capability_receipts",
                         self._apply_model_capability_receipts,
                     ),
+                    32: (
+                        "artifact_browse_index",
+                        self._apply_artifact_browse_index,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1810,6 +1816,20 @@ class Store:
         """
 
         create_model_capability_receipts_schema(conn)
+
+    def _apply_artifact_browse_index(self, conn: sqlite3.Connection) -> None:
+        """Version 32: keyset browse index for the Artifact index route.
+
+        Additive ``CREATE INDEX IF NOT EXISTS``. SQLite transactional DDL
+        rolls the index away if this step fails; ``DROP INDEX IF EXISTS
+        ix_artifacts_project_created`` is the reverse and leaves every
+        Artifact row untouched.
+        """
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_artifacts_project_created "
+            "ON artifacts(project_id, created_at DESC, artifact_id DESC)"
+        )
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -4132,6 +4152,27 @@ class Store:
 
     def list_artifacts(self, filters: dict | None = None) -> list[dict]:
         return self._artifacts.list_artifacts(filters)
+
+    def browse_artifacts(
+        self,
+        *,
+        project_id: str,
+        filename_query: str | None = None,
+        content_type: str | None = None,
+        origin: str | None = None,
+        before: tuple[int, str] | None = None,
+        limit: int = 50,
+        visible_to_user_id: str | None = None,
+    ) -> list[dict]:
+        return self._artifacts.browse_artifacts(
+            project_id=project_id,
+            filename_query=filename_query,
+            content_type=content_type,
+            origin=origin,
+            before=before,
+            limit=limit,
+            visible_to_user_id=visible_to_user_id,
+        )
 
     def list_artifact_names(self) -> list[dict]:
         return self._artifacts.list_artifact_names()

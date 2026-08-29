@@ -94,6 +94,7 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
+    artifact_index_routes,
     artifact_refs,
     artifact_workbench_routes,
     attention_routes,
@@ -14605,6 +14606,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 model_profiles=model_profiles,
                 model_discovery=model_discovery,
             ):
+                return
+            if artifact_index_routes.handle(self, method, sub, q, store):
                 return
             # ---- identity / meta (no-auth local mode) ----
             if sub == "/me":

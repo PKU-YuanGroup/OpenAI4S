@@ -158,6 +158,9 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         "delegation_requests_and_attempts",
         # Exact model-capability receipts from an explicit probe. Additive.
         "model_capability_receipts",
+        # Keyset browse index for GET /projects/{pid}/artifact-index.
+        # Additive CREATE INDEX IF NOT EXISTS; DROP INDEX is the reverse.
+        "artifact_browse_index",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
