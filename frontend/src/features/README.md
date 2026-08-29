@@ -15,3 +15,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`stream/`](stream/) | appendLiveOutput 1MB cap. |
 | [`theme/`](theme/) | Light/dark/system preference. `data-theme` is the only runtime source of truth. |
 | [`ws/`](ws/) | WebSocket cursor protocol, handler registry, `connectWS`. |
+| [`timeline/`](timeline/) | F-15 Action Timeline: sanitize* / merge, virtualized ledger island, workbench WS. |

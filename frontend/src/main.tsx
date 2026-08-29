@@ -4,6 +4,7 @@ import { App } from "./app";
 import { installTheme } from "./features/theme/theme";
 import { bootWs } from "./features/ws";
 import "./i18n";
+import "./features/timeline";
 
 installTheme();
 bootWs();

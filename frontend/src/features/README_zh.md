@@ -15,3 +15,4 @@
 | [`stream/`](stream/) | appendLiveOutput 的 1MB 截断。 |
 | [`theme/`](theme/) | 浅色/深色/跟随系统。运行时的唯一真值源是 `data-theme`。 |
 | [`ws/`](ws/) | WebSocket 游标协议、handler 注册表、`connectWS`。 |
+| [`timeline/`](timeline/) | F-15 Action Timeline：sanitize* / merge、虚拟化 ledger 孤岛、工作台 WS。 |

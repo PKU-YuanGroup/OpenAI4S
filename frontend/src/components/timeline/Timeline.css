@@ -1,0 +1,53 @@
+/* Island layout contract. Visual tokens stay with F-21's style.css;
+   these rules keep the 46px virtualizer and overview SVG measurable. */
+
+.timeline-ledger-region {
+  --timeline-row-height: 46px;
+}
+
+.timeline-ledger {
+  position: relative;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.timeline-ledger thead tr,
+.timeline-ledger-row {
+  display: grid;
+  grid-template-columns: 62px 44px minmax(0, 1fr) 68px 62px;
+  width: 100%;
+}
+
+.timeline-ledger-body {
+  position: relative;
+  display: block;
+}
+
+.timeline-ledger-row {
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--timeline-row-height, 46px);
+  cursor: pointer;
+  will-change: transform;
+}
+
+.timeline-ledger-row td {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--timeline-row-height, 46px);
+  overflow: hidden;
+}
+
+.timeline-ledger-scroll {
+  overflow: auto;
+  position: relative;
+}
+
+.timeline-overview svg {
+  display: block;
+  width: 100%;
+  height: 112px;
+}
