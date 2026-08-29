@@ -47,6 +47,53 @@ def test_table_renderer_declares_only_viewing() -> None:
     assert list(table["capabilities"]) == ["view"]
 
 
+def test_flag_off_catalog_does_not_advertise_workbench_table_verbs() -> None:
+    registry = RendererRegistry(workbench_enabled=False, parquet_available=True)
+    catalog = {item["renderer_id"]: item for item in registry.catalog()}
+    assert list(catalog["table"]["capabilities"]) == ["view"]
+    assert "parquet" not in catalog["table"]["capabilities"]
+    assert "profile" not in catalog["table"]["capabilities"]
+    selected = registry.select({"filename": "expression.parquet"})
+    assert selected["renderer"]["renderer_id"] == "download"
+    assert selected["matched_by"] == "extension"
+
+
+def test_workbench_catalog_declares_profile_only_when_enabled() -> None:
+    registry = RendererRegistry(workbench_enabled=True, parquet_available=False)
+    table = {item["renderer_id"]: item for item in registry.catalog()}["table"]
+    assert "view" in table["capabilities"]
+    assert "sort" in table["capabilities"]
+    assert "filter" in table["capabilities"]
+    assert "profile" in table["capabilities"]
+    assert "export" in table["capabilities"]
+    assert "parquet" not in table["capabilities"]
+    assert "compare_versions" not in table["capabilities"]
+    selected = registry.select({"filename": "expression.parquet"})
+    assert selected["renderer"]["renderer_id"] == "download"
+
+
+def test_parquet_is_available_only_with_workbench_and_engine() -> None:
+    registry = RendererRegistry(workbench_enabled=True, parquet_available=True)
+    table = {item["renderer_id"]: item for item in registry.catalog()}["table"]
+    assert "parquet" in table["capabilities"]
+    assert ".parquet" in table["extensions"]
+    selected = registry.select({"filename": "expression.parquet"})
+    assert selected["renderer"]["renderer_id"] == "table"
+    assert selected["matched_by"] == "extension"
+    download = {item["renderer_id"]: item for item in registry.catalog()}["download"]
+    assert ".parquet" not in download["extensions"]
+
+
+def test_unsupported_parquet_engine_never_reports_available() -> None:
+    registry = RendererRegistry(workbench_enabled=True, parquet_available=False)
+    catalog = {item["renderer_id"]: item for item in registry.catalog()}
+    assert "parquet" not in catalog["table"]["capabilities"]
+    assert ".parquet" not in catalog["table"]["extensions"]
+    assert catalog["download"]["extensions"].count(".parquet") == 1
+    selected = registry.select({"filename": "counts.parquet"})
+    assert selected["renderer"]["renderer_id"] == "download"
+
+
 @pytest.mark.parametrize(
     "filename", ["expression.parquet", "cells.arrow", "counts.feather"]
 )

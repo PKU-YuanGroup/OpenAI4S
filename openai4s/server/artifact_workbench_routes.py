@@ -8,6 +8,7 @@ from openai4s.server.artifact_workbench import (
     WorkbenchError,
     official_workbench_enabled,
 )
+from openai4s.server.table_profile import parse_table_query
 
 from . import contract, errors
 
@@ -15,6 +16,18 @@ _TABLE = contract.RouteSpec(
     "artifact.table",
     "GET",
     r"/artifacts/([^/]+)/table",
+    mutates=False,
+)
+_TABLE_PROFILE = contract.RouteSpec(
+    "artifact.table_profile",
+    "GET",
+    r"/artifacts/([^/]+)/table/profile",
+    mutates=False,
+)
+_TABLE_EXPORT = contract.RouteSpec(
+    "artifact.table_export",
+    "GET",
+    r"/artifacts/([^/]+)/table/export.csv",
     mutates=False,
 )
 _DIFF = contract.RouteSpec(
@@ -42,27 +55,35 @@ _HTML_OUTLINE = contract.RouteSpec(
     mutates=False,
 )
 
-ROUTES = contract.validate_routes((_TABLE, _DIFF, _STRUCTURE, _PDF_TEXT, _HTML_OUTLINE))
+ROUTES = contract.validate_routes(
+    (
+        _TABLE,
+        _TABLE_PROFILE,
+        _TABLE_EXPORT,
+        _DIFF,
+        _STRUCTURE,
+        _PDF_TEXT,
+        _HTML_OUTLINE,
+    )
+)
 
 
 def _fail(self: Any, error: WorkbenchError) -> None:
     self._json({"error": error.message, "code": error.code}, error.status)
 
 
-def _integer_query(q: dict, name: str, default: int) -> int:
-    raw = (q.get(name) or [str(default)])[0]
-    try:
-        return int(raw or default)
-    except (TypeError, ValueError) as error:
-        raise WorkbenchError(
-            400, f"{name} must be an integer", "invalid_query"
-        ) from error
-
-
 def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
     """Answer a workbench route, or report that this group does not own it."""
 
-    specs = (_TABLE, _DIFF, _STRUCTURE, _PDF_TEXT, _HTML_OUTLINE)
+    specs = (
+        _TABLE_PROFILE,
+        _TABLE_EXPORT,
+        _TABLE,
+        _DIFF,
+        _STRUCTURE,
+        _PDF_TEXT,
+        _HTML_OUTLINE,
+    )
     if not any(spec.match(method, sub) for spec in specs):
         return False
     if not official_workbench_enabled(runner.cfg):
@@ -82,20 +103,46 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
         )
         return True
     try:
+        matched = _TABLE_PROFILE.match(method, sub)
+        if matched:
+            parsed = parse_table_query(q, mode="profile")
+            self._json(
+                service.table_profile(
+                    matched.group(1),
+                    version_id=parsed.version_id,
+                    filters=parsed.filters,
+                )
+            )
+            return True
+        matched = _TABLE_EXPORT.match(method, sub)
+        if matched:
+            parsed = parse_table_query(q, mode="export")
+            exported = service.table_export(
+                matched.group(1),
+                version_id=parsed.version_id,
+                sort=parsed.sort,
+                descending=parsed.descending,
+                filters=parsed.filters,
+            )
+            self._send(
+                200,
+                exported["body"],
+                exported["content_type"],
+                exported["headers"],
+            )
+            return True
         matched = _TABLE.match(method, sub)
         if matched:
+            parsed = parse_table_query(q, mode="page")
             self._json(
                 service.table(
                     matched.group(1),
-                    sort=(q.get("sort") or [""])[0],
-                    descending=(q.get("dir") or ["asc"])[0] == "desc",
-                    filters={
-                        key[2:]: values[0]
-                        for key, values in q.items()
-                        if key.startswith("q_") and values
-                    },
-                    offset=_integer_query(q, "offset", 0),
-                    limit=_integer_query(q, "limit", 50),
+                    sort=parsed.sort,
+                    descending=parsed.descending,
+                    filters=parsed.filters,
+                    offset=parsed.offset,
+                    limit=parsed.limit,
+                    version_id=parsed.version_id or None,
                 )
             )
             return True
