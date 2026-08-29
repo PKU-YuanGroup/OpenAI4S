@@ -9,5 +9,5 @@
 | 文件 | 职责 |
 | --- | --- |
 | `en-DtuUOBlM.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-4aH2Bnph.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-DdUpHg9i.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `zh-gS0NfuQ7.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
