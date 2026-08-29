@@ -118,3 +118,4 @@ export {
 // F-06: window.onEvent is assigned by bootWs() in features/ws (imported from main.tsx).
 // F-07: window.t / window.tOptional are assigned by the i18n module.
 // F-10: window.openConversation / fetch*Messages / down assigned by features/messages.
+// F-13: fetchAllMessages / fetchOlderMessages / fetchRecentMessages / openConversation / renderMessageRefChips / renderComposerRefChips / hint are assigned by features/sessions (imported from main.tsx).

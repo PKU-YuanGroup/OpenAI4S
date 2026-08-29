@@ -13,6 +13,7 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`md/`](md/) | renderMd / mdInline / esc chain and the unified mdHighlight scanner. |
 | [`messages/`](messages/) | F-10 message stream: framed history, dual-node markdown, StreamingPre, rAF scroll. |
 | [`scrub/`](scrub/) | publicText credential redaction. |
+| [`sessions/`](sessions/) | F-13 dashboard / projects / sessions, paging, share/import-export, hint + disconnect banner. |
 | [`stream/`](stream/) | appendLiveOutput 1MB cap. |
 | [`theme/`](theme/) | Light/dark/system preference. `data-theme` is the only runtime source of truth. |
 | [`ws/`](ws/) | WebSocket cursor protocol, handler registry, `connectWS`. |

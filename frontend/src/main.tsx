@@ -3,6 +3,7 @@ import { render } from "preact";
 import { App } from "./app";
 import { installTheme } from "./features/theme/theme";
 import { bootWs } from "./features/ws";
+import "./features/sessions";
 import "./i18n";
 import "./features/messages";
 
