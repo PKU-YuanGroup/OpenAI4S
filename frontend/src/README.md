@@ -12,3 +12,9 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 | [`app.tsx`](app.tsx) | Empty-shell `App`. Replaced as real views land. |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. Later items may add one module import here. |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite client types (`import.meta.env`). |
+
+## Subdirectories
+
+| Directory | Responsibility |
+| --- | --- |
+| [`i18n/`](i18n/) | F-07: extracted zh/en dictionaries, `t()` / `tOptional` runtime, plan-mode payload helper. |

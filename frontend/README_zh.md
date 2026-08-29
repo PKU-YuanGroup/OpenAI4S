@@ -20,6 +20,8 @@
 | [`tsconfig.node.json`](tsconfig.node.json) | `vite.config.ts` 的 strict TypeScript。 |
 | [`vite.config.ts`](vite.config.ts) | `base: '/static/dist/'`、禁用 `@vitejs/plugin-legacy`、`modulePreload.polyfill: false`、`assetsInlineLimit: 0`、outDir 为 `openai4s/server/webui/dist/`，以及拒绝内联 `<script>` 的构建后守卫。 |
 
+`package.json` 还提供 `extract-i18n` / `extract-i18n:check`（F-07；实现在 `src/i18n/extract-i18n.mjs`）。
+
 ## 子目录
 
 | 目录 | 职责 |

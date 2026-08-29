@@ -1,5 +1,6 @@
 import { render } from "preact";
 import { App } from "./app";
+import "./i18n";
 
 const mount = document.getElementById("app");
 if (mount === null) {
