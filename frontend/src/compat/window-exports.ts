@@ -122,3 +122,4 @@ export {
 // === lane additions ===
 // Later F-series lanes may append one window export assignment per line below.
 // Do not edit anything above this marker.
+// F-06: window.onEvent is assigned by bootWs() in features/ws (imported from main.tsx).

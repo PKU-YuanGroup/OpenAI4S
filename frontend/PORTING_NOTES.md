@@ -80,3 +80,24 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `scientific_renderers.js` (CSV fact source) | **not modified** | That file has no CSV parser today. F-08 does not add one. The fact source for CSV is parseDelimited. |
 | `appendLiveOutput` 5361-5371 | `frontend/src/features/stream/cap.ts` | `LIVE_OUTPUT_CHAR_CAP = 1_000_000`; marker `\n...(live output truncated)`; further appends are no-ops once the marker is present. |
 | `publicText` 2761-2767 | `frontend/src/features/scrub/scrub.ts` | Bearer / `sk`/`ark`/`api_key`/`access_token`/`refresh_token` / `?[key\|token\|api_key]=` redaction; ellipsis at `limit`. |
+
+## F-06 WS layer
+
+`connectWS` + inner `onEvent` become a Map registry. The if/else chain had one branch per type; the cursor still advances only after `onEvent` returns. Domain bodies for streaming/notebook/timeline/cards stay in later lanes, which `registerWsHandler` their own types.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `connectWS` 5157-5172 | `frontend/src/features/ws/connect.ts` `connectWS` | `ws:`/`wss:` + `location.host` + `/api/v1/ws`. onopen → `conn` + `sub(currentId)`. onclose → reconnect 1500ms. JSON ping every 25s on that socket. `connectWS._p` interval id. |
+| onmessage 5162-5169 | `handleIncomingMessage` | **onEvent first, then `_seqSeen[root_frame_id] = seq` iff `seq > cursor`.** Comment at 5164-5167 kept. `JSON.parse` failure returns without a cursor write. Cursor key is `root_frame_id`, not `frame_id`. |
+| `_seqSeen` 5176 / `_streamEpoch` 5180 | F-05 `stream._seqSeen` / `stream._streamEpoch` (imported, not edited) | Nested `S._seqSeen[rid] = sq` mutates the stored object. Epoch mismatch **replaces** `_seqSeen` with `{}`. |
+| `sub` / `unsub` 5181-5182 | `sub` / `unsub` | `view_session` carries `since_seq` and `epoch` (undefined omitted). |
+| `conn` 5183 | `conn` | `#conn-dot` `dot on`/`dot off`. Missing node is a no-op. |
+| `onEvent` 5184-5357 if/else | `registry.ts` Map + per-type handlers | **Exactly one handler per type; `registerWsHandler` throws on duplicate.** Unknown types no-op then still advance the cursor (same as falling off the chain). |
+| `replay_begin` 5186-5198 | `handlers.ts` `handleReplayBegin` | Epoch mismatch (truthy and ≠ current) sets `_streamEpoch` and `_seqSeen = {}` **before** `mine`. If `mine(fid)`: tear down `S.stream.wrap`, `S.stream = null`, `S.liveCells = []`, `S._liveCell = null`; `gap` zeros that cursor and sets `_replayGap`. |
+| `replay_end` 5200-5205 | `handleReplayEnd` | If `mine` and `_replayGap === fid`: clear flag, `openConversation(fid, S.project)` when that lane export exists. Then `down()` if present. |
+| `mine` 5358 | `guards.ts` `mine` | `f && S.currentId && f === S.currentId`. |
+| `isStaleTurnEvent` 5755-5761 | `guards.ts` `isStaleTurnEvent` | Execution id first; one-side-silent is current; else request id; neither is current. |
+| `frame_update` `loadSessions()` 5312 | `patchSessionFromFrameUpdate` + 300ms trailing debounce | In-place row mutate (`running` / `task_summary` / `name`); array identity kept. REST walk is `setLoadSessionsImpl` (F-13). Turn-ticket body is `setFrameUpdateTurnHandler` (F-11) — do not register a second `frame_update` handler. |
+| `artifact_created` `loadArtifacts` 5343 | `upsertArtifactFromEvent` + 150ms trailing debounce | Nested / flat / bare payloads; `_artBust` + `_tbl` filename bust. REST fetch is `setLoadArtifactsImpl` (F-17). Remaining 32-line side effects via `setArtifactCreatedSideEffects`. |
+| `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
+| `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
