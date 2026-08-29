@@ -10,7 +10,7 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 | --- | --- |
 | [`app.test.ts`](app.test.ts) | Scaffold Vitest: `@preact/signals` updates. |
 | [`app.tsx`](app.tsx) | Empty-shell `App`. Replaced as real views land. |
-| [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. Later items may add one module import here. |
+| [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). Later items may add one module import here. |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite client types (`import.meta.env`). |
 
 ## Subdirectories
