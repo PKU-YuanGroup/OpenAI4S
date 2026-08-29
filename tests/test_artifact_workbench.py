@@ -411,9 +411,60 @@ def test_the_ketcher_page_carries_no_inline_script():
 
 def test_workbench_routes_are_forbidden_when_the_flag_is_off(tmp_path):
     _cfg, runner, handler, fid = _setup(tmp_path, workbench=False)
-    code, payload = _call(handler, "GET", "/artifacts/missing/table")
-    assert code == 403
-    assert payload["code"] == "workbench_disabled"
+    for route in (
+        "table",
+        "table/profile",
+        "table/export.csv",
+        "diff",
+        "pdf-text",
+        "html-outline",
+    ):
+        code, payload = _call(handler, "GET", f"/artifacts/missing/{route}")
+        assert code == 403
+        assert payload["code"] == "workbench_disabled"
+    runner.close()
+
+
+def test_table_optional_version_id_never_falls_back_to_latest(tmp_path):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    workspace = runner.workspace_for_branch(fid, fid)
+    workspace.mkdir(parents=True, exist_ok=True)
+    path = workspace / "table.csv"
+    path.write_text("name,n\nr7,7\nr8,8\n", encoding="utf-8")
+    first = runner.store.save_artifact(
+        path=str(path),
+        filename="table.csv",
+        content_type="text/csv",
+        size_bytes=path.stat().st_size,
+        checksum=_checksum(path),
+        frame_id=fid,
+        project_id="default",
+    )
+    _freeze_version(runner, first, path)
+    edited = runner.edit_artifact(first["artifact_id"], "name,n\nr7,7\nr9,9\n")
+    requested: list[str | None] = []
+    original = runner.workbench_artifacts._version_snapshot
+
+    def wrapped(artifact, version_id=None):
+        requested.append(version_id)
+        return original(artifact, version_id)
+
+    runner.workbench_artifacts._version_snapshot = wrapped
+    code, page = _call(
+        handler,
+        "GET",
+        f"/artifacts/{first['artifact_id']}/table",
+        query={"sort": ["n"], "dir": ["desc"], "version_id": [first["version_id"]]},
+    )
+    assert code == 200
+    assert page["version_id"] == first["version_id"]
+    assert page["rows"][0][0] == "r8"
+    assert requested == [first["version_id"]]
+    assert edited["version_id"] not in requested
+    code, latest = _call(handler, "GET", f"/artifacts/{first['artifact_id']}/table")
+    assert code == 200
+    assert latest["version_id"] == edited["version_id"]
+    assert latest["rows"][0][0] in {"r7", "r9"}
     runner.close()
 
 

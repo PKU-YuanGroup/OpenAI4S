@@ -189,24 +189,29 @@ def _coerce(value: str, kind: str) -> tuple[int, Any]:
     return (0, text.lower())
 
 
-def query_table(
+def materialize_table(
     rows: Sequence[Sequence[str]],
     *,
     sort: str = "",
     descending: bool = False,
     filters: Mapping[str, str] | None = None,
-    offset: int = 0,
-    limit: int = 50,
 ) -> dict[str, Any]:
+    """Filter and sort the full rectangular table. No pagination.
+
+    Type inference, integer/number equality-after-trim, text substring
+    (case-insensitive), and header-identical ``sort`` are the same rules
+    ``query_table`` has always applied. Pagination clamps stay in
+    ``query_table`` so the historical page contract cannot drift.
+    """
+
     if not rows:
         return {
             "columns": [],
             "column_types": [],
             "rows": [],
             "total_rows": 0,
-            "offset": 0,
-            "limit": limit,
             "sorted_by": None,
+            "descending": False,
             "filters": {},
         }
     header = [str(name or f"col_{index}") for index, name in enumerate(rows[0])]
@@ -249,19 +254,53 @@ def query_table(
             key=lambda row: _coerce(row[index] if index < len(row) else "", kind),
             reverse=bool(descending),
         )
-    start = max(0, int(offset))
-    size = max(1, min(int(limit), 500))
-    page = filtered[start : start + size]
     return {
         "columns": header,
         "column_types": types,
-        "rows": page,
+        "rows": filtered,
         "total_rows": len(filtered),
-        "offset": start,
-        "limit": size,
         "sorted_by": sort_name,
         "descending": bool(descending) if sort_name else False,
         "filters": applied,
+    }
+
+
+def query_table(
+    rows: Sequence[Sequence[str]],
+    *,
+    sort: str = "",
+    descending: bool = False,
+    filters: Mapping[str, str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    if not rows:
+        return {
+            "columns": [],
+            "column_types": [],
+            "rows": [],
+            "total_rows": 0,
+            "offset": 0,
+            "limit": limit,
+            "sorted_by": None,
+            "filters": {},
+        }
+    prepared = materialize_table(
+        rows, sort=sort, descending=descending, filters=filters
+    )
+    start = max(0, int(offset))
+    size = max(1, min(int(limit), 500))
+    page = prepared["rows"][start : start + size]
+    return {
+        "columns": prepared["columns"],
+        "column_types": prepared["column_types"],
+        "rows": page,
+        "total_rows": prepared["total_rows"],
+        "offset": start,
+        "limit": size,
+        "sorted_by": prepared["sorted_by"],
+        "descending": prepared["descending"],
+        "filters": prepared["filters"],
     }
 
 
@@ -944,6 +983,37 @@ class ArtifactWorkbenchService:
         _version, snapshot = self._version_snapshot(artifact, version_id)
         return _bounded_snapshot_bytes(snapshot, max_bytes=max_bytes)
 
+    def _table_rows(
+        self, artifact: Mapping[str, Any], version_id: str | None = None
+    ) -> tuple[str, str, list[list[str]], str]:
+        """Load one exact snapshot as a rectangular table.
+
+        A provided ``version_id`` is resolved as that immutable snapshot and
+        is never replaced with latest. An omitted id still reads the current
+        latest snapshot, matching the historical ``/table`` default.
+        """
+
+        requested = str(version_id or "")
+        if requested:
+            resolved, snapshot = self._version_snapshot(artifact, requested)
+            if resolved != requested:
+                raise WorkbenchError(
+                    404,
+                    "artifact version not found",
+                    "artifact_version_not_found",
+                )
+        else:
+            resolved, snapshot = self._version_snapshot(artifact)
+        name = str(artifact.get("filename") or "")
+        if name.lower().endswith(".parquet"):
+            rows = read_parquet_rows(snapshot)
+        else:
+            raw = _bounded_snapshot_bytes(snapshot)
+            rows = parse_delimited(raw.decode("utf-8", "replace"), name)
+        meta = self.store.version_meta(resolved) or {}
+        checksum = str(meta.get("checksum") or "")
+        return resolved, name, rows, checksum
+
     def table(
         self,
         artifact_id: str,
@@ -953,15 +1023,10 @@ class ArtifactWorkbenchService:
         filters: Mapping[str, str] | None = None,
         offset: int = 0,
         limit: int = 50,
+        version_id: str | None = None,
     ) -> dict[str, Any]:
         artifact = self._artifact(artifact_id)
-        name = str(artifact.get("filename") or "")
-        version_id, snapshot = self._version_snapshot(artifact)
-        if name.lower().endswith(".parquet"):
-            rows = read_parquet_rows(snapshot)
-        else:
-            raw = _bounded_snapshot_bytes(snapshot)
-            rows = parse_delimited(raw.decode("utf-8", "replace"), name)
+        resolved, name, rows, _checksum = self._table_rows(artifact, version_id)
         result = query_table(
             rows,
             sort=sort,
@@ -971,9 +1036,106 @@ class ArtifactWorkbenchService:
             limit=limit,
         )
         result["artifact_id"] = artifact_id
-        result["version_id"] = version_id
+        result["version_id"] = resolved
         result["filename"] = name
         return result
+
+    def table_profile(
+        self,
+        artifact_id: str,
+        *,
+        version_id: str,
+        filters: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        from openai4s.server.table_profile import (
+            canonical_profile_key,
+            profile_cache_get,
+            profile_cache_put,
+            profile_from_prepared,
+        )
+
+        requested = str(version_id or "")
+        if not requested:
+            raise WorkbenchError(400, "version_id is required", "invalid_query")
+        artifact = self._artifact(artifact_id)
+        resolved, _name, rows, checksum = self._table_rows(artifact, requested)
+        prepared = materialize_table(rows, filters=filters)
+        cache_key = canonical_profile_key(checksum, prepared["filters"])
+        cached = profile_cache_get(cache_key)
+        if cached is not None:
+            payload = dict(cached)
+            payload["artifact_id"] = artifact_id
+            payload["version_id"] = resolved
+            payload["checksum"] = checksum
+            return payload
+        stats = profile_from_prepared(prepared)
+        payload = {
+            "artifact_id": artifact_id,
+            "version_id": resolved,
+            "checksum": checksum,
+            "filtered_rows": stats["filtered_rows"],
+            "approximate": stats["approximate"],
+            "schema_version": stats["schema_version"],
+            "columns": stats["columns"],
+            "filters": stats["filters"],
+        }
+        profile_cache_put(
+            cache_key,
+            {
+                "filtered_rows": payload["filtered_rows"],
+                "approximate": payload["approximate"],
+                "schema_version": payload["schema_version"],
+                "columns": payload["columns"],
+                "filters": payload["filters"],
+            },
+        )
+        return payload
+
+    def table_export(
+        self,
+        artifact_id: str,
+        *,
+        version_id: str,
+        sort: str = "",
+        descending: bool = False,
+        filters: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        from openai4s.server.table_profile import (
+            csv_export_filename,
+            export_csv_chunks,
+            export_response_headers,
+        )
+
+        requested = str(version_id or "")
+        if not requested:
+            raise WorkbenchError(400, "version_id is required", "invalid_query")
+        artifact = self._artifact(artifact_id)
+        resolved, name, rows, checksum = self._table_rows(artifact, requested)
+        prepared = materialize_table(
+            rows, sort=sort, descending=descending, filters=filters
+        )
+        chunks = export_csv_chunks(prepared["columns"], prepared["rows"])
+        body = b"".join(chunks)
+        filename = csv_export_filename(name)
+        return {
+            "body": body,
+            "chunks": chunks,
+            "content_type": "text/csv; charset=utf-8",
+            "filename": filename,
+            "headers": export_response_headers(
+                artifact_id=artifact_id,
+                version_id=resolved,
+                checksum=checksum,
+                filtered_rows=int(prepared["total_rows"]),
+                filename=name,
+                approximate=False,
+            ),
+            "artifact_id": artifact_id,
+            "version_id": resolved,
+            "checksum": checksum,
+            "filtered_rows": int(prepared["total_rows"]),
+            "approximate": False,
+        }
 
     def diff(
         self,

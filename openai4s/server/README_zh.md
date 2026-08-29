@@ -55,8 +55,9 @@ gateway.py
 | [`artifact_refs.py`](artifact_refs.py) | 用户消息里钉住版本的 `@文件` 引用。`@name#v-<version_id>` 发送的是那个确切版本的冻结字节，而不是活文件——旧的解析读到的是后续 cell 留下的任何内容。解析不出来的引用会被**报告**而不是丢掉；二进制 Artifact 只报名字，不会被贴成一片替换字符；同 project 的跨会话引用在**发送时**物化（D3），而不是就地读取。 |
 | [`retrieval_source.py`](retrieval_source.py) | 一个版本的检索溯源信息中，可以安全交给客户端的那一部分投影。这个信封是由执行检索的那段代码（包括未经审计的 Skill）写入的自由格式 JSON，而科研 API 把 key 放进查询串是常态——所以键走白名单、值有长度上限，查询串、路径和 userinfo 三处的凭据都会被指纹化。没有溯源信息时返回 `None` 而不是一个空面板：空面板会被读成一条关于数据本身的结论。 |
 | [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。trusted 路径会在登记前流式复制、fsync、原子冻结并验证字节；遇到相同 head 时复用 version，同时保留 observation。 |
-| [`artifact_workbench.py`](artifact_workbench.py) | Stage 9 正式 Artifact workbench：完整数据集表格查询、版本 diff、PDF/HTML locator、结构摘要，以及 Ketcher 3.7.0 包装页。flag 关闭时不生效。 |
-| [`artifact_workbench_routes.py`](artifact_workbench_routes.py) | Stage 9 的五条 Artifact workbench 路由（`/table`、`/diff`、`/structure`、`/pdf-text`、`/html-outline`）。flag 关闭时返回 403。 |
+| [`artifact_workbench.py`](artifact_workbench.py) | Stage 9 正式 Artifact workbench：完整数据集表格查询、版本 diff、PDF/HTML locator、结构摘要，以及 Ketcher 3.7.0 包装页。flag 关闭时不生效。``GET .../table`` 可带可选 ``version_id``，提供时绝不降级 latest。 |
+| [`artifact_workbench_routes.py`](artifact_workbench_routes.py) | Stage 9 Artifact workbench 路由（`/table`、`/table/profile`、`/table/export.csv`、`/diff`、`/structure`、`/pdf-text`、`/html-outline`）。flag 关闭时返回 403。 |
+| [`table_profile.py`](table_profile.py) | 共享表格 query parser（锁定既有 `/table` 五参数契约）、列 profile（type/missing/unique/min/max/mean/histogram，bins≤50，exact unique 做不完则 `approximate:true`）、分块 CSV 导出（单块 1 MiB，总量 32 MiB 超限 413）、profile 的进程 LRU，以及资源验收 manifest 门。统计不入库。 |
 | [`auto_budget.py`](auto_budget.py) | Auto Mode 原子预算准入：consumer 注册表、canonical 动作指纹、durable-delta 闭集，以及不可验证 token 的 fail-closed。各 sink 在动作前用稳定 `admission_id` 预留；只有明确未开始的调用才可释放。Guardian 字段只投影既有权威状态，不复制计数。 |
 | [`auto_mode.py`](auto_mode.py) | 按冻结的「导入隔离 → frame → project → 显式 deployment → 旧 result-review → 内建默认」顺序解析 Stage 2 Auto Mode 选择；对 durable run/audit 状态做有界白名单投影；只把新建且已提交的规范事件作为尽力而为的 WebSocket 提示转发。它不会调用模型、Reviewer、Repair Agent 或权限路径。 |
 | [`auto_mode_portability.py`](auto_mode_portability.py) | Session package 与只读 share 共用的“不信任输入也安全”reducer。它验证 Auto Mode 的 scope/reference 闭包，只输出闭合的审计 DTO，把 portable evidence 无法独立证明的结论降级，而且绝不恢复执行或权限能力。 |

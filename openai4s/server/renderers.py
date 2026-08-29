@@ -9,7 +9,7 @@ from the bytes it represents.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping
 
@@ -81,15 +81,14 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
         "Data table",
         kinds=("table", "dataframe", "dataset"),
         content_types=("text/csv", "text/tab-separated-values"),
-        # Delimited text only.  ``.parquet``/``.arrow`` were listed here with no
-        # parser for either anywhere in the tree, so the viewer promised a table
-        # and then dropped to a download card once the bytes turned out to be
-        # binary.  Naming them download-only up front is the honest answer; the
-        # alternative keeps the claim and hopes the fallback covers for it.
+        # Delimited text only in the default (flag-off) catalog.  ``.parquet``
+        # is added to this renderer only when the official workbench is on
+        # *and* the optional Parquet engine is importable; otherwise it stays
+        # on the download renderer.  ``sort``/``filter``/``profile``/``export``
+        # follow the same gate: the flag-off viewer is still one static capped
+        # table, so those names must not appear until the workbench is on.
         extensions=(".csv", ".tsv"),
         interactive=True,
-        # ``sort``/``filter`` had no implementation -- the viewer draws one
-        # static, capped table -- so they are removed rather than documented.
         capabilities=("view",),
     ),
     Renderer(
@@ -170,9 +169,85 @@ DEFAULT_RENDERERS: tuple[Renderer, ...] = (
 )
 
 
+_WORKBENCH_TABLE_CAPABILITIES = (
+    "view",
+    "sort",
+    "filter",
+    "profile",
+    "export",
+)
+
+
+def _catalog_renderers(
+    *,
+    workbench_enabled: bool,
+    parquet_available: bool,
+    renderers: Iterable[Renderer],
+) -> tuple[Renderer, ...]:
+    """Project the static catalog through the live workbench/Parquet posture.
+
+    Under-claiming is the allowed direction: a missing engine or a flag-off
+    process never advertises ``table``/``profile``/``parquet``. A present
+    engine is still not advertised unless the workbench itself is on, because
+    ``GET .../table`` answers 403 when the flag is off.
+    """
+
+    parquet_on_table = bool(workbench_enabled and parquet_available)
+    projected: list[Renderer] = []
+    for renderer in renderers:
+        if renderer.renderer_id == "table":
+            extensions = renderer.extensions
+            if parquet_on_table and ".parquet" not in extensions:
+                extensions = extensions + (".parquet",)
+            extra = ("parquet",) if parquet_on_table else ()
+            capabilities = (
+                _WORKBENCH_TABLE_CAPABILITIES + extra
+                if workbench_enabled
+                else renderer.capabilities
+            )
+            projected.append(
+                replace(renderer, extensions=extensions, capabilities=capabilities)
+            )
+            continue
+        if renderer.renderer_id == "download":
+            extensions = renderer.extensions
+            if parquet_on_table:
+                extensions = tuple(item for item in extensions if item != ".parquet")
+            projected.append(replace(renderer, extensions=extensions))
+            continue
+        projected.append(renderer)
+    return tuple(projected)
+
+
 class RendererRegistry:
-    def __init__(self, renderers: Iterable[Renderer] = DEFAULT_RENDERERS) -> None:
-        self._renderers = tuple(renderers)
+    def __init__(
+        self,
+        renderers: Iterable[Renderer] | None = None,
+        *,
+        workbench_enabled: bool = False,
+        parquet_available: bool | None = None,
+    ) -> None:
+        from openai4s.server.table_profile import parquet_engine_available
+
+        source = DEFAULT_RENDERERS if renderers is None else tuple(renderers)
+        parquet_ok = (
+            parquet_engine_available()
+            if parquet_available is None
+            else bool(parquet_available)
+        )
+        self._workbench_enabled = bool(workbench_enabled)
+        self._parquet_available = parquet_ok
+        # A caller-supplied catalog is taken as already honest; only the
+        # default catalog is projected through the workbench/Parquet gate.
+        self._renderers = (
+            _catalog_renderers(
+                workbench_enabled=self._workbench_enabled,
+                parquet_available=self._parquet_available,
+                renderers=source,
+            )
+            if renderers is None
+            else source
+        )
         ids = [item.renderer_id for item in self._renderers]
         if len(ids) != len(set(ids)):
             raise ValueError("renderer IDs must be unique")
