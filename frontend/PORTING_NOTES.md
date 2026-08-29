@@ -101,3 +101,24 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_created` `loadArtifacts` 5343 | `upsertArtifactFromEvent` + 150ms trailing debounce | Nested / flat / bare payloads; `_artBust` + `_tbl` filename bust. REST fetch is `setLoadArtifactsImpl` (F-17). Remaining 32-line side effects via `setArtifactCreatedSideEffects`. |
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
+
+## F-10 message stream
+
+Streaming render shell. Domain kernels (renderMd, appendLiveOutput) stay F-08 imports. `LIVE_OUTPUT_CHAR_CAP` 1MB truncation is unchanged. Window names this lane owns are assigned by `installMessages()` (F-06 `bootWs` / F-07 `t` pattern), not left as F-05 stubs. Capability checks use `isReady` from `compat/stub.ts`; this module does not import `compat/window-exports.ts`.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `_mdStableCut` 5378-5402 | `features/messages/cut.ts` `mdStableCut` / `_mdStableCut` | Same seal rules: top-level blank line or completed fence; blank line inside a fence is not a boundary; an opening fence is never a closer; final ~120 chars stay soft; `limit < 80` (text shorter than 200) returns 0. **Scan is incremental**: append-only streams resume from the last unprocessed line + `openFence`, instead of `text.split("\\n")` every token. |
+| `flushRender` 5403-5426 | `features/messages/stream.ts` `flushRender` | Hysteresis `cut > _stableAt + 40` kept. Dual nodes: `.md-sealed` rewritten only when the cut advances (`renderMd(prefix)` once); `.md-tail` is `renderMd(unstable rest)` each frame. Final flush still sets `st.md.innerHTML = renderMd(text)` and drops the dual nodes. No marked / DOMPurify. |
+| `scheduleRender` 5427-5440 | `scheduleRender` | Dirty flag + single rAF; streams `>600` chars skip a flush when the previous one was `<48ms` ago (~20/s). `down()` is the shared rAF, not a sync layout. |
+| `sealText` 5445-5451 | `sealText` | Final render, drop `.cursor`, reset sealed prefix so the next text block after a tool card starts clean. |
+| `startStream` / `ensure` / `feed` 5452-5510 | `stream.ts` | Same tool-header detection (`cell_index` / `◆` / `⚙`), `TOOL_LABELS`, `storedCandidateOwnsChunk` skip. Tool body uses `bindStreamingPre` → `textNode.appendData(delta)` instead of rewriting `pre.textContent`. Newline meta uses the increment (`toolMetaLabel`, including the dead `n === 1 ? " line"` branch). `nbLiveStart` / `nbLiveAppend` via impl hook or `isReady` window call (F-14). |
+| `appendLiveOutput` 5361-5377 / 5494 | F-08 `features/stream/cap.ts` + F-10 `liveOutputDelta` | Cap 1_000_000 + `"\n...(live output truncated)"`; once the marker is present, further appends are no-ops (idempotent). Delta path never rereads `textContent`. |
+| `openConversation` 7166-7181 (the 300-item `forEach`) | `list.ts` `scheduleFramedRender` + `open.ts` | 40 items per rAF (30-50 window) into one `DocumentFragment`. Generation guard `_openGen` kept. Messages + steps still interleave by `(t, seq)`. `renderStoredStep` is F-11 (`setRenderStoredStepImpl`). |
+| `renderStored` 7234-7260 | `list.ts` `renderStored` | User bubble is `textContent`; assistant is `renderMd` innerHTML. `dataset.ts` for time order. Candidate identity + review badge + failure meta. `renderMessageRefChips` via `isReady`. |
+| `insertMessageByTime` 7263-7274 | `list.ts` `insertMessageByTime` | Skip `#msgs-earlier`; first later `dataset.ts` wins; else append. |
+| `down` / `paintJumpPill` / `updateJumpPill` 12934-12942 | `scroll.ts` | `messagesAtBottom` pad 80 (follow) / 60 (pill). `down(force)` sets follow and `scrollTop = scrollHeight`. **All writes go through one rAF** (replaces 5509 sync layout and 13384 unthrottled scroll). |
+| `$("#jump-pill").onclick` / `$("#messages").scroll` 13383-13384 | `bindMessageScroll` | Click → `down(true)`; scroll → measure follow on the same rAF. |
+| `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` 6926-6961 | `fetch.ts` | Newest-first page then sort by `seq`; older page is keyset `before_seq`; walk cap `MESSAGE_WALK_MAX_PAGES = 200`; `MESSAGE_PAGE_SIZE = 300`. F-13 should import these. |
+| `text_reset` 5220 / `text_chunk` 5270-5276 | `handlers.ts` | `mine` + `!isStaleTurnEvent`; `feed(block_type, chunk, m, storedCandidateOwnsChunk(m))`. |
+| `window.openConversation` / `fetch*Messages` | `installMessages()` | Overwrites the F-05 stub. F-06 `tryLane("openConversation")` / `tryLane("down")` now hit real functions. |
