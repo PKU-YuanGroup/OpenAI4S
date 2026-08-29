@@ -8,4 +8,4 @@ Committed output of `frontend/` (`npm run build`). The gateway will serve this t
 
 | File | Responsibility |
 | --- | --- |
-| `index-BwbKMGnO.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
+| `index-BrA3alX6.js` | Vite build output. Do not edit by hand; rebuild from `frontend/`. |
