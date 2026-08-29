@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-Committed output of `frontend/` (`npm run build`). The gateway will serve this tree at `/static/dist/` once F-04 wires `OPENAI4S_WEBUI_NEXT=1`. Every script is an external `src=` file so CSP `script-src 'self'` holds.
+Committed output of `frontend/` (`npm run build`). The gateway serves this tree at `/static/dist/`. `OPENAI4S_WEBUI_NEXT=1` makes `dist/index.html` the SPA shell at `/` and at workbench deep links. Every script is an external `src=` file so CSP `script-src 'self'` holds.
 
 ## Files
 

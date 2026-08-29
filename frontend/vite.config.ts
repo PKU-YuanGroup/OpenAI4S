@@ -75,7 +75,7 @@ function writeDistReadmes(dir: string, titleEn: string, titleZh: string): void {
 
 [中文说明](README_zh.md)
 
-Committed output of \`frontend/\` (\`npm run build\`). The gateway will serve this tree at \`/static/dist/\` once F-04 wires \`OPENAI4S_WEBUI_NEXT=1\`. Every script is an external \`src=\` file so CSP \`script-src 'self'\` holds.
+Committed output of \`frontend/\` (\`npm run build\`). The gateway serves this tree at \`/static/dist/\`. \`OPENAI4S_WEBUI_NEXT=1\` makes \`dist/index.html\` the SPA shell at \`/\` and at workbench deep links. Every script is an external \`src=\` file so CSP \`script-src 'self'\` holds.
 
 ## Files
 
@@ -85,7 +85,7 @@ ${subEn}`;
 
 [English](README.md)
 
-\`frontend/\`（\`npm run build\`）提交进来的构建产物。F-04 接上 \`OPENAI4S_WEBUI_NEXT=1\` 之后，Gateway 会在 \`/static/dist/\` 提供这棵树。脚本全部是带 \`src=\` 的外链文件，CSP \`script-src 'self'\` 不需要放行内联脚本。
+\`frontend/\`（\`npm run build\`）提交进来的构建产物。Gateway 在 \`/static/dist/\` 提供这棵树。\`OPENAI4S_WEBUI_NEXT=1\` 时 \`dist/index.html\` 成为 \`/\` 与工作台深链的 SPA 外壳。脚本全部是带 \`src=\` 的外链文件，CSP \`script-src 'self'\` 不需要放行内联脚本。
 
 ## 文件
 

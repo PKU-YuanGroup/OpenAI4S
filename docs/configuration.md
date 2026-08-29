@@ -143,6 +143,8 @@ exposes to an unauthenticated caller.
 
 `OPENAI4S_NOTEBOOK_REPL` (`off`) — set to `1` to re-enable the web UI's in-Notebook developer REPL (arbitrary kernel code from the right panel); off by default, so the Notebook is a read-only execution trace (see [Security](security.md)).
 
+`OPENAI4S_WEBUI_NEXT` (`off`) — set to exactly `1` to serve the committed Vite workbench (`openai4s/server/webui/dist/index.html`) as the SPA shell at `/` and at deep links such as `/projects/{pid}/frames/{fid}`. Unset, empty, or any other value keeps the legacy `webui/index.html`. `/static/dist/` is ordinary static files under `WEBUI_DIR` either way. F-23 reverses this default.
+
 ## Auto Mode rollout flags
 
 Every rollout flag defaults off. Stage 1 implements trusted delivery, Stage 2

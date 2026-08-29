@@ -234,6 +234,17 @@ from openai4s.tools import control_tool_specs, get_tool
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
+
+
+def _webui_next_enabled() -> bool:
+    """True only for ``OPENAI4S_WEBUI_NEXT=1``; unset keeps the legacy shell.
+
+    Any other value (including ``true``/``yes``) is off, so a typo cannot
+    silently switch the product UI. F-23 reverses this default.
+    """
+    return (os.environ.get("OPENAI4S_WEBUI_NEXT") or "").strip() == "1"
+
+
 #: The only `/static/` path served as a framed document rather than a
 #: subresource: `/ketcher` embeds it, so it needs `frame-ancestors 'self'`
 #: while every other static file keeps the shell's frame denial.
@@ -13946,7 +13957,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
-            self._serve_ui_file(WEBUI_DIR / "index.html", "text/html; charset=utf-8")
+            index = (
+                WEBUI_DIR / "dist" / "index.html"
+                if _webui_next_enabled()
+                else WEBUI_DIR / "index.html"
+            )
+            self._serve_ui_file(index, "text/html; charset=utf-8")
 
         def _serve_static(self, path: str) -> bool:
             if path in ("/", "/index.html"):

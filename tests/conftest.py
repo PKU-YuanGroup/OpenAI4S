@@ -75,6 +75,9 @@ for _name in (
     "OPENAI4S_WORKER_CONNECT",
     "OPENAI4S_WORKER_ADVERTISE",
     "OPENAI4S_RECONCILE_INTERVAL",
+    # Next workbench shell. Read at request time by gateway._serve_index;
+    # a developer export would 404 GET / in fixtures that have no dist/.
+    "OPENAI4S_WEBUI_NEXT",
 ):
     os.environ.pop(_name, None)
 
@@ -194,6 +197,10 @@ def isolated_openai4s_home(tmp_path, monkeypatch):
         "OPENAI4S_SHARE_BASE_DOMAIN",
         "OPENAI4S_SHARE_ALLOW_INSECURE",
         "OPENAI4S_MCP_DEADLINE_S",
+        # Request-time SPA-shell switch. A leftover OPENAI4S_WEBUI_NEXT=1
+        # would make GET / serve dist/index.html (or 404 in fixtures that
+        # only planted the legacy shell).
+        "OPENAI4S_WEBUI_NEXT",
     ):
         monkeypatch.delenv(var, raising=False)
     # The BYOC confinement self-test caches its verdict process-wide, keyed by
