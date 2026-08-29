@@ -10,11 +10,13 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 | --- | --- |
 | [`app.test.ts`](app.test.ts) | Scaffold Vitest: `@preact/signals` updates. |
 | [`app.tsx`](app.tsx) | Empty-shell `App`. Replaced as real views land. |
-| [`main.tsx`](main.tsx) | `preact.render` onto `#app`. Later items may add one module import here. |
+| [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. Later items may add one module import here. |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite client types (`import.meta.env`). |
 
 ## Subdirectories
 
 | Directory | Responsibility |
 | --- | --- |
+| [`compat/`](compat/) | F-05 window export layer and `window.S` Proxy. Later lanes only append in the marker region. |
 | [`features/`](features/) | F-series domain kernels. F-08 lands the pure-function markdown / highlight / CSV / stream-cap / scrub modules. |
+| [`stores/`](stores/) | F-05 signal modules. Later lanes import these files; they do not edit them. |
