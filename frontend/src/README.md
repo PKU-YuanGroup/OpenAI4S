@@ -19,4 +19,5 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 | --- | --- |
 | [`compat/`](compat/) | F-05 window export layer and `window.S` Proxy. Later lanes only append in the marker region. |
 | [`features/`](features/) | F-series domain kernels. F-08 lands the pure-function markdown / highlight / CSV / stream-cap / scrub modules. |
+| [`i18n/`](i18n/) | F-07: extracted zh/en dictionaries, `t()` / `tOptional` runtime, plan-mode payload helper. |
 | [`stores/`](stores/) | F-05 signal modules. Later lanes import these files; they do not edit them. |

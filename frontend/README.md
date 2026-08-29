@@ -20,6 +20,8 @@ The next workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vit
 | [`tsconfig.node.json`](tsconfig.node.json) | Strict TypeScript for `vite.config.ts`. |
 | [`vite.config.ts`](vite.config.ts) | `base: '/static/dist/'`, no `@vitejs/plugin-legacy`, `modulePreload.polyfill: false`, `assetsInlineLimit: 0`, outDir `openai4s/server/webui/dist/`, and a post-build guard that rejects inline `<script>`. |
 
+`package.json` also exposes `extract-i18n` / `extract-i18n:check` (F-07; implementation lives in `src/i18n/extract-i18n.mjs`).
+
 ## Subdirectories
 
 | Directory | Responsibility |

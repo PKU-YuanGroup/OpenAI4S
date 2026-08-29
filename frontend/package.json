@@ -12,7 +12,9 @@
     "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "extract-i18n": "node src/i18n/extract-i18n.mjs",
+    "extract-i18n:check": "node src/i18n/extract-i18n.mjs --check"
   },
   "dependencies": {
     "@preact/signals": "^2.3.2",

@@ -19,4 +19,5 @@
 | --- | --- |
 | [`compat/`](compat/) | F-05 的 window 导出层和 `window.S` Proxy。后续车道只允许在标记区 append。 |
 | [`features/`](features/) | F 系列领域内核。F-08 放下 markdown / 高亮 / CSV / 流截断 / 涂抹这些纯函数模块。 |
+| [`i18n/`](i18n/) | F-07：抽取的 zh/en 字典、`t()` / `tOptional` 运行时、计划模式 payload 辅助函数。 |
 | [`stores/`](stores/) | F-05 的 signal 模块。后续车道只 import 这些文件，不改本体。 |
