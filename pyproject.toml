@@ -134,6 +134,11 @@ openai4s = [
     "server/webui/*.js",
     "server/webui/vendor/*.js",
     "server/webui/vendor/fonts/*.woff2",
+    # Dist is one directory below webui/. These globs are not recursive:
+    # `server/webui/*.html` does not match `dist/index.html`. Dropping
+    # either line silently omits the next UI from the wheel.
+    "server/webui/dist/*.html",
+    "server/webui/dist/assets/*",
 ]
 # Data-only trees (skills*, envs*, workflows*) ship whole rather than by
 # extension. The enumerated list needed one entry per upstream file type and

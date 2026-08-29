@@ -6,7 +6,7 @@
 
 ## 在架构中的位置
 
-`npm run dev` 在 `http://127.0.0.1:5173/static/dist/` 提供本应用，并把 `/api` 与 `/ws` 代理到 `8760` 上的 daemon。`npm run build` 以 `base: '/static/dist/'` 把空壳写进 `openai4s/server/webui/dist/`。真正让 daemon 端出这棵树的是 F-04（`OPENAI4S_WEBUI_NEXT=1`）。`app.js` 里的领域内核由后续 F 系列工作项移植；本目录只放工具链和一个挂载节点。
+`npm run dev` 在 `http://127.0.0.1:5173/static/dist/` 提供本应用，并把 `/api` 与 `/ws` 代理到 `8760` 上的 daemon。`npm run build` 以 `base: '/static/dist/'` 把空壳写进 `openai4s/server/webui/dist/`。设置 `OPENAI4S_WEBUI_NEXT=1` 后 daemon 会把 `dist/index.html` 当作 SPA 外壳发出。`app.js` 里的领域内核由后续 F 系列工作项移植；本目录只放工具链和一个挂载节点。
 
 ## 文件
 
@@ -15,7 +15,7 @@
 | [`index.html`](index.html) | SPA 外壳。唯一的脚本是带 `src=` 的外链 `type="module"`，CSP `script-src 'self'` 不必放行内联脚本。 |
 | [`package.json`](package.json) | 前端包：Preact 10、`@preact/signals`、Vite、Vitest、TypeScript。`private: true`。 |
 | [`package-lock.json`](package-lock.json) | 锁文件，保证 `npm ci` 重建确定（F-23 拿它对照 `webui/dist`）。 |
-| [`PORTING_NOTES.md`](PORTING_NOTES.md) | 逐项把旧 `app.js` 行号映射到新模块。F-03 没有领域内核。 |
+| [`PORTING_NOTES.md`](PORTING_NOTES.md) | 逐项把旧 `app.js` 行号映射到新模块。F-03 没有领域内核；F-04 对照 `_serve_index` / package-data / `_WHEEL_REQUIRED`。 |
 | [`tsconfig.json`](tsconfig.json) | `src/` 的 strict TypeScript（`strict`、`noUncheckedIndexedAccess`、Preact `jsxImportSource`）。 |
 | [`tsconfig.node.json`](tsconfig.node.json) | `vite.config.ts` 的 strict TypeScript。 |
 | [`vite.config.ts`](vite.config.ts) | `base: '/static/dist/'`、禁用 `@vitejs/plugin-legacy`、`modulePreload.polyfill: false`、`assetsInlineLimit: 0`、outDir 为 `openai4s/server/webui/dist/`，以及拒绝内联 `<script>` 的构建后守卫。 |

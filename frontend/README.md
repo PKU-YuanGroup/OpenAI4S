@@ -6,7 +6,7 @@ The next workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vit
 
 ## Where this fits
 
-`npm run dev` serves this app at `http://127.0.0.1:5173/static/dist/` and proxies `/api` and `/ws` to the daemon on `8760`. `npm run build` writes the empty shell into `openai4s/server/webui/dist/` with `base: '/static/dist/'`. F-04 is what makes the daemon actually serve that tree (`OPENAI4S_WEBUI_NEXT=1`). Domain kernels from `app.js` are ported by later F-series items; this directory only holds the toolchain and a mount node.
+`npm run dev` serves this app at `http://127.0.0.1:5173/static/dist/` and proxies `/api` and `/ws` to the daemon on `8760`. `npm run build` writes the empty shell into `openai4s/server/webui/dist/` with `base: '/static/dist/'`. Set `OPENAI4S_WEBUI_NEXT=1` so the daemon serves `dist/index.html` as the SPA shell. Domain kernels from `app.js` are ported by later F-series items; this directory only holds the toolchain and a mount node.
 
 ## Files
 
@@ -15,7 +15,7 @@ The next workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vit
 | [`index.html`](index.html) | SPA shell. The only script is an external `type="module"` `src=` tag so CSP `script-src 'self'` never has to authorize inline script. |
 | [`package.json`](package.json) | Frontend package: Preact 10, `@preact/signals`, Vite, Vitest, TypeScript. `private: true`. |
 | [`package-lock.json`](package-lock.json) | Lockfile for a deterministic `npm ci` rebuild (F-23 diffs `webui/dist` against this). |
-| [`PORTING_NOTES.md`](PORTING_NOTES.md) | Per-item map of old `app.js` line ranges onto new modules. F-03 has no domain kernel. |
+| [`PORTING_NOTES.md`](PORTING_NOTES.md) | Per-item map of old `app.js` line ranges onto new modules. F-03 has no domain kernel; F-04 maps `_serve_index` / package-data / `_WHEEL_REQUIRED`. |
 | [`tsconfig.json`](tsconfig.json) | Strict TypeScript for `src/` (`strict`, `noUncheckedIndexedAccess`, Preact `jsxImportSource`). |
 | [`tsconfig.node.json`](tsconfig.node.json) | Strict TypeScript for `vite.config.ts`. |
 | [`vite.config.ts`](vite.config.ts) | `base: '/static/dist/'`, no `@vitejs/plugin-legacy`, `modulePreload.polyfill: false`, `assetsInlineLimit: 0`, outDir `openai4s/server/webui/dist/`, and a post-build guard that rejects inline `<script>`. |
