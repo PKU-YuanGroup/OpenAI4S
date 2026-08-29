@@ -2,6 +2,7 @@ import "./compat/window-exports";
 import { render } from "preact";
 import { App } from "./app";
 import { bootArtifacts } from "./features/artifacts";
+import { bootCustomize } from "./features/customize";
 import { installTheme } from "./features/theme/theme";
 import { installNotebook } from "./features/notebook";
 import { bootWs } from "./features/ws";
@@ -14,6 +15,7 @@ installTheme();
 bootWs();
 installNotebook();
 bootArtifacts();
+bootCustomize();
 
 const mount = document.getElementById("app");
 if (mount === null) {

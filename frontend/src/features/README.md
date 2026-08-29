@@ -10,6 +10,7 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | Directory | Responsibility |
 | --- | --- |
 | [`csv/`](csv/) | RFC-4180-ish CSV/TSV parser. Converges parseDelimited / csvFields / parseTable. |
+| [`customize/`](customize/) | F-19 Customize tab state machine, timer lease, API client, vendor helpers. |
 | [`md/`](md/) | renderMd / mdInline / esc chain and the unified mdHighlight scanner. |
 | [`messages/`](messages/) | F-10 message stream: framed history, dual-node markdown, StreamingPre, rAF scroll. |
 | [`scrub/`](scrub/) | publicText credential redaction. |

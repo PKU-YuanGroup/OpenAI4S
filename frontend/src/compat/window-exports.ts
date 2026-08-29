@@ -122,3 +122,4 @@ export {
 // F-14: window.highlightTraceback / window.notebookExportLink are assigned by features/notebook (imported from main.tsx).
 // F-15: timeline contract names are assigned by features/timeline (imported from main.tsx).
 // F-17: window.parseTable / window.renderSheet are assigned by bootArtifacts() in features/artifacts.
+// F-19: window.openCust / window.custTab / window.telemetryRow are assigned by bootCustomize() in features/customize.

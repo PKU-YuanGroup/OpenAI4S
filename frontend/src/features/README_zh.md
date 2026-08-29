@@ -10,6 +10,7 @@
 | 目录 | 职责 |
 | --- | --- |
 | [`csv/`](csv/) | RFC-4180 风格 CSV/TSV 解析。收敛 parseDelimited / csvFields / parseTable。 |
+| [`customize/`](customize/) | F-19 Customize 的 tab 状态机、定时器租约、API 客户端、vendor 辅助函数。 |
 | [`md/`](md/) | renderMd / mdInline / esc 全链，以及统一的 mdHighlight 扫描器。 |
 | [`messages/`](messages/) | F-10 消息流：分帧历史、Markdown 双节点、StreamingPre、rAF 滚动。 |
 | [`scrub/`](scrub/) | publicText 凭证涂抹。 |
