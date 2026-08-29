@@ -145,6 +145,35 @@ class LocalModelDiscoveryService:
             self._cached_at = self._clock()
         return self._payload(results, cached=False)
 
+    def catalog(self) -> dict[str, Any]:
+        """The fixed candidate list, with no sockets opened.
+
+        First-run readiness must not refresh this catalogue in the
+        background.  ``discover()`` remains the explicit, user-asked scan.
+        """
+        endpoints = [
+            {
+                "kind": endpoint.kind,
+                "label": endpoint.label,
+                "provider": "chatgpt",
+                "base_url": endpoint.base_url,
+                "models": [],
+                "default_model": "",
+                "local": True,
+                "requires_api_key": False,
+                "contacted": False,
+            }
+            for endpoint in self.endpoints
+        ]
+        return {
+            "endpoints": endpoints,
+            "probed": 0,
+            "cached": False,
+            "mutated_settings": False,
+            "contacted": False,
+            "background_refresh": False,
+        }
+
     def _probe(self, endpoint: LocalModelEndpoint) -> dict[str, Any] | None:
         request = Request(
             endpoint.models_url,

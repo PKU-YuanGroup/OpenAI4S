@@ -32,6 +32,60 @@ def test_legacy_registry_and_immutable_provider_catalog_stay_aligned():
         llm.get_provider_capabilities("ark").vision = False
 
 
+def test_receipt_overlay_only_relaxes_with_positive_evidence():
+    from openai4s.llm.capabilities import (
+        drop_receipt_overlays,
+        install_receipt_overlay,
+    )
+    from openai4s.storage.model_capability_receipts import (
+        EVIDENCE_TRUE,
+        EVIDENCE_UNKNOWN,
+    )
+
+    local = llm.get_model_capabilities(
+        "chatgpt", "lab-model", base_url="http://127.0.0.1:11434/v1/"
+    )
+    assert local.tool_calling is False
+
+    assert (
+        install_receipt_overlay(
+            {
+                "profile_id": "mp-x",
+                "revision": 1,
+                "endpoint": "http://127.0.0.1:11434/v1",
+                "model": "lab-model",
+                "wire": "openai",
+                "native_tool_call": EVIDENCE_UNKNOWN,
+                "streaming": EVIDENCE_UNKNOWN,
+                "receipt_sha256": "unknown",
+            }
+        )
+        is False
+    )
+    still = llm.get_model_capabilities(
+        "chatgpt", "lab-model", base_url="http://127.0.0.1:11434/v1/"
+    )
+    assert still.tool_calling is False
+
+    assert install_receipt_overlay(
+        {
+            "profile_id": "mp-x",
+            "revision": 1,
+            "endpoint": "http://127.0.0.1:11434/v1",
+            "model": "lab-model",
+            "wire": "openai",
+            "native_tool_call": EVIDENCE_TRUE,
+            "streaming": EVIDENCE_TRUE,
+            "receipt_sha256": "positive",
+        }
+    )
+    relaxed = llm.get_model_capabilities(
+        "chatgpt", "lab-model", base_url="http://127.0.0.1:11434/v1/"
+    )
+    assert relaxed.tool_calling is True
+    drop_receipt_overlays()
+
+
 def test_model_resolution_marks_custom_and_local_endpoints():
     default = llm.get_model_capabilities("chatgpt", "gpt-5")
     assert default.custom_endpoint is False
