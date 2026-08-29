@@ -29,7 +29,7 @@
 | [`favicon_anim_64.gif`](favicon_anim_64.gif) | 打包的 favicon 源文件：动画解码的帧来自它，静态回退图标也是它。 |
 | [`index.html`](index.html) | Dashboard、对话 Workspace、composer、右侧 dock、dialog 与设置的可访问 DOM 骨架。它在首屏绘制前应用主题，并引用静态脚本与样式。 |
 | [`scientific_renderers.js`](scientific_renderers.js) | 零依赖的 sequence/MSA、genome、Molfile/SMILES、LaTeX 解析与辅助函数，外加渲染器描述符校验。它们只产出普通数据、绝不产出 HTML，DOM 由 `app.js` 依据这些记录构建；一层薄薄的 UMD 包装让 Node 契约测试能直接导入同一个文件。通用的 table/image/PDF/HTML/text 展示仍留在 `app.js` 中。 |
-| [`style.css`](style.css) | 整套视觉系统：明暗 token、字体、Dashboard/Workspace 布局、Activity 与 Artifact 组件、dialog、可访问性以及移动端断点。 |
+| [`style.css`](style.css) | 整套视觉系统：明暗 token（含 `--text-100/--text-300/--surface-0/--warn`）、字体、Dashboard/Workspace 布局、Activity 与 Artifact 组件、dialog、可访问性以及移动端断点。`scripts/check_css_tokens.py` 要求每一处 `var(--x)` 都有声明。 |
 | [`theme-bootstrap.js`](theme-bootstrap.js) | 在解析文档 head 时、body 绘制前应用已保存的明暗主题；外链后 CSP 授权不再依赖内联 HTML 的 hash。 |
 
 ## 子目录

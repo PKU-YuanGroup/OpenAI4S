@@ -12,5 +12,5 @@ Markdown + highlight kernel. Whole-string `esc` then markup replacement; scheme 
 | [`esc.test.ts`](esc.test.ts) | Quote-escape order; old `&<>` assertions still hold. |
 | [`highlight.ts`](highlight.ts) | mdHighlight scanner; `_OC_KW ∪ MD_KEYWORDS`; EDKW derived from the same table. |
 | [`highlight.test.ts`](highlight.test.ts) | `.tok-*` names, keyword union, EDKW derivation. |
-| [`render.ts`](render.ts) | `renderMd` / `mdInline` / `mdCodeBlock`. |
-| [`render.test.ts`](render.test.ts) | Five XSS samples from `tests/browser_smoke.mjs`; scheme whitelist. |
+| [`render.ts`](render.ts) | `renderMd` / `mdInline` / `mdCodeBlock`. F-21 wraps tables in `.md-table-wrap`. |
+| [`render.test.ts`](render.test.ts) | Five XSS samples from `tests/browser_smoke.mjs`; scheme whitelist; table wrap. |

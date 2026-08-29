@@ -101,3 +101,22 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_created` `loadArtifacts` 5343 | `upsertArtifactFromEvent` + 150ms trailing debounce | Nested / flat / bare payloads; `_artBust` + `_tbl` filename bust. REST fetch is `setLoadArtifactsImpl` (F-17). Remaining 32-line side effects via `setArtifactCreatedSideEffects`. |
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
+
+## F-21 style.css + a11y batch
+
+Global stylesheet. Class names are not renamed. Token holes, the dark comma leak, eight dead rules, long lines, light `--text-400` contrast, ≤900px touch targets, and markdown table clipping are fixed in `openai4s/server/webui/style.css`. The next UI loads that same file from the SPA head.
+
+| Old (`openai4s/server/webui/`) | New | Semantics kept |
+| --- | --- | --- |
+| `style.css:6-40` `:root` tokens | same block | Added `--text-100/#1f1f1c`, `--text-300/#5c5a55`, `--surface-0/#fff`, `--warn/#b8860b`. Light `--text-400` `#7b7974` → `#6f6d68` (body-on-`--bg` contrast 5.08:1). Aliases `--bg-1/--bg-2/--fg/--fg-2/--surface-2` and JS layout knobs `--side-w/--dock-w/--exec-indent/--step-child-indent/--delegation-indent/--timeline-row-height` so `var(--x) − --x:` is empty. `--muted/--faint` track the new `--text-400`. |
+| `style.css:1577-1585` `html[data-theme="dark"]` tokens | same block | Same four tokens + aliases. Dark `--text-100/#e8e6dc`, `--text-300/#a8a69c`, `--surface-0/#1c1c19`, `--warn/#d4a017`. |
+| `style.css:1617` `html[data-theme="dark"] .lang-btn.active,.seg-btn.active` | both sides dark-qualified | Comma no longer lets `.seg-btn.active` leak onto the light theme. Same fix on `.molmini` / `.txt` / `.art:hover` sibling commas. |
+| `style.css:1685` `html[data-theme="dark"] #dash-theme,…` | unchanged | F-09 already dropped `body.theme-dark`. The exact selector string is still what `theme.test.ts` greps. |
+| eight dead rules (`.files-view`, `.folder-tools`, `.side-mini`, `.nb-repl-prompt` / `.pmt`, `.nbc-error-msg`, `.nbc-toggle`, `.prov-file-h`) | deleted | Unused: no matching class string in `app.js` / `index.html` / `frontend/src`. `.step-*` kind classes and `.genome-variant/.genome-signal` stay — they are built as `step-${kind}` / `genome-${type}`. |
+| `style.css:514/1455/1456/1477` packed rule runs | one rule per line | Declarations unchanged. |
+| `style.css:204` `.md table{overflow:hidden;max-width:100%}` | `.md-table-wrap` + table `width:max-content;min-width:100%` | Wide markdown tables scroll instead of clipping columns. |
+| `app.js:12869` `"<table>…</table>"` | `'<div class="md-table-wrap">…</div>'` | Same wrap in the legacy renderer. |
+| `frontend/src/features/md/render.ts` table emit | same wrap | Verbatim port of the wrap; XSS chain untouched. |
+| `style.css` `@media (max-width:900px)` 32–36px chrome | `min-height/min-width:40px` on buttons, tabs, icon-ghost, nb-icon, session rows, tiles, zoom-bar | Class names unchanged. |
+| *(none)* | `scripts/check_css_tokens.py` | `var(--x)` refs − `--x:` defs = ∅. Lint job step + pre-commit hook. |
+| `frontend/index.html` head | `<link rel="stylesheet" href="/static/style.css" />` | Same sheet as legacy. Vite `npm run dev` proxies `/static` to :8760 for fonts. |

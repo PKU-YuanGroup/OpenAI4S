@@ -29,7 +29,7 @@ The browser client lives here, and the stdlib gateway serves it at `/static/`. T
 | [`replay.html`](replay.html) | The read-only replay viewer page (M2-3) — a guest's whole UI, and a member's quick look. Served at `/replay` behind the login guard; inline styles only, script external for the CSP. |
 | [`replay.js`](replay.js) | Fetches `GET /api/v1/sessions/{id}/replay` (the sanitized web-share view.json, built in place) and renders messages and scientific cells as a plain transcript. |
 | [`scientific_renderers.js`](scientific_renderers.js) | Dependency-free parsers and helpers for sequence/MSA, genome, Molfile/SMILES and LaTeX, plus renderer-descriptor validation. They return plain data and never HTML, so `app.js` builds the DOM from the records; a small UMD wrapper lets the Node contract test import the same file. General table/image/PDF/HTML/text presentation stays in `app.js`. |
-| [`style.css`](style.css) | The whole visual system: light/dark tokens, fonts, dashboard and workspace layout, activity and artifact components, dialogs, accessibility, and mobile breakpoints. |
+| [`style.css`](style.css) | The whole visual system: light/dark tokens (including `--text-100/--text-300/--surface-0/--warn`), fonts, dashboard and workspace layout, activity and artifact components, dialogs, accessibility, and mobile breakpoints. `scripts/check_css_tokens.py` requires every `var(--x)` to be declared. |
 | [`theme-bootstrap.js`](theme-bootstrap.js) | Applies the saved light/dark theme while the document head is parsed, before the body paints; externalized so CSP authorization never depends on hashing inline HTML. |
 
 ## Subdirectories
