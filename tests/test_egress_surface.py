@@ -442,8 +442,15 @@ def _webui_absolute_urls() -> list[tuple[str, int, str, str]]:
                 continue
             for match in pattern.finditer(line):
                 url = match.group(1)
+                # What sits *next to* the URL, not the whole line. A minified
+                # bundle is one line, so "same line as a fetch(" stops meaning
+                # anything there: Preact's SVG namespace constant at one end
+                # and any fetch( at the other would read as a fetch of that
+                # namespace. For ordinary source the window covers the line
+                # and nothing changes.
+                near = line[max(0, match.start() - 160) : match.end() + 160]
                 found.append(
-                    (str(path.relative_to(_PACKAGE)), lineno, url.split("/")[2], line)
+                    (str(path.relative_to(_PACKAGE)), lineno, url.split("/")[2], near)
                 )
     return found
 

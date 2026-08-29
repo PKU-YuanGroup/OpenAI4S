@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_compute_lifecycle.py,tests/test_compute_trust_boundary.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_stage11_remote_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "0566c6249dd1c01e5178cbcb0b6fa7ea0276b2fa6fc5b3241a5ebf8c6433411d"
+      "evidence_digest": "087af9eefdb1baadf86cb65d4394cd135bbb10b4106fe80831648279133437f0"
     },
     {
       "source": "R2",
@@ -592,7 +592,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "69a6a54004d6a34f775ae214d6cb654a5ee3670f82764444ab05b1fc5b531217"
+      "evidence_digest": "9bb7cc940bebb74b255c460ec1bcd26b050265e496fc24eac92b9b19ad29298c"
     },
     {
       "source": "R6",
@@ -606,7 +606,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_artifact_mutation_service.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "9a67b0f229d120dbdff94656a9972a82f701461685bce1e256cb34c1fc6077ba"
+      "evidence_digest": "c0e68e61454239cb26ab35a68ff1d6fa84858cd9d4dc59f890c73c16ec02ad58"
     },
     {
       "source": "R6",
@@ -662,7 +662,7 @@
       "tests": "tests/test_renderer_capability_honesty.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1093731cd8291a78464ec2e7a44a4c5c67df9d3a34f6a32b69a1d50b52d89b57"
+      "evidence_digest": "4bf2944794c004eecda3f9c5a690cb0f867baa87c178a7fc775701f45b6e6e09"
     },
     {
       "source": "R6",

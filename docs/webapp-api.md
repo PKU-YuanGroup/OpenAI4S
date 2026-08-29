@@ -339,6 +339,13 @@ success response body. Serializer shapes are in §4.
 | `GET /search?q=` | `{sessions:[{id,project_id,name,task_summary}], artifacts:[{id,filename,content_type,root_frame_id,project_id}], datapro:[{query,dataset_type,json_pointer,content,artifact_id,root_frame_id,project_id}]}`; empty `q` → empty lists. `datapro` searches every recursively indexed key and scalar in successful DataPro content; each hit is a logical result occurrence, so equal records at different JSON pointers remain distinct. |
 | `GET /` (i.e. `/api` or `/api/v1/`) | `{"service":"openai4s","ok":true}`. |
 
+### First-run onboarding
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /onboarding` | Redacted first-run state: which of the four decisions — model path, the explicit Test, environment/network readiness, first Project — are already satisfied. Derived entirely from stored state, so opening the wizard contacts no provider and cannot be used to probe whether a key works. No credential value appears in the payload. |
+| `POST /onboarding/complete` | Marks first-run finished. In team mode this is admin-only (`403 admin_only`): the state is installation-wide, so a member dismissing it would be deciding for everyone. |
+
 ### Models and model profiles
 
 **Readiness is local; reachability is asked for.** Every profile carries a
@@ -547,6 +554,12 @@ A session's kernel is on the daemon by default. Asking for it to be on a granted
 | `POST /sessions/{id}/compute/release` | Records the desire to stop and ends the lease; the reconciler runs the cancel barrier. `{ok, session_id}`. In team mode only the session owner or an admin may release it; project visibility alone does not confer control of another user's allocation. |
 
 `state_lost_epochs` is what the UI turns into a banner. When a node dies the kernel's memory dies with it — variables, imports, the seed somebody set three cells ago — and the session continues on a new epoch. Saying so is mandatory (INV-11): the results afterwards look exactly like results from the session that was lost.
+
+### Cross-session attention
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /attention?limit=&cursor=` | Read-only aggregation of what is waiting across every visible session: `{items, next_cursor}`. An item is `{id, source_kind, source_id, state, severity, frame_id, project_id, title, updated_at, target:{surface,dock,frame_id}, action_hint}`. Four closed sets: `source_kind` ∈ `running`/`queued`/`approval`/`recovery`/`blocked`/`compute`, `severity` ∈ `high`/`medium`/`low`, `target.surface` ∈ `session`, `target.dock` ∈ `timeline`/`recovery`/`security`/`compute`. They are closed so the client builds navigation locally and the server never emits a URL. Items are deduplicated by `source_kind + source_id` — one card per fact, not per source that noticed it. The cursor is keyset over `(updated_at, id)` and bound to the caller's scope and filter fingerprint. Team visibility is applied *before* aggregation, ordering and `limit`, so a row the caller may not see cannot consume a slot. The GET has no side effects: no kernel spawn, no provider call, no harvest. Retry / approve / restore remain on their existing mutation routes. |
 
 ### Permissions
 
