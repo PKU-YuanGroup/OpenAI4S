@@ -101,3 +101,32 @@ Verbatim ports of the markdown / highlight / CSV / live-output / publicText kern
 | `artifact_created` `loadArtifacts` 5343 | `upsertArtifactFromEvent` + 150ms trailing debounce | Nested / flat / bare payloads; `_artBust` + `_tbl` filename bust. REST fetch is `setLoadArtifactsImpl` (F-17). Remaining 32-line side effects via `setArtifactCreatedSideEffects`. |
 | `artifact_ref_problems` … `kernel_status` | not registered here | Later lanes: F-10 text_*; F-11 cards/candidate/step/plan/permission; F-14 notebook_cell_* / kernel_status; F-15 timeline/execution/recovery/branch/delegation/sandbox. |
 | `window.onEvent` | `bootWs()` / `installWs()` | Overwrites the F-05 stub. E2E still calls `onEvent(m)` without advancing the cursor (that stays in `onmessage`). |
+
+## F-14 Notebook
+
+Rendering shell rewrite of the Notebook dock. The live protocol, `_seenChunks` dedup, `_kc` invalidate timings, and scroll-follow/reading-delay gate are verbatim; the `innerHTML=""` full rebuild at `renderNotebook` 10352 is not.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `nbEventCellId` / `nbCellKey` / `mergeNotebookCells` / `nbFindCell` 9765-9785 | `features/notebook/cells.ts` | Server record wins on the same Cell ID; sort by `cell_index` then key; legacy key `legacy:{kernel}:{index}`. |
+| `nbCellDraft` / `nbCellStart` / `nbCellChunk` / `nbCellFinished` 9787-9876 | `cells.ts` | Draft revision; discarded draft; start does **not** inherit finished output on replay; running live cell *does* inherit stdout/stderr/`_seenChunks`. |
+| `_seenChunks` 9851-9853 | `nbCellChunk` | `stream + ":" + chunkId` (`chunk_id` else `sequence`); `chunk_id` 0 is a real id (`!= null`). Duplicate replay is a no-op. |
+| `nbLiveStart` / `nbLiveAppend` 9880-9898 | `cells.ts` | Unstructured tool-stream fallback; divider `----- output -----`. |
+| `nbRender` 9900-9908 | `scroll.ts` `nbRender` | If `running && _nbReading` → `_nbDirty`, no paint. `_nbSched` coalesces to one rAF. |
+| `renderNotebook` follow + scroll listener 10339-10350 | `scroll.ts` `measureNotebookFollow` / `bindNotebookScroll` / `onNotebookScroll` | 120px threshold; `_nbScrollBound` once; returning to bottom flushes `_nbDirty`. |
+| `renderNotebook` `nb.innerHTML=""` 10352 + `cellNode` 10567-10621 | `Notebook.tsx` CellList + memo completed cells | Keyed by `producing_cell_id`. Chunks write only that cell's output signal and `textNode.appendData(delta)`. Code highlight memoized on source. |
+| kernel chips / REPL / status strip 10357-10475 | `Notebook.tsx` `KernelChips` / `ReplPanel` / `StatusStrip` | Rendered apart from the cell list. REPL only when `repl_enabled` and not quarantined. Classes `#dock-notebook .nb-repl` / `.nb-repl-input` / `.nb-status` / `.notebook-cell` unchanged. |
+| `_kc` 9954 + `invalidateKernelCache` 9955 | F-05 `stores/notebook.ts` `_kc` + `kernel.ts` `invalidateKernelCache` | Clears `id/st/stAt/envs/cur/envAt`; leaves `stBusy/envBusy`. |
+| invalidate at `kernel_status` 5352, `turnDone` 5854, `nbSwitchEnv` 10060 | `handleKernelStatus` / `notebookOnTurnDone` / `nbSwitchEnv` | F-11 **must** call `notebookOnTurnDone()` from `turnDone` (this lane cannot register a second `frame_update` handler). |
+| `kernelCtl` / `executeNotebookCode` / `refreshKernelState` / `nbPopulateEnvSelect` 9911-10047 | `kernel.ts` | 800ms state / 8000ms env cache; session-id race drop. |
+| `projectNotebookCells` 10076-10112 | `cells.ts` | Agent retry grouping after a failed same-runtime cell. |
+| `NOTEBOOK_EXPORTS` / `notebookExportLink` 10119-10136, 10231-10264 | `chrome.ts` | Window contract global. sources.zip → `/execution-sources/export`. |
+| `highlightTraceback` 10513-10521 | `chrome.ts` | Window contract global. `esc` then `.tb-loc` / `.tb-final`. |
+| `looksBinary` 6055-6066 / `stripAnsi` 10482 | `chrome.ts` | Unchanged. |
+| figure live-mount 5337-5341 | `chrome.ts` `mountLiveNotebookFigure` via `setArtifactCreatedSideEffects` | `_tbl` bust stays in F-06 upsert. F-17 must **compose** this call, not replace the setter. |
+| `parseDelimited` / `renderTableInto` 9690-9744 | F-08 `csv.ts` + `chrome.ts` `renderTableInto` | `_tbl` keyed by busted URL, in the artifacts store. |
+| cell highlighter `_ocHighlight` 6100-6118 | F-08 `mdHighlight` via `highlightCellSource` | Intended visible change (F-08): unified keyword set. Recomputed only when source/lang change. |
+
+F-11: import `notebookOnTurnDone` and call it from `turnDone`.
+F-16: import `cellNode` / `NotebookDock`; hang `buildExecutedCodeView` / `toggleExecutedCode` on window (`isReady` gated here).
+F-17: call `mountLiveNotebookFigure` from `artifact_created` side effects.

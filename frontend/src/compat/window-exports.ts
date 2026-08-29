@@ -117,3 +117,4 @@ export {
 // Do not edit anything above this marker.
 // F-06: window.onEvent is assigned by bootWs() in features/ws (imported from main.tsx).
 // F-07: window.t / window.tOptional are assigned by the i18n module.
+// F-14: window.highlightTraceback / window.notebookExportLink are assigned by features/notebook (imported from main.tsx).
