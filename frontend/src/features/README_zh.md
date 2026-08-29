@@ -11,6 +11,7 @@
 | --- | --- |
 | [`csv/`](csv/) | RFC-4180 风格 CSV/TSV 解析。收敛 parseDelimited / csvFields / parseTable。 |
 | [`md/`](md/) | renderMd / mdInline / esc 全链，以及统一的 mdHighlight 扫描器。 |
+| [`messages/`](messages/) | F-10 消息流：分帧历史、Markdown 双节点、StreamingPre、rAF 滚动。 |
 | [`scrub/`](scrub/) | publicText 凭证涂抹。 |
 | [`stream/`](stream/) | appendLiveOutput 的 1MB 截断。 |
 | [`theme/`](theme/) | 浅色/深色/跟随系统。运行时的唯一真值源是 `data-theme`。 |
