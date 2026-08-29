@@ -8,10 +8,27 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from openai4s.config import Config, LLMConfig, is_placeholder_api_key
-from openai4s.endpoint_identity import normalize_endpoint
+from openai4s.endpoint_identity import endpoint_sha256, normalize_endpoint
+from openai4s.llm.capabilities import (
+    CAPABILITY_PROBE_TOOL,
+    PROBE_VERSION,
+    capability_probe_window,
+    classify_probe_error,
+    drop_receipt_overlays,
+    get_provider_capabilities,
+    install_receipt_overlay,
+    streaming_evidence,
+    tool_call_matches_schema,
+)
 from openai4s.llm.catalog import ModelPreset, model_presets
 from openai4s.llm.resolve import is_loopback_endpoint
 from openai4s.security.secret_broker import is_ref
+from openai4s.storage.model_capability_receipts import (
+    EVIDENCE_FALSE,
+    EVIDENCE_TRUE,
+    EVIDENCE_UNKNOWN,
+    public_receipt,
+)
 
 # Model profiles select a transport contract, not an arbitrary vendor name.
 # Keep the persisted ids compatible with the existing LLM registry while the
@@ -158,6 +175,7 @@ class ModelProfileService:
         presets: Callable[[], Sequence[ModelPreset]] = model_presets,
         id_factory: Callable[[], str] | None = None,
         clock_ms: Callable[[], int] | None = None,
+        receipts: Any | None = None,
     ) -> None:
         self.store = store
         self.cfg = cfg
@@ -165,6 +183,7 @@ class ModelProfileService:
         self._presets = presets
         self._id_factory = id_factory or (lambda: "mp-" + uuid.uuid4().hex[:8])
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._receipts_repo = receipts
 
     def effective_model_id(self, provider: Any, model: Any) -> str:
         explicit = str(model or "").strip()
@@ -200,18 +219,97 @@ class ModelProfileService:
             except Exception:  # noqa: BLE001 - removing the row still matters
                 pass
 
+    def _receipts(self) -> Any | None:
+        if self._receipts_repo is not None:
+            return self._receipts_repo
+        return getattr(self.store, "model_capability_receipts", None)
+
+    def _receipt_identity(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        provider = str(profile.get("provider") or "")
+        model = self.effective_model_id(provider, profile.get("model"))
+        base_url = str(profile.get("base_url") or "")
+        try:
+            adapter = get_provider_capabilities(provider, base_url=base_url or None)
+            wire = adapter.wire
+            endpoint = normalize_endpoint(base_url) or normalize_endpoint(
+                adapter.default_base_url
+            )
+            adapter_streaming = bool(adapter.streaming)
+        except Exception:  # noqa: BLE001 - unsupported protocol has no wire
+            wire = ""
+            endpoint = normalize_endpoint(base_url)
+            adapter_streaming = False
+        return {
+            "profile_id": str(profile.get("id") or ""),
+            "revision": int(profile.get("revision") or 0),
+            "model": model,
+            "wire": wire,
+            "endpoint": endpoint,
+            "endpoint_sha256": endpoint_sha256(endpoint),
+            "provider": provider,
+            "adapter_streaming": adapter_streaming,
+        }
+
+    def _public_receipt(self, profile: Mapping[str, Any]) -> dict[str, Any] | None:
+        repo = self._receipts()
+        if repo is None:
+            return None
+        identity = self._receipt_identity(profile)
+        exact = None
+        if identity["wire"]:
+            exact = repo.get_exact(
+                profile_id=identity["profile_id"],
+                revision=identity["revision"],
+                endpoint_sha256=identity["endpoint_sha256"],
+                model=identity["model"],
+                wire=identity["wire"],
+                probe_version=PROBE_VERSION,
+            )
+        if exact is not None:
+            return public_receipt(exact, stale=False, probe_version=PROBE_VERSION)
+        latest = repo.latest_for_profile(identity["profile_id"])
+        return public_receipt(latest, stale=True, probe_version=PROBE_VERSION)
+
+    def _persist_receipt(
+        self,
+        profile: Mapping[str, Any],
+        *,
+        reachable: bool,
+        native_tool_call: str,
+        streaming: str,
+    ) -> dict[str, Any] | None:
+        repo = self._receipts()
+        identity = self._receipt_identity(profile)
+        if repo is None or not identity["wire"] or not identity["profile_id"]:
+            return None
+        row = repo.put(
+            profile_id=identity["profile_id"],
+            revision=identity["revision"],
+            endpoint_sha256=identity["endpoint_sha256"],
+            model=identity["model"],
+            wire=identity["wire"],
+            probe_version=PROBE_VERSION,
+            reachable=reachable,
+            native_tool_call=native_tool_call,
+            streaming=streaming,
+        )
+        row["endpoint"] = identity["endpoint"]
+        if native_tool_call == EVIDENCE_TRUE or streaming == EVIDENCE_TRUE:
+            install_receipt_overlay(row)
+        return public_receipt(row, stale=False, probe_version=PROBE_VERSION)
+
     def probe(self, profile_id: str) -> dict[str, Any]:
-        """Contact the endpoint, once, because a user asked.
+        """Contact the endpoint because a user asked, and record a receipt.
 
         Never called from a read path. `readiness` answers "is this configured"
         from local state alone precisely so that this — the only thing here
         that spends a request, a token allowance and a rate-limit slot — needs
         somebody to press a button.
 
-        Reports what happened rather than a verdict. "ok" means the endpoint
-        answered a minimal request; it does not mean the model is good, the
-        quota is sufficient, or that a later call will succeed, and phrasing it
-        as `reachable` rather than `verified` keeps that difference visible.
+        At most two tiny requests.  Tools are schema-validated and never
+        executed.  ``true`` on the receipt is only a schema-valid native tool
+        call or a fully terminated stream; timeout, auth failure, 5xx, and an
+        uncooperative model are ``unknown``.
         """
         profile = next(
             (
@@ -234,41 +332,150 @@ class ModelProfileService:
                 "state": local["state"],
                 "detail": local["detail"],
                 "contacted": False,
+                "outbound": 0,
+                "tool_execution": 0,
+                "capability_receipt": None,
             }
 
         provider = str(profile.get("provider") or "")
-        try:
-            from openai4s.llm import chat
+        model = self.effective_model_id(provider, profile.get("model"))
+        base_url = str(profile.get("base_url") or "") or None
+        cfg = LLMConfig(
+            provider=provider,
+            api_key=self.resolve_key(profile),
+            base_url=base_url,
+            model=str(profile.get("model") or "") or None,
+        )
+        outbound = 0
+        native = EVIDENCE_UNKNOWN
+        streaming = EVIDENCE_UNKNOWN
+        reachable = False
+        last_error: Exception | None = None
+        public: dict[str, Any] = {}
 
-            chat(
-                [{"role": "user", "content": "ping"}],
-                LLMConfig(
-                    provider=provider,
-                    api_key=self.resolve_key(profile),
-                    base_url=str(profile.get("base_url") or "") or None,
-                    model=str(profile.get("model") or "") or None,
-                ),
-                max_tokens=1,
+        from openai4s.llm import chat as _chat
+
+        def _request(**kwargs: Any) -> dict[str, Any]:
+            nonlocal outbound
+            outbound += 1
+            if outbound > 2:
+                raise RuntimeError("capability probe exceeded two requests")
+            return (
+                _chat(
+                    kwargs.pop("messages"),
+                    cfg,
+                    **kwargs,
+                )
+                or {}
             )
+
+        identity = self._receipt_identity(profile)
+        adapter_streaming = bool(identity["adapter_streaming"])
+        if not adapter_streaming:
+            # The adapter has no streaming transport.  That is stable
+            # protocol-level evidence; it is not a timeout or a 5xx.
+            streaming = EVIDENCE_FALSE
+
+        try:
+            with capability_probe_window(
+                provider, model, base_url=base_url, tool_calling=True, streaming=False
+            ):
+                reply = _request(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "Call openai4s_capability_probe with ok=true. "
+                                "Do nothing else."
+                            ),
+                        }
+                    ],
+                    max_tokens=32,
+                    tools=[CAPABILITY_PROBE_TOOL],
+                    tool_choice=CAPABILITY_PROBE_TOOL["name"],
+                    parallel_tool_calls=False,
+                )
+            reachable = True
+            calls = reply.get("tool_calls") or ()
+            if any(
+                tool_call_matches_schema(call, CAPABILITY_PROBE_TOOL) for call in calls
+            ):
+                native = EVIDENCE_TRUE
         except Exception as error:  # noqa: BLE001 - reported, never raised
+            last_error = error
+            native = classify_probe_error(error)
             from openai4s.server.errors import public_exception
 
             public, _status = public_exception(
                 error, surface="model_profile:probe", error_code="probe_failed"
             )
+
+        status = getattr(last_error, "status", None) if last_error else None
+        stop_after_first = last_error is not None and (
+            isinstance(last_error, (TimeoutError, ConnectionError, OSError))
+            or status in (401, 403, 429)
+            or (isinstance(status, int) and 500 <= status < 600)
+        )
+        if adapter_streaming and not stop_after_first:
+            deltas: list[Any] = []
+
+            def _on_delta(text: Any) -> None:
+                deltas.append(text)
+
+            try:
+                with capability_probe_window(
+                    provider,
+                    model,
+                    base_url=base_url,
+                    tool_calling=False,
+                    streaming=True,
+                ):
+                    reply = _request(
+                        messages=[{"role": "user", "content": "Reply with pong."}],
+                        max_tokens=8,
+                        on_delta=_on_delta,
+                    )
+                reachable = True
+                streaming = streaming_evidence(
+                    deltas_seen=bool(deltas),
+                    finish_reason=reply.get("finish_reason"),
+                )
+            except Exception as error:  # noqa: BLE001 - reported, never raised
+                streaming = classify_probe_error(error)
+                if last_error is None:
+                    last_error = error
+                    from openai4s.server.errors import public_exception
+
+                    public, _status = public_exception(
+                        error, surface="model_profile:probe", error_code="probe_failed"
+                    )
+
+        receipt = self._persist_receipt(
+            profile,
+            reachable=reachable,
+            native_tool_call=native,
+            streaming=streaming,
+        )
+        if last_error is not None and not reachable:
             return {
                 "reachable": False,
                 "state": "unreachable",
-                "detail": _probe_detail(error, public),
+                "detail": _probe_detail(last_error, public),
                 "code": public.get("code"),
                 "request_id": public.get("request_id"),
                 "contacted": True,
+                "outbound": outbound,
+                "tool_execution": 0,
+                "capability_receipt": receipt,
             }
         return {
             "reachable": True,
             "state": "reachable",
             "detail": "the endpoint answered a minimal request",
             "contacted": True,
+            "outbound": outbound,
+            "tool_execution": 0,
+            "capability_receipt": receipt,
         }
 
     def readiness(self, profile: Mapping[str, Any]) -> dict[str, Any]:
@@ -359,6 +566,9 @@ class ModelProfileService:
             # which configuration a session is pinned at, and tell "this is the
             # current one" from "this profile has moved on since".
             "revision": int(profile.get("revision") or 0) or None,
+            # Exact probe receipt, or a stale prior one.  Never contacts the
+            # endpoint: SQLite only.
+            "capability_receipt": self._public_receipt(profile),
         }
 
     def models_payload(self, default_model_id: str) -> dict[str, Any]:
@@ -505,6 +715,7 @@ class ModelProfileService:
         if not isinstance(history, list):
             history = []
         current = cls._configuration(profile)
+        previous = int(profile.get("revision") or 0)
         if history:
             last = history[-1]
             if (
@@ -518,6 +729,8 @@ class ModelProfileService:
             revision = int(last.get("revision") or 0) + 1
         else:
             revision = 1
+        if previous and revision != previous:
+            drop_receipt_overlays(str(profile.get("id") or ""))
         entry = {
             "revision": revision,
             "created_at": now_ms,

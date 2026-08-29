@@ -156,6 +156,8 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # does not auto-resume; only an explicit continue creates the next
         # attempt. Additive; rollback does not delete Artifact versions.
         "delegation_requests_and_attempts",
+        # Exact model-capability receipts from an explicit probe. Additive.
+        "model_capability_receipts",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0

@@ -121,6 +121,10 @@ from openai4s.storage.migrations import (
     current_version,
     run_migrations,
 )
+from openai4s.storage.model_capability_receipts import (
+    ModelCapabilityReceiptRepository,
+    create_model_capability_receipts_schema,
+)
 from openai4s.storage.permissions import (
     DEFAULT_PERMISSION_RULES as _DEFAULT_PERMISSION_RULES,
 )
@@ -752,6 +756,9 @@ QUERY_DENYLIST = frozenset(
         "capability_states",
         "capability_events",
         "capability_manifests",
+        # Exact probe receipts.  Not agent-working-data; they name a profile
+        # revision and an endpoint digest, and they gate native completion.
+        "model_capability_receipts",
         "skill_blobs",
         "skill_versions",
         "skill_version_files",
@@ -1345,6 +1352,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._model_capability_receipts = ModelCapabilityReceiptRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1456,6 +1468,7 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._load_capability_receipt_overlays()
 
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
@@ -1616,6 +1629,10 @@ class Store:
                     30: (
                         "delegation_requests_and_attempts",
                         self._apply_delegation_requests_and_attempts,
+                    ),
+                    31: (
+                        "model_capability_receipts",
+                        self._apply_model_capability_receipts,
                     ),
                 },
             )
@@ -1784,6 +1801,15 @@ class Store:
         """
 
         create_delegation_request_schema(conn)
+
+    def _apply_model_capability_receipts(self, conn: sqlite3.Connection) -> None:
+        """Version 31: exact model-capability receipts from an explicit probe.
+
+        Additive.  Timeout/auth/5xx never persist as false; only a current
+        revision's positive evidence is adopted as an overlay.
+        """
+
+        create_model_capability_receipts_schema(conn)
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -2475,6 +2501,11 @@ class Store:
         return self._user_keys
 
     @property
+    def model_capability_receipts(self) -> ModelCapabilityReceiptRepository:
+        """Exact probe receipts bound to profile revision + endpoint."""
+        return self._model_capability_receipts
+
+    @property
     def leases(self) -> LeaseRepository:
         """Session leases and session↔workload bindings (M3b-4)."""
         return self._leases
@@ -2594,6 +2625,28 @@ class Store:
             datapro.CONNECTOR_ID,
             cache_scope=datapro.runtime_cache_scope(self),
         )
+
+    def _load_capability_receipt_overlays(self) -> None:
+        """Re-adopt current-revision positive receipts after a restart."""
+        from openai4s.llm.capabilities import (
+            PROBE_VERSION,
+            drop_receipt_overlays,
+            install_receipt_overlay,
+        )
+
+        drop_receipt_overlays()
+        current = {
+            str(profile.get("id") or ""): int(profile.get("revision") or 0)
+            for profile in self.list_model_profiles()
+            if not profile.get("deleted_at")
+        }
+        for receipt in self._model_capability_receipts.list_all():
+            profile_id = str(receipt.get("profile_id") or "")
+            if current.get(profile_id) != int(receipt.get("revision") or 0):
+                continue
+            if int(receipt.get("probe_version") or 0) != PROBE_VERSION:
+                continue
+            install_receipt_overlay(receipt)
 
     # --- frames ----------------------------------------------------------
     def new_frame(

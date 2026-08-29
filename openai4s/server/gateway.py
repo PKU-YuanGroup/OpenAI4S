@@ -105,6 +105,7 @@ from openai4s.server import (
     governance_routes,
     kernel_routes,
     local_auth,
+    onboarding_routes,
     orchestration_routes,
     retrieval_source,
     team_policy,
@@ -14593,6 +14594,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if auto_mode_routes.handle(self, method, sub, q, runner):
                 return
             if artifact_workbench_routes.handle(self, method, sub, q, runner):
+                return
+            if onboarding_routes.handle(
+                self,
+                method,
+                sub,
+                q,
+                store=store,
+                cfg=cfg,
+                model_profiles=model_profiles,
+                model_discovery=model_discovery,
+            ):
                 return
             # ---- identity / meta (no-auth local mode) ----
             if sub == "/me":
