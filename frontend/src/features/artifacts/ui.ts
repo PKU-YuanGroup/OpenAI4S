@@ -169,7 +169,18 @@ export function renderFilesGrid(): void {
   });
 }
 
+let renderViewerImpl: (() => void) | null = null;
+
+/** F-18 island replaces the F-17 skeleton once `bootIslands` runs. */
+export function setRenderViewerImpl(fn: (() => void) | null): void {
+  renderViewerImpl = fn;
+}
+
 export function renderViewer(): void {
+  if (renderViewerImpl) {
+    renderViewerImpl();
+    return;
+  }
   if (typeof document === "undefined") return;
   const a = dockArtifact.value as ArtifactRow | null;
   const v = document.getElementById("dock-viewer");

@@ -33,3 +33,4 @@
 | [`i18n/`](i18n/) | F-07：抽取的 zh/en 字典、`t()` / `tOptional` 运行时、计划模式 payload 辅助函数。 |
 | [`stores/`](stores/) | F-05 的 signal 模块。后续车道只 import 这些文件，不改本体。 |
 | [`components/`](components/) | 视图容器。F-15 加入 `timeline/`（`#dock-timeline` 的孤岛宿主）。 |
+| [`islands/`](islands/) | F-18 命令式孤岛：3Dmol 懒注入、图片标注器、Ketcher、PDF/html-preview sandbox。 |

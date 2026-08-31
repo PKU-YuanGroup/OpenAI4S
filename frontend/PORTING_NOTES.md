@@ -173,7 +173,7 @@ Version cache, Files grid, renderer catalog, and the ten scientific renderer glu
 | `artUrl` 8577 | `cache.ts` `artUrl` | Unpinned: `/artifacts/{id}?_={bust}`. `_exactVersion`: `/artifacts/versions/{vid}` — never latest. |
 | `scientificRenderers` 8578 | `catalog.ts` `scientificRenderers` | `window.OpenAI4SScientificRenderers \|\| null`. Empty-value defense kept. |
 | `loadRendererCatalog` / `artifactRendererDescriptor` / `compatibilityRendererDescriptor` 8580-8635 | `catalog.ts` | Descriptor `version_id` must match the requested version or the promise rejects (no silent latest). Missing runtime → `renderer_id: "download"`. |
-| `renderArtifactBody` + 10 renderer glues 8637-8962 | `renderers.ts` | Sequence / MSA / genome / chemistry-2d / latex / markdown / table / text / download / sheet. image / pdf / html-preview / molecule-3d call later islands through `isReady` (F-18). PDF iframe still has no sandbox (F-18). html-preview `sandbox=""`. |
+| `renderArtifactBody` + 10 renderer glues 8637-8962 | `renderers.ts` | Sequence / MSA / genome / chemistry-2d / latex / markdown / table / text / download / sheet. image / pdf / html-preview / molecule-3d call F-18 islands through `isReady`. PDF and html-preview both `sandbox=""` (F-18). |
 | `renderSheet` / `sheetShape` / `appendSheetShape` 8771-8802 | `sheet.ts` | Cap 5000×100; union of keys; `nb.table.*` hidden-copy reused. Window export for smoke. |
 | `parseMolPoints` / `molSvg` / thumbs 8414-8490 | `thumbs.ts` | CA backbone preference, 500-point cap, spectrum XY SVG. |
 | `artifact_created` 5314-5346 | `events.ts` `artifactCreatedSideEffects` | After F-06 upsert: `syncArtifactVersion(art, true)`, open-Viewer refresh, live-cell `figures` push, project Files reload. `nbRender` only if `isReady`. |
@@ -323,3 +323,19 @@ Composer send, turn tickets, step / plan / permission / candidate cards, attachm
 | `frame_update` turn-ticket body 5296-5310 | `handlers.ts` `handleFrameUpdateTurn` via `setFrameUpdateTurnHandler` | `processing` → `activateTurnTicket`; terminal → `applyFinalReviewStatus` + `turnDone`. Stale turn refreshes workbench only. |
 | `renderStoredStep` hook (F-10 `setRenderStoredStepImpl`) | `installSend` | Interleaved history steps paint through `step.ts` `renderStoredStep`. |
 | window contract names | `index.ts` `installSend` | Overwrites the F-05 stubs for the ten names. `main.tsx` adds one import. |
+
+## F-18 imperative islands
+
+Command-style islands that F-17 left as `isReady` / `callWindow` glues: 3Dmol lazy inject, image annotator, dock Viewer chrome / versions / editor, Ketcher iframe, PDF/html-preview sandbox. Components still only host `#dock-viewer`; the islands own the DOM. `stores/` is imported, not edited. `window-exports.ts` only gained a lane-additions comment.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `_molTeardown` 9610-9619 | `islands/mol.ts` `molTeardown` | `clear()` then `WEBGL_lose_context` on the live canvas; nulls `_molViewer` / `_molView` (F-05 artifacts store). |
+| `molecule` 9622-9673 | `islands/mol.ts` `molecule` | Lazy `<script src="/static/vendor/3Dmol-min.js">`. **No static import, no CDN fallback.** The deleted-CDN comment at 9665-9672 is kept next to the tag. Degraded path is coordinates as `<pre>`. Theme colors `#1c1c19` / `white`. CA-only cartoon uses trace + spheres. |
+| image annotator 9149-9429 + helpers 8965-8993 | `islands/annot.ts` | Width-based zoom, pan-while-zoomed, pin `%` positions, `annotationStatus` (`reserved`/`pending` → pending; unknown ≠ open), held pins not deletable (`data-annotation-status`, `data-held-by-turn`). Admission tracker stays F-11. |
+| `openArtifact` / `renderViewer` / editor / versions 9430-9609 | `islands/viewer.ts` | Menu / edit / fullscreen / download / close. `_molTeardown` before rebuild. `edacTeardown` then `bindEditorAutocomplete`. Diff `textContent`. Retrieval-source panel is read-only. M-03 deep-link copy + stale-version banner from F-17 kept. |
+| PDF iframe 8663 | `islands/frames.ts` + `renderers.ts` `renderPdfGlue` | **Audit hardening:** `sandbox=""` (same empty token as html-preview). No `allow-scripts` / `allow-forms`. |
+| html-preview iframe 8664 | `frames.ts` + `renderHtmlPreviewGlue` | `sandbox=""` kept. `src` is `sandboxOrigin + /preview/{id}`. Noscript note kept. |
+| `openKetcher` 10834 + workbench 8918 | `islands/ketcher.ts` | iframe `src` is `sandboxOrigin + /ketcher` (optional `?artifact_id=`). `allow="clipboard-read; clipboard-write"`. **No sandbox** — `/ketcher` is first-party, served with embeddable headers (`frame-ancestors 'self'`). |
+| `renderLocatorComments` 10835-10897 | `islands/locator.ts` | PDF page controls rewrite `#page=`; HTML selector; POST locator annotations. |
+| window names | `islands/index.ts` `bootIslands` | Overwrites F-05 stubs (`molecule`, `renderAnnotatableImage`, `annotationStatus`, `annotationIsHeld`, `openAnnotations`, `loadAnnotations`, `renderPins`, `openPinPop`, …). `main.tsx` adds one import. |

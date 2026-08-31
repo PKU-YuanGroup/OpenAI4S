@@ -137,3 +137,7 @@ export {
 //   renderRefProblems / searchResultHttpUrl / admissionSettled /
 //   forgetAdmission / outstandingAdmissions / reconcileLastAdmission /
 //   rememberAdmission are assigned by features/send (imported from main.tsx).
+// F-18: window.molecule / renderAnnotatableImage / annotationStatus /
+//   annotationIsHeld / openAnnotations / loadAnnotations / renderPins /
+//   openPinPop / openKetcher / renderLocatorComments assigned by
+//   bootIslands() in islands (imported from main.tsx).

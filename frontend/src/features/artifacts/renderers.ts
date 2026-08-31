@@ -1,14 +1,17 @@
+import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
 import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
 import { artifactWorkbench, _kc } from "../../stores/notebook";
 import { sandboxOrigin } from "../../stores/session";
+import { applyArtifactIframeSandbox, htmlPreviewSrc } from "../../islands/frames";
 import {
   api,
   apiErrorText,
   callWindow,
   el,
   fetchArtifactText,
+  hostWindow,
   iconEl,
   looksBinary,
   svgElement,
@@ -615,9 +618,15 @@ export function renderDownloadArtifact(container: HTMLElement, a: ArtifactRow, u
   container.appendChild(card);
 }
 
+function runIsland(name: string, ...args: unknown[]): boolean {
+  const fn = hostWindow()[name];
+  if (!isReady(fn)) return false;
+  (fn as (...inner: unknown[]) => unknown)(...args);
+  return true;
+}
+
 function renderImageGlue(content: HTMLElement, a: ArtifactRow, url: string): void {
-  const rendered = callWindow("renderAnnotatableImage", content, a, url);
-  if (rendered !== undefined) return;
+  if (runIsland("renderAnnotatableImage", content, a, url)) return;
   const img = el("img");
   img.src = url;
   img.alt = a.filename || "artifact";
@@ -626,6 +635,7 @@ function renderImageGlue(content: HTMLElement, a: ArtifactRow, url: string): voi
 
 function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void {
   const frame = el("iframe");
+  applyArtifactIframeSandbox(frame, "pdf");
   frame.dataset.currentPage = "1";
   frame.src = url + "#page=1";
   content.appendChild(frame);
@@ -634,16 +644,15 @@ function renderPdfGlue(content: HTMLElement, a: ArtifactRow, url: string): void 
 
 function renderHtmlPreviewGlue(content: HTMLElement, a: ArtifactRow): void {
   const frame = el("iframe");
-  frame.setAttribute("sandbox", "");
-  frame.src = (sandboxOrigin.value || "") + `/preview/${encodeURIComponent(a.id)}`;
+  applyArtifactIframeSandbox(frame, "html-preview");
+  frame.src = htmlPreviewSrc(sandboxOrigin.value || "", a.id);
   content.appendChild(frame);
   content.appendChild(el("p", "muted renderer-noscript", translate("viewer.renderer.noscript")));
   if (artifactWorkbenchOn()) callWindow("renderLocatorComments", content, a, "html");
 }
 
 function renderMolecule3dGlue(content: HTMLElement, url: string, nm: string): void {
-  const rendered = callWindow("molecule", content, url, nm);
-  if (rendered !== undefined) return;
+  if (runIsland("molecule", content, url, nm)) return;
   fetchArtifactText(url)
     .then((text) => {
       if (!content.isConnected) return;

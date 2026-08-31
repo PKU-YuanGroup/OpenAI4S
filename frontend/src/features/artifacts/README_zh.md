@@ -25,7 +25,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`http-stub.ts`](http-stub.ts) | Vitest 用的 JSON `Response` 替身。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`load.ts`](load.ts) | `loadArtifacts` / `loadProjectArtifacts` / `setFilesScope`。 |
-| [`renderers.ts`](renderers.ts) | 十个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol 孤岛。 |
+| [`renderers.ts`](renderers.ts) | 十个科学胶水 + 用 `isReady` 接 image/pdf/html/3Dmol 孤岛。PDF iframe 由 F-18 补 `sandbox=""`。 |
 | [`sheet.test.ts`](sheet.test.ts) | `sheetShape` 键并集；5000×100 上限。 |
 | [`sheet.ts`](sheet.ts) | `renderSheet` / `sheetShape`（app.js:8771-8802）。 |
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
