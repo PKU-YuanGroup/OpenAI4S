@@ -74,6 +74,12 @@ export async function skipFirstRunWizard(page, baseUrl) {
     headers: { "content-type": "application/json" },
   });
   if (complete.ok()) {
+    // Let the startup fetches settle first. Reloading with requests in flight
+    // aborts them, and WebKit surfaces an aborted fetch as a page-level error
+    // while Chromium and Firefox drop it silently -- the same abort
+    // browser_matrix.mjs already warns about above its own `authenticate`
+    // call, reintroduced here by this reload rather than by a second goto.
+    await page.waitForLoadState("networkidle").catch(() => {});
     await page.reload({ waitUntil: "domcontentloaded" });
   }
   const wizard = page.locator("#onboarding");
