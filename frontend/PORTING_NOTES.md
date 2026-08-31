@@ -300,3 +300,26 @@ Composer `@` / `#` / `/` and the right-dock editor completer. Keyword lists are 
 | `edacCaretXY` / `edacRender` / `edacPosition` 13174-13205 | `editor.ts` | Reused `.ed-mirror`. Flip above the caret near the bottom edge. |
 | `edacUpdate` / `edacPick` / `edacClose` / `edacTeardown` 13206-13229 | `editor.ts` | Re-validate caret at pick. `execCommand('insertText')` with `setRangeText` fallback. `justPicked` suppresses the input reopen. |
 | editor wiring 9481-9499 | `bindEditorAutocomplete` + `watchEditAreas` | Per-textarea controller on `.edit-area` (F-17 has not painted the editor yet; MutationObserver binds when it does). No document/window listeners on the controller itself. |
+
+## F-11 send chain + cards
+
+Composer send, turn tickets, step / plan / permission / candidate cards, attachment and @-ref problem cards, admission tracker. Window names this lane owns are assigned by `installSend()` (F-06 `bootWs` / F-10 `installMessages` pattern), not left as F-05 stubs. Capability checks use `isReady` from `compat/stub.ts`; this module does not import `compat/window-exports.ts`. Plan-mode payload goes through F-07 `planModePayload` (already called from `send.ts`; the drifted Chinese literal is not inlined). `frame_update` is not re-registered; the turn-ticket body is `setFrameUpdateTurnHandler`.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `send` 7908-8178 | `features/send/send.ts` `send` | Ref chips, attachments, plan/explore, admission mint **before** POST, turn ticket, `planModePayload(text)` instead of the drifted Chinese literal. `ac.open` is read as an object (F-12), not `isReady`. |
+| plan / explore / composer Enter 13395-13411 | `send.ts` `bindComposer` | Called from `installSend`. IME `isComposing` / keyCode 229 ignored. `ac.open` skips Enter-to-send. |
+| `openTurnTicket` / `commitTurnTicket` / `acceptTurnTicket` / `activateTurnTicket` / `closeTurnTicket` 5679-5784 | `ticket.ts` | Generation taken before POST. `queue_position === 0` is the only proof the 202 owns the running slot. `processing` always advances the generation. |
+| `resumeWatch` 7103-7120 | `ticket.ts` `resumeWatch` | 2s status poll; miss reloads through `openConversation` (F-10, `isReady`). |
+| `turnDone` 5799-5874 | `turn.ts` | Composer unlock, ticket close, artifact reload. **Must** call F-14 `notebookOnTurnDone()`. |
+| standard-profile readiness 7842-7906 | `environment.ts` | Banner + 409/503 send block; terminal `environment_not_ready` / `environment_readiness_unavailable` opens Compute. |
+| `markCandidateReady` / `applyCandidateResolution` / `applyFinalReviewStatus` 5511-5666 | `candidate.ts` | Three-state timing verbatim. Identity helpers stay F-10 `messages/identity.ts`. Verified never lands on undelivered bytes. One `.review-badge` replaced in place. |
+| `renderPlanCard` / `updatePlanProgress` / approve/revise/discard/resume 5876-6041 | `plan.ts` | `PLAN_SETTLED_STEP_STATUSES` includes `skipped`. Dispatch takes the turn ticket **before** the POST. |
+| `stepBody` / `buildStepCard` / live step 6043-6458 | `step.ts` | `searchResultHttpUrl` rebuilds the scheme from a literal. `_ocHighlight` not ported; code blocks use F-08 `mdHighlight`. |
+| `renderPermissionCard` / `resolvePermissionCard` 6460-6614 | `permission.ts` | Frozen classes `.perm-card` / `.resolved` / `.allowed` / `.denied`. Null-proto registry. |
+| `renderAttachmentProblems` / `renderRefProblems` 13035-13096 | `problems.ts` | Attachments: client wording from `{name, reason, limit, bytes}`. Refs: server `message`. |
+| admission tracker 9016-9143 | `admission.ts` | Keys `openai4s.admission.{fid}.{id}` independent, never a container. Legacy `openai4s.admission.{fid}` migrates. Grace 60s. `outstandingAdmissions` stays on window. |
+| `onEvent` `artifact_ref_problems` … `attachment_problems` 5206-5216; `step` … `candidate_resolved` 5277-5294 | `handlers.ts` `registerSendHandlers` | One handler per type via F-06 registry. Does **not** register `action_timeline` / `frame_update` / `replay_begin` / `text_chunk`. |
+| `frame_update` turn-ticket body 5296-5310 | `handlers.ts` `handleFrameUpdateTurn` via `setFrameUpdateTurnHandler` | `processing` → `activateTurnTicket`; terminal → `applyFinalReviewStatus` + `turnDone`. Stale turn refreshes workbench only. |
+| `renderStoredStep` hook (F-10 `setRenderStoredStepImpl`) | `installSend` | Interleaved history steps paint through `step.ts` `renderStoredStep`. |
+| window contract names | `index.ts` `installSend` | Overwrites the F-05 stubs for the ten names. `main.tsx` adds one import. |
