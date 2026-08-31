@@ -453,6 +453,29 @@ def domain_in_declared(host: str, declared: Sequence[str]) -> bool:
     return False
 
 
+def raw_required_binding(frame_id: str | None) -> SkillNetworkBinding | None:
+    """A bound Skill this version refuses outright, or None.
+
+    Separate from `admit` because this half needs no measured posture: a
+    declared `raw_required` manifest is denied whatever the sandbox reports,
+    including with the compatibility env var set. That lets a caller with no
+    live kernel -- the CLI and delegated children, which reach a Cell through
+    `LocalActionExecutor` rather than `CellExecutionService` -- apply the
+    unconditional refusal without spawning a worker to ask about confinement.
+
+    The `host_only` half genuinely depends on posture and is not answered
+    here; those callers still admit less than the Web path does.
+    """
+
+    for item in bindings_for(frame_id):
+        if (
+            item.capability.mode == "raw_required"
+            and item.capability.declaration == "declared"
+        ):
+            return item
+    return None
+
+
 def admit_cell(
     *,
     frame_id: str | None,

@@ -496,6 +496,24 @@ class Agent:
         and must retain the ``LazyKernel`` zero-spawn contract.
         """
 
+        # B-02's Cell sink reaches here too. `CellExecutionService` is the Web
+        # path; a CLI run and every delegated child execute their Cells through
+        # `LocalActionExecutor`, so a Skill bound `raw_required` used to run
+        # unconfined here while the Web parent refused the identical Cell.
+        # Only the unconditional half is applied: a declared `raw_required`
+        # manifest is refused whatever the sandbox reports, which needs no
+        # posture and so keeps the zero-spawn contract. The `host_only` half
+        # does depend on measured posture, which is not available before the
+        # worker exists -- this sink still admits more than the Web one.
+        from openai4s.server.skill_network_admission import raw_required_binding
+
+        refused = raw_required_binding(self.frame_id)
+        if refused is not None:
+            raise PermissionError(
+                f"skill {refused.skill_id!r} requires raw kernel network and is "
+                "blocked in this version"
+            )
+
         if not self.cfg.roadmap_features.stage1_trusted_delivery:
             return
         from openai4s.kernel.readiness import (

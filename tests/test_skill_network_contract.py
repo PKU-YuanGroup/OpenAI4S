@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from openai4s.agent.loop import Agent
 from openai4s.bash_capability import command_digest
 from openai4s.config import Config
 from openai4s.egress import EgressBlocked, check_url, grant_domain, reset_grants
@@ -400,6 +401,31 @@ def test_cell_and_shell_sinks_have_zero_bypass():
     bash_mod = Path("openai4s/host/bash.py").read_text("utf-8")
     assert cell_mod.count("admit_cell(") == 1
     assert bash_mod.count("admit_shell(") == 1
+
+
+def test_the_cli_and_delegation_cell_sink_refuses_raw_required():
+    """`CellExecutionService` is not the only Code-as-Action sink.
+
+    A CLI run and every delegated child execute Cells through
+    `LocalActionExecutor`, whose admission hook is `Agent._admit_cell`. While
+    this file only read `cell_run.py` and `host/bash.py`, a Skill bound
+    `raw_required` ran unconfined there and the omission was invisible to the
+    zero-bypass check itself.
+
+    Only the unconditional half is asserted, which is the half that sink can
+    apply: `host_only` needs measured posture and no kernel exists yet.
+    """
+
+    loop_src = inspect.getsource(Agent._admit_cell)
+    assert "raw_required_binding(" in loop_src
+
+
+def test_raw_required_is_refused_without_any_measured_posture():
+    """The refusal that must not depend on a live kernel."""
+
+    from openai4s.server.skill_network_admission import raw_required_binding
+
+    assert raw_required_binding("frame-with-no-bindings") is None
 
 
 def test_load_event_records_skill_version_document_and_manifest_digest(tmp_path):
