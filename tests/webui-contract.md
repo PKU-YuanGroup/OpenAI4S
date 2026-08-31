@@ -81,7 +81,7 @@ Sorted by name.
 | `send` | browser_admission_fault.mjs | 4 |
 | `setActiveTab` | browser_smoke.mjs, browser_stage0_acceptance.mjs | 6 |
 | `steerDelegationChild` | browser_p1_controls.mjs | 1 |
-| `t` | browser_matrix.mjs, browser_p1_controls.mjs, browser_smoke.mjs | 10 |
+| `t` | browser_matrix.mjs, browser_p1_controls.mjs, browser_smoke.mjs | 11 |
 | `telemetryRow` | browser_matrix.mjs | 2 |
 | `timelineOverviewTimeToX` | browser_smoke.mjs | 2 |
 | `toggleActionTimelineTurn` | browser_smoke.mjs | 1 |
@@ -155,10 +155,12 @@ Sorted.
 | `#messages` | browser_p1_controls.mjs, browser_smoke.mjs | 2 |
 | `#messages .msg.assistant .md a[href^="/api/v1/artifacts/"]` | browser_stage1_trusted_delivery.mjs | 1 |
 | `#meta` | browser_team_mode.mjs | 1 |
+| `#mobile-scrim:not(.hidden)` | browser_smoke.mjs | 2 |
 | `#p` | browser_team_mode.mjs | 1 |
 | `#results-list .a-name` | browser_stage1_trusted_delivery.mjs | 1 |
-| `#rightdock.collapsed` | browser_smoke.mjs | 1 |
+| `#rightdock.collapsed` | browser_smoke.mjs | 3 |
 | `#rightdock:not(.collapsed)` | browser_smoke.mjs | 1 |
+| `#sidebar-reopen` | browser_smoke.mjs | 3 |
 | `#stage0-completion-link-probe a` | browser_stage0_acceptance.mjs | 2 |
 | `#team-admin` | browser_team_mode.mjs | 2 |
 | `#team-admin-body` | browser_team_mode.mjs | 1 |
@@ -169,7 +171,13 @@ Sorted.
 | `#team-user:not(.hidden)` | browser_team_mode.mjs | 1 |
 | `#u` | browser_team_mode.mjs | 1 |
 | `#workspace` | browser_smoke.mjs | 1 |
-| `#workspace:not(.hidden)` | browser_p1_controls.mjs, browser_smoke.mjs, browser_stage0_acceptance.mjs, browser_stage1_trusted_delivery.mjs | 7 |
+| `#workspace:not(.hidden)` | browser_p1_controls.mjs, browser_smoke.mjs, browser_stage0_acceptance.mjs, browser_stage1_trusted_delivery.mjs | 8 |
+| `#workspace:not(.hidden) .lang-btn.active[data-lang="en"]` | browser_smoke.mjs | 1 |
+| `#workspace:not(.hidden) .lang-btn.active[data-lang="zh"]` | browser_smoke.mjs | 1 |
+| `#workspace:not(.hidden) .lang-btn[data-lang="en"]` | browser_smoke.mjs | 1 |
+| `#workspace:not(.hidden) .lang-btn[data-lang="zh"]` | browser_smoke.mjs | 1 |
+| `#workspace:not(.hidden) [data-i18n="ws.nav.files"]` | browser_smoke.mjs | 1 |
+| `#ws-theme` | browser_smoke.mjs | 2 |
 | `.annot-layer` | browser_admission_fault.mjs | 1 |
 | `.annot-pin[data-annotation-status]` | browser_admission_fault.mjs | 1 |
 | `.annot-pop .annot-btn.danger` | browser_admission_fault.mjs | 1 |
@@ -187,7 +195,7 @@ Sorted.
 | `.nb-exec-frame` | browser_p1_controls.mjs | 1 |
 | `.nb-exec-note` | browser_p1_controls.mjs | 1 |
 | `.nb-exec-title` | browser_p1_controls.mjs | 1 |
-| `.nb-tray` | browser_smoke.mjs | 1 |
+| `.nb-tray` | browser_smoke.mjs | 2 |
 | `.nb-variables-empty` | browser_smoke.mjs | 1 |
 | `.nbc-error` | browser_p1_controls.mjs | 1 |
 | `.notebook-cell` | browser_p1_controls.mjs | 1 |
@@ -247,13 +255,15 @@ Sorted.
 | `.timeline-turn-toggle` | browser_smoke.mjs | 1 |
 | `.viewer-head .vh-acts button` | browser_stage1_trusted_delivery.mjs | 1 |
 | `.viewer-head .vh-name` | browser_stage1_trusted_delivery.mjs | 1 |
+| `[` | browser_smoke.mjs | 1 |
 | `[data-action="load-earlier-timeline"]` | browser_smoke.mjs | 4 |
 | `[data-action="load-omitted-timeline"]` | browser_smoke.mjs | 2 |
 | `[data-action="refresh-variables"]` | browser_smoke.mjs | 1 |
 | `[data-variable-inspector="python"]` | browser_smoke.mjs | 1 |
+| `body.sidebar-collapsed` | browser_smoke.mjs | 3 |
 | `button.toggle` | browser_matrix.mjs | 2 |
 
-Total selectors: 119
+Total selectors: 129
 
 ```json
 {
@@ -357,10 +367,12 @@ Total selectors: 119
     "#messages",
     "#messages .msg.assistant .md a[href^=\"/api/v1/artifacts/\"]",
     "#meta",
+    "#mobile-scrim:not(.hidden)",
     "#p",
     "#results-list .a-name",
     "#rightdock.collapsed",
     "#rightdock:not(.collapsed)",
+    "#sidebar-reopen",
     "#stage0-completion-link-probe a",
     "#team-admin",
     "#team-admin-body",
@@ -372,6 +384,12 @@ Total selectors: 119
     "#u",
     "#workspace",
     "#workspace:not(.hidden)",
+    "#workspace:not(.hidden) .lang-btn.active[data-lang=\"en\"]",
+    "#workspace:not(.hidden) .lang-btn.active[data-lang=\"zh\"]",
+    "#workspace:not(.hidden) .lang-btn[data-lang=\"en\"]",
+    "#workspace:not(.hidden) .lang-btn[data-lang=\"zh\"]",
+    "#workspace:not(.hidden) [data-i18n=\"ws.nav.files\"]",
+    "#ws-theme",
     ".annot-layer",
     ".annot-pin[data-annotation-status]",
     ".annot-pop .annot-btn.danger",
@@ -449,10 +467,12 @@ Total selectors: 119
     ".timeline-turn-toggle",
     ".viewer-head .vh-acts button",
     ".viewer-head .vh-name",
+    "[",
     "[data-action=\"load-earlier-timeline\"]",
     "[data-action=\"load-omitted-timeline\"]",
     "[data-action=\"refresh-variables\"]",
     "[data-variable-inspector=\"python\"]",
+    "body.sidebar-collapsed",
     "button.toggle"
   ]
 }

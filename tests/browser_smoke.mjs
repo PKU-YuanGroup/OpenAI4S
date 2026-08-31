@@ -1983,6 +1983,156 @@ try {
     }
   }
 
+  // ---- F-22 chrome smokes (locator-only waits; CSP has no unsafe-eval) ----
+  // Theme, i18n, and the 375×812 drawer had zero browser coverage. Waits use
+  // locators / waitUntil polling, not waitForFunction. page.evaluate here is
+  // assertion-only (localStorage, overflow math, loaded I18N key sets).
+  const htmlAttr = (name) => page.locator("html").getAttribute(name);
+
+  const themeBtn = page.locator("#ws-theme");
+  await themeBtn.waitFor({ state: "visible" });
+  const themeBefore = await htmlAttr("data-theme");
+  if (themeBefore !== "dark" && themeBefore !== "light") {
+    throw new Error(`expected html data-theme dark|light, got ${themeBefore}`);
+  }
+  const themeAfter = themeBefore === "dark" ? "light" : "dark";
+  await themeBtn.click();
+  await waitUntil("data-theme flip", async () => (await htmlAttr("data-theme")) === themeAfter);
+  const storedTheme = await page.evaluate(() => localStorage.getItem("os-theme"));
+  if (storedTheme !== themeAfter) {
+    throw new Error(`os-theme localStorage is ${JSON.stringify(storedTheme)}, expected ${themeAfter}`);
+  }
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator("#workspace:not(.hidden)").waitFor({ state: "visible" });
+  await waitUntil("data-theme persisted across reload", async () => (await htmlAttr("data-theme")) === themeAfter);
+  const storedThemeAfterReload = await page.evaluate(() => localStorage.getItem("os-theme"));
+  if (storedThemeAfterReload !== themeAfter) {
+    throw new Error(`os-theme did not survive reload: ${JSON.stringify(storedThemeAfterReload)}`);
+  }
+
+  await page.locator("#ws-theme").waitFor({ state: "visible" });
+  const filesLabel = page.locator('#workspace:not(.hidden) [data-i18n="ws.nav.files"]');
+  await filesLabel.waitFor({ state: "visible" });
+  const langBefore = (await htmlAttr("lang")) === "en" ? "en" : "zh";
+  const filesBefore = ((await filesLabel.textContent()) || "").trim();
+  const firstLang = langBefore === "en" ? "zh" : "en";
+  const secondLang = firstLang === "en" ? "zh" : "en";
+  const filesFor = (lang) => (lang === "en" ? "Files" : "文件");
+
+  async function switchLang(lang) {
+    if (lang === "en") {
+      await page.locator('#workspace:not(.hidden) .lang-btn[data-lang="en"]').click();
+    } else {
+      await page.locator('#workspace:not(.hidden) .lang-btn[data-lang="zh"]').click();
+    }
+    await waitUntil(`html lang=${lang}`, async () => (await htmlAttr("lang")) === lang);
+    if (lang === "en") {
+      await page.locator('#workspace:not(.hidden) .lang-btn.active[data-lang="en"]').waitFor({ state: "visible" });
+    } else {
+      await page.locator('#workspace:not(.hidden) .lang-btn.active[data-lang="zh"]').waitFor({ state: "visible" });
+    }
+    await filesLabel.filter({ hasText: filesFor(lang) }).waitFor({ state: "visible" });
+  }
+
+  await switchLang(firstLang);
+  const filesAfterFirst = ((await filesLabel.textContent()) || "").trim();
+  if (!filesAfterFirst || filesAfterFirst === filesBefore) {
+    throw new Error(
+      `i18n switch to ${firstLang} did not change the surface: before=${JSON.stringify(filesBefore)} after=${JSON.stringify(filesAfterFirst)}`,
+    );
+  }
+  await switchLang(secondLang);
+  const filesAfterSecond = ((await filesLabel.textContent()) || "").trim();
+  if (filesAfterSecond === filesAfterFirst) {
+    throw new Error(`i18n switch back to ${secondLang} left the surface unchanged`);
+  }
+  if (filesBefore && filesAfterSecond !== filesBefore) {
+    throw new Error(
+      `i18n round-trip did not restore the starting surface: start=${JSON.stringify(filesBefore)} end=${JSON.stringify(filesAfterSecond)}`,
+    );
+  }
+
+  // Loaded zh/en dictionaries (classic-script I18N). A function callback
+  // naming I18N would add it to CONTRACT_GLOBALS; the string form is not
+  // scanned, and the new-UI module scope has no I18N global — fall back to
+  // data-i18n keys whose t() result is still the key.
+  const dictDiff = await page.evaluate(`(() => {
+    if (typeof I18N === "undefined" || !I18N || typeof I18N.zh !== "object" || typeof I18N.en !== "object") {
+      return { available: false, onlyZh: [], onlyEn: [] };
+    }
+    const zh = Object.keys(I18N.zh);
+    const en = Object.keys(I18N.en);
+    const zhSet = new Set(zh);
+    const enSet = new Set(en);
+    return {
+      available: true,
+      onlyZh: zh.filter((k) => !enSet.has(k)),
+      onlyEn: en.filter((k) => !zhSet.has(k)),
+    };
+  })()`);
+  if (dictDiff.available) {
+    if (dictDiff.onlyZh.length || dictDiff.onlyEn.length) {
+      throw new Error(
+        `i18n key set difference is not empty: onlyZh=${JSON.stringify(dictDiff.onlyZh)} onlyEn=${JSON.stringify(dictDiff.onlyEn)}`,
+      );
+    }
+  } else {
+    const missing = await page.evaluate(() => {
+      const keys = [];
+      for (const attr of ["data-i18n", "data-i18n-title", "data-i18n-ph", "data-i18n-val"]) {
+        document.querySelectorAll("[" + attr + "]").forEach((node) => {
+          const key = node.getAttribute(attr);
+          if (key) keys.push(key);
+        });
+      }
+      return keys.filter((key) => t(key) === key);
+    });
+    if (missing.length) {
+      throw new Error(`i18n key set difference is not empty on the surface: ${missing.join(", ")}`);
+    }
+  }
+
+  if (await page.locator("#rightdock.collapsed").count() === 0) {
+    await page.locator(".nb-tray").click();
+  }
+  await page.locator("#rightdock.collapsed").waitFor({ state: "attached" });
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.locator("body.sidebar-collapsed").waitFor({ state: "attached" });
+  await page.locator("#sidebar-reopen").waitFor({ state: "visible" });
+
+  async function bodyOverflowX() {
+    // Compare against innerWidth so a vertical scrollbar shrinking
+    // clientWidth is not reported as a horizontal overflow.
+    return page.evaluate(() => {
+      const body = document.body;
+      const root = document.documentElement;
+      const view = window.innerWidth;
+      return {
+        body: body.scrollWidth - view,
+        root: root.scrollWidth - view,
+      };
+    });
+  }
+  const overflowCollapsed = await bodyOverflowX();
+  if (overflowCollapsed.body > 0 || overflowCollapsed.root > 0) {
+    throw new Error(
+      `body overflows horizontally at 375x812 (drawer closed): body=${overflowCollapsed.body} root=${overflowCollapsed.root}`,
+    );
+  }
+
+  await page.locator("#sidebar-reopen").click();
+  await waitUntil("mobile drawer open", async () => (await page.locator("body.sidebar-collapsed").count()) === 0);
+  await page.locator("#mobile-scrim:not(.hidden)").waitFor({ state: "visible" });
+  const overflowOpen = await bodyOverflowX();
+  if (overflowOpen.body > 0 || overflowOpen.root > 0) {
+    throw new Error(
+      `body overflows horizontally at 375x812 (drawer open): body=${overflowOpen.body} root=${overflowOpen.root}`,
+    );
+  }
+  await page.locator("#mobile-scrim:not(.hidden)").click();
+  await page.locator("body.sidebar-collapsed").waitFor({ state: "attached" });
+  await page.locator("#sidebar-reopen").waitFor({ state: "visible" });
+
   if (pageErrors.length) {
     throw new Error(`browser page errors: ${pageErrors.join(" | ")}`);
   }

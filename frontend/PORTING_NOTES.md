@@ -18,6 +18,7 @@ This work item does not port domain logic from `app.js`. It wires the committed 
 | `_serve_index` (gateway.py; plan cited ~13506, now ~13948) always served `WEBUI_DIR/index.html` | `_serve_index` serves `WEBUI_DIR/dist/index.html` iff `OPENAI4S_WEBUI_NEXT=1` (exact `1` after strip). Helper: `_webui_next_enabled()` | Dispatch is unchanged: `/`, `/index.html` (`_serve_static` special-case), and unknown non-API GET (SPA deep links `/projects/{pid}/frames/{fid}`) still call `_serve_index`. Unset / any other value is the legacy shell. `/static/` resolution is unchanged, so `/static/dist/` is a normal tree under `WEBUI_DIR` with or without the flag. |
 | `[tool.setuptools.package-data]` single-level globs (`server/webui/*.html`) | also `server/webui/dist/*.html` and `server/webui/dist/assets/*` | Existing globs stay. Dist is a subdirectory; omitting the new globs would drop the next UI from the wheel with no error. |
 | `_WHEEL_REQUIRED` pinned `server/webui/index.html` / `app.js` / … | also pins `openai4s/server/webui/dist/index.html` | Sentinel only. Hashed asset names are not pinned. `_SDIST_REQUIRED` inherits the sentinel via `*_WHEEL_REQUIRED`. |
+
 ## F-09 theme
 
 | Old (`openai4s/server/webui/`) | New | Semantics kept |
@@ -323,3 +324,14 @@ Composer send, turn tickets, step / plan / permission / candidate cards, attachm
 | `frame_update` turn-ticket body 5296-5310 | `handlers.ts` `handleFrameUpdateTurn` via `setFrameUpdateTurnHandler` | `processing` → `activateTurnTicket`; terminal → `applyFinalReviewStatus` + `turnDone`. Stale turn refreshes workbench only. |
 | `renderStoredStep` hook (F-10 `setRenderStoredStepImpl`) | `installSend` | Interleaved history steps paint through `step.ts` `renderStoredStep`. |
 | window contract names | `index.ts` `installSend` | Overwrites the F-05 stubs for the ten names. `main.tsx` adds one import. |
+
+## F-22 zero-coverage locator smokes
+
+This work item does not port domain logic. It adds locator-only waits at the tail of `tests/browser_smoke.mjs` and one step on the existing `browser-smoke` CI job.
+
+| Old (`openai4s/server/webui/` / `app.js`) | Smoke | Semantics kept |
+| --- | --- | --- |
+| `applyTheme` / `cycleTheme` 185-215; `theme-bootstrap.js`; `os-theme` | `#ws-theme` click → `html[data-theme]` flips, `localStorage.os-theme` matches, survives `reload` | Single source of truth is `data-theme` on `<html>` (F-09). Waits are locator/`waitUntil` polls, not `waitForFunction` (CSP has no `unsafe-eval`). |
+| `setLang` / `refreshLangToggle` 168-173; `I18N.zh`/`I18N.en` 250-2668 | `.lang-btn[data-lang]` click → `html[lang]` + `[data-i18n="ws.nav.files"]` ("文件"/"Files"); zh/en key-set difference is empty | `os-lang` persist and `.lang-btn.active` unchanged. Loaded `I18N` dictionaries are asserted when the classic-script const is in scope; otherwise surface keys whose `t(key)` is still the key. |
+| mobile drawer 2689-2707; `#sidebar-reopen`; `#mobile-scrim` | viewport 375×812 → `body.sidebar-collapsed`, no horizontal overflow, reopen/scrim cycle | `matchMedia("(max-width: 900px)")` still drives `setSidebar`. Overflow compares `scrollWidth` to `innerWidth` so a vertical scrollbar is not a false positive. |
+| `tests/scientific_renderers_smoke.cjs` (manual) | `browser-smoke` job step `node tests/scientific_renderers_smoke.cjs` | Same UMD file. **Step, not job** — the 17 PR-job count stays locked. |
