@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "scenario": "forward",
+  "scenario_id": "forward_prediction_uspto_mit_separated_v1",
+  "query_source": "../04_forward_prediction.md#science-query",
+  "dataset": {
+    "profile": "synthetic_protocol_smoke",
+    "license": "CC0-1.0",
+    "scientific_accuracy_claim": false
+  },
+  "public": {
+    "inputs.json": [{"reaction_id": "reaction_001", "reactants": "A", "reagents": ""}],
+    "config.json": {"top_k": 3, "random_seed": 2026},
+    "model_outputs.json": [
+      {
+        "reaction_id": "reaction_001",
+        "predictions": [
+          {"rank": 1, "product_smiles": "P", "score": 0.9},
+          {"rank": 2, "product_smiles": "Q", "score": 0.1}
+        ],
+        "error": null
+      }
+    ]
+  },
+  "private_evaluator": {
+    "references.json": [{"reaction_id": "reaction_001", "products": ["P"]}]
+  }
+}

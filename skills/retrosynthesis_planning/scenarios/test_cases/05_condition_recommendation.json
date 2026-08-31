@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "scenario": "conditions",
+  "scenario_id": "reaction_condition_uspto_categorical_v1",
+  "query_source": "../05_condition_recommendation.md#science-query",
+  "dataset": {
+    "profile": "synthetic_protocol_smoke",
+    "license": "CC0-1.0",
+    "scientific_accuracy_claim": false
+  },
+  "public": {
+    "inputs.json": [{"reaction_id": "reaction_001", "reactants": "A", "product": "P"}],
+    "config.json": {"top_k": 3, "random_seed": 2026},
+    "vocabulary.json": {
+      "catalyst1": ["cat_a", "cat_b"],
+      "solvent1": ["solv_a", "solv_b"],
+      "solvent2": ["none"],
+      "reagent1": ["reag_a", "reag_b"],
+      "reagent2": ["none"]
+    },
+    "model_outputs.json": [
+      {
+        "reaction_id": "reaction_001",
+        "predictions": [
+          {
+            "rank": 1,
+            "score": 0.8,
+            "conditions": {
+              "catalyst1": "cat_a",
+              "solvent1": "solv_a",
+              "solvent2": "none",
+              "reagent1": "reag_a",
+              "reagent2": "none"
+            }
+          }
+        ],
+        "error": null
+      }
+    ]
+  },
+  "private_evaluator": {
+    "references.json": [
+      {
+        "reaction_id": "reaction_001",
+        "condition_sets": [
+          {
+            "catalyst1": "cat_a",
+            "solvent1": "solv_a",
+            "solvent2": "none",
+            "reagent1": "reag_a",
+            "reagent2": "none"
+          }
+        ]
+      }
+    ]
+  }
+}

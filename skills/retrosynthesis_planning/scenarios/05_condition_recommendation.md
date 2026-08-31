@@ -171,22 +171,18 @@ private_evaluator/
 reference_repository/
 ├── README.md
 ├── environment.yml
-├── run.sh
-├── input/
-├── src/
-│   ├── validate_schema.py
-│   ├── audit_splits.py
-│   ├── train_or_load_model.py
-│   ├── validate_model.py
-│   ├── recommend_conditions.py
-│   └── build_outputs.py
-├── results/
-│   ├── condition_recommendations.jsonl
-│   ├── validation_metrics.csv
-│   └── intermediate_results.json
-└── analysis/
-    └── diagnostics.py
+├── pipelines/
+│   └── 05_condition_recommendation.py
+└── test_cases/
+    ├── install.py
+    ├── evaluate.py
+    ├── database_sources.json
+    └── 05_condition_recommendation.json
 ```
+
+仓库中的实际参考实现位于 `scenarios/pipelines/` 与
+`scenarios/test_cases/`。公开 pipeline 只能看到冻结 vocabulary，不能看到参考
+condition tuple；evaluator 在输出冻结后才读取参考 tuple。
 
 ## 评估自动化实现难度
 

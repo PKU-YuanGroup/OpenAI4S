@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "scenario": "atom_mapping",
+  "scenario_id": "reaction_atom_mapping_curated_v1",
+  "query_source": "../03_atom_mapping.md#science-query",
+  "dataset": {
+    "profile": "synthetic_protocol_smoke",
+    "license": "CC0-1.0",
+    "scientific_accuracy_claim": false,
+    "fixture_note": "Pre-analyzed correspondence tests the boundary without claiming RDKit inference."
+  },
+  "public": {
+    "inputs.json": [{"reaction_id": "reaction_001", "reaction_smiles": "C>>C"}],
+    "config.json": {"random_seed": 2026},
+    "model_outputs.json": [
+      {
+        "reaction_id": "reaction_001",
+        "correspondence": ["r0:a0=>p0:a0"],
+        "bond_changes": [],
+        "valid": true,
+        "issues": []
+      }
+    ]
+  },
+  "private_evaluator": {
+    "references.json": [
+      {
+        "reaction_id": "reaction_001",
+        "equivalent_correspondences": [
+          [{"reactant_atom": "r0:a0", "product_atom": "p0:a0"}]
+        ],
+        "bond_changes": [],
+        "ambiguous": false
+      }
+    ]
+  }
+}

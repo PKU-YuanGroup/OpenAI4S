@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "scenario": "single_step",
+  "scenario_id": "single_step_retrosynthesis_class_unknown_v1",
+  "query_source": "../01_single_step_retrosynthesis.md#science-query",
+  "dataset": {
+    "profile": "synthetic_protocol_smoke",
+    "license": "CC0-1.0",
+    "scientific_accuracy_claim": false
+  },
+  "public": {
+    "inputs.json": [
+      {"target_id": "target_001", "product_smiles": "CCO"}
+    ],
+    "model_outputs.json": [
+      {
+        "target_id": "target_001",
+        "predictions": [
+          {"rank": 1, "reactants_smiles": "CC.O", "score": 0.9},
+          {"rank": 2, "reactants_smiles": "C.CO", "score": 0.4}
+        ],
+        "error": null
+      }
+    ],
+    "config.json": {"top_k": 3, "random_seed": 2026},
+    "model_manifest.json": {
+      "model": "synthetic-protocol-fixture",
+      "provenance_status": "fixture_only"
+    }
+  },
+  "private_evaluator": {
+    "references.json": [
+      {"target_id": "target_001", "precursor_sets": ["CC.O"]}
+    ]
+  }
+}
