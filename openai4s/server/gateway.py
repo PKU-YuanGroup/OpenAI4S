@@ -742,10 +742,6 @@ def _gzip_cached_bytes(path: Path, st: os.stat_result) -> bytes:
         if cached is not None:
             _GZIP_CACHE.move_to_end(key)
             return cached
-    # codeql[py/path-injection]: reached only via _resolve_static_file,
-    # which commonpath-checks the normpath'd candidate, realpaths it and
-    # commonpath-checks again (symlink escape), then isfile. A non-None
-    # status short-circuits to 403/404 before any Path reaches here.
     raw = path.read_bytes()
     compressed = gzip.compress(raw, compresslevel=_GZIP_LEVEL, mtime=0)
     del raw
@@ -785,13 +781,19 @@ def _resolve_static_file(rel: str) -> tuple[Path | None, int | None]:
         real = os.path.realpath(candidate)
     except OSError:
         return None, 404
+    # Two spellings of one check, deliberately both. `commonpath` is the one
+    # that is right about separators and drive roots; the prefix comparison is
+    # the form static analysis recognises as a path-injection barrier, and
+    # without it every read below this function is reported as unguarded.
+    # Neither is load-bearing alone -- a path has to pass both.
+    prefix = base if base.endswith(os.sep) else base + os.sep
+    if real != base and not real.startswith(prefix):
+        return None, 403
     try:
         if os.path.commonpath((base, real)) != base:
             return None, 403
     except ValueError:
         return None, 403
-    # codeql[py/path-injection]: this *is* the barrier -- `real` has just
-    # been realpath'd and commonpath-checked against the served root.
     if not os.path.isfile(real):
         return None, 404
     return Path(real), None
@@ -14042,8 +14044,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             security: dict[str, str] | None = None,
         ) -> None:
             try:
-                # codeql[py/path-injection]: see _resolve_static_file; the
-                # path is confined to WEBUI_DIR before this call.
                 st = path.stat()
             except OSError:
                 self._json({"error": "not found"}, 404)
@@ -14084,8 +14084,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if fingerprinted:
                 try:
-                    # codeql[py/path-injection]: confined by
-                    # _resolve_static_file before this call.
                     body = path.read_bytes()
                 except OSError:
                     self._json({"error": "not found"}, 404)
@@ -14118,9 +14116,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             """Send a potentially large local file without loading it into RAM."""
             extra = dict(extra or {})
             try:
-                # codeql[py/path-injection]: confined by
-                # _resolve_static_file; the other caller passes a
-                # server-generated temp file, not a request path.
                 size = path.stat().st_size
             except OSError:
                 self._json({"error": "not found"}, 404)
@@ -14146,9 +14141,6 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.end_headers()
                 return
             try:
-                # codeql[py/path-injection]: confined by
-                # _resolve_static_file; the other caller passes a
-                # server-generated temp file, not a request path.
                 source = path.open("rb")
             except OSError:
                 self._json({"error": "not found"}, 404)
