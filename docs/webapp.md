@@ -1,8 +1,14 @@
 # The web app
 
 `openai4s serve` starts a pure-stdlib scientific workbench at
-`http://127.0.0.1:8760/`: `http.server`, a hand-rolled WebSocket, and static
-HTML/CSS/JavaScript served directly from the working tree.
+`http://127.0.0.1:8760/`: `http.server`, a hand-rolled WebSocket, and the
+committed Vite workbench (`openai4s/server/webui/dist/`). The source lives in
+`frontend/` (Preact 10 + `@preact/signals` + TypeScript). `npm run dev` serves
+`http://127.0.0.1:5173/static/dist/` and proxies `/api`, `/ws`, and `/static`
+to the daemon. `npm run build` writes `dist/`; that tree lands in the same PR
+as the source. `OPENAI4S_WEBUI=legacy` serves the frozen `webui/index.html` +
+`app.js` hatch. Satellite pages (login, replay, share, Ketcher) stay classic
+scripts.
 
 ## Available now
 

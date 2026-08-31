@@ -5,7 +5,7 @@ import {
 import { currentId, project, sessions } from "../../stores/session";
 import { activeTab, dock, openTabs, provMode } from "../../stores/ui";
 import { isReady } from "../../compat/stub";
-import { bytes, callWindow, el, hostWindow, translate } from "./api";
+import { bytes, callWindow, el, hostWindow, icon, translate } from "./api";
 import { filesT } from "./copy";
 import {
   artifactDeepLinkHref,
@@ -41,6 +41,62 @@ export function closeTab(id: string): void {
   }
 }
 
+function artIcon(a: ArtifactRow): string {
+  const nm = String(a.filename || "").toLowerCase();
+  const ct = String(a.content_type || "");
+  if (ct.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(nm)) return "file";
+  if (/\.(pdb|cif|mol|mol2|sdf|xyz)$/i.test(nm)) return "atom";
+  if (/csv|json|tsv/.test(ct) || /\.(csv|json|tsv)$/i.test(nm)) return "table";
+  return "file";
+}
+
+function tabBtn(kind: "div" | "button", iconName: string, label: string): HTMLElement {
+  const node = el(kind, "dock-tab");
+  const ic = el("span", "ic");
+  ic.innerHTML = icon(iconName, 14);
+  node.appendChild(ic);
+  node.appendChild(el("span", "t-name", label));
+  return node;
+}
+
+export function renderDockTabs(): void {
+  if (typeof document === "undefined") return;
+  const bar = document.getElementById("dock-tabs");
+  if (!bar) return;
+  bar.innerHTML = "";
+  ((openTabs.value as ArtifactRow[]) || []).forEach((a) => {
+    const tab = tabBtn("div", artIcon(a), a.filename || "artifact");
+    if (activeTab.value === a.id) tab.classList.add("active");
+    const close = el("span", "t-close");
+    close.innerHTML = icon("x", 14);
+    close.title = translate("common.close");
+    close.onclick = (event) => {
+      event.stopPropagation();
+      closeTab(a.id);
+    };
+    tab.appendChild(close);
+    tab.onclick = () => {
+      dockArtifact.value = a;
+      provMode.value = false;
+      setActiveTab(a.id);
+    };
+    bar.appendChild(tab);
+  });
+  const notebook = tabBtn("button", "notebook", "Notebook");
+  if (activeTab.value === "notebook") notebook.classList.add("active");
+  notebook.onclick = () => setActiveTab("notebook");
+  bar.appendChild(notebook);
+  const timeline = tabBtn("button", "clock", translate("dock.tab.timeline"));
+  if (activeTab.value === "timeline") timeline.classList.add("active");
+  timeline.onclick = () => setActiveTab("timeline");
+  bar.appendChild(timeline);
+  if (activeTab.value === "files") {
+    const files = tabBtn("button", "files", "Files");
+    files.classList.add("active");
+    bar.appendChild(files);
+  }
+}
+
 export function showDockPane(pane: string): void {
   if (typeof document === "undefined") return;
   ["viewer", "notebook", "timeline", "files"].forEach((p) => {
@@ -49,14 +105,33 @@ export function showDockPane(pane: string): void {
   });
 }
 
+function dockEl(): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  return document.getElementById("rightdock");
+}
+
 export function dockOpen(): void {
   const d = dock.value as { open: boolean; tab: string };
   dock.value = { ...d, open: true, tab: d.tab };
+  dockEl()?.classList.remove("collapsed");
+}
+
+export function dockClose(): void {
+  const d = dock.value as { open: boolean; tab: string };
+  dock.value = { ...d, open: false, tab: d.tab };
+  dockEl()?.classList.add("collapsed");
+}
+
+export function dockToggle(): void {
+  const d = dock.value as { open: boolean; tab: string };
+  if (d.open) dockClose();
+  else setActiveTab(activeTab.value || "notebook");
 }
 
 export function setActiveTab(tab: string): void {
   activeTab.value = tab;
   dockOpen();
+  renderDockTabs();
   const pane =
     tab === "notebook" ? "notebook" : tab === "timeline" ? "timeline" : tab === "files" ? "files" : "viewer";
   showDockPane(pane);

@@ -455,6 +455,18 @@ jobs:
       # A step on this job, not a new job — the 17 PR-job count is locked.
       - name: Scientific renderer parser smoke
         run: node tests/scientific_renderers_smoke.cjs
+      # F-23: Vitest on this Node job, not a new job — the 17 PR-job count
+      # stays locked. frontend/package-lock.json is the rebuild pin.
+      - name: Frontend unit tests (Vitest)
+        run: |
+          npm ci --prefix frontend
+          npm test --prefix frontend
+      # F-23: committed dist must match `npm run build`. A skipped rebuild
+      # would ship a workbench that is not the source this PR changed.
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked
@@ -546,6 +558,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server
         run: uv sync --locked
       # Before the browser: the harness's own redaction, schema, binding and
@@ -636,6 +653,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked

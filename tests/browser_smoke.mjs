@@ -669,6 +669,16 @@ try {
     hasText: /Action Timeline|行动时间线/i,
   });
   await timelineTab.click();
+  // Opening the Timeline tab kicks off loadWorkbenchState (9 optional GETs).
+  // The fixture walk below stubs fetch and asserts search/fold stay local; an
+  // in-flight tab-open request would fail that assertion as a race.
+  const workbenchIdle = Date.now() + 5000;
+  while (Date.now() < workbenchIdle) {
+    const loading = await page.evaluate(() => !!(window.S && window.S._workbenchLoading));
+    if (!loading) break;
+    await page.waitForTimeout(50);
+  }
+  await page.waitForLoadState("networkidle");
   await page.locator(".branch-panel").waitFor({ state: "visible" });
   await page.locator(".recovery-action-list").waitFor({ state: "visible" });
   // One button per advertised action, enabled or not — `disabledWorkbenchButton`
@@ -826,6 +836,7 @@ try {
           throw new Error(`trajectory search did not highlight every match for ${query}`);
         }
       };
+      await new Promise((resolve) => setTimeout(resolve, 400));
       let localInteractionRequests = 0;
       window.fetch = (input, init) => { localInteractionRequests += 1; return originalFetch(input, init); };
       await setSearch("microscopy", ["ledger-a"]);
@@ -1801,6 +1812,7 @@ try {
   await page.locator("#dock-tabs .dock-tab").filter({
     hasText: /Action Timeline|行动时间线/i,
   }).click();
+  await page.waitForLoadState("networkidle");
   await page.locator(".branch-name").filter({ hasText: "Browser smoke fork" }).waitFor({ state: "visible" });
 
   const branchState = await api(`/frames/${encodeURIComponent(frameId)}/branches`);

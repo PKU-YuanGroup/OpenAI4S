@@ -47,6 +47,11 @@ def static_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     webui = tmp_path / "webui"
     webui.mkdir()
     _write(webui, "index.html", b"<!doctype html><title>fixture</title>\n" + _PAYLOAD)
+    _write(
+        webui,
+        "dist/index.html",
+        b"<!doctype html><title>dist-fixture</title>\n" + _PAYLOAD,
+    )
     _write(webui, "app.js", _PAYLOAD)
     _write(webui, "tiny.js", b"ok")
     _write(webui, "style.css", _PAYLOAD)

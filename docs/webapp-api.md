@@ -1,8 +1,10 @@
 # Web App API Contract (as implemented)
 
 This document records the **actual** HTTP/WebSocket contract between
-`openai4s/server/gateway.py` (backend) and `openai4s/server/webui/app.js`
-(frontend), including known warts and gaps. It is descriptive, not
+`openai4s/server/gateway.py` (backend) and the workbench frontend
+(`frontend/` source, served from `openai4s/server/webui/dist/`;
+`openai4s/server/webui/app.js` is the `OPENAI4S_WEBUI=legacy` hatch),
+including known warts and gaps. It is descriptive, not
 aspirational: every claim below maps to the Gateway/frontend or to a focused
 service they compose (notably the execution coordinator, session-domain,
 workbench-state, and permission services). If you change that public surface,
@@ -203,10 +205,11 @@ contract.
   Only `broadcast` events are sequenced; point-to-point snapshots delivered on
   subscribe (`execution_queue`, pending approval cards) and the replay control
   frames deliberately carry no `seq`.
-- The frontend is a single-page app served from the working tree
-  (`/`, `/index.html`, `/static/*`). Any unknown non-API `GET` serves the SPA
-  shell (`index.html`) to support deep links. Unknown non-GET, non-API paths
-  return `404 {"error": "not found"}`.
+- The frontend is a single-page app. `/`, `/index.html`, and any unknown
+  non-API `GET` serve the SPA shell (`webui/dist/index.html` by default;
+  `webui/index.html` when `OPENAI4S_WEBUI=legacy`) so deep links such as
+  `/projects/{pid}/frames/{fid}` work. `/static/*` is the ordinary static
+  tree. Unknown non-GET, non-API paths return `404 {"error": "not found"}`.
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
 - Request bodies are JSON except the explicitly documented Session-package
@@ -297,7 +300,7 @@ or stored `Content-Type`:
 
 | Route | Body | Notes |
 | --- | --- | --- |
-| `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/index.html`. |
+| `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/dist/index.html` (or `webui/index.html` when `OPENAI4S_WEBUI=legacy`). |
 | `GET /static/<rel>` | file bytes | Path-traversal-guarded; 404/403 as JSON. |
 | `GET /api/artifacts/{ident}` | artifact bytes | Compatibility route. `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
 | `GET /api/v1/artifacts/versions/{version_id}` | immutable artifact-version bytes | Stage 1 trusted completion links use this reserved canonical route only. The server helper rejects empty and dot-only identifiers and encodes slash, Unicode, and URL metacharacters into one path segment. The route resolves that exact version or 404 and never falls back to an Artifact id or filename, so a reopened link remains bound to the same bytes after the head changes. |

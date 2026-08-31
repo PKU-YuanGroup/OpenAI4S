@@ -59,5 +59,26 @@ export async function authenticate(page, baseUrl, explicitToken = undefined) {
       `the token bootstrap did not strip the credential from the URL: ${page.url()}`
     );
   }
+  await skipFirstRunWizard(page, baseUrl);
   return token;
+}
+
+export async function skipFirstRunWizard(page, baseUrl) {
+  // F-23: the default workbench is the Vite shell, which mounts the first-run
+  // wizard on a fresh data dir. Workbench E2E files drive dock/composer
+  // locators; a modal on top is not the product under test here. Skip is a
+  // documented first-run path (`POST {skip:true}`, zero provider calls).
+  const completeUrl = new URL("/api/v1/onboarding/complete", baseUrl);
+  const complete = await page.request.post(completeUrl.toString(), {
+    data: { skip: true },
+    headers: { "content-type": "application/json" },
+  });
+  if (complete.ok()) {
+    await page.reload({ waitUntil: "domcontentloaded" });
+  }
+  const wizard = page.locator("#onboarding");
+  if (await wizard.isVisible().catch(() => false)) {
+    await wizard.locator("button.outline-btn").first().click();
+    await wizard.waitFor({ state: "hidden", timeout: 10000 });
+  }
 }

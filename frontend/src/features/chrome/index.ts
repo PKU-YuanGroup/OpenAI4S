@@ -7,6 +7,8 @@
  */
 
 import { isReady } from "../../compat/stub";
+import { activeTab, dock } from "../../stores/ui";
+import { dockClose, dockToggle, setActiveTab } from "../artifacts/ui";
 import { cycleTheme } from "../theme/theme";
 import "./chrome.css";
 import { $ } from "./dom";
@@ -134,5 +136,28 @@ export function bootChrome(): void {
     });
   }
   installWorkbenchKeys();
+  bindDockChrome();
   bootTeam();
+}
+
+function bindDockChrome(): void {
+  const tray = document.querySelector(".nb-tray");
+  if (tray instanceof HTMLElement && tray.dataset.f23Bound !== "1") {
+    tray.dataset.f23Bound = "1";
+    tray.addEventListener("click", () => {
+      const d = dock.value as { open?: boolean };
+      if (d.open && activeTab.value === "notebook") dockClose();
+      else setActiveTab("notebook");
+    });
+  }
+  const toggle = document.getElementById("dock-toggle");
+  if (toggle && toggle.dataset.f23Bound !== "1") {
+    toggle.dataset.f23Bound = "1";
+    toggle.addEventListener("click", () => dockToggle());
+  }
+  const collapse = document.getElementById("dock-collapse");
+  if (collapse && collapse.dataset.f23Bound !== "1") {
+    collapse.dataset.f23Bound = "1";
+    collapse.addEventListener("click", () => dockClose());
+  }
 }

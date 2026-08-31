@@ -1,4 +1,4 @@
-"""OPENAI4S_WEBUI_NEXT: dist SPA shell, packaging globs, wheel sentinel.
+"""OPENAI4S_WEBUI: dist SPA shell by default, legacy escape hatch, packaging.
 
 Wire tests go through a real ThreadingHTTPServer so `/`, `/index.html`, and
 an unknown non-API GET (SPA deep links) share the same `_serve_index` path
@@ -117,40 +117,40 @@ def _get(
 
 
 @pytest.mark.parametrize(
-    "raw, enabled",
+    "raw, legacy",
     [
         (None, False),
         ("", False),
         ("0", False),
+        ("1", False),
+        ("next", False),
         ("true", False),
         ("yes", False),
         ("on", False),
-        ("1", True),
-        (" 1 ", True),
+        ("LEGACY", False),
+        ("legacy", True),
+        (" legacy ", True),
     ],
 )
-def test_webui_next_flag_is_exact_one(monkeypatch: pytest.MonkeyPatch, raw, enabled):
-    if raw is None:
-        monkeypatch.delenv("OPENAI4S_WEBUI_NEXT", raising=False)
-    else:
-        monkeypatch.setenv("OPENAI4S_WEBUI_NEXT", raw)
-    assert gateway_mod._webui_next_enabled() is enabled
-
-
-def test_unset_flag_serves_legacy_shell_and_deep_links(webui_next_daemon):
-    port, token = webui_next_daemon["port"], webui_next_daemon["token"]
-    for path in ("/", "/index.html", "/projects/p1/frames/f1"):
-        status, hdrs, body = _get(port, path, token)
-        assert status == 200, path
-        assert body == _LEGACY, path
-        assert hdrs["content-type"].startswith("text/html")
-        assert b"next-shell" not in body
-
-
-def test_flag_serves_dist_index_for_shell_and_deep_links(
-    webui_next_daemon, monkeypatch: pytest.MonkeyPatch
+def test_webui_legacy_flag_is_exact_legacy(
+    monkeypatch: pytest.MonkeyPatch, raw, legacy
 ):
+    monkeypatch.delenv("OPENAI4S_WEBUI_NEXT", raising=False)
+    if raw is None:
+        monkeypatch.delenv("OPENAI4S_WEBUI", raising=False)
+    else:
+        monkeypatch.setenv("OPENAI4S_WEBUI", raw)
+    assert gateway_mod._webui_legacy_enabled() is legacy
+
+
+def test_stale_webui_next_env_does_not_select_legacy(monkeypatch: pytest.MonkeyPatch):
+    """Retired F-04 name must not flip the default back to the hatch."""
     monkeypatch.setenv("OPENAI4S_WEBUI_NEXT", "1")
+    monkeypatch.delenv("OPENAI4S_WEBUI", raising=False)
+    assert gateway_mod._webui_legacy_enabled() is False
+
+
+def test_unset_flag_serves_dist_shell_and_deep_links(webui_next_daemon):
     port, token = webui_next_daemon["port"], webui_next_daemon["token"]
     for path in ("/", "/index.html", "/projects/p1/frames/f1"):
         status, hdrs, body = _get(port, path, token)
@@ -158,6 +158,19 @@ def test_flag_serves_dist_index_for_shell_and_deep_links(
         assert body == _NEXT, path
         assert hdrs["content-type"].startswith("text/html")
         assert b"legacy-shell" not in body
+
+
+def test_legacy_flag_serves_legacy_shell_and_deep_links(
+    webui_next_daemon, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("OPENAI4S_WEBUI", "legacy")
+    port, token = webui_next_daemon["port"], webui_next_daemon["token"]
+    for path in ("/", "/index.html", "/projects/p1/frames/f1"):
+        status, hdrs, body = _get(port, path, token)
+        assert status == 200, path
+        assert body == _LEGACY, path
+        assert hdrs["content-type"].startswith("text/html")
+        assert b"next-shell" not in body
 
 
 def test_flag_does_not_hide_legacy_static_or_dist_tree(
@@ -174,7 +187,7 @@ def test_flag_does_not_hide_legacy_static_or_dist_tree(
     assert status == 200
     assert body == _ASSET
 
-    monkeypatch.setenv("OPENAI4S_WEBUI_NEXT", "1")
+    monkeypatch.setenv("OPENAI4S_WEBUI", "legacy")
     status, _, body = _get(port, "/static/app.js", token)
     assert status == 200
     assert body == b"legacy-app\n"
@@ -184,14 +197,21 @@ def test_flag_does_not_hide_legacy_static_or_dist_tree(
     assert body == _ASSET
 
 
-def test_flag_on_without_dist_index_is_404(
-    webui_next_daemon, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("OPENAI4S_WEBUI_NEXT", "1")
+def test_default_without_dist_index_is_404(webui_next_daemon):
     (webui_next_daemon["webui"] / "dist" / "index.html").unlink()
     status, _, body = _get(webui_next_daemon["port"], "/", webui_next_daemon["token"])
     assert status == 404
     assert json.loads(body.decode("utf-8"))["error"] == "not found"
+
+
+def test_legacy_without_dist_still_serves_legacy_shell(
+    webui_next_daemon, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("OPENAI4S_WEBUI", "legacy")
+    (webui_next_daemon["webui"] / "dist" / "index.html").unlink()
+    status, _, body = _get(webui_next_daemon["port"], "/", webui_next_daemon["token"])
+    assert status == 200
+    assert body == _LEGACY
 
 
 def test_package_data_lists_dist_tree_explicitly():
@@ -215,3 +235,11 @@ def test_committed_dist_index_is_external_script_shell():
     assert "/static/dist/" in html
     assert re.search(r"<script\b(?![^>]*\bsrc\s*=)", html, flags=re.I) is None
     assert '<script type="module"' in html
+
+
+def test_favicon_clamps_frame_interval():
+    src = (ROOT / "openai4s" / "server" / "webui" / "favicon.js").read_text(
+        encoding="utf-8"
+    )
+    assert "var MIN_FRAME_MS = 100;" in src
+    assert "Math.max(MIN_FRAME_MS," in src

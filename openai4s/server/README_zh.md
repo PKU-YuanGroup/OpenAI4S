@@ -136,7 +136,7 @@ gateway.py
 
 | 目录 | 职责 |
 | --- | --- |
-| [`webui/`](webui/) | 手写的浏览器客户端与科学 Artifact renderer，由 gateway 作为静态文件提供。没有构建步骤，也没有 npm。第三方库只存在于 `webui/vendor/`：3Dmol 负责三维结构，另有钉住的 Ketcher 3.7.0 独立版在 Stage 9 打开时提供二维结构编辑。向 `3Dmol.org` 的 CDN 重试那条路已被删除，因为它会在持有会话 Cookie 的页面里悄悄执行第三方脚本；自带的那份渲染不了的分子现在直接退回纯文本展示——这本来就是 CDN 那条路失败时的同一个结果。只读的分享查看器是 `webui/share/` 下另一个独立客户端。 |
+| [`webui/`](webui/) | Gateway 静态树：来自 [`../../frontend/`](../../frontend/) 的提交 Vite `dist/`（默认 SPA 外壳）、共享经典脚本（`style.css`、`theme-bootstrap.js`、`scientific_renderers.js`、`favicon.js`）、自带的 3Dmol/Ketcher/字体、卫星页，以及冻结的 `index.html` + `app.js` 逃生舱（`OPENAI4S_WEBUI=legacy`）。第三方库只存在于 `webui/vendor/`：3Dmol 负责三维结构，另有钉住的 Ketcher 3.7.0 独立版在 Stage 9 打开时提供二维结构编辑。向 `3Dmol.org` 的 CDN 重试那条路已被删除，因为它会在持有会话 Cookie 的页面里悄悄执行第三方脚本；自带的那份渲染不了的分子现在直接退回纯文本展示——这本来就是 CDN 那条路失败时的同一个结果。只读的分享查看器是 `webui/share/` 下另一个独立客户端。 |
 
 ## 修改注意事项
 

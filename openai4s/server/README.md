@@ -155,7 +155,7 @@ gateway.py
 
 | Directory | Responsibility |
 | --- | --- |
-| [`webui/`](webui/) | The hand-written browser client and the scientific artifact renderers, served as static files by the gateway. There is no build step and no npm. Third-party libraries live only in `webui/vendor/`: 3Dmol for 3D structures, and a pinned Ketcher 3.7.0 standalone for 2D editing when Stage 9 is on. The retry against the `3Dmol.org` CDN was removed, because it silently executed third-party script in the page that holds the session cookie. The read-only share viewer is a second, separate client under `webui/share/`. |
+| [`webui/`](webui/) | Gateway static tree: committed Vite `dist/` from [`../../frontend/`](../../frontend/) (the default SPA shell), shared classic scripts (`style.css`, `theme-bootstrap.js`, `scientific_renderers.js`, `favicon.js`), vendored 3Dmol/Ketcher/fonts, satellite pages, and the frozen `index.html` + `app.js` hatch (`OPENAI4S_WEBUI=legacy`). Third-party libraries live only in `webui/vendor/`: 3Dmol for 3D structures, and a pinned Ketcher 3.7.0 standalone for 2D editing when Stage 9 is on. The retry against the `3Dmol.org` CDN was removed, because it silently executed third-party script in the page that holds the session cookie. The read-only share viewer is a second, separate client under `webui/share/`. |
 
 ## Change guidance
 

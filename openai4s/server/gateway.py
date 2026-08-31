@@ -239,13 +239,13 @@ os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure cap
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
 
 
-def _webui_next_enabled() -> bool:
-    """True only for ``OPENAI4S_WEBUI_NEXT=1``; unset keeps the legacy shell.
+def _webui_legacy_enabled() -> bool:
+    """True only for ``OPENAI4S_WEBUI=legacy``; unset serves the Vite dist shell.
 
-    Any other value (including ``true``/``yes``) is off, so a typo cannot
-    silently switch the product UI. F-23 reverses this default.
+    Any other value (including ``1`` / ``next`` / ``true``) keeps the new UI,
+    so a typo cannot silently fall back to the escape hatch.
     """
-    return (os.environ.get("OPENAI4S_WEBUI_NEXT") or "").strip() == "1"
+    return (os.environ.get("OPENAI4S_WEBUI") or "").strip() == "legacy"
 
 
 #: The only `/static/` path served as a framed document rather than a
@@ -13961,9 +13961,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
             index = (
-                WEBUI_DIR / "dist" / "index.html"
-                if _webui_next_enabled()
-                else WEBUI_DIR / "index.html"
+                WEBUI_DIR / "index.html"
+                if _webui_legacy_enabled()
+                else WEBUI_DIR / "dist" / "index.html"
             )
             self._serve_ui_file(index, "text/html; charset=utf-8")
 

@@ -14,6 +14,8 @@
  *   OPENAI4S_TEAM_ADMIN_PW=<admin-pw> OPENAI4S_TEAM_MEMBER_PW=<member-pw> \
  *     OPENAI4S_BROWSER_URL=http://127.0.0.1:8794 node tests/browser_team_mode.mjs
  */
+import { skipFirstRunWizard } from "./browser_auth.mjs";
+
 let playwright;
 try {
   playwright = await import("playwright");
@@ -58,6 +60,7 @@ async function login(page, who) {
   await page.fill("#p", who.p);
   await page.click("#b");
   await page.waitForURL(BASE + "/", { timeout: 10000 });
+  await skipFirstRunWizard(page, BASE + "/");
 }
 
 // -- 1. the login gate is what an anonymous visitor meets --------------------

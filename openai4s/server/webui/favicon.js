@@ -5,11 +5,15 @@
  * repaint a <canvas> into the <link rel="icon"> href each frame. Where
  * ImageDecoder is unavailable we fall back to the static GIF (shows frame 1).
  * Animation pauses while the tab is hidden to avoid burning CPU in background.
+ * Frame interval is floored at MIN_FRAME_MS (10 fps): ImageDecoder reports
+ * duration in microseconds, and without a floor the GIF's ~20ms frames
+ * encode a PNG into the tab icon ~50 times a second.
  */
 (function () {
   "use strict";
   var SRC = "/static/favicon_anim_64.gif";
   var SIZE = 64;
+  var MIN_FRAME_MS = 100;
 
   function iconLink() {
     var l = document.querySelector("link[rel~='icon']");
@@ -53,7 +57,9 @@
           var frame = res.image;
           ctx.clearRect(0, 0, SIZE, SIZE);
           ctx.drawImage(frame, 0, 0, SIZE, SIZE);
-          var durMs = frame.duration ? Math.max(20, frame.duration / 1000) : 50;
+          var durMs = frame.duration
+            ? Math.max(MIN_FRAME_MS, frame.duration / 1000)
+            : MIN_FRAME_MS;
           frame.close();
           link.href = canvas.toDataURL("image/png");
           i += 1;

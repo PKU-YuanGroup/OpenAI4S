@@ -2,19 +2,19 @@
 
 [中文说明](README_zh.md)
 
-The next workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vite + Vitest. The committed build lands in [`../openai4s/server/webui/dist/`](../openai4s/server/webui/dist/). The hand-written `app.js` client stays as the escape hatch until F-23 flips the default. Dependencies live in this `package.json`; the repository-root npm package is `openai4s-skills` and must not grow frontend deps.
+The workbench UI. Preact 10 + `@preact/signals` + TypeScript (strict) + Vite + Vitest. The committed build lands in [`../openai4s/server/webui/dist/`](../openai4s/server/webui/dist/) and is the default SPA shell. The hand-written `app.js` client is the `OPENAI4S_WEBUI=legacy` escape hatch; do not add features there. Dependencies live in this `package.json`; the repository-root npm package is `openai4s-skills` and must not grow frontend deps.
 
 ## Where this fits
 
-`npm run dev` serves this app at `http://127.0.0.1:5173/static/dist/` and proxies `/api`, `/ws`, and `/static` (fonts + `style.css`) to the daemon on `8760`. `npm run build` writes the empty shell into `openai4s/server/webui/dist/` with `base: '/static/dist/'`. Set `OPENAI4S_WEBUI_NEXT=1` so the daemon serves `dist/index.html` as the SPA shell. Domain kernels from `app.js` are ported by later F-series items; this directory only holds the toolchain and a mount node.
+`npm run dev` serves this app at `http://127.0.0.1:5173/static/dist/` and proxies `/api`, `/ws`, and `/static` (fonts + `style.css`) to the daemon on `8760`. `npm run build` writes `openai4s/server/webui/dist/` with `base: '/static/dist/'`; commit that tree in the same PR as the source. The daemon serves `dist/index.html` as the SPA shell by default. `OPENAI4S_WEBUI=legacy` is the escape hatch.
 
 ## Files
 
 | File | Responsibility |
 | --- | --- |
-| [`index.html`](index.html) | SPA shell. Head loads `/static/style.css` (same global sheet as the legacy UI; F-21) and `/static/theme-bootstrap.js` as a classic (non-module) script so the first paint has `data-theme`. The app entry is an external `type="module"` `src=` tag so CSP `script-src 'self'` never has to authorize inline script. |
+| [`index.html`](index.html) | SPA shell. Head loads `/static/style.css` (same global sheet as the legacy UI; F-21), `/static/theme-bootstrap.js` as a classic (non-module) script so the first paint has `data-theme`, `/static/favicon.js` (10 fps clamp), and `/static/scientific_renderers.js`. The app entry is an external `type="module"` `src=` tag so CSP `script-src 'self'` never has to authorize inline script. |
 | [`package.json`](package.json) | Frontend package: Preact 10, `@preact/signals`, Vite, Vitest, TypeScript. `private: true`. |
-| [`package-lock.json`](package-lock.json) | Lockfile for a deterministic `npm ci` rebuild (F-23 diffs `webui/dist` against this). |
+| [`package-lock.json`](package-lock.json) | Lockfile for a deterministic `npm ci` rebuild. CI rebuilds `webui/dist` and `git diff --exit-code`s it. |
 | [`PORTING_NOTES.md`](PORTING_NOTES.md) | Per-item map of old `app.js` line ranges onto new modules. F-03 has no domain kernel; F-04 maps `_serve_index` / package-data / `_WHEEL_REQUIRED`. |
 | [`tsconfig.json`](tsconfig.json) | Strict TypeScript for `src/` (`strict`, `noUncheckedIndexedAccess`, Preact `jsxImportSource`). |
 | [`tsconfig.node.json`](tsconfig.node.json) | Strict TypeScript for `vite.config.ts`. |

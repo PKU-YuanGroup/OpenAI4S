@@ -2,19 +2,19 @@
 
 [English](README.md)
 
-下一版工作台 UI。Preact 10 + `@preact/signals` + TypeScript（strict）+ Vite + Vitest。提交的构建产物落在 [`../openai4s/server/webui/dist/`](../openai4s/server/webui/dist/)。手写的 `app.js` 客户端在 F-23 翻转默认之前一直作为逃生舱保留。依赖只写在这份 `package.json` 里；仓库根上的 npm 包是 `openai4s-skills`，禁止往那里加前端依赖。
+工作台 UI。Preact 10 + `@preact/signals` + TypeScript（strict）+ Vite + Vitest。提交的构建产物落在 [`../openai4s/server/webui/dist/`](../openai4s/server/webui/dist/)，并且是默认 SPA 外壳。手写的 `app.js` 客户端是 `OPENAI4S_WEBUI=legacy` 逃生舱；不要在那里加功能。依赖只写在这份 `package.json` 里；仓库根上的 npm 包是 `openai4s-skills`，禁止往那里加前端依赖。
 
 ## 在架构中的位置
 
-`npm run dev` 在 `http://127.0.0.1:5173/static/dist/` 提供本应用，并把 `/api`、`/ws` 与 `/static`（字体 + `style.css`）代理到 `8760` 上的 daemon。`npm run build` 以 `base: '/static/dist/'` 把空壳写进 `openai4s/server/webui/dist/`。设置 `OPENAI4S_WEBUI_NEXT=1` 后 daemon 会把 `dist/index.html` 当作 SPA 外壳发出。`app.js` 里的领域内核由后续 F 系列工作项移植；本目录只放工具链和一个挂载节点。
+`npm run dev` 在 `http://127.0.0.1:5173/static/dist/` 提供本应用，并把 `/api`、`/ws` 与 `/static`（字体 + `style.css`）代理到 `8760` 上的 daemon。`npm run build` 以 `base: '/static/dist/'` 把产物写进 `openai4s/server/webui/dist/`；产物必须和源码同一 PR 提交。daemon 默认把 `dist/index.html` 当作 SPA 外壳发出。`OPENAI4S_WEBUI=legacy` 是逃生舱。
 
 ## 文件
 
 | 文件 | 职责 |
 | --- | --- |
-| [`index.html`](index.html) | SPA 外壳。head 加载 `/static/style.css`（与 legacy UI 同一份全局样式；F-21），并以经典脚本（非 module）加载 `/static/theme-bootstrap.js`，第一次绘制就带上 `data-theme`。应用入口是带 `src=` 的外链 `type="module"`，CSP `script-src 'self'` 不必放行内联脚本。 |
+| [`index.html`](index.html) | SPA 外壳。head 加载 `/static/style.css`（与 legacy UI 同一份全局样式；F-21）、经典脚本（非 module）`/static/theme-bootstrap.js`（第一次绘制就带上 `data-theme`）、`/static/favicon.js`（10 fps 钳制）和 `/static/scientific_renderers.js`。应用入口是带 `src=` 的外链 `type="module"`，CSP `script-src 'self'` 不必放行内联脚本。 |
 | [`package.json`](package.json) | 前端包：Preact 10、`@preact/signals`、Vite、Vitest、TypeScript。`private: true`。 |
-| [`package-lock.json`](package-lock.json) | 锁文件，保证 `npm ci` 重建确定（F-23 拿它对照 `webui/dist`）。 |
+| [`package-lock.json`](package-lock.json) | 锁文件，保证 `npm ci` 重建确定。CI 会重建 `webui/dist` 并 `git diff --exit-code`。 |
 | [`PORTING_NOTES.md`](PORTING_NOTES.md) | 逐项把旧 `app.js` 行号映射到新模块。F-03 没有领域内核；F-04 对照 `_serve_index` / package-data / `_WHEEL_REQUIRED`。 |
 | [`tsconfig.json`](tsconfig.json) | `src/` 的 strict TypeScript（`strict`、`noUncheckedIndexedAccess`、Preact `jsxImportSource`）。 |
 | [`tsconfig.node.json`](tsconfig.node.json) | `vite.config.ts` 的 strict TypeScript。 |

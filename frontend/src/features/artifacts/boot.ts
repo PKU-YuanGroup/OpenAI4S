@@ -7,9 +7,12 @@ import { loadArtifacts, setRenderConversationArtifactsImpl, setRenderFilesGridIm
 import { renderSheet } from "./sheet";
 import {
   consumeArtifactDeepLink,
+  dockClose,
+  dockToggle,
   openArtifactFromHit,
   openViewer,
   renderConversationArtifacts,
+  renderDockTabs,
   renderFilesGrid,
   renderViewer,
   setActiveTab,
@@ -37,6 +40,9 @@ export function installArtifacts(target?: Target): void {
     host.renderFilesGrid = renderFilesGrid;
     host.renderViewer = renderViewer;
     host.setActiveTab = setActiveTab;
+    host.renderDockTabs = renderDockTabs;
+    host.dockClose = dockClose;
+    host.dockToggle = dockToggle;
     host.openArtifactFromHit = openArtifactFromHit;
   }
   setLoadArtifactsImpl(loadArtifacts);
