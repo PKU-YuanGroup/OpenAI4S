@@ -19,7 +19,7 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     "files.deeplink.copied": "已复制",
     "files.version.stale": "找不到 version {0}（当前 latest 为 {1}）。不会改用 latest。",
     "files.version.notFound": "找不到该 Artifact 或指定 version。",
-    "files.index.fallback": "索引路由不可用，已回退为本地过滤。",
+    "files.index.unavailable": "无法加载文件索引。",
   },
   en: {
     "files.search.ph": "Search by filename",
@@ -34,7 +34,7 @@ const COPY: Record<"zh" | "en", Record<string, string>> = {
     "files.deeplink.copied": "Copied",
     "files.version.stale": "Version {0} was not found (latest is {1}). Latest was not substituted.",
     "files.version.notFound": "This artifact or version was not found.",
-    "files.index.fallback": "Index route unavailable; using local filtering.",
+    "files.index.unavailable": "Could not load the file index.",
   },
 };
 

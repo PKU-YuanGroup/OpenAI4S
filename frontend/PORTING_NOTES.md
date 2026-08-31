@@ -169,7 +169,7 @@ Version cache, Files grid, renderer catalog, and the ten scientific renderer glu
 | `artifactCacheKey` 8353-8357 | `features/artifacts/cache.ts` `artifactCacheKey` | `_artVer[id]` then `version_id` / `latest_version_id` / `checksum` / `"unknown"`. Missing id → `"_live"`. |
 | `syncArtifactVersion` 8359-8378 | `cache.ts` `syncArtifactVersion` | In-place `Object.assign` on matching `openTabs` items and `dockArtifact`. Force or version change busts `lineage` / `_envSnapById[artifactCacheKey]`. |
 | `loadArtifacts` 8380-8401 | `load.ts` `loadArtifacts` | `_artifactLoadReq` generation; drop if `id !== S.currentId`. Bust `_artBust` when the seen version changes. |
-| `loadProjectArtifacts` 8510-8516 | `load.ts` + `files-index.ts` `browseFiles` | Project Files walks `GET .../artifact-index` (50/page, cap 100). TODO fallback onto the legacy array route when the index 404s. Late responses after a Project switch are dropped (`filesIndexReq`). |
+| `loadProjectArtifacts` 8510-8516 | `load.ts` + `files-index.ts` `browseFiles` | Project Files walks `GET .../artifact-index` (50/page, cap 100). No fallback onto `GET /projects/{pid}/artifacts`. Late responses after a Project switch are dropped (`filesIndexReq`). |
 | `visibleArtifacts` / `filesGridArtifacts` 8492-8502 | `files-index.ts` | `priority < 0` hidden; frame scope still priority-sorts. Project scope keeps server keyset order so pages do not reshuffle. Same-name rows are not merged. |
 | `artUrl` 8577 | `cache.ts` `artUrl` | Unpinned: `/artifacts/{id}?_={bust}`. `_exactVersion`: `/artifacts/versions/{vid}` — never latest. |
 | `scientificRenderers` 8578 | `catalog.ts` `scientificRenderers` | `window.OpenAI4SScientificRenderers \|\| null`. Empty-value defense kept. |
@@ -178,9 +178,23 @@ Version cache, Files grid, renderer catalog, and the ten scientific renderer glu
 | `renderSheet` / `sheetShape` / `appendSheetShape` 8771-8802 | `sheet.ts` | Cap 5000×100; union of keys; `nb.table.*` hidden-copy reused. Window export for smoke. |
 | `parseMolPoints` / `molSvg` / thumbs 8414-8490 | `thumbs.ts` | CA backbone preference, 500-point cap, spectrum XY SVG. |
 | `artifact_created` 5314-5346 | `events.ts` `artifactCreatedSideEffects` | After F-06 upsert: `syncArtifactVersion(art, true)`, open-Viewer refresh, live-cell `figures` push, project Files reload. `nbRender` only if `isReady`. |
-| `openViewer` 9437 | `ui.ts` `openViewer` | Sets `dockArtifact`, clears `provMode`, `addOpenTab`, `setActiveTab(a.id)`. |
-| Files search / filter / Load more / deep link (M-03, new) | `files-index.ts` `deeplink.ts` `components/artifacts/FilesPanel.tsx` | Filename `q`, `content_type`, `origin=uploaded\|generated`, page 50. `?artifact=&version_id=`: omit version → latest; provided version **never** silent-falls-back to latest; missing exact → stale/not-found. ⌘K uses `openArtifactFromHit` (open session, then exact Viewer). |
+| `openViewer` 9437 | `ui.ts` `openViewer` / `presentViewer` | Unpinned rows set `dockArtifact` and open latest. A provided `version_id` is resolved exactly (F-20 ⌘K forwards it as-is); missing exact → stale/not-found, never latest. |
+| Files search / filter / Load more / deep link (M-03) | `files-index.ts` `deeplink.ts` `components/artifacts/FilesPanel.tsx` | Filename `q`, `content_type`, `origin=uploaded\|generated`, page 50 via B-06 only. Filter fingerprint drops the previous cursor. `?artifact=&version_id=`: omit version → latest; provided version **never** silent-falls-back to latest; missing exact → stale/not-found. ⌘K: session first, then exact Viewer. |
 | `parseTable` / `renderSheet` window globals | `boot.ts` `installArtifacts` | Overwrites the F-05 stubs. `parseTable` is F-08's kernel, published here because smoke/E2E read it as a bare global next to `renderSheet`. |
+
+## M-03 Files search / filter / pagination / deep link
+
+Wrap-up of the F-17 Files surface onto B-06. No `app.js` edits.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `loadProjectArtifacts` 8510-8516 (`GET /projects/{pid}/artifacts` full array) | `files-index.ts` `browseFiles` | Project Files **only** `GET /projects/{pid}/artifact-index` (limit 50, cap 100). 404/5xx show an error; they do not page the legacy array client-side. |
+| Project-switch drop 8515 `if (S.project !== pid) return` | `filesIndexReq` + `project.value !== pid` | Late responses after a Project switch are discarded. Filter changes bump the same token. |
+| (new) cursor | `filesCursorFilter` fingerprint (`project + q + content_type + origin`) | A filter change drops the previous cursor before the next request. Server `400 invalid_cursor` retries without the cursor. |
+| Files grid 8559 | `FilesPanel.tsx` mounted into shell `#dock-files` + `renderFilesGrid` | Filename search, content-type / origin, Load more. Frozen ids `#results-list` / `#results-count` / `#files-scope`. |
+| (new) `?artifact={id}&version_id={vid}` | `deeplink.ts` + `ui.ts` `applyArtifactDeepLink` | Omit `version_id` → latest. Provided `version_id` is an exact pin: missing → `stale` / `not-found`, **never** silent latest. Empty versions list is not-found, not a ghost latest. |
+| ⌘K Artifact hit 11030 (`dockTab("files")`) | F-20 `openPaletteArtifact` → `openViewer` | Open owning session first, then exact-version Viewer. `openViewer` resolves `version_id` itself so F-20 does not rewrite it to latest. |
+
 ## F-15 Timeline
 
 Verbatim port of the Action Timeline kernel. The Preact component only hosts `#dock-timeline`; the ledger is an imperative island so `_timelineView` identity, function names, 46px rows, overscan, signature reuse, `translateY`, and the SVG overview stay byte-equivalent for smoke:559-1658.

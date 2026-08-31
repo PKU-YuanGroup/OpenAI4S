@@ -2,7 +2,7 @@ import { signal } from "@preact/signals";
 import type { ArtifactRow, FilesOrigin, VersionResolve } from "./types";
 
 /** How the Files dock obtained the current project listing. */
-export type FilesIndexMode = "idle" | "index" | "fallback";
+export type FilesIndexMode = "idle" | "index" | "error";
 
 /** Filename substring. Bound into the artifact-index `q` query. */
 export const filesQuery = signal("");
@@ -12,6 +12,12 @@ export const filesContentType = signal("");
 export const filesOrigin = signal<FilesOrigin>("");
 export const filesHasMore = signal(false);
 export const filesNextCursor = signal<string | null>(null);
+/**
+ * Filter fingerprint the current cursor was issued under.
+ * A mismatch (q / content_type / origin / project) drops the cursor
+ * rather than sending it to a different listing.
+ */
+export const filesCursorFilter = signal<string | null>(null);
 /** Accumulated pages currently painted. First screen ≤ FILES_PAGE_SIZE. */
 export const filesIndexItems = signal<ArtifactRow[]>([]);
 export const filesIndexLoading = signal(false);
@@ -28,6 +34,7 @@ export function resetFilesIndexState(): void {
   filesOrigin.value = "";
   filesHasMore.value = false;
   filesNextCursor.value = null;
+  filesCursorFilter.value = null;
   filesIndexItems.value = [];
   filesIndexLoading.value = false;
   filesIndexMode.value = "idle";

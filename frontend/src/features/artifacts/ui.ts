@@ -19,7 +19,7 @@ import { loadProjectArtifacts } from "./load";
 import { renderArtifactBody } from "./renderers";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { tileThumb, tileThumbBig } from "./thumbs";
-import type { ArtifactDeepLink, ArtifactRow } from "./types";
+import type { ArtifactDeepLink, ArtifactRow, VersionResolve } from "./types";
 
 export function addOpenTab(a: ArtifactRow): void {
   const tabs = (openTabs.value as ArtifactRow[]) || [];
@@ -220,15 +220,31 @@ export function renderViewer(): void {
   renderArtifactBody(body, a);
 }
 
-/** app.js:9437. Artifact click → dock Viewer tab. */
-export function openViewer(a: ArtifactRow): void {
+function presentViewer(a: ArtifactRow): void {
   viewerVersionState.value = a._exactVersion
     ? { status: "exact", artifact: a, versionId: String(a.version_id || "") }
-    : { status: "latest", artifact: a, versionId: a.version_id || null };
+    : { status: "latest", artifact: a, versionId: a.version_id || a.latest_version_id || null };
   dockArtifact.value = a;
   provMode.value = false;
   addOpenTab(a);
   setActiveTab(a.id);
+}
+
+/**
+ * app.js:9437. Artifact click → dock Viewer tab.
+ *
+ * A provided `version_id` that is not already an exact pin is resolved
+ * immutably: missing exact → stale/not-found, never silent latest.
+ * Palette ⌘K hits forward `version_id` as-is (F-20); this is the pin.
+ */
+export function openViewer(a: ArtifactRow): void | Promise<void> {
+  if (a.version_id && !a._exactVersion) {
+    return applyArtifactDeepLink({
+      artifactId: a.id,
+      versionId: String(a.version_id),
+    });
+  }
+  presentViewer(a);
 }
 
 /**
@@ -238,12 +254,13 @@ export function openViewer(a: ArtifactRow): void {
 export async function openArtifactFromHit(hit: {
   id: string;
   root_frame_id?: string | null;
+  project_id?: string | null;
   version_id?: string | null;
   filename?: string | null;
 }): Promise<void> {
   const fid = hit.root_frame_id;
   if (fid && fid !== currentId.value) {
-    callWindow("openConversation", fid, project.value);
+    callWindow("openConversation", fid, hit.project_id || project.value);
   }
   await applyArtifactDeepLink({
     artifactId: hit.id,
@@ -252,12 +269,22 @@ export async function openArtifactFromHit(hit: {
 }
 
 export async function applyArtifactDeepLink(link: ArtifactDeepLink): Promise<void> {
-  const result = await resolveArtifactVersion(link);
+  let result: VersionResolve;
+  try {
+    result = await resolveArtifactVersion(link);
+  } catch {
+    result = {
+      status: "not-found" as const,
+      artifactId: link.artifactId,
+      versionId: link.versionId,
+    };
+  }
   rememberViewerVersion(result);
   if (result.status === "exact" || result.status === "latest") {
-    openViewer(result.artifact);
+    presentViewer(result.artifact);
     return;
   }
+  // stale / not-found: show the banner and do not substitute latest.
   dockArtifact.value = { id: link.artifactId, artifact_id: link.artifactId };
   setActiveTab(link.artifactId);
   renderViewer();
@@ -265,14 +292,14 @@ export async function applyArtifactDeepLink(link: ArtifactDeepLink): Promise<voi
 
 export function consumeArtifactDeepLink(
   search: string | null | undefined = typeof location !== "undefined" ? location.search : "",
-): void {
+): void | Promise<void> {
   const link = parseArtifactDeepLink(search);
   if (!link) return;
-  void applyArtifactDeepLink(link);
+  return applyArtifactDeepLink(link);
 }
 
 export async function copyArtifactDeepLink(a: ArtifactRow): Promise<string> {
-  const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : a.version_id);
+  const href = artifactDeepLinkHref(a.id, a._exactVersion ? a.version_id : null);
   const clip = hostWindow().navigator as unknown as { clipboard?: { writeText?: (s: string) => Promise<void> } };
   const write = clip && clip.clipboard && clip.clipboard.writeText;
   if (isReady(write)) await write(href);

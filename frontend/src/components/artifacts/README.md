@@ -8,5 +8,5 @@ F-17 Files dock view. Frozen DOM ids (`#dock-files`, `#results-list`, `#results-
 
 | File | Responsibility |
 | --- | --- |
-| [`FilesPanel.tsx`](FilesPanel.tsx) | Filename search, content-type / origin filters, Load more. |
-| [`index.ts`](index.ts) | Re-export `FilesPanel`. |
+| [`FilesPanel.tsx`](FilesPanel.tsx) | Filename search, content-type / origin filters, Load more. `mountFilesPanel` paints into the shell `#dock-files`. |
+| [`index.ts`](index.ts) | Re-export `FilesPanel` / `mountFilesPanel`. |

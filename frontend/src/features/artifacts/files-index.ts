@@ -4,6 +4,7 @@ import { api, asArtifactList, isApiStatus } from "./api";
 import { filesT } from "./copy";
 import {
   filesContentType,
+  filesCursorFilter,
   filesHasMore,
   filesIndexError,
   filesIndexItems,
@@ -31,8 +32,10 @@ export function currentFilesFilter(): FilesFilter {
   };
 }
 
-export function filterFingerprint(filter: FilesFilter): string {
+/** Cursor identity: project + q + content_type + origin. Filter change ⇒ drop. */
+export function filterFingerprint(filter: FilesFilter, pid = ""): string {
   return JSON.stringify({
+    pid,
     q: filter.q,
     contentType: filter.contentType,
     origin: filter.origin,
@@ -44,9 +47,10 @@ function originOf(a: ArtifactRow): "uploaded" | "generated" {
 }
 
 /**
- * Client-side filter matching B-06 semantics: filename substring,
+ * Frame-scope filter matching B-06 semantics: filename substring,
  * content_type substring, origin from `is_user_upload`. Hidden
  * (`priority < 0`) rows stay out. Same-name rows are not merged.
+ * Project scope never uses this — it walks artifact-index.
  */
 export function filterArtifactsClient(rows: ArtifactRow[], filter: FilesFilter): ArtifactRow[] {
   const q = filter.q.toLowerCase();
@@ -122,15 +126,6 @@ async function fetchArtifactIndex(
   };
 }
 
-/**
- * TODO(F-17/M-03): drop this `/projects/{pid}/artifacts` array fallback once
- * the Files dock talks only to B-06's artifact-index route.
- */
-async function fetchProjectArray(pid: string): Promise<ArtifactRow[]> {
-  const body = await api(`/projects/${encodeURIComponent(pid)}/artifacts`);
-  return asArtifactList(body);
-}
-
 function pageSlice(rows: ArtifactRow[], offset: number, limit: number): ArtifactIndexPage {
   const cap = clampLimit(limit);
   const slice = rows.slice(offset, offset + cap);
@@ -142,31 +137,21 @@ function pageSlice(rows: ArtifactRow[], offset: number, limit: number): Artifact
   };
 }
 
-async function applyFallbackPage(
-  pid: string,
-  req: number,
-  filter: FilesFilter,
-  loadMore: boolean,
-): Promise<void> {
-  const all = await fetchProjectArray(pid);
-  if (req !== filesIndexReq.value || project.value !== pid) return;
-  const filtered = filterArtifactsClient(all, filter);
-  const offset = loadMore ? filesIndexItems.value.length : 0;
-  const page = pageSlice(filtered, offset, FILES_PAGE_SIZE);
-  filesIndexItems.value = loadMore ? [...filesIndexItems.value, ...page.artifacts] : page.artifacts;
-  filesNextCursor.value = page.next_cursor;
-  filesHasMore.value = page.has_more;
-  projectArtifacts.value = filesIndexItems.value;
-  filesIndexMode.value = "fallback";
-  filesIndexError.value = filesT("files.index.fallback");
+function dropFilesCursor(): void {
+  filesNextCursor.value = null;
+  filesCursorFilter.value = null;
+  filesIndexItems.value = [];
+  filesIndexReq.value = (filesIndexReq.value || 0) + 1;
 }
 
 export type BrowseFilesOpts = { reset?: boolean; loadMore?: boolean; limit?: number };
 
 /**
- * M-03 Files listing. Project scope walks artifact-index (50/page, cap 100).
- * Filter changes drop the previous cursor. A Project switch drops late
- * responses via `filesIndexReq`. Frame scope filters the session array locally.
+ * M-03 Files listing. Project scope walks B-06 artifact-index (50/page, cap 100)
+ * and never falls back to `GET /projects/{pid}/artifacts`. Filter changes drop
+ * the previous cursor (client fingerprint + server 400 invalid_cursor). A
+ * Project switch drops late responses via `filesIndexReq`. Frame scope filters
+ * the session array locally — the index route is project-scoped.
  */
 export async function browseFiles(opts: BrowseFilesOpts = {}): Promise<void> {
   const req = (filesIndexReq.value || 0) + 1;
@@ -174,50 +159,56 @@ export async function browseFiles(opts: BrowseFilesOpts = {}): Promise<void> {
   const filter = currentFilesFilter();
   const scope = filesScope.value;
   const limit = opts.limit ?? FILES_PAGE_SIZE;
+  const pid = project.value || "";
+  const fp = filterFingerprint(filter, scope === "project" ? pid : "");
 
-  if (opts.reset || !opts.loadMore) {
-    if (!opts.loadMore) filesNextCursor.value = null;
+  let loadMore = !!opts.loadMore && !opts.reset;
+  if (!loadMore || filesCursorFilter.value !== fp) {
+    loadMore = false;
+    filesNextCursor.value = null;
   }
 
   if (scope !== "project") {
     const src = (artifactsSignal.value as ArtifactRow[]) || [];
     const filtered = filterArtifactsClient(sortPriorityThenId(src), filter);
-    const offset = opts.loadMore ? filesIndexItems.value.length : 0;
+    const offset = loadMore ? filesIndexItems.value.length : 0;
     const page = pageSlice(filtered, offset, limit);
     if (req !== filesIndexReq.value) return;
-    filesIndexItems.value = opts.loadMore
+    filesIndexItems.value = loadMore
       ? [...filesIndexItems.value, ...page.artifacts]
       : page.artifacts;
     filesNextCursor.value = page.next_cursor;
     filesHasMore.value = page.has_more;
+    filesCursorFilter.value = fp;
     filesIndexMode.value = "idle";
     filesIndexError.value = null;
     filesIndexLoading.value = false;
     return;
   }
 
-  const pid = project.value;
   if (!pid) {
     if (req !== filesIndexReq.value) return;
     filesIndexItems.value = [];
     projectArtifacts.value = [];
     filesHasMore.value = false;
     filesNextCursor.value = null;
+    filesCursorFilter.value = null;
     filesIndexMode.value = "idle";
     filesIndexLoading.value = false;
     return;
   }
 
   filesIndexLoading.value = true;
-  const cursor = opts.loadMore ? filesNextCursor.value : null;
+  const cursor = loadMore ? filesNextCursor.value : null;
   try {
     const page = await fetchArtifactIndex(pid, filter, cursor, limit);
     if (req !== filesIndexReq.value || project.value !== pid) return;
-    filesIndexItems.value = opts.loadMore
+    filesIndexItems.value = loadMore
       ? [...filesIndexItems.value, ...page.artifacts]
       : page.artifacts;
     filesNextCursor.value = page.next_cursor;
     filesHasMore.value = page.has_more;
+    filesCursorFilter.value = fp;
     projectArtifacts.value = filesIndexItems.value;
     filesIndexMode.value = "index";
     filesIndexError.value = null;
@@ -225,20 +216,18 @@ export async function browseFiles(opts: BrowseFilesOpts = {}): Promise<void> {
     if (req !== filesIndexReq.value || project.value !== pid) return;
     if (isApiStatus(e, 400, "invalid_cursor")) {
       filesNextCursor.value = null;
+      filesCursorFilter.value = null;
       filesIndexItems.value = [];
       await browseFiles({ reset: true, limit });
       return;
     }
-    if (isApiStatus(e, 404) || isApiStatus(e, 501)) {
-      try {
-        await applyFallbackPage(pid, req, filter, !!opts.loadMore);
-      } catch {
-        if (req !== filesIndexReq.value) return;
-        filesIndexError.value = filesT("files.version.notFound");
-      }
-    } else {
-      filesIndexError.value = e instanceof Error ? e.message : String(e);
-    }
+    filesIndexItems.value = [];
+    filesNextCursor.value = null;
+    filesCursorFilter.value = null;
+    filesHasMore.value = false;
+    projectArtifacts.value = [];
+    filesIndexMode.value = "error";
+    filesIndexError.value = e instanceof Error ? e.message : filesT("files.index.unavailable");
   } finally {
     if (req === filesIndexReq.value) filesIndexLoading.value = false;
   }
@@ -246,18 +235,15 @@ export async function browseFiles(opts: BrowseFilesOpts = {}): Promise<void> {
 
 export function setFilesQuery(value: string): void {
   filesQuery.value = value;
-  filesNextCursor.value = null;
-  filesIndexItems.value = [];
+  dropFilesCursor();
 }
 
 export function setFilesContentType(value: string): void {
   filesContentType.value = value;
-  filesNextCursor.value = null;
-  filesIndexItems.value = [];
+  dropFilesCursor();
 }
 
 export function setFilesOrigin(value: FilesOrigin): void {
   filesOrigin.value = value === "uploaded" || value === "generated" ? value : "";
-  filesNextCursor.value = null;
-  filesIndexItems.value = [];
+  dropFilesCursor();
 }

@@ -1,7 +1,9 @@
-import { dock, activeTab } from "../../stores/ui";
+import { useEffect } from "preact/hooks";
+import { render } from "preact";
 import { filesScope } from "../../stores/artifacts";
+import { project } from "../../stores/session";
 import { browseFiles, setFilesContentType, setFilesOrigin, setFilesQuery } from "../../features/artifacts/files-index";
-import { setFilesScope } from "../../features/artifacts/load";
+import { loadProjectArtifacts, setFilesScope } from "../../features/artifacts/load";
 import { filesT } from "../../features/artifacts/copy";
 import {
   filesContentType,
@@ -15,8 +17,6 @@ import { renderFilesGrid } from "../../features/artifacts/ui";
 import { FILES_PAGE_SIZE } from "../../features/artifacts/types";
 import type { FilesOrigin } from "../../features/artifacts/types";
 import "../../features/artifacts/artifacts.css";
-
-type DockState = { open?: boolean; tab?: string };
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -40,17 +40,28 @@ function applyType(value: string): void {
 }
 
 /**
- * Files dock (M-03). Frozen ids: `#dock-files`, `#results-list`,
- * `#results-count`, `#files-scope`.
+ * Files dock chrome (M-03). Mounted into the shell's `#dock-files`.
+ * Frozen ids: `#results-list`, `#results-count`, `#files-scope`.
+ * The grid itself is painted imperatively by `renderFilesGrid` so a
+ * signal-driven re-render of this chrome cannot wipe cards.
  */
 export function FilesPanel() {
-  const d = dock.value as DockState;
-  const hidden = !(d && d.open && activeTab.value === "files");
   const origin = filesOrigin.value;
   const scope = filesScope.value;
+  const pid = project.value;
+
+  useEffect(() => {
+    if (scope === "project") {
+      void loadProjectArtifacts().then(() => renderFilesGrid());
+    }
+  }, [pid, scope]);
+
+  useEffect(() => {
+    renderFilesGrid();
+  });
 
   return (
-    <div id="dock-files" class={hidden ? "dock-pane hidden" : "dock-pane"}>
+    <>
       <div class="files-head">
         <span data-i18n="dock.files.heading">{filesT("dock.files.heading")}</span>
         <span id="results-count" class="count">
@@ -123,6 +134,15 @@ export function FilesPanel() {
           {filesT("files.loadMore")}
         </button>
       ) : null}
-    </div>
+    </>
   );
+}
+
+/** Lane-local mount: paint into the shell `#dock-files` without editing Shell.tsx. */
+export function mountFilesPanel(host?: HTMLElement | null): void {
+  const node =
+    host || (typeof document !== "undefined" ? document.getElementById("dock-files") : null);
+  if (!node || node.dataset.m03Mounted === "1") return;
+  node.dataset.m03Mounted = "1";
+  render(<FilesPanel />, node);
 }

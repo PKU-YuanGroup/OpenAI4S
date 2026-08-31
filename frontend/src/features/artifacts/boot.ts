@@ -1,4 +1,5 @@
 import "./artifacts.css";
+import { mountFilesPanel } from "../../components/artifacts/FilesPanel";
 import { parseTable } from "../csv/csv";
 import { setArtifactCreatedSideEffects, setLoadArtifactsImpl } from "../ws/handlers";
 import { artifactCreatedSideEffects } from "./events";
@@ -48,6 +49,7 @@ export function bootArtifacts(target?: Target): void {
   installArtifacts(target);
   if (typeof document !== "undefined") {
     bindFilesButton();
+    mountFilesPanel();
     consumeArtifactDeepLink();
   }
 }

@@ -125,9 +125,12 @@ async function defaultFetchVersions(id: string): Promise<ArtifactVersionRow[]> {
 async function defaultFetchArtifact(id: string): Promise<ArtifactRow | null> {
   try {
     const versions = await defaultFetchVersions(id);
-    if (!versions.length) return { id, artifact_id: id };
+    // The versions route answers 200 [] for a missing artifact. An empty
+    // list is therefore not-found, not a ghost row that would later look
+    // like "latest".
+    if (!versions.length) return null;
     const latest = versions.find((row) => row.is_latest) || versions[0];
-    if (!latest) return { id, artifact_id: id };
+    if (!latest) return null;
     return {
       id,
       artifact_id: id,
