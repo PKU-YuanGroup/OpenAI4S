@@ -2,6 +2,7 @@ import "./compat/window-exports";
 import { render } from "preact";
 import { App } from "./app";
 import { bootArtifacts } from "./features/artifacts";
+import { bootIslands } from "./islands";
 import { bootCustomize } from "./features/customize";
 import { bootOnboarding } from "./features/onboarding";
 import { bootAttention } from "./features/attention";
@@ -23,6 +24,7 @@ bootWs();
 installNotebook();
 bootArtifacts();
 bootExecution();
+bootIslands();
 bootCustomize();
 bootOnboarding();
 

@@ -141,3 +141,7 @@ export {
 //   toggleExecutedCode / showProvenance / renderProvenanceInto /
 //   renderNotebook are assigned by bootExecution() in features/execution.
 // M-01: first-run wizard is mounted by bootOnboarding() in features/onboarding.
+// F-18: window.molecule / renderAnnotatableImage / annotationStatus /
+//   annotationIsHeld / openAnnotations / loadAnnotations / renderPins /
+//   openPinPop / openKetcher / renderLocatorComments assigned by
+//   bootIslands() in islands (imported from main.tsx).
