@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isContractStub, isReady } from "../../compat/stub";
 import { setRenderStoredStepImpl } from "../messages/list";
 import { registerBuiltinHandlers, setFrameUpdateTurnHandler } from "../ws/handlers";
+import { resetSendHandlers } from "./handlers";
 import { hasWsHandler, registerWsHandler, resetWsHandlers } from "../ws/registry";
 import {
   SEND_CONTRACT_NAMES,
@@ -13,12 +14,14 @@ import {
 describe("F-11 window exports and WS wiring", () => {
   beforeEach(() => {
     resetWsHandlers();
+    resetSendHandlers();
     setFrameUpdateTurnHandler(null);
     setRenderStoredStepImpl(null);
   });
 
   afterEach(() => {
     resetWsHandlers();
+    resetSendHandlers();
     setFrameUpdateTurnHandler(null);
     setRenderStoredStepImpl(null);
   });
@@ -62,6 +65,14 @@ describe("F-11 window exports and WS wiring", () => {
     expect(hasWsHandler("replay_begin")).toBe(false);
     expect(hasWsHandler("text_chunk")).toBe(false);
     expect(hasWsHandler("action_timeline")).toBe(false);
+  });
+
+  it("a type another lane registered first is an error, not a silent skip", () => {
+    // Idempotence and theft must not look alike. Skipping whatever is already
+    // there would leave this lane unregistered and its cards absent, with
+    // nothing said -- the failure mode this wave kept finding.
+    registerWsHandler("step", () => {});
+    expect(() => registerSendHandlers()).toThrow(/duplicate/);
   });
 
   it("install is idempotent and does not steal frame_update from F-06", () => {

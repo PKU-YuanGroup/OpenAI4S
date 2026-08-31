@@ -12,8 +12,8 @@ import { running } from "../../stores/stream";
 import { enableComposer } from "../sessions/dom";
 import { scheduleWorkbenchRefresh } from "../timeline/island";
 import { eventFrameId, isStaleTurnEvent, mine } from "../ws/guards";
-import { hasWsHandler, registerWsHandler } from "../ws/registry";
-import type { WsHandler, WsMessage } from "../ws/types";
+import { registerWsHandler } from "../ws/registry";
+import type { WsMessage } from "../ws/types";
 import {
   applyCandidateResolution,
   applyFinalReviewStatus,
@@ -38,8 +38,20 @@ const TERMINAL_FRAME_STATUS = [
   "ready",
 ];
 
-function registerUnlessPresent(type: string, handler: WsHandler): void {
-  if (!hasWsHandler(type)) registerWsHandler(type, handler);
+/**
+ * Installed once, and only for the types this lane owns.
+ *
+ * Skipping a type that is already present would make idempotence and *theft*
+ * look the same: if a later lane registers `step` first, this lane would go
+ * quietly unregistered and its cards would simply never appear. The flag
+ * gives idempotence; anything registered by someone else still raises the
+ * registry's duplicate error, which is what F-06 built it for.
+ */
+let installed = false;
+
+/** Test seam. Call after `resetWsHandlers()`, which this cannot observe. */
+export function resetSendHandlers(): void {
+  installed = false;
 }
 
 function rec(m: WsMessage): Record<string, unknown> {
@@ -128,15 +140,17 @@ export function handleFrameUpdateTurn(m: WsMessage): void {
 }
 
 export function registerSendHandlers(): void {
-  registerUnlessPresent("artifact_ref_problems", handleArtifactRefProblems);
-  registerUnlessPresent("attachment_problems", handleAttachmentProblems);
-  registerUnlessPresent("step", handleStep);
-  registerUnlessPresent("step_update", handleStepUpdate);
-  registerUnlessPresent("plan_ready", handlePlanReady);
-  registerUnlessPresent("plan_progress", handlePlanProgress);
-  registerUnlessPresent("await_permission", handleAwaitPermission);
-  registerUnlessPresent("permission_resolved", handlePermissionResolved);
-  registerUnlessPresent("candidate_ready", handleCandidateReady);
-  registerUnlessPresent("auto_run_terminal", handleAutoRunTerminal);
-  registerUnlessPresent("candidate_resolved", handleCandidateResolved);
+  if (installed) return;
+  registerWsHandler("artifact_ref_problems", handleArtifactRefProblems);
+  registerWsHandler("attachment_problems", handleAttachmentProblems);
+  registerWsHandler("step", handleStep);
+  registerWsHandler("step_update", handleStepUpdate);
+  registerWsHandler("plan_ready", handlePlanReady);
+  registerWsHandler("plan_progress", handlePlanProgress);
+  registerWsHandler("await_permission", handleAwaitPermission);
+  registerWsHandler("permission_resolved", handlePermissionResolved);
+  registerWsHandler("candidate_ready", handleCandidateReady);
+  registerWsHandler("auto_run_terminal", handleAutoRunTerminal);
+  registerWsHandler("candidate_resolved", handleCandidateResolved);
+  installed = true;
 }
