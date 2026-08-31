@@ -158,7 +158,7 @@ Nine-tab modal plus isolated vendor cards. Polls (jobs 1500ms, job output 1200ms
 | `custMemory` 11986-12063 | `MemoryTab.tsx` + `memory.ts` | Scope is always sent; never the literal `"default"`. |
 | Local discovery 12064-12123; protocols 12132-12150 | `models.ts` | Loopback-only chatgpt endpoints. Protocol list generated from the served catalogue. |
 | Volcengine 12152-12574 | `volcengine.ts` + `vendors/volcengine.tsx` | Key poll 2500ms then 5000ms × 24, stopped on unmount. Auto-configure only while never linked. SSO popup severs `opener`. |
-| `custModels` 12575-12707 | `ModelsTab.tsx` | Probe is a button, never a render-time call. Readiness is local-only. B-04 `capability_receipt` shown as tri-state badges (`true`/`false`/`unknown` + stale). Full M-01 wizard is later. |
+| `custModels` 12575-12707 | `ModelsTab.tsx` + `components/onboarding/CapabilityBadges.tsx` | Probe is a button, never a render-time call. Readiness is local-only. B-04 `capability_receipt` shown as tri-state badges (`true`/`false`/`unknown` + stale + raw unknown reason). |
 | `window.openCust` / `custTab` / `telemetryRow` | `bootCustomize()` in `features/customize/index.ts` | Overwrites the F-05 stubs. `main.tsx` adds one import. |
 ## F-17 artifacts + Files (M-03)
 
@@ -325,6 +325,19 @@ Composer send, turn tickets, step / plan / permission / candidate cards, attachm
 | `renderStoredStep` hook (F-10 `setRenderStoredStepImpl`) | `installSend` | Interleaved history steps paint through `step.ts` `renderStoredStep`. |
 | window contract names | `index.ts` `installSend` | Overwrites the F-05 stubs for the ten names. `main.tsx` adds one import. |
 
+## M-01 first-run wizard + capability badges
+
+New UI on B-04 `GET/POST /api/v1/onboarding` and probe `capability_receipt`. Not a verbatim port of a wizard (legacy app.js has none). Probe/readiness/badge wording follows `custModels` and `renderStandardProfileReadiness`.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| *(no first-run wizard)* | `features/onboarding/machine.ts` + `components/onboarding/Wizard.tsx` | Four required steps: path → Test → env/network readiness → create/open Project. Skip POSTs `{skip:true}` (zero provider calls). Checklist jumps to any step so Project does not require going back. |
+| `custModels` probe button 12682-12700 | Wizard Test step + `ModelsTab.tsx` Test | Probe is a button, never a render-time call. Provider requests stay 0 until that click. Test copy warns about 1–2 outbound requests. |
+| Probe result `reachable` / `detail` 12691-12698 | `testResult` + `CapabilityBadges` | Reachable wording reused (`cust.models.reachable` / `unreachable`). Errors use `ApiError.requestId` (`message [id]`). |
+| `capability_receipt` (B-04; F-19 placeholder in ModelsTab) | `features/onboarding/badges.ts` | Tri-state `true` / `false` / `unknown` + `stale`. unknown is not coerced to false. The reason is probe/receipt `detail` as-is (no “unsupported” rewrite). |
+| `renderStandardProfileReadiness` 11659-11709 | `components/onboarding/ReadinessPanel.tsx` | Same card: state text, missing environments/packages, explicit-only remediation + copy. GET `/onboarding` already includes `environment` and `network` (zero outbound). |
+| API key in the Models form 12627-12632 | Uncontrolled password input in the wizard path step | Key never enters wizard state, never a text node, never a GET field. Sanitizer drops credential-shaped keys. |
+| `window` contract | `bootOnboarding()` from `main.tsx` (one import) | No new contract globals. Comment appended under `// === lane additions ===`. |
 ## F-16 execution view
 
 Executed-code history, variable inspector, Provenance tab, and fork-without-checkpoint 409 presentation. Recovery/branch **sanitize** (app.js:3032-3148) and the Timeline panel buttons stay in F-15; this lane does not rewrite them. Fork-from-cell without an exact cursor checkpoint is HTTP 409 `historical source has no exact cursor checkpoint` — the UI surfaces that sentence, does not retry, and does not rewrite it as success. F-14 already `isReady`-gates `toggleExecutedCode` / `buildExecutedCodeView` and exports `cellNode`; F-17 Viewer already calls `window.renderProvenanceInto` when `provMode` is set. This lane assigns those names and composes F-14 `renderNotebook` with the inspector.

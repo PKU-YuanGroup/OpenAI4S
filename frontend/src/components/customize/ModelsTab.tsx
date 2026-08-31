@@ -22,32 +22,12 @@ import {
   type LocalDiscovery,
   type ProtocolOption,
 } from "../../features/customize/models";
+import { CapabilityBadges } from "../onboarding/CapabilityBadges";
 import { useAlive } from "./use-timer-lease";
 import { Empty, Hdr, IconGhost, Pill, Subhead } from "./ui";
 import { VolcenginePanel } from "./vendors/volcengine";
 
 type Profile = Record<string, unknown>;
-
-function CapabilityBadges({ receipt }: { receipt: CapabilityReceipt | null }) {
-  if (!receipt) return null;
-  const pill = (cap: "native_tool_call" | "streaming", state: string) => (
-    <span
-      class="pill prof-cap"
-      data-cap={cap}
-      data-state={state}
-      data-stale={receipt.stale ? "true" : "false"}
-    >
-      {cap === "native_tool_call" ? "native tool call" : "streaming"} · {state}
-      {receipt.stale ? " · stale" : ""}
-    </span>
-  );
-  return (
-    <div class="ds">
-      {pill("native_tool_call", receipt.native_tool_call)}{" "}
-      {pill("streaming", receipt.streaming)}
-    </div>
-  );
-}
 
 export function ModelsTab() {
   const alive = useAlive();
@@ -391,6 +371,7 @@ function ProfileRow({
     : {}) as Record<string, unknown>;
   const [probe, setProbe] = useState<string | null>(null);
   const [probeClass, setProbeClass] = useState("ds prof-probe");
+  const [probeReason, setProbeReason] = useState("");
   const [receipt, setReceipt] = useState<CapabilityReceipt | null>(
     readCapabilityReceipt(p.capability_receipt),
   );
@@ -423,7 +404,7 @@ function ProfileRow({
         {rd.state && rd.state !== "ready" ? (
           <div class="ds prof-warn">{publicText(rd.detail || rd.state, 200)}</div>
         ) : null}
-        <CapabilityBadges receipt={receipt} />
+        <CapabilityBadges receipt={receipt} unknownReason={probeReason} />
         {probe != null ? <div class={probeClass}>{probe}</div> : null}
       </div>
       {!isActive ? (
@@ -460,16 +441,20 @@ function ProfileRow({
             const r = await api(`/model-profiles/${encodeURIComponent(asString(p.id))}/probe`, {
               method: "POST",
             });
+            const detail = publicText(r.detail, 240);
             setProbeClass("ds prof-probe " + (r.reachable ? "ok" : "bad"));
             setProbe(
               (r.reachable ? t("cust.models.reachable") : t("cust.models.unreachable")) +
-                (r.detail ? " — " + publicText(r.detail, 240) : ""),
+                (detail ? " — " + detail : ""),
             );
+            setProbeReason(r.reachable ? "" : detail);
             const next = readCapabilityReceipt(r.capability_receipt);
             if (next) setReceipt(next);
           } catch (e) {
             setProbeClass("ds prof-probe bad");
-            setProbe(apiErrorText(e));
+            const text = apiErrorText(e);
+            setProbe(text);
+            setProbeReason(text);
           } finally {
             setTesting(false);
           }

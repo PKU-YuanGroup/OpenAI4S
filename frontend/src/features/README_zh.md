@@ -25,3 +25,4 @@
 | [`autocomplete/`](autocomplete/) | F-12 作曲框（`@/#/`）与编辑器自动补全。关键词表来自 F-08 `editorKeywords`。 |
 | [`send/`](send/) | F-11 发送全链、turn ticket、步骤/计划/权限/候选卡片、admission 追踪器。 |
 | [`execution/`](execution/) | F-16 executed-code 视图、变量检查器、Provenance tab、fork 409 呈现。 |
+| [`onboarding/`](onboarding/) | M-01 首次运行向导：四步状态机、skip/清单、能力 badge。 |

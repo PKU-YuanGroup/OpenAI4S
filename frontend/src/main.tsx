@@ -3,6 +3,7 @@ import { render } from "preact";
 import { App } from "./app";
 import { bootArtifacts } from "./features/artifacts";
 import { bootCustomize } from "./features/customize";
+import { bootOnboarding } from "./features/onboarding";
 import { bootChrome } from "./features/chrome";
 import { installTheme } from "./features/theme/theme";
 import { bootExecution } from "./features/execution";
@@ -22,6 +23,7 @@ installNotebook();
 bootArtifacts();
 bootExecution();
 bootCustomize();
+bootOnboarding();
 
 const mount = document.getElementById("app");
 if (mount === null) {

@@ -14,3 +14,4 @@ Lane-owned Preact views. Each F-series item adds `components/<area>/` and does n
 | [`customize/`](customize/) | F-19 Customize modal: nine tabs plus Volcengine / DataPro / Doubao vendor cards. |
 | [`dashboard/`](dashboard/) | F-13 dashboard / workspace chrome (frozen ids, `#composer-hint`, disconnect banner). |
 | [`timeline/`](timeline/) | F-15 `#dock-timeline` host. The ledger itself is the imperative island in `features/timeline/island.ts`. |
+| [`onboarding/`](onboarding/) | M-01 first-run wizard overlay and tri-state capability badges. |

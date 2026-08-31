@@ -140,3 +140,4 @@ export {
 // F-16: window.buildExecutedCodeView / execSourcesState / selectExecFrame /
 //   toggleExecutedCode / showProvenance / renderProvenanceInto /
 //   renderNotebook are assigned by bootExecution() in features/execution.
+// M-01: first-run wizard is mounted by bootOnboarding() in features/onboarding.
