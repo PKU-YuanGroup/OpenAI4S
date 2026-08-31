@@ -323,3 +323,20 @@ Composer send, turn tickets, step / plan / permission / candidate cards, attachm
 | `frame_update` turn-ticket body 5296-5310 | `handlers.ts` `handleFrameUpdateTurn` via `setFrameUpdateTurnHandler` | `processing` → `activateTurnTicket`; terminal → `applyFinalReviewStatus` + `turnDone`. Stale turn refreshes workbench only. |
 | `renderStoredStep` hook (F-10 `setRenderStoredStepImpl`) | `installSend` | Interleaved history steps paint through `step.ts` `renderStoredStep`. |
 | window contract names | `index.ts` `installSend` | Overwrites the F-05 stubs for the ten names. `main.tsx` adds one import. |
+
+## F-16 execution view
+
+Executed-code history, variable inspector, Provenance tab, and fork-without-checkpoint 409 presentation. Recovery/branch **sanitize** (app.js:3032-3148) and the Timeline panel buttons stay in F-15; this lane does not rewrite them. Fork-from-cell without an exact cursor checkpoint is HTTP 409 `historical source has no exact cursor checkpoint` — the UI surfaces that sentence, does not retry, and does not rewrite it as success. F-14 already `isReady`-gates `toggleExecutedCode` / `buildExecutedCodeView` and exports `cellNode`; F-17 Viewer already calls `window.renderProvenanceInto` when `provMode` is set. This lane assigns those names and composes F-14 `renderNotebook` with the inspector.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `execSourcesState` / `toggleExecutedCode` / `loadExecutionSources` / `selectExecFrame` / `buildExecutedCodeView` 10148-10229 | `features/execution/exec.ts` | Identity of `S.execSources`; request generation; do not cache a failed cell list; indent `min(max(depth,0),8)*14px`; executed-code **replaces** the Notebook body (history, not deliverables). |
+| `notebookExportLink` 10231-10264 | F-14 `chrome.ts` (unchanged) | Provenance exec subtab reuses it. |
+| `refreshVariableInspector` / `variablePreviewText` / `renderVariableInspector` 10265-10332 | `features/execution/inspector.ts` | `sanitizeVariableInspection` from F-15 (exact-scope fail-closed). Inspection never runs a Cell. Stale = runtime revision/generation ahead of the snapshot. |
+| `sanitizeRecovery` / `sanitizeBranches` / `sanitizeVariableInspection` 3032-3178 | F-15 `features/timeline/sanitize.ts` (unchanged) | This lane only imports. |
+| Timeline recovery/branch REST buttons 4715-4878 | F-15 `island.ts` (unchanged) | 409 on the banner is `publicText(error.message)`. This lane adds `conflict.ts` / `branch.ts` so a missing cursor checkpoint cannot be retried or rewritten. |
+| `loadLineage` / `showProvenance` / `renderProvenanceInto` 10631-10676 | `features/execution/provenance.ts` + `lineage.ts` | Lineage request generation; tab/version change drops the response. Subtabs code/exec/messages/environment/review. |
+| `renderProvEnvironment` 10683-10766 | `provenance.ts` + `lineage.ts` `envSnapshotHonesty` / `envPythonChip` | Three honesty states (live / verified / unverified). No `Python ?` on an R snapshot. `packages_unavailable` and unverified `provenance` rendered, not reworded. |
+| `renderProvMessages` 10769-10788 | `provenance.ts` | `fetchRecentMessages` (F-13); `renderMd` (F-08). |
+| `renderProvReview` 10789-10833 | `lineage.ts` `lineageReviewModel` + `captureInRootNotebook` | `head_checksum_reused` always listed; other captures only without a cell card. Delegate captures do not get a root-Notebook view-code link. |
+| window names | `boot.ts` `bootExecution` | Overwrites F-05 stubs for `buildExecutedCodeView` / `execSourcesState` / `selectExecFrame`. Also assigns `toggleExecutedCode` / `showProvenance` / `renderProvenanceInto` / `renderNotebook`. `main.tsx` adds one import after `bootArtifacts`. |

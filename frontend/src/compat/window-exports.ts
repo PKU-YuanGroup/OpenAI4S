@@ -137,3 +137,6 @@ export {
 //   renderRefProblems / searchResultHttpUrl / admissionSettled /
 //   forgetAdmission / outstandingAdmissions / reconcileLastAdmission /
 //   rememberAdmission are assigned by features/send (imported from main.tsx).
+// F-16: window.buildExecutedCodeView / execSourcesState / selectExecFrame /
+//   toggleExecutedCode / showProvenance / renderProvenanceInto /
+//   renderNotebook are assigned by bootExecution() in features/execution.
