@@ -578,7 +578,9 @@ def test_literature_review_is_host_only_and_example_stats_needs_no_network():
     stats = loader.get("example_stats")
     assert lit is not None and stats is not None
     assert lit.network.mode == "host_only"
-    assert "api.openalex.org" in lit.network.domains
+    # Exact membership, spelled so it cannot be mistaken for a URL substring
+    # test: `domains` is a tuple of hosts, never a URL to sanitise.
+    assert any(domain == "api.openalex.org" for domain in lit.network.domains)
     assert stats.network.mode == "none"
     af = loader.get("alphafold2")
     assert af is not None
