@@ -63,8 +63,8 @@ export async function loadArtifacts(id: string): Promise<void> {
 }
 
 /**
- * app.js:8510-8516. Project-wide listing is M-03's paged index (or the
- * array-route fallback). `force` busts the per-project cache.
+ * app.js:8510-8516. Project-wide listing is M-03's paged artifact-index.
+ * `force` busts the per-project cache. There is no array-route fallback.
  */
 export async function loadProjectArtifacts(force?: boolean): Promise<void> {
   const pid = project.value;

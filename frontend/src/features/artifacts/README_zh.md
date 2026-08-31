@@ -17,11 +17,11 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`catalog.ts`](catalog.ts) | `scientificRenderers()` 空值防御、catalog 与 descriptor 拉取。 |
 | [`copy.ts`](copy.ts) | M-03 搜索/过滤/深链文案（不改生成的 i18n 字典）。 |
 | [`deeplink.test.ts`](deeplink.test.ts) | 查询串解析；精确 version；禁止静默降级 latest。 |
-| [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` 解析/序列化/解析 version。 |
+| [`deeplink.ts`](deeplink.ts) | `?artifact=&version_id=` 解析/序列化/解析 version。空 versions → not-found。 |
 | [`events.test.ts`](events.test.ts) | `artifact_created` 版本同步 + 现场插图；跳过 stub 的 `nbRender`。 |
 | [`events.ts`](events.ts) | `artifact_created` 余下 32 行（app.js:5314-5346）。 |
-| [`files-index.test.ts`](files-index.test.ts) | 500 条夹具首屏 50、过滤、cursor 重置、过期 project、数组回退。 |
-| [`files-index.ts`](files-index.ts) | artifact-index 浏览；TODO 回退到旧数组 route。 |
+| [`files-index.test.ts`](files-index.test.ts) | cursor 生命周期（filter/project 丢弃）、禁止数组 route 回退、首屏 ≤50。 |
+| [`files-index.ts`](files-index.ts) | 只走 B-06 `GET .../artifact-index`。filter fingerprint 丢弃旧 cursor。 |
 | [`http-stub.ts`](http-stub.ts) | Vitest 用的 JSON `Response` 替身。 |
 | [`index.ts`](index.ts) | 对外 re-export。 |
 | [`load.ts`](load.ts) | `loadArtifacts` / `loadProjectArtifacts` / `setFilesScope`。 |
@@ -31,4 +31,5 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | [`state.ts`](state.ts) | 车道局部 M-03 signal。不上升进 `stores/`。 |
 | [`thumbs.ts`](thumbs.ts) | 磁贴缩略图、`parseMolPoints` / `molSvg`。 |
 | [`types.ts`](types.ts) | Artifact DTO、页大小 50/100、TEXT_EXT / MOL_EXT。 |
-| [`ui.ts`](ui.ts) | Files 网格、Viewer、`openViewer`、⌘K/深链命中。 |
+| [`ui.ts`](ui.ts) | Files 网格、Viewer、`openViewer`、⌘K/深链命中。提供 `version_id` 时绝不静默 latest。 |
+| [`ui.test.ts`](ui.test.ts) | 深链 apply / `openViewer` 精确 pin / stale 不打开 latest。 |

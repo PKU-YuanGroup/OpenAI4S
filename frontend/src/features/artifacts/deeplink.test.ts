@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setArtifactsFetch } from "./api";
 import {
   artifactDeepLinkSearch,
   parseArtifactDeepLink,
   resolveArtifactVersion,
 } from "./deeplink";
+import { jsonResponse } from "./http-stub";
 import type { ArtifactRow, ArtifactVersionRow } from "./types";
 
 const versions: ArtifactVersionRow[] = [
@@ -110,5 +112,38 @@ describe("M-03 exact version resolve", () => {
       artifactId: "nope",
       versionId: "v-old",
     });
+  });
+});
+
+describe("M-03 default version fetch (no silent latest)", () => {
+  beforeEach(() => {
+    setArtifactsFetch(null);
+  });
+  afterEach(() => {
+    setArtifactsFetch(null);
+  });
+
+  it("treats an empty versions list as not-found, not a ghost latest", async () => {
+    setArtifactsFetch(async () => jsonResponse({ versions: [] }));
+    const result = await resolveArtifactVersion({ artifactId: "gone", versionId: "v-old" });
+    expect(result.status).toBe("not-found");
+    if (result.status === "not-found") {
+      expect(result.artifactId).toBe("gone");
+      expect(result.versionId).toBe("v-old");
+    }
+  });
+
+  it("pins the exact version from GET /versions and never rewrites it to latest", async () => {
+    setArtifactsFetch(async (url) => {
+      expect(url).toContain("/artifacts/art-1/versions");
+      return jsonResponse({ versions });
+    });
+    const result = await resolveArtifactVersion({ artifactId: "art-1", versionId: "v-old" });
+    expect(result.status).toBe("exact");
+    if (result.status === "exact") {
+      expect(result.versionId).toBe("v-old");
+      expect(result.artifact._exactVersion).toBe(true);
+      expect(result.artifact.version_id).toBe("v-old");
+    }
   });
 });

@@ -8,5 +8,5 @@ F-17 Files dock 视图。冻结的 DOM id（`#dock-files`、`#results-list`、`#
 
 | 文件 | 职责 |
 | --- | --- |
-| [`FilesPanel.tsx`](FilesPanel.tsx) | 文件名搜索、content-type / 来源过滤、Load more。 |
-| [`index.ts`](index.ts) | 再导出 `FilesPanel`。 |
+| [`FilesPanel.tsx`](FilesPanel.tsx) | 文件名搜索、content-type / 来源过滤、Load more。`mountFilesPanel` 挂进壳层 `#dock-files`。 |
+| [`index.ts`](index.ts) | 再导出 `FilesPanel` / `mountFilesPanel`。 |

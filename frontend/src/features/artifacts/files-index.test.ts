@@ -7,15 +7,19 @@ import {
   browseFiles,
   filterArtifactsClient,
   filesGridArtifacts,
+  setFilesOrigin,
+  setFilesQuery,
 } from "./files-index";
 import { jsonResponse } from "./http-stub";
 import {
+  filesCursorFilter,
   filesHasMore,
   filesIndexError,
   filesIndexItems,
   filesIndexMode,
   filesIndexReq,
   filesNextCursor,
+  filesQuery,
   resetFilesIndexState,
 } from "./state";
 import type { ArtifactRow } from "./types";
@@ -47,7 +51,7 @@ function make500(): ArtifactRow[] {
   return rows;
 }
 
-describe("M-03 Files index + client fallback", () => {
+describe("M-03 Files index (artifact-index, no array fallback)", () => {
   beforeEach(() => {
     resetStoreFields();
     resetFilesIndexState();
@@ -83,6 +87,8 @@ describe("M-03 Files index + client fallback", () => {
       expect(url).toContain("/projects/p1/artifact-index");
       expect(url).toContain("limit=50");
       expect(url).not.toContain("cursor=");
+      expect(url).not.toContain("/projects/p1/artifacts?");
+      expect(url.endsWith("/projects/p1/artifacts")).toBe(false);
       return jsonResponse({
         artifacts: all.slice(0, FILES_PAGE_SIZE),
         next_cursor: "cur-1",
@@ -131,10 +137,31 @@ describe("M-03 Files index + client fallback", () => {
       return jsonResponse({ artifacts: [row({ id: "x" })], next_cursor: "c", has_more: true });
     });
     await browseFiles({ reset: true });
-    filesNextCursor.value = "stale-cursor";
+    expect(filesNextCursor.value).toBe("c");
+    setFilesQuery("report");
+    expect(filesNextCursor.value).toBeNull();
+    expect(filesCursorFilter.value).toBeNull();
     await browseFiles({ reset: true });
     expect(seen[1]).not.toContain("stale-cursor");
     expect(seen[1]).not.toContain("cursor=");
+    expect(seen[1]).toContain("q=report");
+  });
+
+  it("load-more after a filter change does not reuse the old cursor even without reset", async () => {
+    project.value = "p1";
+    filesScope.value = "project";
+    const seen: string[] = [];
+    setArtifactsFetch(async (url) => {
+      seen.push(url);
+      return jsonResponse({ artifacts: [row({ id: "x" })], next_cursor: "keep-me", has_more: true });
+    });
+    await browseFiles({ reset: true });
+    expect(filesNextCursor.value).toBe("keep-me");
+    filesQuery.value = "plot";
+    await browseFiles({ loadMore: true });
+    const last = seen[seen.length - 1] || "";
+    expect(last).not.toContain("cursor=");
+    expect(last).toContain("q=plot");
   });
 
   it("drops a late response after the project switches", async () => {
@@ -165,23 +192,74 @@ describe("M-03 Files index + client fallback", () => {
     expect(projectArtifacts.value as ArtifactRow[]).toEqual(filesIndexItems.value);
   });
 
-  it("falls back to the array route with client paging when index is 404", async () => {
+  it("drops a late response after the filter changes", async () => {
+    filesScope.value = "project";
+    project.value = "p1";
+    let resolveFirst: ((body: unknown) => void) | undefined;
+    const firstBody = new Promise<unknown>((resolve) => {
+      resolveFirst = resolve;
+    });
+    setArtifactsFetch(async (url) => {
+      if (url.includes("q=keep")) {
+        return jsonResponse({
+          artifacts: [row({ id: "kept" })],
+          next_cursor: null,
+          has_more: false,
+        });
+      }
+      const body = await firstBody;
+      return jsonResponse(body);
+    });
+    const first = browseFiles({ reset: true });
+    setFilesQuery("keep");
+    const second = browseFiles({ reset: true });
+    resolveFirst!({ artifacts: [row({ id: "stale" })], next_cursor: null, has_more: false });
+    await first;
+    await second;
+    expect(filesIndexItems.value.map((a) => a.id)).toEqual(["kept"]);
+  });
+
+  it("invalid_cursor retries without the old cursor", async () => {
     project.value = "p1";
     filesScope.value = "project";
-    const all = make500();
+    const seen: string[] = [];
     setArtifactsFetch(async (url) => {
-      if (url.includes("artifact-index")) return jsonResponse({ error: "missing" }, 404);
-      expect(url).toContain("/projects/p1/artifacts");
-      expect(url).not.toContain("artifact-index");
-      return jsonResponse(all);
+      seen.push(url);
+      if (url.includes("cursor=")) {
+        return jsonResponse({ error: "invalid cursor", code: "invalid_cursor" }, 400);
+      }
+      return jsonResponse({
+        artifacts: [row({ id: "fresh" })],
+        next_cursor: null,
+        has_more: false,
+      });
     });
     await browseFiles({ reset: true });
-    expect(filesIndexMode.value).toBe("fallback");
-    expect(filesIndexItems.value).toHaveLength(FILES_PAGE_SIZE);
-    expect(filesHasMore.value).toBe(true);
-    expect(filesIndexError.value).toBeTruthy();
+    filesNextCursor.value = "dead-cursor";
     await browseFiles({ loadMore: true });
-    expect(filesIndexItems.value.length).toBe(FILES_PAGE_SIZE * 2);
+    expect(seen.some((u) => u.includes("cursor=dead-cursor"))).toBe(true);
+    expect(seen[seen.length - 1]).not.toContain("cursor=");
+    expect(filesIndexItems.value.map((a) => a.id)).toEqual(["fresh"]);
+    expect(filesIndexMode.value).toBe("index");
+  });
+
+  it("does not fall back to GET /projects/{pid}/artifacts when the index errors", async () => {
+    project.value = "p1";
+    filesScope.value = "project";
+    const seen: string[] = [];
+    setArtifactsFetch(async (url) => {
+      seen.push(url);
+      if (url.includes("artifact-index")) return jsonResponse({ error: "missing" }, 404);
+      return jsonResponse([row({ id: "from-array" })]);
+    });
+    await browseFiles({ reset: true });
+    expect(seen.every((u) => u.includes("artifact-index"))).toBe(true);
+    expect(seen.some((u) => /\/projects\/p1\/artifacts(?:\?|$)/.test(u) && !u.includes("artifact-index"))).toBe(
+      false,
+    );
+    expect(filesIndexMode.value).toBe("error");
+    expect(filesIndexItems.value).toEqual([]);
+    expect(filesIndexError.value).toBeTruthy();
   });
 
   it("frame scope filters the session array locally", async () => {
@@ -190,11 +268,18 @@ describe("M-03 Files index + client fallback", () => {
       row({ id: "a", filename: "keep.csv" }),
       row({ id: "b", filename: "skip.png" }),
     ];
-    const { filesQuery } = await import("./state");
     filesQuery.value = "keep";
     await browseFiles({ reset: true });
     expect(filesIndexItems.value.map((a) => a.id)).toEqual(["a"]);
     expect(filesHasMore.value).toBe(false);
+  });
+
+  it("origin setter drops the cursor", () => {
+    filesNextCursor.value = "c";
+    filesCursorFilter.value = "old";
+    setFilesOrigin("uploaded");
+    expect(filesNextCursor.value).toBeNull();
+    expect(filesCursorFilter.value).toBeNull();
   });
 
   it("bumps the request token on resetFilesIndexState", () => {
