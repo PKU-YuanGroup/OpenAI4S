@@ -5,6 +5,7 @@ import { bootArtifacts } from "./features/artifacts";
 import { bootCustomize } from "./features/customize";
 import { bootChrome } from "./features/chrome";
 import { installTheme } from "./features/theme/theme";
+import { bootExecution } from "./features/execution";
 import { installNotebook } from "./features/notebook";
 import { bootWs } from "./features/ws";
 import "./features/sessions";
@@ -19,6 +20,7 @@ installTheme();
 bootWs();
 installNotebook();
 bootArtifacts();
+bootExecution();
 bootCustomize();
 
 const mount = document.getElementById("app");
