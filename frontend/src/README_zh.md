@@ -17,6 +17,7 @@
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-14 import `features/notebook`（`installNotebook`）。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-13 import `features/sessions`。后续工作项可以再加一行模块 import。 |
 | [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-10 import `features/messages`。 |
+| [`main.tsx`](main.tsx) | `preact.render` 挂到 `#app`。F-05 在这里 import `compat/window-exports`。F-06 import `features/ws`（`bootWs`）。F-11 import `features/send`。 |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite 客户端类型（`import.meta.env`）。 |
 
 ## 子目录

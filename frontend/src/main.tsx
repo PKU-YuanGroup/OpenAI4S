@@ -11,6 +11,7 @@ import "./features/sessions";
 import "./i18n";
 import "./features/md";
 import "./features/messages";
+import "./features/send";
 import "./features/timeline";
 import "./features/autocomplete";
 

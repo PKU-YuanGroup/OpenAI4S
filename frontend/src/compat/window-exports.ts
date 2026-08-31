@@ -133,3 +133,7 @@ export {
 // are assigned by bootChrome() in features/chrome (imported from main.tsx).
 // F-12: window.ac / edacTeardown / bindEditorAutocomplete are assigned by
 // features/autocomplete (imported from main.tsx).
+// F-11: window.send / buildStepCard / renderAttachmentProblems /
+//   renderRefProblems / searchResultHttpUrl / admissionSettled /
+//   forgetAdmission / outstandingAdmissions / reconcileLastAdmission /
+//   rememberAdmission are assigned by features/send (imported from main.tsx).
