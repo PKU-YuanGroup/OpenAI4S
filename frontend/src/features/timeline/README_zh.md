@@ -11,6 +11,7 @@ F-15 Action Timeline 内核。`sanitize*` / `mergeActionTimelines` 是纯函数�
 | [`api.ts`](api.ts) | 同源 `/api/v1` fetch、`optionalApi`、`hint` / 后续车道 `isReady` 调用。 |
 | [`dom.ts`](dom.ts) | `el` / `iconEl` / `ghostIconBtn` / `svgElement` / `$` / `bytes`。 |
 | [`index.ts`](index.ts) | `bootTimeline`：注册 WS handler 并把契约名字挂到 window。 |
+| [`index.test.ts`](index.test.ts) | `installTimeline` 把 `loadWorkbenchState` 挂到后续车道的 `callWindow`。 |
 | [`island.ts`](island.ts) | 命令式孤岛：46px ledger、overview SVG、五个侧栏面板、`renderActionTimeline`。 |
 | [`model.ts`](model.ts) | span / overview 几何、`actionTimelineEntryKey`、epoch 解析。 |
 | [`s.ts`](s.ts) | `createSProxy()` 别名，保证 `_timelineView` 嵌套写入保持同一性。 |

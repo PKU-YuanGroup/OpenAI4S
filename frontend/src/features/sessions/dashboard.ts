@@ -6,7 +6,7 @@ import { _dashPoll } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys } from "./chrome";
-import { $, ago, el, navURL } from "./dom";
+import { $, ago, el, navURL, syncMobileChrome } from "./dom";
 import { loadProjects } from "./load";
 import {
   annotateRunningCounts,
@@ -289,6 +289,7 @@ export function showWorkspace(): void {
   $("#workspace")?.classList.remove("hidden");
   const view = $("#conv-view");
   if (view) view.classList.remove("hidden");
+  syncMobileChrome(false);
 }
 
 binds.loadDashboard = loadDashboard;

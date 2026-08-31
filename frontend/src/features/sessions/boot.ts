@@ -16,7 +16,7 @@ import {
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { newSession, routeInitialView } from "./conversation";
 import { showDashboard } from "./dashboard";
-import { $, down, grow, setSidebar, setTitle, updateJumpPill } from "./dom";
+import { $, down, grow, setSidebar, setTitle, syncMobileChrome, updateJumpPill } from "./dom";
 import { paintIcons } from "./icon";
 import { callLane, hostWindow } from "./lane";
 import { loadSessions } from "./load";
@@ -183,5 +183,13 @@ export function bindWorkbench(): void {
   window.addEventListener("popstate", () => {
     void routeInitialView().catch(showDashboard);
   });
+  if (typeof window.matchMedia === "function") {
+    const mq = window.matchMedia("(max-width: 900px)");
+    const onMq = () => syncMobileChrome(true);
+    if (typeof mq.addEventListener === "function") mq.addEventListener("change", onMq);
+    else if (typeof (mq as { addListener?: (fn: () => void) => void }).addListener === "function") {
+      (mq as { addListener: (fn: () => void) => void }).addListener(onMq);
+    }
+  }
   void routeInitialView().catch(showDashboard);
 }

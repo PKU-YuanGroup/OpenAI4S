@@ -14,6 +14,7 @@ import {
 import {
   commitActionTimelineOverviewSelection,
   loadEarlierActionTimeline,
+  loadWorkbenchState,
   mergeDelegationChildEvent,
   renderActionTimeline,
   renderDelegationPanel,
@@ -75,6 +76,7 @@ const TIMELINE_WINDOW: Record<string, unknown> = {
   actionTimelineSpan,
   commitActionTimelineOverviewSelection,
   loadEarlierActionTimeline,
+  loadWorkbenchState,
   mergeDelegationChildEvent,
   renderActionTimeline,
   renderDelegationPanel,

@@ -205,6 +205,31 @@ describe("F-07 setLang / detectLang / applyStaticI18n", () => {
     expect(detectLang()).toBe("zh");
   });
 
+  it("i18nReady and setLang write document.documentElement.lang", async () => {
+    const html = { lang: "zh" };
+    const previous = (globalThis as { document?: unknown }).document;
+    (globalThis as unknown as {
+      document: { documentElement: { lang: string }; querySelectorAll: (sel: string) => unknown[] };
+    }).document = {
+      documentElement: html,
+      querySelectorAll: () => [],
+    };
+    try {
+      await i18nReady();
+      expect(html.lang === "zh" || html.lang === "en").toBe(true);
+      await setLang("en");
+      expect(html.lang).toBe("en");
+      await setLang("zh");
+      expect(html.lang).toBe("zh");
+    } finally {
+      if (previous === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = previous;
+      }
+    }
+  });
+
   it("applyStaticI18n writes text/title/placeholder/value through t()", async () => {
     await i18nReady();
     await setLang("zh");

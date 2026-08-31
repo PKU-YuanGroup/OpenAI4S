@@ -98,6 +98,52 @@ async function ensureDockOpen() {
   await page.locator("#rightdock:not(.collapsed)").waitFor({ state: "visible" });
 }
 
+async function waitWorkbenchIdle(timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const loading = await page.evaluate(() => !!(window.S && window.S._workbenchLoading));
+    if (!loading) return;
+    await page.waitForTimeout(50);
+  }
+}
+
+async function dumpBranchForkState(frameId) {
+  const snapshot = await page.evaluate(async (fid) => {
+    const S = window.S || {};
+    let fetched = null;
+    let fetchError = null;
+    try {
+      const response = await fetch(`/api/v1/frames/${encodeURIComponent(fid)}/branches`);
+      fetched = { status: response.status, body: await response.json() };
+    } catch (error) {
+      fetchError = String(error && error.message ? error.message : error);
+    }
+    const timeline = document.getElementById("dock-timeline");
+    return {
+      activeTab: S.activeTab,
+      currentId: S.currentId,
+      workbenchLoading: S._workbenchLoading,
+      workbenchReq: S._workbenchReq,
+      loadWorkbenchStateType: typeof window.loadWorkbenchState,
+      renderActionTimelineType: typeof window.renderActionTimeline,
+      branchState: S.branchState,
+      dockTimelineHidden: timeline ? timeline.classList.contains("hidden") : null,
+      dockTimelineChildCount: timeline ? timeline.children.length : null,
+      branchNameTexts: Array.from(document.querySelectorAll(".branch-name")).map((node) => node.textContent),
+      workbenchEmpty: Array.from(document.querySelectorAll(".workbench-empty")).map((node) => node.textContent),
+      fetched,
+      fetchError,
+    };
+  }, frameId);
+  let apiBranches;
+  try {
+    apiBranches = await api(`/frames/${encodeURIComponent(frameId)}/branches`);
+  } catch (error) {
+    apiBranches = { error: String(error && error.message ? error.message : error) };
+  }
+  return { snapshot, apiBranches };
+}
+
 function queueTickets(snapshot) {
   return [snapshot?.owner, ...(snapshot?.queue || [])].filter(Boolean);
 }
@@ -672,12 +718,7 @@ try {
   // Opening the Timeline tab kicks off loadWorkbenchState (9 optional GETs).
   // The fixture walk below stubs fetch and asserts search/fold stay local; an
   // in-flight tab-open request would fail that assertion as a race.
-  const workbenchIdle = Date.now() + 5000;
-  while (Date.now() < workbenchIdle) {
-    const loading = await page.evaluate(() => !!(window.S && window.S._workbenchLoading));
-    if (!loading) break;
-    await page.waitForTimeout(50);
-  }
+  await waitWorkbenchIdle();
   await page.waitForLoadState("networkidle");
   await page.locator(".branch-panel").waitFor({ state: "visible" });
   await page.locator(".recovery-action-list").waitFor({ state: "visible" });
@@ -1813,7 +1854,15 @@ try {
     hasText: /Action Timeline|行动时间线/i,
   }).click();
   await page.waitForLoadState("networkidle");
-  await page.locator(".branch-name").filter({ hasText: "Browser smoke fork" }).waitFor({ state: "visible" });
+  await waitWorkbenchIdle();
+  try {
+    await page.locator(".branch-name").filter({ hasText: "Browser smoke fork" }).waitFor({ state: "visible" });
+  } catch {
+    const dump = await dumpBranchForkState(frameId);
+    throw new Error(
+      `post-reload .branch-name "Browser smoke fork" timed out: ${JSON.stringify(dump)}`,
+    );
+  }
 
   const branchState = await api(`/frames/${encodeURIComponent(frameId)}/branches`);
   const forkedBranch = (branchState.branches || []).find((branch) => branch.name === "Browser smoke fork");

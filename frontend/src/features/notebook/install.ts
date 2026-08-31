@@ -9,7 +9,7 @@ import { eventFrameId, mine } from "../ws/guards";
 import { hasWsHandler, registerWsHandler } from "../ws/registry";
 import type { WsHandler, WsMessage } from "../ws/types";
 import { mountLiveNotebookFigure, highlightTraceback, notebookExportLink } from "./chrome";
-import { nbCellDraft, nbCellFinished, nbCellStart, nbCellChunk } from "./cells";
+import { loadExecutionLog, nbCellDraft, nbCellFinished, nbCellStart, nbCellChunk } from "./cells";
 import { handleKernelStatus, scheduleWorkbenchRefresh } from "./kernel";
 import type { WindowTarget } from "./types";
 
@@ -41,6 +41,7 @@ export function registerNotebookHandlers(): void {
 function assignWindow(target: WindowTarget): void {
   target.highlightTraceback = highlightTraceback;
   target.notebookExportLink = notebookExportLink;
+  target.loadExecutionLog = loadExecutionLog;
 }
 
 function wireArtifactFigures(): void {

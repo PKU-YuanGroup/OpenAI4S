@@ -15,7 +15,7 @@ import {
   versionResolveMessage,
 } from "./deeplink";
 import { browseFiles, filesGridArtifacts, visibleArtifacts } from "./files-index";
-import { loadProjectArtifacts } from "./load";
+import { loadArtifacts, loadProjectArtifacts } from "./load";
 import { renderArtifactBody } from "./renderers";
 import { filesIndexError, filesIndexItems, viewerVersionState } from "./state";
 import { tileThumb, tileThumbBig } from "./thumbs";
@@ -142,6 +142,7 @@ export function setActiveTab(tab: string): void {
   } else if (tab === "files") {
     void (async () => {
       if (filesScope.value === "project") await loadProjectArtifacts();
+      else if (currentId.value) await loadArtifacts(currentId.value);
       else await browseFiles({ reset: true });
       renderFilesGrid();
     })();
@@ -239,7 +240,7 @@ export function renderFilesGrid(): void {
     if (filesScope.value === "project") {
       card.appendChild(el("div", "a-src", translate("files.fromSession", sessionNameFor(a.root_frame_id))));
     }
-    card.onclick = () => openViewer(a);
+    card.onclick = () => presentViewer(a);
     list.appendChild(card);
   });
 }
@@ -311,6 +312,8 @@ function presentViewer(a: ArtifactRow): void {
  * A provided `version_id` that is not already an exact pin is resolved
  * immutably: missing exact → stale/not-found, never silent latest.
  * Palette ⌘K hits forward `version_id` as-is (F-20); this is the pin.
+ * Files-grid cards call `presentViewer` instead — those rows carry the
+ * current head `version_id` and must not wait on `/versions`.
  */
 export function openViewer(a: ArtifactRow): void | Promise<void> {
   if (a.version_id && !a._exactVersion) {

@@ -329,13 +329,15 @@ describe("F-09 theme", () => {
       expect(moduleAt).toBeGreaterThan(bootstrapAt);
     });
 
-    it("keeps theme-bootstrap.js as the os-theme IIFE that only writes data-theme", () => {
+    it("keeps theme-bootstrap.js as the os-theme IIFE that writes data-theme and html[lang]", () => {
       const src = readFileSync(
         join(repoRoot, "openai4s/server/webui/theme-bootstrap.js"),
         "utf8",
       );
       expect(src).toContain('localStorage.getItem("os-theme")');
       expect(src).toContain('setAttribute("data-theme"');
+      expect(src).toContain('localStorage.getItem("os-lang")');
+      expect(src).toContain("document.documentElement.lang");
       expect(src).not.toContain("theme-dark");
       expect(src).not.toContain("type=\"module\"");
       expect(src.startsWith("/*")).toBe(true);

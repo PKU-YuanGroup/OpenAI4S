@@ -60,6 +60,11 @@ export function loadLocale(lang: Lang): Promise<I18nDict> {
 
 let boot: Promise<void> | undefined;
 
+function applyDocumentLang(lang: Lang): void {
+  if (typeof document === "undefined" || !document.documentElement) return;
+  document.documentElement.lang = lang === "en" ? "en" : "zh";
+}
+
 export function i18nReady(): Promise<void> {
   if (!boot) {
     boot = (async () => {
@@ -70,9 +75,12 @@ export function i18nReady(): Promise<void> {
       void loadLocale(inactive);
     })();
   }
-  return boot;
+  return boot.then(() => {
+    applyDocumentLang(LANG);
+  });
 }
 
+applyDocumentLang(LANG);
 void i18nReady();
 
 // t("key", ...args) — current-language string with {0},{1}… positional interpolation; falls back to zh, then the key.
@@ -157,7 +165,7 @@ export async function setLang(lang: string): Promise<void> {
   await loadLocale(LANG);
   if (LANG !== "zh") await loadLocale("zh");
   if (typeof document !== "undefined") {
-    document.documentElement.lang = LANG === "en" ? "en" : "zh";
+    applyDocumentLang(LANG);
     applyStaticI18n(document);
     refreshLangToggle();
   }

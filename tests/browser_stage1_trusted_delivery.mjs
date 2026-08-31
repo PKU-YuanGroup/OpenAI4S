@@ -464,24 +464,75 @@ async function openWorkspace(page, baseUrl, projectId, frameId) {
   await waitForRenderedLinks(page, 100);
 }
 
+async function dumpArtifactReview(page, filename, step) {
+  return page.evaluate((fname) => {
+    const files = document.getElementById("dock-files");
+    const viewer = document.getElementById("dock-viewer");
+    const filesBtn = document.getElementById("files-btn");
+    return {
+      step: undefined,
+      fname,
+      filesBtn: !!(filesBtn && filesBtn.getBoundingClientRect().height),
+      filesHidden: files ? files.classList.contains("hidden") : "missing",
+      viewerHidden: viewer ? viewer.classList.contains("hidden") : "missing",
+      names: Array.from(document.querySelectorAll("#results-list .a-name")).map((n) => n.textContent),
+      vh: document.querySelector(".viewer-head .vh-name")?.textContent || null,
+      acts: Array.from(document.querySelectorAll(".viewer-head .vh-acts button")).map((n) => ({
+        text: String(n.textContent || "").trim(),
+        title: n.getAttribute("title"),
+        f16: n.getAttribute("data-f16-provenance"),
+      })),
+      ctx: Array.from(document.querySelectorAll(".ctx-item")).map((n) => String(n.textContent || "").trim()),
+      subs: Array.from(document.querySelectorAll(".prov-subtab")).map((n) => n.textContent),
+      cards: document.querySelectorAll(".prov-body .prov-card").length,
+      activeTab: window.S && window.S.activeTab,
+      provMode: !!(window.S && window.S.provMode),
+    };
+  }, filename).then((state) => ({ ...state, step }));
+}
+
 async function openArtifactReview(page, filename) {
-  await page.locator("#files-btn").click();
-  await page.locator("#dock-files:not(.hidden)").waitFor({ state: "visible", timeout: 30000 });
-  const name = page.locator("#results-list .a-name").filter({ hasText: filename });
-  await name.first().waitFor({ state: "visible", timeout: 30000 });
-  await name.first().click();
-  await page.locator(".viewer-head .vh-name").filter({ hasText: filename }).waitFor({ state: "visible", timeout: 30000 });
-  await page.locator(".viewer-head .vh-acts button").first().click();
-  await page.locator(".ctx-item").filter({ hasText: /^(Provenance|溯源)$/ }).click();
-  const review = page.locator(".prov-subtab").filter({ hasText: /^Review$/ });
-  await review.waitFor({ state: "visible", timeout: 30000 });
-  await review.click();
-  const body = page.locator(".prov-body");
-  await body.locator(".prov-card").first().waitFor({ state: "visible", timeout: 30000 });
-  return {
-    text: await body.innerText(),
-    view_code_links: await body.locator(".prov-link").count(),
-  };
+  let step = "files-btn";
+  try {
+    await page.locator("#files-btn").click();
+    step = "dock-files";
+    await page.locator("#dock-files:not(.hidden)").waitFor({ state: "visible", timeout: 30000 });
+    const name = page.locator("#results-list .a-name").filter({ hasText: filename });
+    step = "a-name";
+    await name.first().waitFor({ state: "visible", timeout: 30000 });
+    await name.first().click();
+    step = "vh-name";
+    await page.locator(".viewer-head .vh-name").filter({ hasText: filename }).waitFor({ state: "visible", timeout: 30000 });
+    // F-16 inserts a dedicated Provenance/溯源 button as the first `.vh-acts`
+    // child; F-17's overflow menu still has the same item. Prefer the button so
+    // we do not wait for a `.ctx-item` that never appears.
+    const provenanceBtn = page.locator(".viewer-head .vh-acts button").filter({
+      hasText: /Provenance|溯源/,
+    });
+    if (await provenanceBtn.count()) {
+      step = "provenance-btn";
+      await provenanceBtn.first().click();
+    } else {
+      step = "overflow-menu";
+      await page.locator(".viewer-head .vh-acts button").first().click();
+      step = "ctx-item";
+      await page.locator(".ctx-item").filter({ hasText: /Provenance|溯源/ }).click();
+    }
+    const review = page.locator(".prov-subtab").filter({ hasText: /Review/ });
+    step = "prov-subtab";
+    await review.waitFor({ state: "visible", timeout: 30000 });
+    await review.click();
+    const body = page.locator(".prov-body");
+    step = "prov-card";
+    await body.locator(".prov-card").first().waitFor({ state: "visible", timeout: 30000 });
+    return {
+      text: await body.innerText(),
+      view_code_links: await body.locator(".prov-link").count(),
+    };
+  } catch (error) {
+    const state = await dumpArtifactReview(page, filename, step);
+    throw new Error(`openArtifactReview failed at ${step}: ${String(error && error.message ? error.message : error).split(/\n/, 1)[0]} dump=${JSON.stringify(state)}`);
+  }
 }
 
 async function selfTest() {

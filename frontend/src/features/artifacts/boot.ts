@@ -16,6 +16,7 @@ import {
   renderFilesGrid,
   renderViewer,
   setActiveTab,
+  showDockPane,
 } from "./ui";
 
 type Target = Record<string, unknown>;
@@ -40,10 +41,12 @@ export function installArtifacts(target?: Target): void {
     host.renderFilesGrid = renderFilesGrid;
     host.renderViewer = renderViewer;
     host.setActiveTab = setActiveTab;
+    host.showDockPane = showDockPane;
     host.renderDockTabs = renderDockTabs;
     host.dockClose = dockClose;
     host.dockToggle = dockToggle;
     host.openArtifactFromHit = openArtifactFromHit;
+    host.loadArtifacts = loadArtifacts;
   }
   setLoadArtifactsImpl(loadArtifacts);
   setArtifactCreatedSideEffects(artifactCreatedSideEffects);

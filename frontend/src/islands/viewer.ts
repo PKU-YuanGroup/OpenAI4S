@@ -18,6 +18,10 @@ import { renderArtifactBody } from "../features/artifacts/renderers";
 import { viewerVersionState } from "../features/artifacts/state";
 import type { ArtifactRow } from "../features/artifacts/types";
 import { closeTab } from "../features/artifacts/ui";
+import {
+  decorateViewerWithProvenance,
+  renderProvenanceInto,
+} from "../features/execution/provenance";
 import { bindEditorAutocomplete, edacTeardown } from "../features/autocomplete/editor";
 import { openModalEl } from "../features/chrome/modal";
 import { hint, openMenu, type MenuItem } from "../features/sessions/chrome";
@@ -485,7 +489,8 @@ export function renderViewer(): void {
   head.appendChild(acts);
   v.appendChild(head);
   if (provMode.value) {
-    callWindow("renderProvenanceInto", v, a);
+    renderProvenanceInto(v, a);
+    decorateViewerWithProvenance();
     return;
   }
   molTeardown();
@@ -493,4 +498,5 @@ export function renderViewer(): void {
   v.appendChild(body);
   if (_editing.value === a.id) renderArtifactEditor(body, a);
   else renderArtifactBody(body, a);
+  decorateViewerWithProvenance();
 }
