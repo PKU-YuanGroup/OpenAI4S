@@ -38,6 +38,9 @@ export function onEvent(m: WsMessage | null | undefined): void {
   const type = m.type;
   if (typeof type !== "string" || type === "") return;
   const handler = handlers.get(type);
-  if (!handler) return;
+  // A Map lookup cannot reach Object.prototype the way `obj[type]` can, so a
+  // crafted `type` finds nothing rather than `toString`. The callable check
+  // says that in the code instead of leaving it to the reader.
+  if (typeof handler !== "function") return;
   handler(m);
 }

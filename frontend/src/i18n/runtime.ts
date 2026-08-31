@@ -54,7 +54,13 @@ export function loadLocale(lang: Lang): Promise<I18nDict> {
     I18N[lang] = copy;
     return copy;
   });
+  // Do not keep a rejected load: a chunk request cancelled by navigation
+  // would otherwise poison every later attempt with the same rejection,
+  // and switching language would fail forever after one bad moment.
   localeLoads[lang] = assigned;
+  void assigned.catch(() => {
+    if (localeLoads[lang] === assigned) delete localeLoads[lang];
+  });
   return assigned;
 }
 
@@ -72,7 +78,13 @@ export function i18nReady(): Promise<void> {
       // t() falls back to zh when the active (en) entry is missing.
       if (LANG !== "zh") await loadLocale("zh");
       const inactive: Lang = LANG === "zh" ? "en" : "zh";
-      void loadLocale(inactive);
+      // Prefetch only, and deliberately not awaited: the page is already
+      // usable in the active language. Left unhandled, a chunk request the
+      // browser cancels on navigation surfaces as an uncaught page error --
+      // which is what firefox and webkit reported while chromium finished
+      // the fetch in time and said nothing. The cost of losing it is one
+      // fetch at the next language switch.
+      void loadLocale(inactive).catch(() => undefined);
     })();
   }
   return boot.then(() => {

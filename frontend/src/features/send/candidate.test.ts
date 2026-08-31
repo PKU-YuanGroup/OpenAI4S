@@ -82,7 +82,17 @@ class FakeEl {
   set innerHTML(value: string) {
     this._html = value;
     this.children = [];
-    this._text = value.replace(/<[^>]+>/g, "");
+    // To a fixed point: one pass leaves `<<b>script>` as `<script>`, so a
+    // test asserting on `.textContent` would read markup this double claims
+    // to have stripped. Nothing here is a sanitiser -- it only has to not
+    // lie about what it removed.
+    let text = value,
+      previous: string;
+    do {
+      previous = text;
+      text = text.replace(/<[^>]+>/g, "");
+    } while (text !== previous);
+    this._text = text;
   }
 
   get firstChild(): FakeEl | null {

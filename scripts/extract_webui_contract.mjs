@@ -969,7 +969,7 @@ function renderMarkdown(inv) {
   push("| --- | --- | --- |");
   for (const sel of selectors) {
     const row = inv.selectors.get(sel);
-    const escaped = sel.replace(/\|/g, "\\|");
+    const escaped = sel.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
     push(`| \`${escaped}\` | ${fileList(row.files)} | ${row.count} |`);
   }
   push("");
