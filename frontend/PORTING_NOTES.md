@@ -282,3 +282,21 @@ Streaming render shell. Domain kernels (renderMd, appendLiveOutput) stay F-08 im
 | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` 6926-6961 | `fetch.ts` | Newest-first page then sort by `seq`; older page is keyset `before_seq`; walk cap `MESSAGE_WALK_MAX_PAGES = 200`; `MESSAGE_PAGE_SIZE = 300`. F-13 should import these. |
 | `text_reset` 5220 / `text_chunk` 5270-5276 | `handlers.ts` | `mine` + `!isStaleTurnEvent`; `feed(block_type, chunk, m, storedCandidateOwnsChunk(m))`. |
 | `window.openConversation` / `fetch*Messages` | `installMessages()` | Overwrites the F-05 stub. F-06 `tryLane("openConversation")` / `tryLane("down")` now hit real functions. |
+
+## F-12 autocomplete
+
+Composer `@` / `#` / `/` and the right-dock editor completer. Keyword lists are F-08 `editorKeywords(ext)` (unified highlight table + editor-only extras). This lane does **not** keep a private `EDKW` table. `ac` is an object (not a function); F-11 send() reads `ac.open` rather than `isReady`. `edacTeardown` is a function and is assigned here so F-10 / F-13 `callLane("edacTeardown")` is real. Capability checks use `isReady` from `compat/stub.ts`; this module does not import `compat/window-exports.ts`.
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `ac` 132 | `composer.ts` `ac` | `{ open, items, idx, trigger, start }`. Hung on `window.ac`. |
+| `acDetect` 12946-12951 | `detect.ts` `acDetectFrom` + `composer.ts` `acDetect` | `(^|\s)([@#/])([^\s@#/]*)$`. `start = pos - query.length - 1`. Mid-token `foo@bar` is not a trigger. |
+| `_acFiles` / `acProjectFiles` 12955-12976 | `composer.ts` `acProjectFiles` + `rank.ts` `mergeArtifactCandidates` | 4s per-project cache. Dedup by `artifact_id \|\| id \|\| filename` (not filename). Project list first, then `S.artifacts`. |
+| `acUpdate` 12978-13011 | `composer.ts` `acUpdate` + `rank.ts` | `@` version-pins `name#version_id` and labels another session with `ac.fromOtherSession`. `#` sessions, `/` skills. Filter label/insert substring, cap 8. |
+| `acRender` / `acPick` / `acClose` 13012-13033, 13125 | `composer.ts` | `#composer-ac` (created if Shell has not painted it). Pick splices `trigger+insert+" "` and calls `grow` + `renderComposerRefChips`. |
+| composer keydown 13403-13411 | `bindComposerAutocomplete` capture-phase | Arrows cycle; Enter/Tab pick; Esc close. `stopImmediatePropagation` so a later send() keydown cannot fire after a pick. IME `isComposing` / keyCode 229 ignored. |
+| `EDKW` 13137-13149 | **not copied**; `editorKeywords` from `features/md/highlight.ts` | Same aliases (`ts`/`mjs`/`bash`/…). py gains `self`/`print` from the unified table; sh gains `alias`. |
+| `edacExt` / `edacDetect` / `edacItems` 13150-13169 | `detect.ts` + `rank.ts` `rankEditorItems` / `harvestBufferIdentifiers` | Identifier ≥2, ASCII only. Keywords first (prefix, skip the token already typed), then buffer ids. Scan cap 200_000. Cap 8. |
+| `edacCaretXY` / `edacRender` / `edacPosition` 13174-13205 | `editor.ts` | Reused `.ed-mirror`. Flip above the caret near the bottom edge. |
+| `edacUpdate` / `edacPick` / `edacClose` / `edacTeardown` 13206-13229 | `editor.ts` | Re-validate caret at pick. `execCommand('insertText')` with `setRangeText` fallback. `justPicked` suppresses the input reopen. |
+| editor wiring 9481-9499 | `bindEditorAutocomplete` + `watchEditAreas` | Per-textarea controller on `.edit-area` (F-17 has not painted the editor yet; MutationObserver binds when it does). No document/window listeners on the controller itself. |

@@ -131,3 +131,5 @@ export {
 // F-20: window.openModalEl / closeModalEl / trapModalKeydown / openPalette /
 // closePalette / applyLayout / setLayout / uploadFiles / micDictate / loadNotes
 // are assigned by bootChrome() in features/chrome (imported from main.tsx).
+// F-12: window.ac / edacTeardown / bindEditorAutocomplete are assigned by
+// features/autocomplete (imported from main.tsx).

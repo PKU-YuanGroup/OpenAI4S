@@ -22,3 +22,4 @@
 | [`artifacts/`](artifacts/) | F-17 Files + 版本缓存 + 科学渲染器胶水（M-03）。 |
 | [`notebook/`](notebook/) | Notebook 面板：cell 合并/live 协议、按 producing_cell_id 键控的 CellList、kernel chips/REPL。 |
 | [`timeline/`](timeline/) | F-15 Action Timeline：sanitize* / merge、虚拟化 ledger 孤岛、工作台 WS。 |
+| [`autocomplete/`](autocomplete/) | F-12 作曲框（`@/#/`）与编辑器自动补全。关键词表来自 F-08 `editorKeywords`。 |

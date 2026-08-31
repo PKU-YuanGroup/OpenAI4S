@@ -22,3 +22,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`artifacts/`](artifacts/) | F-17 Files + version cache + scientific renderer glue (M-03). |
 | [`notebook/`](notebook/) | Notebook dock: cell merge/live protocol, CellList keyed by producing_cell_id, kernel chips/REPL. |
 | [`timeline/`](timeline/) | F-15 Action Timeline: sanitize* / merge, virtualized ledger island, workbench WS. |
+| [`autocomplete/`](autocomplete/) | F-12 composer (`@/#/`) and editor autocomplete. Keywords from F-08 `editorKeywords`. |
