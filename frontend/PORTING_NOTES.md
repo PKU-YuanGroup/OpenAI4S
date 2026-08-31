@@ -325,6 +325,17 @@ Composer send, turn tickets, step / plan / permission / candidate cards, attachm
 | `renderStoredStep` hook (F-10 `setRenderStoredStepImpl`) | `installSend` | Interleaved history steps paint through `step.ts` `renderStoredStep`. |
 | window contract names | `index.ts` `installSend` | Overwrites the F-05 stubs for the ten names. `main.tsx` adds one import. |
 
+## M-02 Dashboard attention cards
+
+New UI (not a port of `app.js`). The dashboard did not aggregate cross-session needs-attention; B-05 `GET /api/v1/attention` is the source of truth. `openai4s/server/webui/app.js` is untouched.
+
+| B-05 / old | New | Semantics kept |
+| --- | --- | --- |
+| `GET /api/v1/attention` item `{id,source_kind,source_id,state,severity,frame_id,project_id,title,updated_at,target:{surface,dock,frame_id},action_hint}` | `features/attention/types.ts` + `parse.ts` `parseAttentionItem` / `cardsFromItems` | Closed sets copied from `openai4s/server/attention.py`: kinds `running\|queued\|approval\|recovery\|blocked\|compute`, surfaces `{session}`, docks `{timeline,recovery,security,compute}`. Unknown kinds (idle/completed) yield 0 cards. One card per `source_kind+source_id`. Title goes through `publicText`. Server `url`/`href`/`uri`/`link`/`path` keys are not copied. |
+| `target.surface` / `target.dock` closed set; client builds navigation | `features/attention/navigate.ts` `navigationFromTarget` / `localSessionPath` / `applyNavigation` | Local path is `framePath(frame_id, project_id)`. Dock maps to the timeline pane + `DOCK_FOCUS` selector (recovery card / `.security-panel` / `.compute-panel`). `openConversation` + `setActiveTab("timeline")` are existing lanes (`isReady` / `binds`). |
+| retry / approve / restore stay on existing mutation routes | `features/attention/mutations.ts` | Names only: `POST /frames/{fid}/decision`, `POST /frames/{fid}/recovery/actions/restore\|retry`. Card click does **not** POST; it opens the dock that already has the permission / recovery safety UI. |
+| 4s visible-page poll (`startDashPoll` 4000ms, `refreshDashRunning` skips `document.hidden` and hidden `#dashboard`) | `features/attention/poll.ts` + `boot.ts` | `ATTENTION_POLL_MS = 4000`. Fetch only when the dashboard is shown and the page is visible. Hidden page → zero GET. |
+| *(no dashboard attention chrome)* | `components/attention/*` mounted at `#dash-attention` | Injected above `.dash-grid`. Lane-local CSS. Overlay copy in `copy.ts` (does not rewrite generated F-07 dicts). Lane-local signals in `state.ts` (not `stores/`). `main.tsx` adds `bootAttention()`. |
 ## M-01 first-run wizard + capability badges
 
 New UI on B-04 `GET/POST /api/v1/onboarding` and probe `capability_receipt`. Not a verbatim port of a wizard (legacy app.js has none). Probe/readiness/badge wording follows `custModels` and `renderStandardProfileReadiness`.

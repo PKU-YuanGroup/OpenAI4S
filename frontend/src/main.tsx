@@ -4,6 +4,7 @@ import { App } from "./app";
 import { bootArtifacts } from "./features/artifacts";
 import { bootCustomize } from "./features/customize";
 import { bootOnboarding } from "./features/onboarding";
+import { bootAttention } from "./features/attention";
 import { bootChrome } from "./features/chrome";
 import { installTheme } from "./features/theme/theme";
 import { bootExecution } from "./features/execution";
@@ -31,3 +32,4 @@ if (mount === null) {
 }
 render(<App />, mount);
 bootChrome();
+bootAttention();
