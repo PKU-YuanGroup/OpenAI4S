@@ -2,12 +2,11 @@ import { isReady } from "../../compat/stub";
 import { parseTable } from "../csv/csv";
 import { renderMd } from "../md/render";
 import { publicText } from "../scrub/scrub";
+import { renderTableArtifact as renderTableArtifactM04 } from "../table";
 import { artifactWorkbench, _kc } from "../../stores/notebook";
 import { sandboxOrigin } from "../../stores/session";
 import { applyArtifactIframeSandbox, htmlPreviewSrc } from "../../islands/frames";
 import {
-  api,
-  apiErrorText,
   callWindow,
   el,
   fetchArtifactText,
@@ -113,121 +112,15 @@ export function renderTextArtifact(container: HTMLElement, a: ArtifactRow, url: 
     .catch(() => rendererFailure(container, a, url));
 }
 
-function payloadFilters(text: string, a: ArtifactRow): Record<string, string> {
-  const value = String(text || "").trim();
-  if (!value) return {};
-  const named = value.match(/^([^:]+):(.*)$/);
-  if (named) return { [(named[1] || "").trim()]: (named[2] || "").trim() };
-  return { [((a && a.filename) || "col").replace(/\.[^.]+$/, "")]: value };
-}
-
-function renderWorkbenchTable(container: HTMLElement, a: ArtifactRow): void {
-  const state = { sort: "", dir: "asc", filters: {} as Record<string, string>, offset: 0, limit: 50 };
-  const chrome = el("div", "wb-table");
-  const controls = el("div", "wb-table-controls");
-  const filter = el("input", "wb-filter");
-  filter.placeholder = translate("wb.table.filter");
-  const prev = el("button", "outline-btn small", translate("wb.table.prev"));
-  const next = el("button", "outline-btn small", translate("wb.table.next"));
-  const meta = el("div", "wb-table-meta");
-  controls.appendChild(filter);
-  controls.appendChild(prev);
-  controls.appendChild(next);
-  chrome.appendChild(controls);
-  chrome.appendChild(meta);
-  const hold = el("div", "wb-table-hold");
-  chrome.appendChild(hold);
-  container.appendChild(chrome);
-  const load = async () => {
-    const query = new URLSearchParams({
-      sort: state.sort,
-      dir: state.dir,
-      offset: String(state.offset),
-      limit: String(state.limit),
-    });
-    if (a._exactVersion && a.version_id) query.set("version_id", String(a.version_id));
-    Object.entries(state.filters).forEach(([key, value]) => {
-      if (value) query.set("q_" + key, value);
-    });
-    let payload: {
-      total_rows?: number;
-      offset?: number;
-      rows?: unknown[][];
-      columns?: string[];
-      sorted_by?: string;
-    };
-    try {
-      payload = (await api(`/artifacts/${encodeURIComponent(a.id)}/table?${query}`)) as typeof payload;
-    } catch (error) {
-      hold.textContent = apiErrorText(error);
-      return;
-    }
-    if (!container.isConnected) return;
-    const rows = payload.rows || [];
-    const offset = payload.offset || 0;
-    const total = payload.total_rows || 0;
-    meta.textContent = translate(
-      "wb.table.meta",
-      total,
-      offset + 1,
-      Math.min(offset + rows.length, total),
-    );
-    hold.innerHTML = "";
-    const table = el("table", "sheet");
-    const head = el("tr");
-    (payload.columns || []).forEach((name) => {
-      const th = el("th", payload.sorted_by === name ? "wb-sorted" : "", name);
-      th.onclick = () => {
-        state.sort = name;
-        state.dir = payload.sorted_by === name && state.dir === "asc" ? "desc" : "asc";
-        state.offset = 0;
-        void load();
-      };
-      head.appendChild(th);
-    });
-    table.appendChild(head);
-    rows.forEach((row) => {
-      const tr = el("tr");
-      (payload.columns || []).forEach((_, index) =>
-        tr.appendChild(el("td", null, String(row[index] ?? ""))),
-      );
-      table.appendChild(tr);
-    });
-    hold.appendChild(table);
-    prev.disabled = offset <= 0;
-    next.disabled = offset + rows.length >= total;
-  };
-  filter.onchange = () => {
-    state.filters = payloadFilters(filter.value, a);
-    state.offset = 0;
-    void load();
-  };
-  prev.onclick = () => {
-    state.offset = Math.max(0, state.offset - state.limit);
-    void load();
-  };
-  next.onclick = () => {
-    state.offset += state.limit;
-    void load();
-  };
-  void load();
-}
-
-export function renderTableArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
-  if (artifactWorkbenchOn()) return renderWorkbenchTable(container, a);
-  fetchArtifactText(url)
-    .then((text) => {
-      if (!container.isConnected) return;
-      if (looksBinary(text)) return renderDownloadArtifact(container, a, url);
-      const rows = parseTable(text, a);
-      if (rows && rows.length) renderSheet(container, rows);
-      else {
-        const pre = el("pre", "renderer-source");
-        pre.textContent = text.slice(0, 300000);
-        container.appendChild(pre);
-      }
-    })
-    .catch(() => rendererFailure(container, a, url));
+export function renderTableArtifact(
+  container: HTMLElement,
+  a: ArtifactRow,
+  url: string,
+  renderer?: { capabilities?: readonly string[] | null },
+): void {
+  renderTableArtifactM04(container, a, url, {
+    capabilities: renderer?.capabilities,
+  });
 }
 
 export function renderSequenceArtifact(container: HTMLElement, a: ArtifactRow, url: string): void {
@@ -711,7 +604,7 @@ export function renderArtifactDescriptor(
   else if (rendererId === "msa") renderAlignmentArtifact(content, a, url);
   else if (rendererId === "latex") renderLatexArtifact(content, a, url);
   else if (rendererId === "markdown") renderMarkdownArtifact(content, url);
-  else if (rendererId === "table") renderTableArtifact(content, a, url);
+  else if (rendererId === "table") renderTableArtifact(content, a, url, renderer);
   else if (rendererId === "text") renderTextArtifact(content, a, url);
   else renderDownloadArtifact(content, a, url);
 }

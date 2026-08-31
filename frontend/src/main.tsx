@@ -18,6 +18,7 @@ import "./features/messages";
 import "./features/send";
 import "./features/timeline";
 import "./features/autocomplete";
+import "./features/table";
 
 installTheme();
 bootWs();

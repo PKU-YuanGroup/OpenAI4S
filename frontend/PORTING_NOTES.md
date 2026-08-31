@@ -339,6 +339,18 @@ Composer send, turn tickets, step / plan / permission / candidate cards, attachm
 | `renderStoredStep` hook (F-10 `setRenderStoredStepImpl`) | `installSend` | Interleaved history steps paint through `step.ts` `renderStoredStep`. |
 | window contract names | `index.ts` `installSend` | Overwrites the F-05 stubs for the ten names. `main.tsx` adds one import. |
 
+## M-04 table Schema / Distribution / Export
+
+New UI on the F-17 table artifact viewer. `openai4s/server/webui/app.js` is not modified. Backend contracts are B-07 `GET /artifacts/{id}/table/profile` and `GET /artifacts/{id}/table/export.csv` (`version_id` required; `approximate` pass-through).
+
+| Old (`openai4s/server/webui/app.js`) | New | Semantics kept |
+| --- | --- | --- |
+| `artifactWorkbenchOn` 8710 | `stores/notebook.artifactWorkbench` + `_kc.st.artifact_workbench` (`readWorkbenchFlag` / existing `artifactWorkbenchOn`) | Flag-off is the kill switch. |
+| `renderWorkbenchTable` 8723-8768 | `features/table/workbench.ts` `renderWorkbenchTable` | Same `/table` sort/dir/offset/limit/`q_` page chrome. Filter `col:value` shorthand kept. |
+| `renderTableArtifact` flag-off 8769+ | `features/table/workbench.ts` `renderLegacyTable` | `fetchArtifactText` → `parseTable` → `renderSheet`. No `/table/profile`, no export.csv. |
+| *(none — Schema/Distribution/Export)* | `features/table/zones.ts` | B-07 profile columns: type/missing/unique + min/max/mean/histogram. `approximate:true` paints `.wb-table-approx` (近似 / Approximate) and labels unique as ≈ n; never rewritten as exact. Histogram bars ≤ 50 (`MAX_TABLE_PROFILE_BINS`). |
+| *(none — streaming export)* | `features/table/query.ts` `tableExportHref` + `<a class="wb-table-export-link">` | Same-origin href to `/table/export.csv`. Browser streams. JS does not `fetch()` the CSV body. `offset`/`limit` never sent; `version_id` required. Profile omits `sort`/`dir`/`offset`/`limit`. |
+| renderer catalog `table` capabilities (server `renderers.py`) | `features/table/catalog.ts` `tableCatalogPosture` | Pass-through of `profile`/`export`/`parquet`. Flag-off advertises only `view`. Parquet is never inferred from a filename. |
 ## F-18 imperative islands
 
 Command-style islands that F-17 left as `isReady` / `callWindow` glues: 3Dmol lazy inject, image annotator, dock Viewer chrome / versions / editor, Ketcher iframe, PDF/html-preview sandbox. Components still only host `#dock-viewer`; the islands own the DOM. `stores/` is imported, not edited. `window-exports.ts` only gained a lane-additions comment.

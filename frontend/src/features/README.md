@@ -27,3 +27,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`attention/`](attention/) | M-02 Dashboard attention cards: B-05 `GET /attention`, closed-set local navigation, 4s visible-page poll. |
 | [`execution/`](execution/) | F-16 executed-code view, variable inspector, Provenance tab, fork 409 presentation. |
 | [`onboarding/`](onboarding/) | M-01 first-run wizard: four-step machine, skip/checklist, capability badges. |
+| [`table/`](table/) | M-04 table Schema / Distribution / Export. B-07 `/table/profile` + `/table/export.csv`; approximate is explicit; flag=0 falls back to the sheet. |
