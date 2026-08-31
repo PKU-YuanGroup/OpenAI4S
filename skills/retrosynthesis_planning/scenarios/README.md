@@ -18,6 +18,16 @@ files are not stages of a mandatory pipeline.
 | [`06_yield_estimation.md`](06_yield_estimation.md) | Yield regression and uncertainty on Buchwald-Hartwig OOD splits. |
 | [`README_zh.md`](README_zh.md) | Chinese directory guide and shared scientific boundary. |
 
+## Executable GT-codebase
+
+| Directory | Scope |
+| --- | --- |
+| [`pipelines/`](pipelines/) | Six reviewed OpenAI4S-generated public entrypoints, mapped one-to-one to the Science Queries. |
+| [`test_cases/`](test_cases/) | Evaluation fixtures, database registry, one-command installer, and private evaluator entrypoint. |
+
+The pipeline process reads only installed `public/` files. The evaluator reads
+the frozen output and `private_evaluator/` only after pipeline completion.
+
 The parent [`../SCENARIO.md`](../SCENARIO.md) and
 [`../SCENARIO_zh.md`](../SCENARIO_zh.md) remain the overview and dependency
 map. These detailed files are the canonical benchmark-design drafts. A scenario

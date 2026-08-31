@@ -279,7 +279,7 @@ def evaluate_yield_predictions(
     ]
     result = {
         "schema_version": 1,
-        "scenario_id": "reaction_yield_distribution_shift_v1",
+        "scenario_id": "buchwald_hartwig_yield_ood_v1",
         "reaction_count": len(scored),
         "overall": _group_metrics(scored),
         "by_split": nonempty,

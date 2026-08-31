@@ -170,22 +170,18 @@ private_evaluator/
 reference_repository/
 ├── README.md
 ├── environment.yml
-├── run.sh
-├── input/
-├── src/
-│   ├── validate_benchmark.py
-│   ├── run_planner.py
-│   ├── verify_andor.py
-│   ├── normalize_routes.py
-│   └── freeze_results.py
-├── results/
-│   ├── routes.jsonl
-│   ├── search_events.jsonl
-│   └── intermediate_results.json
-└── analysis/
-    ├── resource_usage.csv
-    └── diagnostics.py
+├── pipelines/
+│   └── 02_multistep_route_planning.py
+└── test_cases/
+    ├── install.py
+    ├── evaluate.py
+    ├── database_sources.json
+    └── 02_multistep_route_planning.json
 ```
+
+仓库中的实际参考实现位于 `scenarios/pipelines/` 与
+`scenarios/test_cases/`。Pipeline 只消费公开 target、stock、budget 和模型输出；
+reference routes 只由冻结输出之后启动的 evaluator 读取。
 
 ## 评估自动化实现难度
 

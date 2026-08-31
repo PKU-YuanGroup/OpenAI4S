@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "policy": "Bundled cases are synthetic protocol checks. Production benchmark artifacts must be acquired by the maintainer, license-reviewed, hashed, and frozen before release.",
+  "scenarios": {
+    "single_step": {
+      "source": "USPTO-50K",
+      "release_status": "not_frozen",
+      "required_artifacts": ["anonymous_targets", "multi_reference_precursor_sets", "split_manifest"]
+    },
+    "multistep": {
+      "source": "PaRoutes",
+      "release_status": "not_frozen",
+      "required_artifacts": ["targets", "stock", "reference_routes", "budget_config"]
+    },
+    "atom_mapping": {
+      "source": "curated atom-mapping benchmark",
+      "release_status": "not_frozen",
+      "required_artifacts": ["unmapped_reactions", "symmetry_aware_correspondences", "bond_changes"]
+    },
+    "forward": {
+      "source": "MIT-licensed USPTO reaction split",
+      "release_status": "not_frozen",
+      "required_artifacts": ["reactant_reagent_inputs", "product_references", "split_manifest"]
+    },
+    "conditions": {
+      "source": "reviewed Parrot USPTO categorical-condition snapshot",
+      "release_status": "not_frozen",
+      "required_artifacts": ["reaction_inputs", "condition_vocabulary", "condition_tuple_references"]
+    },
+    "yield": {
+      "source": "Buchwald-Hartwig HTE distribution-shift splits",
+      "release_status": "not_frozen",
+      "required_artifacts": ["reaction_inputs", "yield_references", "split_manifest"]
+    }
+  }
+}

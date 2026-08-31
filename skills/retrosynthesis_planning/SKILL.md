@@ -50,6 +50,18 @@ reaction-AND semantics; a backend `solved=true` flag is never trusted. Preserve
 search statistics, termination reason, failed routes, duplicates, and budget
 violations in the intermediate artifact.
 
+## Scenario GT-codebases
+
+For any of the six Science Queries, read
+`scenarios/pipelines/generation_manifest.json`, select the matching public
+entrypoint, and install its evaluation example with
+`scenarios/test_cases/install.py`. Run the pipeline against only the installed
+`public/` directory. Freeze `results/intermediate_results.json` before the
+separate `scenarios/test_cases/evaluate.py` process reads
+`private_evaluator/`. Treat bundled cases as protocol smoke tests, never as
+scientific accuracy evidence. Consult `scenarios/test_cases/database_sources.json`
+and fail closed while a production dataset is marked `not_frozen`.
+
 ## Cross-model route admission gate
 
 Treat planner `solved=true` as stock closure, not reaction feasibility. For a
