@@ -24,3 +24,4 @@ Per-lane domain modules. F-08 adds the pure-function kernels; later items add `c
 | [`timeline/`](timeline/) | F-15 Action Timeline: sanitize* / merge, virtualized ledger island, workbench WS. |
 | [`autocomplete/`](autocomplete/) | F-12 composer (`@/#/`) and editor autocomplete. Keywords from F-08 `editorKeywords`. |
 | [`send/`](send/) | F-11 send chain, turn tickets, step/plan/permission/candidate cards, admission tracker. |
+| [`onboarding/`](onboarding/) | M-01 first-run wizard: four-step machine, skip/checklist, capability badges. |

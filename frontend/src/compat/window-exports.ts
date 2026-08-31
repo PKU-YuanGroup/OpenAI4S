@@ -137,3 +137,4 @@ export {
 //   renderRefProblems / searchResultHttpUrl / admissionSettled /
 //   forgetAdmission / outstandingAdmissions / reconcileLastAdmission /
 //   rememberAdmission are assigned by features/send (imported from main.tsx).
+// M-01: first-run wizard is mounted by bootOnboarding() in features/onboarding.
