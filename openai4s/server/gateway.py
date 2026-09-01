@@ -6091,7 +6091,7 @@ class SessionRunner:
                     self._settle_auto_budget(admission, started=False)
                 except Exception:  # noqa: BLE001 - denial remains fail-closed
                     pass
-            self._note_auto_budget_trip(st, denied)
+            self._note_auto_budget_trip(st, denied, run_id=run_id)
             raise
         try:
             result = provider_call(messages, cfg, **kwargs)
@@ -6116,7 +6116,7 @@ class SessionRunner:
                     "adapter token usage is not verifiable",
                     field="extra_token_multiplier",
                 )
-                self._note_auto_budget_trip(st, denied)
+                self._note_auto_budget_trip(st, denied, run_id=run_id)
                 raise denied
         try:
             self._settle_auto_budget(admission, started=True)
@@ -6127,22 +6127,44 @@ class SessionRunner:
                     committed_amount=usage_total,
                 )
         except AutoBudgetDenied as denied:
-            self._note_auto_budget_trip(st, denied)
+            self._note_auto_budget_trip(st, denied, run_id=run_id)
             raise
         return result
 
     def _note_auto_budget_trip(
-        self, st: SessionState, denied: AutoBudgetDenied
+        self,
+        st: SessionState,
+        denied: AutoBudgetDenied,
+        *,
+        run_id: str | None = None,
     ) -> None:
-        st.auto_budget_terminal_reason = denied.reason
-        run_id = str(st.active_auto_mode_run_id or "")
-        if run_id:
+        """Record an Auto Mode denial, and cancel the turn it belongs to.
+
+        ``run_id`` pins the run the denial came from. Since Stop releases the
+        turn while the provider request keeps going on a detached thread, this
+        can now run *after* the next turn was admitted and installed a new run:
+        re-reading the live id there would trip that new run and set the shared
+        cancel Event, aborting a turn that never asked to stop. The caller
+        already pins the id for ``fail_measurement``; this uses the same one.
+
+        A denial whose run is no longer the active one is still recorded
+        against its own run -- the budget ledger should say that run tripped --
+        but it must not touch this session's current cancel or terminal state.
+        """
+
+        active = str(st.active_auto_mode_run_id or "")
+        owning = active if run_id is None else str(run_id or "")
+        stale = run_id is not None and owning != active
+        if owning:
             try:
                 self._auto_budget().trip(
-                    run_id, reason=denied.reason, field=denied.field
+                    owning, reason=denied.reason, field=denied.field
                 )
             except Exception:  # noqa: BLE001 - trip is already fail-closed
                 pass
+        if stale:
+            return
+        st.auto_budget_terminal_reason = denied.reason
         st.cancel.set()
 
     def _freeze_auto_budget_tokens(self, st: SessionState) -> None:

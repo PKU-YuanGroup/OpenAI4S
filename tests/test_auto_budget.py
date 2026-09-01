@@ -640,6 +640,68 @@ def test_gateway_token_denial_precedes_provider_invocation(tmp_path):
     store.close()
 
 
+def test_a_cancelled_calls_late_denial_cannot_trip_the_next_turn(tmp_path):
+    """Stop releases the turn; the provider request keeps going detached.
+
+    Its post-processing (`usage_total is None`, or a denial while settling)
+    then runs on that detached thread, possibly after the next turn has been
+    admitted and installed a new Auto Mode run. Re-reading the live run id
+    there tripped the *new* run and set the shared cancel Event -- aborting a
+    turn that never asked to stop. The denial belongs to the run that made the
+    call, and only that run.
+    """
+
+    store = _store(tmp_path)
+    _start(store)
+    runner = object.__new__(gateway_mod.SessionRunner)
+    runner.store = store
+    runner.cfg = Config()
+    # The session has moved on: Stop was pressed, the coordinator cleared the
+    # Event, and the next turn installed its own run.
+    state = SimpleNamespace(
+        active_auto_mode_run_id="auto-run-NEXT",
+        active_action_group_id=None,
+        cell_index=1,
+        auto_budget_terminal_reason=None,
+        cancel=threading.Event(),
+    )
+    denied = AutoBudgetDenied(
+        "budget_measurement_unavailable",
+        "adapter token usage is not verifiable",
+        field="extra_token_multiplier",
+    )
+
+    runner._note_auto_budget_trip(state, denied, run_id="auto-run-1")
+
+    assert not state.cancel.is_set(), "a late denial cancelled the following turn"
+    assert state.auto_budget_terminal_reason is None
+    store.close()
+
+
+def test_a_live_denial_still_cancels_its_own_turn(tmp_path):
+    """The pin must not disarm the ordinary path it was added to protect."""
+
+    store = _store(tmp_path)
+    _start(store)
+    runner = object.__new__(gateway_mod.SessionRunner)
+    runner.store = store
+    runner.cfg = Config()
+    state = SimpleNamespace(
+        active_auto_mode_run_id="auto-run-1",
+        active_action_group_id=None,
+        cell_index=1,
+        auto_budget_terminal_reason=None,
+        cancel=threading.Event(),
+    )
+    denied = AutoBudgetDenied("budget_exhausted", "no headroom", field="max_cells")
+
+    runner._note_auto_budget_trip(state, denied, run_id="auto-run-1")
+
+    assert state.cancel.is_set()
+    assert state.auto_budget_terminal_reason == "budget_exhausted"
+    store.close()
+
+
 def test_parent_and_child_share_root_run_id(tmp_path):
     store = _store(tmp_path)
     _start(store, budgets=_budgets(max_review_rounds=2))
