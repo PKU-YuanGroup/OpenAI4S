@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario": "yield",
   "scenario_id": "buchwald_hartwig_yield_ood_v1",
-  "query_source": "../06_yield_estimation.md#science-query",
+  "query_source": "../queries/06_yield_estimation.query.md",
   "dataset": {
     "profile": "synthetic_protocol_smoke",
     "license": "CC0-1.0",

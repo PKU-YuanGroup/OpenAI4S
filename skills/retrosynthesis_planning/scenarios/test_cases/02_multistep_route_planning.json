@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario": "multistep",
   "scenario_id": "multistep_paroutes_budgeted_v1",
-  "query_source": "../02_multistep_route_planning.md#science-query",
+  "query_source": "../queries/02_multistep_route_planning.query.md",
   "dataset": {
     "profile": "synthetic_protocol_smoke",
     "license": "CC0-1.0",

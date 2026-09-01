@@ -1,10 +1,10 @@
-# Scenario pipelines
+# 旧版 Scenario pipeline 兼容入口
 
 [English](README.md)
 
-这里的六个入口是经过审阅的 OpenAI4S 生成 codebase，与上级目录中的六个
-Science Query 一一对应。入口只读取已安装 workspace 的 `public/` 边界，并写出
-`results/intermediate_results.json`，绝不读取 `private_evaluator/`。
+这里的六个入口只是经过审查的 GT runtime 的废弃兼容别名，不是 OpenAI4S 生成
+代码。新的对照必须使用同名的 `../gt_codebases/`、`../openai4s_codebases/` 和
+`../queries/` 三组目录。
 
 安装对应测试用例后可直接运行，例如：
 
@@ -13,8 +13,8 @@ uv run python skills/retrosynthesis_planning/scenarios/pipelines/01_single_step_
   --workspace /tmp/openai4s-retro-case
 ```
 
-`generation_manifest.json` 是 query 到 code 的权威映射。共享的纯标准库协议实现位于
-`../../gt_codebase.py`；模型推理继续通过已有的外部 backend adapter 隔离执行。
+`generation_manifest.json` 只记录旧兼容入口映射；权威生成 provenance 位于
+`../openai4s_codebases/generation_manifest.json`。
 
 ## 文件
 

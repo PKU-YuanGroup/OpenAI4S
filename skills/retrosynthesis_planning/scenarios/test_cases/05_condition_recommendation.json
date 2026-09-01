@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario": "conditions",
   "scenario_id": "reaction_condition_uspto_categorical_v1",
-  "query_source": "../05_condition_recommendation.md#science-query",
+  "query_source": "../queries/05_condition_recommendation.query.md",
   "dataset": {
     "profile": "synthetic_protocol_smoke",
     "license": "CC0-1.0",
