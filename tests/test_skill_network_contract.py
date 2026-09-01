@@ -8,9 +8,11 @@ import socket
 import subprocess
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import openai4s.agent.loop as loop_mod
 from openai4s.agent.loop import Agent
 from openai4s.bash_capability import command_digest
 from openai4s.config import Config
@@ -25,6 +27,7 @@ from openai4s.server.skill_network_admission import (
     constrain_check_url,
     frame_scope,
     host_only_boundary_holds,
+    raw_required_binding,
     reset_bindings,
 )
 from openai4s.skills_loader import SkillLoader
@@ -403,7 +406,7 @@ def test_cell_and_shell_sinks_have_zero_bypass():
     assert bash_mod.count("admit_shell(") == 1
 
 
-def test_the_cli_and_delegation_cell_sink_refuses_raw_required():
+def test_the_cli_and_delegation_cell_sink_has_full_network_admission():
     """`CellExecutionService` is not the only Code-as-Action sink.
 
     A CLI run and every delegated child execute Cells through
@@ -412,12 +415,109 @@ def test_the_cli_and_delegation_cell_sink_refuses_raw_required():
     `raw_required` ran unconfined there and the omission was invisible to the
     zero-bypass check itself.
 
-    Only the unconditional half is asserted, which is the half that sink can
-    apply: `host_only` needs measured posture and no kernel exists yet.
+    The unconditional `raw_required` refusal runs before lazy startup. For a
+    `host_only` binding, the first requested Cell creates the worker, checks its
+    actual posture before Skill bootstrap/user code, and refuses when the
+    boundary is not enforced. Tool-only/finalization turns still spawn nothing.
     """
 
     loop_src = inspect.getsource(Agent._admit_cell)
     assert "raw_required_binding(" in loop_src
+    run_src = inspect.getsource(Agent.run)
+    r_src = inspect.getsource(Agent._execute_r)
+    assert "self._admit_spawned_cell_kernel(kernel)" in run_src
+    assert "self._admit_spawned_cell_kernel(k)" in r_src
+
+
+def test_cli_host_only_uses_spawned_workers_measured_posture():
+    cap = declared_capability("host_only", ["doi.org"], source="frontmatter")
+    bind_skill_load(
+        frame_id="frame-cli-host",
+        action_group_id="ag-1",
+        skill_id="literature-review",
+        version="1",
+        document_digest="f" * 64,
+        capability=cap,
+        source="load_skill",
+    )
+    agent = object.__new__(Agent)
+    agent.frame_id = "frame-cli-host"
+    degraded = SimpleNamespace(
+        sandbox_status={
+            "enforced": False,
+            "self_test_passed": False,
+            "network_policy": "not_enforced",
+            "backend": None,
+        }
+    )
+    with pytest.raises(PermissionError, match="Host-only network"):
+        agent._admit_spawned_cell_kernel(degraded)
+
+    enforced = SimpleNamespace(sandbox_status=_enforced_sandbox())
+    agent._admit_spawned_cell_kernel(enforced)
+
+
+@pytest.mark.parametrize(("language", "fence"), [("python", "python"), ("r", "r")])
+def test_cli_host_only_refuses_before_first_python_or_r_user_code(
+    monkeypatch, language, fence
+):
+    def one_cell(_messages, _cfg, **_kwargs):
+        return {
+            "content": f"```{fence}\nprint(42)\n```",
+            "reasoning": None,
+            "usage": {},
+            "finish_reason": "stop",
+            "raw": {},
+        }
+
+    created = []
+
+    class DegradedKernel:
+        generation = 1
+        sandbox_status = {
+            "enforced": False,
+            "self_test_passed": False,
+            "network_policy": "not_enforced",
+            "backend": None,
+        }
+
+        def __init__(self, *_args, **_kwargs):
+            self.closed = False
+            created.append(self)
+
+        def is_alive(self):
+            return not self.closed
+
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("user or Skill bootstrap code reached the worker")
+
+        def shutdown(self):
+            self.closed = True
+
+    monkeypatch.setattr(loop_mod, "chat", one_cell)
+    if language == "python":
+        monkeypatch.setattr(loop_mod, "Kernel", DegradedKernel)
+    else:
+        import openai4s.kernel.r_kernel as r_kernel_mod
+
+        monkeypatch.setattr(r_kernel_mod, "spawn_r_kernel", DegradedKernel)
+
+    agent = Agent(use_skills=False, allow_delegate=False, max_turns=1)
+    bind_skill_load(
+        frame_id=agent.frame_id,
+        action_group_id="ag-1",
+        skill_id="literature-review",
+        version="1",
+        document_digest="9" * 64,
+        capability=declared_capability("host_only", ["doi.org"], source="frontmatter"),
+        source="load_skill",
+    )
+
+    with pytest.raises(PermissionError, match="Host-only network"):
+        agent.run("run one Cell")
+
+    assert len(created) == 1
+    assert created[0].closed is True
 
 
 def test_raw_required_is_refused_without_any_measured_posture():
@@ -451,6 +551,44 @@ def test_load_event_records_skill_version_document_and_manifest_digest(tmp_path)
     assert bound[0].manifest_digest == loaded["manifest_digest"]
     assert bound[0].document_digest == loaded["document_digest"]
     assert bound[0].skill_id == "demo"
+
+
+def test_restart_restores_skill_network_binding_to_exact_loading_frame(tmp_path):
+    from openai4s.host_dispatch import build_dispatcher
+    from openai4s.store import get_store
+
+    skills = tmp_path / "skills"
+    (skills / "raw-demo").mkdir(parents=True)
+    (skills / "raw-demo" / "SKILL.md").write_text(
+        "---\nname: raw-demo\ndescription: d\norigin: openai4s\n"
+        "capabilities:\n  network:\n    mode: raw_required\n    domains: []\n"
+        "---\n# x\n",
+        "utf-8",
+    )
+    cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="science")
+    child = store.new_frame(parent_id=root, kind="delegate", project_id="science")
+    sibling = store.new_frame(parent_id=root, kind="delegate", project_id="science")
+    child_dispatcher = build_dispatcher(cfg, frame_id=child)
+    child_dispatcher._m_load_skill("raw-demo")
+    assert raw_required_binding(child) is not None
+
+    reset_bindings()
+    store.close()
+    parent_dispatcher = build_dispatcher(cfg, frame_id=root)
+    assert raw_required_binding(root) is None
+    sibling_dispatcher = build_dispatcher(cfg, frame_id=sibling)
+    assert raw_required_binding(sibling) is None
+    restored_child = build_dispatcher(cfg, frame_id=child)
+    assert raw_required_binding(child) is not None
+    for dispatcher in (
+        child_dispatcher,
+        parent_dispatcher,
+        sibling_dispatcher,
+        restored_child,
+    ):
+        dispatcher.store.close()
 
 
 def test_cell_execute_records_admission_and_refuses_raw_required(tmp_path):

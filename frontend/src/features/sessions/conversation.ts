@@ -66,6 +66,7 @@ import {
   workbenchErrors,
 } from "../../stores/timeline";
 import { activeTab, openTabs, provMode } from "../../stores/ui";
+import { resetNotebookCellCaches } from "../notebook/chrome";
 import { sub, unsub } from "../ws/connect";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
@@ -143,6 +144,7 @@ export async function openConversation(fid: string, pid?: string | null): Promis
   clearTimeout(_branchConversationTimer.value as ReturnType<typeof setTimeout>);
   const previousFid = currentId.value;
   if (previousFid && previousFid !== fid) unsub(previousFid);
+  resetNotebookCellCaches(previousFid, fid);
   if (pid && pid !== project.value) {
     project.value = pid;
     _projArtFor.value = null;

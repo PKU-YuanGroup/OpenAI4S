@@ -56,6 +56,7 @@ import {
   _timelineView,
   _workbenchLoading,
   _workbenchReq,
+  _workbenchTimer,
   actionTimeline,
   actionTimelineSelectedBranchId,
   actionTimelineSelectedGroupId,
@@ -72,6 +73,25 @@ import {
   workbenchErrors,
 } from "../../stores/timeline";
 import { activeTab, openTabs, provMode } from "../../stores/ui";
+import { renderDockTabs, showDockPane } from "../artifacts/ui";
+import { resetNotebookCellCaches } from "../notebook/chrome";
+import { invalidateKernelCache } from "../notebook/kernel";
+import { renderPlanCard } from "../send/plan";
+import { closeTurnTicket, resumeWatch } from "../send/ticket";
+import { failureHint, lastTerminalFailure } from "../send/turn";
+import { hint } from "../sessions/chrome";
+import { showWorkspace } from "../sessions/dashboard";
+import {
+  enableComposer,
+  framePath,
+  isMobile,
+  navURL,
+  setSidebar,
+  setTitle,
+  showConv,
+} from "../sessions/dom";
+import { loadSessions, renderSessions } from "../sessions/load";
+import { renderProjMenu } from "../sessions/projects";
 import { sub, unsub } from "../ws/connect";
 import { apiGet, fetchRecentMessages, MESSAGE_PAGE_SIZE } from "./fetch";
 import { ensureMessageDom, messagesHost } from "./dom";
@@ -82,12 +102,12 @@ import {
   scheduleFramedRender,
   type StoredMessage,
 } from "./list";
-import { down } from "./scroll";
+import { down, updateJumpPill } from "./scroll";
 
-function callLane(name: string, ...args: unknown[]): void {
+function callLane(name: string, ...args: unknown[]): unknown {
   const fn = (globalThis as Record<string, unknown>)[name];
-  if (!isReady(fn)) return;
-  (fn as (...a: unknown[]) => unknown)(...args);
+  if (!isReady(fn)) return undefined;
+  return (fn as (...a: unknown[]) => unknown)(...args);
 }
 
 function hideCancel(): void {
@@ -137,6 +157,9 @@ function resetSessionScoped(): void {
     error: "",
     request: 0,
   };
+  if (_workbenchTimer.value != null) {
+    clearTimeout(_workbenchTimer.value as ReturnType<typeof setTimeout>);
+  }
   _workbenchReq.value = (_workbenchReq.value || 0) + 1;
   _workbenchLoading.value = null;
   _tbl.value = {};
@@ -182,29 +205,28 @@ export async function openConversation(
   }
   const previousFid = currentId.value;
   if (previousFid && previousFid !== fid) unsub(previousFid);
+  resetNotebookCellCaches(previousFid, fid);
   if (pid && pid !== project.value) {
     project.value = pid;
     _projArtFor.value = null;
   }
-  callLane(
-    "navURL",
-    // later lane owns framePath; pass the ids so a real impl can build it
-    fid,
-    pid || project.value,
+  const found = (sessions.value as Array<{ id?: string; project_id?: string }>).find(
+    (x) => x && x.id === fid,
   );
-  callLane("showWorkspace");
-  callLane("showConv");
-  callLane("renderProjMenu");
-  callLane("setSidebar", true);
+  navURL(framePath(fid, pid || project.value || found?.project_id));
+  showWorkspace();
+  showConv();
+  renderProjMenu();
+  if (isMobile()) setSidebar(true);
 
   ensureMessageDom();
   currentId.value = fid;
   const host = messagesHost();
   if (host) host.innerHTML = "";
   cancelFramedRender();
-  callLane("closeTurnTicket");
+  closeTurnTicket();
   resetSessionScoped();
-  callLane("enableComposer", true);
+  enableComposer(true);
   hideCancel();
   if (_resumeTimer.value != null) {
     clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
@@ -212,8 +234,8 @@ export async function openConversation(
   const gen = (_openGen.value || 0) + 1;
   _openGen.value = gen;
   callLane("destroyActionTimelineView");
-  callLane("showDockPane", "notebook");
-  callLane("invalidateKernelCache");
+  showDockPane("notebook");
+  invalidateKernelCache();
   if (typeof document !== "undefined") {
     const badge = document.getElementById("compute-badge");
     if (badge) badge.remove();
@@ -232,25 +254,28 @@ export async function openConversation(
   } catch {
     /* no document */
   }
-  callLane("renderDockTabs");
-  if (!sessions.value.length) callLane("loadSessions");
-  else callLane("renderSessions");
+  renderDockTabs();
+  if (!sessions.value.length) {
+    await loadSessions();
+    if (gen !== _openGen.value) return;
+  } else renderSessions();
   const row = (sessions.value as Array<{ id?: string; name?: string; task_summary?: string }>).find(
     (x) => x && x.id === fid,
   );
   _titleName.value =
     (row && (row.name || row.task_summary)) || t("conv.title.default");
-  callLane("setTitle", _titleName.value);
+  setTitle(_titleName.value);
 
   try {
     const fb = (await apiGet(`/frames/${encodeURIComponent(fid)}/feedback`)) as {
       feedback?: Record<string, unknown>;
     };
+    if (gen !== _openGen.value) return;
     feedback.value = (fb && fb.feedback) || Object.create(null);
   } catch {
+    if (gen !== _openGen.value) return;
     feedback.value = Object.create(null);
   }
-  if (gen !== _openGen.value) return;
 
   let msgCount = 0;
   try {
@@ -268,6 +293,7 @@ export async function openConversation(
       scheduleFramedRender(items, {
         stillCurrent: () => gen === _openGen.value,
         onBatch: () => down(),
+        onCancel: resolve,
         onDone: () => {
           callLane("paintEarlierControl");
           resolve();
@@ -283,8 +309,50 @@ export async function openConversation(
   callLane("loadExecutionLog", fid);
   callLane("loadWorkbenchState", fid);
   down(true);
-  callLane("loadAnnotations", fid);
-  callLane("reconcileLastAdmission", fid);
+  updateJumpPill();
+  void (async () => {
+    try {
+      await Promise.resolve(callLane("loadAnnotations", fid));
+      if (gen !== _openGen.value) return;
+      await Promise.resolve(callLane("reconcileLastAdmission", fid));
+    } catch {
+      /* annotation restoration is optional */
+    }
+  })();
+  try {
+    const stt = (await apiGet(`/frames/${encodeURIComponent(fid)}/status`)) as {
+      running?: boolean;
+      status?: string;
+    };
+    if (gen !== _openGen.value) return;
+    if (stt && stt.running) {
+      running.value = true;
+      enableComposer(false);
+      const btn = typeof document !== "undefined" && document.getElementById("cancel-btn");
+      if (btn) btn.classList.remove("hidden");
+      hint(t("conv.resuming.hint"), false, true);
+      resumeWatch(fid, gen);
+    } else if (stt && stt.status === "failed") {
+      const last = lastTerminalFailure();
+      if (last) hint(failureHint(last), true);
+    }
+  } catch {
+    /* status is optional */
+  }
+  if (gen !== _openGen.value) return;
+  try {
+    const pj = (await apiGet(`/frames/${encodeURIComponent(fid)}/plan`)) as {
+      plan?: unknown;
+      status?: string;
+    };
+    if (gen !== _openGen.value) return;
+    if (pj && pj.plan && pj.status && pj.status !== "discarded") {
+      renderPlanCard(pj.plan, pj.status);
+    }
+  } catch {
+    /* plan card is optional */
+  }
+  if (gen !== _openGen.value) return;
   try {
     sub(fid);
   } catch {

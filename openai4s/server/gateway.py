@@ -134,6 +134,7 @@ from openai4s.server.auto_budget import (
     AutoBudgetAdmission,
     AutoBudgetDenied,
     canonical_action_fingerprint,
+    execution_action_group,
     token_upper_bound,
     verifiable_token_usage,
 )
@@ -6043,6 +6044,102 @@ class SessionRunner:
         elif not started:
             budget.release(admission_id, started=False)
 
+    def _invoke_model_with_auto_budget(
+        self,
+        st: SessionState,
+        messages: Any,
+        cfg: Any,
+        provider_call: Callable[..., Any],
+        **kwargs: Any,
+    ) -> Any:
+        """Admit model/token spend before crossing the provider boundary."""
+
+        admission = None
+        token_admission = None
+        run_id = str(st.active_auto_mode_run_id or "")
+        group_id = execution_action_group(
+            getattr(st, "active_action_group_id", None) or f"model:{st.cell_index}"
+        )
+        extra = self._auto_budget_extra_phase(st)
+        try:
+            admission = self._admit_auto_budget(
+                st,
+                consumer="model",
+                action_group_id=group_id,
+                amount=1,
+                enforce_field_limit=False,
+            )
+            if extra and admission is not None:
+                bound = token_upper_bound(
+                    cfg,
+                    messages=messages,
+                    tools=kwargs.get("tools"),
+                    max_tokens=kwargs.get("max_tokens"),
+                )
+                if bound is None:
+                    self._settle_auto_budget(admission, started=False)
+                    AutoBudgetAdmission(
+                        self.store, self.cfg.auto_mode.budgets
+                    ).fail_measurement(run_id)
+                    raise AutoBudgetDenied(
+                        "budget_measurement_unavailable",
+                        "adapter lacks a prompt-plus-completion token ceiling",
+                        field="extra_token_multiplier",
+                    )
+                token_admission = self._admit_auto_budget(
+                    st,
+                    consumer="token",
+                    action_group_id=f"{group_id}:token",
+                    amount=bound,
+                    enforce_field_limit=False,
+                    token_upper_bound=bound,
+                )
+        except AutoBudgetDenied as denied:
+            if admission is not None and token_admission is None:
+                try:
+                    self._settle_auto_budget(admission, started=False)
+                except Exception:  # noqa: BLE001 - denial remains fail-closed
+                    pass
+            self._note_auto_budget_trip(st, denied)
+            raise
+        try:
+            result = provider_call(messages, cfg, **kwargs)
+        except Exception:
+            self._settle_auto_budget(admission, started=True, unknown=True)
+            self._settle_auto_budget(token_admission, started=True, unknown=True)
+            raise
+        usage_total = None
+        if extra and admission is not None and token_admission is not None:
+            usage_total = verifiable_token_usage(
+                result.get("usage") if isinstance(result, Mapping) else None
+            )
+            if usage_total is None:
+                self._settle_auto_budget(admission, started=True, unknown=True)
+                self._settle_auto_budget(token_admission, started=True, unknown=True)
+                if run_id:
+                    AutoBudgetAdmission(
+                        self.store, self.cfg.auto_mode.budgets
+                    ).fail_measurement(run_id)
+                denied = AutoBudgetDenied(
+                    "budget_measurement_unavailable",
+                    "adapter token usage is not verifiable",
+                    field="extra_token_multiplier",
+                )
+                self._note_auto_budget_trip(st, denied)
+                raise denied
+        try:
+            self._settle_auto_budget(admission, started=True)
+            if token_admission is not None and usage_total is not None:
+                self._settle_auto_budget(
+                    token_admission,
+                    started=True,
+                    committed_amount=usage_total,
+                )
+        except AutoBudgetDenied as denied:
+            self._note_auto_budget_trip(st, denied)
+            raise
+        return result
+
     def _note_auto_budget_trip(
         self, st: SessionState, denied: AutoBudgetDenied
     ) -> None:
@@ -6090,12 +6187,18 @@ class SessionRunner:
             else getattr(call, "arguments", None)
         )
         ledger = getattr(st, "active_action_ledger", None)
-        group_id = str(
+        ledger_group = str(
             getattr(ledger, "current_group_id", None)
-            or getattr(call, "id", None)
-            or name
+            or getattr(st, "active_action_group_id", None)
             or "native"
         )
+        call_id = (
+            call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        )
+        # A ledger group is a batch, not a single side effect. Bind admission
+        # to this exact native invocation so siblings and retries cannot reuse
+        # one reservation as execution authority.
+        group_id = execution_action_group(ledger_group, call_id)
         admission = None
         try:
             admission = self._admit_auto_budget(
@@ -10724,48 +10827,9 @@ class SessionRunner:
 
         def _auto_budget_chat(messages, cfg, **kwargs):
             # auto_budget sink: model inference admission before provider call.
-            admission = None
-            try:
-                admission = self._admit_auto_budget(
-                    st,
-                    consumer="model",
-                    action_group_id=str(
-                        getattr(st, "active_action_group_id", None)
-                        or f"model:{st.cell_index}"
-                    ),
-                    amount=1,
-                    enforce_field_limit=False,
-                )
-            except AutoBudgetDenied as denied:
-                self._note_auto_budget_trip(st, denied)
-                raise
-            try:
-                result = chat(messages, cfg, **kwargs)
-            except Exception:
-                self._settle_auto_budget(admission, started=True, unknown=True)
-                raise
-            extra = self._auto_budget_extra_phase(st)
-            if extra and admission is not None:
-                bound = token_upper_bound(cfg)
-                usage_total = verifiable_token_usage(
-                    result.get("usage") if isinstance(result, Mapping) else None
-                )
-                if bound is None or usage_total is None:
-                    self._settle_auto_budget(admission, started=True, unknown=True)
-                    run_id = str(st.active_auto_mode_run_id or "")
-                    if run_id:
-                        AutoBudgetAdmission(
-                            self.store, self.cfg.auto_mode.budgets
-                        ).fail_measurement(run_id)
-                    denied = AutoBudgetDenied(
-                        "budget_measurement_unavailable",
-                        "adapter token usage is not verifiable",
-                        field="extra_token_multiplier",
-                    )
-                    self._note_auto_budget_trip(st, denied)
-                    raise denied
-            self._settle_auto_budget(admission, started=True)
-            return result
+            return self._invoke_model_with_auto_budget(
+                st, messages, cfg, chat, **kwargs
+            )
 
         engine = AgentEngine(
             ChatModel(

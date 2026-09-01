@@ -56,16 +56,29 @@ export function installArtifacts(target?: Target): void {
 
 export function bootArtifacts(target?: Target): void {
   installArtifacts(target);
-  if (typeof document !== "undefined") {
-    bindFilesButton();
-    mountFilesPanel();
-    consumeArtifactDeepLink();
-  }
+}
+
+/**
+ * Finish the DOM-dependent half of Artifact boot after the Preact shell exists.
+ *
+ * `main.tsx` installs lane contracts before rendering `<Shell />`, so doing
+ * these operations in `bootArtifacts()` races a DOM that does not exist yet.
+ * The initial session route also clears dock state; wait for that route before
+ * applying an Artifact deep link so the exact-version viewer wins the race.
+ */
+export async function finishArtifactsBoot(
+  initialView: Promise<unknown> | unknown = undefined,
+): Promise<void> {
+  if (typeof document === "undefined") return;
+  bindFilesButton();
+  mountFilesPanel();
+  await initialView;
+  await consumeArtifactDeepLink();
 }
 
 function bindFilesButton(): void {
   const btn = document.getElementById("files-btn");
   if (!btn || btn.dataset.f17Bound === "1") return;
   btn.dataset.f17Bound = "1";
-  btn.addEventListener("click", () => setActiveTab("files"));
+  btn.onclick = () => setActiveTab("files");
 }

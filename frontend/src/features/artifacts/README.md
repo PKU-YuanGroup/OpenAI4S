@@ -10,6 +10,7 @@ F-17 artifacts + Files (M-03). Version cache, Files search/filter/pagination/dee
 | --- | --- |
 | [`api.ts`](api.ts) | Same-origin `api()`, `ApiError`, `bytes`, `looksBinary`, `el`/`icon`, `isReady` window calls. |
 | [`artifacts.css`](artifacts.css) | Files toolbar / filter / Load more / stale-version banner. |
+| [`boot.test.ts`](boot.test.ts) | DOM mount ordering and initial-route-before-deep-link regression coverage. |
 | [`boot.ts`](boot.ts) | `bootArtifacts` / `installArtifacts`. Assigns `parseTable` + `renderSheet`. |
 | [`cache.test.ts`](cache.test.ts) | Version cache, in-place dock mutate, stale `loadArtifacts`. |
 | [`cache.ts`](cache.ts) | `artifactCacheKey` / `syncArtifactVersion` / `artUrl` (exact version never uses latest). |

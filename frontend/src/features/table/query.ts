@@ -14,6 +14,7 @@ export type ExportQueryInput = {
   sort?: string;
   dir?: string;
   filters: Record<string, string>;
+  spreadsheetSafe?: boolean;
 };
 
 /**
@@ -57,6 +58,7 @@ export function tableExportSearch(input: ExportQueryInput): URLSearchParams | nu
   search.set("version_id", versionId);
   if (input.sort) search.set("sort", input.sort);
   if (input.dir) search.set("dir", input.dir);
+  if (input.spreadsheetSafe !== false) search.set("spreadsheet_safe", "1");
   setFilters(search, input.filters);
   return search;
 }

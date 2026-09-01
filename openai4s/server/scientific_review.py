@@ -19,12 +19,14 @@ from typing import Any
 
 from openai4s.scientific_reviewer import (
     model_fingerprint,
+    review_request_messages,
     review_snapshot,
 )
 from openai4s.server.auto_budget import (
     TERMINAL_USER_TRUTH,
     AutoBudgetAdmission,
     AutoBudgetDenied,
+    execution_action_group,
     token_upper_bound,
     verifiable_token_usage,
 )
@@ -729,11 +731,12 @@ class ScientificReviewService:
                 }
             attempts += 1
             admission_id = None
+            token_admission_id = None
             try:
                 if budget is not None and run_id:
-                    group_id = str(
-                        action_group_id
-                        or f"{run_id}:review:{uuid.uuid4().hex[:16]}:{attempts}"
+                    group_id = execution_action_group(
+                        str(action_group_id or f"{run_id}:review"),
+                        f"attempt-{attempts}-{uuid.uuid4().hex[:16]}",
                     )
                     admission_id = f"{run_id}:review:{group_id}"
                     budget.reserve(
@@ -743,7 +746,18 @@ class ScientificReviewService:
                         action_group_id=group_id,
                         amount=1,
                     )
-                    bound = token_upper_bound(reviewer_cfg)
+                    review_messages, _packet_complete = review_request_messages(
+                        dict(frozen)
+                    )
+                    review_max_tokens = min(
+                        int(getattr(reviewer_cfg, "max_tokens", 1800) or 1800),
+                        1800,
+                    )
+                    bound = token_upper_bound(
+                        reviewer_cfg,
+                        messages=review_messages,
+                        max_tokens=review_max_tokens,
+                    )
                     if bound is None:
                         budget.release(admission_id, started=False)
                         budget.fail_measurement(str(run_id))
@@ -754,9 +768,10 @@ class ScientificReviewService:
                             "budget_measurement_unavailable",
                             attempts=attempts,
                         )
+                    token_admission_id = f"{admission_id}:token"
                     budget.reserve(
                         run_id=str(run_id),
-                        admission_id=f"{admission_id}:token",
+                        admission_id=token_admission_id,
                         consumer="token",
                         action_group_id=f"{group_id}:token",
                         amount=bound,
@@ -766,12 +781,17 @@ class ScientificReviewService:
                     dict(frozen), reviewer_cfg, chat_call=invoke
                 )
                 last_error = None
-                if budget is not None and run_id and admission_id:
+                if (
+                    budget is not None
+                    and run_id
+                    and admission_id
+                    and token_admission_id
+                ):
                     usage_total = verifiable_token_usage(
                         (model_result or {}).get("usage")
                     )
                     if usage_total is None:
-                        budget.fail_measurement(str(run_id), f"{admission_id}:token")
+                        budget.fail_measurement(str(run_id), token_admission_id)
                         budget.mark_unknown(admission_id)
                         return self._budget_terminal(
                             frozen,
@@ -781,7 +801,7 @@ class ScientificReviewService:
                             attempts=attempts,
                         )
                     budget.commit(admission_id, committed_amount=1)
-                    budget.commit(f"{admission_id}:token", committed_amount=usage_total)
+                    budget.commit(token_admission_id, committed_amount=usage_total)
                 break
             except AutoBudgetDenied as denied:
                 if budget is not None and admission_id:
@@ -804,6 +824,11 @@ class ScientificReviewService:
                         budget.mark_unknown(admission_id)
                     except Exception:  # noqa: BLE001 - unknown is fail-closed
                         pass
+                    if token_admission_id:
+                        try:
+                            budget.mark_unknown(token_admission_id)
+                        except Exception:  # noqa: BLE001 - unknown is fail-closed
+                            pass
         if last_error is not None:
             return {
                 "verdict": "review_unavailable",

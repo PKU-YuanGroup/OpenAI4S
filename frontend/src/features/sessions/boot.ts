@@ -48,9 +48,11 @@ export function installSessionExports(
 }
 
 let bound = false;
+let initialViewReady: Promise<void> | null = null;
 
-export function bindWorkbench(): void {
-  if (bound || typeof document === "undefined") return;
+export function bindWorkbench(): Promise<void> {
+  if (typeof document === "undefined") return Promise.resolve();
+  if (bound) return initialViewReady || Promise.resolve();
   bound = true;
   paintIcons();
   applyStaticI18n(document);
@@ -111,8 +113,6 @@ export function bindWorkbench(): void {
   if (dashSettings) dashSettings.onclick = () => callLane("openCust", "general");
   const customize = $("#customize-btn");
   if (customize) customize.onclick = () => callLane("openCust");
-  const filesBtn = $("#files-btn");
-  if (filesBtn) filesBtn.onclick = () => callLane("setActiveTab", "files");
   const projBtn = $("#proj-btn");
   if (projBtn) {
     projBtn.onclick = () => {
@@ -191,5 +191,8 @@ export function bindWorkbench(): void {
       (mq as { addListener: (fn: () => void) => void }).addListener(onMq);
     }
   }
-  void routeInitialView().catch(showDashboard);
+  initialViewReady = routeInitialView().catch(() => {
+    showDashboard();
+  });
+  return initialViewReady;
 }

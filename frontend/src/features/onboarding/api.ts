@@ -37,6 +37,14 @@ export async function activateModelProfile(id: string): Promise<Record<string, u
   });
 }
 
+/** Activate a selected existing profile, then return the authoritative status. */
+export async function activateExistingModelProfile(id: string): Promise<OnboardingStatus> {
+  const profileId = String(id || "").trim();
+  if (!profileId) throw new Error("model profile id is required");
+  await activateModelProfile(profileId);
+  return fetchOnboarding();
+}
+
 export async function probeModelProfile(id: string): Promise<Record<string, unknown>> {
   return api(`/model-profiles/${encodeURIComponent(id)}/probe`, {
     method: "POST",

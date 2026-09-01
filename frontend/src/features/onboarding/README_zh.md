@@ -8,6 +8,7 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 
 | 文件 | 职责 |
 | --- | --- |
+| [`api.test.ts`](api.test.ts) | 现有配置档激活先于引导状态刷新的回归覆盖。 |
 | [`api.ts`](api.ts) | `GET /onboarding`、`POST /onboarding/complete`、配置档保存/激活/probe。 |
 | [`badges.test.ts`](badges.test.ts) | 三态 badge 标记；unknown 原因原样保留。 |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` 行 + stale。 |
@@ -17,3 +18,4 @@ M-01 首次运行向导内核。四个必需决策步骤、skip/清单，以及 
 | [`machine.test.ts`](machine.test.ts) | skip / 清单 / 带 request id 的错误；Test 前 providerRequests=0。 |
 | [`machine.ts`](machine.ts) | 四步 reducer。凭据不进入向导状态。 |
 | [`status.ts`](status.ts) | 清洗 GET 载荷；丢掉凭据形状的键。 |
+| [`wizard-integration.test.ts`](wizard-integration.test.ts) | 现有配置档的 Continue 会等待激活完成后再进入下一步。 |

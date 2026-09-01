@@ -8,6 +8,7 @@ import {
   readCapabilityReceipt,
 } from "../../features/customize/models";
 import {
+  activateExistingModelProfile,
   activateModelProfile,
   completeOnboarding,
   fetchOnboarding,
@@ -430,6 +431,25 @@ export function WizardHost() {
     }
   };
 
+  const onUseExisting = async () => {
+    const id = state.path?.kind === "existing" ? state.path.profileId : "";
+    if (!id) {
+      dispatch({ type: "fail", message: ot("onboarding.test.needProfile"), requestId: "" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const refreshed = await activateExistingModelProfile(id);
+      if (!alive.current) return;
+      setStatus(refreshed);
+      dispatch({ type: "next" });
+    } catch (error) {
+      if (alive.current) fail(error);
+    } finally {
+      if (alive.current) setBusy(false);
+    }
+  };
+
   const onOpenProject = async (id: string) => {
     setBusy(true);
     try {
@@ -597,7 +617,7 @@ export function WizardHost() {
               type="button"
               class="solid-btn"
               disabled={busy || !state.path}
-              onClick={() => dispatch({ type: "next" })}
+              onClick={() => void onUseExisting()}
             >
               {ot("onboarding.next")}
             </button>

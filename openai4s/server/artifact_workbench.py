@@ -1099,6 +1099,7 @@ class ArtifactWorkbenchService:
         sort: str = "",
         descending: bool = False,
         filters: Mapping[str, str] | None = None,
+        spreadsheet_safe: bool = False,
     ) -> dict[str, Any]:
         from openai4s.server.table_profile import (
             csv_export_filename,
@@ -1114,7 +1115,11 @@ class ArtifactWorkbenchService:
         prepared = materialize_table(
             rows, sort=sort, descending=descending, filters=filters
         )
-        chunks = export_csv_chunks(prepared["columns"], prepared["rows"])
+        chunks = export_csv_chunks(
+            prepared["columns"],
+            prepared["rows"],
+            spreadsheet_safe=spreadsheet_safe,
+        )
         body = b"".join(chunks)
         filename = csv_export_filename(name)
         return {

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-M-04 表格 artifact 的结构 / 分布 / 导出。对接 B-07 `GET /artifacts/{id}/table/profile` 与 `GET /artifacts/{id}/table/export.csv`（`version_id` 必填）。`approximate: true` 明示「近似」，不改写成精确。导出是同源 `<a href>`，由浏览器流式下载；本车道不 `fetch()` 响应体。渲染器 catalog 的 `profile` / `export` / `parquet` 如实透传，flag 关闭时本地再挡一层——不会从文件名推断 parquet。flag=0 走 F-17 的客户端 `parseTable` + `renderSheet`。
+M-04 表格 artifact 的结构 / 分布 / 导出。对接 B-07 `GET /artifacts/{id}/table/profile` 与 `GET /artifacts/{id}/table/export.csv`（`version_id` 必填）。`approximate: true` 明示「近似」，不改写成精确。导出是同源 `<a href>`，由浏览器流式下载；本车道不 `fetch()` 响应体。工作台下载链接会附加 `spreadsheet_safe=1` 来中和公式形态的单元格；直接 API 调用省略它时仍保留科研原始值。渲染器 catalog 的 `profile` / `export` / `parquet` 如实透传，flag 关闭时本地再挡一层——不会从文件名推断 parquet。flag=0 走 F-17 的客户端 `parseTable` + `renderSheet`。
 
 不改 `stores/`，不改生成的 i18n 字典，不改 `openai4s/server/webui/app.js`。
 

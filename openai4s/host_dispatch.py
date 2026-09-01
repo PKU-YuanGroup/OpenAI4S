@@ -1659,12 +1659,26 @@ class HostDispatcher:
     def set_capability_scope(self, frame_id: str | None = None) -> None:
         """Retarget Skill/Specialist policy to the frame's project + session."""
 
-        scope = self.store.resolve_frame_scope(frame_id or self.frame_id)
+        target_frame = frame_id or self.frame_id
+        scope = self.store.resolve_frame_scope(target_frame)
         self._skill_service.set_scope(
             project_id=scope.get("project_id"),
             session_id=scope.get("root_frame_id"),
         )
         self._skills = self._skill_service.loader
+        session_id = str(scope.get("root_frame_id") or "").strip()
+        if session_id:
+            from openai4s.server.skill_network_admission import restore_bindings
+
+            events = self._skills.capabilities.repository.list_events(
+                kind="skill",
+                event="skill_loaded",
+                session_id=session_id,
+                limit=None,
+            )
+            restore_bindings(target_frame, events)
+            if str(target_frame or "") != session_id:
+                restore_bindings(session_id, events)
 
     def _current_capability_scope(self) -> dict[str, str | None]:
         scope = self.store.resolve_frame_scope(self.frame_id)
@@ -2527,6 +2541,24 @@ class HostDispatcher:
         capability = getattr(skill, "network", None)
         if capability is None:
             return
+        metadata = load_event_metadata(
+            skill_id=skill.name,
+            version=str(getattr(skill, "version", "") or ""),
+            document_digest=str(getattr(skill, "document_sha256", "") or ""),
+            capability=capability,
+            action_group_id=str(action_group_id) if action_group_id else None,
+            source=source,
+            binding_frame_id=self.frame_id,
+        )
+        # Persist the requirement before returning executable guidance. If the
+        # daemon crashes after this commit, dispatcher construction restores
+        # the same binding; if the commit fails, the load fails closed.
+        self._skill_service.loader.capabilities.record_event(
+            "skill",
+            skill.name,
+            "skill_loaded",
+            metadata=metadata,
+        )
         bind_skill_load(
             frame_id=self.frame_id,
             action_group_id=str(action_group_id) if action_group_id else None,
@@ -2536,25 +2568,6 @@ class HostDispatcher:
             capability=capability,
             source=source,
         )
-        metadata = load_event_metadata(
-            skill_id=skill.name,
-            version=str(getattr(skill, "version", "") or ""),
-            document_digest=str(getattr(skill, "document_sha256", "") or ""),
-            capability=capability,
-            action_group_id=str(action_group_id) if action_group_id else None,
-            source=source,
-        )
-        try:
-            self._skill_service.loader.capabilities.record_event(
-                "skill",
-                skill.name,
-                "skill_loaded",
-                metadata=metadata,
-            )
-        except (
-            Exception
-        ):  # noqa: BLE001 - load still succeeds if the ledger write fails
-            pass
         loaded_dict = loaded if isinstance(loaded, dict) else None
         if loaded_dict is not None:
             loaded_dict["skill_id"] = skill.name

@@ -19,8 +19,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from openai4s.skills_loader.capabilities import (
+    DECLARATIONS,
+    NETWORK_MODES,
+    UNKNOWN_MODE,
     NetworkCapability,
     canonical_network_digest,
+    declared_capability,
 )
 
 _LOCK = threading.RLock()
@@ -145,6 +149,102 @@ def bindings_for(frame_id: str | None) -> tuple[SkillNetworkBinding, ...]:
         return ()
     with _LOCK:
         return tuple(_BINDINGS.get(key) or ())
+
+
+def restore_bindings(
+    frame_id: str | None, events: Sequence[Mapping[str, Any]]
+) -> tuple[SkillNetworkBinding, ...]:
+    """Restore durable ``skill_loaded`` requirements after daemon restart.
+
+    The audit row is treated as authorization-relevant input: a malformed or
+    digest-mismatched row fails closed instead of silently dropping the Skill's
+    network requirement.
+    """
+
+    key = str(frame_id or "").strip()
+    if not key:
+        return ()
+    restored: list[SkillNetworkBinding] = []
+    for event in reversed(list(events)):
+        if str(event.get("event") or "") != "skill_loaded":
+            continue
+        metadata = event.get("metadata")
+        if not isinstance(metadata, Mapping):
+            raise ValueError("persisted Skill network binding lacks metadata")
+        binding_frame_id = str(metadata.get("binding_frame_id") or "").strip()
+        # New rows are exact-frame requirements. Rows written before that key
+        # existed cannot prove which frame loaded executable guidance, so they
+        # retain the old session-wide fail-closed behavior rather than being
+        # silently discarded during upgrade.
+        if binding_frame_id and binding_frame_id != key:
+            continue
+        mode = str(metadata.get("network_mode") or "").strip().lower()
+        declaration = str(metadata.get("network_declaration") or "").strip().lower()
+        source = str(metadata.get("source") or "persisted")
+        raw_domains = metadata.get("domains")
+        if not isinstance(raw_domains, list) or declaration not in DECLARATIONS:
+            raise ValueError("persisted Skill network binding is malformed")
+        if declaration == "declared":
+            if mode not in NETWORK_MODES:
+                raise ValueError("persisted Skill network mode is invalid")
+            capability = declared_capability(mode, raw_domains, source=source)
+        else:
+            if mode != UNKNOWN_MODE or raw_domains:
+                raise ValueError("persisted legacy Skill network binding widened")
+            capability = NetworkCapability(
+                mode=UNKNOWN_MODE,
+                domains=(),
+                declaration=declaration,
+                source=source,
+                digest=canonical_network_digest(UNKNOWN_MODE, ()),
+                explicit=True,
+            )
+        manifest_digest = str(metadata.get("manifest_digest") or "")
+        if manifest_digest != capability.digest:
+            raise ValueError("persisted Skill network manifest digest mismatch")
+        restored.append(
+            SkillNetworkBinding(
+                skill_id=str(metadata.get("skill_id") or event.get("name") or ""),
+                version=str(metadata.get("version") or ""),
+                document_digest=str(metadata.get("document_digest") or ""),
+                manifest_digest=manifest_digest,
+                action_group_id=(
+                    str(metadata["action_group_id"])
+                    if metadata.get("action_group_id")
+                    else None
+                ),
+                capability=capability,
+                source=source,
+            )
+        )
+    with _LOCK:
+        current = list(_BINDINGS.get(key) or ())
+        identities = {
+            (
+                item.skill_id,
+                item.version,
+                item.document_digest,
+                item.manifest_digest,
+                item.action_group_id,
+                item.source,
+            )
+            for item in current
+        }
+        for item in restored:
+            identity = (
+                item.skill_id,
+                item.version,
+                item.document_digest,
+                item.manifest_digest,
+                item.action_group_id,
+                item.source,
+            )
+            if identity not in identities:
+                current.append(item)
+                identities.add(identity)
+        if current:
+            _BINDINGS[key] = current
+        return tuple(current)
 
 
 def use_frame(frame_id: str | None) -> Any:
@@ -530,6 +630,7 @@ def load_event_metadata(
     capability: NetworkCapability,
     action_group_id: str | None,
     source: str,
+    binding_frame_id: str | None = None,
 ) -> dict[str, Any]:
     return {
         "skill_id": skill_id,
@@ -540,6 +641,7 @@ def load_event_metadata(
         "network_declaration": capability.declaration,
         "action_group_id": action_group_id,
         "source": source,
+        "binding_frame_id": str(binding_frame_id or ""),
         "domains": list(capability.domains),
     }
 

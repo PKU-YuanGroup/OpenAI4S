@@ -13,7 +13,7 @@ import { esc } from "../md/esc";
 import { mdHighlight } from "../md/highlight";
 import { API } from "../ws/connect";
 import type { WsMessage } from "../ws/types";
-import { asCells, nbFindCell, syncCellOutput } from "./cells";
+import { asCells, nbFindCell, resetCellOutputs, syncCellOutput } from "./cells";
 import { nbRender } from "./scroll";
 import type { NotebookCell } from "./types";
 
@@ -107,6 +107,16 @@ export function highlightCellSource(key: string, source: string, lang: string): 
 
 export function resetHighlightMemo(): void {
   highlightMemo.clear();
+}
+
+/** Drop cell-keyed render state only when the workbench moves to another frame. */
+export function resetNotebookCellCaches(
+  previousFrameId: string | null | undefined,
+  nextFrameId: string | null | undefined,
+): void {
+  if (previousFrameId === nextFrameId) return;
+  resetCellOutputs();
+  resetHighlightMemo();
 }
 
 export type NotebookExportOption = {

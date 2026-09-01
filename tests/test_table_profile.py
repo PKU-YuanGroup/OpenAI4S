@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import sqlite3
 import sys
@@ -174,7 +176,7 @@ def _column(payload: dict, name: str) -> dict:
 
 
 def test_shared_parser_snapshot_locks_historical_table_semantics():
-    assert TABLE_QUERY_PARSER_VERSION == 1
+    assert TABLE_QUERY_PARSER_VERSION == 2
     for query, mode, expected in PARSER_SNAPSHOT:
         parsed = parse_table_query(query, mode=mode)
         assert parsed.sort == expected["sort"]
@@ -183,6 +185,35 @@ def test_shared_parser_snapshot_locks_historical_table_semantics():
         assert parsed.offset == expected["offset"]
         assert parsed.limit == expected["limit"]
         assert parsed.version_id == expected["version_id"]
+
+
+def test_export_spreadsheet_safe_query_is_explicit_and_export_only():
+    raw = parse_table_query({"version_id": ["v-1"]}, mode="export")
+    safe = parse_table_query(
+        {"version_id": ["v-1"], "spreadsheet_safe": ["1"]},
+        mode="export",
+    )
+    explicit_raw = parse_table_query(
+        {"version_id": ["v-1"], "spreadsheet_safe": ["0"]},
+        mode="export",
+    )
+    assert raw.spreadsheet_safe is False
+    assert safe.spreadsheet_safe is True
+    assert explicit_raw.spreadsheet_safe is False
+
+    for mode in ("page", "profile"):
+        with pytest.raises(workbench_mod.WorkbenchError) as error:
+            parse_table_query(
+                {"version_id": ["v-1"], "spreadsheet_safe": ["1"]},
+                mode=mode,
+            )
+        assert (error.value.status, error.value.code) == (400, "invalid_query")
+    with pytest.raises(workbench_mod.WorkbenchError) as error:
+        parse_table_query(
+            {"version_id": ["v-1"], "spreadsheet_safe": ["true"]},
+            mode="export",
+        )
+    assert (error.value.status, error.value.code) == (400, "invalid_query")
 
 
 def test_shared_parser_pagination_clamps_only_inside_query_table():
@@ -435,6 +466,59 @@ def test_export_chunks_stay_at_or_under_one_mebibyte_and_total_overflow_is_413(
     with pytest.raises(workbench_mod.WorkbenchError) as error:
         export_csv_chunks(["label"], rows)
     assert (error.value.status, error.value.code) == (413, "artifact_too_large")
+
+
+def test_export_spreadsheet_safe_mode_neutralizes_formulas_but_raw_is_faithful():
+    columns = ["=header", " @hidden", "+2.5", "-3e-4"]
+    rows = [
+        ["=SUM(A1:A2)", "\t@cmd", "+2.5", "-3e-4"],
+        ["\x00-2+3", "\n+run()", "-1", " +1.25e+6\r"],
+    ]
+
+    raw_text = b"".join(export_csv_chunks(columns, rows)).decode("utf-8")
+    raw = list(csv.reader(io.StringIO(raw_text, newline="")))
+    assert raw == [columns, *rows]
+
+    safe_text = b"".join(
+        export_csv_chunks(columns, rows, spreadsheet_safe=True)
+    ).decode("utf-8")
+    safe = list(csv.reader(io.StringIO(safe_text, newline="")))
+    assert safe == [
+        ["'=header", "' @hidden", "+2.5", "-3e-4"],
+        ["'=SUM(A1:A2)", "'\t@cmd", "+2.5", "-3e-4"],
+        ["'\x00-2+3", "'\n+run()", "-1", " +1.25e+6\r"],
+    ]
+
+
+def test_export_http_defaults_raw_and_opt_in_is_spreadsheet_safe(tmp_path):
+    _cfg, runner, handler, fid = _setup(tmp_path)
+    workspace = runner.workspace_for_branch(fid, fid)
+    source = "=header,signed\n@SUM(A1),-3e-4\n"
+    artifact = _save_snapshot(
+        runner, fid, workspace / "formula.csv", source.encode("utf-8")
+    )
+    base_query = {"version_id": [artifact["version_id"]]}
+
+    raw_reply = _call(
+        handler,
+        "GET",
+        f"/artifacts/{artifact['artifact_id']}/table/export.csv",
+        query=base_query,
+    )
+    assert raw_reply[0] == 200
+    raw = list(csv.reader(io.StringIO(raw_reply[1].decode("utf-8"), newline="")))
+    assert raw == [["=header", "signed"], ["@SUM(A1)", "-3e-4"]]
+
+    safe_reply = _call(
+        handler,
+        "GET",
+        f"/artifacts/{artifact['artifact_id']}/table/export.csv",
+        query={**base_query, "spreadsheet_safe": ["1"]},
+    )
+    assert safe_reply[0] == 200
+    safe = list(csv.reader(io.StringIO(safe_reply[1].decode("utf-8"), newline="")))
+    assert safe == [["'=header", "signed"], ["'@SUM(A1)", "-3e-4"]]
+    runner.close()
 
 
 def test_export_http_total_overflow_is_413(tmp_path, monkeypatch):

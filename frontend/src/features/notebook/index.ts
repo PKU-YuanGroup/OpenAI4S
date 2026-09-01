@@ -32,6 +32,7 @@ export {
   notebookExportHref,
   notebookExportLink,
   resetHighlightMemo,
+  resetNotebookCellCaches,
   stripAnsi,
 } from "./chrome";
 export { installNotebook, registerNotebookHandlers } from "./install";

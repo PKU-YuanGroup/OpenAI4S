@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import inspect
 import json
+import uuid
 from collections.abc import Mapping
 from dataclasses import fields
 from typing import Any
@@ -77,6 +78,19 @@ _COMPLETION_STATUSES = frozenset(
 )
 
 
+def execution_action_group(base: Any, invocation_id: Any = None) -> str:
+    """Identify one sink invocation within a broader action/model group.
+
+    Provider-native call IDs are stable across response replay, which makes a
+    replay hit the same single-use admission. Sibling calls have different IDs;
+    sinks without a provider ID receive a fresh nonce for every attempt.
+    """
+
+    prefix = str(base or "action")
+    suffix = str(invocation_id or uuid.uuid4().hex)
+    return f"{prefix}:{suffix}"
+
+
 def canonical_action_fingerprint(
     *,
     kind: str,
@@ -135,13 +149,77 @@ def verifiable_token_usage(usage: Any) -> int | None:
     return None
 
 
-def token_upper_bound(adapter_cfg: Any) -> int | None:
-    value = getattr(adapter_cfg, "max_tokens", None)
-    if value is None and isinstance(adapter_cfg, Mapping):
-        value = adapter_cfg.get("max_tokens")
-    if type(value) is int and value > 0:
-        return value
-    return None
+def token_upper_bound(
+    adapter_cfg: Any,
+    *,
+    messages: Any = None,
+    tools: Any = None,
+    max_tokens: int | None = None,
+) -> int | None:
+    """Return a pre-provider upper bound for prompt plus completion tokens.
+
+    ``max_tokens`` bounds only provider output and therefore cannot be used as
+    a total-spend reservation. Adapters may expose an audited bound directly.
+    Otherwise, for the exact JSON request, UTF-8 bytes upper-bound ordinary
+    tokenizer tokens; the per-node allowance covers provider wire wrappers and
+    chat control tokens. The per-attempt value is multiplied by the transport's
+    audited attempt ceiling. Non-JSON request content fails closed before
+    provider spend. Model-catalog context sizes are deliberately not used: a
+    provider default is not proof about the exact configured endpoint.
+    """
+
+    def value(name: str) -> Any:
+        if isinstance(adapter_cfg, Mapping):
+            return adapter_cfg.get(name)
+        return getattr(adapter_cfg, name, None)
+
+    total = value("total_token_upper_bound")
+    if type(total) is int and total > 0:
+        return total
+    attempts = value("provider_attempt_upper_bound")
+    if attempts is None:
+        # Exact production transport ceiling: first request + two bounded
+        # retries. Reserving one prompt for a three-attempt transport would not
+        # be a hard spend ceiling after an ambiguous/lost response.
+        from openai4s.llm.transport import DEFAULT_MAX_ATTEMPTS
+
+        attempts = DEFAULT_MAX_ATTEMPTS
+    if type(attempts) is not int or attempts <= 0:
+        return None
+    prompt = value("input_token_upper_bound")
+    completion = max_tokens if max_tokens is not None else value("max_tokens")
+    if (
+        type(prompt) is int
+        and prompt >= 0
+        and type(completion) is int
+        and completion > 0
+    ):
+        return (prompt + completion) * attempts
+    if messages is None or type(completion) is not int or completion <= 0:
+        return None
+    request = {"messages": messages, "tools": tools or []}
+    try:
+        encoded = json.dumps(
+            request,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+
+    def nodes(item: Any) -> int:
+        if isinstance(item, Mapping):
+            return 1 + sum(nodes(child) for child in item.values())
+        if isinstance(item, (list, tuple)):
+            return 1 + sum(nodes(child) for child in item)
+        return 1
+
+    request_bound = (
+        len(encoded) + (64 * nodes(request)) + 1024 + completion
+    ) * attempts
+    return request_bound
 
 
 def inspect_budget_wiring() -> dict[str, Any]:
@@ -245,7 +323,7 @@ class AutoBudgetAdmission:
     ) -> dict[str, Any]:
         if consumer not in CONSUMERS:
             raise ValueError("invalid Auto Budget consumer")
-        return self.store.reserve_auto_mode_budget(
+        result = self.store.reserve_auto_mode_budget(
             run_id=run_id,
             admission_id=admission_id,
             consumer=consumer,
@@ -255,6 +333,15 @@ class AutoBudgetAdmission:
             enforce_field_limit=enforce_field_limit,
             token_upper_bound=token_upper_bound,
         )
+        # Repository replay is useful for crash inspection/reconciliation, but
+        # an execution envelope must never treat an old reservation as fresh
+        # authority to invoke a provider, tool, Cell, or repair a second time.
+        if not bool(result.get("created")):
+            raise AutoBudgetDenied(
+                "loop_detected",
+                "Auto Budget admission was already used",
+            )
+        return result
 
     def commit(self, admission_id: str, *, committed_amount: int) -> dict[str, Any]:
         return self.store.commit_auto_mode_budget(

@@ -8,6 +8,7 @@ M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and 
 
 | File | Responsibility |
 | --- | --- |
+| [`api.test.ts`](api.test.ts) | Existing-profile activation occurs before onboarding status refresh. |
 | [`api.ts`](api.ts) | `GET /onboarding`, `POST /onboarding/complete`, profile save/activate/probe. |
 | [`badges.test.ts`](badges.test.ts) | Tri-state badge markup; unknown reason is not rewritten. |
 | [`badges.ts`](badges.ts) | `capability_receipt` → `true` / `false` / `unknown` rows + stale. |
@@ -17,3 +18,4 @@ M-01 first-run wizard kernel. Four required decision steps, skip/checklist, and 
 | [`machine.test.ts`](machine.test.ts) | Skip / checklist / request-id errors; providerRequests=0 before Test. |
 | [`machine.ts`](machine.ts) | Four-step reducer. Credentials never enter wizard state. |
 | [`status.ts`](status.ts) | Sanitize GET payload; drop credential-shaped keys. |
+| [`wizard-integration.test.ts`](wizard-integration.test.ts) | Existing-profile Continue awaits activation before dispatching the next step. |

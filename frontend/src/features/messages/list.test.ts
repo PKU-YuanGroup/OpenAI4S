@@ -1,5 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { INITIAL_RENDER_BATCH, nextBatchEnd } from "./list";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  INITIAL_RENDER_BATCH,
+  cancelFramedRender,
+  nextBatchEnd,
+  scheduleFramedRender,
+} from "./list";
+
+afterEach(() => {
+  cancelFramedRender();
+  vi.unstubAllGlobals();
+});
 
 describe("framed initial render batches", () => {
   it("uses 40 items per frame (inside the 30-50 window)", () => {
@@ -26,6 +36,33 @@ describe("framed initial render batches", () => {
   it("last batch may be shorter than the frame size", () => {
     expect(nextBatchEnd(280, 300)).toBe(300);
     expect(nextBatchEnd(0, 10)).toBe(10);
+  });
+
+  it("settles a framed render when a session switch cancels it", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      const id = nextFrame++;
+      frames.set(id, cb);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+      frames.delete(id);
+    });
+    const onDone = vi.fn();
+    const settled = new Promise<"cancelled">((resolve) => {
+      scheduleFramedRender([], {
+        host: { appendChild: (node: Node) => node } as unknown as ParentNode,
+        onDone,
+        onCancel: () => resolve("cancelled"),
+      });
+    });
+
+    cancelFramedRender();
+
+    await expect(settled).resolves.toBe("cancelled");
+    expect(onDone).not.toHaveBeenCalled();
+    expect(frames.size).toBe(0);
   });
 });
 

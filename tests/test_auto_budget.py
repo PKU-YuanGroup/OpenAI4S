@@ -9,21 +9,27 @@ from types import SimpleNamespace
 import pytest
 
 from openai4s.config import AutoModeBudgets, AutoModeConfig, Config, RoadmapFeatureFlags
+from openai4s.server import gateway as gateway_mod
 from openai4s.server.auto_budget import (
     FIELD_AUTHORITIES,
     TERMINAL_USER_TRUTH,
     AutoBudgetAdmission,
     AutoBudgetDenied,
     canonical_action_fingerprint,
+    execution_action_group,
     inspect_budget_wiring,
     is_completion_disguise,
+    token_upper_bound,
     verifiable_token_usage,
 )
 from openai4s.server.auto_mode import AutoModeService
 from openai4s.server.auto_repair import AutoRepairService
 from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
 from openai4s.server.scientific_review import ScientificReviewService
-from openai4s.storage.auto_mode import create_auto_mode_budget_schema
+from openai4s.storage.auto_mode import (
+    AutoBudgetConflictError,
+    create_auto_mode_budget_schema,
+)
 from openai4s.store import Store
 
 
@@ -197,6 +203,49 @@ def test_review_limit_two_blocks_third_inference(tmp_path):
     assert result["reason"] == "budget_exhausted"
     assert result["verdict"] != "pass"
     assert is_completion_disguise(result["verdict"], result["reason"]) is False
+    store.close()
+
+
+def test_review_retry_has_unique_admission_and_marks_started_token_unknown(tmp_path):
+    store = _store(tmp_path)
+    _start(store, budgets=_budgets(max_review_rounds=2))
+    calls = {"n": 0}
+
+    def flaky_chat(messages, cfg, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("provider response was lost")
+        return _pass_chat(messages, cfg, **kwargs)
+
+    service = ScientificReviewService(
+        store=store,
+        config=Config(
+            auto_mode=AutoModeConfig(result_review_mode="review_only"),
+            roadmap_features=RoadmapFeatureFlags(stage3_scientific_review_shadow=True),
+        ),
+        chat_call=flaky_chat,
+    )
+    result = service.evaluate(
+        _snapshot(),
+        result_review_mode="review_only",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        chat_call=flaky_chat,
+        run_id="auto-run-1",
+        action_group_id="caller-review-group",
+    )
+    assert calls["n"] == 2
+    assert result["verdict"] == "pass"
+    rows = store.list_auto_mode_budget_reservations("auto-run-1")
+    review_rows = [item for item in rows if item["consumer"] == "review"]
+    token_rows = [item for item in rows if item["consumer"] == "token"]
+    assert [item["state"] for item in review_rows] == ["unknown", "committed"]
+    assert [item["state"] for item in token_rows] == ["unknown", "committed"]
+    assert len({item["action_group_id"] for item in review_rows}) == 2
+    assert all(
+        item["action_group_id"].startswith("caller-review-group:")
+        for item in review_rows
+    )
     store.close()
 
 
@@ -450,6 +499,144 @@ def test_unverified_tokens_fail_closed_and_are_not_completion(tmp_path):
     assert denied.value.reason == "budget_measurement_unavailable"
     assert TERMINAL_USER_TRUTH[denied.value.reason] == "无法验证 token 预算"
     assert is_completion_disguise("completed_with_issues", denied.value.reason)
+    store.close()
+
+
+def test_pre_provider_token_bound_covers_prompt_and_completion():
+    cfg = _llm()
+    assert token_upper_bound(cfg) is None  # output-only is not a total bound
+    short = token_upper_bound(
+        cfg,
+        messages=[{"role": "user", "content": "x"}],
+        tools=[],
+    )
+    long = token_upper_bound(
+        cfg,
+        messages=[{"role": "user", "content": "x" * 10_000}],
+        tools=[],
+    )
+    assert short is not None and short > cfg.max_tokens
+    assert long is not None and long > short
+    assert token_upper_bound(cfg, messages=[{"content": object()}]) is None
+
+
+def test_token_settlement_cannot_exceed_reserved_or_frozen_hard_limit(tmp_path):
+    store = _store(tmp_path)
+    _start(store)
+    store.freeze_auto_mode_budget_initial_tokens(
+        "auto-run-1", 100, extra_token_multiplier=1.5
+    )
+    reserved = store.reserve_auto_mode_budget(
+        run_id="auto-run-1",
+        admission_id="token-overrun",
+        consumer="token",
+        action_group_id="token-overrun",
+        token_upper_bound=100,
+    )
+    with pytest.raises(AutoBudgetDenied) as denied:
+        store.commit_auto_mode_budget(
+            reserved["reservation"]["admission_id"], committed_amount=1000
+        )
+    assert denied.value.reason == "budget_exhausted"
+    row = next(
+        item
+        for item in store.list_auto_mode_budget_reservations("auto-run-1")
+        if item["admission_id"] == "token-overrun"
+    )
+    assert row["state"] == "committed"
+    assert row["committed_amount"] == 1000
+    assert (
+        AutoBudgetAdmission(store).project_usage("auto-run-1")["circuit"]["state"]
+        == "tripped"
+    )
+    store.close()
+
+
+def test_execution_admission_is_single_use_and_replay_identity_is_exact(tmp_path):
+    store = _store(tmp_path)
+    _start(store)
+    budget = AutoBudgetAdmission(store)
+    fingerprint = canonical_action_fingerprint(
+        kind="tool", name="write_file", arguments={"path": "a.txt"}
+    )
+    fields = {
+        "run_id": "auto-run-1",
+        "admission_id": "single-use",
+        "consumer": "native_tool",
+        "action_group_id": "batch:call-1",
+        "action_sha256": fingerprint,
+    }
+    budget.reserve(**fields)
+    with pytest.raises(AutoBudgetDenied, match="already used"):
+        budget.reserve(**fields)
+    changed = canonical_action_fingerprint(
+        kind="tool", name="write_file", arguments={"path": "b.txt"}
+    )
+    with pytest.raises(AutoBudgetConflictError):
+        store.reserve_auto_mode_budget(**{**fields, "action_sha256": changed})
+    assert execution_action_group("batch", "call-1") == "batch:call-1"
+    assert execution_action_group("batch", "call-1") != execution_action_group(
+        "batch", "call-2"
+    )
+    assert execution_action_group("model") != execution_action_group("model")
+    store.close()
+
+
+def test_replay_cannot_bypass_an_open_circuit(tmp_path):
+    store = _store(tmp_path)
+    _start(store)
+    fields = {
+        "run_id": "auto-run-1",
+        "admission_id": "before-trip",
+        "consumer": "review",
+        "action_group_id": "before-trip",
+    }
+    store.reserve_auto_mode_budget(**fields)
+    store.trip_auto_mode_budget_circuit(
+        "auto-run-1", reason="loop_detected", field="same_action_no_delta_limit"
+    )
+    with pytest.raises(AutoBudgetDenied) as denied:
+        store.reserve_auto_mode_budget(**fields)
+    assert denied.value.reason == "loop_detected"
+    store.close()
+
+
+def test_gateway_token_denial_precedes_provider_invocation(tmp_path):
+    store = _store(tmp_path)
+    _start(store)
+    store.freeze_auto_mode_budget_initial_tokens(
+        "auto-run-1", 1, extra_token_multiplier=1.0
+    )
+    runner = object.__new__(gateway_mod.SessionRunner)
+    runner.store = store
+    runner.cfg = Config()
+    state = SimpleNamespace(
+        active_auto_mode_run_id="auto-run-1",
+        active_action_group_id=None,
+        cell_index=1,
+        auto_budget_terminal_reason=None,
+        cancel=threading.Event(),
+    )
+    provider_calls = {"n": 0}
+
+    def provider(*_args, **_kwargs):
+        provider_calls["n"] += 1
+        return {"usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    with pytest.raises(AutoBudgetDenied) as denied:
+        runner._invoke_model_with_auto_budget(
+            state,
+            [{"role": "user", "content": "must not reach provider"}],
+            _llm("agent"),
+            provider,
+        )
+    assert denied.value.reason == "budget_exhausted"
+    assert provider_calls["n"] == 0
+    rows = store.list_auto_mode_budget_reservations("auto-run-1")
+    assert [item["state"] for item in rows if item["consumer"] == "model"] == [
+        "released"
+    ]
+    assert [item for item in rows if item["consumer"] == "token"] == []
     store.close()
 
 

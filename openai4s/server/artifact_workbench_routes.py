@@ -123,6 +123,7 @@ def handle(self: Any, method: str, sub: str, q: dict, runner: Any) -> bool:
                 sort=parsed.sort,
                 descending=parsed.descending,
                 filters=parsed.filters,
+                spreadsheet_safe=parsed.spreadsheet_safe,
             )
             self._send(
                 200,

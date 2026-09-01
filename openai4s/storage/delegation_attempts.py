@@ -143,6 +143,10 @@ def encode_artifact_refs(refs: Sequence[Mapping[str, Any]] | None) -> str | None
                 "artifact_id": str(item.get("artifact_id") or ""),
                 "version_id": str(item.get("version_id") or ""),
                 "filename": str(item.get("filename") or ""),
+                # Logical path is required to reconstruct nested output
+                # placement after a daemon restart. The source bytes are
+                # resolved from immutable version metadata at materialize time.
+                "path": str(item.get("path") or item.get("filename") or ""),
                 "checksum": str(item.get("checksum") or ""),
                 "frame_id": str(item.get("frame_id") or ""),
             }

@@ -1,10 +1,11 @@
 import { useEffect } from "preact/hooks";
+import { finishArtifactsBoot } from "../../features/artifacts/boot";
 import { bindWorkbench } from "../../features/sessions/boot";
 import "./dashboard.css";
 
 export function Shell() {
   useEffect(() => {
-    bindWorkbench();
+    void finishArtifactsBoot(bindWorkbench());
   }, []);
 
   return (

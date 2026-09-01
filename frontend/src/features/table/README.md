@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-M-04 table artifact Schema / Distribution / Export. Talks to B-07 `GET /artifacts/{id}/table/profile` and `GET /artifacts/{id}/table/export.csv` (`version_id` required). `approximate: true` is shown as 近似 / Approximate and is never rewritten as exact. Export is a same-origin `<a href>` so the browser streams the CSV; this lane does not `fetch()` the body. Renderer catalog capabilities (`profile` / `export` / `parquet`) are pass-through plus a flag-off kill switch — parquet is never inferred from a filename. Flag-off uses the F-17 client `parseTable` + `renderSheet` path.
+M-04 table artifact Schema / Distribution / Export. Talks to B-07 `GET /artifacts/{id}/table/profile` and `GET /artifacts/{id}/table/export.csv` (`version_id` required). `approximate: true` is shown as 近似 / Approximate and is never rewritten as exact. Export is a same-origin `<a href>` so the browser streams the CSV; this lane does not `fetch()` the body. Workbench download links add `spreadsheet_safe=1` to neutralize formula-like cells; direct API calls that omit it retain raw scientific values. Renderer catalog capabilities (`profile` / `export` / `parquet`) are pass-through plus a flag-off kill switch — parquet is never inferred from a filename. Flag-off uses the F-17 client `parseTable` + `renderSheet` path.
 
 Does not edit `stores/`, does not rewrite generated i18n, does not edit `openai4s/server/webui/app.js`.
 

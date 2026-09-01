@@ -17,6 +17,7 @@ import json
 import math
 import re
 import threading
+import unicodedata
 from collections import Counter, OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -29,7 +30,7 @@ from openai4s.server.artifact_workbench import (
     infer_column_type,
 )
 
-TABLE_QUERY_PARSER_VERSION = 1
+TABLE_QUERY_PARSER_VERSION = 2
 TABLE_PROFILE_SCHEMA_VERSION = 1
 MAX_TABLE_PROFILE_BINS = 50
 MAX_TABLE_EXPORT_CHUNK_BYTES = 1 * 1024 * 1024
@@ -70,6 +71,7 @@ class ParsedTableQuery:
     offset: int
     limit: int
     version_id: str
+    spreadsheet_safe: bool
 
 
 def parquet_engine_available() -> bool:
@@ -111,6 +113,27 @@ def _version_id(q: Mapping[str, Any]) -> str:
     return str((q.get("version_id") or [""])[0] or "")
 
 
+def _spreadsheet_safe(q: Mapping[str, Any], *, mode: TableQueryMode) -> bool:
+    if "spreadsheet_safe" not in q:
+        return False
+    if mode != "export":
+        raise WorkbenchError(
+            400,
+            "spreadsheet_safe is only accepted for CSV export",
+            "invalid_query",
+        )
+    raw = str((q.get("spreadsheet_safe") or [""])[0] or "")
+    if raw == "1":
+        return True
+    if raw == "0":
+        return False
+    raise WorkbenchError(
+        400,
+        "spreadsheet_safe must be 0 or 1",
+        "invalid_query",
+    )
+
+
 def parse_table_query(
     q: Mapping[str, Any] | None,
     *,
@@ -122,7 +145,9 @@ def parse_table_query(
     * ``profile``: ``version_id`` required; ``sort``/``dir``/``offset``/``limit``
       are 400.
     * ``export``: ``version_id`` required; ``offset``/``limit`` are 400;
-      ``sort``/``dir``/``q_`` use the same parser as ``page``.
+      ``sort``/``dir``/``q_`` use the same parser as ``page``;
+      ``spreadsheet_safe=1`` opts into formula neutralization. Omission keeps
+      the historical byte-faithful cell values.
     """
 
     query = dict(q or {})
@@ -146,6 +171,7 @@ def parse_table_query(
         raise WorkbenchError(400, "invalid table query mode", "invalid_query")
 
     version_id = _version_id(query)
+    spreadsheet_safe = _spreadsheet_safe(query, mode=mode)
     if mode in {"profile", "export"} and not version_id:
         raise WorkbenchError(400, "version_id is required", "invalid_query")
 
@@ -157,6 +183,7 @@ def parse_table_query(
             offset=0,
             limit=50,
             version_id=version_id,
+            spreadsheet_safe=False,
         )
 
     return ParsedTableQuery(
@@ -166,6 +193,7 @@ def parse_table_query(
         offset=integer_query(query, "offset", 0) if mode == "page" else 0,
         limit=integer_query(query, "limit", 50) if mode == "page" else 50,
         version_id=version_id,
+        spreadsheet_safe=spreadsheet_safe,
     )
 
 
@@ -334,9 +362,43 @@ def profile_from_prepared(prepared: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _encode_csv_row(row: Sequence[str]) -> bytes:
+_SIGNED_NUMBER_RE = re.compile(
+    r"[+-](?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?\Z"
+)
+
+
+def _formula_padding(character: str) -> bool:
+    return character.isspace() or unicodedata.category(character) in {"Cc", "Cf"}
+
+
+def _trim_formula_padding(value: str) -> str:
+    start = 0
+    end = len(value)
+    while start < end and _formula_padding(value[start]):
+        start += 1
+    while end > start and _formula_padding(value[end - 1]):
+        end -= 1
+    return value[start:end]
+
+
+def _spreadsheet_safe_csv_cell(value: str) -> str:
+    """Neutralize spreadsheet formulas without rewriting numeric literals."""
+
+    text = str(value)
+    significant = _trim_formula_padding(text)
+    if not significant or significant[0] not in "=@+-":
+        return text
+    if significant[0] in "+-" and _SIGNED_NUMBER_RE.fullmatch(significant):
+        return text
+    return "'" + text
+
+
+def _encode_csv_row(row: Sequence[str], *, spreadsheet_safe: bool = False) -> bytes:
     buf = io.StringIO()
-    csv.writer(buf, dialect=csv.excel).writerow([str(item) for item in row])
+    values = [str(item) for item in row]
+    if spreadsheet_safe:
+        values = [_spreadsheet_safe_csv_cell(item) for item in values]
+    csv.writer(buf, dialect=csv.excel).writerow(values)
     return buf.getvalue().encode("utf-8")
 
 
@@ -346,6 +408,7 @@ def export_csv_chunks(
     *,
     chunk_bytes: int | None = None,
     total_bytes: int | None = None,
+    spreadsheet_safe: bool = False,
 ) -> list[bytes]:
     """Serialize the full filtered table as CSV in bounded chunks.
 
@@ -395,9 +458,9 @@ def export_csv_chunks(
             flush()
         current.extend(data)
 
-    push(_encode_csv_row(columns))
+    push(_encode_csv_row(columns, spreadsheet_safe=spreadsheet_safe))
     for row in rows:
-        push(_encode_csv_row(row))
+        push(_encode_csv_row(row, spreadsheet_safe=spreadsheet_safe))
     flush()
     return chunks
 

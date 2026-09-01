@@ -37,6 +37,7 @@ type StepRenderer = (step: unknown, target?: ParentNode | null) => Node | null |
 
 let renderStoredStepImpl: StepRenderer | null = null;
 let framedRaf = 0;
+let framedOnCancel: (() => void) | null = null;
 
 /** F-11 assigns `renderStoredStep`. Until then steps in the interleaved list are skipped. */
 export function setRenderStoredStepImpl(fn: StepRenderer | null): void {
@@ -239,14 +240,16 @@ export function scheduleFramedRender(
     host?: ParentNode | null;
     stillCurrent?: () => boolean;
     onDone?: () => void;
+    onCancel?: () => void;
     batch?: number;
     onBatch?: () => void;
   } = {},
 ): void {
-  cancelFrame(framedRaf);
-  framedRaf = 0;
+  cancelFramedRender();
+  framedOnCancel = opts.onCancel || null;
   const host = opts.host || messagesHost();
   if (!host) {
+    framedOnCancel = null;
     if (opts.onDone) opts.onDone();
     return;
   }
@@ -254,7 +257,12 @@ export function scheduleFramedRender(
   let i = 0;
   const tick = (): void => {
     framedRaf = 0;
-    if (opts.stillCurrent && !opts.stillCurrent()) return;
+    if (opts.stillCurrent && !opts.stillCurrent()) {
+      const onCancel = framedOnCancel;
+      framedOnCancel = null;
+      if (onCancel) onCancel();
+      return;
+    }
     const nodes: Node[] = [];
     const end = nextBatchEnd(i, items.length, batch);
     const sink = {
@@ -272,8 +280,9 @@ export function scheduleFramedRender(
     if (opts.onBatch) opts.onBatch();
     if (i < items.length) {
       framedRaf = scheduleFrame(tick);
-    } else if (opts.onDone) {
-      opts.onDone();
+    } else {
+      framedOnCancel = null;
+      if (opts.onDone) opts.onDone();
     }
   };
   framedRaf = scheduleFrame(tick);
@@ -282,6 +291,9 @@ export function scheduleFramedRender(
 export function cancelFramedRender(): void {
   cancelFrame(framedRaf);
   framedRaf = 0;
+  const onCancel = framedOnCancel;
+  framedOnCancel = null;
+  if (onCancel) onCancel();
 }
 
 /** app.js:7226-7232. Starter chips use existing i18n keys (no new keys). */

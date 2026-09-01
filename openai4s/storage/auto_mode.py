@@ -8752,6 +8752,16 @@ class AutoModeRepository:
                     event_type="commit",
                 )
                 self._connection.commit()
+            except AutoBudgetDenied:
+                # Settlement records the provider's actual spend and opens the
+                # circuit before raising. Those safety facts must survive the
+                # fail-closed response.
+                try:
+                    self._connection.commit()
+                except Exception:
+                    self._connection.rollback()
+                    raise
+                raise
             except Exception:
                 self._connection.rollback()
                 raise
@@ -8803,6 +8813,13 @@ class AutoModeRepository:
                     allow_from=_BUDGET_SETTLED | {"reserved"},
                 )
                 self._connection.commit()
+            except AutoBudgetDenied:
+                try:
+                    self._connection.commit()
+                except Exception:
+                    self._connection.rollback()
+                    raise
+                raise
             except Exception:
                 self._connection.rollback()
                 raise
@@ -9203,22 +9220,6 @@ class AutoModeRepository:
         token_upper_bound: int | None,
         now: int,
     ) -> dict[str, Any]:
-        existing = self._connection.execute(
-            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
-            (admission_id,),
-        ).fetchone()
-        if existing is not None:
-            if (
-                str(existing["consumer"]) != consumer
-                or str(existing["action_group_id"]) != action_group_id
-            ):
-                raise AutoBudgetConflictError(
-                    "admission_id is bound to a different budget consumer"
-                )
-            return {
-                "reservation": self._decode_budget_reservation(existing),
-                "created": False,
-            }
         state = self._budget_root_locked(run_id)
         if state is None:
             raise AutoBudgetDenied(
@@ -9245,6 +9246,40 @@ class AutoModeRepository:
                     "Auto Mode wall-time budget exhausted",
                     field="wall_time_s",
                 )
+        existing = self._connection.execute(
+            "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
+            (admission_id,),
+        ).fetchone()
+        if existing is not None:
+            expected_amount = token_upper_bound if consumer == "token" else amount
+            reserve_event = self._connection.execute(
+                "SELECT payload_json FROM auto_mode_budget_events "
+                "WHERE admission_id=? AND type='reserve' "
+                "ORDER BY created_at,event_id LIMIT 1",
+                (admission_id,),
+            ).fetchone()
+            payload = (
+                _load(reserve_event["payload_json"], {})
+                if reserve_event is not None
+                else {}
+            )
+            if (
+                str(existing["run_id"]) != run_id
+                or str(existing["root_run_id"]) != root_id
+                or str(existing["consumer"]) != consumer
+                or str(existing["action_group_id"]) != action_group_id
+                or expected_amount is None
+                or int(existing["reserved_amount"]) != int(expected_amount)
+                or not isinstance(payload, Mapping)
+                or payload.get("action_sha256") != action_sha256
+            ):
+                raise AutoBudgetConflictError(
+                    "admission_id is bound to a different budget action"
+                )
+            return {
+                "reservation": self._decode_budget_reservation(existing),
+                "created": False,
+            }
         same_limit = self._budget_int(budgets, "same_action_no_delta_limit", default=0)
         if (
             consumer in _ACTION_CONSUMERS
@@ -9392,10 +9427,9 @@ class AutoModeRepository:
             ).fetchone()
             if conflict is None:
                 raise
-            return {
-                "reservation": self._decode_budget_reservation(conflict),
-                "created": False,
-            }
+            raise AutoBudgetConflictError(
+                "action group already has a different Auto Budget admission"
+            )
         if consumer in _ACTION_CONSUMERS and action_sha256:
             if state["last_action_sha256"] == action_sha256:
                 streak = int(state["same_action_streak"]) + 1
@@ -9501,6 +9535,30 @@ class AutoModeRepository:
             },
             created_at=now,
         )
+        if consumer == "token":
+            bound_breached = amount > int(row["reserved_amount"])
+            frozen = self._connection.execute(
+                "SELECT 1 FROM auto_mode_budget_events "
+                "WHERE root_run_id=? AND type='freeze' LIMIT 1",
+                (root_id,),
+            ).fetchone()
+            if frozen is not None:
+                used, in_flight = self._token_used_locked(root_id)
+                state = self._budget_root_locked(root_id)
+                limit = int(state["computed_extra_token_limit"]) if state else 0
+                bound_breached = bound_breached or used + in_flight > limit
+            if bound_breached:
+                self._trip_budget_locked(
+                    str(row["run_id"]),
+                    reason="budget_exhausted",
+                    field="extra_token_multiplier",
+                    now=now,
+                )
+                raise AutoBudgetDenied(
+                    "budget_exhausted",
+                    "provider token usage exceeded its admitted hard ceiling",
+                    field="extra_token_multiplier",
+                )
         updated = self._connection.execute(
             "SELECT * FROM auto_mode_budget_reservations WHERE admission_id=?",
             (admission_id,),

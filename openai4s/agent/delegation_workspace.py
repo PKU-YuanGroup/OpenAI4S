@@ -183,7 +183,6 @@ def materialize_outputs_into_parent(
     Never deletes Artifact versions. A missing version is reported, not rebuilt.
     """
 
-    del store  # versions stay in SQLite; this path only copies bytes
     base = Path(parent_workspace).expanduser().resolve()
     base.mkdir(parents=True, exist_ok=True)
     wanted = None if paths is None else {str(item) for item in paths}
@@ -199,9 +198,39 @@ def materialize_outputs_into_parent(
             and Path(relative).name not in wanted
         ):
             continue
-        durable = ref.get("durable_path")
-        source_path = Path(str(durable)) if durable else None
+        source_path: Path | None = None
+        expected_checksum = str(ref.get("checksum") or "")
+        version_id = str(ref.get("version_id") or "")
+        artifact_id = str(ref.get("artifact_id") or "")
+        version_meta = getattr(store, "version_meta", None)
+        if callable(version_meta) and version_id:
+            meta = version_meta(version_id)
+            if not isinstance(meta, Mapping):
+                missing.append(relative)
+                continue
+            meta_artifact = str(meta.get("artifact_id") or "")
+            meta_checksum = str(meta.get("checksum") or "")
+            if (
+                (artifact_id and meta_artifact != artifact_id)
+                or not expected_checksum
+                or meta_checksum != expected_checksum
+            ):
+                missing.append(relative)
+                continue
+            candidate = meta.get("snapshot_path") or meta.get("path")
+            source_path = Path(str(candidate)) if candidate else None
+        elif store is None:
+            # Compatibility for direct, in-process callers without a Store.
+            durable = ref.get("durable_path")
+            source_path = Path(str(durable)) if durable else None
         if source_path is None or not source_path.is_file():
+            missing.append(relative)
+            continue
+        data = source_path.read_bytes()
+        if (
+            not expected_checksum
+            or hashlib.sha256(data).hexdigest() != expected_checksum
+        ):
             missing.append(relative)
             continue
         destination = (base / relative).resolve()
@@ -209,7 +238,7 @@ def materialize_outputs_into_parent(
             raise ValueError(f"materialize escaped workspace: {relative}")
         destination.parent.mkdir(parents=True, exist_ok=True)
         tmp = destination.with_name(f".{destination.name}.materialize")
-        tmp.write_bytes(source_path.read_bytes())
+        tmp.write_bytes(data)
         os.replace(tmp, destination)
         written.append(relative)
     return {

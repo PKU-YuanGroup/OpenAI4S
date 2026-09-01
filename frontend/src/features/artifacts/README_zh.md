@@ -10,6 +10,7 @@ F-17 artifacts + Files（M-03）。版本缓存、Files 搜索/过滤/分页/深
 | --- | --- |
 | [`api.ts`](api.ts) | 同源 `api()`、`ApiError`、`bytes`、`looksBinary`、`el`/`icon`、用 `isReady` 调 window。 |
 | [`artifacts.css`](artifacts.css) | Files 工具条 / 过滤 / Load more / 过期 version 横幅。 |
+| [`boot.test.ts`](boot.test.ts) | DOM 挂载顺序及初始路由先于深链的回归覆盖。 |
 | [`boot.ts`](boot.ts) | `bootArtifacts` / `installArtifacts`。挂上 `parseTable` 与 `renderSheet`。 |
 | [`cache.test.ts`](cache.test.ts) | 版本缓存、dock 原位 mutate、过期 `loadArtifacts`。 |
 | [`cache.ts`](cache.ts) | `artifactCacheKey` / `syncArtifactVersion` / `artUrl`（精确 version 不走 latest）。 |

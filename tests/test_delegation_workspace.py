@@ -126,3 +126,62 @@ def test_flag_off_children_still_share_the_parent_workspace(monkeypatch, tmp_pat
     runner({"request": "two"})
     runner.close()
     assert (parent / "shared.txt").read_text(encoding="utf-8") == "two"
+
+
+def test_private_scratch_materializes_persisted_version_after_runner_restart(
+    monkeypatch, tmp_path
+):
+    def write_run(self, task):
+        target = Path(self.workspace) / "nested" / "result.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"durable-{task}", encoding="utf-8")
+        return _submitted({"wrote": "nested/result.txt"})
+
+    monkeypatch.setattr(loop_mod.Agent, "run", write_run)
+    cfg = get_config()
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="science")
+    parent = tmp_path / "restart-parent"
+    parent.mkdir()
+    first_runner = DelegationRunner(
+        cfg,
+        parent_frame_id=root,
+        store=store,
+        workspace=str(parent),
+        private_scratch=True,
+        owner_instance_id="owner-before-restart",
+        runner_instance_id="runner-before-restart",
+    )
+    result = first_runner(
+        {
+            "request": "restart-proof",
+            "parent_action_group_id": "ag-restart",
+            "native_call_id": "call-restart",
+        }
+    )
+    child_id = result["child_id"]
+    assert result["artifact_refs"][0]["path"] == "nested/result.txt"
+    first_runner.close()
+    store.close()
+    assert (parent / "nested" / "result.txt").exists() is False
+
+    store = get_store(cfg.db_path)
+    restored_runner = DelegationRunner(
+        cfg,
+        parent_frame_id=root,
+        store=store,
+        workspace=str(parent),
+        private_scratch=True,
+        owner_instance_id="owner-after-restart",
+        runner_instance_id="runner-after-restart",
+    )
+    materialized = restored_runner.materialize_child(child_id)
+    assert materialized == {
+        "written": ["nested/result.txt"],
+        "missing": [],
+        "deleted_versions": 0,
+    }
+    assert (parent / "nested" / "result.txt").read_text("utf-8") == (
+        "durable-restart-proof"
+    )
+    restored_runner.close()

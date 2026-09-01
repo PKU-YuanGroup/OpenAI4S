@@ -1,4 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const highlightCalls = vi.hoisted(() => vi.fn());
+
+vi.mock("../md/highlight", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../md/highlight")>();
+  return {
+    ...actual,
+    mdHighlight: (code: string, lang?: string) => {
+      highlightCalls(code, lang);
+      return actual.mdHighlight(code, lang);
+    },
+  };
+});
+
 import {
   _kc,
   _liveCell,
@@ -36,6 +50,7 @@ import {
   notebookExportHref,
   NOTEBOOK_EXPORTS,
   resetHighlightMemo,
+  resetNotebookCellCaches,
 } from "./chrome";
 import { installNotebook } from "./install";
 import { invalidateKernelCache, kernelEpoch, nbSwitchEnv, notebookOnTurnDone } from "./kernel";
@@ -61,6 +76,7 @@ describe("F-14 Notebook", () => {
     resetWsHandlers();
     resetCellOutputs();
     resetHighlightMemo();
+    highlightCalls.mockClear();
     setNotebookApi(null);
     setArtifactCreatedSideEffects(null);
     rafs.length = 0;
@@ -88,6 +104,33 @@ describe("F-14 Notebook", () => {
   });
 
   describe("mergeNotebookCells", () => {
+    it("drops prior-frame output and highlight identities but reuses current-frame entries", () => {
+      const oldOutput = cellOutput("shared-cell-id");
+      oldOutput.stdout.value = "old frame output";
+      const oldHtml = highlightCellSource("shared-cell-id", "print(1)", "python");
+
+      expect(cellOutput("shared-cell-id")).toBe(oldOutput);
+      expect(highlightCellSource("shared-cell-id", "print(1)", "python")).toBe(oldHtml);
+      expect(highlightCalls).toHaveBeenCalledTimes(1);
+
+      resetNotebookCellCaches("frame-1", "frame-1");
+      expect(cellOutput("shared-cell-id")).toBe(oldOutput);
+      expect(highlightCellSource("shared-cell-id", "print(1)", "python")).toBe(oldHtml);
+      expect(highlightCalls).toHaveBeenCalledTimes(1);
+
+      resetNotebookCellCaches("frame-1", "frame-2");
+
+      const currentOutput = cellOutput("shared-cell-id");
+      expect(currentOutput).not.toBe(oldOutput);
+      expect(currentOutput.stdout.value).toBe("");
+      const currentHtml = highlightCellSource("shared-cell-id", "print(1)", "python");
+      expect(currentHtml).toBe(oldHtml);
+      expect(highlightCalls).toHaveBeenCalledTimes(2);
+      expect(cellOutput("shared-cell-id")).toBe(currentOutput);
+      expect(highlightCellSource("shared-cell-id", "print(1)", "python")).toBe(currentHtml);
+      expect(highlightCalls).toHaveBeenCalledTimes(2);
+    });
+
     it("keys by producing_cell_id and lets the server record win", () => {
       const local = [
         { producing_cell_id: "c1", cell_index: 1, source: "local", stdout: "old" },

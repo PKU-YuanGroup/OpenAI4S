@@ -236,12 +236,20 @@ describe("B-07 profile/export query contract", () => {
     expect(search!.get("sort")).toBe("n");
     expect(search!.get("dir")).toBe("desc");
     expect(search!.get("q_name")).toBe("Al");
+    expect(search!.get("spreadsheet_safe")).toBe("1");
     expect(search!.has("offset")).toBe(false);
     expect(search!.has("limit")).toBe(false);
     const path = tableExportPath("art-1", search!);
     expect(path).toContain("/table/export.csv?");
     expect(path).toContain("version_id=v1");
     expect(path).not.toMatch(/[?&](offset|limit)=/);
+
+    const rawSearch = tableExportSearch({
+      versionId: "v1",
+      filters: {},
+      spreadsheetSafe: false,
+    });
+    expect(rawSearch!.has("spreadsheet_safe")).toBe(false);
   });
 });
 
@@ -447,6 +455,7 @@ describe("flag=0 fallback + workbench profile fetch", () => {
     expect(host.querySelector(".wb-table-distribution")).toBeTruthy();
     const link = host.querySelector("a.wb-table-export-link");
     expect(link!.getAttribute("href")).toContain("/table/export.csv");
+    expect(link!.getAttribute("href")).toContain("spreadsheet_safe=1");
     expect(link!.getAttribute("href")).toContain("version_id=v1");
     expect(host.querySelector(".wb-table-approx")).toBeTruthy();
   });

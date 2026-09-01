@@ -31,7 +31,7 @@ export {
   renderViewer,
   setActiveTab,
 } from "./ui";
-export { bootArtifacts, installArtifacts } from "./boot";
+export { bootArtifacts, finishArtifactsBoot, installArtifacts } from "./boot";
 export {
   FILES_MAX_PAGE_SIZE,
   FILES_PAGE_SIZE,
