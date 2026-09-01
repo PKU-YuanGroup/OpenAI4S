@@ -36895,6 +36895,120 @@
           "previous_version_id": {
             "type": "string"
           },
+          "review": {
+            "properties": {
+              "capabilities": {
+                "properties": {
+                  "network": {
+                    "properties": {
+                      "declaration": {
+                        "type": "string"
+                      },
+                      "digest": {
+                        "type": "string"
+                      },
+                      "domains": {
+                        "type": "array"
+                      },
+                      "explicit": {
+                        "type": "boolean"
+                      },
+                      "mode": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "ui": {
+                        "properties": {
+                          "label_en": {
+                            "type": "string"
+                          },
+                          "label_zh": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "label_en",
+                          "label_zh",
+                          "state"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "declaration",
+                      "digest",
+                      "domains",
+                      "explicit",
+                      "mode",
+                      "source",
+                      "ui"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "network"
+                ],
+                "type": "object"
+              },
+              "readiness": {
+                "properties": {
+                  "blocked_on": {
+                    "type": "array"
+                  },
+                  "checked_locally": {
+                    "type": "boolean"
+                  },
+                  "missing": {
+                    "type": "array"
+                  },
+                  "probed": {
+                    "type": "boolean"
+                  },
+                  "ready": {
+                    "type": "boolean"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "unverifiable": {
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "blocked_on",
+                  "checked_locally",
+                  "missing",
+                  "probed",
+                  "ready",
+                  "state",
+                  "unverifiable"
+                ],
+                "type": "object"
+              },
+              "requirements": {
+                "type": "array"
+              },
+              "warnings": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "capabilities",
+              "readiness",
+              "requirements",
+              "warnings"
+            ],
+            "type": "object"
+          },
           "scope": {
             "type": "string"
           },
@@ -36911,6 +37025,7 @@
           "name",
           "ok",
           "previous_version_id",
+          "review",
           "scope",
           "scope_id",
           "version_id"
@@ -37845,6 +37960,120 @@
           "previous_version_id": {
             "type": "string"
           },
+          "review": {
+            "properties": {
+              "capabilities": {
+                "properties": {
+                  "network": {
+                    "properties": {
+                      "declaration": {
+                        "type": "string"
+                      },
+                      "digest": {
+                        "type": "string"
+                      },
+                      "domains": {
+                        "type": "array"
+                      },
+                      "explicit": {
+                        "type": "boolean"
+                      },
+                      "mode": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "ui": {
+                        "properties": {
+                          "label_en": {
+                            "type": "string"
+                          },
+                          "label_zh": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "label_en",
+                          "label_zh",
+                          "state"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "declaration",
+                      "digest",
+                      "domains",
+                      "explicit",
+                      "mode",
+                      "source",
+                      "ui"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "network"
+                ],
+                "type": "object"
+              },
+              "readiness": {
+                "properties": {
+                  "blocked_on": {
+                    "type": "array"
+                  },
+                  "checked_locally": {
+                    "type": "boolean"
+                  },
+                  "missing": {
+                    "type": "array"
+                  },
+                  "probed": {
+                    "type": "boolean"
+                  },
+                  "ready": {
+                    "type": "boolean"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "unverifiable": {
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "blocked_on",
+                  "checked_locally",
+                  "missing",
+                  "probed",
+                  "ready",
+                  "state",
+                  "unverifiable"
+                ],
+                "type": "object"
+              },
+              "requirements": {
+                "type": "array"
+              },
+              "warnings": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "capabilities",
+              "readiness",
+              "requirements",
+              "warnings"
+            ],
+            "type": "object"
+          },
           "scope": {
             "type": "string"
           },
@@ -37861,6 +38090,7 @@
           "name",
           "ok",
           "previous_version_id",
+          "review",
           "scope",
           "scope_id",
           "version_id"
@@ -38004,6 +38234,120 @@
           "origin": {
             "type": "string"
           },
+          "review": {
+            "properties": {
+              "capabilities": {
+                "properties": {
+                  "network": {
+                    "properties": {
+                      "declaration": {
+                        "type": "string"
+                      },
+                      "digest": {
+                        "type": "string"
+                      },
+                      "domains": {
+                        "type": "array"
+                      },
+                      "explicit": {
+                        "type": "boolean"
+                      },
+                      "mode": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "ui": {
+                        "properties": {
+                          "label_en": {
+                            "type": "string"
+                          },
+                          "label_zh": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "label_en",
+                          "label_zh",
+                          "state"
+                        ],
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "declaration",
+                      "digest",
+                      "domains",
+                      "explicit",
+                      "mode",
+                      "source",
+                      "ui"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "network"
+                ],
+                "type": "object"
+              },
+              "readiness": {
+                "properties": {
+                  "blocked_on": {
+                    "type": "array"
+                  },
+                  "checked_locally": {
+                    "type": "boolean"
+                  },
+                  "missing": {
+                    "type": "array"
+                  },
+                  "probed": {
+                    "type": "boolean"
+                  },
+                  "ready": {
+                    "type": "boolean"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "unverifiable": {
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "blocked_on",
+                  "checked_locally",
+                  "missing",
+                  "probed",
+                  "ready",
+                  "state",
+                  "unverifiable"
+                ],
+                "type": "object"
+              },
+              "requirements": {
+                "type": "array"
+              },
+              "warnings": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "capabilities",
+              "readiness",
+              "requirements",
+              "warnings"
+            ],
+            "type": "object"
+          },
           "slug": {
             "type": "string"
           }
@@ -38012,6 +38356,7 @@
           "name",
           "ok",
           "origin",
+          "review",
           "slug"
         ],
         "type": "object"
