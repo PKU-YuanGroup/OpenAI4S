@@ -472,8 +472,6 @@ def main() -> int:
             raise BenchmarkProtocolError(
                 "installation scenario_id must be reaction_atom_mapping_curated_v1"
             )
-        dataset_profile = installation.get("dataset_profile")
-
         public_inputs_path = workspace / "public" / "inputs.json"
         with open(public_inputs_path, "r", encoding="utf-8") as f:
             public_inputs = json.load(f)
@@ -489,9 +487,7 @@ def main() -> int:
 
         config_path = workspace / "public" / "config.json"
         with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        random_seed = config.get("random_seed")
-
+            json.load(f)
         # Validate exact fixture schema for model_outputs
         for index, row in enumerate(model_outputs, start=1):
             require_exact_fields(

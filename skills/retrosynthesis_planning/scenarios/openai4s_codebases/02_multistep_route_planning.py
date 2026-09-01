@@ -222,16 +222,16 @@ def build_records(
     records = [dict(item) for item in normalized]
     input_hashes = {
         "inputs.json": _sha256_file(workspace / "public" / "inputs.json"),
-        "model_outputs.json": _sha256_file(
-            workspace / "public" / "model_outputs.json"
-        ),
+        "model_outputs.json": _sha256_file(workspace / "public" / "model_outputs.json"),
         "config.json": _sha256_file(workspace / "public" / "config.json"),
         "stock.json": _sha256_file(workspace / "public" / "stock.json"),
     }
     return records, input_hashes
 
 
-def run(workspace: Path, *, canonicalizer: Canonicalizer | None = None) -> dict[str, Any]:
+def run(
+    workspace: Path, *, canonicalizer: Canonicalizer | None = None
+) -> dict[str, Any]:
     """Run the full normalization and return the intermediate artifact."""
 
     installation = load_installation(workspace)
