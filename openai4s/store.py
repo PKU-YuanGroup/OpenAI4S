@@ -72,6 +72,7 @@ from openai4s.storage.artifacts import file_identity as _file_identity
 from openai4s.storage.artifacts import same_file_path as _same_file_path
 from openai4s.storage.auto_mode import (
     AutoModeRepository,
+    create_auto_mode_budget_schema,
     create_auto_mode_schema,
     install_auto_mode_action_guards,
 )
@@ -90,6 +91,7 @@ from openai4s.storage.datapro_index import (
     create_datapro_index_schema,
 )
 from openai4s.storage.delegation import DelegationProjectionRepository
+from openai4s.storage.delegation_attempts import create_delegation_request_schema
 from openai4s.storage.delivery import (
     CompletionDeliveryRepository,
     create_completion_delivery_schema,
@@ -118,6 +120,10 @@ from openai4s.storage.migrations import (
     applied_migrations,
     current_version,
     run_migrations,
+)
+from openai4s.storage.model_capability_receipts import (
+    ModelCapabilityReceiptRepository,
+    create_model_capability_receipts_schema,
 )
 from openai4s.storage.permissions import (
     DEFAULT_PERMISSION_RULES as _DEFAULT_PERMISSION_RULES,
@@ -247,6 +253,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS ix_artifacts_project_created
+    ON artifacts(project_id, created_at DESC, artifact_id DESC);
 
 CREATE TABLE IF NOT EXISTS artifact_versions (
     version_id    TEXT PRIMARY KEY,
@@ -750,6 +758,9 @@ QUERY_DENYLIST = frozenset(
         "capability_states",
         "capability_events",
         "capability_manifests",
+        # Exact probe receipts.  Not agent-working-data; they name a profile
+        # revision and an endpoint digest, and they gate native completion.
+        "model_capability_receipts",
         "skill_blobs",
         "skill_versions",
         "skill_version_files",
@@ -758,6 +769,8 @@ QUERY_DENYLIST = frozenset(
         "delegation_sessions",
         "delegation_children",
         "delegation_steering",
+        "delegation_requests",
+        "delegation_attempts",
         "session_branches",
         "session_branch_selection",
         "session_checkpoints",
@@ -771,6 +784,9 @@ QUERY_DENYLIST = frozenset(
         "auto_mode_selections",
         "auto_mode_runs",
         "auto_mode_events",
+        "auto_mode_budget_state",
+        "auto_mode_budget_reservations",
+        "auto_mode_budget_events",
         "review_runs",
         "review_findings",
         "repair_runs",
@@ -1338,6 +1354,11 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._model_capability_receipts = ModelCapabilityReceiptRepository(
+            self._conn,
+            self._lock,
+            clock_ms=lambda: _now_ms(),
+        )
         self._shares = SharesRepository(
             self._conn,
             self._lock,
@@ -1449,6 +1470,7 @@ class Store:
             self._lock,
             clock_ms=lambda: _now_ms(),
         )
+        self._load_capability_receipt_overlays()
 
     # --- migration (add columns missing from a pre-existing DB) -----------
     _MIGRATIONS = {
@@ -1602,6 +1624,22 @@ class Store:
                         "delegation_generation_and_task_status",
                         self._apply_delegation_generation_and_task_status,
                     ),
+                    29: (
+                        "auto_mode_budget_admission",
+                        self._apply_auto_mode_budget_admission,
+                    ),
+                    30: (
+                        "delegation_requests_and_attempts",
+                        self._apply_delegation_requests_and_attempts,
+                    ),
+                    31: (
+                        "model_capability_receipts",
+                        self._apply_model_capability_receipts,
+                    ),
+                    32: (
+                        "artifact_browse_index",
+                        self._apply_artifact_browse_index,
+                    ),
                 },
             )
             if report["migrated"]:
@@ -1685,6 +1723,17 @@ class Store:
 
         create_auto_mode_schema(conn)
 
+    def _apply_auto_mode_budget_admission(self, conn: sqlite3.Connection) -> None:
+        """Version 29: atomic Auto Mode budget reservations and circuit state.
+
+        Additive, repeatable CREATE TABLE IF NOT EXISTS. Existing runs get no
+        budget_state row and project as read-only ``legacy=true``; new runs
+        create the row in the same start_run transaction. Guardian counters
+        are not copied into these tables.
+        """
+
+        create_auto_mode_budget_schema(conn)
+
     def _apply_annotation_locators(self, conn: sqlite3.Connection) -> None:
         """Version 26: PDF/HTML annotation locators next to image pins."""
 
@@ -1748,6 +1797,39 @@ class Store:
             except sqlite3.OperationalError as error:
                 if not _is_duplicate_column(error):
                     raise
+
+    def _apply_delegation_requests_and_attempts(self, conn: sqlite3.Connection) -> None:
+        """Version 30: durable request identity separate from attempt identity.
+
+        Additive. Existing children keep no request row, so a replay without
+        an explicit identity stays a new spawn. Rollback does not delete
+        published Artifact versions.
+        """
+
+        create_delegation_request_schema(conn)
+
+    def _apply_model_capability_receipts(self, conn: sqlite3.Connection) -> None:
+        """Version 31: exact model-capability receipts from an explicit probe.
+
+        Additive.  Timeout/auth/5xx never persist as false; only a current
+        revision's positive evidence is adopted as an overlay.
+        """
+
+        create_model_capability_receipts_schema(conn)
+
+    def _apply_artifact_browse_index(self, conn: sqlite3.Connection) -> None:
+        """Version 32: keyset browse index for the Artifact index route.
+
+        Additive ``CREATE INDEX IF NOT EXISTS``. SQLite transactional DDL
+        rolls the index away if this step fails; ``DROP INDEX IF EXISTS
+        ix_artifacts_project_created`` is the reverse and leaves every
+        Artifact row untouched.
+        """
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_artifacts_project_created "
+            "ON artifacts(project_id, created_at DESC, artifact_id DESC)"
+        )
 
     def _apply_team_governance(self, conn: sqlite3.Connection) -> None:
         """Version 20: membership, invites, usage ledger, quotas (M2).
@@ -2439,6 +2521,11 @@ class Store:
         return self._user_keys
 
     @property
+    def model_capability_receipts(self) -> ModelCapabilityReceiptRepository:
+        """Exact probe receipts bound to profile revision + endpoint."""
+        return self._model_capability_receipts
+
+    @property
     def leases(self) -> LeaseRepository:
         """Session leases and session↔workload bindings (M3b-4)."""
         return self._leases
@@ -2558,6 +2645,28 @@ class Store:
             datapro.CONNECTOR_ID,
             cache_scope=datapro.runtime_cache_scope(self),
         )
+
+    def _load_capability_receipt_overlays(self) -> None:
+        """Re-adopt current-revision positive receipts after a restart."""
+        from openai4s.llm.capabilities import (
+            PROBE_VERSION,
+            drop_receipt_overlays,
+            install_receipt_overlay,
+        )
+
+        drop_receipt_overlays()
+        current = {
+            str(profile.get("id") or ""): int(profile.get("revision") or 0)
+            for profile in self.list_model_profiles()
+            if not profile.get("deleted_at")
+        }
+        for receipt in self._model_capability_receipts.list_all():
+            profile_id = str(receipt.get("profile_id") or "")
+            if current.get(profile_id) != int(receipt.get("revision") or 0):
+                continue
+            if int(receipt.get("probe_version") or 0) != PROBE_VERSION:
+                continue
+            install_receipt_overlay(receipt)
 
     # --- frames ----------------------------------------------------------
     def new_frame(
@@ -3536,6 +3645,44 @@ class Store:
     ) -> dict:
         return self._auto_mode.import_quarantined_projection(source, **context)
 
+    def ensure_auto_mode_budget_state(self, run_id: str, **fields: Any) -> dict | None:
+        return self._auto_mode.ensure_budget_state(run_id, **fields)
+
+    def get_auto_mode_budget_state(self, run_id: str) -> dict | None:
+        return self._auto_mode.get_budget_state(run_id)
+
+    def list_auto_mode_budget_reservations(self, run_id: str) -> list[dict]:
+        return self._auto_mode.list_budget_reservations(run_id)
+
+    def reserve_auto_mode_budget(self, **fields: Any) -> dict:
+        return self._auto_mode.reserve_budget(**fields)
+
+    def commit_auto_mode_budget(self, admission_id: str, **fields: Any) -> dict:
+        return self._auto_mode.commit_budget(admission_id, **fields)
+
+    def release_auto_mode_budget(self, admission_id: str, **fields: Any) -> dict:
+        return self._auto_mode.release_budget(admission_id, **fields)
+
+    def mark_auto_mode_budget_unknown(self, admission_id: str) -> dict:
+        return self._auto_mode.mark_budget_unknown(admission_id)
+
+    def reconcile_auto_mode_budget(self, admission_id: str, **fields: Any) -> dict:
+        return self._auto_mode.reconcile_budget(admission_id, **fields)
+
+    def record_auto_mode_budget_delta(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.record_budget_delta(run_id, **fields)
+
+    def freeze_auto_mode_budget_initial_tokens(
+        self, run_id: str, tokens: int, **fields: Any
+    ) -> dict:
+        return self._auto_mode.freeze_budget_initial_tokens(run_id, tokens, **fields)
+
+    def trip_auto_mode_budget_circuit(self, run_id: str, **fields: Any) -> dict:
+        return self._auto_mode.trip_budget_circuit(run_id, **fields)
+
+    def project_auto_mode_budget(self, run_id: str) -> dict | None:
+        return self._auto_mode.project_budget(run_id)
+
     # --- immutable session checkpoints / branches ----------------------
     def ensure_session_branch(self, **fields: Any) -> dict:
         return self._session_snapshots.ensure_branch(**fields)
@@ -3741,6 +3888,12 @@ class Store:
 
     def persist_delegation_child(self, **fields: Any) -> dict | None:
         return self._delegations.persist_child(**fields)
+
+    def continue_delegation_request(self, **fields: Any) -> dict:
+        return self._delegations.continue_request(**fields)
+
+    def delegation_request_for_child(self, **fields: Any) -> dict | None:
+        return self._delegations.request_for_child(**fields)
 
     def delegation_tree(self, root_frame_id: str) -> dict:
         return self._delegations.project(root_frame_id)
@@ -3999,6 +4152,27 @@ class Store:
 
     def list_artifacts(self, filters: dict | None = None) -> list[dict]:
         return self._artifacts.list_artifacts(filters)
+
+    def browse_artifacts(
+        self,
+        *,
+        project_id: str,
+        filename_query: str | None = None,
+        content_type: str | None = None,
+        origin: str | None = None,
+        before: tuple[int, str] | None = None,
+        limit: int = 50,
+        visible_to_user_id: str | None = None,
+    ) -> list[dict]:
+        return self._artifacts.browse_artifacts(
+            project_id=project_id,
+            filename_query=filename_query,
+            content_type=content_type,
+            origin=origin,
+            before=before,
+            limit=limit,
+            visible_to_user_id=visible_to_user_id,
+        )
 
     def list_artifact_names(self) -> list[dict]:
         return self._artifacts.list_artifact_names()

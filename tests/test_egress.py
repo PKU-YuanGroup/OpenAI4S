@@ -47,6 +47,42 @@ def test_mode_defaults_off_and_parses_aliases(monkeypatch):
         assert egress.egress_mode() == "off"
 
 
+def test_host_only_skill_constraint_never_grants(monkeypatch):
+    """A Skill domain list only narrows check_url; it does not call grant_domain."""
+    from openai4s.server.skill_network_admission import (
+        bind_skill_load,
+        frame_scope,
+        reset_bindings,
+    )
+    from openai4s.skills_loader.capabilities import declared_capability
+
+    reset_bindings()
+    bind_skill_load(
+        frame_id="frame-egress",
+        action_group_id="ag-1",
+        skill_id="lit",
+        version="1",
+        document_digest="a" * 64,
+        capability=declared_capability(
+            "host_only", ["api.openalex.org"], source="frontmatter"
+        ),
+        source="load_skill",
+    )
+    grants = {"n": 0}
+
+    def _grant(domain: str) -> str:
+        grants["n"] += 1
+        return domain
+
+    monkeypatch.setattr("openai4s.egress.grant_domain", _grant)
+    with frame_scope("frame-egress"):
+        egress.check_url("https://api.openalex.org/works")
+        with pytest.raises(egress.EgressBlocked):
+            egress.check_url("https://evil.example.com/x")
+    assert grants["n"] == 0
+    reset_bindings()
+
+
 def test_off_mode_fails_open(monkeypatch):
     # unconfigured → networking stays fully ON; nothing is blocked
     assert egress.domain_allowed("evil.example.com") is True

@@ -13176,7 +13176,7 @@ function renderMd(src) {
       var head = cells(lines[i]); i += 2;
       var t = "<table><thead><tr>" + head.map(function (c) { return "<th>" + mdInline(c) + "</th>"; }).join("") + "</tr></thead><tbody>";
       while (i < n && lines[i].indexOf("|") !== -1 && lines[i].trim()) { var r = cells(lines[i]); t += "<tr>" + head.map(function (_, ci) { return "<td>" + mdInline(r[ci] || "") + "</td>"; }).join("") + "</tr>"; i++; }
-      html += t + "</tbody></table>"; continue;
+      html += '<div class="md-table-wrap">' + t + "</tbody></table></div>"; continue;
     }
     if (listRe.test(line)) { var lr = mdList(lines, i, n); html += lr.html; i = lr.next; continue; }
     var para = [line]; i++;

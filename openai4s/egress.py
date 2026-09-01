@@ -6,10 +6,13 @@ Bioconductor, npm) and data repositories (GEO, SRA, ENA, CELLxGENE) are reachabl
 everything else returns a proxy 403 and the agent must call
 ``request_network_access(domain=...)`` to widen the fence.
 
-openai4s does not ship an OS-level sandbox (Seatbelt/bubblewrap) — that is a
-separate, infra-heavy subsystem — so this module is a **best-effort, code-as-action
-fence** enforced at the host-tool boundary (``host.web_fetch`` / ``host.web_search``
-and, statically, ``host.bash``). It is:
+This module is the **host-stamped outbound allowlist** enforced at the Host
+tool boundary (``host.web_fetch`` / ``host.web_search`` and, at capability
+issuance, ``host.bash``). The OS kernel sandbox (Seatbelt/bubblewrap in
+``openai4s.security.sandbox``) is a separate layer: it denies raw sockets from
+the scientific worker so these Host tools remain the intended network path.
+A Skill ``capabilities.network`` manifest describes intended destinations; it
+never calls ``grant_domain`` and never widens this allowlist. It is:
 
 * **host-stamped** — the allowlist is owned by the host process; the agent can only
   *request* a widening through the gated ``request_network_access`` tool, which the
@@ -291,7 +294,36 @@ def blocked_error(domain: str) -> dict:
 def check_url(url: str) -> None:
     """Raise EgressBlocked if `url`'s domain is outside the allowlist. No-op in
     ``off`` mode. Called per redirect hop by webtools so a public → blocked
-    redirect is still caught."""
+    redirect is still caught.
+
+    When a ``host_only`` Skill is bound to the current frame, the destination
+    must also be in that Skill's declared domain list. The extra constraint
+    only narrows; it never grants a host the allowlist would refuse.
+    """
+    try:
+        from openai4s.server.skill_network_admission import constrain_check_url
+
+        blocked_by_skill = constrain_check_url(url)
+    except (
+        Exception
+    ):  # noqa: BLE001 - missing admission must not fail open on a bound skill
+        blocked_by_skill = None
+        # If a host_only Skill is bound and the extra check cannot run, refuse.
+        try:
+            from openai4s.server import skill_network_admission as _sna
+
+            if _sna.active_host_only_domains() is not None:
+                raise EgressBlocked(
+                    "skill host_only domain constraint unavailable; request blocked"
+                )
+        except EgressBlocked:
+            raise
+        except Exception:  # noqa: BLE001
+            blocked_by_skill = None
+    if blocked_by_skill:
+        raise EgressBlocked(
+            f"skill host_only manifest does not declare destination {blocked_by_skill!r}"
+        )
     if egress_mode() != "allowlist":
         return
     host = domain_of(url)
@@ -323,9 +355,11 @@ def scan_command(command: str) -> str | None:
     """Best-effort static egress check for host.bash: return the first http(s)
     URL-domain in `command` that the allowlist would block, else None.
 
-    This is defense-in-depth only — raw code in a cell (or an obfuscated shell
-    command) is NOT sandboxed by this check; real enforcement is the OS-level
-    egress fence, which openai4s does not ship. It catches the common
+    This is defense-in-depth only and is not the Skill-network boundary.
+    Static URL patterns in a command produce an audit-oriented hint here;
+    Cell admission and shell capability issuance enforce Skill manifests
+    against the measured OS sandbox (``openai4s.security.sandbox``) plus
+    this allowlist. It catches the common
     `curl`/`wget`/`pip install <url>`/`git clone https://…` shapes."""
     if egress_mode() != "allowlist":
         return None

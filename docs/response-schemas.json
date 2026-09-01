@@ -519,6 +519,72 @@
         "type": "object"
       }
     },
+    "DELETE /artifacts/([^/]+)/table/export\\.csv [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /artifacts/([^/]+)/table/profile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /artifacts/([^/]+)/versions [error]": {
       "schema": {
         "properties": {
@@ -586,6 +652,39 @@
       }
     },
     "DELETE /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /attention [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -2307,6 +2406,39 @@
         "required": [
           "code",
           "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
           "request_id",
           "status"
         ],
@@ -4098,6 +4230,72 @@
         "type": "object"
       }
     },
+    "DELETE /onboarding [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /onboarding/complete [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /orchestration/jobs [error]": {
       "schema": {
         "properties": {
@@ -4502,6 +4700,39 @@
       }
     },
     "DELETE /projects/([^/]+)/action-timeline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "DELETE /projects/([^/]+)/artifact-index [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -6954,6 +7185,167 @@
         "type": "object"
       }
     },
+    "GET /artifacts/([^/]+)/table/export\\.csv [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/table/profile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/table/profile [ok]": {
+      "schema": {
+        "properties": {
+          "approximate": {
+            "type": "boolean"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "checksum": {
+            "type": "string"
+          },
+          "columns": {
+            "items": {
+              "properties": {
+                "histogram": {
+                  "items": {
+                    "properties": {
+                      "count": {
+                        "type": "integer"
+                      },
+                      "end": {
+                        "type": "number"
+                      },
+                      "start": {
+                        "type": "number"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "count"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "max": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "mean": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "min": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "missing": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "unique": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "histogram",
+                "max",
+                "mean",
+                "min",
+                "missing",
+                "name",
+                "type",
+                "unique"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "filtered_rows": {
+            "type": "integer"
+          },
+          "filters": {
+            "properties": {},
+            "required": [],
+            "type": "object"
+          },
+          "schema_version": {
+            "type": "integer"
+          },
+          "version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "approximate",
+          "artifact_id",
+          "checksum",
+          "columns",
+          "filtered_rows",
+          "filters",
+          "schema_version",
+          "version_id"
+        ],
+        "type": "object"
+      }
+    },
     "GET /artifacts/([^/]+)/versions [ok]": {
       "schema": {
         "properties": {
@@ -7079,6 +7471,97 @@
           "error",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /attention [ok]": {
+      "schema": {
+        "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "properties": {
+                "action_hint": {
+                  "type": "string"
+                },
+                "frame_id": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "source_id": {
+                  "type": "string"
+                },
+                "source_kind": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "target": {
+                  "properties": {
+                    "dock": {
+                      "type": "string"
+                    },
+                    "frame_id": {
+                      "type": "string"
+                    },
+                    "surface": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "dock",
+                    "frame_id",
+                    "surface"
+                  ],
+                  "type": "object"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "action_hint",
+                "frame_id",
+                "id",
+                "project_id",
+                "severity",
+                "source_id",
+                "source_kind",
+                "state",
+                "target",
+                "title",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "has_more",
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       }
@@ -10067,6 +10550,429 @@
               "branch_id": {
                 "type": "string"
               },
+              "budget_usage": {
+                "properties": {
+                  "extra_token_multiplier": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_consecutive_denial_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_timeout_s": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_window_denial_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "guardian_window_size": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "max_extra_cells": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "max_repair_rounds": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "max_review_rounds": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "no_progress_turn_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "repair_turns_per_round": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "repeated_finding_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "same_action_no_delta_limit": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  },
+                  "wall_time_s": {
+                    "properties": {
+                      "authority": {
+                        "type": "string"
+                      },
+                      "exhausted": {
+                        "type": "boolean"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      },
+                      "remaining": {
+                        "type": "integer"
+                      },
+                      "reserved": {
+                        "type": "integer"
+                      },
+                      "used": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "authority",
+                      "exhausted",
+                      "limit",
+                      "remaining",
+                      "reserved",
+                      "used"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "extra_token_multiplier",
+                  "guardian_consecutive_denial_limit",
+                  "guardian_timeout_s",
+                  "guardian_window_denial_limit",
+                  "guardian_window_size",
+                  "max_extra_cells",
+                  "max_repair_rounds",
+                  "max_review_rounds",
+                  "no_progress_turn_limit",
+                  "repair_turns_per_round",
+                  "repeated_finding_limit",
+                  "same_action_no_delta_limit",
+                  "wall_time_s"
+                ],
+                "type": "object"
+              },
               "budgets": {
                 "properties": {
                   "max_repair_rounds": {
@@ -10085,6 +10991,25 @@
               "candidate_version_ids": {
                 "type": "array"
               },
+              "circuit": {
+                "properties": {
+                  "last_delta_cursor": {
+                    "type": "null"
+                  },
+                  "reason": {
+                    "type": "null"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "last_delta_cursor",
+                  "reason",
+                  "state"
+                ],
+                "type": "object"
+              },
               "evidence_snapshot_sha256": {
                 "type": "string"
               },
@@ -10099,6 +11024,9 @@
               },
               "last_event_ordinal": {
                 "type": "integer"
+              },
+              "legacy": {
+                "type": "boolean"
               },
               "mode": {
                 "type": "string"
@@ -10141,6 +11069,7 @@
               "execution_id",
               "last_event_id",
               "last_event_ordinal",
+              "legacy",
               "mode",
               "recovery_required",
               "root_frame_id",
@@ -11315,6 +12244,12 @@
           "children": {
             "items": {
               "properties": {
+                "artifact_refs": {
+                  "type": "array"
+                },
+                "attempt_id": {
+                  "type": "null"
+                },
                 "child_id": {
                   "type": "string"
                 },
@@ -11369,6 +12304,9 @@
                   ],
                   "type": "object"
                 },
+                "request_id": {
+                  "type": "null"
+                },
                 "result": {
                   "type": "null"
                 },
@@ -11409,6 +12347,8 @@
                 }
               },
               "required": [
+                "artifact_refs",
+                "attempt_id",
                 "child_id",
                 "created_at",
                 "depth",
@@ -11421,6 +12361,7 @@
                 "parent_child_id",
                 "parent_frame_id",
                 "progress",
+                "request_id",
                 "result",
                 "started_at",
                 "status",
@@ -11476,6 +12417,39 @@
           "initialized",
           "root_frame_id",
           "stats"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -14405,6 +15379,9 @@
                 "base_url": {
                   "type": "string"
                 },
+                "capability_receipt": {
+                  "type": "null"
+                },
                 "has_api_key": {
                   "type": "boolean"
                 },
@@ -14445,6 +15422,7 @@
               },
               "required": [
                 "base_url",
+                "capability_receipt",
                 "has_api_key",
                 "id",
                 "model",
@@ -14642,6 +15620,435 @@
       }
     },
     "GET /notes/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /onboarding [ok]": {
+      "schema": {
+        "properties": {
+          "active_id": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "contacted": {
+            "type": "boolean"
+          },
+          "environment": {
+            "properties": {
+              "checked_locally": {
+                "type": "boolean"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "environments": {
+                "items": {
+                  "properties": {
+                    "installed_required_package_count": {
+                      "type": "integer"
+                    },
+                    "issue": {
+                      "type": "string"
+                    },
+                    "missing_packages": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "present": {
+                      "type": "boolean"
+                    },
+                    "required_package_count": {
+                      "type": "integer"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "installed_required_package_count",
+                    "issue",
+                    "missing_packages",
+                    "name",
+                    "present",
+                    "required_package_count",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "missing_environments": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_packages": {
+                "properties": {
+                  "python": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "r": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "python",
+                  "r"
+                ],
+                "type": "object"
+              },
+              "mutation_performed": {
+                "type": "boolean"
+              },
+              "network_contacted": {
+                "type": "boolean"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "remediation": {
+                "properties": {
+                  "apply_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "commands": {
+                    "items": {
+                      "properties": {
+                        "argv": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "argv",
+                        "command",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "plan_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "requires_explicit_action": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "apply_argv",
+                  "commands",
+                  "kind",
+                  "plan_argv",
+                  "requires_explicit_action"
+                ],
+                "type": "object"
+              },
+              "required_environments": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "requirements_digest": {
+                "type": "string"
+              },
+              "schema_version": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "checked_locally",
+              "enabled",
+              "environments",
+              "missing_environments",
+              "missing_packages",
+              "mutation_performed",
+              "network_contacted",
+              "profile",
+              "ready",
+              "reason",
+              "remediation",
+              "required_environments",
+              "requirements_digest",
+              "schema_version",
+              "state"
+            ],
+            "type": "object"
+          },
+          "has_api_key": {
+            "type": "boolean"
+          },
+          "local_model_catalog": {
+            "properties": {
+              "background_refresh": {
+                "type": "boolean"
+              },
+              "cached": {
+                "type": "boolean"
+              },
+              "contacted": {
+                "type": "boolean"
+              },
+              "endpoints": {
+                "items": {
+                  "properties": {
+                    "base_url": {
+                      "type": "string"
+                    },
+                    "contacted": {
+                      "type": "boolean"
+                    },
+                    "default_model": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "local": {
+                      "type": "boolean"
+                    },
+                    "models": {
+                      "type": "array"
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "requires_api_key": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "base_url",
+                    "contacted",
+                    "default_model",
+                    "kind",
+                    "label",
+                    "local",
+                    "models",
+                    "provider",
+                    "requires_api_key"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "mutated_settings": {
+                "type": "boolean"
+              },
+              "probed": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "background_refresh",
+              "cached",
+              "contacted",
+              "endpoints",
+              "mutated_settings",
+              "probed"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "type": "string"
+          },
+          "native_runtime_supported": {
+            "type": "boolean"
+          },
+          "network": {
+            "properties": {
+              "allow_network": {
+                "type": "boolean"
+              },
+              "contacted": {
+                "type": "boolean"
+              },
+              "egress": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "allow_network",
+              "contacted",
+              "egress"
+            ],
+            "type": "object"
+          },
+          "outbound": {
+            "type": "integer"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "profiles": {
+            "items": {
+              "properties": {
+                "base_url": {
+                  "type": "string"
+                },
+                "capability_receipt": {
+                  "type": "null"
+                },
+                "has_api_key": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "readiness": {
+                  "properties": {
+                    "checked_endpoint": {
+                      "type": "boolean"
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "checked_endpoint",
+                    "detail",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "revision": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "base_url",
+                "capability_receipt",
+                "has_api_key",
+                "id",
+                "model",
+                "name",
+                "provider",
+                "readiness",
+                "revision"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "protocols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active_id",
+          "base_url",
+          "complete",
+          "contacted",
+          "environment",
+          "has_api_key",
+          "local_model_catalog",
+          "model",
+          "native_runtime_supported",
+          "network",
+          "outbound",
+          "platform",
+          "profiles",
+          "protocols",
+          "provider"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /onboarding/complete [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -15260,6 +16667,85 @@
         "type": "object"
       }
     },
+    "GET /projects/([^/]+)/artifact-index [ok]": {
+      "schema": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "properties": {
+                "artifact_id": {
+                  "type": "string"
+                },
+                "checksum": {
+                  "type": "string"
+                },
+                "content_type": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "filename": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "is_user_upload": {
+                  "type": "boolean"
+                },
+                "priority": {
+                  "type": "integer"
+                },
+                "project_id": {
+                  "type": "string"
+                },
+                "root_frame_id": {
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "type": "integer"
+                },
+                "version_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "artifact_id",
+                "checksum",
+                "content_type",
+                "created_at",
+                "filename",
+                "id",
+                "is_user_upload",
+                "priority",
+                "project_id",
+                "root_frame_id",
+                "size_bytes",
+                "version_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "artifacts",
+          "has_more",
+          "next_cursor"
+        ],
+        "type": "object"
+      }
+    },
     "GET /projects/([^/]+)/artifacts [ok]": {
       "schema": {
         "items": {
@@ -15819,6 +17305,65 @@
                 "activeVersionId": {
                   "type": "string"
                 },
+                "capabilities": {
+                  "properties": {
+                    "network": {
+                      "properties": {
+                        "declaration": {
+                          "type": "string"
+                        },
+                        "digest": {
+                          "type": "string"
+                        },
+                        "domains": {
+                          "type": "array"
+                        },
+                        "explicit": {
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "ui": {
+                          "properties": {
+                            "label_en": {
+                              "type": "string"
+                            },
+                            "label_zh": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label_en",
+                            "label_zh",
+                            "state"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "declaration",
+                        "digest",
+                        "domains",
+                        "explicit",
+                        "mode",
+                        "source",
+                        "ui"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "network"
+                  ],
+                  "type": "object"
+                },
                 "collection": {
                   "type": "null"
                 },
@@ -15842,11 +17387,20 @@
                 },
                 "readiness": {
                   "properties": {
+                    "blocked_on": {
+                      "type": "array"
+                    },
                     "checked_locally": {
                       "type": "boolean"
                     },
                     "missing": {
                       "type": "array"
+                    },
+                    "probed": {
+                      "type": "boolean"
+                    },
+                    "ready": {
+                      "type": "boolean"
                     },
                     "state": {
                       "type": "string"
@@ -15856,12 +17410,18 @@
                     }
                   },
                   "required": [
+                    "blocked_on",
                     "checked_locally",
                     "missing",
+                    "probed",
+                    "ready",
                     "state",
                     "unverifiable"
                   ],
                   "type": "object"
+                },
+                "ready": {
+                  "type": "boolean"
                 },
                 "requirements": {
                   "type": "array"
@@ -15875,6 +17435,7 @@
               },
               "required": [
                 "activeVersionId",
+                "capabilities",
                 "collection",
                 "description",
                 "displayName",
@@ -15883,6 +17444,7 @@
                 "name",
                 "origin",
                 "readiness",
+                "ready",
                 "requirements",
                 "scope",
                 "versioned"
@@ -16962,6 +18524,68 @@
                     "string"
                   ]
                 },
+                "capabilities": {
+                  "properties": {
+                    "network": {
+                      "properties": {
+                        "declaration": {
+                          "type": "string"
+                        },
+                        "digest": {
+                          "type": "string"
+                        },
+                        "domains": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "explicit": {
+                          "type": "boolean"
+                        },
+                        "mode": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "ui": {
+                          "properties": {
+                            "label_en": {
+                              "type": "string"
+                            },
+                            "label_zh": {
+                              "type": "string"
+                            },
+                            "state": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label_en",
+                            "label_zh",
+                            "state"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "declaration",
+                        "digest",
+                        "domains",
+                        "explicit",
+                        "mode",
+                        "source",
+                        "ui"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "network"
+                  ],
+                  "type": "object"
+                },
                 "collection": {
                   "type": [
                     "null",
@@ -16988,6 +18612,12 @@
                 },
                 "readiness": {
                   "properties": {
+                    "blocked_on": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "checked_locally": {
                       "type": "boolean"
                     },
@@ -16996,6 +18626,12 @@
                         "type": "string"
                       },
                       "type": "array"
+                    },
+                    "probed": {
+                      "type": "boolean"
+                    },
+                    "ready": {
+                      "type": "boolean"
                     },
                     "state": {
                       "type": "string"
@@ -17008,12 +18644,18 @@
                     }
                   },
                   "required": [
+                    "blocked_on",
                     "checked_locally",
                     "missing",
+                    "probed",
+                    "ready",
                     "state",
                     "unverifiable"
                   ],
                   "type": "object"
+                },
+                "ready": {
+                  "type": "boolean"
                 },
                 "requirements": {
                   "items": {
@@ -17030,6 +18672,7 @@
               },
               "required": [
                 "activeVersionId",
+                "capabilities",
                 "collection",
                 "description",
                 "displayName",
@@ -17038,6 +18681,7 @@
                 "name",
                 "origin",
                 "readiness",
+                "ready",
                 "requirements",
                 "scope",
                 "versioned"
@@ -18572,6 +20216,72 @@
         "type": "object"
       }
     },
+    "PATCH /artifacts/([^/]+)/table/export\\.csv [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /artifacts/([^/]+)/table/profile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /artifacts/([^/]+)/versions [error]": {
       "schema": {
         "properties": {
@@ -18639,6 +20349,39 @@
       }
     },
     "PATCH /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /attention [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -20506,6 +22249,39 @@
         "type": "object"
       }
     },
+    "PATCH /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /frames/([^/]+)/delegations/([^/]+)/steer [error]": {
       "schema": {
         "properties": {
@@ -22320,6 +24096,72 @@
         "type": "object"
       }
     },
+    "PATCH /onboarding [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /onboarding/complete [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /orchestration/jobs [error]": {
       "schema": {
         "properties": {
@@ -22658,6 +24500,39 @@
       }
     },
     "PATCH /projects/([^/]+)/action-timeline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PATCH /projects/([^/]+)/artifact-index [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -25001,6 +26876,72 @@
         "type": "object"
       }
     },
+    "POST /artifacts/([^/]+)/table/export\\.csv [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/table/profile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /artifacts/([^/]+)/versions [error]": {
       "schema": {
         "properties": {
@@ -25141,6 +27082,39 @@
       }
     },
     "POST /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /attention [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -30103,6 +32077,31 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/delegations/([^/]+)/steer [error]": {
       "schema": {
         "properties": {
@@ -33342,6 +35341,9 @@
           "base_url": {
             "type": "string"
           },
+          "capability_receipt": {
+            "type": "null"
+          },
           "has_api_key": {
             "type": "boolean"
           },
@@ -33382,6 +35384,7 @@
         },
         "required": [
           "base_url",
+          "capability_receipt",
           "has_api_key",
           "id",
           "model",
@@ -33500,6 +35503,80 @@
     "POST /model-profiles/([^/]+)/probe [ok]": {
       "schema": {
         "properties": {
+          "capability_receipt": {
+            "properties": {
+              "context_window_tokens": {
+                "type": "null"
+              },
+              "endpoint_sha256": {
+                "type": "string"
+              },
+              "max_output_tokens": {
+                "type": "null"
+              },
+              "model": {
+                "type": "string"
+              },
+              "native_completion": {
+                "type": "boolean"
+              },
+              "native_tool_call": {
+                "type": "string"
+              },
+              "observed_at": {
+                "type": "integer"
+              },
+              "probe_version": {
+                "type": "integer"
+              },
+              "profile_id": {
+                "type": "string"
+              },
+              "reachable": {
+                "type": "boolean"
+              },
+              "receipt_id": {
+                "type": "string"
+              },
+              "receipt_sha256": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "stale": {
+                "type": "boolean"
+              },
+              "streaming": {
+                "type": "string"
+              },
+              "wire": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "context_window_tokens",
+              "endpoint_sha256",
+              "max_output_tokens",
+              "model",
+              "native_completion",
+              "native_tool_call",
+              "observed_at",
+              "probe_version",
+              "profile_id",
+              "reachable",
+              "receipt_id",
+              "receipt_sha256",
+              "revision",
+              "stale",
+              "streaming",
+              "wire"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
           "code": {
             "type": "string"
           },
@@ -33509,6 +35586,9 @@
           "detail": {
             "type": "string"
           },
+          "outbound": {
+            "type": "integer"
+          },
           "reachable": {
             "type": "boolean"
           },
@@ -33517,13 +35597,19 @@
           },
           "state": {
             "type": "string"
+          },
+          "tool_execution": {
+            "type": "integer"
           }
         },
         "required": [
+          "capability_receipt",
           "contacted",
           "detail",
+          "outbound",
           "reachable",
-          "state"
+          "state",
+          "tool_execution"
         ],
         "type": "object"
       }
@@ -33616,6 +35702,376 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /onboarding [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /onboarding/complete [ok]": {
+      "schema": {
+        "properties": {
+          "active_id": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "contacted": {
+            "type": "boolean"
+          },
+          "environment": {
+            "properties": {
+              "checked_locally": {
+                "type": "boolean"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "environments": {
+                "items": {
+                  "properties": {
+                    "installed_required_package_count": {
+                      "type": "integer"
+                    },
+                    "issue": {
+                      "type": "string"
+                    },
+                    "missing_packages": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "present": {
+                      "type": "boolean"
+                    },
+                    "required_package_count": {
+                      "type": "integer"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "installed_required_package_count",
+                    "issue",
+                    "missing_packages",
+                    "name",
+                    "present",
+                    "required_package_count",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "missing_environments": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_packages": {
+                "properties": {
+                  "python": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "r": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "python",
+                  "r"
+                ],
+                "type": "object"
+              },
+              "mutation_performed": {
+                "type": "boolean"
+              },
+              "network_contacted": {
+                "type": "boolean"
+              },
+              "profile": {
+                "type": "string"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "remediation": {
+                "properties": {
+                  "apply_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "commands": {
+                    "items": {
+                      "properties": {
+                        "argv": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "argv",
+                        "command",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "plan_argv": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "requires_explicit_action": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "apply_argv",
+                  "commands",
+                  "kind",
+                  "plan_argv",
+                  "requires_explicit_action"
+                ],
+                "type": "object"
+              },
+              "required_environments": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "requirements_digest": {
+                "type": "string"
+              },
+              "schema_version": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "checked_locally",
+              "enabled",
+              "environments",
+              "missing_environments",
+              "missing_packages",
+              "mutation_performed",
+              "network_contacted",
+              "profile",
+              "ready",
+              "reason",
+              "remediation",
+              "required_environments",
+              "requirements_digest",
+              "schema_version",
+              "state"
+            ],
+            "type": "object"
+          },
+          "has_api_key": {
+            "type": "boolean"
+          },
+          "local_model_catalog": {
+            "properties": {
+              "background_refresh": {
+                "type": "boolean"
+              },
+              "cached": {
+                "type": "boolean"
+              },
+              "contacted": {
+                "type": "boolean"
+              },
+              "endpoints": {
+                "items": {
+                  "properties": {
+                    "base_url": {
+                      "type": "string"
+                    },
+                    "contacted": {
+                      "type": "boolean"
+                    },
+                    "default_model": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "local": {
+                      "type": "boolean"
+                    },
+                    "models": {
+                      "type": "array"
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "requires_api_key": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "base_url",
+                    "contacted",
+                    "default_model",
+                    "kind",
+                    "label",
+                    "local",
+                    "models",
+                    "provider",
+                    "requires_api_key"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "mutated_settings": {
+                "type": "boolean"
+              },
+              "probed": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "background_refresh",
+              "cached",
+              "contacted",
+              "endpoints",
+              "mutated_settings",
+              "probed"
+            ],
+            "type": "object"
+          },
+          "model": {
+            "type": "string"
+          },
+          "native_runtime_supported": {
+            "type": "boolean"
+          },
+          "network": {
+            "properties": {
+              "allow_network": {
+                "type": "boolean"
+              },
+              "contacted": {
+                "type": "boolean"
+              },
+              "egress": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "allow_network",
+              "contacted",
+              "egress"
+            ],
+            "type": "object"
+          },
+          "outbound": {
+            "type": "integer"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "profiles": {
+            "type": "array"
+          },
+          "protocols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active_id",
+          "base_url",
+          "complete",
+          "contacted",
+          "environment",
+          "has_api_key",
+          "local_model_catalog",
+          "model",
+          "native_runtime_supported",
+          "network",
+          "outbound",
+          "platform",
+          "profiles",
+          "protocols",
+          "provider"
         ],
         "type": "object"
       }
@@ -34088,6 +36544,39 @@
       }
     },
     "POST /projects/([^/]+)/action-timeline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /projects/([^/]+)/artifact-index [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -36774,6 +39263,72 @@
         "type": "object"
       }
     },
+    "PUT /artifacts/([^/]+)/table/export\\.csv [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /artifacts/([^/]+)/table/profile [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /artifacts/([^/]+)/versions [error]": {
       "schema": {
         "properties": {
@@ -36841,6 +39396,39 @@
       }
     },
     "PUT /artifacts/versions/([^/]+) [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /attention [error]": {
       "schema": {
         "properties": {
           "code": {
@@ -38624,6 +41212,39 @@
         "type": "object"
       }
     },
+    "PUT /frames/([^/]+)/delegations/([^/]+)/continue [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /frames/([^/]+)/delegations/([^/]+)/steer [error]": {
       "schema": {
         "properties": {
@@ -40388,6 +43009,72 @@
         "type": "object"
       }
     },
+    "PUT /onboarding [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /onboarding/complete [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PUT /orchestration/jobs [error]": {
       "schema": {
         "properties": {
@@ -40726,6 +43413,39 @@
       }
     },
     "PUT /projects/([^/]+)/action-timeline [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /projects/([^/]+)/artifact-index [error]": {
       "schema": {
         "properties": {
           "code": {

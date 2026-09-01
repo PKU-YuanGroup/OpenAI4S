@@ -78,6 +78,9 @@ def build_build_receipt(
 
     `kind` names the job (`dist`, `macos`) so a release carrying several
     receipts can say which is missing rather than "a receipt is missing".
+    For a notarized DMG this hashes the *post-staple* bytes: the macOS job
+    staples first, then calls this, so the digest staging verifies is the
+    digest a user downloads.
     """
     from scripts import release_gates
 

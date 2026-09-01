@@ -1,8 +1,10 @@
 # Web App API Contract (as implemented)
 
 This document records the **actual** HTTP/WebSocket contract between
-`openai4s/server/gateway.py` (backend) and `openai4s/server/webui/app.js`
-(frontend), including known warts and gaps. It is descriptive, not
+`openai4s/server/gateway.py` (backend) and the workbench frontend
+(`frontend/` source, served from `openai4s/server/webui/dist/`;
+`openai4s/server/webui/app.js` is the `OPENAI4S_WEBUI=legacy` hatch),
+including known warts and gaps. It is descriptive, not
 aspirational: every claim below maps to the Gateway/frontend or to a focused
 service they compose (notably the execution coordinator, session-domain,
 workbench-state, and permission services). If you change that public surface,
@@ -203,10 +205,11 @@ contract.
   Only `broadcast` events are sequenced; point-to-point snapshots delivered on
   subscribe (`execution_queue`, pending approval cards) and the replay control
   frames deliberately carry no `seq`.
-- The frontend is a single-page app served from the working tree
-  (`/`, `/index.html`, `/static/*`). Any unknown non-API `GET` serves the SPA
-  shell (`index.html`) to support deep links. Unknown non-GET, non-API paths
-  return `404 {"error": "not found"}`.
+- The frontend is a single-page app. `/`, `/index.html`, and any unknown
+  non-API `GET` serve the SPA shell (`webui/dist/index.html` by default;
+  `webui/index.html` when `OPENAI4S_WEBUI=legacy`) so deep links such as
+  `/projects/{pid}/frames/{fid}` work. `/static/*` is the ordinary static
+  tree. Unknown non-GET, non-API paths return `404 {"error": "not found"}`.
 - All JSON responses are `application/json; charset=utf-8` with
   `Cache-Control: no-cache` and an explicit `Content-Length`.
 - Request bodies are JSON except the explicitly documented Session-package
@@ -297,7 +300,7 @@ or stored `Content-Type`:
 
 | Route | Body | Notes |
 | --- | --- | --- |
-| `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/index.html`. |
+| `GET /` , `GET /index.html`, unknown non-API GET | HTML | SPA shell from `webui/dist/index.html` (or `webui/index.html` when `OPENAI4S_WEBUI=legacy`). |
 | `GET /static/<rel>` | file bytes | Path-traversal-guarded; 404/403 as JSON. |
 | `GET /api/artifacts/{ident}` | artifact bytes | Compatibility route. `ident` may be a **version_id, artifact_id, or filename** (in that resolution order: `store.resolve_artifact_path` tries `artifact_versions.version_id` first, then `artifacts.artifact_id` → its latest version; the handler falls back to a filename lookup). `Content-Type` comes from stored metadata, else guessed from the filename. |
 | `GET /api/v1/artifacts/versions/{version_id}` | immutable artifact-version bytes | Stage 1 trusted completion links use this reserved canonical route only. The server helper rejects empty and dot-only identifiers and encodes slash, Unicode, and URL metacharacters into one path segment. The route resolves that exact version or 404 and never falls back to an Artifact id or filename, so a reopened link remains bound to the same bytes after the head changes. |
@@ -338,6 +341,13 @@ success response body. Serializer shapes are in §4.
 | `GET|POST|PUT|PATCH /config/llm` | GET → `{provider,model,base_url,has_api_key}`. Write → persists `provider`/`model`/`base_url`; `api_key` only overwrites when non-empty; `clear_api_key:true` empties it. Changing provider without a replacement key also clears the old provider-bound credential so it cannot be reinterpreted or sent to the new provider → `{"ok":true,"has_api_key"}`. The raw key is never returned. |
 | `GET /search?q=` | `{sessions:[{id,project_id,name,task_summary}], artifacts:[{id,filename,content_type,root_frame_id,project_id}], datapro:[{query,dataset_type,json_pointer,content,artifact_id,root_frame_id,project_id}]}`; empty `q` → empty lists. `datapro` searches every recursively indexed key and scalar in successful DataPro content; each hit is a logical result occurrence, so equal records at different JSON pointers remain distinct. |
 | `GET /` (i.e. `/api` or `/api/v1/`) | `{"service":"openai4s","ok":true}`. |
+
+### First-run onboarding
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /onboarding` | Redacted first-run state: which of the four decisions — model path, the explicit Test, environment/network readiness, first Project — are already satisfied. Derived entirely from stored state, so opening the wizard contacts no provider and cannot be used to probe whether a key works. No credential value appears in the payload. |
+| `POST /onboarding/complete` | Marks first-run finished. In team mode this is admin-only (`403 admin_only`): the state is installation-wide, so a member dismissing it would be deciding for everyone. |
 
 ### Models and model profiles
 
@@ -548,6 +558,12 @@ A session's kernel is on the daemon by default. Asking for it to be on a granted
 
 `state_lost_epochs` is what the UI turns into a banner. When a node dies the kernel's memory dies with it — variables, imports, the seed somebody set three cells ago — and the session continues on a new epoch. Saying so is mandatory (INV-11): the results afterwards look exactly like results from the session that was lost.
 
+### Cross-session attention
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /attention?limit=&cursor=` | Read-only aggregation of what is waiting across every visible session: `{items, next_cursor}`. An item is `{id, source_kind, source_id, state, severity, frame_id, project_id, title, updated_at, target:{surface,dock,frame_id}, action_hint}`. Four closed sets: `source_kind` ∈ `running`/`queued`/`approval`/`recovery`/`blocked`/`compute`, `severity` ∈ `high`/`medium`/`low`, `target.surface` ∈ `session`, `target.dock` ∈ `timeline`/`recovery`/`security`/`compute`. They are closed so the client builds navigation locally and the server never emits a URL. Items are deduplicated by `source_kind + source_id` — one card per fact, not per source that noticed it. The cursor is keyset over `(updated_at, id)` and bound to the caller's scope and filter fingerprint. Team visibility is applied *before* aggregation, ordering and `limit`, so a row the caller may not see cannot consume a slot. The GET has no side effects: no kernel spawn, no provider call, no harvest. Retry / approve / restore remain on their existing mutation routes. |
+
 ### Permissions
 
 | Method & path | Behavior |
@@ -651,7 +667,9 @@ These routes are thin Gateway adapters over `SessionDomainService` and
 | `GET /frames/{fid}/session/export` | Raw deterministic, manifest-hashed Session package. Exact-version completion deliveries are included; import verifies their snapshots and remaps message, Artifact, version, manifest, and URL identities atomically. An orphaned or inconsistent delivery rejects the package. |
 | `GET /renderers` | Safe scientific renderer descriptor catalog. |
 | `GET /artifacts/{aid}/renderer?version=&root_frame_id=` | Selects a version-bound renderer descriptor plus immutable checksum/size/provenance metadata; it never executes Artifact content. |
-| `GET /artifacts/{aid}/table` | Stage 9 workbench. Bounded full-dataset sort/filter/page over CSV/TSV/Parquet. A snapshot above 32 MiB, or a table above 250,000 data rows, 256 columns, or 2,000,000 rectangularized cells → `413 {"code":"artifact_too_large"}`. Parquet additionally preflights at most 512 row groups and 64 MiB decoded bytes before reading columns. Flag-off → `403 {"code":"workbench_disabled"}`. |
+| `GET /artifacts/{aid}/table` | Stage 9 workbench. Bounded full-dataset sort/filter/page over CSV/TSV/Parquet. Query: `sort` (must equal a header exactly), `dir=desc` (only the literal `desc` is descending), `q_{column_header}` (integer/number: trim then equal; other columns: case-insensitive substring), `offset` (negative becomes 0, non-integer 400), `limit` (default 50, clamped 1–500, non-integer 400), optional `version_id` (exact immutable snapshot; **never** falls back to latest). A snapshot above 32 MiB, or a table above 250,000 data rows, 256 columns, or 2,000,000 rectangularized cells → `413 {"code":"artifact_too_large"}`. Parquet additionally preflights at most 512 row groups and 64 MiB decoded bytes before reading columns. Missing optional Parquet engine → `415 {"code":"parquet_unavailable"}`. Flag-off → `403 {"code":"workbench_disabled"}`. |
+| `GET /artifacts/{aid}/table/profile` | Stage 9 workbench. Per-column type/missing/unique/min/max/mean/histogram for the filtered set. `version_id` is required. `q_{column_header}` uses the same parser as `/table`. Passing `sort`, `dir`, `offset`, or `limit` → `400 {"code":"invalid_query"}`. Histogram bins ≤ 50. If exact unique cannot be finished inside the tracking bound, `approximate` is `true` rather than a pretended exact count. Stats are not persisted. Flag-off → `403 workbench_disabled`. |
+| `GET /artifacts/{aid}/table/export.csv` | Stage 9 workbench. Full filtered CSV (same parser for `sort`/`dir`/`q_…`). `version_id` is required. Optional `spreadsheet_safe=1` prefixes formula-like headers and cells for spreadsheet downloads while preserving complete signed numeric/scientific literals; omitted or `spreadsheet_safe=0` preserves raw values for direct/scientific API callers. Other values → `400 {"code":"invalid_query"}`. `offset`/`limit` → `400 {"code":"invalid_query"}`. Server-side chunks ≤ 1 MiB; total output above 32 MiB → `413 {"code":"artifact_too_large"}`. Success is `text/csv` with `X-Artifact-Id`/`X-Version-Id`/`X-Checksum`/`X-Filtered-Rows`/`X-Approximate`. Flag-off → `403 workbench_disabled`. |
 | `GET /artifacts/{aid}/diff` | Stage 9 workbench. Unified diff between two versions (default oldest→newest), bounded to 8 MiB and 50,000 lines per version; excess → `413 {"code":"artifact_too_large"}`. |
 | `POST /artifacts/{aid}/structure` | Stage 9 workbench. Save a Ketcher mol/SMILES payload as a new version, or `{unchanged:true}` when the checksum matches the head. |
 | `GET /artifacts/{aid}/pdf-text` | Stage 9 workbench. Page-quoted PDF text for locator comments; snapshots above 32 MiB → `413 artifact_too_large`. |
@@ -701,7 +719,9 @@ current lineage response and is not a portable observation ledger.
 | `POST /artifacts/{aid}/versions/{vid}/restore` | Reverts the live file + latest pointer → `{"ok":true,"artifact":…}` or `404 {"error":…}`; broadcasts a *bare* `artifact_created` (see §3). |
 | `POST|PUT|PATCH /artifacts/{aid}/edit` | Body `{content}` (text). Non-text artifact → `415`; unknown → `404` (both via `GatewayError`) → `{"ok":true,"artifact_id","version_id","size_bytes"}`. |
 | `POST|PUT|PATCH /artifacts/{aid}/rename` | Body `{filename}`; missing → `400`; unknown → `404` → `{"ok":true,"artifact_id","filename"}`. |
-| `GET /artifacts/{aid}/table` | Stage 9: `{artifact_id,version_id,filename,columns,column_types,rows,total_rows,offset,limit,sorted_by,descending,filters}`. Flag-off → `403 workbench_disabled`. |
+| `GET /artifacts/{aid}/table` | Stage 9: `{artifact_id,version_id,filename,columns,column_types,rows,total_rows,offset,limit,sorted_by,descending,filters}`. Optional `version_id` selects that exact snapshot. Flag-off → `403 workbench_disabled`. |
+| `GET /artifacts/{aid}/table/profile` | Stage 9: `{artifact_id,version_id,checksum,filtered_rows,approximate,schema_version,columns:[{name,type,missing,unique,min,max,mean,histogram}],filters}`. |
+| `GET /artifacts/{aid}/table/export.csv` | Stage 9: `text/csv` body of the complete filtered set; `spreadsheet_safe=1` opts into formula neutralization (the Workbench download default), while omission/`0` keeps raw cells; metadata in `X-Artifact-Id`, `X-Version-Id`, `X-Checksum`, `X-Filtered-Rows`, `X-Approximate`. |
 | `GET /artifacts/{aid}/diff` | Stage 9: `{artifact_id,from_version_id,to_version_id,changed,diff}`. |
 | `POST /artifacts/{aid}/structure` | Stage 9: `{ok,artifact_id,version_id,unchanged,structure}`. Same-checksum save is a no-op. |
 | `GET /artifacts/{aid}/pdf-text` | Stage 9: `{artifact_id,version_id,pages:[{page,text}]}`. |

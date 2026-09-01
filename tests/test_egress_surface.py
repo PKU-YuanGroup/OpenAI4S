@@ -256,8 +256,14 @@ _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 #: its raw-network surface reviewable without pretending that dozens of
 #: identical vendored entries are individual policy grants. The plan crosswalk
 #: remains `open`: this is a detection gate, not runtime enforcement.
+#:
+#: Re-pinned when the network capability manifests landed: the six frontmatter
+#: lines added to `remote-compute-nvidia/SKILL.md` shifted its five existing
+#: `curl` sites from 94/119/127/130/218 to 100/125/133/136/224. Because the
+#: fingerprint covers line numbers, a pure edit above a hit moves it. No file
+#: entered or left the surface and no new client was recognized.
 _PINNED_SKILL_EGRESS_FINGERPRINT = (
-    "1aaf83d07b6fae72e507a725672b49457484f4bee9f4b4dc23e9acd4ffc9bad7"
+    "dc7d2f483827dc07580699e60dc2ede3fc92ea989593e937c03f8de53f8e3904"
 )
 
 _SKILL_EGRESS_PATTERNS = (
@@ -436,8 +442,15 @@ def _webui_absolute_urls() -> list[tuple[str, int, str, str]]:
                 continue
             for match in pattern.finditer(line):
                 url = match.group(1)
+                # What sits *next to* the URL, not the whole line. A minified
+                # bundle is one line, so "same line as a fetch(" stops meaning
+                # anything there: Preact's SVG namespace constant at one end
+                # and any fetch( at the other would read as a fetch of that
+                # namespace. For ordinary source the window covers the line
+                # and nothing changes.
+                near = line[max(0, match.start() - 160) : match.end() + 160]
                 found.append(
-                    (str(path.relative_to(_PACKAGE)), lineno, url.split("/")[2], line)
+                    (str(path.relative_to(_PACKAGE)), lineno, url.split("/")[2], near)
                 )
     return found
 

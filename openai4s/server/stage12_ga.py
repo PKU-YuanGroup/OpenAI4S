@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from openai4s.server.auto_budget import inspect_budget_wiring
+
 ROLLOUT_PHASES = (
     "shadow",
     "opt_in",
@@ -38,12 +40,24 @@ def earlier_flags(config: Any) -> dict[str, bool]:
 def rollout_status(config: Any) -> dict[str, Any]:
     enabled = official_stage12_enabled(config)
     previous = earlier_flags(config)
+    inventory = inspect_budget_wiring()
+    ga_ready = bool(inventory.get("ga_ready"))
+    blocked_on: list[str] = []
+    if inventory.get("missing_authorities"):
+        blocked_on.append("budget_authority_missing")
+    if inventory.get("duplicate_authorities"):
+        blocked_on.append("budget_authority_duplicate")
+    if inventory.get("missing_sinks") or inventory.get("sink_bypass_count"):
+        blocked_on.append("budget_sink_unwired")
     return {
         "ga_kill_switch_armed": enabled,
         "auto_mode_default": "off",
         "phases": list(ROLLOUT_PHASES),
-        "active_phase": "ga" if enabled else "shadow",
+        "active_phase": "ga" if enabled and ga_ready else "shadow",
         "earlier_flags_remain_opt_in": True,
         "earlier_flags": previous,
         "any_earlier_flag_on": any(previous.values()),
+        "auto_budget": inventory,
+        "ga_blocked_on": blocked_on,
+        "ga_refused": bool(blocked_on),
     }

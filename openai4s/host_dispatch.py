@@ -1075,6 +1075,11 @@ class HostDispatcher:
         # it is populated.
         self._bash_generation_local = threading.local()
         self._bash_generation_default: str | int | None = None
+        # Measured OS-sandbox posture of the worker that is currently in a
+        # host_call, bound by Kernel._service_host_call. Cell admission reads
+        # the same status off the supervisor; shell authorization must not
+        # guess from env when a live worker has already reported.
+        self._sandbox_status_local = threading.local()
         # Canonical action attribution is bound by the engine/kernel manager
         # at the actual invocation boundary.  Thread-local storage matters for
         # parallel read-only native tools: each approval must point back to its
@@ -1094,6 +1099,7 @@ class HostDispatcher:
             allowed_roots=_configured_bash_allowed_roots,
             audit=self._audit_bash_result,
             step_sink=lambda: self.on_step,
+            sandbox_status=self._current_sandbox_status,
         )
         self._data_service = HostDataService(
             store=lambda: self.store,
@@ -1325,6 +1331,30 @@ class HostDispatcher:
     def _current_action_context(self) -> dict[str, Any]:
         value = getattr(self._action_context_local, "value", None)
         return dict(value) if isinstance(value, dict) else {}
+
+    @contextmanager
+    def bind_sandbox_status(self, status: Mapping[str, Any] | None) -> Iterator[None]:
+        """Bind the calling worker's measured sandbox posture for one host_call."""
+
+        marker = object()
+        previous = getattr(self._sandbox_status_local, "value", marker)
+        self._sandbox_status_local.value = (
+            dict(status) if isinstance(status, Mapping) else None
+        )
+        try:
+            yield
+        finally:
+            if previous is marker:
+                try:
+                    del self._sandbox_status_local.value
+                except AttributeError:
+                    pass
+            else:
+                self._sandbox_status_local.value = previous
+
+    def _current_sandbox_status(self) -> dict[str, Any] | None:
+        value = getattr(self._sandbox_status_local, "value", None)
+        return dict(value) if isinstance(value, dict) else None
 
     @contextmanager
     def bind_native_artifact_committer(
@@ -1629,12 +1659,26 @@ class HostDispatcher:
     def set_capability_scope(self, frame_id: str | None = None) -> None:
         """Retarget Skill/Specialist policy to the frame's project + session."""
 
-        scope = self.store.resolve_frame_scope(frame_id or self.frame_id)
+        target_frame = frame_id or self.frame_id
+        scope = self.store.resolve_frame_scope(target_frame)
         self._skill_service.set_scope(
             project_id=scope.get("project_id"),
             session_id=scope.get("root_frame_id"),
         )
         self._skills = self._skill_service.loader
+        session_id = str(scope.get("root_frame_id") or "").strip()
+        if session_id:
+            from openai4s.server.skill_network_admission import restore_bindings
+
+            events = self._skills.capabilities.repository.list_events(
+                kind="skill",
+                event="skill_loaded",
+                session_id=session_id,
+                limit=None,
+            )
+            restore_bindings(target_frame, events)
+            if str(target_frame or "") != session_id:
+                restore_bindings(session_id, events)
 
     def _current_capability_scope(self) -> dict[str, str | None]:
         scope = self.store.resolve_frame_scope(self.frame_id)
@@ -1722,6 +1766,10 @@ class HostDispatcher:
         args = decode_args(args)
         args = self._canonical_mcp_server(method, args)
         action_context = self._current_action_context()
+        from openai4s.server.skill_network_admission import frame_scope
+
+        skill_frame = frame_scope(self.frame_id)
+        skill_frame.__enter__()
         try:
             audit_resources = (
                 list(control_tool.resource_keys(args[0] if args else {}))
@@ -1923,6 +1971,7 @@ class HostDispatcher:
             raised_error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            skill_frame.__exit__(None, None, None)
             self.store.log_host_call(
                 method=method,
                 args=args,
@@ -2463,7 +2512,98 @@ class HostDispatcher:
     def _m_load_skill(self, name: str) -> dict:
         """Return a skill's full guidance (SKILL.md) — the reference's
         'Loading <skill> skill guidance → loaded' step."""
-        return self._skill_service.load(name)
+        loaded = self._skill_service.load(name)
+        if isinstance(loaded, dict) and loaded.get("error"):
+            return loaded
+        refusal = self._bind_loaded_skill(loaded, source="load_skill")
+        if refusal is not None:
+            # Refuse here, not at the next Cell. Binding the requirement and
+            # then returning the recipe leaves exactly one Cell able to run
+            # it: the one that called load_skill, inside the fence it was
+            # already admitted into. That is the ordinary Code-as-Action
+            # shape -- load, then use -- so the version-wide freeze would
+            # have applied to every Cell except the one that matters.
+            return {"error": refusal}
+        return loaded
+
+    def _bind_loaded_skill(
+        self, loaded: Mapping[str, Any], *, source: str
+    ) -> str | None:
+        """Record the load-event, bind the manifest, and refuse a blocked one.
+
+        The manifest is stored as a requirement. Binding it never grants
+        egress or raw kernel network. Returns a refusal message when this
+        version blocks the Skill outright, so the caller withholds the
+        guidance rather than admitting the next Cell and no more.
+        """
+
+        if not isinstance(loaded, Mapping) or not loaded.get("name"):
+            return None
+        skill_name = str(loaded.get("name") or "")
+        skill = self._skill_service.loader.get(skill_name, include_disabled=True)
+        if skill is None:
+            return None
+        from openai4s.server.skill_network_admission import (
+            LOAD_SINK,
+            admit,
+            bind_skill_load,
+            load_event_metadata,
+        )
+
+        context = self._current_action_context()
+        action_group_id = context.get("action_group_id")
+        capability = getattr(skill, "network", None)
+        if capability is None:
+            return None
+        metadata = load_event_metadata(
+            skill_id=skill.name,
+            version=str(getattr(skill, "version", "") or ""),
+            document_digest=str(getattr(skill, "document_sha256", "") or ""),
+            capability=capability,
+            action_group_id=str(action_group_id) if action_group_id else None,
+            source=source,
+            binding_frame_id=self.frame_id,
+        )
+        # Persist the requirement before returning executable guidance. If the
+        # daemon crashes after this commit, dispatcher construction restores
+        # the same binding; if the commit fails, the load fails closed.
+        self._skill_service.loader.capabilities.record_event(
+            "skill",
+            skill.name,
+            "skill_loaded",
+            metadata=metadata,
+        )
+        bind_skill_load(
+            frame_id=self.frame_id,
+            action_group_id=str(action_group_id) if action_group_id else None,
+            skill_id=skill.name,
+            version=str(getattr(skill, "version", "") or ""),
+            document_digest=str(getattr(skill, "document_sha256", "") or ""),
+            capability=capability,
+            source=source,
+        )
+        loaded_dict = loaded if isinstance(loaded, dict) else None
+        if loaded_dict is not None:
+            loaded_dict["skill_id"] = skill.name
+            loaded_dict["action_group_id"] = metadata["action_group_id"]
+            loaded_dict["manifest_digest"] = metadata["manifest_digest"]
+            loaded_dict["document_digest"] = metadata["document_digest"]
+        # Full admission, not just the version-wide `raw_required` freeze.
+        # `host_only` genuinely depends on measured posture -- and at load
+        # time the posture is available: every `host_call` runs inside
+        # `bind_sandbox_status(self.sandbox_status)`, which the manager reads
+        # from the worker executing this very Cell. Refusing only
+        # `raw_required` here left `host_only` on a degraded sandbox refused
+        # for every subsequent Cell and permitted for the one that loaded it
+        # -- the load-then-use shape, i.e. the one that matters.
+        decision = admit(
+            sink=LOAD_SINK,
+            frame_id=self.frame_id,
+            sandbox_status=self._current_sandbox_status(),
+        )
+        if not decision.allowed:
+            return f"{decision.refusal_message()} (the load is refused, not just the next Cell)"
+        return None
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions
@@ -2807,6 +2947,22 @@ class HostDispatcher:
         return self._bg_executor
 
     def _m_exec_background(self, spec: dict) -> dict:
+        # A third Code-as-Action sink. Foreground Cells and host.bash are
+        # admitted; this one spawns its own worker and used to run whatever
+        # it was given, so a Skill the version blocks stayed reachable by
+        # sending the same code here instead. Only the unconditional half
+        # applies -- a declared raw_required manifest is refused whatever the
+        # sandbox reports, which needs no measured posture.
+        from openai4s.server.skill_network_admission import raw_required_binding
+
+        refused = raw_required_binding(self.frame_id)
+        if refused is not None:
+            return {
+                "error": (
+                    f"skill {refused.skill_id!r} requires raw kernel network "
+                    "and is blocked in this version"
+                )
+            }
         code = spec["code"] if isinstance(spec, dict) else str(spec)
         origin = spec.get("origin", "agent") if isinstance(spec, dict) else "agent"
         return self._bg().launch(code, origin=origin)
@@ -2879,7 +3035,21 @@ class HostDispatcher:
     def _m_skills_get(self, name: str) -> dict:
         return self._skill_service.get(name)
 
-    def _m_skills_read(self, spec: dict) -> str:
+    def _m_skills_read(self, spec: dict) -> str | dict:
+        """Read one Skill file -- the recipe itself, at the default path.
+
+        `read` with no `path` returns `SKILL.md`, which is the same
+        executable guidance `load_skill` hands back. Gating only `load_skill`
+        left the freeze one synonym wide: an already-admitted Cell that reads
+        instead of loads got the recipe with no bind and no refusal. The bind
+        is the same one, so the requirement is recorded either way.
+        """
+
+        name = str(spec.get("name") or "")
+        if name:
+            refusal = self._bind_loaded_skill({"name": name}, source="skills_read")
+            if refusal is not None:
+                return {"error": refusal}
         return self._skill_service.read(spec)
 
     def _m_skills_edit(self, spec: dict) -> dict:

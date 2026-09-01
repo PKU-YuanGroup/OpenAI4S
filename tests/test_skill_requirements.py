@@ -101,6 +101,15 @@ def test_browsing_the_catalogue_never_reaches_the_network(monkeypatch):
     assert rows, "no skills discovered"
     for row in rows:
         assert row["readiness"]["checked_locally"] is True
+        assert row["readiness"]["probed"] is False
+        assert "blocked_on" in row["readiness"]
+        assert "ready" in row
+        assert row["capabilities"]["network"]["mode"] in {
+            "none",
+            "host_only",
+            "raw_required",
+            "unknown",
+        }
 
 
 def test_readiness_does_not_spawn_a_process_per_skill(monkeypatch):

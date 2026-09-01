@@ -406,6 +406,38 @@ def test_view_image_refuses_an_absent_version_the_same_way(two_projects):
         service.view_image({"version_id": "v-nope"})
 
 
+def test_browse_artifacts_never_returns_another_projects_rows(two_projects):
+    """The index is project-scoped in SQL, including when the filename query
+    would otherwise match a foreign row of the same name."""
+    _cfg, store, _service, ours, foreign = two_projects
+    mine = store.get_artifact(ours["artifact_id"])
+    rows = store.browse_artifacts(project_id=mine["project_id"], limit=100)
+    ids = {row["artifact_id"] for row in rows}
+    assert ours["artifact_id"] in ids
+    assert foreign["artifact_id"] not in ids
+    assert "secret-cohort.csv" not in {row["filename"] for row in rows}
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["%", "_", "secret%", "%cohort%", "secret-cohort.csv", "ours.csv"],
+)
+def test_browse_filename_wildcards_cannot_escape_the_project(two_projects, query):
+    """Escaped LIKE is still a filename filter inside the project predicate.
+    A literal ``%`` must not become 'every filename in the database'."""
+    _cfg, store, _service, ours, foreign = two_projects
+    mine = store.get_artifact(ours["artifact_id"])
+    rows = store.browse_artifacts(
+        project_id=mine["project_id"],
+        filename_query=query,
+        limit=100,
+    )
+    ids = {row["artifact_id"] for row in rows}
+    assert foreign["artifact_id"] not in ids
+    for row in rows:
+        assert row["project_id"] == mine["project_id"]
+
+
 def test_save_artifact_cannot_declare_a_foreign_lineage_input(two_projects):
     """One call creates an edge the scoping model says cannot exist.
 

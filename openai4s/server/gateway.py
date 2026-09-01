@@ -20,6 +20,7 @@ cell's figures / written files are captured as versioned artifacts.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -35,6 +36,7 @@ import time
 import traceback
 import uuid
 import zipfile
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -92,8 +94,10 @@ from openai4s.observability import (
 from openai4s.review import review_evidence
 from openai4s.security.sandbox import KernelReadIsolation
 from openai4s.server import (
+    artifact_index_routes,
     artifact_refs,
     artifact_workbench_routes,
+    attention_routes,
     auto_mode_routes,
     compute_session_routes,
     compute_tasks,
@@ -102,6 +106,7 @@ from openai4s.server import (
     governance_routes,
     kernel_routes,
     local_auth,
+    onboarding_routes,
     orchestration_routes,
     retrieval_source,
     team_policy,
@@ -124,6 +129,14 @@ from openai4s.server.artifacts import (
     PromotionTarget,
     WorkspaceSnapshot,
     artifact_receipt_map,
+)
+from openai4s.server.auto_budget import (
+    AutoBudgetAdmission,
+    AutoBudgetDenied,
+    canonical_action_fingerprint,
+    execution_action_group,
+    token_upper_bound,
+    verifiable_token_usage,
 )
 from openai4s.server.auto_mode import AutoModeService, resolve_effective_selection
 from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
@@ -225,6 +238,17 @@ from openai4s.tools import control_tool_specs, get_tool
 os.environ.setdefault("MPLBACKEND", "Agg")  # headless matplotlib for figure capture
 
 WEBUI_DIR = Path(__file__).resolve().parent / "webui"
+
+
+def _webui_legacy_enabled() -> bool:
+    """True only for ``OPENAI4S_WEBUI=legacy``; unset serves the Vite dist shell.
+
+    Any other value (including ``1`` / ``next`` / ``true``) keeps the new UI,
+    so a typo cannot silently fall back to the escape hatch.
+    """
+    return (os.environ.get("OPENAI4S_WEBUI") or "").strip() == "legacy"
+
+
 #: The only `/static/` path served as a framed document rather than a
 #: subresource: `/ketcher` embeds it, so it needs `frame-ancestors 'self'`
 #: while every other static file keeps the shell's frame denial.
@@ -624,6 +648,156 @@ def _sanitize_header_value(value: str) -> str:
     """Remove CR/LF from an HTTP header value so a user-influenced value cannot
     inject extra headers or split the response (CWE-113)."""
     return str(value).replace("\r", "").replace("\n", "")
+
+
+# Static UI transport (ETag / 304 / gzip / fingerprint Cache-Control). These
+# apply only to `_serve_index` / `_serve_static` / the large-file branch of
+# `_stream_file`. `_send` stays `Cache-Control: no-cache` so API JSON and
+# Artifact bytes keep the same headers they always had.
+_STATIC_STREAM_BYTES = 8 * 1024 * 1024
+_GZIP_MIN_BYTES = 1024
+_GZIP_CACHE_MAX_BYTES = 48 * 1024 * 1024
+_GZIP_LEVEL = 6
+_GZIP_SUFFIXES = (".js", ".css", ".html", ".htm", ".svg", ".json")
+_FINGERPRINT_CACHE_CONTROL = "public, max-age=31536000, immutable"
+# Webpack `name.<8 hex>[.chunk].ext` (Ketcher) and Vite/font
+# `name-<8 url-safe>.ext` (vendored woff2). Unhashed names stay no-cache.
+_FINGERPRINT_NAME_RE = re.compile(
+    r"(?:\.[0-9a-f]{8}(?:\.chunk)?(?:\.[A-Za-z0-9]+)+$)"
+    r"|(?:-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$)",
+    re.IGNORECASE,
+)
+_GZIP_CACHE: OrderedDict[tuple[str, int, int], bytes] = OrderedDict()
+_GZIP_CACHE_BYTES = 0
+_GZIP_CACHE_LOCK = threading.Lock()
+
+
+def _is_fingerprinted_name(name: str) -> bool:
+    return bool(_FINGERPRINT_NAME_RE.search(name))
+
+
+def _gzip_eligible(name: str, size: int) -> bool:
+    if size <= _GZIP_MIN_BYTES:
+        return False
+    lower = name.lower()
+    return any(lower.endswith(suffix) for suffix in _GZIP_SUFFIXES)
+
+
+def _weak_etag(mtime_ns: int, size: int, *, gzip_body: bool) -> str:
+    tag = f"{mtime_ns:x}-{size:x}"
+    if gzip_body:
+        tag += "-gz"
+    return f'W/"{tag}"'
+
+
+def _etag_key(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[:2].upper() == "W/":
+        value = value[2:].strip()
+    return value
+
+
+def _if_none_match(headers: Any, etag: str) -> bool:
+    if headers is None:
+        return False
+    raw = headers.get("If-None-Match")
+    if not raw:
+        return False
+    raw = str(raw).strip()
+    if raw == "*":
+        return True
+    want = _etag_key(etag)
+    return any(_etag_key(part) == want for part in raw.split(",") if part.strip())
+
+
+def _accepts_gzip(headers: Any) -> bool:
+    if headers is None:
+        return False
+    raw = headers.get("Accept-Encoding")
+    if not raw:
+        return False
+    for part in str(raw).split(","):
+        token, _, params = part.strip().partition(";")
+        if token.strip().casefold() != "gzip":
+            continue
+        q = 1.0
+        if params:
+            for param in params.split(";"):
+                name, _, value = param.strip().partition("=")
+                if name.strip().casefold() != "q":
+                    continue
+                try:
+                    q = float(value.strip() or "0")
+                except ValueError:
+                    q = 0.0
+        return q > 0.0
+    return False
+
+
+def _gzip_cached_bytes(path: Path, st: os.stat_result) -> bytes:
+    """Compress a static file, keyed by (path, mtime_ns, size), LRU ~48MB."""
+    global _GZIP_CACHE_BYTES
+    key = (str(path), int(st.st_mtime_ns), int(st.st_size))
+    with _GZIP_CACHE_LOCK:
+        cached = _GZIP_CACHE.get(key)
+        if cached is not None:
+            _GZIP_CACHE.move_to_end(key)
+            return cached
+    raw = path.read_bytes()
+    compressed = gzip.compress(raw, compresslevel=_GZIP_LEVEL, mtime=0)
+    del raw
+    with _GZIP_CACHE_LOCK:
+        cached = _GZIP_CACHE.get(key)
+        if cached is not None:
+            _GZIP_CACHE.move_to_end(key)
+            return cached
+        while (
+            _GZIP_CACHE and _GZIP_CACHE_BYTES + len(compressed) > _GZIP_CACHE_MAX_BYTES
+        ):
+            _, old = _GZIP_CACHE.popitem(last=False)
+            _GZIP_CACHE_BYTES -= len(old)
+            if _GZIP_CACHE_BYTES < 0:
+                _GZIP_CACHE_BYTES = 0
+        if len(compressed) <= _GZIP_CACHE_MAX_BYTES:
+            _GZIP_CACHE[key] = compressed
+            _GZIP_CACHE_BYTES += len(compressed)
+    return compressed
+
+
+def _resolve_static_file(rel: str) -> tuple[Path | None, int | None]:
+    """Resolve `/static/<rel>` inside WEBUI_DIR.
+
+    `join` + `normpath` alone does not follow a symlink, so a link planted
+    under the tree used to be served. realpath the target too, then
+    commonpath, before treating it as a file.
+    """
+    base = os.path.realpath(str(WEBUI_DIR))
+    candidate = os.path.normpath(os.path.join(base, rel))
+    try:
+        if os.path.commonpath((base, candidate)) != base:
+            return None, 403
+    except ValueError:
+        return None, 403
+    try:
+        real = os.path.realpath(candidate)
+    except OSError:
+        return None, 404
+    # Two spellings of one check, deliberately both. `commonpath` is the one
+    # that is right about separators and drive roots; the prefix comparison is
+    # the form static analysis recognises as a path-injection barrier, and
+    # without it every read below this function is reported as unguarded.
+    # Neither is load-bearing alone -- a path has to pass both.
+    prefix = base if base.endswith(os.sep) else base + os.sep
+    if real != base and not real.startswith(prefix):
+        return None, 403
+    try:
+        if os.path.commonpath((base, real)) != base:
+            return None, 403
+    except ValueError:
+        return None, 403
+    if not os.path.isfile(real):
+        return None, 404
+    return Path(real), None
 
 
 def _sha256(path: Path) -> str:
@@ -1788,6 +1962,7 @@ class SessionState:
         # closure that a dispatcher created on an earlier turn cannot see.
         self.active_auto_mode_run_id: str | None = None
         self.guardian_blocked_reason: str | None = None
+        self.auto_budget_terminal_reason: str | None = None
         # Per-session model override (from the composer dropdown) + plan flag.
         self.model: str | None = None
         self.plan: bool = False
@@ -2948,6 +3123,45 @@ class SessionRunner:
                 "delegation_record_stale",
             )
         return result
+
+    def continue_delegation_child(self, root_frame_id: str, child_id: str) -> dict:
+        """Create the next attempt. Restore never auto-runs a stopped child."""
+
+        from openai4s.agent.delegation import DelegationConflictError, DelegationError
+
+        tree = self.store.delegation_tree(root_frame_id) or {}
+        record = next(
+            (
+                child
+                for child in (tree.get("children") or [])
+                if str(child.get("child_id") or "") == child_id
+            ),
+            None,
+        )
+        if record is None:
+            raise GatewayError(404, f"no such sub-agent {child_id}", "not_found")
+        state = self._existing_state(root_frame_id)
+        runner = state.delegation_runner if state is not None else None
+        if runner is None:
+            raise GatewayError(
+                409,
+                "this sub-agent belongs to a run that is no longer active; "
+                "open the session and continue explicitly — restart does not "
+                "auto-resume delegated children",
+                "delegation_record_stale",
+            )
+        try:
+            return runner.continue_child(child_id)
+        except DelegationConflictError as error:
+            raise GatewayError(
+                getattr(error, "http_status", 409),
+                str(error),
+                "delegation_conflict",
+            ) from error
+        except KeyError as error:
+            raise GatewayError(404, str(error), "not_found") from error
+        except DelegationError as error:
+            raise GatewayError(409, str(error), "delegation_error") from error
 
     def refresh_compute_task(self, root_frame_id: str, job_id: str) -> dict:
         """Contact the remote for ONE job, because a person asked.
@@ -5706,6 +5920,11 @@ class SessionRunner:
                 reason = "blocked_by_guardian"
                 stop_reason = "loop_detected"
                 key = f"guardian-terminal:{run_id}"
+            elif st.auto_budget_terminal_reason:
+                terminal = "paused"
+                reason = str(st.auto_budget_terminal_reason)
+                stop_reason = reason
+                key = f"budget-terminal:{run_id}"
             elif status == "cancelled":
                 terminal = "cancelled"
                 reason = "cancelled"
@@ -5756,6 +5975,243 @@ class SessionRunner:
             self.auto_mode.publish_committed(transition)
         finally:
             st.active_auto_mode_run_id = None
+
+    def _auto_budget(self) -> AutoBudgetAdmission:
+        return AutoBudgetAdmission(self.store, self.cfg.auto_mode.budgets)
+
+    def _auto_budget_extra_phase(self, st: SessionState) -> bool:
+        return AutoBudgetAdmission(
+            self.store, self.cfg.auto_mode.budgets
+        ).token_phase_active(str(st.active_auto_mode_run_id or ""))
+
+    def _admit_auto_budget(
+        self,
+        st: SessionState,
+        *,
+        consumer: str,
+        action_group_id: str,
+        action_sha256: str | None = None,
+        amount: int = 1,
+        enforce_field_limit: bool = True,
+        token_upper_bound: int | None = None,
+    ) -> dict | None:
+        run_id = str(st.active_auto_mode_run_id or "")
+        if not run_id:
+            return None
+        admission_id = f"{run_id}:{consumer}:{action_group_id}"
+        return self._auto_budget().reserve(
+            run_id=run_id,
+            admission_id=admission_id,
+            consumer=consumer,
+            action_group_id=action_group_id,
+            amount=amount,
+            action_sha256=action_sha256,
+            enforce_field_limit=enforce_field_limit,
+            token_upper_bound=token_upper_bound,
+        )
+
+    def _settle_auto_budget(
+        self,
+        admission: Mapping[str, Any] | None,
+        *,
+        started: bool,
+        unknown: bool = False,
+        committed_amount: int = 1,
+    ) -> None:
+        if not isinstance(admission, Mapping):
+            return
+        reservation = admission.get("reservation")
+        if not isinstance(reservation, Mapping):
+            return
+        admission_id = str(reservation.get("admission_id") or "")
+        if not admission_id:
+            return
+        budget = self._auto_budget()
+        if unknown or (started and reservation.get("state") == "reserved"):
+            if unknown:
+                budget.mark_unknown(admission_id)
+            elif started:
+                budget.commit(admission_id, committed_amount=committed_amount)
+        elif not started:
+            budget.release(admission_id, started=False)
+
+    def _invoke_model_with_auto_budget(
+        self,
+        st: SessionState,
+        messages: Any,
+        cfg: Any,
+        provider_call: Callable[..., Any],
+        **kwargs: Any,
+    ) -> Any:
+        """Admit model/token spend before crossing the provider boundary."""
+
+        admission = None
+        token_admission = None
+        run_id = str(st.active_auto_mode_run_id or "")
+        group_id = execution_action_group(
+            getattr(st, "active_action_group_id", None) or f"model:{st.cell_index}"
+        )
+        extra = self._auto_budget_extra_phase(st)
+        try:
+            admission = self._admit_auto_budget(
+                st,
+                consumer="model",
+                action_group_id=group_id,
+                amount=1,
+                enforce_field_limit=False,
+            )
+            if extra and admission is not None:
+                bound = token_upper_bound(
+                    cfg,
+                    messages=messages,
+                    tools=kwargs.get("tools"),
+                    max_tokens=kwargs.get("max_tokens"),
+                )
+                if bound is None:
+                    self._settle_auto_budget(admission, started=False)
+                    AutoBudgetAdmission(
+                        self.store, self.cfg.auto_mode.budgets
+                    ).fail_measurement(run_id)
+                    raise AutoBudgetDenied(
+                        "budget_measurement_unavailable",
+                        "adapter lacks a prompt-plus-completion token ceiling",
+                        field="extra_token_multiplier",
+                    )
+                token_admission = self._admit_auto_budget(
+                    st,
+                    consumer="token",
+                    action_group_id=f"{group_id}:token",
+                    amount=bound,
+                    enforce_field_limit=False,
+                    token_upper_bound=bound,
+                )
+        except AutoBudgetDenied as denied:
+            if admission is not None and token_admission is None:
+                try:
+                    self._settle_auto_budget(admission, started=False)
+                except Exception:  # noqa: BLE001 - denial remains fail-closed
+                    pass
+            self._note_auto_budget_trip(st, denied)
+            raise
+        try:
+            result = provider_call(messages, cfg, **kwargs)
+        except Exception:
+            self._settle_auto_budget(admission, started=True, unknown=True)
+            self._settle_auto_budget(token_admission, started=True, unknown=True)
+            raise
+        usage_total = None
+        if extra and admission is not None and token_admission is not None:
+            usage_total = verifiable_token_usage(
+                result.get("usage") if isinstance(result, Mapping) else None
+            )
+            if usage_total is None:
+                self._settle_auto_budget(admission, started=True, unknown=True)
+                self._settle_auto_budget(token_admission, started=True, unknown=True)
+                if run_id:
+                    AutoBudgetAdmission(
+                        self.store, self.cfg.auto_mode.budgets
+                    ).fail_measurement(run_id)
+                denied = AutoBudgetDenied(
+                    "budget_measurement_unavailable",
+                    "adapter token usage is not verifiable",
+                    field="extra_token_multiplier",
+                )
+                self._note_auto_budget_trip(st, denied)
+                raise denied
+        try:
+            self._settle_auto_budget(admission, started=True)
+            if token_admission is not None and usage_total is not None:
+                self._settle_auto_budget(
+                    token_admission,
+                    started=True,
+                    committed_amount=usage_total,
+                )
+        except AutoBudgetDenied as denied:
+            self._note_auto_budget_trip(st, denied)
+            raise
+        return result
+
+    def _note_auto_budget_trip(
+        self, st: SessionState, denied: AutoBudgetDenied
+    ) -> None:
+        st.auto_budget_terminal_reason = denied.reason
+        run_id = str(st.active_auto_mode_run_id or "")
+        if run_id:
+            try:
+                self._auto_budget().trip(
+                    run_id, reason=denied.reason, field=denied.field
+                )
+            except Exception:  # noqa: BLE001 - trip is already fail-closed
+                pass
+        st.cancel.set()
+
+    def _freeze_auto_budget_tokens(self, st: SessionState) -> None:
+        run_id = str(st.active_auto_mode_run_id or "")
+        if not run_id:
+            return
+        frame = self.store.get_frame(st.root_frame_id) or {}
+        tokens = int(frame.get("input_tokens") or 0) + int(
+            frame.get("output_tokens") or 0
+        )
+        try:
+            self._auto_budget().freeze_initial_tokens(run_id, tokens)
+        except Exception:  # noqa: BLE001 - freeze is best-effort after the turn
+            pass
+
+    def _note_auto_budget_delta(
+        self, st: SessionState, *, kind: str, cursor: str
+    ) -> None:
+        run_id = str(getattr(st, "active_auto_mode_run_id", None) or "")
+        if not run_id:
+            return
+        try:
+            self._auto_budget().record_delta(run_id, kind=kind, cursor=cursor)
+        except Exception:  # noqa: BLE001 - delta must not fail the producing write
+            pass
+
+    def _invoke_control_with_auto_budget(self, st, call, emit, invoke):
+        # auto_budget sink: native tool admission before invoke.
+        name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+        arguments = (
+            call.get("arguments")
+            if isinstance(call, dict)
+            else getattr(call, "arguments", None)
+        )
+        ledger = getattr(st, "active_action_ledger", None)
+        ledger_group = str(
+            getattr(ledger, "current_group_id", None)
+            or getattr(st, "active_action_group_id", None)
+            or "native"
+        )
+        call_id = (
+            call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        )
+        # A ledger group is a batch, not a single side effect. Bind admission
+        # to this exact native invocation so siblings and retries cannot reuse
+        # one reservation as execution authority.
+        group_id = execution_action_group(ledger_group, call_id)
+        admission = None
+        try:
+            admission = self._admit_auto_budget(
+                st,
+                consumer="native_tool",
+                action_group_id=group_id,
+                action_sha256=canonical_action_fingerprint(
+                    kind="tool",
+                    name=str(name or ""),
+                    arguments=arguments,
+                ),
+            )
+        except AutoBudgetDenied as denied:
+            self._note_auto_budget_trip(st, denied)
+            raise
+        try:
+            result = self._invoke_control_with_artifacts(st, call, emit, invoke)
+            self._settle_auto_budget(admission, started=True)
+            return result
+        except Exception:
+            self._settle_auto_budget(admission, started=True, unknown=True)
+            raise
 
     def _release_bound_compute_in_execution(
         self,
@@ -9019,6 +9475,7 @@ class SessionRunner:
         ) as execution:
             st.active_auto_mode_run_id = None
             st.guardian_blocked_reason = None
+            st.auto_budget_terminal_reason = None
             self._bind_execution_to_turn(getattr(execution, "execution_id", ""))
             self.recovery.touch(st)
             # Tool-only and plan turns need the control plane and provider
@@ -10302,17 +10759,47 @@ class SessionRunner:
                 action_ledger.current_group_id if action_ledger else None
             )
             try:
-                # The full outcome (not just ["result"]): the executor needs
-                # the "executed" bit to keep refused cells out of the
-                # finalize-evidence ledger, and unwraps "result" itself.
-                return self._execute_and_log(
-                    st,
-                    action.code,
-                    "agent",
-                    emit,
-                    stream=True,
-                    language=action.language,
-                )
+                # auto_budget sink: Python/R Cell admission before execution.
+                cell_admission = None
+                try:
+                    cell_admission = self._admit_auto_budget(
+                        st,
+                        consumer="extra_cell",
+                        action_group_id=str(
+                            st.active_action_group_id
+                            or f"cell:{st.cell_index}:{action.language}"
+                        ),
+                        action_sha256=canonical_action_fingerprint(
+                            kind="cell",
+                            name=str(action.language or "python"),
+                            source=str(action.code or ""),
+                        ),
+                        enforce_field_limit=self._auto_budget_extra_phase(st),
+                    )
+                except AutoBudgetDenied as denied:
+                    self._note_auto_budget_trip(st, denied)
+                    return {
+                        "executed": False,
+                        "error": str(denied),
+                        "result": "",
+                    }
+                try:
+                    # The full outcome (not just ["result"]): the executor needs
+                    # the "executed" bit to keep refused cells out of the
+                    # finalize-evidence ledger, and unwraps "result" itself.
+                    result = self._execute_and_log(
+                        st,
+                        action.code,
+                        "agent",
+                        emit,
+                        stream=True,
+                        language=action.language,
+                    )
+                    self._settle_auto_budget(cell_admission, started=True)
+                    return result
+                except Exception:
+                    self._settle_auto_budget(cell_admission, started=True, unknown=True)
+                    raise
             finally:
                 st.active_action_group_id = None
 
@@ -10342,10 +10829,16 @@ class SessionRunner:
         def _llm_quota_gate() -> None:
             self.enforce_llm_quota(st.root_frame_id)
 
+        def _auto_budget_chat(messages, cfg, **kwargs):
+            # auto_budget sink: model inference admission before provider call.
+            return self._invoke_model_with_auto_budget(
+                st, messages, cfg, chat, **kwargs
+            )
+
         engine = AgentEngine(
             ChatModel(
                 llm_cfg,
-                chat,
+                _auto_budget_chat,
                 tools=model_tools,
                 stream=True,
                 # Same signal the engine gets below, so Stop also interrupts a
@@ -10363,7 +10856,7 @@ class SessionRunner:
                 explore_nudge=_EXPLORE_NUDGE,
                 admit_cell=lambda _action: (self.require_standard_profile_readiness()),
                 native_wrapper=lambda call, invoke: (
-                    self._invoke_control_with_artifacts(st, call, emit, invoke)
+                    self._invoke_control_with_auto_budget(st, call, emit, invoke)
                 ),
                 explore_mode=st.explore,
                 plan_mode=st.plan,
@@ -10403,10 +10896,16 @@ class SessionRunner:
             max_turns=max_turns,
         )
         state = RunState(st.messages, max_turns=max_turns)
-        result = engine.run(state)
+        try:
+            result = engine.run(state)
+        except AutoBudgetDenied as denied:
+            self._note_auto_budget_trip(st, denied)
+            self._freeze_auto_budget_tokens(st)
+            return denied.reason
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
         self._telemetry_turn(st, result)
+        self._freeze_auto_budget_tokens(st)
         return result.stop_reason
 
     def _telemetry_turn(self, st: SessionState, result: Any) -> None:
@@ -10594,7 +11093,7 @@ class SessionRunner:
         """Never turn snapshot infrastructure failure into source failure."""
 
         try:
-            return self.session_domain.capture_cursor_checkpoint(
+            captured = self.session_domain.capture_cursor_checkpoint(
                 root_frame_id,
                 source_kind=source_kind,
                 source_id=source_id,
@@ -10604,6 +11103,20 @@ class SessionRunner:
             )
         except Exception:  # noqa: BLE001 - Cell/message persistence already won
             return None
+        if isinstance(captured, Mapping):
+            state = self._existing_state(str(root_frame_id))
+            if state is not None:
+                cursor = str(
+                    captured.get("checkpoint_id")
+                    or captured.get("id")
+                    or source_id
+                    or ""
+                )
+                if cursor:
+                    self._note_auto_budget_delta(
+                        state, kind="checkpoint", cursor=cursor
+                    )
+        return captured
 
     def _record_cell_with_cursor_checkpoint(self, **record: Any) -> str:
         cell_id = self.store.log_cell(**record)
@@ -10799,6 +11312,13 @@ class SessionRunner:
     # -- structured plan: capture / persist / approve / revise / discard ----
     def _finalize_plan(self, st: SessionState, reply: str, prose: str, emit) -> None:
         self.plans.finalize(st, reply, prose, emit)
+        plan = self.plans.get_state(st.root_frame_id)
+        cursor = ""
+        if isinstance(plan, Mapping):
+            cursor = str(plan.get("plan_id") or plan.get("id") or "")
+        self._note_auto_budget_delta(
+            st, kind="plan", cursor=cursor or f"plan:{st.root_frame_id}"
+        )
 
     def _write_plan_artifact(
         self, st: SessionState, plan: dict, artifact_id: str | None, emit
@@ -13517,7 +14037,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
 
         # ---- static -----------------------------------------------------
         def _serve_index(self) -> None:
-            self._serve_file(WEBUI_DIR / "index.html", "text/html; charset=utf-8")
+            index = (
+                WEBUI_DIR / "index.html"
+                if _webui_legacy_enabled()
+                else WEBUI_DIR / "dist" / "index.html"
+            )
+            self._serve_ui_file(index, "text/html; charset=utf-8")
 
         def _serve_static(self, path: str) -> bool:
             if path in ("/", "/index.html"):
@@ -13525,30 +14050,116 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return True
             if path.startswith("/static/"):
                 rel = path[len("/static/") :]
-                # Normalize the requested path and require it to share the web-UI
-                # root as a common path prefix, so it cannot escape via ".." or an
-                # absolute path.
-                base = os.path.realpath(str(WEBUI_DIR))
-                target_s = os.path.normpath(os.path.join(base, rel))
-                if os.path.commonpath((base, target_s)) != base:
-                    self._json({"error": "forbidden"}, 403)
-                    return True
-                target = Path(target_s)
-                if target.is_file():
-                    ctype = _guess_ctype(target.name)
-                    # The one static document that is itself framed: `/ketcher`
-                    # embeds the vendored editor's entry page. Everything else
-                    # under /static/ keeps the shell's frame denial.
-                    security = (
-                        embeddable_security_headers()
-                        if rel == _FRAMED_STATIC_DOCUMENT
-                        else None
+                target, status = _resolve_static_file(rel)
+                if status is not None:
+                    self._json(
+                        {"error": "forbidden" if status == 403 else "not found"},
+                        status,
                     )
-                    self._serve_file(target, ctype, security=security)
-                else:
-                    self._json({"error": "not found"}, 404)
+                    return True
+                assert target is not None
+                ctype = _guess_ctype(target.name)
+                # The one static document that is itself framed: `/ketcher`
+                # embeds the vendored editor's entry page. Everything else
+                # under /static/ keeps the shell's frame denial.
+                security = (
+                    embeddable_security_headers()
+                    if rel == _FRAMED_STATIC_DOCUMENT
+                    else None
+                )
+                self._serve_ui_file(target, ctype, security=security)
                 return True
             return False
+
+        def _send_static_bytes(
+            self,
+            code: int,
+            body: bytes,
+            ctype: str,
+            extra: dict | None,
+            security: dict[str, str] | None,
+        ) -> None:
+            """Write a static response whose Cache-Control `_send` cannot express.
+
+            `_send` hard-wires `no-cache`. Fingerprint names need
+            `public, max-age=31536000, immutable`; sending both would combine
+            into a contradictory policy. 304 still applies the security
+            profile — an empty body is not an opt-out.
+            """
+            extra = dict(extra or {})
+            cache_control = extra.pop("Cache-Control", "no-cache")
+            self._last_status = code
+            self.send_response(code)
+            self.send_header("Content-Type", _sanitize_header_value(ctype))
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", _sanitize_header_value(cache_control))
+            request_id = getattr(self, "_correlation_id", "")
+            if request_id:
+                self.send_header("X-Request-Id", _sanitize_header_value(request_id))
+            profile = security if security is not None else security_headers()
+            for key, value in profile.items():
+                self.send_header(key, _sanitize_header_value(value))
+            for key, value in extra.items():
+                self.send_header(key, _sanitize_header_value(value))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def _serve_ui_file(
+            self,
+            path: Path,
+            ctype: str,
+            extra: dict | None = None,
+            security: dict[str, str] | None = None,
+        ) -> None:
+            try:
+                st = path.stat()
+            except OSError:
+                self._json({"error": "not found"}, 404)
+                return
+            headers_out = dict(extra or {})
+            gzip_ok = _gzip_eligible(path.name, st.st_size) and _accepts_gzip(
+                getattr(self, "headers", None)
+            )
+            headers_out["ETag"] = _weak_etag(
+                st.st_mtime_ns, st.st_size, gzip_body=gzip_ok
+            )
+            fingerprinted = _is_fingerprinted_name(path.name)
+            if fingerprinted:
+                headers_out["Cache-Control"] = _FINGERPRINT_CACHE_CONTROL
+            if _gzip_eligible(path.name, st.st_size):
+                headers_out["Vary"] = "Accept-Encoding"
+            if gzip_ok:
+                headers_out["Content-Encoding"] = "gzip"
+            if _if_none_match(getattr(self, "headers", None), headers_out["ETag"]):
+                if fingerprinted:
+                    self._send_static_bytes(304, b"", ctype, headers_out, security)
+                else:
+                    self._send(304, b"", ctype, extra=headers_out, security=security)
+                return
+            if gzip_ok:
+                try:
+                    body = _gzip_cached_bytes(path, st)
+                except OSError:
+                    self._json({"error": "not found"}, 404)
+                    return
+                if fingerprinted:
+                    self._send_static_bytes(200, body, ctype, headers_out, security)
+                else:
+                    self._send(200, body, ctype, extra=headers_out, security=security)
+                return
+            if st.st_size > _STATIC_STREAM_BYTES:
+                self._stream_file(path, ctype, extra=headers_out, security=security)
+                return
+            if fingerprinted:
+                try:
+                    body = path.read_bytes()
+                except OSError:
+                    self._json({"error": "not found"}, 404)
+                    return
+                self._send_static_bytes(200, body, ctype, headers_out, security)
+                return
+            self._serve_file(path, ctype, extra=headers_out, security=security)
 
         def _serve_file(
             self,
@@ -13572,17 +14183,44 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             security: dict[str, str] | None = None,
         ) -> None:
             """Send a potentially large local file without loading it into RAM."""
+            extra = dict(extra or {})
             try:
-                source = path.open("rb")
                 size = path.stat().st_size
             except OSError:
                 self._json({"error": "not found"}, 404)
                 return
+            etag = extra.get("ETag")
+            if etag and _if_none_match(getattr(self, "headers", None), etag):
+                # 304 must still carry the security profile: an empty body is
+                # not an opt-out. `_send` is not used here because fingerprint
+                # names pass a Cache-Control `_send` would contradict.
+                self._last_status = 304
+                self.send_response(304)
+                self.send_header("Content-Type", _sanitize_header_value(ctype))
+                self.send_header("Content-Length", "0")
+                cache_control = extra.get("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", _sanitize_header_value(cache_control))
+                profile = security if security is not None else security_headers()
+                for key, value in profile.items():
+                    self.send_header(key, _sanitize_header_value(value))
+                for key, value in extra.items():
+                    if key == "Cache-Control":
+                        continue
+                    self.send_header(key, _sanitize_header_value(value))
+                self.end_headers()
+                return
+            try:
+                source = path.open("rb")
+            except OSError:
+                self._json({"error": "not found"}, 404)
+                return
+            cache_control = extra.pop("Cache-Control", "no-cache")
             with source:
+                self._last_status = 200
                 self.send_response(200)
                 self.send_header("Content-Type", _sanitize_header_value(ctype))
                 self.send_header("Content-Length", str(size))
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", _sanitize_header_value(cache_control))
                 # This path streams artifact bytes — agent-authored content, so
                 # the one that most needs nosniff and a closed CSP. It builds
                 # its own headers instead of going through _send, so it has to
@@ -13591,7 +14229,7 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 profile = security if security is not None else security_headers()
                 for key, value in profile.items():
                     self.send_header(key, _sanitize_header_value(value))
-                for key, value in (extra or {}).items():
+                for key, value in extra.items():
                     self.send_header(key, _sanitize_header_value(value))
                 self.end_headers()
                 while True:
@@ -13811,6 +14449,13 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             if file_routes.handle(self, method, sub, q, _file_area, _team_auth):
                 return
+            # Cross-session attention (B-05). Visibility is applied inside
+            # the aggregator, before sort/limit, so a handler-level frame
+            # guard cannot see the fan-out. GET is a read of existing
+            # projections; retry/approve/restore stay on their mutation
+            # routes.
+            if attention_routes.handle(self, method, sub, q, runner):
+                return
             # Session visibility toggle (M2-2, D4): owner-only.
             m = re.fullmatch(r"/frames/([^/]+)/visibility", sub)
             if m and method == "POST":
@@ -14027,6 +14672,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             if auto_mode_routes.handle(self, method, sub, q, runner):
                 return
             if artifact_workbench_routes.handle(self, method, sub, q, runner):
+                return
+            if onboarding_routes.handle(
+                self,
+                method,
+                sub,
+                q,
+                store=store,
+                cfg=cfg,
+                model_profiles=model_profiles,
+                model_discovery=model_discovery,
+            ):
+                return
+            if artifact_index_routes.handle(self, method, sub, q, store):
                 return
             # ---- identity / meta (no-auth local mode) ----
             if sub == "/me":
@@ -17036,6 +17694,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                         fid, child_id, (self._body() or {}).get("message") or ""
                     )
                 )
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/delegations/([^/]+)/continue", sub)
+            if m and method == "POST":
+                fid, child_id = m.groups()
+                self._json(runner.continue_delegation_child(fid, child_id))
                 return
             m = re.fullmatch(r"/frames/([^/]+)/compute/tasks", sub)
             if m and method == "GET":

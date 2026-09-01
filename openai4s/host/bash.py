@@ -24,7 +24,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from openai4s.bash_capability import CAPABILITY_VERSION, command_digest
 from openai4s.execution.budget import channel_counters
@@ -226,6 +226,7 @@ class BashAuthorizationService:
         allowed_roots: Callable[[], Iterable[str | Path]] | None = None,
         audit: Callable[..., Any] | None = None,
         step_sink: Callable[[], Callable[[dict], Any] | None] | None = None,
+        sandbox_status: Callable[[], Mapping[str, Any] | None] | None = None,
         clock: Callable[[], float] = time.time,
         token_factory: Callable[[], str] | None = None,
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
@@ -236,6 +237,7 @@ class BashAuthorizationService:
         self._allowed_roots = allowed_roots or (lambda: ())
         self._audit = audit
         self._step_sink = step_sink or (lambda: None)
+        self._sandbox_status = sandbox_status or (lambda: None)
         self._clock = clock
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
         self._ttl = min(
@@ -356,6 +358,21 @@ class BashAuthorizationService:
         except Exception as exc:  # noqa: BLE001 — host policy lookup fails closed
             return {"error": f"bash authorization: egress policy unavailable: {exc}"}
 
+        try:
+            from openai4s.server.skill_network_admission import admit_shell
+
+            network = admit_shell(
+                frame_id=self._frame_id(),
+                sandbox_status=self._sandbox_status(),
+                command_domains=domains,
+            )
+        except Exception as exc:  # noqa: BLE001 — admission must fail closed
+            return {
+                "error": f"bash authorization: skill network admission failed: {exc}"
+            }
+        if not network.allowed:
+            return {"error": network.refusal_message()}
+
         digest = command_digest(command)
         claimed_digest = spec.get("command_sha256")
         if claimed_digest is not None and claimed_digest != digest:
@@ -386,7 +403,9 @@ class BashAuthorizationService:
                 expires_at=now + self._ttl,
             )
             self._issued[token] = capability
-            return capability.public_payload()
+            payload = capability.public_payload()
+            payload["skill_network"] = network.as_dict()
+            return payload
 
     def attach_step(
         self,

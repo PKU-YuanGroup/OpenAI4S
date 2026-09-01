@@ -12,13 +12,22 @@ prints. It asserts the backend really is bubblewrap: a run that fell back to
 something else and still passed would be reporting on a boundary it never
 tested.
 
-**This is a manual smoke, not a CI job.** Its former hosted run failed during
-network-namespace setup and was removed because a permanently red check was not
-evidence. The newer targeted interrupt job loads Ubuntu's restricted bwrap
-AppArmor profile, which may change that old result, but this complete boundary
-smoke has not yet been re-evaluated under that setup. docs/platforms.md therefore
-keeps the broad Linux tier verified-by-hand instead of inferring it from the
-raw-network interrupt gate.
+**This is the independent full-boundary CI gate**, not the interrupt smoke.
+`.github/workflows/ci.yml` runs it on Ubuntu 24.04 under
+``OPENAI4S_KERNEL_SANDBOX=enforce`` with Ubuntu's restricted bwrap AppArmor
+profile loaded, and **without** ``OPENAI4S_KERNEL_ALLOW_RAW_NETWORK``. The
+interrupt job still allows raw networking so its private-PID evidence does not
+depend on network-namespace setup; that exception is why a green interrupt
+check is not this check. A raw-network override here is a hard failure.
+
+The four assertions are: outside write denied, raw network denied, workspace
+write allowed, child secret absent. The receipt the smoke prints names
+``backend=bubblewrap``, ``enforced=true``, ``self_test_passed=true``. The
+release quality receipt attests the check run at the frozen SHA
+(``ci-linux-sandbox-full``). The release workflow's own ``platform-checks``
+matrix still does **not** re-execute this smoke: it stays in
+``PLATFORM_CHECKS_UNAVAILABLE`` until multiple scheduled runs plus a candidate
+SHA are green. There is no ``continue-on-error``.
 
 Deliberately not in default pytest collection -- it requires `bwrap`, which a
 laptop may not have, and a check that quietly skips is the thing the frozen
@@ -35,7 +44,11 @@ from harness.smoke.sandbox_boundary import run_boundary_smoke
 def main() -> int:
     if platform.system() != "Linux":
         raise RuntimeError("Linux sandbox smoke must run on Linux")
-    return run_boundary_smoke(label="linux", expected_backend="bubblewrap")
+    return run_boundary_smoke(
+        label="linux",
+        expected_backend="bubblewrap",
+        forbid_raw_network=True,
+    )
 
 
 if __name__ == "__main__":

@@ -188,6 +188,10 @@ def _signed_dmg(
                 # job. Was hardcoded `None` and gated nothing.
                 "notarized": notarized,
                 "stapler_returncode": 0 if notarized else 1,
+                "spctl_returncode": 0 if notarized else 1,
+                # Stapling rewrites the DMG; the gate requires this post-staple
+                # digest to match the bytes being staged.
+                "post_staple_sha256": sha256_file(dmg) if notarized else "",
             }
         ),
         encoding="utf-8",
@@ -801,6 +805,56 @@ def test_omitting_the_macos_asset_is_a_supported_release_shape(assets):
     verify = next(s for s in report["steps"] if s["step"] == "verify")
     assert verify["facts"]["macos_asset"] == "omitted"
     assert verify["facts"]["macos_publishable"] is False
+
+
+def test_a_stale_stapled_ticket_does_not_notarize_rebuilt_bytes(assets):
+    """Stapling rewrites the DMG. A receipt that kept stapler_returncode==0
+    from an earlier build, then pointed image_sha256 at new bytes, is a stale
+    ticket: post_staple_sha256 no longer matches."""
+    dmg = _signed_dmg(assets, notarized=True)
+    payload = json.loads(dmg.with_name(dmg.name + ".codesign.json").read_text())
+    payload["post_staple_sha256"] = "0" * 64
+    dmg.with_name(dmg.name + ".codesign.json").write_text(json.dumps(payload), "utf-8")
+
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    detail = report["steps"][-1]["detail"]
+    assert "notarization" in detail
+
+
+def test_a_notarized_receipt_without_post_staple_digest_is_not_verified(assets):
+    """The field is load-bearing: omitting it is how a pre-staple receipt
+    would look, and it must not satisfy the gate."""
+    dmg = _signed_dmg(assets, notarized=True)
+    payload = json.loads(dmg.with_name(dmg.name + ".codesign.json").read_text())
+    payload.pop("post_staple_sha256", None)
+    dmg.with_name(dmg.name + ".codesign.json").write_text(json.dumps(payload), "utf-8")
+
+    info = read_signature(dmg, lambda argv: _completed())
+    assert info["notarized"] is False
+    assert info["post_staple_digest_matches"] is False
+
+
+def test_verify_records_post_staple_digest_and_assessment_returncodes(assets):
+    _signed_dmg(assets, notarized=True)
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert report["ok"], report
+    verify = next(s for s in report["steps"] if s["step"] == "verify")
+    name = "OpenAI4S-0.2.0-arm64.dmg"
+    assert verify["facts"]["post_staple_sha256"][name] == sha256_file(assets / name)
+    assert verify["facts"]["stapler_returncode"][name] == 0
+    assert verify["facts"]["spctl_returncode"][name] == 0
+    assert verify["facts"]["macos_asset"] == "present"
+
+
+def test_staging_records_the_linux_full_boundary_check_run_id(assets):
+    pipeline = _pipeline(assets, mode="release", gh=_gh_for(assets))
+    result = pipeline.step_test()
+    assert result.ok
+    assert result.facts["linux_sandbox_full_check_run_id"]
+    names = {row["name"] for row in result.facts["checks"]}
+    assert "ci-linux-sandbox-full" in names
 
 
 # --------------------------------------------------------------------------
@@ -1668,8 +1722,14 @@ def test_verified_requires_a_ticket_and_the_build_script_alone_cannot_reach_it()
     build = Path("scripts/build_macos_dmg.sh").read_text("utf-8")
     assert "codesign" in build
     # No notarization submission in the build script: `verified` cannot be
-    # reached by building alone, which is the honest limit.
+    # reached by building alone. The notary script is a separate file.
     assert "notarytool" not in build
+    notary = Path("scripts/notarize_macos_dmg.sh").read_text("utf-8")
+    assert "notarytool submit" in notary
+    assert "--wait" in notary
+    assert "stapler staple" in notary
+    assert "stapler validate" in notary
+    assert "spctl" in notary
 
     # Ad-hoc: preview, never publishable.
     assert signing_state({"developer_id": False, "adhoc": True}) == "preview"

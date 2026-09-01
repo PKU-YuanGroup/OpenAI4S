@@ -81,6 +81,9 @@ jobs:
         run: uv sync --locked
       - name: pre-commit (black, isort, ruff, mypy, hygiene hooks)
         run: uv run pre-commit run --all-files
+      - name: CSS custom-property references must be defined
+        if: success() || failure()
+        run: uv run python scripts/check_css_tokens.py
 
   # Its own job, not a second step in `lint`. As a step it could only ever run
   # when pre-commit had already passed, so a branch that failed formatting and
@@ -448,6 +451,22 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      # F-22: the UMD parser contract is Node-only (no daemon, no Playwright).
+      # A step on this job, not a new job — the 17 PR-job count is locked.
+      - name: Scientific renderer parser smoke
+        run: node tests/scientific_renderers_smoke.cjs
+      # F-23: Vitest on this Node job, not a new job — the 17 PR-job count
+      # stays locked. frontend/package-lock.json is the rebuild pin.
+      - name: Frontend unit tests (Vitest)
+        run: |
+          npm ci --prefix frontend
+          npm test --prefix frontend
+      # F-23: committed dist must match `npm run build`. A skipped rebuild
+      # would ship a workbench that is not the source this PR changed.
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked
@@ -539,6 +558,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server
         run: uv sync --locked
       # Before the browser: the harness's own redaction, schema, binding and
@@ -629,6 +653,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+      - name: Rebuild the committed workbench and fail on drift
+        run: |
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          git diff --exit-code -- openai4s/server/webui/dist
       - name: Install the zero-dependency server and browser driver
         run: |
           uv sync --locked
@@ -743,10 +772,47 @@ jobs:
           OPENAI4S_KERNEL_ALLOW_RAW_NETWORK: "1"
         run: uv run python -m harness.smoke.linux_bwrap_interrupt
 
-  # The full Linux boundary smoke still does not run here. It includes network
-  # denial and has not yet been re-evaluated with the restricted bwrap profile
-  # loaded above. Keep that broader claim manual rather than interpreting the
-  # raw-network interrupt job as evidence for network confinement.
+  # Independent of the interrupt job above. That job deliberately sets
+  # OPENAI4S_KERNEL_ALLOW_RAW_NETWORK=1, so a green interrupt check is not
+  # evidence of filesystem or egress confinement. This job is the four-check
+  # full boundary: outside write denied, raw network denied, workspace write
+  # allowed, child secret absent, under enforce, with the same restricted
+  # bwrap profile. A raw-network override is a hard failure inside the smoke.
+  # No continue-on-error. The check run is attested at the frozen SHA as
+  # `ci-linux-sandbox-full`. The release workflow's platform-checks matrix
+  # does not re-execute this smoke until multiple scheduled greens plus a
+  # candidate SHA have passed (see release_gates.PLATFORM_CHECKS_UNAVAILABLE).
+  linux-sandbox-full:
+    name: Linux bubblewrap full filesystem/egress boundary
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - name: Refresh Ubuntu package metadata
+        run: sudo apt-get update
+      - name: Install bubblewrap and its restricted AppArmor profile
+        run: >-
+          sudo apt-get install --yes --no-install-recommends
+          apparmor apparmor-profiles bubblewrap
+      - name: Load Ubuntu's bwrap-only user-namespace policy
+        run: >-
+          sudo apparmor_parser --replace
+          /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+      - name: Prove bubblewrap can create PID and network namespaces
+        run: >-
+          /usr/bin/bwrap --die-with-parent --new-session --unshare-ipc --unshare-uts
+          --unshare-pid --unshare-net --ro-bind / / --dev /dev --proc /proc --
+          /usr/bin/python3 -c
+          'import os; raise SystemExit((os.getpid(), os.getppid()) != (2, 1))'
+      - name: Install the zero-dependency runtime
+        run: uv sync --locked
+      - name: Require the four Linux filesystem and egress boundaries
+        env:
+          OPENAI4S_KERNEL_SANDBOX: enforce
+        run: uv run python -m harness.smoke.linux_sandbox
 
   linux-bundle-smoke:
     name: Linux app bundle builds and imports (nightly)

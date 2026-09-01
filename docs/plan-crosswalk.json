@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "dc0a0f4e423a85fdcdd9d24da191617efb310bdfa1302adbde9d30db08621f71"
+      "evidence_digest": "18d7590b957dfe44409676a0d5351e22dd4bb99c6dbde8853d7519ab1a06acc2"
     },
     {
       "source": "R1",
@@ -95,7 +95,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
+      "evidence_digest": "2f9aa117b024396ea360d0cb678b5626e4ff541d2fd6184f24462f6c946108e5"
     },
     {
       "source": "R1",
@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_compute_lifecycle.py,tests/test_compute_trust_boundary.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_stage11_remote_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "0566c6249dd1c01e5178cbcb0b6fa7ea0276b2fa6fc5b3241a5ebf8c6433411d"
+      "evidence_digest": "087af9eefdb1baadf86cb65d4394cd135bbb10b4106fe80831648279133437f0"
     },
     {
       "source": "R2",
@@ -176,7 +176,7 @@
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "888bbf5d8385f2d45cf2beb08b4bf69fe7cc975a8b3df897ecbf8646430b6413"
+      "evidence_digest": "11ea5ca248a2f3bdc5934f65570ffc7c1fc3a0fc7c26fc3786dce87e376554ef"
     },
     {
       "source": "R2",
@@ -190,7 +190,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "bb5886d288ac9f43bb635d32a1cf3b36e8544600ec9c7a36b0399b06454c5ae1"
+      "evidence_digest": "a9df14a9d75a5670145fe13ddf7df8a5bab0b110f702d62ba0acd03c30a64e44"
     },
     {
       "source": "R2",
@@ -328,7 +328,7 @@
       "tests": "tests/test_skill_catalog_readiness_route.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "4734e786f7e04e4622a48e410a380d41b5eda4a5a9a6ff2e886105df52e9e2c5"
+      "evidence_digest": "2f9aa117b024396ea360d0cb678b5626e4ff541d2fd6184f24462f6c946108e5"
     },
     {
       "source": "R3",
@@ -592,7 +592,7 @@
       "tests": "tests/test_artifact_scope_closure.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "69a6a54004d6a34f775ae214d6cb654a5ee3670f82764444ab05b1fc5b531217"
+      "evidence_digest": "9bb7cc940bebb74b255c460ec1bcd26b050265e496fc24eac92b9b19ad29298c"
     },
     {
       "source": "R6",
@@ -606,7 +606,7 @@
       "tests": "tests/test_artifact_scope_closure.py,tests/test_artifact_mutation_service.py,tests/test_materialisation_atomicity.py,tests/test_model_profile_identity.py,tests/test_compute_owner_and_harvest.py,tests/test_upload_scope_resolution.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "9a67b0f229d120dbdff94656a9972a82f701461685bce1e256cb34c1fc6077ba"
+      "evidence_digest": "c0e68e61454239cb26ab35a68ff1d6fa84858cd9d4dc59f890c73c16ec02ad58"
     },
     {
       "source": "R6",
@@ -648,7 +648,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_queued_followups.py,tests/test_specialist_connector_allowlist.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1bf59d5a7237146fe02e028ff1cc9fec9fef37740ef85d546e3e8013c9539b01"
+      "evidence_digest": "71bb8860433f850d2d0b45e574477918656be607676bd6eabab6025d75f8d322"
     },
     {
       "source": "R6",
@@ -662,7 +662,7 @@
       "tests": "tests/test_renderer_capability_honesty.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "1093731cd8291a78464ec2e7a44a4c5c67df9d3a34f6a32b69a1d50b52d89b57"
+      "evidence_digest": "4bf2944794c004eecda3f9c5a690cb0f867baa87c178a7fc775701f45b6e6e09"
     },
     {
       "source": "R6",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "11eddf43340b9f8ede8e036b21ee2048aff87bd60471cd3fe36fc0be03ec0589"
+      "evidence_digest": "0dd434eef1955669359c08bdba33b78b3c2798cbf0caf4559a2a3e709950bb31"
     },
     {
       "source": "R7",

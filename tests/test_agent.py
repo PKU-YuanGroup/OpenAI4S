@@ -418,7 +418,7 @@ def test_r_cell_without_r_soft_fails_into_observation(monkeypatch):
 # ---- ReAct tool surface (```tool) ----------------------------------------
 
 
-def test_react_tool_call_then_submit(monkeypatch):
+def test_react_tool_call_then_submit(monkeypatch, tmp_path):
     """Happy ReAct path: a ```tool turn runs a read-only tool through the REAL
     HostDispatcher (whose workspace is a per-test tmp dir), its result is fed
     back as ONE '[Tool Results]' observation, and the loop CONTINUES to the next
@@ -434,9 +434,9 @@ def test_react_tool_call_then_submit(monkeypatch):
     )
     monkeypatch.setattr(loop_mod, "chat", scripted)
 
-    result = Agent(use_skills=False, allow_delegate=False, max_turns=4).run(
-        "list the workspace, then submit"
-    )
+    result = Agent(
+        use_skills=False, allow_delegate=False, max_turns=4, workspace=tmp_path
+    ).run("list the workspace, then submit")
 
     # completion still flows ONLY through host.submit_output
     assert result["stop_reason"] == "submitted"

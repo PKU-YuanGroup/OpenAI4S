@@ -29,6 +29,7 @@ from openai4s.storage.artifact_observations import (
     MAX_DELIVERY_OBSERVATIONS,
     ArtifactObservationRepository,
 )
+from openai4s.storage.frames import visible_session_clause
 
 Clock = Callable[[], int]
 Execute = Callable[[str, tuple], None]
@@ -116,6 +117,17 @@ def env_snapshot_id(
         ]
     )
     return "env-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def _like_contains(value: str) -> str:
+    """A substring LIKE pattern that treats ``%``, ``_`` and ``\\`` as literals.
+
+    The Artifact index searches *filename* only. An unescaped ``%`` in the
+    query would match every filename, which is how a filter that looks
+    precise becomes an unscoped listing.
+    """
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _encode_source(source: Any) -> str | None:
@@ -1587,6 +1599,77 @@ class ArtifactRepository:
         sql += " ORDER BY a.created_at DESC"
         with self._lock:
             rows = self._connection.execute(sql, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def browse_artifacts(
+        self,
+        *,
+        project_id: str,
+        filename_query: str | None = None,
+        content_type: str | None = None,
+        origin: str | None = None,
+        before: tuple[int, str] | None = None,
+        limit: int = 50,
+        visible_to_user_id: str | None = None,
+    ) -> list[dict]:
+        """Newest-first keyset page of one project's artifacts.
+
+        ``before`` is the ``(created_at, artifact_id)`` of the last row of
+        the previous page, not an offset. ``created_at`` is a millisecond
+        clock and two captures in the same millisecond are ordinary (a
+        fixture, a batch harvest), so the ``artifact_id`` tiebreaker is
+        what makes the cursor sound: ordering by timestamp alone leaves
+        the rest of a tie undefined and a cursor can drop it.
+
+        Team visibility is a WHERE conjunct, not a post-filter. Keyset
+        ``has_more`` is observed from row counts, so filtering after
+        ``LIMIT`` turns a page of hidden rows into a phantom end-of-list.
+
+        ``filename_query`` is an escaped substring match on ``filename``
+        only — never path, checksum, or content type. ``origin`` is
+        derived from ``is_user_upload`` (``uploaded`` / ``generated``).
+        """
+        clauses: list[str] = ["a.project_id=?"]
+        params: list[Any] = [project_id]
+        query = (filename_query or "").strip()
+        if query:
+            clauses.append("a.filename LIKE ? ESCAPE '\\'")
+            params.append(_like_contains(query))
+        if content_type:
+            clauses.append("a.content_type=?")
+            params.append(content_type)
+        if origin == "uploaded":
+            clauses.append("a.is_user_upload=1")
+        elif origin == "generated":
+            clauses.append("a.is_user_upload=0")
+        elif origin:
+            raise ValueError("origin must be uploaded or generated")
+        if visible_to_user_id is not None:
+            clause, clause_params = visible_session_clause(
+                visible_to_user_id,
+                table="a",
+                session_expr="a.root_frame_id",
+            )
+            clauses.append(clause)
+            params.extend(clause_params)
+        if before is not None:
+            before_created, before_id = before
+            clauses.append(
+                "(a.created_at < ? OR (a.created_at = ? AND a.artifact_id < ?))"
+            )
+            params.extend([before_created, before_created, before_id])
+        page_size = max(1, int(limit))
+        sql = (
+            "SELECT a.artifact_id,a.filename,a.content_type,a.is_user_upload,"
+            "a.priority,a.latest_version_id,a.root_frame_id,a.project_id,"
+            "a.created_at,v.size_bytes,v.checksum "
+            "FROM artifacts a LEFT JOIN artifact_versions v "
+            "ON a.latest_version_id=v.version_id WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY a.created_at DESC, a.artifact_id DESC LIMIT ?"
+        )
+        with self._lock:
+            rows = self._connection.execute(sql, (*params, page_size)).fetchall()
         return [dict(row) for row in rows]
 
     def list_artifact_names(self) -> list[dict]:

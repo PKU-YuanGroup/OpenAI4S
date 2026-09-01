@@ -12,6 +12,10 @@ license: MIT
 origin: openai4s
 category: biomodels
 requirements: [gpu]
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: RFdiffusion
   third_party:

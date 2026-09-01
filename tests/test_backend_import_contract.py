@@ -73,7 +73,9 @@ FACADE_EXPORTS: dict[str, frozenset[str]] = {
         }
     ),
     "openai4s.mcp_client": frozenset({"disconnect_if_initialized", "manager"}),
-    "openai4s.permissions": frozenset({"PermissionBroker", "broker"}),
+    "openai4s.permissions": frozenset(
+        {"PermissionBroker", "broker", "guardian_denial_history"}
+    ),
     "openai4s.egress": frozenset(
         {
             "EGRESS_GROUPS",

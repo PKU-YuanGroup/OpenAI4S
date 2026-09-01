@@ -488,6 +488,31 @@ class Agent:
         and must retain the ``LazyKernel`` zero-spawn contract.
         """
 
+        # B-02's Cell sink reaches here too. `CellExecutionService` is the Web
+        # path; a CLI run and every delegated child execute their Cells through
+        # `LocalActionExecutor`, so a Skill bound `raw_required` used to run
+        # unconfined here while the Web parent refused the identical Cell.
+        # Before the first worker exists, apply the unconditional half: a
+        # declared `raw_required` manifest is refused whatever the sandbox
+        # reports.  Once a Python/R worker exists, use its measured posture so
+        # a later-loaded `host_only` Skill cannot bypass the Web Cell sink.
+        # First-spawn posture is checked in `_admit_spawned_cell_kernel`, before
+        # Skill bootstrap or user code executes.
+        from openai4s.server.skill_network_admission import raw_required_binding
+
+        language = str(getattr(_action, "language", "python") or "python")
+        with self._foreground_lock:
+            kernel = self._r_kernel if language == "r" else self._foreground_kernel
+        if kernel is not None:
+            self._admit_spawned_cell_kernel(kernel)
+        else:
+            refused = raw_required_binding(self.frame_id)
+            if refused is not None:
+                raise PermissionError(
+                    f"skill {refused.skill_id!r} requires raw kernel network and "
+                    "is blocked in this version"
+                )
+
         if not self.cfg.roadmap_features.stage1_trusted_delivery:
             return
         from openai4s.kernel.readiness import (
@@ -498,6 +523,28 @@ class Agent:
         readiness = standard_profile_readiness(enabled=True)
         if readiness.get("ready") is not True:
             raise EnvironmentReadinessError(readiness)
+
+    def _admit_spawned_cell_kernel(self, kernel: object) -> None:
+        """Apply the full Skill-network Cell policy to an actual worker.
+
+        Creating a worker is not executing a Cell.  This seam lets CLI and
+        delegated runs inspect the same measured posture as the Web path while
+        still preserving lazy zero-spawn turns that use only native tools or
+        structured finalization.
+        """
+
+        from openai4s.server.skill_network_admission import admit_cell
+
+        try:
+            sandbox_status = getattr(kernel, "sandbox_status", None)
+        except Exception:  # noqa: BLE001 - unavailable posture must fail closed
+            sandbox_status = None
+        decision = admit_cell(
+            frame_id=self.frame_id,
+            sandbox_status=sandbox_status,
+        )
+        if not decision.allowed:
+            raise PermissionError(decision.refusal_message())
 
     def _install_cell_recorder(self) -> None:
         """Give this Agent durable ``execution_log`` recording for its cells.
@@ -590,6 +637,9 @@ class Agent:
                 self._foreground_kernel = kernel
 
         def bootstrap(kernel: Any) -> None:
+            # The worker exists, so its actual sandbox posture is now
+            # measurable. Refuse before any executable Skill sidecar bootstrap.
+            self._admit_spawned_cell_kernel(kernel)
             if self._skill_loader is None or self._cancelled():
                 return
             boot = self._skill_loader.bootstrap_code()
@@ -815,6 +865,13 @@ class Agent:
             with self._foreground_lock:
                 self._r_kernel = k
                 self._r_kernel_env = want_env
+        try:
+            # R has no sidecar bootstrap, but admission still precedes the first
+            # user expression and uses this exact worker's measured posture.
+            self._admit_spawned_cell_kernel(k)
+        except BaseException:
+            self._shutdown_r_kernel()
+            raise
         if self._generation_recorder is not None:
             self._generation_recorder.observe(k, language="r")
         if self.cancellation is not None:

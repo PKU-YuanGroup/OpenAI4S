@@ -17,7 +17,9 @@ node_modules/
 .DS_Store
 
 # release build outputs (DMG is uploaded as a GitHub Release asset, not committed)
-dist/
+# Anchored at the repository root so the committed Preact workbench output at
+# openai4s/server/webui/dist/ (F-03) is not ignored.
+/dist/
 .build/
 # setuptools' own scratch tree, left behind by `pip wheel .` and `python -m
 # build --wheel`. Not ignored until now, and the consequence was not a stray

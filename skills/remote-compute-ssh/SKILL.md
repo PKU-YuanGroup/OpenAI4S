@@ -3,6 +3,11 @@ name: remote-compute-ssh
 description: Submit→poll .result()→harvest workflow for the user's SSH/SLURM hosts. Load once you've decided to dispatch remote.
 license: Apache-2.0
 origin: openai4s
+capabilities:
+  network:
+    mode: host_only
+    domains: []
+
 ---
 
 You've decided to run this on the user's SSH host. This skill covers the

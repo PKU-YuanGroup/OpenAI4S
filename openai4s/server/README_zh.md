@@ -49,12 +49,20 @@ gateway.py
 | --- | --- |
 | [`__init__.py`](__init__.py) | 稳定的包门面，导出 `build_server` 与 `serve`。 |
 | [`action_timeline.py`](action_timeline.py) | 把规范的 Action Ledger 投影成 UI 真正看到的 Timeline。一条记录足以说清：跑的是什么、怎么结束的、用掉哪些权限、花了多少用量、引用了哪些 Artifact，而且这些内容都有界、都经过脱敏。供应商的 `wire_state` 和原始参数字符串被刻意省略，避免有人把一个调试端点变成凭据或协议的转储口。 |
+| [`attention.py`](attention.py) | 跨 Session 的只读「需要处理」聚合。把 running/queued 执行、待批准、可恢复失败、view-only/blocked 会话，以及 live/unknown 远程计算合成固定 shape 的卡片。team 可见性在聚合、排序、limit 之前生效。`target.surface`/`dock` 是闭集，服务端不返回任意 URL。GET 零副作用：不 spawn kernel、不打 provider、不 retry/approve/harvest。首版不建物化表。 |
+| [`attention_routes.py`](attention_routes.py) | `GET /attention?limit&cursor`，一张经校验的 `RouteSpec`。cursor 是绑在调用方 team-scope fingerprint 上的 `(updated_at, id)` keyset；来自另一用户或另一组 filter 的 cursor 返回 `400 invalid_cursor`。retry/approve/restore 仍走现有 mutation 路由。 |
 | [`agent_run.py`](agent_run.py) | 把 `AgentEngine` 适配到 Web 契约。它流式输出安全的文本与代码草稿，发出 Web 事件，处理取消，并通过注入的端口执行原生 Action 或 Cell。 |
 | [`artifact_refs.py`](artifact_refs.py) | 用户消息里钉住版本的 `@文件` 引用。`@name#v-<version_id>` 发送的是那个确切版本的冻结字节，而不是活文件——旧的解析读到的是后续 cell 留下的任何内容。解析不出来的引用会被**报告**而不是丢掉；二进制 Artifact 只报名字，不会被贴成一片替换字符；同 project 的跨会话引用在**发送时**物化（D3），而不是就地读取。 |
 | [`retrieval_source.py`](retrieval_source.py) | 一个版本的检索溯源信息中，可以安全交给客户端的那一部分投影。这个信封是由执行检索的那段代码（包括未经审计的 Skill）写入的自由格式 JSON，而科研 API 把 key 放进查询串是常态——所以键走白名单、值有长度上限，查询串、路径和 userinfo 三处的凭据都会被指纹化。没有溯源信息时返回 `None` 而不是一个空面板：空面板会被读成一条关于数据本身的结论。 |
 | [`artifacts.py`](artifacts.py) | Agent 写出的工作区文件在这里变成带版本的 Artifact。UI 上的编辑、重命名、上传、恢复和提升也走同一个 service，版本每动一次，快照、溯源和广播都跟着对齐。trusted 路径会在登记前流式复制、fsync、原子冻结并验证字节；遇到相同 head 时复用 version，同时保留 observation。 |
+| [`artifact_index.py`](artifact_index.py) | 按 project 分页的 Artifact 索引：`(created_at, artifact_id)` keyset、绑定 `project_id + q + content_type + origin + team scope` 的不透明 cursor，以及只搜 filename 的转义 `LIKE`。旧的 `/projects/{pid}/artifacts` 数组 route 保持不变。 |
+| [`artifact_index_routes.py`](artifact_index_routes.py) | `GET /projects/{pid}/artifact-index`。`RouteSpec` 进入契约清单；filter 变化后沿用旧 cursor 返回 `400 invalid_cursor`。 |
 | [`artifact_workbench.py`](artifact_workbench.py) | Stage 9 正式 Artifact workbench：完整数据集表格查询、版本 diff、PDF/HTML locator、结构摘要，以及 Ketcher 3.7.0 包装页。flag 关闭时不生效。 |
+| [`artifact_workbench.py`](artifact_workbench.py) | Stage 9 正式 Artifact workbench：完整数据集表格查询、版本 diff、PDF/HTML locator、结构摘要，以及 Ketcher 3.7.0 包装页。flag 关闭时不生效。``GET .../table`` 可带可选 ``version_id``，提供时绝不降级 latest。 |
 | [`artifact_workbench_routes.py`](artifact_workbench_routes.py) | Stage 9 的五条 Artifact workbench 路由（`/table`、`/diff`、`/structure`、`/pdf-text`、`/html-outline`）。flag 关闭时返回 403。 |
+| [`artifact_workbench_routes.py`](artifact_workbench_routes.py) | Stage 9 Artifact workbench 路由（`/table`、`/table/profile`、`/table/export.csv`、`/diff`、`/structure`、`/pdf-text`、`/html-outline`）。flag 关闭时返回 403。 |
+| [`table_profile.py`](table_profile.py) | 共享表格 query parser（锁定既有 `/table` 五参数契约）、列 profile（type/missing/unique/min/max/mean/histogram，bins≤50，exact unique 做不完则 `approximate:true`）、分块 CSV 导出（单块 1 MiB，总量 32 MiB 超限 413）、profile 的进程 LRU，以及资源验收 manifest 门。统计不入库。 |
+| [`auto_budget.py`](auto_budget.py) | Auto Mode 原子预算准入：consumer 注册表、canonical 动作指纹、durable-delta 闭集，以及不可验证 token 的 fail-closed。各 sink 在动作前用稳定 `admission_id` 预留；只有明确未开始的调用才可释放。Guardian 字段只投影既有权威状态，不复制计数。 |
 | [`auto_mode.py`](auto_mode.py) | 按冻结的「导入隔离 → frame → project → 显式 deployment → 旧 result-review → 内建默认」顺序解析 Stage 2 Auto Mode 选择；对 durable run/audit 状态做有界白名单投影；只把新建且已提交的规范事件作为尽力而为的 WebSocket 提示转发。它不会调用模型、Reviewer、Repair Agent 或权限路径。 |
 | [`auto_mode_portability.py`](auto_mode_portability.py) | Session package 与只读 share 共用的“不信任输入也安全”reducer。它验证 Auto Mode 的 scope/reference 闭包，只输出闭合的审计 DTO，把 portable evidence 无法独立证明的结论降级，而且绝不恢复执行或权限能力。 |
 | [`auto_mode_routes.py`](auto_mode_routes.py) | 精确承接 `GET/PATCH /frames/{id}/auto-mode` 与只读 `/auto-audits`。经校验的 `RouteSpec` 表进入契约清单；这里刻意没有公开的 run/review/repair/Guardian 状态变更路由。 |
@@ -83,8 +91,9 @@ gateway.py
 | [`team_policy.py`](team_policy.py) | 谁可以碰什么——写成关于**资源**而不是关于 URL 的谓词。一次外部审查点破了团队模式第一版的真问题：鉴权是"这个路径匹不匹配那两条正则之一"，于是凡不是 `/frames/{id}` 或 `/projects/{id}/…` 的面，统统还是那个单用户 API——五个各自独立的隔离缺陷都出自这同一个形状。把五个调用点各修一遍，等于把病因原样保留。全篇保持两条性质：团队模式关闭时立即返回放行，于是单用户安装跑的还是它一直跑的那段代码（INV-1）；查询抛异常即视为拒绝，因为把读不出来的归属行当成"没有限制"，正是这个产品曾经让一个按版本寻址的产物绕过检查的方式。调用点仍然必须去问——没有任何机制能强迫一条新路由去问——但至少现在只有一个模型要读、只有一处规则要改。 |
 | [`compute_session_routes.py`](compute_session_routes.py) | 一个会话的内核跑在哪里、以及好了没有（M3b-6）。它们存在的意义在于 `readiness` 这个字段：集群会话是四个条件而不是一个布尔（INV-5），响应会指出还差哪一个——"在排队等节点""等 worker 连回""正在起内核"是三种不同的等待、三种不同的预期时长，用一个转圈图糊弄全部，正是用户断定这产品坏了的方式。`location: "local"` 是一个答复而不是错误：那是每一个安装的常态。未配置的 profile 会被拒绝而不是猜测，因为猜测正是会话落到主人从未选择的资源上的方式。而 `state_lost_epochs` 就是 UI 拿去做横幅的东西（INV-11）——因为恢复之后产出的结果，看起来和那个已经丢掉的会话产出的结果一模一样。 |
 | [`orchestration_routes.py`](orchestration_routes.py) | BatchJob 的提交/列表/详情/取消/日志，外加只读的 profile 列表（M3a-8）。有两处刻意的"不做"：它从不提交——请求只写一行持久记录，由 reconciler 去跟后端说话，于是取消能扛过重启、提交也不会在一个随时可能消失的请求线程里被试两次；它也从不叫出调度器的名字，所以响应里带的是 `allocation_id` 而永远不是作业 id（INV-2）。归属沿用会话那条规则：别人的作业是 404 而非 403，因为"哪些作业存在"本身就说明了同事在做什么。`command` 若给成**字符串**会被拒绝而不是被切分——切分命令行正是引号 bug 变成注入的地方。 |
-| [`model_discovery.py`](model_discovery.py) | 探测一小份固定的 loopback URL 名录，找出 OpenAI-compatible 的模型服务；探测时关闭代理、拒绝重定向，调用方无法把它变成通用的 SSRF 原语。结果只是一个 profile 建议：不会改动模型设置，也不会存下凭据。 |
-| [`model_profiles.py`](model_profiles.py) | 一个模型供应商 profile 进来时要过这里，被校验和迁移；落库、激活、删除时还要再过一次。凡是要公开出去的东西，凭据都会被清掉。顶部的模型选择器也由它构建：只列当前模型和已保存的 profile，别的一概不列——没人配过的 endpoint 不该出现在那里，选了也只会在发消息时失败。 |
+| [`model_discovery.py`](model_discovery.py) | 探测一小份固定的 loopback URL 名录，找出 OpenAI-compatible 的模型服务；探测时关闭代理、拒绝重定向，调用方无法把它变成通用的 SSRF 原语。`catalog()` 返回这份名录，不开 socket、不后台刷新。结果只是一个 profile 建议：不会改动模型设置，也不会存下凭据。 |
+| [`model_profiles.py`](model_profiles.py) | 一个模型供应商 profile 进来时要过这里，被校验和迁移；落库、激活、删除时还要再过一次。凡是要公开出去的东西，凭据都会被清掉。`probe()` 记下三态能力 receipt（验证 tool schema 但绝不执行 tool，单次最多两个极小请求）。顶部的模型选择器也由它构建：只列当前模型和已保存的 profile，别的一概不列——没人配过的 endpoint 不该出现在那里，选了也只会在发消息时失败。 |
+| [`onboarding_routes.py`](onboarding_routes.py) | 首次运行的 Web 路由。`GET /onboarding` 脱敏且零出站；`POST /onboarding/complete` 是实例级变更（团队模式下仅 admin）。 |
 | [`notebook_export.py`](notebook_export.py) | 把原始的不可变执行历史确定性地导出成四种只读形态：每种语言一个 `.ipynb`、一个把两者打包并带 checksum 描述的 bundle，以及一份 Markdown 文档。前三种是给人重跑用的；Markdown 那份是给人阅读、以及贴进 issue 或方法学章节用的，所以它把两种语言按执行顺序放在同一份文件里——交错本身就是记录——并以一节 `## Inputs` 开头，列出这条分支的各轮所钉住的每个 Artifact 版本。没有输入时这一节整节省略，因为一个空标题也是一种声称。四种形态都不套用 Notebook 投影那道过滤，所以只含协议调用的 completion Cell 仍可能出现在导出结果里。 |
 | [`notebook_lineage.py`](notebook_lineage.py) | Stage 8 正式 live Notebook 开关，以及 host 侧 Python/R 读→version 映射和写 lineage。它不改内核。 |
 | [`stage12_ga.py`](stage12_ga.py) | Stage 12 GA 总开关声明。它不会打开更早的 Stage。 |
@@ -104,6 +113,7 @@ gateway.py
 | [`session_package.py`](session_package.py) | 创建和导入会话 ZIP 包，过程确定、带 checksum。传输这一段由过滤秘密、防路径穿越和隔离区中转来把关。导入会先校验整个压缩包再创建任何东西；导入进来的会话落在一个已结束的内核 generation 上，这是一条显式的只读/待恢复边界。 |
 | [`session_recovery.py`](session_recovery.py) | 启动时协调过期的运行时状态，并在 activity 与恢复阻塞条件的约束下确定性地回收空闲内核。旧 daemon 遗留下来的活 generation 会被标成 `abandoned` 并保持可审计；这里没有任何代码反序列化对象，也不声称内存还活着。 |
 | [`session_runtime.py`](session_runtime.py) | 保存会话的控制平面对象，例如 dispatcher、委派树和动态 capability，让语言 worker 可以启动、替换或停止，而不丢掉这些状态。 |
+| [`skill_network_admission.py`](skill_network_admission.py) | 把已加载 Skill 的网络 manifest 绑到会话，并在两个执行 sink 上准入：下一格 Python/R Cell，以及 shell capability 签发。求交 manifest × 实测 sandbox posture × Host egress × 调用方绑定。manifest 永不授权。 |
 | [`skill_sidecars.py`](skill_sidecars.py) | 消费 worker 的私有 Skill 加载诊断，但不会把与不可信 Cell 共用解释器的声明当作恢复证据。它用 compare-and-swap 把对应 generation 的 sidecar 捕获标为失败，让恢复停止，而不是重放未经独立证明的 sidecar。Host 进程从不导入或执行 sidecar。 |
 | [`share_projection.py`](share_projection.py) | 把一个会话构建成一份冻结、扁平化的 `ShareProjection`（单一 synthetic root、无 checkpoint、无 memories/策略），再分两路序列化：一个 `import_bytes` 兼容的 bundle 和一份脱敏的查看器文档。复用会话包的失败即拒 secret 闸门。 |
 | [`share_router.py`](share_router.py) | 单个分享的只读公网请求处理器：仅 GET/HEAD、有且仅有两个读取根（内存查看器资产 + 当前 lease 的快照）、严格 CSP、单段 Range，以及统一 404。它绝不触碰内核、dispatcher 或任何 gateway 路由。 |
@@ -126,7 +136,7 @@ gateway.py
 
 | 目录 | 职责 |
 | --- | --- |
-| [`webui/`](webui/) | 手写的浏览器客户端与科学 Artifact renderer，由 gateway 作为静态文件提供。没有构建步骤，也没有 npm。第三方库只存在于 `webui/vendor/`：3Dmol 负责三维结构，另有钉住的 Ketcher 3.7.0 独立版在 Stage 9 打开时提供二维结构编辑。向 `3Dmol.org` 的 CDN 重试那条路已被删除，因为它会在持有会话 Cookie 的页面里悄悄执行第三方脚本；自带的那份渲染不了的分子现在直接退回纯文本展示——这本来就是 CDN 那条路失败时的同一个结果。只读的分享查看器是 `webui/share/` 下另一个独立客户端。 |
+| [`webui/`](webui/) | Gateway 静态树：来自 [`../../frontend/`](../../frontend/) 的提交 Vite `dist/`（默认 SPA 外壳）、共享经典脚本（`style.css`、`theme-bootstrap.js`、`scientific_renderers.js`、`favicon.js`）、自带的 3Dmol/Ketcher/字体、卫星页，以及冻结的 `index.html` + `app.js` 逃生舱（`OPENAI4S_WEBUI=legacy`）。第三方库只存在于 `webui/vendor/`：3Dmol 负责三维结构，另有钉住的 Ketcher 3.7.0 独立版在 Stage 9 打开时提供二维结构编辑。向 `3Dmol.org` 的 CDN 重试那条路已被删除，因为它会在持有会话 Cookie 的页面里悄悄执行第三方脚本；自带的那份渲染不了的分子现在直接退回纯文本展示——这本来就是 CDN 那条路失败时的同一个结果。只读的分享查看器是 `webui/share/` 下另一个独立客户端。 |
 
 ## 修改注意事项
 

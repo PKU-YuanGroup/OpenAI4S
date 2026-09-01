@@ -241,3 +241,35 @@ def test_flag_off_is_inert():
     )
     assert repaired is first or repaired["verdict"] == "issues"
     assert repaired.get("snapshot") == first.get("snapshot")
+
+
+def test_budget_exhausted_repair_is_not_a_pass():
+    review = ScientificReviewService(store=None, config=_cfg(), chat_call=_pass_chat)
+    first = {
+        "verdict": "issues",
+        "findings": [{"severity": "high", "fingerprint": "stuck"}],
+        "snapshot": _table_snapshot("resid.csv has n=99 and mean=2.0"),
+    }
+
+    def noop(snapshot, findings):
+        del findings
+        return {
+            "changed": True,
+            "self_certified": False,
+            "candidate_answer": snapshot.get("candidate_answer"),
+            "after_version_ids": [],
+        }
+
+    repaired = AutoRepairService(
+        store=None,
+        config=_cfg(),
+        scientific_review=review,
+        repair_fn=noop,
+    ).run(
+        initial=first,
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+    )
+    assert repaired.get("verdict") != "pass"
+    assert repaired.get("stop_reason") in {"budget_exhausted", "loop_detected"}

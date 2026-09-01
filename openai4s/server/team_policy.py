@@ -239,6 +239,8 @@ INSTANCE_CONFIG_PATHS = frozenset(
         "/network/status",
         "/share/settings",
         "/memory/enabled",
+        # First-run completion writes instance-global model settings.
+        "/onboarding/complete",
     }
 )
 
