@@ -437,7 +437,10 @@ def main() -> int:
         installation_path = workspace / "installation.json"
         with open(installation_path, "r", encoding="utf-8") as f:
             installation = json.load(f)
-        if installation.get("scenario_id") != "forward_prediction_uspto_mit_separated_v1":
+        if (
+            installation.get("scenario_id")
+            != "forward_prediction_uspto_mit_separated_v1"
+        ):
             raise BenchmarkProtocolError("Invalid scenario_id in installation.json")
 
         # Load public inputs

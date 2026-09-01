@@ -217,9 +217,7 @@ def build_records(
     records = [item.to_dict() for item in predictions]
     input_hashes = {
         "inputs.json": _sha256_file(workspace / "public" / "inputs.json"),
-        "model_outputs.json": _sha256_file(
-            workspace / "public" / "model_outputs.json"
-        ),
+        "model_outputs.json": _sha256_file(workspace / "public" / "model_outputs.json"),
         "config.json": _sha256_file(workspace / "public" / "config.json"),
         "model_manifest.json": _sha256_file(
             workspace / "public" / "model_manifest.json"
@@ -228,7 +226,9 @@ def build_records(
     return records, input_hashes
 
 
-def run(workspace: Path, *, canonicalizer: Canonicalizer | None = None) -> dict[str, Any]:
+def run(
+    workspace: Path, *, canonicalizer: Canonicalizer | None = None
+) -> dict[str, Any]:
     """Run the full normalization and return the intermediate artifact."""
 
     installation = load_installation(workspace)
