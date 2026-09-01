@@ -441,8 +441,16 @@ class DelegationProjectionRepository:
                 f"native_call_id {native_call_id!r}"
             )
         latest = self._attempts.latest_attempt_locked(existing["request_id"])
+        # The attempt row is the authority for which child is current.
+        # `delegation_requests.child_id` is attempt 1's child and never moves,
+        # while `continue_request` mints a fresh child per retry; reading the
+        # child from one table and the attempt id from the other hands back a
+        # pair that never existed together -- attempt 1's child, whose output
+        # is the failure that prompted the retry, labelled with the id of the
+        # attempt actually in flight.
+        child_id = str(latest["child_id"]) if latest else existing["child_id"]
         return {
-            "child_ids": [existing["child_id"]],
+            "child_ids": [child_id],
             "budget": self._budget_locked(root),
             "reused": True,
             "request_id": existing["request_id"],

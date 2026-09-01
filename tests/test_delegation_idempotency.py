@@ -273,3 +273,64 @@ def test_restart_does_not_auto_continue_until_explicit_continue(monkeypatch):
         )
     ]
     assert nos == [1, 2]
+
+
+def test_reuse_after_continue_reports_the_latest_attempts_child():
+    """The request row keeps attempt 1's child; the pair must not be mixed.
+
+    `continue_request` mints a new child for each retry and records it on the
+    new attempt row, but `delegation_requests.child_id` stays whatever attempt
+    1 got. Reuse read the child from the request and the attempt id from the
+    latest attempt, so a caller that re-issued the same delegation after a
+    continue was handed a pair that never existed together: attempt 1's child
+    -- whose output is the failure that prompted the retry -- labelled with
+    the id of the attempt actually running.
+    """
+
+    cfg, store, root = _root_store()
+    store.restore_delegation_tree(
+        root_frame_id=root,
+        owner_instance_id="owner-reuse",
+        runner_instance_id="runner-reuse",
+        budget_limit=SESSION_CAP,
+    )
+    identity = dict(
+        root_frame_id=root,
+        owner_instance_id="owner-reuse",
+        runner_instance_id="runner-reuse",
+        parent_action_group_id="group-reuse",
+        native_call_id="call-reuse",
+        request_sha256="b" * 64,
+    )
+    first = store.reserve_delegation_children(
+        count=1, depth=0, parent_child_id=None, payload={"request": "r"}, **identity
+    )
+    attempt_one_child = first["child_ids"][0]
+
+    # A retry is only allowed once the attempt in flight has settled.
+    store._conn.execute(
+        "UPDATE delegation_attempts SET state='failed' WHERE child_id=?",
+        (attempt_one_child,),
+    )
+    store._conn.commit()
+
+    continued = store.continue_delegation_request(
+        root_frame_id=root,
+        owner_instance_id="owner-reuse",
+        runner_instance_id="runner-reuse",
+        child_id=attempt_one_child,
+        depth=0,
+        parent_child_id=None,
+    )
+    attempt_two_child = continued["child_ids"][0]
+    assert attempt_two_child != attempt_one_child
+
+    reused = store.reserve_delegation_children(
+        count=1, depth=0, parent_child_id=None, payload={"request": "r"}, **identity
+    )
+    assert reused["reused"] is True
+    assert reused["attempt_no"] == 2
+    assert reused["attempt_id"] == continued["attempt_id"]
+    assert reused["child_ids"] == [
+        attempt_two_child
+    ], "reuse returned attempt 1's child alongside attempt 2's id"
