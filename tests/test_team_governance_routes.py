@@ -757,10 +757,15 @@ def test_ledger_attributes_llm_usage_to_the_owner(daemon):
     # A provider may finish after Stop has already quarantined its content.
     # Those counters still belong to the session owner and quota ledger.
     ledger.record_abandoned_usage({"input_tokens": 11, "output_tokens": 2})
+    # The gateway forwards the reply's own usage mapping, so the alias-only
+    # OpenAI shape has to meter too: `record_session_llm_usage` reads the
+    # canonical names, and dropping the aliases would let Stop bypass the
+    # quota ledger silently -- exactly what this path exists to prevent.
+    ledger.record_abandoned_usage({"prompt_tokens": 5, "completion_tokens": 1})
     rows = daemon.store.governance.usage_summary(user_id=_uid(daemon, "alice"))
     by_kind = {r["kind"]: r["total"] for r in rows}
-    assert by_kind["llm_input_tokens"] == 111
-    assert by_kind["llm_output_tokens"] == 9
+    assert by_kind["llm_input_tokens"] == 116
+    assert by_kind["llm_output_tokens"] == 10
 
     # no ownership row -> no rows written (single-user inertness, INV-1)
     orphan = daemon.store.new_frame(kind="turn", status="ready")

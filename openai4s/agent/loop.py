@@ -31,6 +31,7 @@ from openai4s.agent.runtime import (
     LocalActionExecutor,
     TranscriptEventSink,
     TranscriptTurn,
+    _cancelled_model_reply,
     format_observation,
 )
 from openai4s.agent.task_modes import resolve_task_mode, task_mode_prompt
@@ -228,15 +229,6 @@ class _LedgerTranscriptEventSink:
     def emit(self, event: Any) -> None:
         self.ledger.emit(event)
         self.transcript.emit(event)
-
-
-def _cancelled_model_reply() -> dict[str, Any]:
-    return {
-        "content": "",
-        "tool_calls": [],
-        "assistant_message": {"role": "assistant", "content": ""},
-        "finish_reason": "cancelled",
-    }
 
 
 def _completion_summary(completion: Any) -> str | None:

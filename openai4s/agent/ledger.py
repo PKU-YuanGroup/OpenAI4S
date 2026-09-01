@@ -504,6 +504,16 @@ class RuntimeActionLedger:
         for key, value in usage.items():
             if isinstance(key, str) and isinstance(value, (int, float)):
                 normalized[key] = max(0, int(value))
+        # ``record_session_llm_usage`` reads the canonical names only. A reply
+        # that carried just the OpenAI-style aliases would meter as zero, which
+        # is precisely the Stop-bypasses-the-quota-ledger hole this exists to
+        # close -- and it would do so silently.
+        for canonical, alias in (
+            ("input_tokens", "prompt_tokens"),
+            ("output_tokens", "completion_tokens"),
+        ):
+            if not normalized.get(canonical) and normalized.get(alias):
+                normalized[canonical] = normalized[alias]
         self._record_team_usage(normalized)
 
     def _reply_accounting(

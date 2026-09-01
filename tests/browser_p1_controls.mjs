@@ -47,6 +47,24 @@ function check(label, condition, detail) {
   if (!condition) failures.push(`${label}${detail ? `: ${detail}` : ""}`);
 }
 
+// Same shape as browser_smoke.mjs's helper, and here for the same reason: the
+// shell's CSP has no 'unsafe-eval', so page.waitForFunction is refused and
+// every wait has to be a locator or an evaluate poll.
+async function waitUntil(label, predicate, timeoutMs = 20000, intervalMs = 60) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ""}`);
+}
+
 async function api(path, { method = "GET", data } = {}) {
   const response = await page.request.fetch(new URL(`api/v1${path}`, baseUrl).toString(), {
     method,
@@ -385,9 +403,11 @@ try {
   await page.unroute(sendRoute);
   await page.unroute(uploadRoute);
 
-  // A failed upload is a persistent admission latch, not a one-shot toast.
-  // A second Enter must still preserve the draft and must not run list_dir;
-  // reselecting a file is the explicit retry that replaces this state.
+  // A failed upload refuses the Enter that raced it: that Enter must preserve
+  // the draft and must not run list_dir against bytes that never arrived. The
+  // refusal is consumed when it is reported, though -- latching it left the
+  // composer dead for the rest of the session, with re-selecting a file in that
+  // same conversation as the only escape.
   let failedMessageCount = 0;
   await page.route(uploadRoute, (route) => route.fulfill({
     status: 500,
@@ -409,7 +429,6 @@ try {
     box.value = prompt;
     const file = new File(["not admitted"], "failed-upload.txt", { type: "text/plain" });
     await Promise.all([uploadFiles([file]), send(prompt)]);
-    await send(prompt);
     return {
       draft: box.value,
       running: S.running,
@@ -419,7 +438,7 @@ try {
     };
   }, failedPrompt);
   check(
-    "a failed upload keeps later Enter from listing an empty workspace",
+    "a failed upload keeps the Enter that raced it from listing an empty workspace",
     failedMessageCount === 0
       && failedUpload.draft === failedPrompt
       && failedUpload.running === false
@@ -427,13 +446,35 @@ try {
       && failedUpload.bubbles === 0,
     JSON.stringify({ failedMessageCount, failedUpload }),
   );
-  await page.evaluate(() => {
+  const afterWarnedUpload = await page.evaluate(async (prompt) => {
+    await send(prompt);
+    return {
+      draft: document.querySelector("#composer").value,
+      failures: UPLOAD_STATE.failures.size,
+      bubbles: [...document.querySelectorAll(".msg.user .bubble")]
+        .filter((node) => node.textContent === prompt).length,
+    };
+  }, failedPrompt);
+  check(
+    "a reported upload failure does not brick the composer for the session",
+    failedMessageCount === 1
+      && afterWarnedUpload.draft === ""
+      && afterWarnedUpload.failures === 0
+      && afterWarnedUpload.bubbles === 1,
+    JSON.stringify({ failedMessageCount, afterWarnedUpload }),
+  );
+  await page.evaluate((prompt) => {
+    document.querySelectorAll(".msg.user").forEach((node) => {
+      const bubble = node.querySelector(".bubble");
+      if (bubble && bubble.textContent === prompt) node.remove();
+    });
+    turnDone("cancelled");
     UPLOAD_STATE.failures.clear(); S._sendPreparing = null;
     const box = document.querySelector("#composer");
     box.value = window.__failedUploadSavedDraft || "";
     delete window.__failedUploadSavedDraft;
     grow(); renderComposerRefChips(); hint("");
-  });
+  }, failedPrompt);
   await page.unroute(sendRoute);
   await page.unroute(uploadRoute);
 
@@ -955,14 +996,21 @@ try {
       body.project_id === projectId,
       JSON.stringify(body),
     );
-    // onclick does not await its async handler.  Let this project's single-
-    // flight creation fully drain before clicking the second entry; otherwise
-    // the second click can correctly reuse the first promise and emit no POST,
-    // making the test (not the product) race its own 5-second assertion.
-    await page.waitForFunction(
-      (beforeId) => S.currentId !== beforeId && UPLOAD_STATE.creations.size === 0,
-      before,
-      { timeout: 8000 },
+    // onclick does not await its async handler.  An explicit New session opts
+    // out of the per-project single flight, so both clicks do POST -- but the
+    // second one still has to observe the first one's frame before it can be
+    // told apart from it, so let this click land before issuing the next.
+    //
+    // Polled with page.evaluate rather than page.waitForFunction: the shell
+    // CSP carries no 'unsafe-eval', so waitForFunction is refused outright
+    // (browser_smoke.mjs makes the same note at both of its wait sites).
+    await waitUntil(
+      "the New session single-flight creation to drain",
+      () => page.evaluate(
+        (beforeId) => S.currentId !== beforeId && UPLOAD_STATE.creations.size === 0,
+        before,
+      ),
+      8000,
     );
   }
   await page.unroute(frameCreateRoute);

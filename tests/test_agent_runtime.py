@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -213,7 +214,9 @@ def test_chat_model_projects_stream_deltas_on_the_owning_thread():
 
 
 def test_chat_model_bounds_detached_provider_calls(monkeypatch):
-    monkeypatch.setattr(runtime, "_PROVIDER_CALL_SLOTS", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(
+        runtime, "_PROVIDER_CALL_BUDGET", runtime._DetachedCallBudget(1)
+    )
     entered = threading.Event()
     release = threading.Event()
     shared_cancel = threading.Event()
@@ -235,18 +238,50 @@ def test_chat_model_bounds_detached_provider_calls(monkeypatch):
     shared_cancel.set()
     owner.join(1)
     assert not owner.is_alive()
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding() == 1
 
     second = ChatModel(
         object(),
         blocked_chat,
         cancellation=SimpleNamespace(cancelled=lambda: False),
     )
-    with pytest.raises(RuntimeError, match="too many model requests"):
+    with pytest.raises(RuntimeError, match="cancelled model requests"):
         second.complete([], lambda _text: None)
 
     release.set()
-    assert runtime._PROVIDER_CALL_SLOTS.acquire(timeout=2)
-    runtime._PROVIDER_CALL_SLOTS.release()
+    deadline = time.monotonic() + 2
+    while runtime._PROVIDER_CALL_BUDGET.outstanding() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding() == 0
+
+
+def test_chat_model_budget_never_charges_a_live_provider_call():
+    """Only *detached* calls are bounded.
+
+    Charging every cancellable request would bound healthy concurrency: each
+    delegated child carries a cancellation, the fan-out cap of 48 is per node,
+    and the session cap is 1000 -- so a nested fan-out routinely holds more
+    live calls than the budget and would start refusing requests nobody
+    cancelled.
+    """
+
+    budget = runtime._DetachedCallBudget(2)
+    live = [budget.track() for _ in range(5)]
+    for _ in range(10):
+        budget.admit()  # no live call is charged, so admission stays open
+    assert budget.outstanding() == 0
+
+    live[0].detach()
+    live[1].detach()
+    assert budget.outstanding() == 2
+    with pytest.raises(RuntimeError, match="cancelled model requests"):
+        budget.admit()
+
+    live[0].settle()
+    budget.admit()
+    for call in live:
+        call.settle()
+    assert budget.outstanding() == 0
 
 
 def test_native_batch_returns_one_canonical_tool_message_per_call(monkeypatch):

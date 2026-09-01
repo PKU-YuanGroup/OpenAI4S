@@ -65,11 +65,135 @@ from .models import ExecutionOutcome, ModelReply, RunState
 LogFn = Callable[..., None]
 
 _LOG = logging.getLogger(__name__)
+
+
+class _DetachedCallBudget:
+    """Bound provider calls that outlive the turn which cancelled them.
+
+    Only *detached* calls are counted. A semaphore held for the whole life of
+    every cancellable request would have bounded healthy concurrency instead:
+    every delegated child is built with a ``cancellation`` (see
+    ``delegation._ChildCancellation``), the fan-out cap of 48 is per node, and
+    the session cap is 1000 -- so an ordinary nested fan-out routinely holds
+    more than 128 live calls and would have started refusing requests that
+    nobody ever cancelled.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._outstanding = 0
+
+    def outstanding(self) -> int:
+        with self._lock:
+            return self._outstanding
+
+    def admit(self) -> None:
+        """Refuse a new request while too many cancelled ones are closing."""
+
+        with self._lock:
+            if self._outstanding >= self._limit:
+                raise RuntimeError(
+                    "too many cancelled model requests are still closing; "
+                    "wait for one to time out before retrying"
+                )
+
+    def track(self) -> "_DetachedCall":
+        return _DetachedCall(self)
+
+    def _enter(self) -> None:
+        self._outstanding += 1
+
+    def _exit(self) -> None:
+        self._outstanding = max(0, self._outstanding - 1)
+
+
+class _DetachedCall:
+    """One provider call's handle: at most one counted detachment, always settled.
+
+    ``detach`` (owner thread) and ``settle`` (provider thread) race, so the
+    budget counter is mutated under this handle's lock rather than the
+    budget's own -- a detach that lost the race must not add a slot the
+    settle already decided not to remove.
+    """
+
+    def __init__(self, budget: _DetachedCallBudget) -> None:
+        self._budget = budget
+        self._lock = threading.Lock()
+        self._counted = False
+        self._settled = False
+
+    def detach(self) -> None:
+        with self._lock:
+            if self._counted or self._settled:
+                return
+            self._counted = True
+            with self._budget._lock:
+                self._budget._enter()
+
+    def settle(self) -> None:
+        with self._lock:
+            if self._settled:
+                return
+            self._settled = True
+            if self._counted:
+                with self._budget._lock:
+                    self._budget._exit()
+
+
 # A cancelled urllib call may remain blocked until its socket timeout. Bound
 # those detached calls so repeated Stop presses cannot grow threads/sockets
-# without limit. The delegation fan-out cap is 48, so 128 leaves headroom for
-# concurrent roots while still providing a hard process boundary.
-_PROVIDER_CALL_SLOTS = threading.BoundedSemaphore(128)
+# without limit; live requests are never charged against this budget.
+_PROVIDER_CALL_BUDGET = _DetachedCallBudget(128)
+
+
+class _LateAccounting:
+    """Run a cancelled call's accounting off the detached provider thread.
+
+    A reply that lands after Stop has no owning turn left to run its metering
+    on, and the provider thread is the wrong substitute: there is one per
+    abandoned call, they wake whenever their sockets happen to time out, and
+    the sink they invoke reaches ``Store`` and the action ledger -- which the
+    rest of this file treats as single-threaded state machines. Draining every
+    late reply through one daemon worker keeps that sink on a single known
+    thread, in arrival order, however many calls were abandoned.
+
+    The worker is started on first use and never exits: it spends its life
+    blocked in ``get()``, and being a daemon it cannot hold the process open.
+    """
+
+    def __init__(self) -> None:
+        self._start_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._pending: queue.Queue[
+            tuple[Callable[[Mapping[str, Any]], None], Mapping[str, Any]]
+        ] = queue.Queue()
+
+    def submit(
+        self,
+        sink: Callable[[Mapping[str, Any]], None],
+        reply: Mapping[str, Any],
+    ) -> None:
+        with self._start_lock:
+            if self._worker is None:
+                self._worker = threading.Thread(
+                    target=self._drain,
+                    name="openai4s-late-accounting",
+                    daemon=True,
+                )
+                self._worker.start()
+        self._pending.put((sink, reply))
+
+    def _drain(self) -> None:
+        while True:
+            sink, reply = self._pending.get()
+            try:
+                sink(reply)
+            except Exception:  # noqa: BLE001 - accounting is fail-soft
+                _LOG.exception("failed to account for an abandoned model reply")
+
+
+_LATE_ACCOUNTING = _LateAccounting()
 
 
 def _null_log(*args: object) -> None:
@@ -178,12 +302,8 @@ class ChatModel:
         if is_cancelled():
             return _cancelled_model_reply()
 
-        provider_slots = _PROVIDER_CALL_SLOTS
-        if not provider_slots.acquire(blocking=False):
-            raise RuntimeError(
-                "too many model requests are still in flight; wait for a "
-                "cancelled request to close before retrying"
-            )
+        _PROVIDER_CALL_BUDGET.admit()
+        detached_call = _PROVIDER_CALL_BUDGET.track()
 
         def report_abandoned_reply() -> None:
             if (
@@ -196,16 +316,22 @@ class ChatModel:
                 if abandoned_reported.is_set():
                     return
                 abandoned_reported.set()
-                try:
-                    self.abandoned_reply(outcome["reply"])
-                except Exception:  # noqa: BLE001 - accounting is fail-soft
-                    _LOG.exception("failed to account for an abandoned model reply")
+                sink = self.abandoned_reply
+                reply = outcome["reply"]
+            # Handed off rather than called here: this runs from the provider
+            # thread's ``finally`` as often as from the owning turn, and the
+            # sink writes to Store and the action ledger.
+            _LATE_ACCOUNTING.submit(sink, reply)
 
         def abandon() -> Mapping[str, Any]:
             # Mark this before inspecting outcome: the provider may be between
             # storing its reply and running its accounting callback.
             cancelled.set()
             abandoned.set()
+            # The owning turn is about to return while the request may still be
+            # blocked in urllib. From here it is a detached call and counts
+            # against the budget until its socket finally closes.
+            detached_call.detach()
             report_abandoned_reply()
             return _cancelled_model_reply()
 
@@ -235,7 +361,7 @@ class ChatModel:
                     report_abandoned_reply()
                 finally:
                     finished.set()
-                    provider_slots.release()
+                    detached_call.settle()
 
         provider_thread = threading.Thread(
             target=carry_context(invoke),
@@ -245,7 +371,7 @@ class ChatModel:
         try:
             provider_thread.start()
         except BaseException:
-            provider_slots.release()
+            detached_call.settle()
             raise
         while True:
             if is_cancelled():
@@ -254,7 +380,10 @@ class ChatModel:
                 try:
                     delta = deltas.get(timeout=0.05)
                 except queue.Empty:
-                    if finished.is_set():
+                    # ``finished`` can be set between the timeout above and this
+                    # check, with the provider's last chunk already queued. Only
+                    # an empty queue means there is nothing left to project.
+                    if finished.is_set() and deltas.empty():
                         break
                     continue
                 if is_cancelled():
@@ -262,9 +391,7 @@ class ChatModel:
                 try:
                     on_delta(delta)
                 except BaseException:
-                    cancelled.set()
-                    abandoned.set()
-                    report_abandoned_reply()
+                    abandon()
                     raise
                 continue
             if finished.wait(0.05):

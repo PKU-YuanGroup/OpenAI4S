@@ -7099,7 +7099,10 @@ async function newSession(projectId) {
   try {
     // Empty-project auto creation, Attach, and the first Send all share this
     // promise. They cannot create sibling frames and split bytes from text.
-    const frameId = await createUploadSession(targetProject);
+    // With a conversation already open there is nothing to share: uploads bind
+    // to S.currentId directly, so the only thing the shared promise could do is
+    // collapse two deliberate New-session clicks into one frame.
+    const frameId = await createUploadSession(targetProject, { fresh: !!S.currentId });
     if ((S.project || null) !== targetProject) return;
     if (S.currentId !== frameId) {
       // Publish the destination before awaiting the sidebar refresh, so a file
@@ -7815,6 +7818,11 @@ async function cancelTurn() {
 }
 function markTurnStopping(fid) {
   if (!fid || fid !== S.currentId) return;
+  // resumeWatch's staleness test includes `!S.running`, so with no local running
+  // episode its first tick exits and nothing would ever clear the spinner. That
+  // state is reachable: the sidebar row can still report `frame.running` after a
+  // reconnect while this client already saw the turn end.
+  if (!S.running) { turnDone("cancelled"); return; }
   // Accepted is not terminal. Keep the authoritative running episode open
   // until frame_update (or the status watchdog) confirms the owner was
   // released; otherwise a reload can resurrect "Running" immediately after
@@ -8027,6 +8035,14 @@ async function send(text, opts) {
     if (!uploadReady.ok) {
       const failure = uploadReady.failures[0];
       hint(t("upload.failed", apiErrorText(failure && failure.error)), true);
+      // Reported once, then consumed. The refusal exists so this Enter cannot
+      // ask the agent about bytes that never arrived -- it was never meant to
+      // outlive the warning. Left latched, every later Enter in this
+      // conversation returned here, so abandoning the attachment cost the user
+      // their composer for the rest of the session.
+      [...UPLOAD_STATE.failures].forEach(previous => {
+        if (uploadFailureMatches(previous, dispatchFrameId, sendProjectId)) UPLOAD_STATE.failures.delete(previous);
+      });
       return;
     }
     // Navigation while preparation was in flight changes who owns the
@@ -11018,9 +11034,15 @@ function readUploadFile(file) {
   });
 }
 
-function createUploadSession(projectId) {
+function createUploadSession(projectId, options) {
+  // `fresh` opts out of the per-project single flight.  Sharing exists so that
+  // Attach and the first Send cannot split bytes from text across two sibling
+  // frames; a caller that already has a conversation open has nothing to
+  // strand, and adopting a stranger's promise there would silently answer an
+  // explicit request for a NEW session with an existing one.
+  const shared = !(options && options.fresh);
   const key = projectId ? `project:${projectId}` : "project:<none>";
-  const existing = UPLOAD_STATE.creations.get(key);
+  const existing = shared ? UPLOAD_STATE.creations.get(key) : null;
   if (existing) return existing;
   const navigationGen = S._openGen || 0;
   const creating = (async () => {
@@ -11042,10 +11064,14 @@ function createUploadSession(projectId) {
     }
     return frameId;
   })();
-  UPLOAD_STATE.creations.set(key, creating);
-  creating.finally(() => {
-    if (UPLOAD_STATE.creations.get(key) === creating) UPLOAD_STATE.creations.delete(key);
-  }).catch(() => {});
+  if (shared) {
+    UPLOAD_STATE.creations.set(key, creating);
+    creating.finally(() => {
+      if (UPLOAD_STATE.creations.get(key) === creating) UPLOAD_STATE.creations.delete(key);
+    }).catch(() => {});
+  } else {
+    creating.catch(() => {});
+  }
   return creating;
 }
 
@@ -11055,6 +11081,15 @@ function uploadBatchMatches(batch, frameId, projectId, creationPromise) {
     || (!batch.frameAtSelection
         && !!creationPromise
         && batch.targetSource === creationPromise
+        && batch.projectId === projectId)
+    // createUploadSession publishes S.currentId as soon as POST /frames answers
+    // and only resolves after loadSessions() + openConversation().  In that gap
+    // the batch has a live destination that neither id above can name yet, so
+    // matching on the ids alone let Enter cross the barrier and post the message
+    // before the bytes.  An unresolved batch in this project is by construction
+    // bound to the same single-flight frame: wait for it.
+    || (!batch.frameAtSelection
+        && batch.targetFrameId === null
         && batch.projectId === projectId);
 }
 
