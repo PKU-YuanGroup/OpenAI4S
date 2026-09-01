@@ -200,13 +200,21 @@ class AutoRepairService:
                 current["verdict"] = "issues"
                 return current
             admission_id = None
+            finding_admission_id = None
             if budget is not None and run_id:
                 admission_id = f"{run_id}:repair:{round_index}"
                 digest = finding_set_digest(prints)
+                # Held in a variable because it has to be settled below. It
+                # was previously built inline, so the only id that reached
+                # commit/mark_unknown was the repair one: every
+                # `repeated_finding` reservation stayed `reserved` for the
+                # life of the run, and since reserved counts against
+                # remaining, the budget only ever shrank.
+                finding_admission_id = f"{run_id}:finding:{digest}:{round_index}"
                 try:
                     budget.reserve(
                         run_id=str(run_id),
-                        admission_id=f"{run_id}:finding:{digest}:{round_index}",
+                        admission_id=finding_admission_id,
                         consumer="repeated_finding",
                         action_group_id=f"{digest}:{round_index}",
                         amount=1,
@@ -224,11 +232,15 @@ class AutoRepairService:
             try:
                 repair_payload = dict(self.repair_fn(snapshot, material))
             except Exception:
-                if budget is not None and admission_id:
-                    budget.mark_unknown(admission_id)
+                if budget is not None:
+                    for pending in (admission_id, finding_admission_id):
+                        if pending:
+                            budget.mark_unknown(pending)
                 raise
-            if budget is not None and admission_id:
-                budget.commit(admission_id, committed_amount=1)
+            if budget is not None:
+                for settled in (admission_id, finding_admission_id):
+                    if settled:
+                        budget.commit(settled, committed_amount=1)
             if repair_payload.get("self_certified"):
                 raise RuntimeError("Repair Agent cannot certify its own review")
             if run_id and checkpoint_id:

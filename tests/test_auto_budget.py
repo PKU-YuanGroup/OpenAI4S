@@ -748,3 +748,80 @@ def test_repair_budget_exhaustion_is_not_a_pass(tmp_path):
     assert repaired.get("verdict") != "pass"
     assert repaired.get("stop_reason") in {"budget_exhausted", "loop_detected"}
     store.close()
+
+
+def test_repeated_finding_reservations_are_settled_not_left_reserved(tmp_path):
+    """A reservation that is never settled is a permanent charge.
+
+    `AutoRepairService` reserves against `repeated_finding` and `repair` in
+    the same block, but built the finding admission id inline, so the only id
+    that reached commit/mark_unknown was the repair one. Reserved counts
+    against remaining exactly like committed does -- that is the whole point
+    of reserving before acting -- so every repair round permanently consumed
+    a `repeated_finding` slot that no fact ever confirmed.
+    """
+
+    from openai4s.config import AutoModeConfig, RoadmapFeatureFlags
+    from openai4s.server.auto_repair import AutoRepairService
+
+    store = _store(tmp_path)
+    _start(store, budgets=_budgets(max_repair_rounds=2))
+    cfg = Config(
+        roadmap_features=RoadmapFeatureFlags(stage5_auto_repair=True),
+        auto_mode=AutoModeConfig(
+            result_review_mode="auto_fix",
+            approvals_reviewer="auto_review",
+            budgets=AutoModeBudgets(max_repair_rounds=2),
+        ),
+    )
+    service = AutoRepairService(
+        store=store,
+        config=cfg,
+        scientific_review=SimpleNamespace(
+            evaluate=lambda *a, **k: {"verdict": "pass", "findings": []}
+        ),
+        repair_fn=lambda snapshot, findings: {
+            "changed": True,
+            "candidate_answer": "corrected",
+        },
+    )
+    service.run(
+        initial={
+            "verdict": "issues",
+            "snapshot": {"candidate_answer": "wrong"},
+            "findings": [{"severity": "high", "claim": "n=9", "id": "f-1"}],
+        },
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        run_id="auto-run-1",
+    )
+
+    rows = store.list_auto_mode_budget_reservations("auto-run-1")
+    finding_rows = [item for item in rows if item["consumer"] == "repeated_finding"]
+    assert finding_rows, "no repeated_finding reservation was taken at all"
+    assert [item["state"] for item in finding_rows] == [
+        "committed"
+    ], "repeated_finding reservation was never settled"
+    store.close()
+
+
+def test_every_declared_consumer_has_a_sink_or_is_named_unwired():
+    """A published limit with no sink permits an unbounded number of actions.
+
+    `repair_turn` sat in CONSUMERS with a limit, a projected `used`, and no
+    reserve call anywhere -- so the field read as measured while measuring
+    nothing. Splitting the inventory means a consumer cannot be silently
+    unmeasured: it is either wired, or it is named here with a reason.
+    """
+
+    from openai4s.server.auto_budget import (
+        CONSUMERS,
+        SINK_REGISTRY,
+        UNWIRED_CONSUMERS,
+    )
+
+    assert not (set(SINK_REGISTRY) & set(UNWIRED_CONSUMERS))
+    assert set(SINK_REGISTRY) | set(UNWIRED_CONSUMERS) == set(
+        CONSUMERS
+    ), "a consumer is neither wired to a sink nor declared unwired"

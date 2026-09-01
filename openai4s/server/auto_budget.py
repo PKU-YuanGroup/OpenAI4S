@@ -59,6 +59,22 @@ SINK_REGISTRY = {
     "model": ("openai4s.server.gateway", "SessionRunner._loop"),
     "extra_cell": ("openai4s.server.gateway", "SessionRunner._loop"),
     "native_tool": ("openai4s.server.gateway", "SessionRunner._loop"),
+    "repeated_finding": ("openai4s.server.auto_repair", "AutoRepairService.run"),
+    "token": (
+        "openai4s.server.scientific_review",
+        "ScientificReviewService.evaluate",
+    ),
+}
+#: Consumers with a published limit that nothing currently reserves against,
+#: and why. `repair_turn` maps to `repair_turns_per_round`, but the shipped
+#: Repair executor (`apply_claim_repair`) is deterministic and runs no agent
+#: turns, so the limit is dormant rather than broken. It stops being dormant
+#: the moment a caller injects an LLM-driven `repair_fn`: the turns happen
+#: inside that callable, where `AutoRepairService` cannot see them, and the
+#: limit would silently permit any number. Wire it there, and delete the
+#: entry here -- the projection already reports this field as measured.
+UNWIRED_CONSUMERS = {
+    "repair_turn": "no sink: the shipped Repair executor runs no agent turns",
 }
 FIELD_AUTHORITIES = {
     **{
