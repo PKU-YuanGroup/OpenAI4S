@@ -2544,6 +2544,8 @@ class HostDispatcher:
         if skill is None:
             return None
         from openai4s.server.skill_network_admission import (
+            LOAD_SINK,
+            admit,
             bind_skill_load,
             load_event_metadata,
         )
@@ -2571,7 +2573,7 @@ class HostDispatcher:
             "skill_loaded",
             metadata=metadata,
         )
-        binding = bind_skill_load(
+        bind_skill_load(
             frame_id=self.frame_id,
             action_group_id=str(action_group_id) if action_group_id else None,
             skill_id=skill.name,
@@ -2586,15 +2588,21 @@ class HostDispatcher:
             loaded_dict["action_group_id"] = metadata["action_group_id"]
             loaded_dict["manifest_digest"] = metadata["manifest_digest"]
             loaded_dict["document_digest"] = metadata["document_digest"]
-        if (
-            binding.capability.mode == "raw_required"
-            and binding.capability.declaration == "declared"
-        ):
-            return (
-                f"skill {skill.name!r} requires raw kernel network and is "
-                "blocked in this version (the load is refused, not just the "
-                "next Cell)"
-            )
+        # Full admission, not just the version-wide `raw_required` freeze.
+        # `host_only` genuinely depends on measured posture -- and at load
+        # time the posture is available: every `host_call` runs inside
+        # `bind_sandbox_status(self.sandbox_status)`, which the manager reads
+        # from the worker executing this very Cell. Refusing only
+        # `raw_required` here left `host_only` on a degraded sandbox refused
+        # for every subsequent Cell and permitted for the one that loaded it
+        # -- the load-then-use shape, i.e. the one that matters.
+        decision = admit(
+            sink=LOAD_SINK,
+            frame_id=self.frame_id,
+            sandbox_status=self._current_sandbox_status(),
+        )
+        if not decision.allowed:
+            return f"{decision.refusal_message()} (the load is refused, not just the next Cell)"
         return None
 
     def _m_remember(self, spec: dict) -> dict:
@@ -3027,7 +3035,21 @@ class HostDispatcher:
     def _m_skills_get(self, name: str) -> dict:
         return self._skill_service.get(name)
 
-    def _m_skills_read(self, spec: dict) -> str:
+    def _m_skills_read(self, spec: dict) -> str | dict:
+        """Read one Skill file -- the recipe itself, at the default path.
+
+        `read` with no `path` returns `SKILL.md`, which is the same
+        executable guidance `load_skill` hands back. Gating only `load_skill`
+        left the freeze one synonym wide: an already-admitted Cell that reads
+        instead of loads got the recipe with no bind and no refusal. The bind
+        is the same one, so the requirement is recorded either way.
+        """
+
+        name = str(spec.get("name") or "")
+        if name:
+            refusal = self._bind_loaded_skill({"name": name}, source="skills_read")
+            if refusal is not None:
+                return {"error": refusal}
         return self._skill_service.read(spec)
 
     def _m_skills_edit(self, spec: dict) -> dict:

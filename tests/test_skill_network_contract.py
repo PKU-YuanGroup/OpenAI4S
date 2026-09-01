@@ -909,3 +909,80 @@ def test_cell_refuses_a_blocked_skill_before_running_its_bootstrap(tmp_path):
     assert harness.ran is False
     assert outcome.result["skill_network"]["allowed"] is False
     assert "raw_network" in outcome.result["skill_network"]["blocked_on"]
+
+
+def _host_only_dispatcher(tmp_path):
+    from openai4s.host_dispatch import build_dispatcher
+
+    skills = tmp_path / "skills"
+    (skills / "lit").mkdir(parents=True)
+    (skills / "lit" / "SKILL.md").write_text(
+        "---\nname: lit\ndescription: d\norigin: openai4s\n"
+        "capabilities:\n  network:\n    mode: host_only\n"
+        "    domains:\n      - api.openalex.org\n---\n"
+        "# recipe\nimport requests\n",
+        "utf-8",
+    )
+    return build_dispatcher(Config(data_dir=tmp_path / "data", skills_dir=skills))
+
+
+_DEGRADED = {
+    "enforced": False,
+    "self_test_passed": False,
+    "network_policy": "raw_allowed",
+    "backend": "none",
+}
+_ENFORCED = {
+    "enforced": True,
+    "self_test_passed": True,
+    "network_policy": "blocked",
+    "backend": "seatbelt",
+}
+
+
+def test_load_refuses_host_only_when_the_measured_sandbox_is_degraded(tmp_path):
+    """`raw_required` needs no posture; `host_only` does -- and load has it.
+
+    Every `host_call` runs inside `bind_sandbox_status(self.sandbox_status)`,
+    which the manager reads from the worker executing this very Cell. Only
+    the version-wide `raw_required` freeze was applied at load, so a
+    `host_only` Skill on a degraded sandbox was refused for every subsequent
+    Cell and handed to the one that loaded it -- the load-then-use shape,
+    which is the one that matters.
+    """
+
+    disp = _host_only_dispatcher(tmp_path)
+    disp.frame_id = "frame-host-only-degraded"
+    with disp.bind_sandbox_status(_DEGRADED):
+        refused = disp._m_load_skill("lit")
+    assert set(refused) == {"error"}, refused
+    assert "does not confine the kernel" in refused["error"]
+    assert "import requests" not in str(refused)
+
+    disp.frame_id = "frame-host-only-enforced"
+    with disp.bind_sandbox_status(_ENFORCED):
+        loaded = disp._m_load_skill("lit")
+    assert loaded.get("name") == "lit", loaded
+    disp.store.close()
+
+
+def test_reading_a_skill_file_is_gated_like_loading_it(tmp_path):
+    """`skills_read` with the default path returns SKILL.md -- the recipe.
+
+    Gating only `load_skill` left the freeze one synonym wide: an
+    already-admitted Cell that reads instead of loads got the same
+    executable guidance with no bind and no refusal.
+    """
+
+    disp = _host_only_dispatcher(tmp_path)
+    disp.frame_id = "frame-read-degraded"
+    with disp.bind_sandbox_status(_DEGRADED):
+        refused = disp._m_skills_read({"name": "lit"})
+    assert isinstance(refused, dict) and set(refused) == {"error"}, refused
+    assert "import requests" not in str(refused)
+
+    disp.frame_id = "frame-read-enforced"
+    with disp.bind_sandbox_status(_ENFORCED):
+        allowed = disp._m_skills_read({"name": "lit"})
+    assert isinstance(allowed, str) and "import requests" in allowed
+    disp.store.close()
