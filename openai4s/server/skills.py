@@ -15,10 +15,13 @@ from typing import Any
 from openai4s import execution_principal
 from openai4s.skills_loader import SkillLoader, SkillVersionService, frontmatter_edit
 from openai4s.skills_loader.capabilities import (
+    NETWORK_MODES,
+    InvalidSkillCapability,
     compose_readiness,
     unknown_capability,
+    validate_network_frontmatter_strict,
 )
-from openai4s.skills_loader.loader import skill_readiness
+from openai4s.skills_loader.loader import _requirements, skill_readiness
 
 #: Every domain failure this service can report, as a stable machine-readable
 #: code and the HTTP status the gateway turns it into.
@@ -47,6 +50,11 @@ SKILL_FAILURE_STATUS: dict[str, int] = {
     # The version store is a dependency that is absent, not a bad request.
     "skill_version_storage_unavailable": 503,
     "skill_write_failed": 500,
+    # Closed-set capability on the import path. 400: the document is
+    # well-formed enough to parse, but the declared mode is not in
+    # NETWORK_MODES. The tolerant reader still degrades this to "unknown"
+    # for already-stored third-party Skills.
+    "skill_capability_invalid": 400,
 }
 
 
@@ -122,6 +130,34 @@ class SkillCustomizationService:
         except Exception:  # noqa: BLE001 - malformed imports keep their raw body
             return {}, content
 
+    def _review_from_document(self, content: str) -> dict:
+        """Safe import/rollback summary. Declaration is never authorization."""
+
+        metadata, _body = self.parse_document(content)
+        requirements = list(_requirements(metadata.get("requirements")))
+        try:
+            network = validate_network_frontmatter_strict(content)
+        except InvalidSkillCapability:
+            network = None
+        if network is None:
+            network = unknown_capability(source="missing")
+        readiness = compose_readiness(requirements, network)
+        warnings: list[str] = []
+        if network.mode not in NETWORK_MODES or not network.explicit:
+            warnings.append("network requirements unknown")
+        for item in readiness.get("missing") or []:
+            warnings.append(f"missing:{item}")
+        for item in readiness.get("unverifiable") or []:
+            warnings.append(f"unverifiable:{item}")
+        for item in readiness.get("blocked_on") or []:
+            warnings.append(f"blocked_on:{item}")
+        return {
+            "requirements": requirements,
+            "capabilities": network.public_dict(),
+            "readiness": readiness,
+            "warnings": warnings,
+        }
+
     def create_or_update(
         self,
         name: str,
@@ -129,6 +165,9 @@ class SkillCustomizationService:
         body: str,
         *,
         existing: bool = False,
+        seed: str | None = None,
+        strict_capabilities: bool = False,
+        with_review: bool = False,
     ) -> dict:
         name = (name or "").strip()
         if not name:
@@ -212,8 +251,6 @@ class SkillCustomizationService:
         root = root.resolve()
         if root == user_directory or not root.is_relative_to(user_directory):
             return _fail("skill_name_unsafe", "unsafe user skill path")
-        if self.versions is None:
-            root.mkdir(parents=True, exist_ok=True)
         document = root / "SKILL.md"
         if document.is_symlink():
             return _fail("skill_name_unsafe", "unsafe user skill path")
@@ -231,17 +268,36 @@ class SkillCustomizationService:
         # `metadata` block — and `requirements` is load-bearing, so a skill
         # that lost `[gpu]` stopped reporting `needs_setup` and started
         # claiming it could run anywhere.
-        try:
-            previous = document.read_text("utf-8") if document.exists() else ""
-        except OSError:
-            previous = ""
-        content = frontmatter_edit.rewrite(
-            previous,
-            name=document_name,
-            description=description,
-            origin=origin,
-            body=body or "",
-        )
+        #
+        # Import passes the pasted document as `seed`. A new Skill has no
+        # on-disk previous, so without the seed rewrite would start from
+        # empty and drop every field the form does not own.
+        if seed is not None:
+            origin = frontmatter_edit.IMPORT_ORIGIN
+            previous = seed
+            content = frontmatter_edit.rewrite_import(
+                previous,
+                name=document_name,
+                description=description,
+                body=body or "",
+            )
+        else:
+            try:
+                previous = document.read_text("utf-8") if document.exists() else ""
+            except OSError:
+                previous = ""
+            content = frontmatter_edit.rewrite(
+                previous,
+                name=document_name,
+                description=description,
+                origin=origin,
+                body=body or "",
+            )
+        if strict_capabilities:
+            try:
+                validate_network_frontmatter_strict(content)
+            except InvalidSkillCapability as error:
+                return _fail("skill_capability_invalid", str(error))
         if self.versions is not None:
             try:
                 files = self.versions.read_package(root) if document.exists() else {}
@@ -265,14 +321,18 @@ class SkillCustomizationService:
                     message or "skill version update failed",
                 )
         else:
+            root.mkdir(parents=True, exist_ok=True)
             document.write_text(content, "utf-8")
         self.loader.discover()
-        return {
+        result = {
             "ok": True,
             "name": document_name,
             "slug": root.name,
             "origin": origin,
         }
+        if with_review:
+            result["review"] = self._review_from_document(content)
+        return result
 
     def import_document(
         self,
@@ -291,7 +351,14 @@ class SkillCustomizationService:
             name = name or metadata.get("name") or ""
             description = description or metadata.get("description") or ""
             body = parsed_body
-        return self.create_or_update(name, description, body)
+        return self.create_or_update(
+            name,
+            description,
+            body,
+            seed=content if content else None,
+            strict_capabilities=True,
+            with_review=True,
+        )
 
     def get(self, name: str) -> dict:
         skill = self._find_skill(name)
@@ -583,6 +650,15 @@ class SkillCustomizationService:
         except (KeyError, PermissionError, ValueError, RuntimeError) as error:
             return _fail("skill_write_failed", str(error))
         self.loader.discover()
+        restored_skill = self._find_skill(name)
+        if restored_skill is not None:
+            document = restored_skill.root / "SKILL.md"
+            try:
+                restored = document.read_text("utf-8") if document.exists() else ""
+            except OSError:
+                restored = ""
+            if restored:
+                result = {**result, "review": self._review_from_document(restored)}
         return result
 
 

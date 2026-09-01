@@ -138,6 +138,74 @@ def test_an_unknown_future_field_is_kept_too():
     assert "not_invented_yet: 42" in out
 
 
+IMPORT_SEED = """---
+name: cryo-import
+description: Import me whole
+origin: draft
+requirements: [gpu, cuda]
+capabilities:
+  network:
+    mode: host_only
+    domains:
+      - api.openalex.org
+      - doi.org
+license: CC-BY-4.0
+category: structural-biology
+# keep this comment
+x-vendor-ext:
+  nested:
+    keep: me
+    list:
+      - one
+      - two
+---
+
+Original imported body.
+"""
+
+
+def test_import_rewrite_keeps_unknown_nested_keys_comments_and_network():
+    """The import seed is the pasted document. Empty original is the bug:
+    rewrite would then emit only name/description/origin and this fixture
+    would still pass if it only asserted those three."""
+    out = frontmatter_edit.rewrite_import(
+        IMPORT_SEED,
+        name="cryo-import",
+        description="Import me whole",
+        body="Original imported body.",
+    )
+    meta, body = _parse_frontmatter(out)
+    assert meta["name"] == "cryo-import"
+    assert meta["origin"] == "user"
+    assert meta["origin"] != "draft"
+    assert meta["requirements"] == "[gpu, cuda]"
+    assert meta["license"] == "CC-BY-4.0"
+    assert meta["category"] == "structural-biology"
+    assert "mode: host_only" in out
+    assert "api.openalex.org" in out
+    assert "doi.org" in out
+    assert "# keep this comment" in out
+    assert "x-vendor-ext:" in out
+    assert "    keep: me" in out
+    assert "      - two" in out
+    assert body.strip() == "Original imported body."
+
+
+def test_import_rewrite_from_empty_seed_cannot_invent_dropped_fields():
+    """If import forgets to pass the pasted document, nothing but the
+    owned fields exists to keep. This is the hollow-test trap: a fixture
+    with only name/description/body is green either way."""
+    out = frontmatter_edit.rewrite_import(
+        "",
+        name="cryo-import",
+        description="Import me whole",
+        body="Original imported body.",
+    )
+    assert "requirements:" not in out
+    assert "x-vendor-ext:" not in out
+    assert "license:" not in out
+
+
 # --------------------------------------------------------------------------
 # through the service a user actually reaches
 # --------------------------------------------------------------------------

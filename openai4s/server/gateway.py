@@ -17000,6 +17000,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     description=b.get("description") or "",
                     body=b.get("body") or "",
                 )
+                # skill_capability_invalid is registered on SKILL_FAILURE_STATUS
+                # as 400; _skill_result_status projects it. Do not degrade the
+                # mode to unknown on this path — that is the historical reader.
                 self._json(imported, _skill_result_status(imported))
                 return
             m = re.fullmatch(r"/skills/([^/]+)/versions", sub)
