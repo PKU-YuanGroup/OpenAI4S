@@ -118,7 +118,7 @@ def _write_receipt(directory, *, source_sha=FAKE_HEAD, failing=(), **overrides):
     return target
 
 
-def _write_build_receipt(directory, kind, artifacts, *, source_sha=FAKE_HEAD):
+def _write_build_receipt(directory, kind, artifacts, *, source_sha=FAKE_HEAD, **kwargs):
     """The receipt the job that built those bytes writes beside them.
 
     Staging verifies one per artifact group against the frozen SHA, which is how
@@ -127,7 +127,31 @@ def _write_build_receipt(directory, kind, artifacts, *, source_sha=FAKE_HEAD):
     """
     from scripts import release_receipts
 
-    document = release_receipts.build_build_receipt(kind, source_sha, artifacts)
+    kwargs.setdefault("workflow_run_id", "7100")
+    kwargs.setdefault(
+        "workflow_inputs",
+        {
+            "tag": "v0.2.0",
+            "publish": False,
+            "pypi_only": False,
+            "macos_asset": "notarized" if kind == "macos" else "omit",
+        },
+    )
+    if kind == "macos":
+        kwargs.setdefault(
+            "notary",
+            {
+                "requested": True,
+                "submitted": True,
+                "stapled": True,
+                "stapler_returncode": 0,
+                "spctl_returncode": 0,
+                "post_staple_sha256": sha256_file(artifacts[0]) if artifacts else "",
+            },
+        )
+    document = release_receipts.build_build_receipt(
+        kind, source_sha, artifacts, **kwargs
+    )
     target = directory / release_receipts.build_receipt_name(kind)
     target.write_text(json.dumps(document, indent=2), "utf-8")
     return target
@@ -197,7 +221,19 @@ def _signed_dmg(
         encoding="utf-8",
     )
     if receipt:
-        _write_build_receipt(assets, "macos", [dmg])
+        _write_build_receipt(
+            assets,
+            "macos",
+            [dmg],
+            notary={
+                "requested": notarized,
+                "submitted": notarized,
+                "stapled": notarized,
+                "stapler_returncode": 0 if notarized else 1,
+                "spctl_returncode": 0 if notarized else 1,
+                "post_staple_sha256": sha256_file(dmg) if notarized else "",
+            },
+        )
     return dmg
 
 
@@ -855,6 +891,10 @@ def test_staging_records_the_linux_full_boundary_check_run_id(assets):
     assert result.facts["linux_sandbox_full_check_run_id"]
     names = {row["name"] for row in result.facts["checks"]}
     assert "ci-linux-sandbox-full" in names
+    boundary = result.facts["linux_boundary"]
+    assert boundary["ci_attestation"]["status"] == "passed"
+    assert boundary["release_reexecution"]["status"] == "unproven"
+    assert "status" not in boundary
 
 
 # --------------------------------------------------------------------------

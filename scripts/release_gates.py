@@ -58,10 +58,16 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
+LINUX_BOUNDARY = "linux-filesystem-and-egress"
+LINUX_CI_GATE = "ci-linux-sandbox-full"
+LINUX_REEXEC_GATE = "linux-sandbox"
+CI_ATTESTATION_STATUSES = frozenset({"passed", "failed", "missing", "skipped"})
+RELEASE_REEXECUTION_STATUSES = frozenset({"executed", "unproven"})
+
 #: Bumped whenever the receipt's shape or the gate list changes. The consumer
 #: requires an exact match rather than `>=`: an older producer cannot know about
 #: a gate added later, so accepting its receipt would silently drop that gate.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 RECEIPT_FORMAT = "openai4s-quality-receipt"
 
@@ -159,6 +165,7 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
     Gate("ci-tests-py3.10", CHECK_SUITE_KIND, check_name="Offline tests (py3.10)"),
     Gate("ci-tests-py3.12", CHECK_SUITE_KIND, check_name="Offline tests (py3.12)"),
     Gate("ci-tests-py3.13", CHECK_SUITE_KIND, check_name="Offline tests (py3.13)"),
+    Gate("ci-tests-py3.14", CHECK_SUITE_KIND, check_name="Offline tests (py3.14)"),
     Gate(
         "ci-browser-chromium",
         CHECK_SUITE_KIND,
@@ -251,6 +258,134 @@ def manifest_digest() -> str:
     """
     payload = json.dumps(manifest(), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_linux_boundary(
+    checks: Iterable[Mapping[str, Any]] = (),
+    platform_checks: Iterable[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Split the Linux filesystem-and-egress boundary into two facts.
+
+    CI attestation and release-workflow re-execution are different events.
+    Flattening them into one status is how a reader could see `passed` and
+    `unproven` on the same boundary and not know which was true.
+    """
+    ci_row = next(
+        (dict(row) for row in checks if str(row.get("name") or "") == LINUX_CI_GATE),
+        None,
+    )
+    reexec_row = next(
+        (
+            dict(row)
+            for row in platform_checks
+            if str(row.get("name") or "") == LINUX_REEXEC_GATE
+        ),
+        None,
+    )
+    if ci_row is None:
+        ci = {
+            "status": "missing",
+            "gate": LINUX_CI_GATE,
+            "check_run_id": "",
+            "head_sha": "",
+        }
+    else:
+        conclusion = str(ci_row.get("conclusion") or "")
+        if conclusion == "success":
+            status = "passed"
+        elif conclusion == "skipped":
+            status = "skipped"
+        elif conclusion:
+            status = "failed"
+        else:
+            status = "missing"
+        ci = {
+            "status": status,
+            "gate": LINUX_CI_GATE,
+            "check_run_id": str(ci_row.get("check_run_id") or ""),
+            "head_sha": str(ci_row.get("head_sha") or ""),
+        }
+    if reexec_row is None:
+        reexec = {
+            "status": "unproven",
+            "gate": LINUX_REEXEC_GATE,
+            "reason": str(PLATFORM_CHECKS_UNAVAILABLE.get(LINUX_REEXEC_GATE) or ""),
+        }
+    else:
+        reexec = {
+            "status": "executed",
+            "gate": LINUX_REEXEC_GATE,
+            "returncode": reexec_row.get("returncode"),
+        }
+    evidence = {
+        "boundary": LINUX_BOUNDARY,
+        "ci_attestation": ci,
+        "release_reexecution": reexec,
+    }
+    verify_linux_boundary(evidence)
+    return evidence
+
+
+def verify_linux_boundary(evidence: Any) -> dict[str, Any]:
+    """Refuse a Linux boundary object that collapses two facts into one status."""
+    if not isinstance(evidence, Mapping):
+        raise GateManifestError("linux_boundary is not an object")
+    if str(evidence.get("boundary") or "") != LINUX_BOUNDARY:
+        raise GateManifestError(
+            f"linux_boundary names {evidence.get('boundary')!r}, expected "
+            f"{LINUX_BOUNDARY!r}"
+        )
+    # A single status field is the original defect: passed and unproven
+    # cannot share a vocabulary on the same object.
+    if "status" in evidence:
+        raise GateManifestError(
+            "linux_boundary cannot carry a flat status; ci_attestation and "
+            "release_reexecution are different facts"
+        )
+    if "unproven" in evidence:
+        raise GateManifestError(
+            "linux_boundary cannot carry a flat unproven map next to "
+            "ci_attestation; that is passed and unproven on the same boundary"
+        )
+    ci = evidence.get("ci_attestation")
+    reexec = evidence.get("release_reexecution")
+    if not isinstance(ci, Mapping) or not isinstance(reexec, Mapping):
+        raise GateManifestError(
+            "linux_boundary must have ci_attestation and release_reexecution objects"
+        )
+    ci_status = str(ci.get("status") or "")
+    reexec_status = str(reexec.get("status") or "")
+    if ci_status == "unproven":
+        raise GateManifestError(
+            "ci_attestation cannot be unproven; that fact belongs to "
+            "release_reexecution"
+        )
+    if reexec_status == "passed":
+        raise GateManifestError(
+            "release_reexecution cannot be passed; CI attestation is the "
+            "passed/failed fact"
+        )
+    if ci_status not in CI_ATTESTATION_STATUSES:
+        raise GateManifestError(
+            f"ci_attestation status {ci_status!r} is not one of "
+            f"{sorted(CI_ATTESTATION_STATUSES)}"
+        )
+    if reexec_status not in RELEASE_REEXECUTION_STATUSES:
+        raise GateManifestError(
+            f"release_reexecution status {reexec_status!r} is not one of "
+            f"{sorted(RELEASE_REEXECUTION_STATUSES)}"
+        )
+    if ci_status == "passed" and not str(ci.get("check_run_id") or ""):
+        raise GateManifestError("ci_attestation status passed requires a check-run id")
+    if reexec_status == "unproven" and not str(reexec.get("reason") or "").strip():
+        raise GateManifestError(
+            "release_reexecution status unproven must say why it was not run"
+        )
+    if reexec_status == "executed" and reexec.get("returncode") is None:
+        raise GateManifestError(
+            "release_reexecution status executed records no returncode"
+        )
+    return dict(evidence)
 
 
 def builder_facts() -> dict[str, Any]:
@@ -410,6 +545,23 @@ def verify_receipt_document(
                 f"check {gate.name!r} records no check-run id, so nobody can "
                 f"go and look at it"
             )
+
+    try:
+        boundary = verify_linux_boundary(document.get("linux_boundary"))
+    except GateManifestError as error:
+        raise GateManifestError(f"quality receipt {error}") from error
+    ci = boundary["ci_attestation"]
+    attested = check_rows[LINUX_CI_GATE]
+    if ci["status"] != "passed":
+        raise GateManifestError(
+            "linux_boundary.ci_attestation is not passed, but check-suite gate "
+            f"{LINUX_CI_GATE} concluded success"
+        )
+    if str(ci.get("check_run_id") or "") != str(attested.get("check_run_id") or ""):
+        raise GateManifestError(
+            "linux_boundary.ci_attestation check-run id does not match the "
+            f"{LINUX_CI_GATE} check row"
+        )
     return document
 
 
@@ -428,12 +580,34 @@ def build_receipt(
     consumer detect a receipt from a different gate list rather than a receipt
     with fewer rows.
     """
+    check_list = [
+        {
+            "name": str(row["name"]),
+            "check_name": str(row.get("check_name") or ""),
+            "check_run_id": str(row.get("check_run_id") or ""),
+            "run_id": str(row.get("run_id") or ""),
+            "url": str(row.get("url") or ""),
+            "conclusion": str(row.get("conclusion") or ""),
+            "head_sha": str(row.get("head_sha") or ""),
+        }
+        for row in checks
+    ]
+    platform_list = [
+        {
+            "name": str(row["name"]),
+            "command": list(row.get("command") or []),
+            "returncode": int(row["returncode"]),
+            "runner": dict(row.get("runner") or {}),
+        }
+        for row in platform_checks
+    ]
     return {
         "format": RECEIPT_FORMAT,
         "schema_version": SCHEMA_VERSION,
         "manifest_digest": manifest_digest(),
         "source_sha": str(source_sha),
         "builder": builder_facts(),
+        "linux_boundary": build_linux_boundary(check_list, platform_list),
         "gates": [
             {
                 "name": str(row["name"]),
@@ -442,27 +616,8 @@ def build_receipt(
             }
             for row in gates
         ],
-        "checks": [
-            {
-                "name": str(row["name"]),
-                "check_name": str(row.get("check_name") or ""),
-                "check_run_id": str(row.get("check_run_id") or ""),
-                "run_id": str(row.get("run_id") or ""),
-                "url": str(row.get("url") or ""),
-                "conclusion": str(row.get("conclusion") or ""),
-                "head_sha": str(row.get("head_sha") or ""),
-            }
-            for row in checks
-        ],
-        "platform_checks": [
-            {
-                "name": str(row["name"]),
-                "command": list(row.get("command") or []),
-                "returncode": int(row["returncode"]),
-                "runner": dict(row.get("runner") or {}),
-            }
-            for row in platform_checks
-        ],
+        "checks": check_list,
+        "platform_checks": platform_list,
     }
 
 

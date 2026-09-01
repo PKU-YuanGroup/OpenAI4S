@@ -201,6 +201,25 @@ def _linux_series() -> str:
     return match.group(1)
 
 
+def _dockerfile_series() -> str:
+    """The interpreter the published container image runs.
+
+    The image is a third shipped runtime, next to the .dmg and the Linux
+    tarball. Reading the Dockerfile rather than restating 3.14 here is the
+    mutation the release gate needs: change the FROM line to an unlisted
+    series and this fails instead of the container silently leaving the
+    tested matrix.
+    """
+    text = (_ROOT / "Dockerfile").read_text("utf-8")
+    matches = re.findall(r"^FROM python:(\d+\.\d+)[^\n]*", text, re.M)
+    assert matches, "Dockerfile FROM python:X.Y is not where this reads"
+    series = set(matches)
+    assert (
+        len(series) == 1
+    ), f"Dockerfile names more than one Python series: {sorted(series)}"
+    return matches[0]
+
+
 def test_every_shipped_interpreter_is_claimed_and_tested():
     """Not just the DMG's. Both bundles embed a CPython, and the previous
     version of this reconciliation read one of the two build scripts."""
@@ -254,6 +273,24 @@ def test_the_shipped_interpreter_is_claimed_and_tested():
     )
 
 
+def test_the_container_interpreter_is_tested_and_gated():
+    """The published image runs 3.14. Until this check, CI and the release
+    gate stopped at 3.13, so a 3.14-only failure shipped as a green
+    container smoke."""
+    shipped = _dockerfile_series()
+    assert shipped in _ci_tested_versions(), (
+        f"the container ships Python {shipped}, which the CI offline-test "
+        "matrix never runs"
+    )
+    from scripts import release_gates
+
+    names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
+    assert f"Offline tests (py{shipped})" in names, (
+        f"the container ships Python {shipped}, which the release gate does "
+        "not require at the candidate SHA"
+    )
+
+
 def test_every_tested_version_is_a_claimed_version():
     """The other direction, and the cheaper one.
 
@@ -261,11 +298,17 @@ def test_every_tested_version_is_a_claimed_version():
     something the package tells installers it does not offer. That is not
     harmless -- it is the shape of a claim that drifted, and whichever side is
     wrong, the two disagreeing is the bug.
+
+    The container runtime is the one deliberate exception: it is claimed by
+    the Dockerfile and the support matrix, not by a wheel classifier, and
+    `test_the_container_interpreter_is_tested_and_gated` is what keeps that
+    claim honest.
     """
     tested, claimed = _ci_tested_versions(), _classifier_versions()
-    assert not (tested - claimed), (
-        f"CI tests Python {sorted(tested - claimed)}, which the classifiers do "
-        "not claim"
+    extra = tested - claimed - {_dockerfile_series()}
+    assert not extra, (
+        f"CI tests Python {sorted(extra)}, which the classifiers do not claim "
+        "and the Dockerfile does not ship"
     )
 
 
