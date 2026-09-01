@@ -677,6 +677,23 @@ class Agent:
                     if action_ledger is not None
                     else transcript_events
                 )
+
+                def _account_abandoned_reply(reply: Mapping[str, Any]) -> None:
+                    """Meter a reply that landed after this run was cancelled.
+
+                    Only the Web loop used to wire this, so a cancelled CLI run
+                    or delegated child quarantined its late reply (right) and
+                    then never reached ``record_session_llm_usage`` (wrong) --
+                    the quota-ledger hole ``record_abandoned_usage`` exists to
+                    close, left open on every non-Web path.
+                    """
+
+                    if action_ledger is None:
+                        return
+                    usage = reply.get("usage")
+                    if isinstance(usage, Mapping) and usage:
+                        action_ledger.record_abandoned_usage(usage)
+
                 model: Any = ChatModel(
                     self.cfg.llm,
                     chat,
@@ -687,6 +704,7 @@ class Agent:
                     # reply from acting, this one lets the transport abandon a
                     # retry backoff it is merely sleeping through.
                     cancellation=self.cancellation,
+                    abandoned_reply=_account_abandoned_reply,
                 )
                 if self.cancellation is not None:
                     model = _CancellationAwareModel(

@@ -1418,6 +1418,8 @@ Object.assign(I18N.zh, {
   "upload.dropping": "正在上传拖入的文件…",
   "upload.failed": "上传失败：{0}",
   "upload.pasting": "正在上传粘贴的文件…",
+  "upload.pendingSend": "正在等待附件上传完成…",
+  "upload.stalled": "附件上传时间过长，这条消息没有发出。请重试或重新选择文件。",
   "upload.uploaded": "已上传：{0}",
   "versions.badge.current": "当前",
   "versions.empty": "暂无版本历史。",
@@ -2630,6 +2632,8 @@ Object.assign(I18N.en, {
   "upload.dropping": "Uploading dropped files…",
   "upload.failed": "Upload failed: {0}",
   "upload.pasting": "Uploading pasted files…",
+  "upload.pendingSend": "Waiting for attachments to finish uploading…",
+  "upload.stalled": "The attachments took too long to upload, so this message was not sent. Retry, or choose the files again.",
   "upload.uploaded": "Uploaded: {0}",
   "versions.badge.current": "Current",
   "versions.empty": "No version history yet.",
@@ -7972,7 +7976,12 @@ async function send(text, opts) {
   if (activePreparation
       && activePreparation.frameId === sourceFrameId
       && activePreparation.projectId === sourceProjectId
-      && activePreparation.openGen === sourceOpenGen) return;
+      && activePreparation.openGen === sourceOpenGen) {
+    // Say why. Returning silently here made a slow (or stuck) upload look like
+    // a dead composer: Enter did nothing and nothing explained it.
+    hint(t("upload.pendingSend"), false, true);
+    return;
+  }
   const preparation = { frameId: sourceFrameId, projectId: sourceProjectId, openGen: sourceOpenGen };
   S._sendPreparing = preparation;
   const sendProjectId = sourceProjectId;
@@ -8031,7 +8040,27 @@ async function send(text, opts) {
     // This is the LAST await before the message POST. A FileReader/upload
     // batch that starts during any earlier preflight is therefore included;
     // after this barrier JavaScript runs synchronously through fetch().
-    const uploadReady = await waitForPendingUploads(dispatchFrameId, sendProjectId, dispatchCreation);
+    // Announce the wait before taking it. This barrier can span a real upload,
+    // and an unexplained pause is indistinguishable from a broken Send.
+    if (pendingUploadsFor(dispatchFrameId, sendProjectId, dispatchCreation).length) {
+      hint(t("upload.pendingSend"), false, true);
+    }
+    let stallTimer = null;
+    const uploadReady = await Promise.race([
+      waitForPendingUploads(dispatchFrameId, sendProjectId, dispatchCreation),
+      // A hung /uploads must not pin the composer forever. Refusing rather
+      // than proceeding keeps the barrier's guarantee -- bytes never silently
+      // trail the turn that talks about them -- while `finally` below releases
+      // the preparation latch so the next Enter is live again.
+      new Promise(resolve => {
+        stallTimer = setTimeout(() => resolve({ ok: false, stalled: true, failures: [] }), UPLOAD_WAIT_LIMIT_MS);
+      }),
+    ]);
+    clearTimeout(stallTimer);
+    if (uploadReady.stalled) {
+      hint(t("upload.stalled"), true);
+      return;
+    }
     if (!uploadReady.ok) {
       const failure = uploadReady.failures[0];
       hint(t("upload.failed", apiErrorText(failure && failure.error)), true);
@@ -11156,9 +11185,16 @@ function uploadFiles(files) {
   return batch.promise;
 }
 
+// A stuck /uploads must not pin the composer indefinitely; see send().
+const UPLOAD_WAIT_LIMIT_MS = 120000;
+
+function pendingUploadsFor(frameId, projectId, creationPromise) {
+  return [...UPLOAD_STATE.pending].filter(batch => uploadBatchMatches(batch, frameId, projectId, creationPromise));
+}
+
 async function waitForPendingUploads(frameId, projectId, creationPromise) {
   while (true) {
-    const pending = [...UPLOAD_STATE.pending].filter(batch => uploadBatchMatches(batch, frameId, projectId, creationPromise));
+    const pending = pendingUploadsFor(frameId, projectId, creationPromise);
     if (!pending.length) break;
     await Promise.all(pending.map(batch => batch.promise));
   }
@@ -11430,8 +11466,19 @@ async function custTab(tab) {
       reject(error);
     }, CUST_LOAD_TIMEOUT_MS);
   });
+  // Held so the loser of the race still has a handler. When `deadline` wins,
+  // `loading` is still in flight; most tab loaders swallow their own errors,
+  // but one that rejects later would otherwise be an unhandled rejection.
+  let loading;
   try {
-    await Promise.race([loaders[selected](c), deadline]);
+    loading = Promise.resolve(loaders[selected](c));
+  } catch (error) {
+    // A synchronous throw is still this tab's failure, not an escaping one.
+    loading = Promise.reject(error);
+  }
+  loading.catch(() => {});
+  try {
+    await Promise.race([loading, deadline]);
   } catch (error) {
     custLoadFailure(c, selected, request, error && error.settingsLoadTimeout ? t("cust.load.timeout") : t("versions.load.err", apiErrorText(error)));
   } finally {

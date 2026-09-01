@@ -1665,7 +1665,12 @@ def test_customize_entry_clicks_cannot_leave_the_panel_stuck_loading() -> None:
     assert 'old = $("#cust-content"), c = old.cloneNode(false)' in loader
     assert "old.replaceWith(c)" in loader
     assert "S._custReq" in loader
-    assert "Promise.race([loaders[selected](c), deadline])" in loader
+    # The loader promise is held rather than raced inline: when the deadline
+    # wins, a loader that rejects later would otherwise be unhandled.
+    assert "loading = Promise.resolve(loaders[selected](c))" in loader
+    assert "loading = Promise.reject(error)" in loader
+    assert "loading.catch(() => {})" in loader
+    assert "Promise.race([loading, deadline])" in loader
     assert "CUST_LOAD_TIMEOUT_MS" in loader
     assert "custLoadFailure(c, selected, request" in loader
     assert 'c.setAttribute("aria-busy", "false")' in loader
@@ -1699,10 +1704,18 @@ def test_send_waits_for_bound_upload_batches_before_starting_a_turn() -> None:
     open_project = _extract_js_function(APP_JS, "openProject")
     init = _extract_js_function(APP_JS, "init")
 
-    upload_wait = send.index("await waitForPendingUploads(")
+    upload_wait = send.index("waitForPendingUploads(dispatchFrameId")
     assert upload_wait < send.index("openTurnTicket()")
     assert upload_wait < send.index("await api(`/frames/${dispatchFrameId}/message`")
     assert upload_wait < send.index("composer.value === composerDraft")
+    # Awaited, and bounded: a hung /uploads must neither precede the turn nor
+    # pin the composer forever, and a stall refuses instead of proceeding.
+    assert "const uploadReady = await Promise.race([" in send
+    assert "UPLOAD_WAIT_LIMIT_MS" in send
+    assert "if (uploadReady.stalled)" in send
+    assert 'hint(t("upload.stalled"), true)' in send
+    # A repeated Enter while preparation is in flight says why it did nothing.
+    assert 'hint(t("upload.pendingSend")' in send
     assert "if (!uploadReady.ok)" in send
     assert "const priorFailure = [...UPLOAD_STATE.failures]" in send
     assert "S.currentId !== dispatchFrameId" in send
