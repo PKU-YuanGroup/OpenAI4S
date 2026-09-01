@@ -234,12 +234,27 @@ therefore attests only the private-PID interrupt and persistence contract. On
 Ubuntu 24.04 it loads the distribution's
 `bwrap-userns-restrict` AppArmor profile, which permits bwrap's namespace setup
 but strips capabilities from the worker; it does not turn off the host-wide
-unprivileged-userns restriction. That profile may change the historical
-hosted-runner loopback result, but the complete Linux filesystem-and-egress
-boundary has not yet been re-evaluated there and stays a separate manual
-smoke. The normal CI browser smoke and nightly macOS Seatbelt smoke likewise
-remain separate because they exercise runtime/browser and operating-system
-boundaries rather than archive integrity.
+unprivileged-userns restriction.
+
+The complete Linux filesystem-and-egress boundary now runs as the independent
+CI job `Linux bubblewrap full filesystem/egress boundary` and is attested at
+the frozen SHA as check-suite gate `ci-linux-sandbox-full`. That is
+`ci_attestation`. The release workflow still does not re-execute that smoke
+inside `platform-checks`; that absence is `release_reexecution: unproven`,
+not a second status on the same fact. A receipt that flattens both into one
+`passed`/`unproven` field is refused.
+
+The container image runs Python 3.14. That series is in the full offline CI
+matrix and in the quality-receipt check-suite gates. Container smoke is not a
+substitute for that matrix.
+
+A candidate SHA is not publishable on the strength of a `publish=true`
+dispatch. Schema-2 build receipts and the stage attestation record the
+candidate commit, the workflow run id, the dispatch inputs, check-run ids,
+notary/staple results, and artifact checksums. `publish=false` is a
+rehearsal: PyPI and the public GitHub Release must not change, and
+`macos_asset=omit` (or a missing notary success) means DMG count is zero.
+Old schema-1 receipts remain readable JSON and cannot satisfy this gate.
 
 ## Trusted publication
 

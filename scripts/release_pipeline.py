@@ -94,26 +94,34 @@ from scripts import release_gates, release_receipts  # noqa: E402
 from scripts.release_gates import GateManifestError  # noqa: E402
 
 
-def _sandbox_posture() -> dict[str, Any]:
+def _sandbox_posture(
+    *, linux_boundary: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """The sandbox posture this build was produced under, as a fact not a claim.
 
     Read from the environment rather than probed: the release runner is not the
     machine the product will run on, so "enforce was requested here" is the only
     honest statement available. Recorded because the evidence bundle is supposed
     to carry it and carried nothing.
+
+    Linux filesystem-and-egress evidence is a structured object with
+    `ci_attestation` and `release_reexecution`. Putting that boundary in a
+    flat `unproven` map next to a passed CI check is how a reader sees
+    `passed` and `unproven` on the same fact.
     """
+    unproven = {
+        name: reason
+        for name, reason in release_gates.PLATFORM_CHECKS_UNAVAILABLE.items()
+        if name != release_gates.LINUX_REEXEC_GATE
+    }
     return {
         "requested": os.environ.get("OPENAI4S_KERNEL_SANDBOX", "auto"),
         "note": (
             "the posture requested on the build runner; not a measurement of the "
             "sandbox on an end user's machine"
         ),
-        # The platform boundaries this release did not prove, and why. Carried
-        # because a bundle that simply omits them is indistinguishable from one
-        # where every platform passed, and that is the reading a reader defaults
-        # to. Named here so "we could not check Linux" survives into the
-        # evidence rather than living only in a workflow comment.
-        "unproven": dict(release_gates.PLATFORM_CHECKS_UNAVAILABLE),
+        "linux_boundary": linux_boundary or release_gates.build_linux_boundary([], []),
+        "unproven": unproven,
     }
 
 
@@ -762,6 +770,8 @@ class Pipeline:
         smoke: Callable[[Path], str] | None = None,
         source_sha: str = "",
         attestation: Path | None = None,
+        workflow_run_id: str = "",
+        workflow_inputs: Mapping[str, Any] | None = None,
     ) -> None:
         self.version = version
         self.mode = mode
@@ -776,6 +786,14 @@ class Pipeline:
         #: draft, because a document stored in the draft can be replaced by
         #: whatever replaced the asset it vouches for.
         self.attestation = Path(attestation) if attestation else None
+        self.workflow_run_id = str(
+            workflow_run_id or release_receipts.workflow_run_id_from()
+        )
+        self.workflow_inputs = (
+            release_receipts.normalize_workflow_inputs(workflow_inputs)
+            if workflow_inputs is not None
+            else None
+        )
         # Absolute at construction: `_run` executes subprocesses from ROOT
         # (the checkout), while the staging job passes `--assets-dir assets`
         # as a *sibling* of the checkout. A relative path would make pip in
@@ -906,6 +924,11 @@ class Pipeline:
                         ),
                         "",
                     ),
+                    "linux_boundary": receipt.get("linux_boundary")
+                    or release_gates.build_linux_boundary(
+                        receipt.get("checks") or [],
+                        receipt.get("platform_checks") or [],
+                    ),
                 },
             )
         if self.mode == "release":
@@ -945,6 +968,11 @@ class Pipeline:
                         for row in receipt.get("checks", [])
                     ],
                     "platform_checks": receipt.get("platform_checks", []),
+                    "linux_boundary": receipt.get("linux_boundary")
+                    or release_gates.build_linux_boundary(
+                        receipt.get("checks") or [],
+                        receipt.get("platform_checks") or [],
+                    ),
                 },
             )
         if self.dry_run:
@@ -1460,6 +1488,33 @@ class Pipeline:
                 )
             except release_receipts.ReceiptError as error:
                 raise ReleaseError(str(error)) from error
+            macos_receipt = build_receipts.get("macos") or {}
+            dmg_count = sum(1 for asset in self.assets if Path(asset).suffix == ".dmg")
+            notary = macos_receipt.get("notary")
+            if isinstance(notary, Mapping):
+                try:
+                    notary = release_receipts.normalize_notary(notary, required=False)
+                except release_receipts.ReceiptError as error:
+                    raise ReleaseError(str(error)) from error
+            else:
+                notary = None
+            macos_asset = "omit"
+            if isinstance(macos_receipt.get("workflow_inputs"), Mapping):
+                macos_asset = str(
+                    macos_receipt["workflow_inputs"].get("macos_asset") or "omit"
+                )
+            elif self.workflow_inputs is not None:
+                macos_asset = self.workflow_inputs["macos_asset"]
+            elif dmg_count:
+                macos_asset = "notarized"
+            if macos_asset == "omit" and dmg_count:
+                raise ReleaseError("macos_asset=omit cannot carry a DMG")
+            if dmg_count and not release_receipts.notary_succeeded(notary):
+                raise ReleaseError(
+                    "no notarization success receipt; DMG count must be zero. "
+                    "Notarize and staple the image, or omit the macOS asset "
+                    "from this release."
+                )
 
         dmgs = [a for a in self.assets if a.suffix == ".dmg"]
         signatures = {dmg.name: read_signature(dmg, self._run) for dmg in dmgs}
@@ -1687,10 +1742,33 @@ class Pipeline:
         # leave through a channel the draft does not control: `step_publish` used
         # to re-hash the draft against the draft's own `SHA256SUMS`, and anything
         # able to replace an asset can replace that manifest in the same motion.
+        linux_boundary = None
+        check_runs: list[dict[str, Any]] = []
+        notary = None
+        for result in self.results:
+            if result.name == "test":
+                linux_boundary = result.facts.get("linux_boundary")
+                check_runs = list(result.facts.get("checks") or [])
+        receipts = sorted(
+            self.assets_dir.glob(f"{release_receipts.BUILD_RECEIPT_PREFIX}*.json")
+        )
+        for path in receipts:
+            try:
+                document = json.loads(path.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            if str(document.get("kind") or "") == "macos":
+                notary = document.get("notary")
+                break
         attestation = release_receipts.build_stage_attestation(
             version=self.version,
             source_sha=self._frozen_sha(),
             assets=[a for a in self.assets if a.is_file()],
+            workflow_run_id=self.workflow_run_id,
+            workflow_inputs=self.workflow_inputs,
+            check_runs=check_runs,
+            linux_boundary=linux_boundary,
+            notary=notary if isinstance(notary, Mapping) else None,
         )
         target = self.assets_dir / release_receipts.STAGE_ATTESTATION_NAME
         target.write_text(json.dumps(attestation, indent=2, sort_keys=True), "utf-8")
@@ -2050,7 +2128,11 @@ class Pipeline:
                 for asset in sorted(self.assets)
                 if asset.is_file()
             }
-            document["sandbox"] = _sandbox_posture()
+            linux_boundary = None
+            for result in self.results:
+                if result.name == "test":
+                    linux_boundary = result.facts.get("linux_boundary")
+            document["sandbox"] = _sandbox_posture(linux_boundary=linux_boundary)
         return document
 
 
@@ -2194,7 +2276,28 @@ def main() -> int:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--workflow-run-id",
+        default="",
+        help="GitHub workflow run id for receipts (defaults to GITHUB_RUN_ID)",
+    )
+    parser.add_argument(
+        "--workflow-inputs-json",
+        default="",
+        help="dispatch inputs as JSON: tag, publish, pypi_only, macos_asset",
+    )
     args = parser.parse_args()
+
+    inputs = None
+    raw_inputs = args.workflow_inputs_json or os.environ.get(
+        "OPENAI4S_RELEASE_INPUTS_JSON", ""
+    )
+    if raw_inputs:
+        try:
+            inputs = json.loads(raw_inputs)
+        except ValueError as error:
+            print(f"::error::workflow inputs are not JSON: {error}", file=sys.stderr)
+            return 2
 
     pipeline = Pipeline(
         args.version,
@@ -2206,6 +2309,8 @@ def main() -> int:
         only=args.only,
         source_sha=args.source_sha,
         attestation=args.attestation,
+        workflow_run_id=args.workflow_run_id,
+        workflow_inputs=inputs,
     )
     report = pipeline.run()
     if args.json:

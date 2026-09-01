@@ -246,8 +246,10 @@ jobs:
       matrix:
         # 3.13 is here because the macOS .dmg embeds it: the build that
         # reaches the most end users was, until this line, the one Python
-        # nothing tested. 3.10 is the floor from requires-python.
-        python-version: ["3.10", "3.12", "3.13"]
+        # nothing tested. 3.14 is the container's interpreter
+        # (`Dockerfile` `python:3.14-slim-bookworm`). 3.10 is the floor
+        # from requires-python.
+        python-version: ["3.10", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -257,7 +259,7 @@ jobs:
           # depth-1 checkout does not contain those objects, so the check can
           # only skip. Deepening one job makes it a check CI actually performs
           # instead of one that is enforced on developer machines and nowhere
-          # else; deepening all three would pay for the same answer twice more.
+          # else; deepening all four would pay for the same answer twice more.
           fetch-depth: ${{ matrix.python-version == '3.12' && 0 || 1 }}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
@@ -276,6 +278,14 @@ jobs:
       # skip and the job stops validating the interpreter the .dmg ships.
       - name: Install dev and science dependencies
         if: matrix.python-version == '3.13'
+        run: uv sync --locked --extra science
+      # The container's interpreter. Job-level `if:` cannot see `matrix`,
+      # so the extra install stays a step-level condition like the rows
+      # above. Science is not optional: without it the science-dependent
+      # modules importorskip and this job would stop validating the
+      # runtime the published image actually runs.
+      - name: Install dev and science dependencies
+        if: matrix.python-version == '3.14'
         run: uv sync --locked --extra science
       - name: Byte-compile all first-party sources
         run: uv run python -m compileall -q openai4s openai4s_compute_provider harness tests

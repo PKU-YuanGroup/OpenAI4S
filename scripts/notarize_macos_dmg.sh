@@ -21,7 +21,10 @@
 #
 # `macos_asset=omit` (the workflow default) is the remedy when the set is
 # incomplete: do not upload a preview DMG. Requesting notarized without the
-# secrets is a hard failure, not a silent omission.
+# secrets is a hard failure, not a silent omission. A schema-2 macOS build
+# receipt reads stapler/spctl/post-staple evidence from the sibling
+# `.codesign.json`; without a success receipt the pipeline requires DMG
+# count zero.
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
