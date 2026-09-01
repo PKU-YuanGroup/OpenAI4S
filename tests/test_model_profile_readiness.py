@@ -81,9 +81,11 @@ def test_readiness_never_contacts_anyone(tmp_path, monkeypatch):
         }
     )
     for row in store.list_model_profiles():
-        card = service.public_profile(row)["readiness"]
+        projected = service.public_profile(row)
+        card = projected["readiness"]
         assert card["checked_endpoint"] is False
         assert card["state"] == "ready"
+        assert projected.get("capability_receipt") is None
 
 
 def test_readiness_names_what_is_missing(tmp_path):

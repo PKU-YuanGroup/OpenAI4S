@@ -349,13 +349,10 @@ def _snapshot_packet(snapshot: dict[str, Any]) -> tuple[str, bool]:
     return packet, False
 
 
-def review_snapshot(
+def review_request_messages(
     snapshot: dict[str, Any],
-    cfg: LLMConfig,
-    *,
-    chat_call: Callable[..., dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Run one independent V2 review against a frozen snapshot."""
+) -> tuple[list[dict[str, str]], bool]:
+    """Build the exact reviewer prompt and its completeness projection."""
 
     if not isinstance(snapshot, dict):
         raise ReviewError("scientific review requires a frozen snapshot object")
@@ -364,8 +361,7 @@ def review_snapshot(
         complete = False
     packet, packet_complete = _snapshot_packet(snapshot)
     complete = complete and packet_complete
-    invoke = chat if chat_call is None else chat_call
-    result = invoke(
+    return (
         [
             {"role": "system", "content": REVIEWER_V2_SYSTEM_PROMPT},
             {
@@ -373,6 +369,22 @@ def review_snapshot(
                 "content": "Review this frozen Evidence Snapshot:\n" + packet,
             },
         ],
+        complete,
+    )
+
+
+def review_snapshot(
+    snapshot: dict[str, Any],
+    cfg: LLMConfig,
+    *,
+    chat_call: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run one independent V2 review against a frozen snapshot."""
+
+    messages, complete = review_request_messages(snapshot)
+    invoke = chat if chat_call is None else chat_call
+    result = invoke(
+        messages,
         cfg,
         max_tokens=min(int(getattr(cfg, "max_tokens", 1800) or 1800), 1800),
         temperature=0.1,

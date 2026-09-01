@@ -6,6 +6,10 @@ description: >
   LLM-judged error reasoning; or generate the responses.
 origin: openai4s
 category: model-evaluation
+capabilities:
+  network:
+    mode: raw_required
+    domains: []
 metadata:
   display-name: BioProBench
   upstream: https://github.com/YuyangSunshine/bioprotocolbench

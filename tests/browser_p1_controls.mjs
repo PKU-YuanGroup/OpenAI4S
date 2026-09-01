@@ -363,7 +363,7 @@ try {
   const steerTarget = await page.evaluate(() => String(steerDelegationChild));
   check(
     "steer posts to the child's steer route",
-    /delegations\/\$\{encodeURIComponent\(childId\)\}\/steer/.test(steerTarget),
+    /delegations\/\$\{encodeURIComponent\([^)]+\)\}\/steer/.test(steerTarget),
     steerTarget.slice(0, 200),
   );
 
@@ -483,10 +483,41 @@ try {
   check("the panel row surfaces task_status", liveEvent.chips.some((c) => c.includes("warning")), JSON.stringify(liveEvent.chips));
   check("the panel row references the child frame", liveEvent.frameRef === "f-child-live", liveEvent.frameRef);
   check("live stats recount from the merged children", liveEvent.stats.total === 1 && liveEvent.stats.done === 1, JSON.stringify(liveEvent.stats));
-  const eventHandler = await page.evaluate(() => String(onEvent));
+  const eventHandler = await page.evaluate(() => {
+    const previous = S.delegationState;
+    const fid = S.currentId;
+    S.delegationState = {
+      root_frame_id: fid,
+      initialized: true,
+      budget: null,
+      stats: { total: 0, pending: 0, running: 0, done: 0, failed: 0, stopped: 0 },
+      children: [],
+    };
+    onEvent({
+      type: "delegation_child_event",
+      event: "running",
+      root_frame_id: fid,
+      frame_id: fid,
+      child: {
+        child_id: "c-route",
+        name: "routed-child",
+        status: "running",
+        task_status: "",
+        depth: 1,
+        frame_id: "f-child-route",
+      },
+    });
+    const routed = (S.delegationState.children || []).some((c) => c.child_id === "c-route");
+    S.delegationState = previous;
+    return {
+      routed,
+      onEventIsFn: typeof onEvent === "function",
+      mergeIsFn: typeof mergeDelegationChildEvent === "function",
+    };
+  });
   check(
     "the delegation_child_event handler feeds the live merge and the timeline",
-    eventHandler.includes("mergeDelegationChildEvent") && eventHandler.includes("delegation_child_event"),
+    eventHandler.routed && eventHandler.onEventIsFn && eventHandler.mergeIsFn,
     "onEvent does not route delegation_child_event through the live merge",
   );
 

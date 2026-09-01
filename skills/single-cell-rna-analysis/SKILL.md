@@ -9,6 +9,11 @@ description: >
   Multiome, spatial, trajectory, communication, or CNV analysis.
 origin: openai4s
 category: workflow
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # Single-cell RNA Analysis

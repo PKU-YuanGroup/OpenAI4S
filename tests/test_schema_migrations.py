@@ -149,6 +149,18 @@ def test_a_new_store_is_stamped_and_recorded(tmp_path):
         # child's derived completion contract lands beside its lifecycle
         # status.
         "delegation_generation_and_task_status",
+        # Atomic Auto Mode budget reservations and the persistent progress
+        # circuit. Additive; existing runs stay legacy/read-only.
+        "auto_mode_budget_admission",
+        # Durable request identity separate from attempt identity. Restore
+        # does not auto-resume; only an explicit continue creates the next
+        # attempt. Additive; rollback does not delete Artifact versions.
+        "delegation_requests_and_attempts",
+        # Exact model-capability receipts from an explicit probe. Additive.
+        "model_capability_receipts",
+        # Keyset browse index for GET /projects/{pid}/artifact-index.
+        # Additive CREATE INDEX IF NOT EXISTS; DROP INDEX is the reverse.
+        "artifact_browse_index",
     ]
     assert state["applied"][0]["checksum"]
     assert state["applied"][0]["applied_at"] > 0
@@ -1606,3 +1618,47 @@ def test_a_correctly_addressed_row_is_labelled_verified(tmp_path):
     assert (
         row["generation_confidence"] == "verified"
     ), "an address that includes its generation cannot have been shared"
+
+
+def test_storage_readmes_name_the_migration_numbers_the_code_uses(tmp_path):
+    """A migration number written into prose drifts silently when it is bumped.
+
+    Two parallel lanes each claimed the next free number, the second was
+    renumbered on merge, and the READMEs kept the original -- so
+    `delegation_requests_and_attempts` was documented as 29 while the code
+    applied it as 30, and the browse index as 31 while it was 32. Nothing
+    failed: the numbers only appear in a prose table. Reviewers read them.
+    """
+
+    import re
+    from pathlib import Path
+
+    store = Store(tmp_path / "readme.db")
+    try:
+        by_name = {
+            str(row["name"]): int(row["version"])
+            for row in applied_migrations(store._conn)
+        }
+    finally:
+        store.close()
+    assert "delegation_requests_and_attempts" in by_name, sorted(by_name)
+
+    claims = {
+        r"DDL is numbered migration (\d+)": "delegation_requests_and_attempts",
+        r"DDL 是编号迁移 (\d+)": "delegation_requests_and_attempts",
+        r"Version (\d+) adds the reversible Artifact browse index": (
+            "artifact_browse_index"
+        ),
+        r"版本 (\d+) 增加可回滚的 Artifact browse 索引": "artifact_browse_index",
+    }
+    for name in ("README.md", "README_zh.md"):
+        text = Path("openai4s/storage") / name
+        body = text.read_text("utf-8")
+        for pattern, migration in claims.items():
+            match = re.search(pattern, body)
+            if match is None:
+                continue
+            assert int(match.group(1)) == by_name[migration], (
+                f"{name} says migration {match.group(1)} for {migration}, "
+                f"but the code applies it as {by_name[migration]}"
+            )

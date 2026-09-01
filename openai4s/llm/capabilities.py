@@ -12,9 +12,12 @@ from __future__ import annotations
 import ipaddress
 import json
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, replace
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 from urllib.parse import urlsplit
+
+from openai4s.endpoint_identity import endpoint_sha256
 
 
 class CapabilityError(ValueError):
@@ -22,6 +25,39 @@ class CapabilityError(ValueError):
 
 
 SUPPORTED_WIRES = frozenset({"openai", "responses", "anthropic", "gemini"})
+
+#: Bump when the probe's tiny request shape changes so old receipts go stale.
+PROBE_VERSION = 1
+
+#: The only tool a capability probe may name.  Schema is verified; the tool
+#: is never executed.
+CAPABILITY_PROBE_TOOL = {
+    "name": "openai4s_capability_probe",
+    "description": "Acknowledge this capability probe. Do not perform any other action.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    },
+}
+
+EVIDENCE_TRUE = "true"
+EVIDENCE_FALSE = "false"
+EVIDENCE_UNKNOWN = "unknown"
+
+#: Closed set of protocol-level "this wire cannot do that" codes.  Timeout,
+#: auth failure, and 5xx must not be listed here — those are unknown.
+_UNSUPPORTED_FEATURE_CODES = frozenset(
+    {
+        "unsupported_parameter",
+        "unknown_parameter",
+        "tool_use_not_supported",
+        "tools_not_supported",
+        "streaming_not_supported",
+        "invalid_tool",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +338,12 @@ _MODEL_CACHE: dict[tuple[str, str, str, int], ModelCapabilities] = {}
 _CACHE_HITS = 0
 _CACHE_MISSES = 0
 _CACHE_GENERATION = 0
+# In-process overlay of exact receipts.  Only positive evidence relaxes a
+# catalogue default.  Keyed by (endpoint_sha256, model, wire).
+_RECEIPT_OVERLAYS: dict[tuple[str, str, str], dict[str, Any]] = {}
+# Stack of temporary probe windows.  Lets a probe declare tools/streaming
+# without persisting an overlay or enabling native completion.
+_PROBE_WINDOWS: list[tuple[str, str, str, dict[str, Any]]] = []
 
 
 def _normalize_name(value: str, label: str) -> str:
@@ -433,6 +475,243 @@ def _invalidate_cache_locked() -> None:
     _PROVIDER_CACHE.clear()
     _MODEL_CACHE.clear()
     _CACHE_GENERATION += 1
+
+
+def _overlay_key(endpoint: str, model: str, wire: str) -> tuple[str, str, str]:
+    return (
+        endpoint_sha256(endpoint),
+        str(model or "").strip().lower(),
+        str(wire or "").strip().lower(),
+    )
+
+
+def install_receipt_overlay(receipt: Mapping[str, Any]) -> bool:
+    """Adopt a current receipt as an endpoint-specific overlay.
+
+    Returns True only when at least one field is positive evidence.  Unknown
+    and false receipts stay in storage for display but are not adopted.
+    """
+    native = str(receipt.get("native_tool_call") or "")
+    streaming = str(receipt.get("streaming") or "")
+    if native != EVIDENCE_TRUE and streaming != EVIDENCE_TRUE:
+        return False
+    endpoint = str(receipt.get("endpoint") or "")
+    digest = str(receipt.get("endpoint_sha256") or "")
+    if not digest:
+        digest = endpoint_sha256(endpoint)
+    model = str(receipt.get("model") or "").strip().lower()
+    wire = str(receipt.get("wire") or "").strip().lower()
+    if not digest or not model or not wire:
+        return False
+    with _LOCK:
+        _RECEIPT_OVERLAYS[(digest, model, wire)] = dict(receipt)
+        _invalidate_cache_locked()
+    return True
+
+
+def drop_receipt_overlays(
+    profile_id: str | None = None, *, revision: int | None = None
+) -> int:
+    """Drop adopted overlays.  All of them, or those of one profile/revision."""
+    removed = 0
+    with _LOCK:
+        if profile_id is None:
+            removed = len(_RECEIPT_OVERLAYS)
+            _RECEIPT_OVERLAYS.clear()
+        else:
+            wanted = str(profile_id)
+            for key, rec in list(_RECEIPT_OVERLAYS.items()):
+                if str(rec.get("profile_id") or "") != wanted:
+                    continue
+                if revision is not None and int(rec.get("revision") or 0) != int(
+                    revision
+                ):
+                    continue
+                del _RECEIPT_OVERLAYS[key]
+                removed += 1
+        if removed:
+            _invalidate_cache_locked()
+    return removed
+
+
+def adopted_receipts(
+    *, profile_id: str | None = None, revision: int | None = None
+) -> list[dict[str, Any]]:
+    """Receipts currently adopted as overlays (the decision set)."""
+    with _LOCK:
+        rows = [dict(item) for item in _RECEIPT_OVERLAYS.values()]
+    if profile_id is not None:
+        rows = [row for row in rows if str(row.get("profile_id") or "") == profile_id]
+    if revision is not None:
+        rows = [row for row in rows if int(row.get("revision") or 0) == int(revision)]
+    return rows
+
+
+def _overlay_for_locked(
+    endpoint: str, model_key: str, wire: str
+) -> dict[str, Any] | None:
+    key = _overlay_key(endpoint, model_key, wire)
+    rec = _RECEIPT_OVERLAYS.get(key)
+    return dict(rec) if rec else None
+
+
+def _apply_positive_overlay(
+    values: dict[str, Any], overlay: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Relax catalogue defaults with positive evidence only."""
+    if not overlay:
+        return values
+    updated = dict(values)
+    if overlay.get("native_tool_call") == EVIDENCE_TRUE:
+        updated["tool_calling"] = True
+    if overlay.get("streaming") == EVIDENCE_TRUE:
+        updated["streaming"] = True
+    tokens = overlay.get("context_window_tokens")
+    if (
+        updated.get("context_window_tokens") is None
+        and isinstance(tokens, int)
+        and tokens > 0
+    ):
+        updated["context_window_tokens"] = tokens
+    output = overlay.get("max_output_tokens")
+    if (
+        updated.get("max_output_tokens") is None
+        and isinstance(output, int)
+        and output > 0
+    ):
+        updated["max_output_tokens"] = output
+    return updated
+
+
+@contextmanager
+def capability_probe_window(
+    provider: str,
+    model: str | None = None,
+    *,
+    base_url: str | None = None,
+    tool_calling: bool = True,
+    streaming: bool = False,
+) -> Iterator[None]:
+    """Temporarily allow a probe to send tools/streaming without an overlay.
+
+    The window is not evidence.  Native completion stays off until a receipt
+    with ``native_tool_call=true`` is adopted.
+    """
+    name = _normalize_name(provider, "provider")
+    model_key = str(model or "").strip().lower()
+    endpoint = _normalize_endpoint(base_url)
+    layer = {
+        "tool_calling": bool(tool_calling),
+        "streaming": bool(streaming),
+        "parallel_tool_calls": False,
+    }
+    token = (name, model_key, endpoint, layer)
+    with _LOCK:
+        _PROBE_WINDOWS.append(token)
+        _invalidate_cache_locked()
+    try:
+        yield
+    finally:
+        with _LOCK:
+            try:
+                _PROBE_WINDOWS.remove(token)
+            except ValueError:
+                pass
+            _invalidate_cache_locked()
+
+
+def _probe_window_for_locked(
+    provider: str, model_key: str, endpoint: str
+) -> dict[str, Any] | None:
+    for name, window_model, window_endpoint, layer in reversed(_PROBE_WINDOWS):
+        if name != provider:
+            continue
+        if window_model and window_model != model_key:
+            continue
+        if window_endpoint and window_endpoint != endpoint:
+            continue
+        return dict(layer)
+    return None
+
+
+def tool_call_matches_schema(
+    call: Mapping[str, Any] | None, spec: Mapping[str, Any] | None = None
+) -> bool:
+    """Whether a native tool call satisfies the probe schema.
+
+    ``parse_error`` or a missing required field is not schema-valid.  This
+    does not execute the tool.
+    """
+    declaration = spec or CAPABILITY_PROBE_TOOL
+    if not isinstance(call, Mapping):
+        return False
+    if call.get("parse_error"):
+        return False
+    if str(call.get("name") or "") != str(declaration.get("name") or ""):
+        return False
+    args = call.get("arguments")
+    if not isinstance(args, dict):
+        return False
+    schema = declaration.get("input_schema") or {}
+    if not isinstance(schema, Mapping):
+        return False
+    for key in schema.get("required") or ():
+        if key not in args:
+            return False
+    properties = schema.get("properties") or {}
+    additional = schema.get("additionalProperties", True)
+    for key, value in args.items():
+        if key not in properties:
+            if additional is False:
+                return False
+            continue
+        expected = str((properties[key] or {}).get("type") or "")
+        if expected == "boolean" and not isinstance(value, bool):
+            return False
+        if expected == "string" and not isinstance(value, str):
+            return False
+        if expected == "integer" and (
+            not isinstance(value, int) or isinstance(value, bool)
+        ):
+            return False
+        if expected == "number" and (
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+        ):
+            return False
+    return True
+
+
+def classify_probe_error(error: BaseException) -> str:
+    """Map a probe failure onto ``false`` or ``unknown``.  Never ``true``.
+
+    ``false`` only for a closed set of protocol-level unsupported codes.
+    Timeout, authentication failure, 5xx, and anything else is unknown.
+    """
+    status = getattr(error, "status", None)
+    code = str(getattr(error, "error_code", "") or "").strip().lower()
+    if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+        return EVIDENCE_UNKNOWN
+    if status in (401, 403) or code in {
+        "invalid_api_key",
+        "unauthorized",
+        "forbidden",
+    }:
+        return EVIDENCE_UNKNOWN
+    if status == 429 or code in {"rate_limit", "rate_limit_exceeded"}:
+        return EVIDENCE_UNKNOWN
+    if isinstance(status, int) and 500 <= status < 600:
+        return EVIDENCE_UNKNOWN
+    if code in _UNSUPPORTED_FEATURE_CODES:
+        return EVIDENCE_FALSE
+    return EVIDENCE_UNKNOWN
+
+
+def streaming_evidence(*, deltas_seen: bool, finish_reason: Any) -> str:
+    """``true`` only for a fully terminated stream that actually streamed."""
+    reason = str(finish_reason or "").strip()
+    if deltas_seen and reason:
+        return EVIDENCE_TRUE
+    return EVIDENCE_UNKNOWN
 
 
 def bind_provider_registry(registry: Mapping[str, Mapping[str, Any]]) -> None:
@@ -619,8 +898,19 @@ def get_model_capabilities(
     endpoint = _normalize_endpoint(base_url) or _normalize_endpoint(
         provider_caps.default_base_url
     )
-    cache_key = (provider_caps.provider, model_key, endpoint, hash(provider_caps))
     with _LOCK:
+        overlay = _overlay_for_locked(endpoint, model_key, provider_caps.wire)
+        window = _probe_window_for_locked(provider_caps.provider, model_key, endpoint)
+        overlay_fp = str((overlay or {}).get("receipt_sha256") or "")
+        window_fp = len(_PROBE_WINDOWS)
+        cache_key = (
+            provider_caps.provider,
+            model_key,
+            endpoint,
+            hash(provider_caps),
+            overlay_fp,
+            window_fp,
+        )
         cached = _MODEL_CACHE.get(cache_key)
         if cached is not None:
             _CACHE_HITS += 1
@@ -630,6 +920,11 @@ def get_model_capabilities(
         }
         values.update(_BUILTIN_MODELS.get((provider_caps.provider, model_key), {}))
         values.update(_MODEL_OVERRIDES.get((provider_caps.provider, model_key), {}))
+        if window:
+            values.update(
+                {key: window[key] for key in _CAPABILITY_FIELDS if key in window}
+            )
+        values = _apply_positive_overlay(values, overlay)
         result = ModelCapabilities(
             provider=provider_caps.provider,
             model=model_name,
@@ -689,6 +984,7 @@ def clear_capability_overrides(
                 raise CapabilityError("model requires provider")
             _PROVIDER_OVERRIDES.clear()
             _MODEL_OVERRIDES.clear()
+            _RECEIPT_OVERLAYS.clear()
         else:
             name = _normalize_name(provider, "provider")
             if model is None:

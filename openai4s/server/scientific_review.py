@@ -19,7 +19,16 @@ from typing import Any
 
 from openai4s.scientific_reviewer import (
     model_fingerprint,
+    review_request_messages,
     review_snapshot,
+)
+from openai4s.server.auto_budget import (
+    TERMINAL_USER_TRUTH,
+    AutoBudgetAdmission,
+    AutoBudgetDenied,
+    execution_action_group,
+    token_upper_bound,
+    verifiable_token_usage,
 )
 from openai4s.server.evidence_snapshot import (
     collect_turn_evidence,
@@ -654,6 +663,8 @@ class ScientificReviewService:
         chat_call: ChatCall | None = None,
         allow_same_model: bool = False,
         cancel: Callable[[], bool] | None = None,
+        run_id: str | None = None,
+        action_group_id: str | None = None,
     ) -> dict[str, Any]:
         """Evaluate one frozen snapshot. This is the shipped Stage 3 entry."""
 
@@ -701,6 +712,7 @@ class ScientificReviewService:
         invoke = chat_call or self.chat_call
         attempts = 0
         last_error: Exception | None = None
+        budget = self._auto_budget()
         while attempts < 2:
             if self._cancel_requested(cancel):
                 return {
@@ -718,15 +730,124 @@ class ScientificReviewService:
                     "cancelled": True,
                 }
             attempts += 1
+            admission_id = None
+            token_admission_id = None
             try:
+                if budget is not None and run_id:
+                    group_id = execution_action_group(
+                        str(action_group_id or f"{run_id}:review"),
+                        f"attempt-{attempts}-{uuid.uuid4().hex[:16]}",
+                    )
+                    admission_id = f"{run_id}:review:{group_id}"
+                    budget.reserve(
+                        run_id=str(run_id),
+                        admission_id=admission_id,
+                        consumer="review",
+                        action_group_id=group_id,
+                        amount=1,
+                    )
+                    review_messages, _packet_complete = review_request_messages(
+                        dict(frozen)
+                    )
+                    review_max_tokens = min(
+                        int(getattr(reviewer_cfg, "max_tokens", 1800) or 1800),
+                        1800,
+                    )
+                    bound = token_upper_bound(
+                        reviewer_cfg,
+                        messages=review_messages,
+                        max_tokens=review_max_tokens,
+                    )
+                    if bound is None:
+                        # Fatal only once token ceilings bind. Before the
+                        # extra phase there is no frozen token limit to
+                        # enforce, and the Web turn loop -- which gates its
+                        # whole token block on the same phase -- runs the
+                        # identical adapter without complaint. Unconditional
+                        # here, one adapter that cannot state a ceiling
+                        # paused the entire run at its first review.
+                        if budget.token_phase_active(str(run_id)):
+                            budget.release(admission_id, started=False)
+                            budget.fail_measurement(str(run_id))
+                            return self._budget_terminal(
+                                frozen,
+                                identity,
+                                findings,
+                                "budget_measurement_unavailable",
+                                attempts=attempts,
+                            )
+                    else:
+                        token_admission_id = f"{admission_id}:token"
+                        budget.reserve(
+                            run_id=str(run_id),
+                            admission_id=token_admission_id,
+                            consumer="token",
+                            action_group_id=f"{group_id}:token",
+                            amount=bound,
+                            token_upper_bound=bound,
+                        )
                 model_result = review_snapshot(
                     dict(frozen), reviewer_cfg, chat_call=invoke
                 )
                 last_error = None
+                # The review reservation settles on its own terms. Gating it
+                # on `token_admission_id` -- as this did -- means a turn that
+                # took no token reservation never commits the review either,
+                # and `reserved` counts against remaining just like
+                # `committed`: the round is charged forever and
+                # `review_rounds` never advances.
+                if budget is not None and run_id and admission_id:
+                    if token_admission_id:
+                        usage_total = verifiable_token_usage(
+                            (model_result or {}).get("usage")
+                        )
+                        if usage_total is None:
+                            if budget.token_phase_active(str(run_id)):
+                                budget.fail_measurement(str(run_id), token_admission_id)
+                                budget.mark_unknown(admission_id)
+                                return self._budget_terminal(
+                                    frozen,
+                                    identity,
+                                    findings,
+                                    "budget_measurement_unavailable",
+                                    attempts=attempts,
+                                )
+                            # The call happened and its cost cannot be
+                            # verified, so the reservation stays charged as
+                            # `unknown` rather than optimistically returned.
+                            budget.mark_unknown(token_admission_id)
+                        else:
+                            budget.commit(
+                                token_admission_id, committed_amount=usage_total
+                            )
+                    budget.commit(admission_id, committed_amount=1)
                 break
+            except AutoBudgetDenied as denied:
+                if budget is not None and admission_id:
+                    try:
+                        budget.release(admission_id, started=False)
+                    except Exception:  # noqa: BLE001 - denial already fail-closed
+                        pass
+                return self._budget_terminal(
+                    frozen,
+                    identity,
+                    findings,
+                    denied.reason,
+                    attempts=attempts,
+                )
             except Exception as exc:  # noqa: BLE001 - bounded retry then unavailable
                 last_error = exc
                 error = str(exc)[:500]
+                if budget is not None and admission_id:
+                    try:
+                        budget.mark_unknown(admission_id)
+                    except Exception:  # noqa: BLE001 - unknown is fail-closed
+                        pass
+                    if token_admission_id:
+                        try:
+                            budget.mark_unknown(token_admission_id)
+                        except Exception:  # noqa: BLE001 - unknown is fail-closed
+                            pass
         if last_error is not None:
             return {
                 "verdict": "review_unavailable",
@@ -777,6 +898,40 @@ class ScientificReviewService:
             "same_model_independent_session": not identity["independent"],
             "gates_completion": False,
             "usage": model_result.get("usage") or {},
+            "attempts": attempts,
+        }
+
+    def _auto_budget(self) -> AutoBudgetAdmission | None:
+        store = self.store
+        if store is None or not callable(
+            getattr(store, "reserve_auto_mode_budget", None)
+        ):
+            return None
+        budgets = getattr(getattr(self.config, "auto_mode", None), "budgets", None)
+        return AutoBudgetAdmission(store, budgets)
+
+    def _budget_terminal(
+        self,
+        frozen: Mapping[str, Any],
+        identity: Mapping[str, Any],
+        findings: list[dict[str, Any]],
+        reason: str,
+        *,
+        attempts: int,
+    ) -> dict[str, Any]:
+        summary = TERMINAL_USER_TRUTH.get(reason, reason)
+        return {
+            "verdict": "review_unavailable",
+            "status": "unavailable",
+            "reason": reason,
+            "stop_reason": reason,
+            "summary": summary,
+            "findings": findings,
+            "snapshot": frozen,
+            "reviewer": identity,
+            "same_model_independent_session": not identity["independent"],
+            "gates_completion": False,
+            "usage": {},
             "attempts": attempts,
         }
 
@@ -915,6 +1070,11 @@ class ScientificReviewService:
                 reviewer_cfg=reviewer_cfg,
                 reviewer_profile=profile,
                 cancel=cancel,
+                run_id=(
+                    str(handle.get("run_id") or "") or None
+                    if isinstance(handle, Mapping)
+                    else None
+                ),
             )
         except Exception as error:  # noqa: BLE001 - durable owner must be closed
             result = self._unavailable_result(

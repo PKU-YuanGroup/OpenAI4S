@@ -630,10 +630,23 @@ async function redactionAndSchemaSelfTest() {
   disposableBindingSelfTest();
   const visited = [];
   const explicitToken = "captured-self-test-token";
+  const onboardingPosts = [];
   const returnedToken = await authenticate(
     {
       goto: async (url) => visited.push(url),
       url: () => "http://127.0.0.1:18999/",
+      // F-23 folded the first-run skip into authenticate, so the double has to
+      // carry the surface that reaches: without these it exercises an
+      // authenticate that no longer exists, and fails on `undefined.post`
+      // before it can check the thing it is here to check.
+      request: {
+        post: async (url) => {
+          onboardingPosts.push(url);
+          return { ok: () => false };
+        },
+      },
+      reload: async () => {},
+      locator: () => ({ isVisible: async () => false }),
     },
     "http://127.0.0.1:18999/",
     explicitToken,
@@ -642,6 +655,11 @@ async function redactionAndSchemaSelfTest() {
   assertion(
     visited.length === 1 && new URL(visited[0]).searchParams.get("token") === explicitToken,
     "authenticate did not use the captured token",
+  );
+  assertion(
+    onboardingPosts.length === 1 &&
+      new URL(onboardingPosts[0]).pathname === "/api/v1/onboarding/complete",
+    "authenticate did not attempt the documented first-run skip",
   );
   const selfTestSummary = makeSummary("self_test");
   selfTestSummary.self_test_checks = {

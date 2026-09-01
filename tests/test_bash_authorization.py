@@ -58,6 +58,28 @@ def _service(workspace: Path, **kwargs) -> BashAuthorizationService:
     )
 
 
+def test_skill_network_admission_is_consulted_on_authorize(tmp_path, monkeypatch):
+    calls = {"admit": 0}
+
+    def _admit(**kwargs):
+        calls["admit"] += 1
+        from openai4s.server.skill_network_admission import AdmissionDecision
+
+        return AdmissionDecision(
+            allowed=True,
+            reason=None,
+            blocked_on=(),
+            sink="shell",
+        )
+
+    monkeypatch.setattr("openai4s.server.skill_network_admission.admit_shell", _admit)
+    service = _service(tmp_path)
+    capability = service.authorize(_proposal(tmp_path))
+    assert "token" in capability
+    assert calls["admit"] == 1
+    assert "skill_network" in capability
+
+
 def test_capability_is_bound_and_single_use(tmp_path):
     service = _service(tmp_path)
     capability = service.authorize(_proposal(tmp_path))

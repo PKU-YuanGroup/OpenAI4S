@@ -129,9 +129,10 @@ for each of these):
   regression tests.
 - The large hotspot files — `openai4s/server/gateway.py`,
   `openai4s/host_dispatch.py`, `openai4s/store.py`,
-  `openai4s/server/webui/app.js`, `openai4s/kernel/worker.py`,
+  `openai4s/kernel/worker.py`,
   `openai4s/kernel/manager.py` — were edited **surgically, never wholesale
-  rewritten**.
+  rewritten**. New workbench UI goes in `frontend/`, not legacy `app.js`;
+  rebuild and commit `openai4s/server/webui/dist/` with the source.
 - `openai4s/server/webui/vendor/` and `tests/fixtures/` were not reformatted.
 - No tests were deleted without tracked replacements
   (`git ls-files --deleted` is clean or explained).

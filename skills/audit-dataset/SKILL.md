@@ -3,6 +3,11 @@ name: audit-dataset
 description: Audit tabular datasets before analysis or training for schema drift, missing values, duplicate rows or IDs, target imbalance, and entity or group leakage across splits using pure-stdlib helpers.
 origin: openai4s
 category: data-quality
+capabilities:
+  network:
+    mode: none
+    domains: []
+
 ---
 
 # Audit a dataset
