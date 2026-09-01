@@ -312,10 +312,12 @@ try {
     typeof UPLOAD_STATE !== "undefined" && typeof turnDone === "function");
   if (!legacyUploadShell) {
     console.log(
-      "SKIP upload-barrier / failed-upload-latch / New-session checks: the daemon is " +
-      "serving the Vite workbench, which does not export UPLOAD_STATE or turnDone and " +
-      "still carries the pre-fix upload and cancel paths. Run with OPENAI4S_WEBUI=legacy " +
-      "to exercise them, or port the fixes into frontend/src to cover the default shell.",
+      "SKIP upload-barrier / failed-upload-latch / New-session state checks: these " +
+      "assert on UPLOAD_STATE and turnDone, which app.js has as globals and the " +
+      "workbench keeps module-scoped. The workbench now carries the same fixes " +
+      "(frontend/src/features/chrome/upload.ts, features/send/send.ts), and its " +
+      "cancel path is covered shell-agnostically below; run with OPENAI4S_WEBUI=legacy " +
+      "to exercise these particular assertions.",
     );
   }
   if (legacyUploadShell) {
@@ -506,6 +508,60 @@ try {
   await page.unroute(sendRoute);
   await page.unroute(uploadRoute);
   }
+
+  // ---- Stop sends a SCOPED cancel, on whichever shell is serving ---------
+  // Observable through the wire, not through globals, so this is the one
+  // upload/cancel check that covers the default workbench too. The workbench
+  // reached its cancel through `callLane("scopedExecutionRequest", ...)`, a
+  // name nothing ever assigned; `callLane` answers a missing name with
+  // `undefined` rather than throwing, so Stop resolved to undefined, no POST
+  // was ever sent, and nothing said so. An interrupt that names no execution
+  // is the other half: it can land on whatever started after the one the user
+  // meant to stop.
+  const cancelPosts = [];
+  const queueRoute = "**/api/v1/frames/*/execution-queue";
+  const cancelRoute = "**/api/v1/frames/*/cancel";
+  await page.route(queueRoute, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      owner: {
+        execution_id: "exec-scoped-cancel",
+        status: "running",
+        owner: { kind: "agent", id: "job-scoped-cancel" },
+      },
+      queue: [],
+    }),
+  }));
+  await page.route(cancelRoute, async (route) => {
+    cancelPosts.push({ url: route.request().url(), body: route.request().postDataJSON() });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, scope: "running" }),
+    });
+  });
+  await page.evaluate(() => { S.running = true; });
+  const stopBtn = page.locator("#cancel-btn");
+  await stopBtn.evaluate((node) => node.classList.remove("hidden"));
+  await stopBtn.click();
+  await waitUntil("the scoped cancel to reach the wire", () => cancelPosts.length > 0, 5000);
+  const cancelBody = cancelPosts[0] ? cancelPosts[0].body : {};
+  check(
+    "Stop sends one cancel naming the exact execution it means to stop",
+    cancelPosts.length === 1
+      && cancelPosts[0].url.includes(`/frames/${frameId}/cancel`)
+      && cancelBody.execution_id === "exec-scoped-cancel"
+      && cancelBody.owner_id === "job-scoped-cancel"
+      && !!cancelBody.reason,
+    JSON.stringify(cancelPosts),
+  );
+  await page.unroute(cancelRoute);
+  await page.unroute(queueRoute);
+  await page.evaluate(() => {
+    S.running = false;
+    document.querySelector("#cancel-btn")?.classList.add("hidden");
+  });
 
   // ---- P1-A: the two problem cards, which are deliberately not one -------
   // Ref problems carry {ref, code, message} and the server owns the wording;

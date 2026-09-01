@@ -8,6 +8,13 @@ import { exploreMode, planMode, running } from "../../stores/stream";
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, type MenuItem } from "./chrome";
 import { openConversation, resumeWatch } from "./conversation";
+// Imported, not reached through `callLane`. Neither name is ever assigned to
+// `window` (they are in neither CONTRACT_GLOBAL_NAMES nor SEND_CONTRACT_NAMES),
+// and `callLane` answers a missing name with `undefined` rather than throwing --
+// so Stop sent no request at all and `turnDone` never ran. `turnDone` is a
+// hoisted function declaration, so the sessions<->send cycle resolves at call time.
+import { turnDone } from "../send/turn";
+import { scopedExecutionRequest } from "../timeline/execution-request";
 import { $, clearConversationChrome, enableComposer, setTitle } from "./dom";
 import { callLane } from "./lane";
 import { assignFolder, loadProjects, loadSessions } from "./load";
@@ -138,7 +145,7 @@ export async function requestReview(): Promise<void> {
     await api(`/frames/${currentId.value}/review`, { method: "POST", body: "{}" });
     resumeWatch(currentId.value, _openGen.value);
   } catch (e) {
-    callLane("turnDone", "failed");
+    turnDone("failed");
     hint((e as Error).message, true);
   }
 }
@@ -246,13 +253,8 @@ export function sessionMenu(anchor: Element, fid: string): void {
       icon: "stop",
       onClick: async () => {
         try {
-          const result = (await callLane(
-            "scopedExecutionRequest",
-            fid,
-            "cancel",
-            "session menu cancel",
-          )) as { ok?: boolean } | undefined;
-          if (result && result.ok && fid === currentId.value) callLane("turnDone", "cancelled");
+          const result = await scopedExecutionRequest(fid, "cancel", "session menu cancel");
+          if (result && result.ok) markTurnStopping(fid);
         } catch (error) {
           hint(t("nb.action.failed", apiErrorText(error)), true);
         }
@@ -687,16 +689,37 @@ export async function duplicateSession(fid: string): Promise<void> {
   }
 }
 
+/**
+ * A cancel that the server accepted is not a cancel that finished.
+ * Port of app.js:7823-7830.
+ */
+export function markTurnStopping(fid: string | null | undefined): void {
+  if (!fid || fid !== currentId.value) return;
+  // resumeWatch's staleness test includes `!running`, so with no local running
+  // episode its first tick exits and nothing would ever clear the spinner. That
+  // state is reachable: the sidebar row can still report `frame.running` after a
+  // reconnect while this client already saw the turn end.
+  if (!running.value) {
+    turnDone("cancelled");
+    return;
+  }
+  // Accepted is not terminal. Keep the authoritative running episode open
+  // until frame_update (or the status watchdog) confirms the owner was
+  // released; otherwise a reload can resurrect "Running" immediately after
+  // this client claimed the turn had stopped.
+  $("#cancel-btn")?.classList.add("hidden");
+  hint(t("turn.stopping"), false, true);
+  resumeWatch(fid, _openGen.value);
+}
+
 export async function cancelTurn(): Promise<void> {
-  if (!currentId.value) return;
+  // `currentId` can move while the request is in flight; the turn this cancel
+  // was aimed at is the one markTurnStopping has to be told about.
+  const fid = currentId.value;
+  if (!fid) return;
   try {
-    const result = (await callLane(
-      "scopedExecutionRequest",
-      currentId.value,
-      "cancel",
-      "composer cancel",
-    )) as { ok?: boolean } | undefined;
-    if (result && result.ok) callLane("turnDone", "cancelled");
+    const result = await scopedExecutionRequest(fid, "cancel", "composer cancel");
+    if (result && result.ok) markTurnStopping(fid);
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
   }

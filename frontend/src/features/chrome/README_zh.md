@@ -24,4 +24,5 @@ F-20 工作台外壳：团队面、模态焦点陷阱、⌘K palette、上传 / 
 | [`resizer.ts`](resizer.ts) | 侧栏 / dock 列宽拖拽。键 `os-side-w` / `os-dock-w`。 |
 | [`team.test.ts`](team.test.ts) | 身份芯片、admin 面板、guest 重定向、团队模态走陷阱。 |
 | [`team.ts`](team.ts) | 团队 IIFE。`/auth/me` 探测；admin/files 模态走陷阱。 |
-| [`upload.ts`](upload.ts) | 文件选择 / 粘贴 / 拖放上传。 |
+| [`upload.test.ts`](upload.test.ts) | 选择时刻锁定目的地、四条 batch 匹配、单飞、重试覆盖旧失败、失败集 64 上限。 |
+| [`upload.ts`](upload.ts) | 文件选择 / 粘贴 / 拖放上传、`UPLOAD_STATE`、首个会话的单飞，以及 send 屏障用的 `waitForPendingUploads`。 |

@@ -2,7 +2,7 @@
 
 import { publicText } from "../scrub/scrub";
 import { t } from "../../i18n";
-import { editingProject, project, projects, sessions } from "../../stores/session";
+import { _openGen, editingProject, project, projects, sessions } from "../../stores/session";
 import { _modalMode } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
@@ -289,14 +289,30 @@ export function selectProject(id: string): void {
 }
 
 export async function openProject(id: string): Promise<void> {
+  // A project trip is navigation: bump the generation so any continuation still
+  // parked on an await (an upload-created session about to open its
+  // conversation, a resume watchdog) sees a stale token and stands down instead
+  // of yanking the view back to where it started.
+  _openGen.value = (_openGen.value || 0) + 1;
   await loadProjects();
   project.value = id;
   showWorkspace();
   await loadSessions();
   renderProjMenu();
   const ss = (sessions.value as SessionLike[]).filter((f) => f.project_id === id);
-  if (ss.length && ss[0]?.id) void binds.openConversation(ss[0].id, id);
-  else void binds.newSession();
+  const first = ss[0];
+  // Await the conversation. Fire-and-forget let openProject's callers (routing,
+  // dashboard rows, createProject) return before the session existed, so the
+  // next navigation raced the open this call had not finished.
+  if (first?.id) await binds.openConversation(first.id, id);
+  else {
+    // The empty-project path must create its conversation in the project just
+    // opened, not in whatever `project` happens to hold once the shared
+    // creation promise settles.
+    // Read through `binds` at call time: binds.ts holds a no-op placeholder
+    // until conversation.ts installs the real function.
+    await binds.newSession(id);
+  }
 }
 
 export async function createProject(

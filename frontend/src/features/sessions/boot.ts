@@ -15,6 +15,8 @@ import {
 } from "./actions";
 import { hint, watchActivateKeys, watchDisconnect } from "./chrome";
 import { newSession, routeInitialView } from "./conversation";
+import { setScopedExecutionRequest } from "../notebook/kernel";
+import { scopedExecutionRequest } from "../timeline/execution-request";
 import { showDashboard } from "./dashboard";
 import { $, down, grow, setSidebar, setTitle, syncMobileChrome, updateJumpPill } from "./dom";
 import { paintIcons } from "./icon";
@@ -45,6 +47,18 @@ export function installSessionExports(
   target.hint = hint;
   target.loadSessions = loadSessions;
   target.showDashboard = showDashboard;
+  // The command palette reaches both of these through `hostFn`, and neither
+  // was ever assigned anywhere: `isReady(undefined)` is false, so "New session"
+  // and "New project" closed the palette and did nothing at all. Installed here
+  // rather than added to CONTRACT_GLOBAL_NAMES -- that list is diffed against
+  // tests/webui-contract.md, and a stub there would still be un-ready.
+  target.newSession = newSession;
+  target.openProjectModal = openProjectModal;
+  // Without this the Notebook's interrupt fell through to an UNSCOPED
+  // POST /frames/<id>/kernel/interrupt carrying no execution_id or owner --
+  // a shape app.js never sends, and one that can land on whichever execution
+  // started after the one the user meant to stop.
+  setScopedExecutionRequest(scopedExecutionRequest);
 }
 
 let bound = false;
