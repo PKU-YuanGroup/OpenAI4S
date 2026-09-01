@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario": "atom_mapping",
   "scenario_id": "reaction_atom_mapping_curated_v1",
-  "query_source": "../03_atom_mapping.md#science-query",
+  "query_source": "../queries/03_atom_mapping.query.md",
   "dataset": {
     "profile": "synthetic_protocol_smoke",
     "license": "CC0-1.0",

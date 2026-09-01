@@ -1,11 +1,11 @@
-# Scenario pipelines
+# Legacy Scenario pipeline aliases
 
 [中文](README_zh.md)
 
-These six entrypoints are the reviewed OpenAI4S-generated codebases corresponding
-one-to-one with the six Science Queries in the parent directory. They read only
-an installed workspace's `public/` boundary and write
-`results/intermediate_results.json`. They never open `private_evaluator/`.
+These six entrypoints are deprecated compatibility aliases for the reviewed GT
+runtime. They are not OpenAI4S-generated code. New comparisons must use the
+matched `../gt_codebases/`, `../openai4s_codebases/`, and `../queries/`
+directories.
 
 Run an entrypoint after installing its matching case, for example:
 
@@ -14,9 +14,9 @@ uv run python skills/retrosynthesis_planning/scenarios/pipelines/01_single_step_
   --workspace /tmp/openai4s-retro-case
 ```
 
-`generation_manifest.json` is the authoritative query-to-code mapping. The
-shared, pure-stdlib contract implementation is `../../gt_codebase.py`; model
-inference remains behind the existing external backend adapters.
+`generation_manifest.json` records only the legacy alias mapping. The
+authoritative generation provenance is
+`../openai4s_codebases/generation_manifest.json`.
 
 ## Files
 

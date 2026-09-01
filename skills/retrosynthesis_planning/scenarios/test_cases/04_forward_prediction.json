@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario": "forward",
   "scenario_id": "forward_prediction_uspto_mit_separated_v1",
-  "query_source": "../04_forward_prediction.md#science-query",
+  "query_source": "../queries/04_forward_prediction.query.md",
   "dataset": {
     "profile": "synthetic_protocol_smoke",
     "license": "CC0-1.0",

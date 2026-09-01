@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scenario": "single_step",
   "scenario_id": "single_step_retrosynthesis_class_unknown_v1",
-  "query_source": "../01_single_step_retrosynthesis.md#science-query",
+  "query_source": "../queries/01_single_step_retrosynthesis.query.md",
   "dataset": {
     "profile": "synthetic_protocol_smoke",
     "license": "CC0-1.0",

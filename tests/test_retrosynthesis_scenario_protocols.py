@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -677,46 +678,85 @@ def test_snapshot_refuses_a_symlink_that_escapes_the_base(tmp_path):
         snapshot_artifacts([base / "models"], base=base)
 
 
-def test_scenario_gt_codebases_are_one_to_one_and_run_without_private_gt(tmp_path):
+def test_scenario_query_gt_and_generated_names_are_aligned(tmp_path):
     scenarios = Path(get_config().skills_dir) / "retrosynthesis_planning" / "scenarios"
+    names = {
+        "single_step": "01_single_step_retrosynthesis",
+        "multistep": "02_multistep_route_planning",
+        "atom_mapping": "03_atom_mapping",
+        "forward": "04_forward_prediction",
+        "conditions": "05_condition_recommendation",
+        "yield": "06_yield_estimation",
+    }
     manifest = json.loads(
-        (scenarios / "pipelines" / "generation_manifest.json").read_text(
+        (scenarios / "openai4s_codebases" / "generation_manifest.json").read_text(
             encoding="utf-8"
         )
     )
-    entries = {entry["scenario"]: entry for entry in manifest["entries"]}
-    assert set(entries) == set(SCENARIO_IDS)
-    shared_runtime = scenarios / "pipelines" / manifest["shared_runtime"]["path"]
-    assert (
-        hashlib.sha256(shared_runtime.read_bytes()).hexdigest()
-        == manifest["shared_runtime"]["sha256"]
-    )
+    entries = {entry["name"]: entry for entry in manifest["entries"]}
+    assert set(entries) == set(names.values())
     for scenario, scenario_id in SCENARIO_IDS.items():
-        entry = entries[scenario]
-        assert entry["scenario_id"] == scenario_id
-        assert (scenarios / "pipelines" / entry["entrypoint"]).is_file()
-        query_path = scenarios / "pipelines" / entry["query_source"].split("#", 1)[0]
-        assert query_path.is_file()
-        assert "## Science Query" in query_path.read_text(encoding="utf-8")
+        name = names[scenario]
+        entry = entries[name]
+        query_path = scenarios / "queries" / f"{name}.query.md"
+        gt_path = scenarios / "gt_codebases" / f"{name}.py"
+        case_path = scenarios / "test_cases" / f"{name}.json"
+        case = json.loads(case_path.read_text(encoding="utf-8"))
+        query = query_path.read_text(encoding="utf-8")
+        assert case["scenario_id"] == scenario_id
+        assert case["query_source"] == f"../queries/{name}.query.md"
+        assert "## Installed public inputs" in query
+        assert "private_evaluator" in query
+        for public_name in case["public"]:
+            assert f"PATH/public/{public_name}" in query
         assert (
-            hashlib.sha256(query_path.read_bytes()).hexdigest()
-            == entry["query_document_sha256"]
+            hashlib.sha256(query_path.read_bytes()).hexdigest() == entry["query_sha256"]
         )
-        entrypoint = scenarios / "pipelines" / entry["entrypoint"]
-        assert (
-            hashlib.sha256(entrypoint.read_bytes()).hexdigest()
-            == entry["entrypoint_sha256"]
+        assert hashlib.sha256(gt_path.read_bytes()).hexdigest() == entry["gt_sha256"]
+        assert entry["query"] == str(
+            query_path.relative_to(get_config().skills_dir.parent)
         )
+        assert entry["gt_codebase"] == str(
+            gt_path.relative_to(get_config().skills_dir.parent)
+        )
+        generated_path = scenarios / "openai4s_codebases" / f"{name}.py"
+        if entry["status"].startswith("generated"):
+            assert generated_path.is_file()
+            generated = generated_path.read_text(encoding="utf-8")
+            assert not any(
+                forbidden in generated
+                for forbidden in ("gt_codebase", "gt_codebases", "private_evaluator")
+            )
+            assert (
+                hashlib.sha256(generated_path.read_bytes()).hexdigest()
+                == entry["generated_sha256"]
+            )
+        else:
+            assert not generated_path.exists()
 
-        case_name = entry["entrypoint"].replace(".py", ".json")
         workspace = tmp_path / scenario
-        installation = install_test_case(
-            scenarios / "test_cases" / case_name, workspace
-        )
+        installation = install_test_case(case_path, workspace)
         assert installation["ground_truth_boundary"] == "private_evaluator"
         hidden = tmp_path / f"{scenario}-private"
         (workspace / "private_evaluator").rename(hidden)
-        artifact = run_pipeline(scenario, workspace)
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            (str(get_config().skills_dir), environment.get("PYTHONPATH", ""))
+        )
+        completed = subprocess.run(
+            [sys.executable, str(gt_path), "--workspace", str(workspace)],
+            cwd=get_config().skills_dir.parent,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        artifact = json.loads(
+            (workspace / "results" / "intermediate_results.json").read_text(
+                encoding="utf-8"
+            )
+        )
         assert artifact["scenario_id"] == scenario_id
         hidden.rename(workspace / "private_evaluator")
         metrics = evaluate_workspace(scenario, workspace)
