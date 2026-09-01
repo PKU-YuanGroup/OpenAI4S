@@ -825,3 +825,54 @@ def test_every_declared_consumer_has_a_sink_or_is_named_unwired():
     assert set(SINK_REGISTRY) | set(UNWIRED_CONSUMERS) == set(
         CONSUMERS
     ), "a consumer is neither wired to a sink nor declared unwired"
+
+
+def test_missing_token_ceiling_pauses_only_once_ceilings_bind(tmp_path, monkeypatch):
+    """An adapter with no stateable ceiling must not pause a pre-freeze run.
+
+    The Web turn loop gates its whole token block on `token_phase_active`, so
+    before the extra phase an adapter that cannot state a prompt-plus-
+    completion bound simply runs. The review path applied the same check
+    unconditionally and treated the silence as `budget_measurement_
+    unavailable`, pausing the entire run at its first review -- one missing
+    capability, two answers, decided by which sink saw it first.
+
+    Once a review round has landed the ceiling does bind, and the same
+    adapter is correctly fatal.
+    """
+
+    from openai4s.server import scientific_review as review_mod
+
+    monkeypatch.setattr(review_mod, "token_upper_bound", lambda *a, **k: None)
+    store = _store(tmp_path)
+    _start(store, budgets=_budgets(max_review_rounds=2))
+    service = ScientificReviewService(
+        store=store,
+        config=Config(
+            auto_mode=AutoModeConfig(result_review_mode="review_only"),
+            roadmap_features=RoadmapFeatureFlags(stage3_scientific_review_shadow=True),
+        ),
+        chat_call=_pass_chat,
+    )
+    call = dict(
+        result_review_mode="review_only",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        chat_call=_pass_chat,
+        run_id="auto-run-1",
+    )
+
+    first = service.evaluate(_snapshot(), **call)
+    assert first["verdict"] == "pass", first.get("reason")
+    assert first.get("reason") != "budget_measurement_unavailable"
+    assert not [
+        item
+        for item in store.list_auto_mode_budget_reservations("auto-run-1")
+        if item["consumer"] == "token"
+    ], "a token reservation was taken with no ceiling to reserve against"
+
+    # The committed review round is what makes ceilings bind from here on.
+    assert AutoBudgetAdmission(store).token_phase_active("auto-run-1") is True
+    second = service.evaluate(_snapshot(), **call)
+    assert second["reason"] == "budget_measurement_unavailable"
+    store.close()

@@ -759,49 +759,68 @@ class ScientificReviewService:
                         max_tokens=review_max_tokens,
                     )
                     if bound is None:
-                        budget.release(admission_id, started=False)
-                        budget.fail_measurement(str(run_id))
-                        return self._budget_terminal(
-                            frozen,
-                            identity,
-                            findings,
-                            "budget_measurement_unavailable",
-                            attempts=attempts,
+                        # Fatal only once token ceilings bind. Before the
+                        # extra phase there is no frozen token limit to
+                        # enforce, and the Web turn loop -- which gates its
+                        # whole token block on the same phase -- runs the
+                        # identical adapter without complaint. Unconditional
+                        # here, one adapter that cannot state a ceiling
+                        # paused the entire run at its first review.
+                        if budget.token_phase_active(str(run_id)):
+                            budget.release(admission_id, started=False)
+                            budget.fail_measurement(str(run_id))
+                            return self._budget_terminal(
+                                frozen,
+                                identity,
+                                findings,
+                                "budget_measurement_unavailable",
+                                attempts=attempts,
+                            )
+                    else:
+                        token_admission_id = f"{admission_id}:token"
+                        budget.reserve(
+                            run_id=str(run_id),
+                            admission_id=token_admission_id,
+                            consumer="token",
+                            action_group_id=f"{group_id}:token",
+                            amount=bound,
+                            token_upper_bound=bound,
                         )
-                    token_admission_id = f"{admission_id}:token"
-                    budget.reserve(
-                        run_id=str(run_id),
-                        admission_id=token_admission_id,
-                        consumer="token",
-                        action_group_id=f"{group_id}:token",
-                        amount=bound,
-                        token_upper_bound=bound,
-                    )
                 model_result = review_snapshot(
                     dict(frozen), reviewer_cfg, chat_call=invoke
                 )
                 last_error = None
-                if (
-                    budget is not None
-                    and run_id
-                    and admission_id
-                    and token_admission_id
-                ):
-                    usage_total = verifiable_token_usage(
-                        (model_result or {}).get("usage")
-                    )
-                    if usage_total is None:
-                        budget.fail_measurement(str(run_id), token_admission_id)
-                        budget.mark_unknown(admission_id)
-                        return self._budget_terminal(
-                            frozen,
-                            identity,
-                            findings,
-                            "budget_measurement_unavailable",
-                            attempts=attempts,
+                # The review reservation settles on its own terms. Gating it
+                # on `token_admission_id` -- as this did -- means a turn that
+                # took no token reservation never commits the review either,
+                # and `reserved` counts against remaining just like
+                # `committed`: the round is charged forever and
+                # `review_rounds` never advances.
+                if budget is not None and run_id and admission_id:
+                    if token_admission_id:
+                        usage_total = verifiable_token_usage(
+                            (model_result or {}).get("usage")
                         )
+                        if usage_total is None:
+                            if budget.token_phase_active(str(run_id)):
+                                budget.fail_measurement(str(run_id), token_admission_id)
+                                budget.mark_unknown(admission_id)
+                                return self._budget_terminal(
+                                    frozen,
+                                    identity,
+                                    findings,
+                                    "budget_measurement_unavailable",
+                                    attempts=attempts,
+                                )
+                            # The call happened and its cost cannot be
+                            # verified, so the reservation stays charged as
+                            # `unknown` rather than optimistically returned.
+                            budget.mark_unknown(token_admission_id)
+                        else:
+                            budget.commit(
+                                token_admission_id, committed_amount=usage_total
+                            )
                     budget.commit(admission_id, committed_amount=1)
-                    budget.commit(token_admission_id, committed_amount=usage_total)
                 break
             except AutoBudgetDenied as denied:
                 if budget is not None and admission_id:

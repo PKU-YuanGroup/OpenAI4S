@@ -310,6 +310,34 @@ class AutoBudgetAdmission:
     def available(self) -> bool:
         return callable(getattr(self.store, "reserve_auto_mode_budget", None))
 
+    def token_phase_active(self, run_id: str) -> bool:
+        """Whether this run has reached the phase where token ceilings bind.
+
+        Before the extra phase a run has no frozen token limit, so an adapter
+        that cannot state a prompt-plus-completion ceiling costs nothing: the
+        turn proceeds and no field is being enforced against it. After it,
+        the same silence means the limit cannot be enforced, and the run
+        fails closed.
+
+        Both admission sites ask this. The Web turn loop gated its token
+        reservation on the predicate while the review path did not, so an
+        adapter without a usable ceiling was tolerated on one path and
+        paused the whole run on the other -- same missing capability, two
+        answers, depending only on which sink reached it first.
+        """
+
+        if not run_id:
+            return False
+        raw = self.store.project_auto_mode_budget(run_id)
+        if not isinstance(raw, Mapping):
+            return False
+        state = raw.get("state") if isinstance(raw.get("state"), Mapping) else {}
+        return bool(
+            raw.get("tokens_frozen")
+            or int(state.get("review_rounds") or 0)
+            or int(state.get("repair_rounds") or 0)
+        )
+
     def ensure_state(
         self,
         run_id: str,

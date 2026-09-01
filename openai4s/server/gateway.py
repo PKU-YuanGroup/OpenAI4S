@@ -5980,18 +5980,9 @@ class SessionRunner:
         return AutoBudgetAdmission(self.store, self.cfg.auto_mode.budgets)
 
     def _auto_budget_extra_phase(self, st: SessionState) -> bool:
-        run_id = str(st.active_auto_mode_run_id or "")
-        if not run_id:
-            return False
-        raw = self.store.project_auto_mode_budget(run_id)
-        if not isinstance(raw, Mapping):
-            return False
-        state = raw.get("state") if isinstance(raw.get("state"), Mapping) else {}
-        return bool(
-            raw.get("tokens_frozen")
-            or int(state.get("review_rounds") or 0)
-            or int(state.get("repair_rounds") or 0)
-        )
+        return AutoBudgetAdmission(
+            self.store, self.cfg.auto_mode.budgets
+        ).token_phase_active(str(st.active_auto_mode_run_id or ""))
 
     def _admit_auto_budget(
         self,
