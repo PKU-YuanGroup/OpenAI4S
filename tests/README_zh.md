@@ -367,6 +367,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | 目录 | 职责 |
 | --- | --- |
 | `fixtures/` | 字节敏感的捕获 HTML、假解释器 helper 与 renderer 样本。这棵子树刻意不参与目录 README 生成，也不参与自动格式化。 |
+| `support/` | 共享的运行时前缀夹具。通过 `sys.executable` 观察环境绑定的测试在这里安装带 `pyvenv.cfg` 的真实前缀，而不是裸符号链接，从而让 provenance 断言在 CPython 3.13 与 3.14 上都保持强度。 |
 
 ## 如何选择位置
 

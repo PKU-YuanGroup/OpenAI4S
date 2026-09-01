@@ -367,6 +367,7 @@ Every `test_*.py` file is listed below, with the reason the module exists rather
 | Directory | Responsibility |
 | --- | --- |
 | `fixtures/` | Byte-sensitive captured HTML, fake interpreter helpers, and renderer samples. The subtree is deliberately left out of directory README generation and automatic formatting. |
+| `support/` | Shared runtime-prefix fixtures. Tests that observe env binding through `sys.executable` install a real `pyvenv.cfg` prefix here rather than a bare symlink, so provenance assertions stay strong on CPython 3.13 and 3.14. |
 
 ## Choosing the right place
 
