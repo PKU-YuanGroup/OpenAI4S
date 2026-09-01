@@ -39,10 +39,16 @@ from __future__ import annotations
 #: and breaks silently.
 OWNED_FIELDS = ("name", "description", "origin")
 
+#: Web Customize import always stamps this origin. The author's other
+#: frontmatter, including keys this code has never heard of, is the seed.
+IMPORT_ORIGIN = "user"
+
 
 def _is_top_level_key(line: str) -> bool:
     """A `key:` at column 0. Indented lines belong to the block above."""
-    return bool(line) and not line[:1].isspace() and ":" in line
+    if not line or line[:1].isspace() or line.lstrip().startswith("#"):
+        return False
+    return ":" in line
 
 
 def _key_of(line: str) -> str:
@@ -124,4 +130,27 @@ def rewrite(
     return f"---\n{frontmatter}\n---\n\n{(body or '').strip()}\n"
 
 
-__all__ = ["OWNED_FIELDS", "rewrite", "split_document"]
+def rewrite_import(original: str, *, name: str, description: str, body: str) -> str:
+    """Import overlay: origin is always ``user``; every other line is kept.
+
+    ``original`` is the pasted SKILL.md, not an on-disk previous version. A
+    new import has no previous file, so passing ``""`` here would rebuild
+    from the three owned fields and drop requirements, capabilities,
+    license, category, comments, and unknown nested keys.
+    """
+    return rewrite(
+        original,
+        name=name,
+        description=description,
+        origin=IMPORT_ORIGIN,
+        body=body,
+    )
+
+
+__all__ = [
+    "IMPORT_ORIGIN",
+    "OWNED_FIELDS",
+    "rewrite",
+    "rewrite_import",
+    "split_document",
+]

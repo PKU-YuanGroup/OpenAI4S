@@ -1,8 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
-import { t } from "../../i18n";
+import { LANG, t } from "../../i18n";
 import { api, apiErrorText } from "../../features/customize/api";
 import { custTab } from "../../features/customize/actions";
 import { nestedEditor } from "../../features/customize/state";
+import { skillReadinessNoteText } from "../../features/customize/environment";
 import {
   asList,
   asString,
@@ -158,9 +159,18 @@ function SkillForm({ name }: { name: string | null }) {
   );
 }
 
-function SkillImport() {
+export function SkillImport() {
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
+  const [review, setReview] = useState<Record<string, unknown> | null>(null);
+  const caps = rec(rec(review && review.capabilities).network);
+  const ui = rec(caps.ui);
+  const requirements = asList(review && review.requirements).map(String);
+  const warnings = asList(review && review.warnings).map(String);
+  const networkMode = asString(caps.mode);
+  const networkLabel = asString(LANG === "zh" ? ui.label_zh : ui.label_en, networkMode);
+  const readinessState = asString(rec(review && review.readiness).state);
+  const readinessNote = review ? skillReadinessNoteText(review) : null;
   return (
     <div class="skill-form">
       <label class="skill-lbl">{t("skill.importLabel")}</label>
@@ -169,33 +179,65 @@ function SkillImport() {
         placeholder={t("skill.importPlaceholder")}
         style={{ minHeight: "260px" }}
         value={content}
+        disabled={!!review}
         onInput={(e) => setContent((e.target as HTMLTextAreaElement).value)}
       />
+      {review ? (
+        <div class="skill-import-review" data-skill-import-review="1">
+          <div class="ds" data-review-requirements={requirements.join(",")}>
+            {requirements.join(", ")}
+          </div>
+          <div class="ds" data-review-capabilities={networkMode}>
+            {networkLabel}
+          </div>
+          <div class="ds" data-review-readiness={readinessState}>
+            {readinessNote || readinessState}
+          </div>
+          {warnings.map((warning) => (
+            <div class="ds prof-warn" key={warning}>
+              {warning}
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div class="form-actions">
-        <button
-          type="button"
-          class="solid-btn"
-          disabled={saving}
-          onClick={async () => {
-            if (!content.trim()) return;
-            setSaving(true);
-            try {
-              const r = await api("/skills/import", {
-                method: "POST",
-                body: JSON.stringify({ content }),
-              });
+        {review ? (
+          <button
+            type="button"
+            class="solid-btn"
+            onClick={() => {
               dropSkillsCatalog();
               nestedEditor.value = null;
-              hint(t("toast.skill.imported", asString(r.name)));
               custTab("skills");
-            } catch (e) {
-              setSaving(false);
-              hint(t("toast.importFailed", apiErrorText(e)), true);
-            }
-          }}
-        >
-          {saving ? t("cust.importing") : t("skill.importBtn")}
-        </button>
+            }}
+          >
+            {t("common.close")}
+          </button>
+        ) : (
+          <button
+            type="button"
+            class="solid-btn"
+            disabled={saving}
+            onClick={async () => {
+              if (!content.trim()) return;
+              setSaving(true);
+              try {
+                const r = await api("/skills/import", {
+                  method: "POST",
+                  body: JSON.stringify({ content }),
+                });
+                setReview(rec(r.review));
+                setSaving(false);
+                hint(t("toast.skill.imported", asString(r.name)));
+              } catch (e) {
+                setSaving(false);
+                hint(t("toast.importFailed", apiErrorText(e)), true);
+              }
+            }}
+          >
+            {saving ? t("cust.importing") : t("skill.importBtn")}
+          </button>
+        )}
       </div>
     </div>
   );

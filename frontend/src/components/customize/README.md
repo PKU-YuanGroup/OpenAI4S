@@ -15,6 +15,7 @@ F-19 Customize modal. Nine tab components, a nested editor overlay, and `vendors
 | [`MemoryTab.tsx`](MemoryTab.tsx) | Memory enable / add / edit / delete with explicit scope. |
 | [`ModelsTab.tsx`](ModelsTab.tsx) | Profiles, local scan, probe, capability-receipt badges. |
 | [`NestedEditor.tsx`](NestedEditor.tsx) | Skill / specialist / connector / job-output overlay. |
+| [`SkillImport.test.tsx`](SkillImport.test.tsx) | Import review shows requirements, network mode, and readiness before enable. |
 | [`NetworkTab.tsx`](NetworkTab.tsx) | Doubao card, allowlist, Tavily backup, telemetry drain. |
 | [`PermissionsTab.tsx`](PermissionsTab.tsx) | Per-scope approval rules. |
 | [`SkillsTab.tsx`](SkillsTab.tsx) | Personal / project / collection skills. |

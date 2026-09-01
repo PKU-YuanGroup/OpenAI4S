@@ -33,6 +33,16 @@ NETWORK_MODES = frozenset({"none", "host_only", "raw_required"})
 DECLARATIONS = frozenset({"declared", "legacy", "unknown"})
 UNKNOWN_MODE = "unknown"
 
+
+class InvalidSkillCapability(ValueError):
+    """Illegal closed-set Skill capability on the import path.
+
+    ``parse_network_frontmatter`` degrades unknown modes to ``unknown`` so a
+    third-party historical Skill still loads. Import must not: a bad mode is
+    a 400, not a silent grant-shaped unknown.
+    """
+
+
 _INVENTORY_NAME = "bundled_network_inventory.json"
 _RAW_NETWORK_ENV = "OPENAI4S_KERNEL_ALLOW_RAW_NETWORK"
 _SANDBOX_ENV = "OPENAI4S_KERNEL_SANDBOX"
@@ -187,6 +197,48 @@ def legacy_capability(*, source: str = "inventory") -> NetworkCapability:
         digest=canonical_network_digest(mode, domains),
         explicit=True,
     )
+
+
+def validate_network_frontmatter_strict(raw_text: str) -> NetworkCapability | None:
+    """Reject illegal ``capabilities.network`` instead of degrading to unknown.
+
+    Absence of the field is allowed and returns ``None``. Present-but-invalid
+    values raise ``InvalidSkillCapability``. Call this on the import write
+    path; do not replace ``parse_network_frontmatter``, which remains the
+    tolerant reader for already-stored third-party Skills.
+    """
+
+    block = _frontmatter_block(raw_text)
+    if block is None:
+        return None
+    parsed = _parse_capabilities_network(block)
+    if parsed is None or parsed.get("missing"):
+        return None
+    mode = parsed.get("mode")
+    domains = parsed.get("domains")
+    if not isinstance(mode, str) or not mode.strip():
+        raise InvalidSkillCapability(
+            "capabilities.network.mode must be one of "
+            + ", ".join(sorted(NETWORK_MODES))
+        )
+    normalized = mode.strip().lower()
+    if normalized not in NETWORK_MODES:
+        raise InvalidSkillCapability(
+            "capabilities.network.mode must be one of "
+            + ", ".join(sorted(NETWORK_MODES))
+        )
+    if domains is None:
+        domains = []
+    if not isinstance(domains, list):
+        raise InvalidSkillCapability("capabilities.network.domains must be a list")
+    cleaned: list[str] = []
+    for item in domains:
+        if not isinstance(item, str) or not str(item).strip():
+            raise InvalidSkillCapability(
+                "capabilities.network.domains must be a list of domains"
+            )
+        cleaned.append(item)
+    return declared_capability(normalized, cleaned, source="frontmatter")
 
 
 def parse_network_frontmatter(raw_text: str) -> NetworkCapability | None:
