@@ -14,7 +14,8 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`boot.ts`](boot.ts) | Window exports, `setLoadSessionsImpl`, workbench click wiring. |
 | [`chrome.test.ts`](chrome.test.ts) | Hint error prefix (`错误：` / `Error: `) without a new i18n key. |
 | [`chrome.ts`](chrome.ts) | `hint`, disconnect banner, `openMenu` Esc/`role=menu`, keyboard activate. |
-| [`conversation.ts`](conversation.ts) | `openConversation`, `newSession`, `resumeWatch`, `routeInitialView`. |
+| [`conversation.ts`](conversation.ts) | `newSession`, `routeInitialView`. Re-exports `openConversation` (F-10) and `resumeWatch` (F-11) rather than keeping this lane's duplicates. |
+| [`conversation.identity.test.ts`](conversation.identity.test.ts) | Those re-exports are the same function objects the owning lanes install. |
 | [`dashboard.ts`](dashboard.ts) | Home list, example CTA poll bound to view lifecycle, dash poll. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer helpers. |
 | [`icon.ts`](icon.ts) | Line icons used by this lane's menus and rows. |

@@ -14,7 +14,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`boot.ts`](boot.ts) | window 导出、`setLoadSessionsImpl`、工作台点击接线。 |
 | [`chrome.test.ts`](chrome.test.ts) | hint 错误前缀（`错误：` / `Error: `），不新增 i18n 键。 |
 | [`chrome.ts`](chrome.ts) | `hint`、断连横幅、`openMenu` 的 Esc/`role=menu`、键盘激活。 |
-| [`conversation.ts`](conversation.ts) | `openConversation`、`newSession`、`resumeWatch`、`routeInitialView`。 |
+| [`conversation.ts`](conversation.ts) | `newSession`、`routeInitialView`。`openConversation`（F-10）与 `resumeWatch`（F-11）改为 re-export，不再保留本车道的副本。 |
+| [`conversation.identity.test.ts`](conversation.identity.test.ts) | 断言这些 re-export 与拥有车道装上的是同一个函数对象。 |
 | [`dashboard.ts`](dashboard.ts) | 首页列表、示例 CTA 轮询绑视图生命周期、仪表盘轮询。 |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer 辅助。 |
 | [`icon.ts`](icon.ts) | 本车道菜单和行用到的线性图标。 |
