@@ -406,6 +406,58 @@ def test_cell_and_shell_sinks_have_zero_bypass():
     assert bash_mod.count("admit_shell(") == 1
 
 
+def test_load_skill_refuses_a_blocked_skill_instead_of_only_the_next_cell(tmp_path):
+    """Binding the requirement is not the same as refusing it.
+
+    Cell admission runs once, when the Cell starts. A Cell that calls
+    `load_skill` mid-flight is already inside its fence, so binding the
+    manifest and handing back the recipe leaves exactly one Cell able to run
+    a blocked Skill: the one that asked for it. That is the ordinary
+    load-then-use shape, so the freeze has to apply to the load itself.
+    """
+
+    from openai4s.host_dispatch import build_dispatcher
+
+    skills = tmp_path / "skills"
+    (skills / "raw").mkdir(parents=True)
+    (skills / "raw" / "SKILL.md").write_text(
+        "---\nname: raw\ndescription: d\norigin: openai4s\n"
+        "capabilities:\n  network:\n    mode: raw_required\n    domains: []\n---\n"
+        "# recipe\nimport socket\n",
+        "utf-8",
+    )
+    cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
+    disp = build_dispatcher(cfg)
+    disp.frame_id = "frame-raw-load"
+
+    refused = disp._m_load_skill("raw")
+    assert set(refused) == {"error"}, refused
+    assert "raw kernel network" in refused["error"]
+    assert "import socket" not in str(refused)
+
+
+def test_background_execution_is_a_sink_too(tmp_path):
+    """`exec_background` spawns its own worker; the freeze has to reach it."""
+
+    from openai4s.host_dispatch import build_dispatcher
+
+    skills = tmp_path / "skills"
+    (skills / "raw").mkdir(parents=True)
+    (skills / "raw" / "SKILL.md").write_text(
+        "---\nname: raw\ndescription: d\norigin: openai4s\n"
+        "capabilities:\n  network:\n    mode: raw_required\n    domains: []\n---\n# x\n",
+        "utf-8",
+    )
+    cfg = Config(data_dir=tmp_path / "data", skills_dir=skills)
+    disp = build_dispatcher(cfg)
+    disp.frame_id = "frame-raw-bg"
+    disp._m_load_skill("raw")
+
+    out = disp._m_exec_background({"code": "print(1)"})
+    assert set(out) == {"error"}, out
+    assert "raw kernel network" in out["error"]
+
+
 def test_the_cli_and_delegation_cell_sink_has_full_network_admission():
     """`CellExecutionService` is not the only Code-as-Action sink.
 

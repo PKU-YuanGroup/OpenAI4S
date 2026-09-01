@@ -468,6 +468,43 @@ def test_export_chunks_stay_at_or_under_one_mebibyte_and_total_overflow_is_413(
     assert (error.value.status, error.value.code) == (413, "artifact_too_large")
 
 
+def test_a_row_the_csv_module_refuses_is_still_written_faithfully():
+    """The export must not lose a row because the stdlib writer balked.
+
+    Before CPython 3.11 a NUL is refused under every quoting mode, so the
+    encoder falls back to writing the excel dialect itself. On 3.11+ that
+    branch is unreachable through the module, which is why this drives the
+    fallback directly -- otherwise the code that keeps 3.10 working would be
+    covered on no interpreter at all.
+    """
+
+    from openai4s.server.table_profile import _excel_row
+
+    assert _excel_row(["a", "b"]) == "a,b\r\n"
+    assert _excel_row(['say "hi"']) == '"say ""hi"""\r\n'
+    assert _excel_row(["with,comma"]) == '"with,comma"\r\n'
+    assert _excel_row(["line\nbreak"]) == '"line\nbreak"\r\n'
+    assert _excel_row(["\x00keep"]) == "\x00keep\r\n"
+    # Same bytes the module produces for anything it does accept.
+    import csv as _csv
+    import io as _io
+
+    for row in (["a", "b"], ['say "hi"'], ["with,comma"], ["line\nbreak"]):
+        buf = _io.StringIO()
+        _csv.writer(buf, dialect=_csv.excel).writerow(row)
+        assert buf.getvalue() == _excel_row(row), row
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason=(
+        "the NUL cell needs csv support this interpreter does not have: before "
+        "CPython 3.11 the module refuses a NUL in both directions. The export "
+        "path falls back to writing the row itself, so the product still works "
+        "on 3.10 -- but this case reads back with csv.reader, which has no "
+        "such fallback, so it would fail on the reader rather than the export."
+    ),
+)
 def test_export_spreadsheet_safe_mode_neutralizes_formulas_but_raw_is_faithful():
     columns = ["=header", " @hidden", "+2.5", "-3e-4"]
     rows = [

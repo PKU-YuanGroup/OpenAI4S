@@ -393,12 +393,34 @@ def _spreadsheet_safe_csv_cell(value: str) -> str:
     return "'" + text
 
 
+def _excel_row(values: Sequence[str]) -> str:
+    """`csv.excel` output, written directly.
+
+    Only used when the csv module refuses a value: before CPython 3.11 its
+    writer rejects a NUL under every quoting mode, and raw export has to be
+    byte-faithful about whatever the table actually holds. The rules are
+    excel's own -- quote when the field contains a delimiter, a quote, or a
+    line break; double an embedded quote; terminate with CRLF.
+    """
+
+    out = []
+    for value in values:
+        if any(ch in value for ch in (",", '"', "\r", "\n")):
+            out.append('"' + value.replace('"', '""') + '"')
+        else:
+            out.append(value)
+    return ",".join(out) + "\r\n"
+
+
 def _encode_csv_row(row: Sequence[str], *, spreadsheet_safe: bool = False) -> bytes:
-    buf = io.StringIO()
     values = [str(item) for item in row]
     if spreadsheet_safe:
         values = [_spreadsheet_safe_csv_cell(item) for item in values]
-    csv.writer(buf, dialect=csv.excel).writerow(values)
+    buf = io.StringIO()
+    try:
+        csv.writer(buf, dialect=csv.excel).writerow(values)
+    except csv.Error:
+        return _excel_row(values).encode("utf-8")
     return buf.getvalue().encode("utf-8")
 
 

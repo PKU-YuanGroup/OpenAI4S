@@ -2515,22 +2515,34 @@ class HostDispatcher:
         loaded = self._skill_service.load(name)
         if isinstance(loaded, dict) and loaded.get("error"):
             return loaded
-        self._bind_loaded_skill(loaded, source="load_skill")
+        refusal = self._bind_loaded_skill(loaded, source="load_skill")
+        if refusal is not None:
+            # Refuse here, not at the next Cell. Binding the requirement and
+            # then returning the recipe leaves exactly one Cell able to run
+            # it: the one that called load_skill, inside the fence it was
+            # already admitted into. That is the ordinary Code-as-Action
+            # shape -- load, then use -- so the version-wide freeze would
+            # have applied to every Cell except the one that matters.
+            return {"error": refusal}
         return loaded
 
-    def _bind_loaded_skill(self, loaded: Mapping[str, Any], *, source: str) -> None:
-        """Record the load-event and bind the manifest for later admission.
+    def _bind_loaded_skill(
+        self, loaded: Mapping[str, Any], *, source: str
+    ) -> str | None:
+        """Record the load-event, bind the manifest, and refuse a blocked one.
 
         The manifest is stored as a requirement. Binding it never grants
-        egress or raw kernel network.
+        egress or raw kernel network. Returns a refusal message when this
+        version blocks the Skill outright, so the caller withholds the
+        guidance rather than admitting the next Cell and no more.
         """
 
         if not isinstance(loaded, Mapping) or not loaded.get("name"):
-            return
+            return None
         skill_name = str(loaded.get("name") or "")
         skill = self._skill_service.loader.get(skill_name, include_disabled=True)
         if skill is None:
-            return
+            return None
         from openai4s.server.skill_network_admission import (
             bind_skill_load,
             load_event_metadata,
@@ -2540,7 +2552,7 @@ class HostDispatcher:
         action_group_id = context.get("action_group_id")
         capability = getattr(skill, "network", None)
         if capability is None:
-            return
+            return None
         metadata = load_event_metadata(
             skill_id=skill.name,
             version=str(getattr(skill, "version", "") or ""),
@@ -2559,7 +2571,7 @@ class HostDispatcher:
             "skill_loaded",
             metadata=metadata,
         )
-        bind_skill_load(
+        binding = bind_skill_load(
             frame_id=self.frame_id,
             action_group_id=str(action_group_id) if action_group_id else None,
             skill_id=skill.name,
@@ -2574,6 +2586,16 @@ class HostDispatcher:
             loaded_dict["action_group_id"] = metadata["action_group_id"]
             loaded_dict["manifest_digest"] = metadata["manifest_digest"]
             loaded_dict["document_digest"] = metadata["document_digest"]
+        if (
+            binding.capability.mode == "raw_required"
+            and binding.capability.declaration == "declared"
+        ):
+            return (
+                f"skill {skill.name!r} requires raw kernel network and is "
+                "blocked in this version (the load is refused, not just the "
+                "next Cell)"
+            )
+        return None
 
     def _m_remember(self, spec: dict) -> dict:
         """Persist a durable memory the daemon injects into future sessions
@@ -2917,6 +2939,22 @@ class HostDispatcher:
         return self._bg_executor
 
     def _m_exec_background(self, spec: dict) -> dict:
+        # A third Code-as-Action sink. Foreground Cells and host.bash are
+        # admitted; this one spawns its own worker and used to run whatever
+        # it was given, so a Skill the version blocks stayed reachable by
+        # sending the same code here instead. Only the unconditional half
+        # applies -- a declared raw_required manifest is refused whatever the
+        # sandbox reports, which needs no measured posture.
+        from openai4s.server.skill_network_admission import raw_required_binding
+
+        refused = raw_required_binding(self.frame_id)
+        if refused is not None:
+            return {
+                "error": (
+                    f"skill {refused.skill_id!r} requires raw kernel network "
+                    "and is blocked in this version"
+                )
+            }
         code = spec["code"] if isinstance(spec, dict) else str(spec)
         origin = spec.get("origin", "agent") if isinstance(spec, dict) else "agent"
         return self._bg().launch(code, origin=origin)
