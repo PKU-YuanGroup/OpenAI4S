@@ -60,22 +60,18 @@ SINK_REGISTRY = {
     "extra_cell": ("openai4s.server.gateway", "SessionRunner._loop"),
     "native_tool": ("openai4s.server.gateway", "SessionRunner._loop"),
     "repeated_finding": ("openai4s.server.auto_repair", "AutoRepairService.run"),
+    "repair_turn": ("openai4s.server.auto_repair", "AutoRepairService.run"),
     "token": (
         "openai4s.server.scientific_review",
         "ScientificReviewService.evaluate",
     ),
 }
 #: Consumers with a published limit that nothing currently reserves against,
-#: and why. `repair_turn` maps to `repair_turns_per_round`, but the shipped
-#: Repair executor (`apply_claim_repair`) is deterministic and runs no agent
-#: turns, so the limit is dormant rather than broken. It stops being dormant
-#: the moment a caller injects an LLM-driven `repair_fn`: the turns happen
-#: inside that callable, where `AutoRepairService` cannot see them, and the
-#: limit would silently permit any number. Wire it there, and delete the
-#: entry here -- the projection already reports this field as measured.
-UNWIRED_CONSUMERS = {
-    "repair_turn": "no sink: the shipped Repair executor runs no agent turns",
-}
+#: and why. An empty mapping means every CONSUMERS member is in
+#: SINK_REGISTRY. `inspect_budget_wiring()` treats every key here as a
+#: missing sink -- naming an unwired field is not GA-ready, it is a
+#: fail-closed inventory of known holes.
+UNWIRED_CONSUMERS: dict[str, str] = {}
 FIELD_AUTHORITIES = {
     **{
         name: "auto_budget"
@@ -272,6 +268,15 @@ def inspect_budget_wiring() -> dict[str, Any]:
             missing_sinks.append(consumer)
             continue
         if "auto_budget" not in source:
+            missing_sinks.append(consumer)
+    # A named-unwired consumer is still a missing sink. Publishing the
+    # hole is not the same as wiring it; Stage 12 must refuse GA until
+    # the key is deleted from this mapping because a real sink exists.
+    for consumer in UNWIRED_CONSUMERS:
+        if consumer not in missing_sinks:
+            missing_sinks.append(consumer)
+    for consumer in sorted(CONSUMERS - set(SINK_REGISTRY) - set(UNWIRED_CONSUMERS)):
+        if consumer not in missing_sinks:
             missing_sinks.append(consumer)
     return {
         "field_authorities": dict(FIELD_AUTHORITIES),
@@ -700,6 +705,7 @@ __all__ = [
     "DURABLE_DELTA_KINDS",
     "FIELD_AUTHORITIES",
     "SINK_REGISTRY",
+    "UNWIRED_CONSUMERS",
     "TERMINAL_USER_TRUTH",
     "AutoBudgetAdmission",
     "AutoBudgetDenied",

@@ -9,6 +9,7 @@ fingerprints stop as ``completed_with_issues`` / ``loop_detected``.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -23,7 +24,8 @@ from openai4s.server.auto_budget import (
 from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
 from openai4s.storage.auto_mode import AutoModeConflictError
 
-RepairFn = Callable[[Mapping[str, Any], Sequence[Mapping[str, Any]]], Mapping[str, Any]]
+RepairFn = Callable[..., Mapping[str, Any]]
+DETERMINISTIC_REPAIR_ATTR = "openai4s_deterministic_repair"
 
 
 def _fingerprint_set(findings: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -36,6 +38,120 @@ def _fingerprint_set(findings: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
     )
 
 
+def declare_deterministic_repair(fn: Any) -> Any:
+    """Mark a two-parameter repair_fn as never invoking a provider."""
+
+    setattr(fn, DETERMINISTIC_REPAIR_ATTR, True)
+    return fn
+
+
+def adapt_legacy_repair_fn(fn: Any, *, deterministic: bool = False) -> Any:
+    """Explicit adapter for a two-parameter repair_fn.
+
+    Pass ``deterministic=True`` when the callable never invokes a provider.
+    Otherwise AutoRepairService refuses to run it as metered while a budget
+    envelope is active; unmigrated callables do not break stored runs.
+    """
+
+    if deterministic:
+        return declare_deterministic_repair(fn)
+    return fn
+
+
+class RepairTurnAdmission:
+    """Per-round admission context passed to a metered repair_fn.
+
+    Each provider turn must call ``admit_turn`` (or ``run_provider``) before
+    the provider is invoked. Settlement is owned by AutoRepairService.run:
+    this object only appends reserved ids onto the shared pending list.
+    """
+
+    def __init__(
+        self,
+        *,
+        budget: AutoBudgetAdmission | None,
+        run_id: str | None,
+        round_index: int,
+        pending: list[str],
+    ) -> None:
+        self._budget = budget
+        self._run_id = run_id
+        self._round_index = round_index
+        self._pending = pending
+        self._next = 0
+
+    @property
+    def active(self) -> bool:
+        return self._budget is not None and bool(self._run_id)
+
+    def admit_turn(self, turn_index: int | None = None) -> str:
+        index = self._next if turn_index is None else int(turn_index)
+        if index < 0:
+            raise ValueError("repair turn index must be >= 0")
+        self._next = max(self._next, index + 1)
+        admission_id = (
+            f"{self._run_id or 'local'}:repair_turn:{self._round_index}:{index}"
+        )
+        if not self.active:
+            return admission_id
+        assert self._budget is not None and self._run_id is not None
+        self._budget.reserve(
+            run_id=str(self._run_id),
+            admission_id=admission_id,
+            consumer="repair_turn",
+            action_group_id=admission_id,
+            amount=1,
+        )
+        self._pending.append(admission_id)
+        return admission_id
+
+    def run_provider(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        self.admit_turn()
+        return fn(*args, **kwargs)
+
+
+def _classify_repair_fn(fn: Any) -> str:
+    if getattr(fn, DETERMINISTIC_REPAIR_ATTR, False):
+        return "deterministic"
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return "legacy"
+    accepted: list[inspect.Parameter] = []
+    for param in sig.parameters.values():
+        if param.name in {"self", "cls"}:
+            continue
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        accepted.append(param)
+    names = [param.name for param in accepted]
+    if "admission" in names or len(accepted) >= 3:
+        return "metered"
+    return "legacy"
+
+
+def _invoke_repair_fn(
+    fn: Any,
+    snapshot: Mapping[str, Any],
+    material: Sequence[Mapping[str, Any]],
+    admission: RepairTurnAdmission,
+) -> Mapping[str, Any]:
+    kind = _classify_repair_fn(fn)
+    if kind != "metered":
+        return fn(snapshot, material)
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return fn(snapshot, material, admission)
+    if "admission" in sig.parameters:
+        return fn(snapshot, material, admission=admission)
+    return fn(snapshot, material, admission)
+
+
+@declare_deterministic_repair
 def apply_claim_repair(
     snapshot: Mapping[str, Any],
     findings: Sequence[Mapping[str, Any]],
@@ -199,9 +315,15 @@ class AutoRepairService:
                 current["stop_reason"] = "loop_detected"
                 current["verdict"] = "issues"
                 return current
-            admission_id = None
-            finding_admission_id = None
-            if budget is not None and run_id:
+            pending_ids: list[str] = []
+            active_budget = budget is not None and bool(run_id)
+            if _classify_repair_fn(self.repair_fn) == "legacy" and active_budget:
+                raise RuntimeError(
+                    "repair_fn must declare deterministic or accept admission; "
+                    "refusing to run an unmetered repair as metered"
+                )
+            if active_budget:
+                assert budget is not None and run_id is not None
                 admission_id = f"{run_id}:repair:{round_index}"
                 digest = finding_set_digest(prints)
                 # Held in a variable because it has to be settled below. It
@@ -209,7 +331,10 @@ class AutoRepairService:
                 # commit/mark_unknown was the repair one: every
                 # `repeated_finding` reservation stayed `reserved` for the
                 # life of the run, and since reserved counts against
-                # remaining, the budget only ever shrank.
+                # remaining, the budget only ever shrank. Each reserve is
+                # appended as it succeeds so a later denial still settles
+                # the ones that already exist -- pairing cannot depend on
+                # the other reservation having happened.
                 finding_admission_id = f"{run_id}:finding:{digest}:{round_index}"
                 try:
                     budget.reserve(
@@ -219,6 +344,7 @@ class AutoRepairService:
                         action_group_id=f"{digest}:{round_index}",
                         amount=1,
                     )
+                    pending_ids.append(finding_admission_id)
                     budget.reserve(
                         run_id=str(run_id),
                         admission_id=admission_id,
@@ -226,21 +352,43 @@ class AutoRepairService:
                         action_group_id=admission_id,
                         amount=1,
                     )
+                    pending_ids.append(admission_id)
                 except AutoBudgetDenied as denied:
+                    for pending in pending_ids:
+                        try:
+                            budget.release(pending, started=False)
+                        except Exception:  # noqa: BLE001 - stop still wins
+                            pass
                     return self._budget_stop(current, denied.reason)
             snapshot = dict(current.get("snapshot") or {})
+            # Provider turns inside a metered repair_fn reserve
+            # consumer="repair_turn" via RepairTurnAdmission before each
+            # call; ids land on pending_ids and settle in the same block.
+            turn_admission = RepairTurnAdmission(
+                budget=budget if active_budget else None,
+                run_id=str(run_id) if run_id else None,
+                round_index=round_index,
+                pending=pending_ids,
+            )
             try:
-                repair_payload = dict(self.repair_fn(snapshot, material))
+                repair_payload = dict(
+                    _invoke_repair_fn(
+                        self.repair_fn, snapshot, material, turn_admission
+                    )
+                )
+            except AutoBudgetDenied as denied:
+                if budget is not None:
+                    for pending in pending_ids:
+                        budget.commit(pending, committed_amount=1)
+                return self._budget_stop(current, denied.reason)
             except Exception:
                 if budget is not None:
-                    for pending in (admission_id, finding_admission_id):
-                        if pending:
-                            budget.mark_unknown(pending)
+                    for pending in pending_ids:
+                        budget.mark_unknown(pending)
                 raise
             if budget is not None:
-                for settled in (admission_id, finding_admission_id):
-                    if settled:
-                        budget.commit(settled, committed_amount=1)
+                for settled in pending_ids:
+                    budget.commit(settled, committed_amount=1)
             if repair_payload.get("self_certified"):
                 raise RuntimeError("Repair Agent cannot certify its own review")
             if run_id and checkpoint_id:
