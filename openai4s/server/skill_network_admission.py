@@ -352,6 +352,42 @@ def _deny(
     )
 
 
+def _raw_required_denial(
+    *,
+    sink: str,
+    bindings: Sequence[SkillNetworkBinding],
+    sandbox: Mapping[str, Any] | None,
+) -> AdmissionDecision | None:
+    """The half of admission that needs no measured posture, or None.
+
+    A declared `raw_required` manifest is refused whatever the sandbox
+    reports, so this answer is available before a worker exists. Both the
+    full `admit` and the pre-bootstrap preflight route through here: the
+    refusal message and `blocked_on` are one string in one place, not a
+    second copy at each sink that happens to need the early answer.
+    """
+
+    raw_required = [
+        item
+        for item in bindings
+        if item.capability.mode == "raw_required"
+        and item.capability.declaration == "declared"
+    ]
+    if not raw_required:
+        return None
+    return _deny(
+        sink=sink,
+        reason=(
+            "skill requires raw kernel network and is blocked in this "
+            "version (OPENAI4S_KERNEL_ALLOW_RAW_NETWORK does not grant it)"
+        ),
+        blocked_on=("raw_network",),
+        bindings=raw_required,
+        sandbox=sandbox,
+        extra={"compat_raw_env": _raw_env_enabled()},
+    )
+
+
 def _allow(
     *,
     sink: str,
@@ -399,24 +435,9 @@ def admit(
     if not bindings:
         return _allow(sink=sink, bindings=(), sandbox=sandbox_status)
 
-    raw_required = [
-        item
-        for item in bindings
-        if item.capability.mode == "raw_required"
-        and item.capability.declaration == "declared"
-    ]
-    if raw_required:
-        return _deny(
-            sink=sink,
-            reason=(
-                "skill requires raw kernel network and is blocked in this "
-                "version (OPENAI4S_KERNEL_ALLOW_RAW_NETWORK does not grant it)"
-            ),
-            blocked_on=("raw_network",),
-            bindings=raw_required,
-            sandbox=sandbox_status,
-            extra={"compat_raw_env": _raw_env_enabled()},
-        )
+    denial = _raw_required_denial(sink=sink, bindings=bindings, sandbox=sandbox_status)
+    if denial is not None:
+        return denial
 
     host_only = [
         item
@@ -576,6 +597,25 @@ def raw_required_binding(frame_id: str | None) -> SkillNetworkBinding | None:
     return None
 
 
+def admit_cell_preflight(*, frame_id: str | None) -> AdmissionDecision:
+    """Cell admission's posture-independent half, for use before bootstrap.
+
+    `CellExecutionService` cannot run full admission first: the measured
+    posture it intersects comes from the worker that `prepare_language`
+    prepares. But `prepare_language` also runs Skill bootstrap -- sidecar
+    imports, `origin="system"` -- so waiting for it means a refused Skill's
+    code has already executed by the time the user Cell is denied. This
+    answers the unconditional half early; the full `admit_cell` still runs
+    afterwards for `host_only`, which genuinely needs the posture.
+    """
+
+    bindings = bindings_for(frame_id)
+    denial = _raw_required_denial(sink=CELL_SINK, bindings=bindings, sandbox=None)
+    if denial is not None:
+        return denial
+    return _allow(sink=CELL_SINK, bindings=bindings, sandbox=None)
+
+
 def admit_cell(
     *,
     frame_id: str | None,
@@ -647,4 +687,19 @@ def load_event_metadata(
 
 
 # Imported by tests that assert the two sinks cannot skip admission.
-ADMISSION_SINKS = (CELL_SINK, SHELL_SINK)
+#: Every path that can reach executable code, named so an omission is a
+#: failing test rather than a grep that happened not to look. Two of these
+#: were found by review after shipping: the CLI/delegation Cell hook and the
+#: background executor both ran while this tuple said the surface was two
+#: names wide.
+CLI_CELL_SINK = "cli_cell"
+BACKGROUND_SINK = "exec_background"
+LOAD_SINK = "load_skill"
+
+ADMISSION_SINKS = (
+    CELL_SINK,
+    SHELL_SINK,
+    CLI_CELL_SINK,
+    BACKGROUND_SINK,
+    LOAD_SINK,
+)

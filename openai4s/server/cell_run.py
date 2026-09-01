@@ -306,6 +306,31 @@ class CellExecutionService:
                 # action timeline shows the group "running" forever.
                 self._finish_attempt(attempt_id, "record_failed", exc)
                 raise
+        # Before `prepare_language`, which runs Skill bootstrap (sidecar
+        # imports, `origin="system"`) on the worker it prepares. Admission
+        # further down needs that worker's measured posture and so cannot
+        # move; the unconditional half needs no posture and belongs here,
+        # or a blocked Skill's bootstrap has already executed by the time
+        # the user Cell is refused. The CLI sink is ordered the same way.
+        from openai4s.server.skill_network_admission import admit_cell_preflight
+
+        preflight = admit_cell_preflight(frame_id=session.root_frame_id)
+        if not preflight.allowed:
+            refused = self._soft_error(
+                session,
+                request,
+                emit,
+                index,
+                cell_id,
+                None,
+                preflight.refusal_message(),
+                attempt_id,
+                "skill_network_refused",
+                None,
+            )
+            if isinstance(refused.result, dict):
+                refused.result["skill_network"] = preflight.as_dict()
+            return refused
         try:
             runtime_error = self.ports.prepare_language(session, request.language)
             kernel_id = self.ports.kernel_id(session, request.language)

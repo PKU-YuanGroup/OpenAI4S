@@ -394,16 +394,41 @@ def test_host_only_boundary_helper_matches_measured_fields():
     assert host_only_boundary_holds(None) is False
 
 
+#: Where each declared sink actually applies admission. Keyed by the name in
+#: `ADMISSION_SINKS` so the two cannot drift: a sink added to the tuple with
+#: nothing wired fails here, and a sink wired without being declared fails
+#: too. This replaced a hand-written pair of greps that named `cell_run.py`
+#: and `host/bash.py` and called them "the only production callers" -- while
+#: `agent/loop.py`, `host_dispatch.py`'s background launcher, and its
+#: `load_skill` handler all reached executable code with no check. Each of
+#: those was found by review, not by this test, because a grep only covers
+#: the files someone thought to name.
+_SINK_EVIDENCE = {
+    "cell": ("openai4s/server/cell_run.py", ("admit_cell(", "admit_cell_preflight(")),
+    "shell": ("openai4s/host/bash.py", ("admit_shell(",)),
+    "cli_cell": ("openai4s/agent/loop.py", ("admit_cell(", "raw_required_binding(")),
+    "exec_background": ("openai4s/host_dispatch.py", ("raw_required_binding(",)),
+    "load_skill": ("openai4s/host_dispatch.py", ("_bind_loaded_skill(",)),
+}
+
+
+def test_every_declared_sink_is_wired_to_admission():
+    from openai4s.server.skill_network_admission import ADMISSION_SINKS
+
+    assert set(_SINK_EVIDENCE) == set(ADMISSION_SINKS), (
+        "ADMISSION_SINKS and the evidence table disagree: a sink was declared "
+        "without being wired, or wired without being declared"
+    )
+    for sink, (path, calls) in sorted(_SINK_EVIDENCE.items()):
+        src = Path(path).read_text("utf-8")
+        assert any(call in src for call in calls), f"{sink} sink has no admission"
+
+
 def test_cell_and_shell_sinks_have_zero_bypass():
     cell_src = inspect.getsource(CellExecutionService._execute_admitted)
     bash_src = inspect.getsource(BashAuthorizationService.authorize)
     assert "admit_cell(" in cell_src
     assert "admit_shell(" in bash_src
-    # The only production callers of these two sinks.
-    cell_mod = Path("openai4s/server/cell_run.py").read_text("utf-8")
-    bash_mod = Path("openai4s/host/bash.py").read_text("utf-8")
-    assert cell_mod.count("admit_cell(") == 1
-    assert bash_mod.count("admit_shell(") == 1
 
 
 def test_load_skill_refuses_a_blocked_skill_instead_of_only_the_next_cell(tmp_path):
@@ -812,3 +837,75 @@ def test_remote_sandbox_status_is_unproven():
     assert status["backend"] == "remote"
     assert status["network_policy"] == "unproven"
     assert host_only_boundary_holds(status) is False
+
+
+def test_cell_refuses_a_blocked_skill_before_running_its_bootstrap(tmp_path):
+    """The refusal must precede `prepare_language`, not merely happen.
+
+    `prepare_language` is where Skill bootstrap runs -- sidecar imports on a
+    worker, `origin="system"`. Full admission cannot run before it, because
+    the posture it intersects is measured from that worker; so the sink runs
+    the posture-independent half first. A test that only asserts "the Cell
+    was refused" stays green when that half is deleted, because the later
+    full admission still refuses -- after the blocked Skill's code has run.
+    """
+
+    from types import SimpleNamespace
+
+    from openai4s.execution import CaptureResult, CellRequest
+    from openai4s.kernel import KernelSupervisor
+    from openai4s.server.cell_run import CellExecutionPorts, CellExecutionService
+
+    bind_skill_load(
+        frame_id="frame-bootstrap",
+        action_group_id="ag-cell",
+        skill_id="alphafold2",
+        version="1",
+        document_digest="f" * 64,
+        capability=declared_capability("raw_required", [], source="frontmatter"),
+        source="load_skill",
+    )
+
+    class Harness:
+        def __init__(self) -> None:
+            self.prepared = False
+            self.ran = False
+
+        def prepare_language(self, *_args):
+            self.prepared = True
+            return None
+
+        def ports(self) -> CellExecutionPorts:
+            return CellExecutionPorts(
+                prepare_language=self.prepare_language,
+                kernel_id=lambda *_a: "python",
+                snapshot=lambda *_a: {},
+                protect_versions=lambda *_a: None,
+                safety_refusal=lambda *_a: None,
+                run=self.run,
+                capture=lambda *a: CaptureResult(),
+                emit_artifact_step=lambda *a: None,
+                record_cell=lambda **record: None,
+            )
+
+        def run(self, *args):
+            self.ran = True
+            return {"stdout": "should not run", "stderr": "", "error": None}
+
+    harness = Harness()
+    outcome = CellExecutionService(harness.ports()).execute(
+        SimpleNamespace(
+            root_frame_id="frame-bootstrap",
+            project_id="project-1",
+            workspace=tmp_path,
+            cell_index=0,
+            kernels=KernelSupervisor(),
+        ),
+        CellRequest("print(1)", "agent", action_group_id="ag-cell"),
+        [].append,
+    )
+
+    assert harness.prepared is False, "Skill bootstrap ran before the refusal"
+    assert harness.ran is False
+    assert outcome.result["skill_network"]["allowed"] is False
+    assert "raw_network" in outcome.result["skill_network"]["blocked_on"]
