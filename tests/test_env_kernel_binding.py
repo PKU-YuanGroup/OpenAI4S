@@ -71,7 +71,9 @@ def _sha(path: Path) -> str:
 
 def _real_python_prefix(prefix: Path) -> Path:
     """A real venv whose interpreter self-reports this exact prefix."""
-    venv.EnvBuilder(with_pip=False).create(prefix)
+    # A copied python-build-standalone launcher loses its runtime tree on
+    # Linux 3.10; pyvenv.cfg plus a link keeps it runnable and prefix-aware.
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(prefix)
     return prefix
 
 

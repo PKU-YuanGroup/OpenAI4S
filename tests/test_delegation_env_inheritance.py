@@ -69,7 +69,9 @@ def _fresh_discovery():
 def _fake_env(root: Path, name: str) -> Path:
     """A real venv whose interpreter self-reports the selected env path."""
     env_dir = root / name
-    venv.EnvBuilder(with_pip=False).create(env_dir)
+    # A copied python-build-standalone launcher loses its runtime tree on
+    # Linux 3.10; pyvenv.cfg plus a link keeps it runnable and prefix-aware.
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(env_dir)
     return env_dir
 
 
