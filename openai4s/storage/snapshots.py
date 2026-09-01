@@ -15,6 +15,7 @@ be replayed and validated.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -121,6 +122,39 @@ def _canonical_json(value: Any) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _read_regular_no_follow(path: Path, expected: os.stat_result) -> bytes:
+    """Read the exact file `lstat` described, or raise.
+
+    `lstat` proves the entry was a regular file at that instant; a plain
+    `read_bytes()` then follows whatever the name points at *now*. A child
+    process still alive in the workspace can replace the file with a symlink
+    to a Host-only path in between, and this walker runs with daemon
+    privileges -- so the bytes it captures would be ones the child could not
+    open itself. O_NOFOLLOW refuses a final-segment symlink; the fstat
+    comparison refuses every other swap, including a fresh regular file at
+    the same name. O_NONBLOCK keeps a FIFO planted at that name from hanging
+    the open before the mode can be checked.
+    """
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        actual = os.fstat(fd)
+        if not stat.S_ISREG(actual.st_mode):
+            raise OSError(errno.EINVAL, f"not a regular file: {path}")
+        if (actual.st_ino, actual.st_dev) != (expected.st_ino, expected.st_dev):
+            raise OSError(errno.ESTALE, f"file replaced between stat and read: {path}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 def _digest(data: bytes) -> str:
@@ -246,7 +280,7 @@ class WorkspaceCAS:
                     skipped.append({"path": relative, "reason": "too_large"})
                     continue
                 try:
-                    data = path.read_bytes()
+                    data = _read_regular_no_follow(path, info)
                 except OSError as error:
                     skipped.append({"path": relative, "reason": f"read: {error}"})
                     continue

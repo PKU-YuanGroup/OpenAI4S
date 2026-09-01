@@ -127,6 +127,16 @@ def publish_child_outputs(
     if not scratch.directory.is_dir():
         return []
     after = scratch.cas.capture(scratch.directory)
+    # The Artifact's bytes are the ones the capture walk audited, addressed by
+    # content. Re-opening `scratch.directory / relative` here would follow a
+    # symlink the capture deliberately refused to follow -- and this runs as
+    # the daemon, so a child that cannot read a Host-only file could still get
+    # the daemon to read it and publish the bytes.
+    captured = {
+        str(entry.get("path")): str(entry.get("blob"))
+        for entry in (after.get("entries") or [])
+        if entry.get("path") and entry.get("blob")
+    }
     if scratch.parent_tree_id:
         diff = scratch.cas.diff_trees(scratch.parent_tree_id, after["tree_id"])
         output_paths = list(diff.get("added") or []) + list(diff.get("changed") or [])
@@ -137,12 +147,16 @@ def publish_child_outputs(
         Path(scratch.cas.root).parent / "artifacts" / "delegation" / scratch.child_id
     )
     for relative in output_paths:
-        source = scratch.directory / relative
-        if not source.is_file():
+        blob_id = captured.get(str(relative))
+        if blob_id is None:
+            # Not a regular file at capture time (symlink, socket, FIFO) or
+            # skipped as secret/oversized. It has no audited bytes to publish.
             continue
-        data = source.read_bytes()
+        try:
+            data = scratch.cas.get_blob(blob_id)
+        except (KeyError, ValueError):
+            continue
         checksum = hashlib.sha256(data).hexdigest()
-        scratch.cas.put_blob(data)
         destination = durable_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)

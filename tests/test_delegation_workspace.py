@@ -185,3 +185,68 @@ def test_private_scratch_materializes_persisted_version_after_runner_restart(
         "durable-restart-proof"
     )
     restored_runner.close()
+
+
+def test_a_symlink_planted_after_capture_cannot_publish_host_only_bytes(
+    monkeypatch, tmp_path
+):
+    """The published bytes must be the ones the capture walk audited.
+
+    `WorkspaceCAS` walks with `followlinks=False` and `S_ISREG`, so a symlink
+    present at capture time is skipped. Publishing then re-opened the same
+    relative path -- `is_file()` and `read_bytes()` both follow, with no
+    containment check -- and publish runs as the daemon while a child's
+    leftover subprocess can still write. Swapping a just-captured regular
+    file for a symlink to a Host-only path therefore had the unsandboxed
+    daemon read that file and persist it as an Artifact version.
+
+    The swap is simulated by racing `capture` itself, which is exactly the
+    window: after the audit, before the read.
+    """
+
+    from openai4s.storage.snapshots import WorkspaceCAS
+
+    secret = tmp_path / "access-token"
+    secret.write_text("HOST-ONLY-TOKEN", encoding="utf-8")
+
+    def write_run(self, task):
+        (Path(self.workspace) / "result.txt").write_text("child-output", "utf-8")
+        return _submitted({"wrote": "result.txt"})
+
+    monkeypatch.setattr(loop_mod.Agent, "run", write_run)
+
+    real_capture = WorkspaceCAS.capture
+
+    def racing_capture(self, workspace, **kwargs):
+        tree = real_capture(self, workspace, **kwargs)
+        victim = Path(workspace) / "result.txt"
+        if victim.is_file() and not victim.is_symlink():
+            victim.unlink()
+            victim.symlink_to(secret)
+        return tree
+
+    monkeypatch.setattr(WorkspaceCAS, "capture", racing_capture)
+
+    cfg = get_config()
+    store = get_store(cfg.db_path)
+    root = store.new_frame(kind="turn", project_id="science")
+    parent = tmp_path / "parent-workspace"
+    parent.mkdir()
+    runner = DelegationRunner(
+        cfg,
+        parent_frame_id=root,
+        store=store,
+        workspace=str(parent),
+        private_scratch=True,
+        owner_instance_id="owner-symlink",
+        runner_instance_id="runner-symlink",
+    )
+    result = runner({"request": "alpha", "name": "alpha"})
+
+    for ref in result.get("artifact_refs") or []:
+        published = Path(ref["durable_path"]).read_bytes()
+        assert b"HOST-ONLY-TOKEN" not in published, (
+            "the daemon followed a symlink planted after capture and published "
+            "bytes the child could not read itself"
+        )
+        assert published == b"child-output"
