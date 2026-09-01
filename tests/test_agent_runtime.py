@@ -215,7 +215,9 @@ def test_chat_model_projects_stream_deltas_on_the_owning_thread():
 
 def test_chat_model_bounds_detached_provider_calls(monkeypatch):
     monkeypatch.setattr(
-        runtime, "_PROVIDER_CALL_BUDGET", runtime._DetachedCallBudget(1)
+        runtime,
+        "_PROVIDER_CALL_BUDGET",
+        runtime._DetachedCallBudget(1, per_scope_limit=4),
     )
     entered = threading.Event()
     release = threading.Event()
@@ -265,7 +267,7 @@ def test_chat_model_budget_never_charges_a_live_provider_call():
     cancelled.
     """
 
-    budget = runtime._DetachedCallBudget(2)
+    budget = runtime._DetachedCallBudget(2, per_scope_limit=99)
     live = [budget.track() for _ in range(5)]
     for _ in range(10):
         budget.admit()  # no live call is charged, so admission stays open
@@ -282,6 +284,74 @@ def test_chat_model_budget_never_charges_a_live_provider_call():
     for call in live:
         call.settle()
     assert budget.outstanding() == 0
+
+
+def test_one_session_cannot_stack_cancelled_calls_against_a_stale_ledger(
+    monkeypatch,
+):
+    """Stop releases the turn while the request keeps billing.
+
+    ``enforce_llm_quota`` is check-then-call: it reads stored ``llm_*``
+    counters and reserves nothing for a call in flight, so every Stop-and-
+    resend passes a ledger that has not been charged for the request still
+    running. Only this budget decides how far one session can outrun its own
+    accounting, so the per-scope limit has to bite well before the process one.
+    """
+
+    monkeypatch.setattr(
+        runtime,
+        "_PROVIDER_CALL_BUDGET",
+        runtime._DetachedCallBudget(128, per_scope_limit=2),
+    )
+    release = threading.Event()
+    started = threading.Semaphore(0)
+
+    def blocked_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        started.release()
+        assert release.wait(5)
+        return {"content": "late"}
+
+    def stop_one(scope):
+        shared = threading.Event()
+        model = ChatModel(
+            object(),
+            blocked_chat,
+            cancellation=SimpleNamespace(cancelled=shared.is_set),
+            call_scope=scope,
+        )
+        owner = threading.Thread(target=lambda: model.complete([], lambda _t: None))
+        owner.start()
+        assert started.acquire(timeout=2)
+        shared.set()
+        owner.join(2)
+        assert not owner.is_alive()
+
+    try:
+        stop_one("frame-a")
+        stop_one("frame-a")
+        # A third Stop on the same session would be a third concurrent billed
+        # request against counters none of them have reached yet.
+        with pytest.raises(RuntimeError, match="this session already has"):
+            ChatModel(
+                object(),
+                blocked_chat,
+                cancellation=SimpleNamespace(cancelled=lambda: False),
+                call_scope="frame-a",
+            ).complete([], lambda _t: None)
+
+        # Another session is unaffected: the bound is per session, and the
+        # process ceiling is far away.
+        stop_one("frame-b")
+        assert runtime._PROVIDER_CALL_BUDGET.outstanding("frame-a") == 2
+        assert runtime._PROVIDER_CALL_BUDGET.outstanding("frame-b") == 1
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 5
+    while runtime._PROVIDER_CALL_BUDGET.outstanding() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding("frame-a") == 0
 
 
 def test_native_batch_returns_one_canonical_tool_message_per_call(monkeypatch):

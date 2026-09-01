@@ -705,6 +705,7 @@ class Agent:
                     # retry backoff it is merely sleeping through.
                     cancellation=self.cancellation,
                     abandoned_reply=_account_abandoned_reply,
+                    call_scope=self.frame_id or None,
                 )
                 if self.cancellation is not None:
                     model = _CancellationAwareModel(

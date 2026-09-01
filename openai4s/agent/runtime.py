@@ -77,18 +77,33 @@ class _DetachedCallBudget:
     the session cap is 1000 -- so an ordinary nested fan-out routinely holds
     more than 128 live calls and would have started refusing requests that
     nobody ever cancelled.
+
+    ``scope`` (a session's root frame) is bounded far more tightly than the
+    process. Releasing the turn on Stop is what makes a second one admissible
+    while the first request is still billing, and the team quota gate is
+    check-then-call: it reads stored ``llm_*`` counters and reserves nothing
+    for a call in flight. Stop-and-resend therefore passes a stale ledger every
+    time, and the overrun is whatever this budget allows to stack. The
+    process-wide 128 is a resource ceiling; the per-scope limit is the one that
+    decides how far a single session can outrun its own accounting. It does not
+    make the gate reservation-based -- the in-flight window is still there --
+    it bounds it to a few calls instead of a hundred.
     """
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, *, per_scope_limit: int) -> None:
         self._limit = limit
+        self._per_scope_limit = per_scope_limit
         self._lock = threading.Lock()
         self._outstanding = 0
+        self._by_scope: dict[str, int] = {}
 
-    def outstanding(self) -> int:
+    def outstanding(self, scope: str | None = None) -> int:
         with self._lock:
-            return self._outstanding
+            if scope is None:
+                return self._outstanding
+            return self._by_scope.get(scope, 0)
 
-    def admit(self) -> None:
+    def admit(self, scope: str | None = None) -> None:
         """Refuse a new request while too many cancelled ones are closing."""
 
         with self._lock:
@@ -97,15 +112,31 @@ class _DetachedCallBudget:
                     "too many cancelled model requests are still closing; "
                     "wait for one to time out before retrying"
                 )
+            if (
+                scope is not None
+                and self._by_scope.get(scope, 0) >= self._per_scope_limit
+            ):
+                raise RuntimeError(
+                    "this session already has cancelled model requests still "
+                    "billing; wait for one to close before sending again"
+                )
 
-    def track(self) -> "_DetachedCall":
-        return _DetachedCall(self)
+    def track(self, scope: str | None = None) -> "_DetachedCall":
+        return _DetachedCall(self, scope)
 
-    def _enter(self) -> None:
+    def _enter(self, scope: str | None) -> None:
         self._outstanding += 1
+        if scope is not None:
+            self._by_scope[scope] = self._by_scope.get(scope, 0) + 1
 
-    def _exit(self) -> None:
+    def _exit(self, scope: str | None) -> None:
         self._outstanding = max(0, self._outstanding - 1)
+        if scope is not None:
+            remaining = self._by_scope.get(scope, 0) - 1
+            if remaining > 0:
+                self._by_scope[scope] = remaining
+            else:
+                self._by_scope.pop(scope, None)
 
 
 class _DetachedCall:
@@ -117,8 +148,9 @@ class _DetachedCall:
     settle already decided not to remove.
     """
 
-    def __init__(self, budget: _DetachedCallBudget) -> None:
+    def __init__(self, budget: _DetachedCallBudget, scope: str | None) -> None:
         self._budget = budget
+        self._scope = scope
         self._lock = threading.Lock()
         self._counted = False
         self._settled = False
@@ -129,7 +161,7 @@ class _DetachedCall:
                 return
             self._counted = True
             with self._budget._lock:
-                self._budget._enter()
+                self._budget._enter(self._scope)
 
     def settle(self) -> None:
         with self._lock:
@@ -138,13 +170,17 @@ class _DetachedCall:
             self._settled = True
             if self._counted:
                 with self._budget._lock:
-                    self._budget._exit()
+                    self._budget._exit(self._scope)
 
 
 # A cancelled urllib call may remain blocked until its socket timeout. Bound
 # those detached calls so repeated Stop presses cannot grow threads/sockets
 # without limit; live requests are never charged against this budget.
-_PROVIDER_CALL_BUDGET = _DetachedCallBudget(128)
+# 128 process-wide is the resource ceiling. Four per session is the accounting
+# one: it leaves the ordinary Stop-then-retype flow untouched while keeping a
+# Stop-spam from stacking a hundred billed requests against a ledger that has
+# not been charged for any of them yet.
+_PROVIDER_CALL_BUDGET = _DetachedCallBudget(128, per_scope_limit=4)
 
 
 class _LateAccounting:
@@ -245,6 +281,10 @@ class ChatModel:
     #: Optional accounting-only sink for a provider reply which arrives after
     #: the owning turn was cancelled. It must never project content/actions.
     abandoned_reply: Callable[[Mapping[str, Any]], None] | None = None
+    #: Session identity (root frame) used to bound how many cancelled requests
+    #: one session can leave billing while the quota gate reads a ledger that
+    #: has not been charged for them yet. None keeps only the process bound.
+    call_scope: str | None = None
 
     def complete(
         self,
@@ -302,8 +342,8 @@ class ChatModel:
         if is_cancelled():
             return _cancelled_model_reply()
 
-        _PROVIDER_CALL_BUDGET.admit()
-        detached_call = _PROVIDER_CALL_BUDGET.track()
+        _PROVIDER_CALL_BUDGET.admit(self.call_scope)
+        detached_call = _PROVIDER_CALL_BUDGET.track(self.call_scope)
 
         def report_abandoned_reply() -> None:
             if (

@@ -10846,6 +10846,11 @@ class SessionRunner:
                 cancellation=EventCancellation(st.cancel),
                 quota_gate=_llm_quota_gate,
                 abandoned_reply=account_abandoned_reply,
+                # The quota gate reads stored counters and reserves nothing, so
+                # Stop-and-resend passes a ledger that has not been charged for
+                # the request still billing. Naming the session here bounds how
+                # many of those one member can stack.
+                call_scope=rid,
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,
