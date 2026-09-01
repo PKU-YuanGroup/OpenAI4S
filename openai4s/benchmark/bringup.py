@@ -460,7 +460,12 @@ def verify_bringup(
             generation_dir,
         )
         try:
-            layout_has_symlink = any(path.is_symlink() for path in layout_paths)
+            # Path.is_symlink() suppresses every OSError on CPython 3.14, so
+            # an unreadable layout is indistinguishable from a non-symlink.
+            # lstat preserves the verifier's fail-closed error boundary.
+            layout_has_symlink = any(
+                stat.S_ISLNK(os.lstat(path).st_mode) for path in layout_paths
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             env_issues.append(
                 f"environment generation layout cannot be inspected: {exc}"

@@ -201,14 +201,23 @@ def _linux_series() -> str:
     return match.group(1)
 
 
+def _container_series() -> str:
+    """The CPython series selected by both Dockerfile stages."""
+    text = (_ROOT / "Dockerfile").read_text("utf-8")
+    matches = re.findall(r"^FROM python:(\d+\.\d+)-slim-bookworm@", text, re.M)
+    assert matches, "the container's Python series is not where this reads"
+    assert len(set(matches)) == 1, "the container stages use different Python series"
+    return matches[0]
+
+
 def test_every_shipped_interpreter_is_claimed_and_tested():
-    """Not just the DMG's. Both bundles embed a CPython, and the previous
-    version of this reconciliation read one of the two build scripts."""
+    """Every bundled or containerized CPython needs both public claims."""
     classifiers = _classifier_versions()
     tested = _ci_tested_versions()
     for label, series in (
         ("macOS .dmg", _dmg_series()),
         ("Linux tarball", _linux_series()),
+        ("container image", _container_series()),
     ):
         assert (
             series in classifiers

@@ -31,6 +31,7 @@ import stat
 import subprocess
 import sys
 import types
+import venv
 from pathlib import Path
 
 import pytest
@@ -69,9 +70,8 @@ def _sha(path: Path) -> str:
 
 
 def _real_python_prefix(prefix: Path) -> Path:
-    """A prefix whose bin/python really is an interpreter."""
-    (prefix / "bin").mkdir(parents=True, exist_ok=True)
-    (prefix / "bin" / "python").symlink_to(sys.executable)
+    """A real venv whose interpreter self-reports this exact prefix."""
+    venv.EnvBuilder(with_pip=False).create(prefix)
     return prefix
 
 

@@ -155,7 +155,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_gateway_static_cache.py`](test_gateway_static_cache.py) | `/static/` 与 SPA 外壳的弱 ETag、304、gzip 协商与 immutable Cache-Control。在真实连接上断言：命中 If-None-Match 是无体 304 且仍带安全头；gzip 只给 >1KB 的文本类并带 Vary、否则 identity 回退；immutable 仅限指纹名；>8MB 走流式发送；出树的 symlink 在 realpath 之后 403。 |
 | [`test_gateway_webui_next.py`](test_gateway_webui_next.py) | F-23 翻转后的 SPA 外壳切换。未设置时 `/`、`/index.html` 与 `/projects/{pid}/frames/{fid}` 发 `dist/index.html`；`OPENAI4S_WEBUI=legacy` 是改发 `webui/index.html` 的逃生舱。`/static/` 解析不变。同时钉死 package-data 的 dist glob、`_WHEEL_REQUIRED` 哨兵，以及 favicon 的 10 fps 下限。 |
 | [`test_global_research_views.py`](test_global_research_views.py) | 两个跨会话的读模型。project Timeline 把它们合并起来，且不携带任何原始 payload；血缘视图把 Artifact 版本连回产出它的那些 cell。 |
-| [`test_governance.py`](test_governance.py) | 用测试写出来的仓库治理。每一个安全扫描与发布用的 action 都固定到具体 commit，secret 扫描用一个校验和固定的二进制扫全部历史，Dependabot 盯着 hook 与 workflow action。 |
+| [`test_governance.py`](test_governance.py) | 用测试写出来的仓库治理。每个 workflow action 都固定到具体 commit，版本注释由 PR CI 校验；源码 secret 扫描覆盖工作树；Dependabot 的 uv/pre-commit/Actions 批次配有互补的周一回退条目以保留被排除的更新，同时维持 npm 与 Docker 各自独立的政策。 |
 | [`test_harness_characterization.py`](test_harness_characterization.py) | 一份特征化 golden，因此它刻意记录的是当前行为，已知 bug 也照记不误，并且标注出来。重新生成 golden 必须是一个显式动作——正是这一点拦得住无声的漂移。 |
 | [`test_harness_contract.py`](test_harness_contract.py) | harness 自身：场景 schema、脚本化 provider、故障时刻表，以及一个保留事件顺序、而不是排序的规范化器。声明了却从未触发的故障，会让这个场景判失败。 |
 | [`test_auto_budget.py`](test_auto_budget.py) | 对着真实 SQLite repository 的 Auto Mode 原子预算准入：最后名额竞态、相同 admission_id 合并、不乐观返还、重启后 remaining 不增加、same-action/no-progress 熔断、不可验证 token fail closed，以及每个公开字段恰好一个权威计量器。 |

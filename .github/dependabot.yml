@@ -1,14 +1,52 @@
 version: 2
+
+# Multi-ecosystem groups own their schedule. Each assigned entry below therefore
+# has no per-ecosystem `schedule:` block. A second, regular entry for the same
+# ecosystem and directory carries a complementary ignore list on the same
+# Monday clock. The duplicate entries are intentional: together they partition
+# the update classes without suppressing majors, production dependencies, or
+# Black just because those changes do not belong in the routine batch.
+multi-ecosystem-groups:
+  routine-dependencies:
+    schedule:
+      interval: "weekly"
+      day: "monday"
+
 updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    # Only the four direct development tools join the cross-ecosystem PR, and
+    # only for minor/patch bumps. The regular uv entry immediately below ignores
+    # exactly this subset at exactly these levels, leaving their majors and all
+    # production dependency updates on the ordinary Dependabot path.
+    patterns: ["mypy", "pytest", "pytest-xdist", "pre-commit"]
+    multi-ecosystem-group: "routine-dependencies"
+    allow:
+      - dependency-type: "development"
+    update-types: ["minor", "patch"]
+
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
-    groups:
-      development-dependencies:
-        dependency-type: "development"
-        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "mypy"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+      - dependency-name: "pytest"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+      - dependency-name: "pytest-xdist"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+      - dependency-name: "pre-commit"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
     open-pull-requests-limit: 5
 
   - package-ecosystem: "npm"
@@ -41,46 +79,51 @@ updates:
 
   - package-ecosystem: "pre-commit"
     directory: "/"
+    # Multi-ecosystem entries require their inclusion patterns at this level.
+    # Spell out the three normally inert hook repositories so Black stays out
+    # of the batch: its releases are formatting-policy changes, and 23.3.0 ->
+    # 26.5.1 reformatted 234 files. Do not replace this with `update-types`;
+    # pre-commit hooks are git refs and this ecosystem does not SemVer-classify
+    # them (its PR metadata has no `update-type:` trailer).
+    patterns:
+      - "https://github.com/pre-commit/pre-commit-hooks"
+      - "https://github.com/pycqa/isort"
+      - "https://github.com/astral-sh/ruff-pre-commit"
+    multi-ecosystem-group: "routine-dependencies"
+
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    # Exclude the three repositories already owned by the multi-ecosystem job.
+    # Black, plus any future hook not deliberately admitted to that batch,
+    # remains covered here on the original Monday schedule.
     schedule:
       interval: "weekly"
       day: "monday"
-    groups:
-      # The only pre-commit ecosystem left ungrouped, which is why one Monday
-      # produced two separate hook PRs. Batch the half that is normally inert
-      # against the rule sets pinned in pyproject.toml, and deliberately keep
-      # black out of the group: a black bump is a style change that has to be
-      # read on its own, not merged as one row of a version table (black
-      # 23.3.0 -> 26.5.1 reformatted 234 files).
-      #
-      # `exclude-patterns`, not `update-types`, because this ecosystem cannot
-      # evaluate `update-types`. Dependabot resolves pre-commit hooks as git
-      # refs and does not semver-classify them: every hook bump it has opened
-      # carries `dependency-type: direct:production` with NO `update-type:`
-      # trailer, while the uv and github-actions PRs from the same Mondays
-      # carry `update-type: version-update:semver-patch`. A group filtered only
-      # on `update-types` therefore matched nothing, and the group batched zero
-      # updates from the day it was added -- which is why the separate hook PRs
-      # it was meant to stop kept arriving and kept being consolidated by hand.
-      hook-versions:
-        patterns: ["*"]
-        exclude-patterns: ["https://github.com/psf/black"]
+    ignore:
+      - dependency-name: "https://github.com/pre-commit/pre-commit-hooks"
+      - dependency-name: "https://github.com/pycqa/isort"
+      - dependency-name: "https://github.com/astral-sh/ruff-pre-commit"
     open-pull-requests-limit: 3
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    # github-actions is SemVer-classified, so this preserves the former
+    # workflow-actions group's minor/patch boundary. Action majors can change
+    # OIDC publishing and code-scanning behavior and stay out of this batch.
+    patterns: ["*"]
+    multi-ecosystem-group: "routine-dependencies"
+    update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    # Minor/patch updates are owned by the multi-ecosystem job. Ignoring only
+    # those levels here keeps every Action major on its focused review path.
     schedule:
       interval: "weekly"
       day: "monday"
-    groups:
-      # Same rule as the hook group above, and here the filter actually works:
-      # github-actions IS semver-classified, so `update-types` matches. It was
-      # missing, and a major went through as one row of a two-row version
-      # table -- setup-uv 9.0.0 -> 10.0.1 batched with a codeql-action patch.
-      # Action majors land in release.yml (`id-token: write`, OIDC PyPI
-      # publish) and scorecard.yml (`security-events: write`), where the only
-      # human-readable content of the diff is a `# vX.Y.Z` comment, so they
-      # have to arrive as their own PR.
-      workflow-actions:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
     open-pull-requests-limit: 5

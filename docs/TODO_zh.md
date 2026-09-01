@@ -14,10 +14,13 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 
 - [ ] **把 `openai4s-skills` 发布到 npm。** 包已经完整并有关卡把守
       （`node tools/skills-installer/selftest.mjs`、
-      `node tools/skills-installer/check_package.mjs`），`npm pack` 产出 6.4 MiB、
-      带着全部 602 个 Skill。在发布之前，`npx openai4s-skills …` 解析不到；
+      `node tools/skills-installer/check_package.mjs`）。在干净 checkout 上，已发布的
+      `v0.2.0` tag 通过全部 16 项 installer 自测，并打出 2,212 个文件 / 603 个
+      Skill / 6.4 MB；当前 `main` 则打出 2,236 个文件 / 604 个 Skill / 6.5 MB。
+      在发布之前，`npx openai4s-skills …` 解析不到；
       `npx github:PKU-YuanGroup/OpenAI4S install --all` 今天就能用，README 里也是
-      和它并列写的。截至 2026-08-23，这个名字在 registry 上没人占。
+      和它并列写的。2026-09-01 实时执行
+      `npm view openai4s-skills version` 仍返回 `E404`。
       *做完的标准：* 在已发布 tag 的干净 checkout 上跑过
       `npm publish --access public`，并且在一台没有 checkout 的机器上
       `npx openai4s-skills list` 可用。这需要一个有发布权限的 npm 账号——
@@ -25,46 +28,32 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 
 ## CI 与供应链
 
-- [ ] **让 action pin 在合并前就被校验，而不是合并后。** `scorecard.yml` 只在
-      `push: branches: [main]` 和周六定时任务上触发，所以改在那里的 pin 从来
-      不会为 PR 执行一次——一个解析不出来的 SHA 会全绿合入，最先露头的形式是
-      SARIF 悄悄不再送达 code scanning。`tests/test_governance.py` 现在要求每个
-      workflow 的每一行 `uses:` 都是 40 位 hex SHA 并带 `# vX.Y.Z` 注释，但它
-      查不了注释是否名副其实：解引用 tag 需要联网，而这套测试按设计是离线的。
-      也没有任何 workflow linter——`actionlint`、`zizmor`、`pinact`、`ratchet`
-      在整棵树里都搜不到。
-      *做完的标准：* 有一个由 PR 触发的检查，会在某行 `uses:` 的 SHA 解引用不到
-      其注释所写的 tag 时失败。`pinact --check` 是能做到这件事的最小选择；再加
-      一个 `actionlint` job 还能覆盖这里没有任何测试在看的 schema 错误。
-
-- [ ] **把周一的依赖 PR 跨 ecosystem 合批。** `groups:` 按设计是 per-ecosystem
-      的，所以 uv、pre-commit、github-actions 三路更新会分成三个 PR，至今已被
-      手工并到同一分支上至少四次（#75、#97、#131）。Dependabot 支持用配置解决：
-      顶层加 `multi-ecosystem-groups`，再给每个 `updates` 条目加
-      `multi-ecosystem-group: <名字>`。这次没做，是因为那些条目得交出各自的
-      `schedule:` 块，而配错会让 Dependabot 干脆不再开 PR——那比它要修的问题
-      更糟；这件事该有自己的 PR，并观察一个真实的周一。
+- [ ] **观察新的周一跨 ecosystem 依赖批次。** 配置部分已经实现：
+      `routine-dependencies` 持有周一计划，并把选定的 uv 开发工具、Black 之外的
+      pre-commit hook，以及 GitHub Action 的小版本/补丁升级合并起来。带互补
+      ignore 规则的常规条目只排除这些已分组的更新类别，因此 uv 大版本和生产依赖、
+      Black、Action 大版本仍有覆盖。`tests/test_governance.py` 在离线环境中钉死了
+      这个分区以及 npm/Docker 的独立策略。工作树无法证明的是 GitHub 会接受合并后的
+      配置并按计划调度它。最新的真实周一证据仍是旧配置开出的两个独立 PR：
+      pre-commit [#140](https://github.com/PKU-YuanGroup/OpenAI4S/pull/140) 与
+      GitHub Actions [#141](https://github.com/PKU-YuanGroup/OpenAI4S/pull/141)。
       *做完的标准：* 有一个 Dependabot PR 同时带着不止一个 ecosystem 的更新，
       且下一个周一的运行照常开 PR。
 
-- [ ] **离线套件在 CPython 3.14 上不通过，而容器现在正跑在 3.14 上。**
-      `Dockerfile` 已改为 `python:3.14-slim-bookworm`，但 `ci.yml` 的矩阵是
-      `["3.10", "3.12", "3.13"]`，CI 里没有任何地方在 3.14 上跑套件；
-      `Container image builds and serves` 只在构建出的镜像里启动 daemon，不跑测试。
-      手工在 3.14 上跑过：**6 失败 / 7855 通过**。六个失败同源，而且是 CPython
-      自身的变化、不是本仓库的缺陷——通过**裸符号链接**启动时，3.13 的
-      `sys.executable` 报告符号链接路径，3.14 报告解析后的真实二进制。
-      `tests/test_env_kernel_binding.py` 里的 `_real_python_prefix` 正是用这种
-      裸符号链接造 `prefix/bin/python`，而那些夹具就是靠这个自我报告来观察环境绑定的
-      （`test_env_kernel_binding.py` ×2、`test_delegation_env_inheritance.py` ×3、
-      `test_benchmark_bringup.py` ×1）。同一个 worktree 换回 3.13 跑同样这批测试全过，
-      所以是 3.14 特有。两种情况下 kernel 都 exec 了交给它的解释器；变的是 cell
-      对自己的报告——而那也正是 artifact provenance 记录成 `interpreter` 的东西。
-      *做完的标准：* 套件在 3.14 上转绿——更可能的做法是给夹具一个真实前缀
-      （带 `pyvenv.cfg`）而不是裸符号链接，这样断言在两个版本上都保持强度，
-      而不是放宽到接受解析后的路径——并且把 3.14 加进 `ci.yml` 矩阵，防止再次回归。
-
 ## 最近关掉的，记下来免得再查一遍
+
+Action pin 的身份现在会在普通 pull request CI 中校验。`action-pins` job 以只校验、
+不修写的模式运行按 commit 固定的 `pinact-action`，并启用 tag 核验；离线治理测试则继续
+要求每个 workflow action 都带精确的 40 位 hex SHA 和 `# vX.Y.Z` 声明。真实 pinact
+运行接受了当前工作树；把 Checkout 的 `v7.0.1` SHA 错注成 `# v7.0.0` 的负对照则因
+身份不匹配而失败。
+
+CPython 3.14 现在既有 classifier，也进入 CI 测试矩阵，并安装 3.14 容器所用的
+science extra。环境绑定夹具改为创建不带 pip 的真实虚拟环境，而不是裸解释器符号链接，
+所以它对 `sys.executable` 的精确断言在 3.13 与 3.14 上都仍有意义。bring-up verifier
+改用 fail-closed 的 `lstat` 检查，避开 3.14 中会吞掉探测错误的
+`Path.is_symlink()` 行为；嵌套 xdist capture 测试也只显式加载其契约真正使用的插件。
+最终锁定环境的 Python 3.14.4 完整套件结果为 **8094 通过 / 23 跳过**。
 
 本地 kernel worker 现在会 spawn 进自己的 session，因此投向 daemon 进程组的信号
 不再同时投向其下的每一个 cell——这正是 Linux + bubblewrap 本来就没有的那处分歧。

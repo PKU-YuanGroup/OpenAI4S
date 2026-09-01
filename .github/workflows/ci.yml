@@ -1,4 +1,4 @@
-# Default-safe PR CI: the offline gate.
+# Default-safe PR CI: networked action-pin identity plus offline gates.
 #
 # Security posture (do not weaken without a security review):
 #   - Triggered by plain `pull_request` / `push`, a secret-free schedule, or a
@@ -6,9 +6,10 @@
 #     `..._target` trigger variant is forbidden in this workflow: it would
 #     let PR-controlled code run with access to repository secrets.
 #   - `permissions` is read-only (contents: read) for every job.
-#   - No secrets are referenced or injected anywhere in this workflow.
+#   - No repository secrets are referenced or injected anywhere in this
+#     workflow. Pinact receives only the job's read-only GitHub token.
 #   - GitHub-hosted runners only — no self-hosted runners.
-#   - The default offline gate runs pytest plus deterministic `tier:pr`
+#   - The default offline gates run pytest plus deterministic `tier:pr`
 #     harness scenarios. Pytest's addopts deselect opt-in markers (external /
 #     network / live_llm / gpu / ssh / lab / docker / browser), and the harness
 #     CLI requires explicit offline eligibility, so neither path uses secrets or
@@ -67,6 +68,28 @@ jobs:
             echo "::error::Branch name '$HEAD_REF' violates the naming policy in .github/CONTRIBUTING.md (expected main, next, or <prefix>/<name> with prefix one of feat|fix|docs|test|refactor|chore|ui|harness|science|release|hotfix)"
             exit 1
           fi
+
+  action-pins:
+    name: Action pins match version comments
+    # The offline governance test proves the local shape (full SHA plus a
+    # version comment), but only a networked check can prove that the tag in
+    # that comment actually dereferences to the SHA beside it. Keep this in
+    # ordinary PR CI so a stale or fabricated annotation cannot merge green.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflows
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify action pins and version comments
+        uses: suzuki-shunsuke/pinact-action@2a42f29b3397967439ed46e7650f3045f49699f9 # v3.0.1
+        with:
+          # Validation only: this job has read-only permissions and must never
+          # rewrite a contributor's branch. `verify` makes pinact resolve each
+          # version comment through the GitHub API and compare it with the SHA.
+          fix: "false"
+          verify: "true"
 
   lint:
     name: Lint (pre-commit)
@@ -244,10 +267,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 is here because the macOS .dmg embeds it: the build that
-        # reaches the most end users was, until this line, the one Python
-        # nothing tested. 3.10 is the floor from requires-python.
-        python-version: ["3.10", "3.12", "3.13"]
+        # 3.13 is here because the macOS .dmg embeds it, and 3.14 because the
+        # container image runs it. 3.10 is the floor from requires-python.
+        python-version: ["3.10", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -257,7 +279,8 @@ jobs:
           # depth-1 checkout does not contain those objects, so the check can
           # only skip. Deepening one job makes it a check CI actually performs
           # instead of one that is enforced on developer machines and nowhere
-          # else; deepening all three would pay for the same answer twice more.
+          # else; deepening all four would pay for the same answer three times
+          # more.
           fetch-depth: ${{ matrix.python-version == '3.12' && 0 || 1 }}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
@@ -270,12 +293,12 @@ jobs:
       - name: Install dev, science, and chemistry dependencies
         if: matrix.python-version == '3.12'
         run: uv sync --locked --extra science --extra chemistry
-      # The .dmg's interpreter. The science extra is not optional here even
-      # though the core is stdlib-only: the science-dependent test modules
-      # importorskip pandas/matplotlib, so without the extra they silently
-      # skip and the job stops validating the interpreter the .dmg ships.
+      # The .dmg and container interpreters. The science extra is not optional
+      # here even though the core is stdlib-only: the science-dependent test
+      # modules importorskip pandas/matplotlib, so without the extra they
+      # silently skip and the jobs stop validating the interpreters we ship.
       - name: Install dev and science dependencies
-        if: matrix.python-version == '3.13'
+        if: matrix.python-version == '3.13' || matrix.python-version == '3.14'
         run: uv sync --locked --extra science
       - name: Byte-compile all first-party sources
         run: uv run python -m compileall -q openai4s openai4s_compute_provider harness tests

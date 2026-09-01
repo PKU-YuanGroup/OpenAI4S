@@ -19,6 +19,7 @@ code too.
 from __future__ import annotations
 
 import sys
+import venv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -66,11 +67,10 @@ def _fresh_discovery():
 
 
 def _fake_env(root: Path, name: str) -> Path:
-    """A conda-shaped env whose bin/python really is an interpreter."""
-    bin_dir = root / name / "bin"
-    bin_dir.mkdir(parents=True)
-    (bin_dir / "python").symlink_to(sys.executable)
-    return root / name
+    """A real venv whose interpreter self-reports the selected env path."""
+    env_dir = root / name
+    venv.EnvBuilder(with_pip=False).create(env_dir)
+    return env_dir
 
 
 def _env_spec(env_dir: Path) -> KernelEnvSpec:
