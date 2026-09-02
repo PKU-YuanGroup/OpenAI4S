@@ -4,6 +4,7 @@ import { t } from "../../i18n";
 import {
   _folderCollapsed,
   _foldersFor,
+  _projectsLoadingMore,
   _sessionScope,
   _sessionsLoadingMore,
   _titleName,
@@ -11,6 +12,11 @@ import {
   folders,
   project,
   projects,
+  projectsHasMore,
+  projectsLoadError,
+  projectsNextCursor,
+  projectsQuery,
+  projectsTotal,
   sessionPages,
   sessions,
   sessionsHasMore,
@@ -35,12 +41,135 @@ import {
   type SessionLike,
 } from "./paging";
 
-export async function loadProjects(): Promise<void> {
+export const PROJECT_PAGE_SIZE = 100;
+export const PROJECT_Q_MAX = 128;
+
+export type ProjectLike = {
+  project_id?: string;
+  id?: string;
+  name?: string;
+  conversation_count?: number;
+  last_active_at?: string;
+  updated_at?: string;
+  running_count?: number;
+};
+
+export type ProjectDashView =
+  | { kind: "error" }
+  | { kind: "empty" }
+  | { kind: "no-match" }
+  | { kind: "list"; showMore: boolean; loadingMore: boolean };
+
+export function normalizeProjectQuery(raw: string): string {
+  return Array.from(raw.trim())
+    .slice(0, PROJECT_Q_MAX)
+    .join("");
+}
+
+export function projectListQuery(opts: {
+  q?: string;
+  cursor?: string | null;
+  limit?: number;
+}): string {
+  const params = new URLSearchParams();
+  params.set("limit", String(opts.limit ?? PROJECT_PAGE_SIZE));
+  const q = normalizeProjectQuery(opts.q || "");
+  if (q) params.set("q", q);
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  return `/projects?${params.toString()}`;
+}
+
+export function mergeProjectPage(
+  existing: ProjectLike[],
+  incoming: ProjectLike[],
+  mode: "replace" | "append",
+): ProjectLike[] {
+  const seen = new Set<string>();
+  const out: ProjectLike[] = [];
+  const source = mode === "append" ? existing.concat(incoming) : incoming;
+  for (const row of source) {
+    const id = String(row.project_id || row.id || "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(row);
+  }
+  return out;
+}
+
+export function canLoadMoreProjects(opts: {
+  loadingMore: boolean;
+  hasMore: boolean;
+  cursor: string | null;
+}): boolean {
+  return !opts.loadingMore && opts.hasMore && !!opts.cursor;
+}
+
+export function projectDashView(opts: {
+  error: boolean;
+  count: number;
+  query: string;
+  hasMore: boolean;
+  loadingMore: boolean;
+}): ProjectDashView {
+  if (opts.error) return { kind: "error" };
+  if (!opts.count) return { kind: opts.query.trim() ? "no-match" : "empty" };
+  return {
+    kind: "list",
+    showMore: opts.hasMore,
+    loadingMore: opts.loadingMore,
+  };
+}
+
+let _projectsLoadGen = 0;
+
+export async function loadProjects(opts?: { append?: boolean }): Promise<void> {
+  const append = !!opts?.append;
+  if (
+    append &&
+    !canLoadMoreProjects({
+      loadingMore: !!_projectsLoadingMore.value,
+      hasMore: !!projectsHasMore.value,
+      cursor: projectsNextCursor.value,
+    })
+  ) {
+    return;
+  }
+  const gen = ++_projectsLoadGen;
+  const q = normalizeProjectQuery(String(projectsQuery.value || ""));
+  const cursor = append ? projectsNextCursor.value : null;
+  const path = projectListQuery({ q, cursor });
   try {
-    const d = (await api("/projects?limit=100&offset=0")) as { projects?: unknown[] } | null;
-    projects.value = (d && d.projects) || [];
+    if (append) _projectsLoadingMore.value = true;
+    else projectsLoadError.value = false;
+    const d = (await api(path)) as {
+      projects?: ProjectLike[];
+      next_cursor?: string | null;
+      has_more?: boolean;
+      total?: number;
+    } | null;
+    if (gen !== _projectsLoadGen) return;
+    const incoming = (d && d.projects) || [];
+    projects.value = mergeProjectPage(
+      (projects.value as ProjectLike[]) || [],
+      incoming,
+      append ? "append" : "replace",
+    );
+    projectsHasMore.value = !!(d && d.has_more);
+    projectsNextCursor.value = (d && d.next_cursor) || null;
+    projectsTotal.value =
+      typeof d?.total === "number" ? d.total : (projects.value as ProjectLike[]).length;
+    projectsLoadError.value = false;
   } catch {
-    projects.value = [];
+    if (gen !== _projectsLoadGen) return;
+    projectsLoadError.value = true;
+    if (!append) {
+      projects.value = [];
+      projectsHasMore.value = false;
+      projectsNextCursor.value = null;
+      projectsTotal.value = 0;
+    }
+  } finally {
+    if (gen === _projectsLoadGen) _projectsLoadingMore.value = false;
   }
 }
 

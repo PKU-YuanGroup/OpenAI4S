@@ -16,12 +16,13 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`chrome.ts`](chrome.ts) | `hint`, disconnect banner, `openMenu` Esc/`role=menu`, keyboard activate. |
 | [`conversation.ts`](conversation.ts) | `newSession`, `routeInitialView`. Re-exports `openConversation` (F-10) and `resumeWatch` (F-11) rather than keeping this lane's duplicates. |
 | [`conversation.identity.test.ts`](conversation.identity.test.ts) | Those re-exports are the same function objects the owning lanes install. |
-| [`dashboard.ts`](dashboard.ts) | Home list, example CTA poll bound to view lifecycle, dash poll. |
+| [`dashboard.ts`](dashboard.ts) | Home list, project search / load-more / retry, example CTA poll bound to view lifecycle, dash poll. |
 | [`dom.ts`](dom.ts) | `$` / `el` / `ago` / `navURL` / composer helpers. |
 | [`icon.ts`](icon.ts) | Line icons used by this lane's menus and rows. |
 | [`index.ts`](index.ts) | Public re-exports; installs window names on import. |
 | [`lane.ts`](lane.ts) | `isReady` wrapper for later-lane window names. |
-| [`load.ts`](load.ts) | `loadSessions` cursor walk, folders, `renderSessions`. |
+| [`load.ts`](load.ts) | `loadSessions` cursor walk, `loadProjects` keyset pages (no `offset`), folders, `renderSessions`. |
+| [`load.projects.test.ts`](load.projects.test.ts) | Project-list query string has no `offset`; merge/dedupe; empty / retry / load-more view states. |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / earlier bar. |
 | [`paging.test.ts`](paging.test.ts) | Pagination constants, session sort, walk/dedupe, dashboard filters. |
 | [`paging.ts`](paging.ts) | `MESSAGE_PAGE_SIZE=300`, `SESSION_MAX_PAGES=50`, sort/walk/filter. |
