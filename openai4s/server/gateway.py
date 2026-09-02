@@ -3411,11 +3411,19 @@ class SessionRunner:
                 or task.get("status")
                 or ""
             )
+            # The real terminal state rides on `task`, not on the envelope.
+            # `status` in an error envelope is the integer HTTP status
+            # everywhere but one pinned legacy route; a second route
+            # declaring both types is the collision
+            # `test_the_envelope_status_is_the_http_status_except_where_a_route_owns_it`
+            # exists to make somebody answer for. `task["status"]` already
+            # carries `actual`, and the UI already reads it from there.
+            task = dict(task)
+            task.setdefault("status", actual)
             return {
                 "outcome": "already_terminal",
                 "error": "the job already reached a terminal state",
                 "code": "already_terminal",
-                "status": actual,
                 "task": task,
             }
         return {"outcome": "cancel_confirmed", "task": task}

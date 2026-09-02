@@ -507,7 +507,12 @@ def test_a_natural_completion_race_returns_the_real_terminal_state(client, monke
     assert status == 409
     assert body["outcome"] == "already_terminal"
     assert body["code"] == "already_terminal"
-    assert body["status"] == "succeeded"
+    # The envelope's `status` is the integer HTTP status, as it is on every
+    # error shape but one pinned legacy route. Returning the terminal state
+    # under that key clobbered the integer `public_failure` adds -- it defers
+    # to a value the route set -- and made this the second route declaring
+    # both types. The terminal state rides on `task`, where the UI reads it.
+    assert body["status"] == 409
     assert body["task"]["status"] == "succeeded"
     assert client.store.get_compute_job("job-done")["status"] == SUCCEEDED
 

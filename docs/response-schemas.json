@@ -32043,10 +32043,7 @@
             "type": "string"
           },
           "status": {
-            "type": [
-              "integer",
-              "string"
-            ]
+            "type": "integer"
           },
           "task": {
             "properties": {
