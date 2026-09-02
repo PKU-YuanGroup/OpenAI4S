@@ -118,6 +118,28 @@ def _get_extra(
     return _speak(port, ("\r\n".join(lines) + "\r\n\r\n").encode("ascii"))
 
 
+def _post_extra(
+    port: int,
+    path: str,
+    body: dict,
+    *,
+    cookie: str | None = None,
+    extra: list[str] | None = None,
+):
+    payload = json.dumps(body).encode("utf-8")
+    lines = [
+        f"POST {path} HTTP/1.1",
+        f"Host: 127.0.0.1:{port}",
+        "Content-Type: application/json",
+        f"Content-Length: {len(payload)}",
+    ]
+    if cookie is not None:
+        lines.append(f"Cookie: {cookie}")
+    lines.extend(extra or [])
+    lines.append("Connection: close")
+    return _speak(port, ("\r\n".join(lines) + "\r\n\r\n").encode("ascii") + payload)
+
+
 # ---------------------------------------------------------------------------
 # inventory / policy
 # ---------------------------------------------------------------------------
@@ -441,10 +463,17 @@ def test_bundle_download_has_zero_canary_hits(tmp_path, monkeypatch):
     node, admin, _member = _admin_daemon(tmp_path)
     _inject_canaries(node.cfg, monkeypatch)
     try:
-        status, raw = _post(node.port, "/api/v1/diagnostics/bundle", {}, cookie=admin)
+        status, raw = _post_extra(
+            node.port,
+            "/api/v1/diagnostics/bundle",
+            {},
+            cookie=admin,
+            extra=["X-Request-Id: diag-bundle-7"],
+        )
         assert status == 200, raw[:300]
         headers = _headers(raw)
         assert headers.get("cache-control") == "no-store"
+        assert headers.get("x-request-id") == "diag-bundle-7"
         assert headers.get("content-disposition") == (
             f'attachment; filename="{BUNDLE_FILENAME}"'
         )
@@ -498,12 +527,15 @@ def test_single_flight_returns_429(tmp_path, monkeypatch):
     monkeypatch.setattr("openai4s.server.diagnostics_routes.write_bundle_file", _held)
     try:
         replies: list[int] = []
+        limited: list[bytes] = []
 
         def _one():
-            status, _raw = _post(
+            status, raw = _post(
                 node.port, "/api/v1/diagnostics/bundle", {}, cookie=admin
             )
             replies.append(status)
+            if status == 429:
+                limited.append(raw)
 
         first = threading.Thread(target=_one, daemon=True)
         first.start()
@@ -514,6 +546,10 @@ def test_single_flight_returns_429(tmp_path, monkeypatch):
         hold.set()
         first.join(10)
         assert sorted(replies) == [200, 429]
+        assert limited
+        headers = _headers(limited[0])
+        assert headers.get("cache-control") == "no-store"
+        assert "content-disposition" not in headers
     finally:
         hold.set()
         node.close()
@@ -526,8 +562,10 @@ def test_per_principal_cooldown_returns_429(tmp_path):
         assert status == 200, raw[:240]
         status, raw = _post(node.port, "/api/v1/diagnostics/bundle", {}, cookie=admin)
         assert status == 429, raw[:240]
+        headers = _headers(raw)
         assert _json_body(raw).get("code") == "rate_limited"
-        assert "content-disposition" not in _headers(raw)
+        assert headers.get("cache-control") == "no-store"
+        assert "content-disposition" not in headers
     finally:
         node.close()
 
@@ -545,8 +583,10 @@ def test_bundle_over_32_mib_is_413(tmp_path, monkeypatch):
     try:
         status, raw = _post(node.port, "/api/v1/diagnostics/bundle", {}, cookie=admin)
         assert status == 413, raw[:240]
+        headers = _headers(raw)
         assert _json_body(raw).get("code") == "payload_too_large"
-        assert "content-disposition" not in _headers(raw)
+        assert headers.get("cache-control") == "no-store"
+        assert "content-disposition" not in headers
     finally:
         node.close()
 

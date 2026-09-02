@@ -36,7 +36,7 @@ from openai4s.diagnostics import (
     write_bundle_file,
 )
 from openai4s.server import contract, team_policy
-from openai4s.server.errors import GatewayError, public_failure
+from openai4s.server.errors import public_failure
 
 _STATUS = contract.RouteSpec(
     "diagnostics.status", "GET", r"/diagnostics/status", mutates=False
@@ -172,20 +172,31 @@ def _unlink(path: Path | None) -> None:
         pass
 
 
+def _refuse_limit(handler: Any, status: int, message: str, code: str) -> None:
+    """429/413 through the same no-store writer as 200. Members never reach here."""
+    _reply_json(handler, {"error": message, "code": code}, status)
+
+
 def _bundle(handler: Any, cfg: Any) -> None:
     # The request body is ignored: a client-supplied output path is a non-goal.
     principal = _principal_id(handler)
     decision = _GATE.try_begin(principal)
     if decision == "busy":
-        raise GatewayError(
-            429, "a diagnostic bundle is already in progress", "rate_limited"
+        _refuse_limit(
+            handler,
+            429,
+            "a diagnostic bundle is already in progress",
+            "rate_limited",
         )
+        return
     if decision == "rate":
-        raise GatewayError(
+        _refuse_limit(
+            handler,
             429,
             "wait 60 seconds between diagnostic bundle downloads",
             "rate_limited",
         )
+        return
     tmp_path: Path | None = None
     try:
         fd, name = tempfile.mkstemp(prefix=BUNDLE_TEMP_PREFIX, suffix=".zip")
@@ -193,21 +204,25 @@ def _bundle(handler: Any, cfg: Any) -> None:
         tmp_path = Path(name)
         try:
             write_bundle_file(cfg, tmp_path, max_bytes=BUNDLE_MAX_BYTES)
-        except BundleTooLarge as exc:
-            raise GatewayError(
-                413, "diagnostic bundle exceeds 32 MiB", "payload_too_large"
-            ) from exc
+        except BundleTooLarge:
+            _refuse_limit(
+                handler,
+                413,
+                "diagnostic bundle exceeds 32 MiB",
+                "payload_too_large",
+            )
+            return
         stream = getattr(handler, "_stream_file", None)
         if not callable(stream):
             raise RuntimeError("handler cannot stream a file")
-        stream(
-            tmp_path,
-            _ZIP_TYPE,
-            {
-                "Cache-Control": "no-store",
-                "Content-Disposition": _DISPOSITION,
-            },
-        )
+        extra = {
+            "Cache-Control": "no-store",
+            "Content-Disposition": _DISPOSITION,
+        }
+        request_id = _request_id(handler)
+        if request_id:
+            extra["X-Request-Id"] = request_id
+        stream(tmp_path, _ZIP_TYPE, extra)
     finally:
         _unlink(tmp_path)
         _GATE.end()
