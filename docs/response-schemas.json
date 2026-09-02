@@ -2296,6 +2296,39 @@
         "type": "object"
       }
     },
+    "DELETE /frames/([^/]+)/compute/tasks/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
       "schema": {
         "properties": {
@@ -11975,6 +12008,9 @@
                 "status": {
                   "type": "string"
                 },
+                "submitted_at": {
+                  "type": "integer"
+                },
                 "terminal": {
                   "type": "boolean"
                 },
@@ -12004,6 +12040,39 @@
           "live_count",
           "polled",
           "tasks"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /frames/([^/]+)/compute/tasks/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -22133,6 +22202,39 @@
         "type": "object"
       }
     },
+    "PATCH /frames/([^/]+)/compute/tasks/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
       "schema": {
         "properties": {
@@ -31925,6 +32027,175 @@
         "type": "object"
       }
     },
+    "POST /frames/([^/]+)/compute/tasks/([^/]+)/cancel [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "task": {
+            "properties": {
+              "created_at": {
+                "type": "integer"
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "live": {
+                "type": "boolean"
+              },
+              "outputs": {
+                "properties": {
+                  "file_count": {
+                    "type": "integer"
+                  },
+                  "total_bytes": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "file_count",
+                  "total_bytes"
+                ],
+                "type": "object"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "terminal": {
+                "type": "boolean"
+              },
+              "terminal_at": {
+                "type": "integer"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "created_at",
+              "job_id",
+              "live",
+              "outputs",
+              "provider",
+              "status",
+              "terminal",
+              "terminal_at",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /frames/([^/]+)/compute/tasks/([^/]+)/cancel [ok]": {
+      "schema": {
+        "properties": {
+          "hint": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "task": {
+            "properties": {
+              "created_at": {
+                "type": "integer"
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "live": {
+                "type": "boolean"
+              },
+              "outputs": {
+                "properties": {
+                  "file_count": {
+                    "type": "integer"
+                  },
+                  "total_bytes": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "file_count",
+                  "total_bytes"
+                ],
+                "type": "object"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "submitted_at": {
+                "type": "integer"
+              },
+              "terminal": {
+                "type": "boolean"
+              },
+              "terminal_at": {
+                "type": "integer"
+              },
+              "termination_reason": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "created_at",
+              "job_id",
+              "live",
+              "outputs",
+              "provider",
+              "status",
+              "terminal",
+              "updated_at"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "outcome",
+          "task"
+        ],
+        "type": "object"
+      }
+    },
     "POST /frames/([^/]+)/compute/tasks/([^/]+)/refresh [error]": {
       "schema": {
         "properties": {
@@ -41409,6 +41680,39 @@
       }
     },
     "PUT /frames/([^/]+)/compute/tasks [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /frames/([^/]+)/compute/tasks/([^/]+)/cancel [error]": {
       "schema": {
         "properties": {
           "code": {

@@ -77,11 +77,11 @@
       "integrated": "P1-B",
       "plan_conclusion": "纳入；不自动 poll、cancel 或重提",
       "status": "closed",
-      "status_note": "owner-scoped read-only remote task centre: `GET /frames/<id>/compute/tasks` plus an explicit `.../refresh`, rendered by app.js `computePanel`. Opening the page returns the durable record and says it did not poll; one session cannot enumerate another's; `unknown` is not rendered as a failure; process handles and cluster paths are not published. The previous `open` label predated the work.",
+      "status_note": "owner-scoped remote task centre: `GET /frames/<id>/compute/tasks` plus an explicit `.../refresh`. Opening the page returns the durable record and says it did not poll; one session cannot enumerate another's; `unknown` is not rendered as a failure; process handles and cluster paths are not published. The previous `open` label predated the work. This row's conclusion -- no *automatic* poll, cancel or resubmit -- still holds after P1-4 added an explicit confirm-gated cancel: closing the page, stopping a turn, deleting a session, a timeout UI and a daemon restart are each asserted not to reach it.",
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b17a8ea94abcaecd8e52653b583477925628618938b3138deca4692d72cf604"
+      "evidence_digest": "cebfaed6fb072817986b0c3f32ab2c66bacef9e8d8c2ad6df50c06c6522752b9"
     },
     {
       "source": "R1",
@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_compute_lifecycle.py,tests/test_compute_trust_boundary.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_stage11_remote_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "087af9eefdb1baadf86cb65d4394cd135bbb10b4106fe80831648279133437f0"
+      "evidence_digest": "d844b94002fdac0b288902589011a0e27d46ca66c11c53fe4aca2d180059f8b5"
     },
     {
       "source": "R2",
@@ -314,7 +314,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "b7fcd8955392ed5c449ddb66ec4b22bc92a1df542c89bb6293ab5fb553932b18"
+      "evidence_digest": "c4ea20efc8080eb700f1740be523d4cdce80041acadc8e0967421c631fff0f1c"
     },
     {
       "source": "R3",
@@ -449,11 +449,11 @@
       "integrated": "P2、P1-B",
       "plan_conclusion": "owner-scoped 只读面板可进 P1；完整合同 P2",
       "status": "closed",
-      "status_note": "the P1-B half this version promised -- an owner-scoped read-only panel that does not poll on open -- is on the production path and covered. The full Poll/Harvest/Cancel/Reconcile workbench contract with imported/quarantined semantics remains P2 by decision D8 and enters no public API this version.",
+      "status_note": "the P1-B half this version promised -- an owner-scoped panel that does not poll on open -- is on the production path and covered. Decision D8 kept the full Poll/Harvest/Cancel/Reconcile workbench at P2 with no public API; the next-version report has since promoted the Cancel half to core scope (P1-4), and `POST /frames/<fid>/compute/tasks/<job_id>/cancel` is now a public route. Harvest, Reconcile and the imported/quarantined semantics remain P2 under D8; the panel is no longer read-only.",
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b17a8ea94abcaecd8e52653b583477925628618938b3138deca4692d72cf604"
+      "evidence_digest": "cebfaed6fb072817986b0c3f32ab2c66bacef9e8d8c2ad6df50c06c6522752b9"
     },
     {
       "source": "R5",
@@ -481,7 +481,7 @@
       "tests": "tests/test_compute_alias_registration.py,tests/test_compute_trust_boundary.py,tests/test_compute_durability.py,tests/test_sdk_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "0165194064a87c01c89d8757733dbddbec3c02c3eb5fc4a51d49fbd1c54680bf"
+      "evidence_digest": "a071098892f48b88944f750fe9fe1177f1b5bcbf1a7c3b10bc3dbb4be817593c"
     },
     {
       "source": "R5",
@@ -560,11 +560,11 @@
       "integrated": "P2、P1-B",
       "plan_conclusion": "只读入口 P1；完整控制 P2",
       "status": "closed",
-      "status_note": "same split as R4/P2-1: the session-isolated read-only entry is delivered and covered; the full workbench stays P2 by decision D8.",
+      "status_note": "same split as R4/P2-1, with the same amendment: the session-isolated entry is delivered and covered, and P1-4 has promoted explicit cancel out of D8's P2 bucket into a public route. The rest of the workbench stays P2.",
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "6b17a8ea94abcaecd8e52653b583477925628618938b3138deca4692d72cf604"
+      "evidence_digest": "cebfaed6fb072817986b0c3f32ab2c66bacef9e8d8c2ad6df50c06c6522752b9"
     },
     {
       "source": "R6",
