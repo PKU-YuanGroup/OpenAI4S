@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.cell_record import DelegatedCellRecorder
+from openai4s.agent.delegation import _child_context_budget
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
@@ -720,7 +721,15 @@ class Agent:
                         generation_recorder=self._generation_recorder,
                     ),
                     context_policy=(
-                        self.context_policy or CompactionPolicy(self.cfg, log=self._log)
+                        self.context_policy
+                        or CompactionPolicy(
+                            self.cfg,
+                            log=self._log,
+                            context_budget_provider=_child_context_budget(self.cfg),
+                            tool_schema_provider=lambda state: with_finalize_response(
+                                tool_catalog.specs_for(state.messages)
+                            ),
+                        )
                     ),
                     event_sink=event_sink,
                     cancellation=self.cancellation,
