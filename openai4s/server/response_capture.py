@@ -693,6 +693,20 @@ def _probe_handler(
         recorder.observe_raw(method, path, 200, ctype, size, route=route)
 
     handler._stream_file = _stub_stream
+
+    # The fourth writer, arriving the same way the third did. P1-3's
+    # diagnostics routes need `Cache-Control: no-store`, which `_json`
+    # hard-wires as `no-cache`, so they send through `_send_static_bytes` --
+    # which, like `_stream_file`, builds headers straight on the
+    # BaseHTTPRequestHandler and raises inside `send_response` on this
+    # synthetic handler. Left unstubbed, the diagnostics routes publish
+    # whatever their *other* verbs produced, which is the exact lie the
+    # comment above describes. Mirrors the real method's signature.
+    handler._send_static_bytes = (
+        lambda code, body, ctype, extra=None, security=None: recorder.observe_raw(
+            method, path, code, ctype, len(body or b""), route=route
+        )
+    )
     return handler
 
 
