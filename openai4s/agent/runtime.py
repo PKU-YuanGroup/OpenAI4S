@@ -58,6 +58,11 @@ from .finalize import (
 )
 from .models import ExecutionOutcome, ModelReply, RunState
 
+# Import-time binding. Tests patch `should_compact` to force compaction on
+# small fixtures; production compares identity and uses the calibrated trigger
+# instead of calling compaction.py's helper (owned by a parallel change).
+_SHOULD_COMPACT = should_compact
+
 LogFn = Callable[..., None]
 
 
@@ -125,9 +130,22 @@ class ChatModel:
         return self.chat_fn([dict(message) for message in messages], self.cfg, **kwargs)
 
 
+def _positive_float(value: Any) -> float | None:
+    """Return a finite number strictly greater than zero, else ``None``."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0 or parsed != parsed or parsed == float("inf"):
+        return None
+    return parsed
+
+
 @dataclass
 class CompactionPolicy:
-    """Apply Context Policy V2 with a consecutive-low-yield breaker.
+    """Apply Context Policy V2 with low-yield and consecutive-failure breakers.
 
     ``metadata_provider`` is the persistence-neutral seam for Web runtimes to
     attach branch, ledger cursor, recovery pointer, and Kernel generation.  If
@@ -155,30 +173,36 @@ class CompactionPolicy:
     circuit_open_total: int = field(default=0, init=False)
     # Multiple of ``circuit_open_total`` at which compaction is retried.
     circuit_retry_growth: float = 1.5
+    max_failure_attempts: int = 2
+    failure_streak: int = field(default=0, init=False)
 
     def prepare(self, state: RunState) -> Sequence[Mapping[str, Any]]:
         if self.minimum_yield_ratio < 0 or self.minimum_yield_ratio >= 1:
             raise ValueError("minimum_yield_ratio must be in [0, 1)")
         if self.max_low_yield_attempts < 1:
             raise ValueError("max_low_yield_attempts must be positive")
+        if self.max_failure_attempts < 1:
+            raise ValueError("max_failure_attempts must be positive")
 
+        ratio = self._calibration_ratio(state)
+        tool_schemas = self._tool_schemas(state)
+        context_budget = self._context_budget(state)
+        prepared = self._prepare(state, tool_schemas, context_budget, ratio)
+        state.metadata["compaction_failure_streak"] = self.failure_streak
+        state.metadata["compaction_circuit_open"] = self.circuit_open
+        state.metadata["context_estimate_sent"] = estimate_context(
+            prepared, tool_schemas
+        ).total
+        return prepared
+
+    def _prepare(
+        self,
+        state: RunState,
+        tool_schemas: Sequence[Mapping[str, Any]],
+        context_budget: int | None,
+        calibration: float,
+    ) -> Sequence[Mapping[str, Any]]:
         metadata = self._metadata(state)
-        try:
-            tool_schemas = tuple(
-                self.tool_schema_provider(state)
-                if self.tool_schema_provider is not None
-                else ()
-            )
-        except Exception:  # noqa: BLE001 - schema accounting is fail-soft
-            tool_schemas = ()
-        try:
-            context_budget = (
-                self.context_budget_provider(state)
-                if self.context_budget_provider is not None
-                else None
-            )
-        except Exception:  # noqa: BLE001 - config fallback remains available
-            context_budget = None
         try:
             messages = externalize_large_outputs(
                 state.messages,
@@ -193,12 +217,14 @@ class CompactionPolicy:
             messages = state.messages
         before = estimate_context(messages, tool_schemas)
         state.metadata["context_estimate"] = before.as_dict()
+        calibrated_total = before.total * calibration
+        state.metadata["context_estimate_calibrated_total"] = calibrated_total
 
-        if not should_compact(
+        if not self._should_trigger(
             messages,
-            self.cfg,
             tool_schemas=tool_schemas,
             context_budget=context_budget,
+            calibrated_total=calibrated_total,
         ):
             return messages
         if self.circuit_open:
@@ -235,9 +261,18 @@ class CompactionPolicy:
                 tool_schemas=tool_schemas,
             )
         except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
+            self.failure_streak += 1
             state.metadata["last_compaction_error"] = str(error)[:500]
             self.log(f"[compaction skipped] durable archive failed: {error}")
+            if self.failure_streak >= self.max_failure_attempts:
+                self.circuit_open = True
+                self.circuit_open_total = before.total
+                self.log(
+                    "[compaction circuit open] "
+                    f"{self.failure_streak} consecutive failures: {error}"
+                )
             return messages
+        self.failure_streak = 0
         after = estimate_context(prepared, tool_schemas)
         gain = max(0, before.total - after.total)
         ratio = gain / max(1, before.total)
@@ -269,6 +304,72 @@ class CompactionPolicy:
             state.metadata["context_estimate"] = before.as_dict()
             return messages
         return prepared
+
+    def _calibration_ratio(self, state: RunState) -> float:
+        previous = _positive_float(state.metadata.get("context_estimate_calibration"))
+        if previous is None:
+            previous = 1.0
+        actual = 0.0
+        reply = state.last_reply
+        if reply is not None:
+            usage = reply.usage
+            if isinstance(usage, Mapping):
+                actual_value = _positive_float(usage.get("input_tokens"))
+                actual = actual_value if actual_value is not None else 0.0
+        sent = _positive_float(state.metadata.get("context_estimate_sent")) or 0.0
+        if actual > 0 and sent > 0:
+            ratio = min(8.0, max(0.5, actual / sent))
+        else:
+            ratio = previous
+        state.metadata["context_estimate_calibration"] = ratio
+        return ratio
+
+    def _should_trigger(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        tool_schemas: Sequence[Mapping[str, Any]],
+        context_budget: int | None,
+        calibrated_total: float,
+    ) -> bool:
+        if should_compact is not _SHOULD_COMPACT:
+            return bool(
+                should_compact(
+                    messages,
+                    self.cfg,
+                    tool_schemas=tool_schemas,
+                    context_budget=context_budget,
+                )
+            )
+        window = int(
+            context_budget
+            if context_budget is not None
+            else self.cfg.context_window_tokens
+        )
+        trigger = int(
+            window * float(getattr(self.cfg, "compaction_trigger_ratio", 0.75))
+        )
+        return calibrated_total > trigger
+
+    def _tool_schemas(self, state: RunState) -> tuple[Mapping[str, Any], ...]:
+        try:
+            return tuple(
+                self.tool_schema_provider(state)
+                if self.tool_schema_provider is not None
+                else ()
+            )
+        except Exception:  # noqa: BLE001 - schema accounting is fail-soft
+            return ()
+
+    def _context_budget(self, state: RunState) -> int | None:
+        try:
+            return (
+                self.context_budget_provider(state)
+                if self.context_budget_provider is not None
+                else None
+            )
+        except Exception:  # noqa: BLE001 - config fallback remains available
+            return None
 
     def _metadata(self, state: RunState) -> CompactionArchiveMetadata:
         source = (
