@@ -8,8 +8,10 @@ file editor, origin transitions, and permission behavior.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+from pathlib import Path
 from typing import Any
 
 from openai4s import execution_principal
@@ -248,9 +250,17 @@ class SkillCustomizationService:
         )
         if root.is_symlink():
             return _fail("skill_name_unsafe", "unsafe user skill path")
-        root = root.resolve()
-        if root == user_directory or not root.is_relative_to(user_directory):
+        # The containment check is spelled as realpath + prefix rather than
+        # pathlib's resolve()/is_relative_to(): the semantics are identical
+        # (a resolved path strictly inside the resolved user directory), but
+        # only this form is one static analysis recognises as a barrier, so
+        # the sinks below are audited from the checked string, not the
+        # untrusted name.
+        base = os.path.realpath(os.fspath(user_directory))
+        root_text = os.path.realpath(os.fspath(root))
+        if root_text == base or not root_text.startswith(base + os.sep):
             return _fail("skill_name_unsafe", "unsafe user skill path")
+        root = Path(root_text)
         document = root / "SKILL.md"
         if document.is_symlink():
             return _fail("skill_name_unsafe", "unsafe user skill path")
