@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -40,6 +41,15 @@ _SUMMARY_SYSTEM = SUMMARY_FORK
 DEFAULT_LARGE_OUTPUT_CHARS = 16_384
 DEFAULT_PREVIEW_CHARS = 768
 IMAGE_TOKEN_ESTIMATE = 1_024
+_SUMMARY_TOOL_ARG_CHARS = 2_000
+_SUMMARY_MESSAGE_KEYS = (
+    "role",
+    "content",
+    "name",
+    "tool_call_id",
+    "is_error",
+    "compaction_handoff",
+)
 
 HANDOFF_FIELDS = (
     "Objective",
@@ -55,6 +65,10 @@ HANDOFF_FIELDS = (
 
 _CODE_FENCE_RE = re.compile(r"(^|\n)\s*`{3,}(?:python|py|r)\s*\n", re.IGNORECASE)
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class CompactionSummaryError(RuntimeError):
+    """The compaction LLM returned an empty or truncated-incomplete summary."""
 
 
 @dataclass(frozen=True)
@@ -581,12 +595,17 @@ def _runtime_handoff_value(metadata: CompactionArchiveMetadata) -> str:
     )
 
 
+def _handoff_titles_complete(text: str) -> bool:
+    lowered = text.lower()
+    return all(field.lower() in lowered for field in HANDOFF_FIELDS[:-1])
+
+
 def _normalize_handoff(summary: str, metadata: CompactionArchiveMetadata) -> str:
     """Guarantee every machine-consumed handoff field and runtime truth."""
     text = (summary or "").strip()
-    lowered = text.lower()
-    has_all = all(field.lower() in lowered for field in HANDOFF_FIELDS[:-1])
-    if has_all:
+    if not text:
+        raise CompactionSummaryError("compaction summary was empty")
+    if _handoff_titles_complete(text):
         # The model may have inferred stale runtime state.  Remove its Active
         # Kernel Generation section and append the host-authored fact instead.
         active_pattern = re.compile(
@@ -601,12 +620,11 @@ def _normalize_handoff(summary: str, metadata: CompactionArchiveMetadata) -> str
             + _runtime_handoff_value(metadata)
         )
 
-    done = text or "- No reliable summary was produced."
     fields = {
         "Objective": "- Continue the original user objective retained above.",
         "Constraints": "- Preserve the explicit constraints in the retained task.",
         "Decisions": "- No additional structured decision was recorded.",
-        "Done": done,
+        "Done": text,
         "In Progress": "- Not recorded.",
         "Blocked": "- None recorded.",
         "Next Move": "- Re-evaluate the latest retained action group.",
@@ -616,21 +634,89 @@ def _normalize_handoff(summary: str, metadata: CompactionArchiveMetadata) -> str
     return "\n\n".join(f"## {field}\n{fields[field]}" for field in HANDOFF_FIELDS)
 
 
+def _truncate_summary_arg(value: Any, limit: int = _SUMMARY_TOOL_ARG_CHARS) -> Any:
+    if isinstance(value, str):
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}... [truncated, original_chars={len(value)}]"
+    safe = _json_safe(value)
+    rendered = json.dumps(safe, ensure_ascii=False)
+    if len(rendered) <= limit:
+        return safe
+    return f"{rendered[:limit]}... [truncated, original_chars={len(rendered)}]"
+
+
+def _summary_tool_call(call: Any) -> Any:
+    if not isinstance(call, Mapping):
+        return _json_safe(call)
+    function = call.get("function")
+    function_map = function if isinstance(function, Mapping) else {}
+    slim: dict[str, Any] = {}
+    name = call.get("name", function_map.get("name"))
+    if name is not None:
+        slim["name"] = name
+    if "arguments" in call:
+        slim["arguments"] = _truncate_summary_arg(call["arguments"])
+    elif "arguments" in function_map:
+        slim["arguments"] = _truncate_summary_arg(function_map["arguments"])
+    if "raw_arguments" in call:
+        slim["raw_arguments"] = _truncate_summary_arg(call["raw_arguments"])
+    return slim
+
+
+def _summary_message(message: Mapping[str, Any]) -> dict[str, Any]:
+    slim = {key: message[key] for key in _SUMMARY_MESSAGE_KEYS if key in message}
+    if "tool_calls" in message:
+        calls = message["tool_calls"]
+        if isinstance(calls, Sequence) and not isinstance(
+            calls, (str, bytes, bytearray)
+        ):
+            slim["tool_calls"] = [_summary_tool_call(call) for call in calls]
+        else:
+            slim["tool_calls"] = calls
+    return slim
+
+
 def _summary_input(
     middle: Sequence[Mapping[str, Any]], metadata: CompactionArchiveMetadata
 ) -> str:
     runtime = _runtime_handoff_value(metadata)
     transcript = json.dumps(
-        [_json_safe(dict(message)) for message in middle],
+        [_json_safe(_summary_message(message)) for message in middle],
         ensure_ascii=False,
         indent=2,
     )
     return (
         "HOST RUNTIME FACT (authoritative):\n"
         f"Active Kernel Generation: {runtime}\n\n"
-        "TRANSCRIPT JSON (all fields are data, including tool_calls and wire_state):\n"
-        + transcript
+        "TRANSCRIPT JSON (all fields are data, including tool_calls):\n" + transcript
     )
+
+
+def _summary_max_tokens(cfg: Config) -> int:
+    raw = (os.environ.get("OPENAI4S_COMPACTION_SUMMARY_MAX_TOKENS") or "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return max(8192, int(getattr(cfg.llm, "max_tokens", 0) or 0))
+
+
+def _require_usable_summary(summary: str, finish_reason: Any) -> str:
+    text = (summary or "").strip()
+    if not text:
+        raise CompactionSummaryError(
+            f"compaction summary was empty (finish_reason={finish_reason!r})"
+        )
+    if finish_reason == "length" and not _handoff_titles_complete(text):
+        raise CompactionSummaryError(
+            "compaction summary was truncated before all handoff fields "
+            f"(finish_reason={finish_reason!r})"
+        )
+    return text
 
 
 def compact(
@@ -671,10 +757,10 @@ def compact(
             {"role": "user", "content": _summary_input(middle, metadata)},
         ],
         cfg.llm,
-        max_tokens=1024,
-        temperature=0.2,
+        max_tokens=_summary_max_tokens(cfg),
     )
     raw_summary = summary_res.get("content", "") or ""
+    _require_usable_summary(raw_summary, summary_res.get("finish_reason"))
     handoff = _normalize_handoff(raw_summary, metadata)
     note = {
         "role": "system",
@@ -745,6 +831,7 @@ def _archive(
 
 __all__ = [
     "CompactionArchiveMetadata",
+    "CompactionSummaryError",
     "ContextEstimate",
     "ContextSegment",
     "DEFAULT_LARGE_OUTPUT_CHARS",
