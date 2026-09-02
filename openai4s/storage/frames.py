@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -88,6 +89,137 @@ def visible_session_clause(
         " AND pm.role = 'member')))))"
     )
     return clause, [user_id, user_id, user_id]
+
+
+PROJECT_PAGE_DEFAULT = 100
+PROJECT_PAGE_MAX = 100
+PROJECT_Q_MAX_CODEPOINTS = 128
+
+
+def _like_contains(value: str) -> str:
+    """A substring LIKE pattern that treats ``\\``, ``%`` and ``_`` as literals."""
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def project_filter_fingerprint(*, q: str, team_scope: str) -> str:
+    """Stable digest of the filter identity a project-list cursor is bound to."""
+    canonical = json.dumps(
+        {"q": q, "team_scope": team_scope},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def encode_project_cursor(
+    *,
+    last_active_at: int | None,
+    project_id: str,
+    fingerprint: str,
+) -> str:
+    """Opaque keyset cursor. Opaque on purpose: a client that parses it
+    becomes coupled to the sort key."""
+    stamp = None if last_active_at is None else int(last_active_at)
+    raw = json.dumps(
+        {"fp": fingerprint, "id": project_id, "t": stamp},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_project_cursor(
+    value: str | None, *, fingerprint: str
+) -> tuple[int | None, str] | None:
+    """Return the keyset tuple, or raise ``ValueError``.
+
+    A fingerprint mismatch is the same failure as a malformed payload: the
+    caller changed ``q`` or principal scope, and reusing the old cursor must
+    not walk a different listing. The HTTP adapter maps this to 400
+    ``invalid_cursor`` rather than restarting at page one.
+    """
+    if not value:
+        return None
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("cursor is not an object")
+        if payload.get("fp") != fingerprint:
+            raise ValueError("cursor filter mismatch")
+        project_id = payload.get("id")
+        if not isinstance(project_id, str) or not project_id:
+            raise ValueError("missing project id")
+        if "t" not in payload:
+            raise ValueError("missing last_active_at")
+        stamp = payload["t"]
+        if stamp is not None:
+            stamp = int(stamp)
+        return (stamp, project_id)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(str(exc)) from exc
+
+
+def _project_listing_filters(
+    *,
+    q: str | None,
+    visible_to_user_id: str | None,
+    before: tuple[int | None, str] | None = None,
+    alias: str = "p",
+    activity_alias: str = "a",
+) -> tuple[list[str], list[Any]]:
+    """WHERE conjuncts applied *before* ORDER BY / LIMIT.
+
+    Team visibility is a SQL predicate, not a post-filter: keyset ``has_more``
+    is observed from row counts, so filtering after LIMIT turns hidden rows
+    into empty slots an attacker can count.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    query = (q or "").strip()
+    if query:
+        clauses.append(
+            f"({alias}.name LIKE ? ESCAPE '\\' "
+            f"OR {alias}.description LIKE ? ESCAPE '\\')"
+        )
+        pattern = _like_contains(query)
+        params.extend([pattern, pattern])
+    if visible_to_user_id is not None:
+        clauses.append(
+            f"({alias}.project_id IN (SELECT project_id FROM project_members "
+            f"WHERE user_id=?) OR {alias}.project_id IN "
+            f"(SELECT project_id FROM session_owners WHERE user_id=? "
+            f"AND project_id IS NOT NULL))"
+        )
+        params.extend([visible_to_user_id, visible_to_user_id])
+    if before is not None:
+        before_t, before_id = before
+        if before_t is None:
+            clauses.append(
+                f"({activity_alias}.last_active_at IS NULL "
+                f"AND {alias}.project_id < ?)"
+            )
+            params.append(before_id)
+        else:
+            clauses.append(
+                f"({activity_alias}.last_active_at < ? OR "
+                f"({activity_alias}.last_active_at = ? AND {alias}.project_id < ?) "
+                f"OR {activity_alias}.last_active_at IS NULL)"
+            )
+            params.extend([before_t, before_t, before_id])
+    return clauses, params
+
+
+_ACTIVITY_JOIN = (
+    "FROM projects p LEFT JOIN ("
+    "SELECT project_id, COUNT(*) AS conversation_count, "
+    "MAX(updated_at) AS last_active_at FROM frames "
+    "WHERE parent_id IS NULL GROUP BY project_id"
+    ") a ON a.project_id = p.project_id"
+)
 
 
 class FrameRepository:
@@ -339,24 +471,73 @@ class FrameRepository:
     def project_session_ids(self, project_id: str) -> list[str]:
         return self._deletions.project_session_ids(project_id)
 
-    def list_projects(self) -> list[dict]:
-        """Return projects with conversation count and last activity."""
+    def list_projects(
+        self,
+        *,
+        q: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        before: tuple[int | None, str] | None = None,
+        visible_to_user_id: str | None = None,
+    ) -> list[dict]:
+        """Return projects with conversation count and last activity.
+
+        One JOIN aggregates ``conversation_count`` / ``last_active_at``;
+        callers that also need the exact filtered total issue
+        :meth:`count_projects` (two statements per page, never N+1).
+
+        With no paging arguments this is the compatibility full dump, ordered
+        by ``projects.updated_at`` as before. A ``limit`` / ``before`` /
+        ``offset`` uses the keyset order ``(last_active_at DESC NULLS LAST,
+        project_id DESC)``. Empty ``last_active_at`` (no root frames) sorts
+        last. Visibility and ``q`` are WHERE conjuncts, not post-filters.
+        """
+        paging = limit is not None or offset is not None or before is not None
+        clauses, params = _project_listing_filters(
+            q=q,
+            visible_to_user_id=visible_to_user_id,
+            before=before if paging else None,
+        )
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        if paging:
+            order = (
+                " ORDER BY (a.last_active_at IS NULL) ASC, "
+                "a.last_active_at DESC, p.project_id DESC"
+            )
+        else:
+            order = " ORDER BY p.updated_at DESC"
+        sql = (
+            "SELECT p.*, COALESCE(a.conversation_count, 0) AS conversation_count, "
+            "COALESCE(a.last_active_at, p.updated_at) AS last_active_at, "
+            "a.last_active_at AS last_active_raw " + _ACTIVITY_JOIN + where + order
+        )
+        bind: list[Any] = list(params)
+        if limit is not None:
+            sql += " LIMIT ?"
+            bind.append(max(1, int(limit)))
+            if offset is not None:
+                sql += " OFFSET ?"
+                bind.append(max(0, int(offset)))
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT * FROM projects ORDER BY updated_at DESC"
-            ).fetchall()
-            projects = []
-            for row in rows:
-                project = dict(row)
-                aggregate = self._connection.execute(
-                    "SELECT COUNT(*) AS n, MAX(updated_at) AS last FROM frames "
-                    "WHERE project_id=? AND parent_id IS NULL",
-                    (project["project_id"],),
-                ).fetchone()
-                project["conversation_count"] = aggregate["n"] or 0
-                project["last_active_at"] = aggregate["last"] or project["updated_at"]
-                projects.append(project)
-        return projects
+            rows = self._connection.execute(sql, tuple(bind)).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_projects(
+        self,
+        *,
+        q: str | None = None,
+        visible_to_user_id: str | None = None,
+    ) -> int:
+        """Exact count after permission filter and ``q``, not after LIMIT."""
+        clauses, params = _project_listing_filters(
+            q=q,
+            visible_to_user_id=visible_to_user_id,
+        )
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = "SELECT COUNT(*) AS n FROM projects p" + where
+        with self._lock:
+            row = self._connection.execute(sql, tuple(params)).fetchone()
+        return int(row["n"] or 0)
 
     # --- messages ----------------------------------------------------
     def add_message(
@@ -1310,4 +1491,12 @@ class FrameRepository:
             self._connection.commit()
 
 
-__all__ = ["FrameRepository"]
+__all__ = [
+    "FrameRepository",
+    "PROJECT_PAGE_DEFAULT",
+    "PROJECT_PAGE_MAX",
+    "PROJECT_Q_MAX_CODEPOINTS",
+    "decode_project_cursor",
+    "encode_project_cursor",
+    "project_filter_fingerprint",
+]

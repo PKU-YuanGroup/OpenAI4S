@@ -15246,20 +15246,124 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
             if sub == "/projects" and method == "GET":
-                projects = store.list_projects()
-                # Team mode (INV-13): a non-admin sees only projects they
-                # participate in — otherwise the list leaks every team's
-                # project names and agent-context prose.
+                from openai4s.storage.frames import (
+                    PROJECT_PAGE_DEFAULT,
+                    PROJECT_PAGE_MAX,
+                    PROJECT_Q_MAX_CODEPOINTS,
+                    decode_project_cursor,
+                    encode_project_cursor,
+                    project_filter_fingerprint,
+                )
+
+                # Team visibility is a WHERE conjunct on the listing SQL
+                # (INV-13), not a post-filter after LIMIT: hidden rows must
+                # not occupy page slots or forge the end of the list.
                 filt = self._team_visibility_filter()
-                if filt is not None:
-                    allowed = store.governance.participant_project_ids(filt)
-                    projects = [
-                        p for p in projects if str(p.get("project_id")) in allowed
-                    ]
+                raw_q = (q.get("q") or [None])[0]
+                raw_limit = (q.get("limit") or [None])[0]
+                raw_cursor = (q.get("cursor") or [None])[0]
+                raw_offset = (q.get("offset") or [None])[0]
+                paging = any(
+                    value not in (None, "")
+                    for value in (raw_q, raw_limit, raw_cursor, raw_offset)
+                )
+                search = "" if raw_q in (None, "") else str(raw_q).strip()
+                if len(search) > PROJECT_Q_MAX_CODEPOINTS:
+                    raise GatewayError(
+                        400,
+                        "q must be at most 128 Unicode code points",
+                        "invalid_q",
+                    )
+                team_scope = "" if filt is None else str(filt)
+                fingerprint = project_filter_fingerprint(
+                    q=search, team_scope=team_scope
+                )
+                if raw_cursor not in (None, "") and raw_offset not in (None, ""):
+                    raise GatewayError(
+                        400,
+                        "cursor and offset cannot be combined",
+                        "bad_request",
+                    )
+                before = None
+                if raw_cursor not in (None, ""):
+                    try:
+                        before = decode_project_cursor(
+                            str(raw_cursor), fingerprint=fingerprint
+                        )
+                    except ValueError as exc:
+                        raise GatewayError(
+                            400,
+                            f"invalid cursor: {exc}",
+                            "invalid_cursor",
+                        ) from exc
+                offset = None
+                if raw_offset not in (None, ""):
+                    try:
+                        offset = int(raw_offset)
+                    except (TypeError, ValueError) as exc:
+                        raise GatewayError(
+                            400, "offset must be an integer", "invalid_offset"
+                        ) from exc
+                    if offset < 0:
+                        raise GatewayError(
+                            400,
+                            "offset must be at least 0",
+                            "invalid_offset",
+                        )
+                repo = store._frames
+                if not paging:
+                    projects = repo.list_projects(visible_to_user_id=filt)
+                    self._json(
+                        {
+                            "projects": [_project_json(p) for p in projects],
+                            "total": len(projects),
+                        }
+                    )
+                    return
+                if raw_limit in (None, ""):
+                    limit = PROJECT_PAGE_DEFAULT
+                else:
+                    try:
+                        limit = int(raw_limit)
+                    except (TypeError, ValueError) as exc:
+                        raise GatewayError(
+                            400, "limit must be an integer", "invalid_limit"
+                        ) from exc
+                    if limit < 1:
+                        raise GatewayError(
+                            400, "limit must be at least 1", "invalid_limit"
+                        )
+                    limit = min(limit, PROJECT_PAGE_MAX)
+                keyset = offset is None
+                rows = repo.list_projects(
+                    q=search or None,
+                    limit=limit + 1 if keyset else limit,
+                    offset=offset,
+                    before=before,
+                    visible_to_user_id=filt,
+                )
+                total = repo.count_projects(q=search or None, visible_to_user_id=filt)
+                if keyset:
+                    has_more = len(rows) > limit
+                    page = rows[:limit]
+                    next_cursor = None
+                    if has_more and page:
+                        tail = page[-1]
+                        next_cursor = encode_project_cursor(
+                            last_active_at=tail.get("last_active_raw"),
+                            project_id=str(tail["project_id"]),
+                            fingerprint=fingerprint,
+                        )
+                else:
+                    page = rows
+                    has_more = (offset or 0) + len(page) < total
+                    next_cursor = None
                 self._json(
                     {
-                        "projects": [_project_json(p) for p in projects],
-                        "total": len(projects),
+                        "projects": [_project_json(p) for p in page],
+                        "total": total,
+                        "next_cursor": next_cursor,
+                        "has_more": has_more,
                     }
                 )
                 return

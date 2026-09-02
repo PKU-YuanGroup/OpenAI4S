@@ -430,7 +430,7 @@ identifiers, tokens, authorization codes, and API Keys are never returned.
 
 | Method & path | Behavior |
 | --- | --- |
-| `GET /projects` | `{"projects":[project…],"total":n}`. **No pagination:** the frontend sends `?limit=100&offset=0` but the handler ignores both parameters and always returns *all* projects; `total` is just `len(projects)`. Do not document or rely on offset semantics — they do not exist. |
+| `GET /projects` | `{"projects":[project…],"total":n}` on an unparameterized request (compatibility full dump). With `q`, `limit`, `cursor`, or `offset`, the envelope also carries `next_cursor` and `has_more`. `limit` is 1–100 (default 100, values above 100 are capped). Official clients page by opaque keyset `cursor` on `(last_active_at DESC NULLS LAST, project_id DESC)`; `offset` is honoured only for one compatibility window and must not be combined with `cursor`. `q` searches project `name` and `description` only: trim, at most 128 Unicode code points, parameterized `LIKE … ESCAPE` with `\`, `%`, `_` treated as literals, ASCII case-insensitive and non-ASCII exact. `total` is the exact count after the team-visibility filter and `q`, not after `LIMIT`. An illegal cursor or one bound to a different `q` / principal returns `400 invalid_cursor` and does not restart at page one. |
 | `POST /projects` | Body `{name?,description?,context?}` → project JSON (with `conversation_count: 0`). |
 | `GET /projects/{pid}` | Project JSON, or `{}` when not found (**not** a 404). |
 | `GET /projects/{pid}/action-timeline?limit=` | Bounded cross-session safe Timeline projection with session labels. |
@@ -1028,10 +1028,11 @@ compatibility; keep both when touching these serializers.
 
 ## 5. Known gaps and sharp edges (summary)
 
-- `GET /api/projects` accepts but **ignores** `limit`/`offset`; there is no
-  project pagination. Real bounded reads exist for `from`/`limit` on messages,
-  `limit` on frames, and the Timeline's `before_ordinal`/`after_ordinal` +
-  `limit` windows (§2).
+- `GET /api/projects` pages by opaque `cursor` (`limit` 1–100) and, for one
+  compatibility window, honours `offset`. An unparameterized request still
+  returns the full list. Real bounded reads also exist for `from`/`limit` on
+  messages, `limit` on frames, and the Timeline's `before_ordinal`/`after_ordinal`
+  + `limit` windows (§2).
 - `artifact_created` has four payload shapes; every field is optional (§3).
 - Uploads are JSON/base64, not multipart, and are strict: exactly one content
   field, whitespace tolerated, anything else outside the base64 alphabet

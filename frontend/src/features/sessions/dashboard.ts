@@ -1,13 +1,26 @@
 /** Home dashboard. app.js:6616-6764, 2685. */
 
-import { t } from "../../i18n";
-import { currentId, projects } from "../../stores/session";
+import { LANG, t } from "../../i18n";
+import {
+  _projectsLoadingMore,
+  currentId,
+  projects,
+  projectsHasMore,
+  projectsLoadError,
+  projectsNextCursor,
+  projectsQuery,
+} from "../../stores/session";
 import { _dashPoll } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys } from "./chrome";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
-import { loadProjects } from "./load";
+import {
+  canLoadMoreProjects,
+  loadProjects,
+  projectDashView,
+  type ProjectLike,
+} from "./load";
 import {
   annotateRunningCounts,
   filterRootFrames,
@@ -16,18 +29,57 @@ import {
   type SessionLike,
 } from "./paging";
 
-type ProjectLike = {
-  project_id?: string;
-  id?: string;
-  name?: string;
-  conversation_count?: number;
-  last_active_at?: string;
-  updated_at?: string;
-  running_count?: number;
-};
-
 let exampleTimer = 0;
 let visBound = false;
+
+function projectCopy(kind: "more" | "retry" | "no-match" | "error"): string {
+  if (LANG === "en") {
+    if (kind === "more") return "Load more";
+    if (kind === "retry") return "Retry";
+    if (kind === "no-match") return "No matching projects";
+    return "Could not load projects.";
+  }
+  if (kind === "more") return "加载更多";
+  if (kind === "retry") return "重试";
+  if (kind === "no-match") return "没有匹配的项目";
+  return "无法加载项目。";
+}
+
+export function bindProjectSearch(): void {
+  const input = $("#dash-project-search") as HTMLInputElement | null;
+  if (!input || input.dataset.bound === "1") return;
+  input.dataset.bound = "1";
+  input.addEventListener("input", () => {
+    projectsQuery.value = input.value;
+    void loadProjects().then(() => renderDashProjects());
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      input.value = "";
+      projectsQuery.value = "";
+      void loadProjects().then(() => renderDashProjects());
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void loadProjects().then(() => renderDashProjects());
+    }
+  });
+}
+
+export async function loadMoreProjects(): Promise<void> {
+  if (
+    !canLoadMoreProjects({
+      loadingMore: !!_projectsLoadingMore.value,
+      hasMore: !!projectsHasMore.value,
+      cursor: projectsNextCursor.value,
+    })
+  ) {
+    return;
+  }
+  await loadProjects({ append: true });
+  renderDashProjects();
+}
 
 function stopExamplePoll(): void {
   if (exampleTimer) {
@@ -57,6 +109,7 @@ export function paintDashSkeleton(): void {
 }
 
 export async function loadDashboard(): Promise<void> {
+  bindProjectSearch();
   paintDashSkeleton();
   await loadProjects();
   let frames: SessionLike[] = [];
@@ -77,7 +130,33 @@ export function renderDashProjects(): void {
   if (!pc) return;
   pc.innerHTML = "";
   const list = projects.value as ProjectLike[];
-  if (!list.length) pc.appendChild(el("div", "dash-empty", t("dash.projects.empty")));
+  const view = projectDashView({
+    error: !!projectsLoadError.value,
+    count: list.length,
+    query: String(projectsQuery.value || ""),
+    hasMore: !!projectsHasMore.value,
+    loadingMore: !!_projectsLoadingMore.value,
+  });
+  if (view.kind === "error") {
+    const box = el("div", "dash-empty", projectCopy("error"));
+    const retry = el("button", "outline-btn small", projectCopy("retry"));
+    retry.type = "button";
+    retry.id = "dash-projects-retry";
+    retry.onclick = () => {
+      void loadProjects().then(() => renderDashProjects());
+    };
+    pc.appendChild(box);
+    pc.appendChild(retry);
+    return;
+  }
+  if (view.kind === "empty") {
+    pc.appendChild(el("div", "dash-empty", t("dash.projects.empty")));
+    return;
+  }
+  if (view.kind === "no-match") {
+    pc.appendChild(el("div", "dash-empty", projectCopy("no-match")));
+    return;
+  }
   list.forEach((p) => {
     const row = el("div", "d-row");
     const main = el("div", "d-main");
@@ -102,6 +181,20 @@ export function renderDashProjects(): void {
     ensureActivateKeys(row);
     pc.appendChild(row);
   });
+  if (view.showMore) {
+    const more = el(
+      "button",
+      "outline-btn small",
+      view.loadingMore ? t("common.loading") : projectCopy("more"),
+    );
+    more.type = "button";
+    more.id = "dash-projects-more";
+    (more as HTMLButtonElement).disabled = view.loadingMore;
+    more.onclick = () => {
+      void loadMoreProjects();
+    };
+    pc.appendChild(more);
+  }
 }
 
 function exampleSeedCta(): HTMLElement {
