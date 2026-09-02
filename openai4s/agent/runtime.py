@@ -259,6 +259,7 @@ class CompactionPolicy:
                 artifact_archiver=self.artifact_archiver,
                 archive_sink=self.archive_sink,
                 tool_schemas=tool_schemas,
+                context_budget=context_budget,
             )
         except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
             self.failure_streak += 1
