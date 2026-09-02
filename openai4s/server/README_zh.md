@@ -94,6 +94,7 @@ gateway.py
 | [`model_discovery.py`](model_discovery.py) | 探测一小份固定的 loopback URL 名录，找出 OpenAI-compatible 的模型服务；探测时关闭代理、拒绝重定向，调用方无法把它变成通用的 SSRF 原语。`catalog()` 返回这份名录，不开 socket、不后台刷新。结果只是一个 profile 建议：不会改动模型设置，也不会存下凭据。 |
 | [`model_profiles.py`](model_profiles.py) | 一个模型供应商 profile 进来时要过这里，被校验和迁移；落库、激活、删除时还要再过一次。凡是要公开出去的东西，凭据都会被清掉。`probe()` 记下三态能力 receipt（验证 tool schema 但绝不执行 tool，单次最多两个极小请求）。顶部的模型选择器也由它构建：只列当前模型和已保存的 profile，别的一概不列——没人配过的 endpoint 不该出现在那里，选了也只会在发消息时失败。 |
 | [`onboarding_routes.py`](onboarding_routes.py) | 首次运行的 Web 路由。`GET /onboarding` 脱敏且零出站；`POST /onboarding/complete` 是实例级变更（团队模式下仅 admin）。 |
+| [`diagnostics_routes.py`](diagnostics_routes.py) | Web 诊断：`GET /diagnostics/status` 只读安全姿态（无网络、无子进程、无 Store 写入）；`POST /diagnostics/checks` 跑完整 doctor 报告；`POST /diagnostics/bundle` 从临时文件流式下发默认拒绝的 zip，完成、断连、异常三条路径都会删除临时文件。团队模式仅 admin，统一 403 而非 404；每实例一个生成任务；每 principal 60 秒一次；上限 32 MiB。 |
 | [`notebook_export.py`](notebook_export.py) | 把原始的不可变执行历史确定性地导出成四种只读形态：每种语言一个 `.ipynb`、一个把两者打包并带 checksum 描述的 bundle，以及一份 Markdown 文档。前三种是给人重跑用的；Markdown 那份是给人阅读、以及贴进 issue 或方法学章节用的，所以它把两种语言按执行顺序放在同一份文件里——交错本身就是记录——并以一节 `## Inputs` 开头，列出这条分支的各轮所钉住的每个 Artifact 版本。没有输入时这一节整节省略，因为一个空标题也是一种声称。四种形态都不套用 Notebook 投影那道过滤，所以只含协议调用的 completion Cell 仍可能出现在导出结果里。 |
 | [`notebook_lineage.py`](notebook_lineage.py) | Stage 8 正式 live Notebook 开关，以及 host 侧 Python/R 读→version 映射和写 lineage。它不改内核。 |
 | [`stage12_ga.py`](stage12_ga.py) | Stage 12 GA 总开关声明。它不会打开更早的 Stage。 |

@@ -406,6 +406,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_update_contributors.py`](test_update_contributors.py) | Community Contributors 生成器会把已公开署名的非 commit 贡献者保留在按提交数排序的 API 用户之后，按登录名大小写无关地去重，并拒绝同时出现在排除名单里的署名登录名；API 返回空时仍会失败即拒绝，不会把贡献者墙改写成只剩维护名单。头像临时刷新失败时会保留该现有贡献者已提交的 PNG，同时继续清理已离开的身份，并如实报告本次刷新了 0 张而不是给出一个看起来正常的数字。断言直接写出署名登录名字面量——从被测常量反推出来的期望，在该常量为空时同样会通过。另外钉住两处链接完整性回归：登录名大小写与已提交文件名不一致时，文件会被保留、并回退到远端头像，而不是为一个刚被清理掉的文件写出本地 `<img src>`；以及未鉴权的 `github.com/<login>.png` 回退路径不会把仓库 token 带过那次跨主机跳转。 |
 | [`test_diagnostic_archive_boundary.py`](test_diagnostic_archive_boundary.py) | 可分享的诊断 ZIP 里不会带出任何未知内容：归档边界默认拒绝，结构化日志行只保留通过校验的元数据，非结构化行只保留条数、分类和指纹。 |
 | [`test_diagnostics.py`](test_diagnostics.py) | 诊断包可以安全贴进公开 issue，包括夹在日志句子中间的 token。 |
+| [`test_diagnostics_routes.py`](test_diagnostics_routes.py) | Web 诊断路由：未认证 401、成员 403（同一状态码/大小/文件名，绝不是 404 或 429）、管理员 200；页面加载 GET 不新增网络连接、子进程或 Store/config/bundle 写入；ZIP 对 canary 零命中；下载完成、断连、异常三条路径临时文件都回到基线。 |
 | [`test_evidence_verification.py`](test_evidence_verification.py) | 导出的包无需 daemon 即可校验，四种篡改都被抓到——含 payload 与其记录 hash 被一起改写。 |
 | [`test_observability.py`](test_observability.py) | correlation ID 与按形状脱敏的结构化日志字段。 |
 | [`test_doctor.py`](test_doctor.py) | `openai4s doctor` 不依赖 daemon 就能跑，能区分「降级」与「无法进行」，退出码即结论，且绝不打印任何凭据值。 |

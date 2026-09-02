@@ -28,7 +28,7 @@ import re
 import sys
 import zipfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Mapping
 
 from openai4s.observability import (
     _looks_opaque,
@@ -42,6 +42,12 @@ from openai4s.observability import (
 # chatty for an hour, and bytes are what actually run out.
 LOG_MAX_BYTES = 8 * 1024 * 1024
 LOG_KEEP = 3
+
+#: Web bundle cap. The CLI path stays unbounded: an operator at a terminal
+#: chose the destination. The HTTP path is a DoS surface, so 32 MiB is hard.
+BUNDLE_MAX_BYTES = 32 * 1024 * 1024
+BUNDLE_FILENAME = "openai4s-diagnostics.zip"
+BUNDLE_TEMP_PREFIX = "openai4s-diagnostics-"
 
 # Never collected, whatever the caller asks for. The database carries research
 # work and (until fully brokered) credentials; the keychain-backed store is not
@@ -584,6 +590,32 @@ def _probe_failure(exc: BaseException) -> dict:
     return {"status": "unavailable", "error_type": safe_type_name(exc)}
 
 
+def passive_security_posture(cfg: Any) -> dict:
+    """Env knobs plus permission stats. Does not open the Store.
+
+    `security_posture()` still probes schema and the secret broker for the
+    CLI bundle, which needs the live answer. A page-load GET cannot: opening
+    the database is a business write on a fresh install (and a WAL touch on
+    an existing one). Schema and broker state therefore stay off this path.
+    """
+    report: dict[str, Any] = {}
+    try:
+        from openai4s.security.permissions import posture
+
+        report["permissions"] = posture(Path(cfg.data_dir), Path(cfg.db_path))
+    except Exception as e:  # noqa: BLE001
+        report["permissions"] = _probe_failure(e)
+    for name, env in (
+        ("kernel_sandbox", "OPENAI4S_KERNEL_SANDBOX"),
+        ("compute_confinement", "OPENAI4S_COMPUTE_CONFINEMENT"),
+        ("secret_store_mode", "OPENAI4S_SECRET_STORE"),
+        ("egress", "OPENAI4S_EGRESS"),
+        ("structured_logs", "OPENAI4S_STRUCTURED_LOGS"),
+    ):
+        report[name] = os.environ.get(env, "(default)")
+    return report
+
+
 def security_posture(cfg: Any) -> dict:
     """Every boundary's self-reported state, in one place.
 
@@ -665,66 +697,149 @@ def rotate_log(
     return True
 
 
-def build_bundle(cfg: Any, destination: Path) -> dict:
-    """Write a redacted diagnostic zip. Returns a manifest of what went in."""
-    data_dir = Path(cfg.data_dir)
-    destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+class BundleTooLarge(Exception):
+    """The archive would exceed the web bundle cap. Never sent to a client."""
 
+
+class _CappedIO:
+    """A seekable binary file that refuses to grow past `limit` bytes."""
+
+    def __init__(self, fh: BinaryIO, limit: int) -> None:
+        self._fh = fh
+        self._limit = limit
+        self.bytes_written = 0
+
+    def write(self, data: bytes) -> int:  # noqa: D401 - file-like
+        n = len(data)
+        self.bytes_written += n
+        if self.bytes_written > self._limit:
+            raise BundleTooLarge(f"diagnostic bundle exceeds {self._limit} bytes")
+        return self._fh.write(data)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._fh.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._fh.tell()
+
+    def flush(self) -> None:
+        self._fh.flush()
+
+    def close(self) -> None:
+        self._fh.close()
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1) -> bytes:
+        return self._fh.read(n)
+
+    @property
+    def name(self) -> str:
+        return str(getattr(self._fh, "name", ""))
+
+
+def _populate_bundle(cfg: Any, bundle: zipfile.ZipFile) -> dict[str, Any]:
+    """Write the deny-by-default archive into an open ZipFile."""
+    data_dir = Path(cfg.data_dir)
     included: list[str] = []
     excluded: list[dict[str, str]] = []
     report = {
         "environment": environment_report(),
         "security": security_posture(cfg),
     }
+    # `default=str` rendered any object the encoder did not understand,
+    # which is the same "call str() and hope" the diagnostic record
+    # stopped doing. `archive_safe` reduces the structure first, so by
+    # the time json sees it every leaf is already a validated scalar.
+    bundle.writestr("report.json", json.dumps(archive_safe(report), indent=2))
+    included.append("report.json")
+    logs_dir = data_dir / "logs"
+    if logs_dir.is_dir():
+        collected = {
+            path for pattern in _LOG_PATTERNS for path in logs_dir.glob(pattern)
+        }
+        # Numbered by the archive, never named after the file on disk. A
+        # log's *name* is attacker-influenced the moment anything writes
+        # one named after a token, and it lands in two places no content
+        # scrubber looks: the ZIP member name and the MANIFEST listing it.
+        for index, log in enumerate(sorted(collected), start=1):
+            if not log.is_file():
+                continue
+            member = f"logs/log-{index:04d}.json"
+            bundle.writestr(member, _safe_read_tail(log))
+            included.append(member)
+    for name in _NEVER_COLLECT:
+        if (data_dir / name).exists():
+            excluded.append(
+                {"path": name, "reason": "may contain research data or credentials"}
+            )
+    bundle.writestr(
+        "MANIFEST.json",
+        json.dumps({"included": included, "excluded": excluded}, indent=2),
+    )
+    return {"included": included, "excluded": excluded}
 
-    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as bundle:
-        # `default=str` rendered any object the encoder did not understand,
-        # which is the same "call str() and hope" the diagnostic record
-        # stopped doing. `archive_safe` reduces the structure first, so by
-        # the time json sees it every leaf is already a validated scalar.
-        bundle.writestr("report.json", json.dumps(archive_safe(report), indent=2))
-        included.append("report.json")
-        logs_dir = data_dir / "logs"
-        if logs_dir.is_dir():
-            collected = {
-                path for pattern in _LOG_PATTERNS for path in logs_dir.glob(pattern)
-            }
-            # Numbered by the archive, never named after the file on disk. A
-            # log's *name* is attacker-influenced the moment anything writes
-            # one named after a token, and it lands in two places no content
-            # scrubber looks: the ZIP member name and the MANIFEST listing it.
-            for index, log in enumerate(sorted(collected), start=1):
-                if not log.is_file():
-                    continue
-                member = f"logs/log-{index:04d}.json"
-                bundle.writestr(member, _safe_read_tail(log))
-                included.append(member)
-        for name in _NEVER_COLLECT:
-            if (data_dir / name).exists():
-                excluded.append(
-                    {"path": name, "reason": "may contain research data or credentials"}
-                )
-        bundle.writestr(
-            "MANIFEST.json",
-            json.dumps({"included": included, "excluded": excluded}, indent=2),
-        )
 
+def _harden(path: Path) -> None:
     try:
         from openai4s.security.permissions import harden_file
 
-        harden_file(destination)
+        harden_file(path)
     except Exception:  # noqa: BLE001 - hardening is best-effort
         pass
-    return {"path": str(destination), "included": included, "excluded": excluded}
+
+
+def build_bundle(cfg: Any, destination: Path) -> dict:
+    """Write a redacted diagnostic zip. Returns a manifest of what went in.
+
+    The CLI destination is caller-chosen. The web path must not take a
+    destination: it uses `write_bundle_file` on a process-owned temp file.
+    """
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as bundle:
+        result = _populate_bundle(cfg, bundle)
+    _harden(destination)
+    return {"path": str(destination), **result}
+
+
+def write_bundle_file(
+    cfg: Any, path: Path, *, max_bytes: int = BUNDLE_MAX_BYTES
+) -> dict:
+    """Write a capped archive to `path`. Raises `BundleTooLarge` over `max_bytes`.
+
+    `path` is created by the caller (a temp file the HTTP handler will
+    unlink on every exit, including client disconnect). This function
+    never chooses a user-supplied location.
+    """
+    target = Path(path)
+    with target.open("w+b") as handle:
+        capped = _CappedIO(handle, max_bytes)
+        with zipfile.ZipFile(capped, "w", zipfile.ZIP_DEFLATED) as bundle:
+            result = _populate_bundle(cfg, bundle)
+    _harden(target)
+    return {"path": str(target), **result}
 
 
 __all__ = [
+    "BUNDLE_FILENAME",
+    "BUNDLE_MAX_BYTES",
+    "BUNDLE_TEMP_PREFIX",
+    "BundleTooLarge",
     "LOG_KEEP",
     "LOG_MAX_BYTES",
     "archive_safe",
     "build_bundle",
     "environment_report",
+    "passive_security_posture",
     "rotate_log",
     "security_posture",
+    "write_bundle_file",
 ]

@@ -53,3 +53,57 @@ export async function api(
   if (!r.ok) throw new ApiError(j, r.status);
   return (j && typeof j === "object" ? j : {}) as Record<string, unknown>;
 }
+
+export type DiagnosticsStatus = {
+  security: Record<string, unknown>;
+  environment: Record<string, unknown>;
+  request_id: string;
+};
+
+export async function getDiagnosticsStatus(): Promise<DiagnosticsStatus> {
+  const body = await api("/diagnostics/status");
+  const requestId =
+    typeof body.request_id === "string" ? body.request_id : "";
+  return {
+    security:
+      body.security && typeof body.security === "object"
+        ? (body.security as Record<string, unknown>)
+        : {},
+    environment:
+      body.environment && typeof body.environment === "object"
+        ? (body.environment as Record<string, unknown>)
+        : {},
+    request_id: requestId,
+  };
+}
+
+export async function runDiagnosticsChecks(): Promise<Record<string, unknown>> {
+  return api("/diagnostics/checks", { method: "POST", body: "{}" });
+}
+
+export async function downloadDiagnosticsBundle(): Promise<void> {
+  const r = await fetch(API + "/diagnostics/bundle", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    let j: unknown = null;
+    try {
+      j = text ? JSON.parse(text) : null;
+    } catch {
+      j = text;
+    }
+    throw new ApiError(j, r.status);
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "openai4s-diagnostics.zip";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}

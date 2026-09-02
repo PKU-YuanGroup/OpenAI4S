@@ -102,6 +102,7 @@ from openai4s.server import (
     compute_session_routes,
     compute_tasks,
     contract,
+    diagnostics_routes,
     file_routes,
     governance_routes,
     kernel_routes,
@@ -14828,6 +14829,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 model_profiles=model_profiles,
                 model_discovery=model_discovery,
             ):
+                return
+            if diagnostics_routes.handle(self, method, sub, cfg=cfg):
                 return
             if artifact_index_routes.handle(self, method, sub, q, store):
                 return
