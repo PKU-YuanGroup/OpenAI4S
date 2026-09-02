@@ -940,6 +940,17 @@
         404
       ]
     },
+    "/frames/([^/]+)/compute/tasks/([^/]+)/cancel": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        404
+      ]
+    },
     "/frames/([^/]+)/compute/tasks/([^/]+)/refresh": {
       "content_types": [
         "application/json"

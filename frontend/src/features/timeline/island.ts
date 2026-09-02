@@ -3340,6 +3340,62 @@ async function refreshComputeTask(jobId: string, button: HTMLButtonElement): Pro
   }
 }
 
+const computeCancelInFlight = new Set<string>();
+
+const COMPUTE_MAY_STILL_BILL =
+  "The remote job may still be running and billing.";
+
+async function cancelComputeTask(jobId: string, button: HTMLButtonElement): Promise<void> {
+  const id = S.currentId;
+  if (!id || !jobId) return;
+  if (computeCancelInFlight.has(jobId)) return;
+  const promptText =
+    tOptional("compute.cancelConfirm") ||
+    "Cancel this remote job? If the remote does not confirm, it may still be running and billing.";
+  if (typeof globalThis.confirm === "function" && !globalThis.confirm(promptText)) return;
+  computeCancelInFlight.add(jobId);
+  button.disabled = true;
+  try {
+    const result = (await api(
+      `/frames/${id}/compute/tasks/${encodeURIComponent(jobId)}/cancel`,
+      { method: "POST", body: JSON.stringify({ confirm: true }) },
+    )) as {
+      outcome?: string;
+      hint?: string;
+      task?: { status?: string };
+    };
+    if (result && result.outcome === "cancel_indeterminate") {
+      hint(result.hint || COMPUTE_MAY_STILL_BILL, true);
+    } else if (result && result.outcome === "already_terminal") {
+      hint(
+        "The job already ended as " +
+          String((result.task && result.task.status) || "terminal") +
+          ".",
+      );
+    }
+    await loadWorkbenchState(id, true);
+  } catch (e) {
+    const body = (e as { body?: { outcome?: string; status?: string; task?: { status?: string } } })
+      .body;
+    if (body && body.outcome === "already_terminal") {
+      hint(
+        "The job already ended as " +
+          String((body.task && body.task.status) || body.status || "terminal") +
+          ".",
+      );
+      await loadWorkbenchState(id, true);
+    } else {
+      hint(
+        (tOptional("compute.cancelFailed") || "Cancel failed") + " — " + apiErrorText(e),
+        true,
+      );
+    }
+  } finally {
+    computeCancelInFlight.delete(jobId);
+    button.disabled = false;
+  }
+}
+
 export function renderComputeTasksPanel(): HTMLElement {
   const panel = panelShell(t("timeline.panel.compute"), "compute-panel"),
     state = S.computeTasks;
@@ -3376,9 +3432,13 @@ export function renderComputeTasksPanel(): HTMLElement {
       );
     if (task.reason) row.appendChild(el("div", "compute-task-message", task.reason));
     if (task.live) {
-      const btn = ghostIconBtn("refresh", t("compute.refresh"));
-      btn.onclick = () => refreshComputeTask(task.job_id, btn);
-      row.appendChild(btn);
+      const refresh = ghostIconBtn("refresh", t("compute.refresh"));
+      refresh.onclick = () => refreshComputeTask(task.job_id, refresh);
+      row.appendChild(refresh);
+      const cancel = ghostIconBtn("stop", tOptional("compute.cancel") || "Cancel remote job");
+      cancel.className += " compute-task-cancel";
+      cancel.onclick = () => cancelComputeTask(task.job_id, cancel);
+      row.appendChild(cancel);
     }
     panel.appendChild(row);
   });
