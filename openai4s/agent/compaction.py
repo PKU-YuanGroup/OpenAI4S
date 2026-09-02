@@ -948,6 +948,7 @@ def compact(
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None,
     tool_schemas: Iterable[Mapping[str, Any]] = (),
     context_budget: int | None = None,
+    workspace: Path | str | None = None,
 ) -> list[dict]:
     """Return a shorter, replay-safe message list or a no-op projection."""
     metadata = CompactionArchiveMetadata.from_mapping(archive_metadata)
@@ -957,6 +958,7 @@ def compact(
         threshold_chars=large_output_chars,
         archive_metadata=metadata,
         artifact_archiver=artifact_archiver,
+        workspace=workspace,
     )
     budget = int(
         cfg.context_window_tokens if context_budget is None else context_budget
