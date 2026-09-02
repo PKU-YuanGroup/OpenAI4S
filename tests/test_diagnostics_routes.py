@@ -26,11 +26,11 @@ from tests.test_team_auth_routes import (
     _TeamDaemon,
 )
 
-SECRET = "sk-live-" + "aa11bb22cc33dd44ee55ff66"
+PLANTED_CANARY = "sk-live-" + "aa11bb22cc33dd44ee55ff66"
 PATH_CANARY = "/Users/research/private/grant-2026.csv"
 PROMPT_CANARY = "unpublished-hypothesis-omega-prime-sequence"
 RESEARCH_CANARY = "embargoed-cohort-gamma-raw-counts"
-CANARIES = (SECRET, PATH_CANARY, PROMPT_CANARY, RESEARCH_CANARY)
+CANARIES = (PLANTED_CANARY, PATH_CANARY, PROMPT_CANARY, RESEARCH_CANARY)
 
 _DIAG_PATHS = (
     "/api/v1/diagnostics/status",
@@ -396,19 +396,19 @@ def test_access_audit_does_not_carry_sensitive_fields(tmp_path, monkeypatch):
     try:
         status, raw = _get_extra(
             node.port,
-            "/api/v1/diagnostics/status?token=" + SECRET,
+            "/api/v1/diagnostics/status?token=" + PLANTED_CANARY,
             cookie=admin,
         )
         assert status == 200, raw[:240]
         blob = json.dumps(captured)
         for canary in CANARIES:
             assert canary not in blob
-        assert SECRET not in blob
+        assert PLANTED_CANARY not in blob
         for rec in captured:
             if rec.get("event") == "http_request":
                 path = str(rec.get("path") or "")
                 assert "token=" not in path
-                assert SECRET not in path
+                assert PLANTED_CANARY not in path
     finally:
         node.close()
 
@@ -444,11 +444,13 @@ def test_explicit_checks_call_doctor_report(tmp_path, monkeypatch):
 
 
 def _inject_canaries(cfg, monkeypatch):
-    monkeypatch.setenv("HOST_PRIVATE_SLOT_ORANGE", SECRET)
+    monkeypatch.setenv("HOST_PRIVATE_SLOT_ORANGE", PLANTED_CANARY)
     logs = Path(cfg.data_dir) / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     (logs / "app.out").write_text(
-        json.dumps({"HOST_PRIVATE_SLOT_ORANGE": SECRET, "prompt": PROMPT_CANARY})
+        json.dumps(
+            {"HOST_PRIVATE_SLOT_ORANGE": PLANTED_CANARY, "prompt": PROMPT_CANARY}
+        )
         + "\n"
         + f"{PATH_CANARY} {RESEARCH_CANARY}\n",
         encoding="utf-8",

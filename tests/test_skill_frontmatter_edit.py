@@ -182,8 +182,11 @@ def test_import_rewrite_keeps_unknown_nested_keys_comments_and_network():
     assert meta["license"] == "CC-BY-4.0"
     assert meta["category"] == "structural-biology"
     assert "mode: host_only" in out
-    assert "api.openalex.org" in out
-    assert "doi.org" in out
+    # Whole lines, not substrings: the author's domain list must survive
+    # verbatim, indentation included.
+    lines = out.splitlines()
+    assert "      - api.openalex.org" in lines
+    assert "      - doi.org" in lines
     assert "# keep this comment" in out
     assert "x-vendor-ext:" in out
     assert "    keep: me" in out
