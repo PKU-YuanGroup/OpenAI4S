@@ -341,6 +341,7 @@ class RuntimeActionLedger:
             self.append_terminal(
                 event.result.stop_reason,
                 completion=event.result.completion,
+                progress_reason=getattr(event.result, "progress_reason", None),
             )
 
     def _append_action(
@@ -592,6 +593,7 @@ class RuntimeActionLedger:
         *,
         completion: Any = None,
         error: Any = None,
+        progress_reason: Any = None,
     ) -> dict | None:
         if self.terminal_recorded:
             return None
@@ -609,6 +611,8 @@ class RuntimeActionLedger:
             payload["completion"] = _redact_value(completion, frozenset())
         if error is not None:
             payload["error"] = _redact_value(error, frozenset())
+        if progress_reason:
+            payload["progress_reason"] = str(progress_reason)
         self.store.append_action_event(
             group_id=group["group_id"],
             type=(
@@ -842,6 +846,25 @@ def restore_action_history(
     )
 
 
+def restore_progress_circuit(
+    store: LedgerStore,
+    root_frame_id: str,
+    *,
+    branch_id: str | None = None,
+) -> Any:
+    """Rebuild the generic no-progress circuit from durable action groups.
+
+    ``RunState.metadata`` is only a process cache. Callers that resume after a
+    restart or compaction must use this entry point rather than a checkpoint.
+    """
+
+    from .progress_circuit import reconstruct_progress_circuit
+
+    return reconstruct_progress_circuit(
+        branch_action_groups(store, root_frame_id, branch_id=branch_id)
+    )
+
+
 def new_turn_id() -> str:
     return f"turn-{uuid.uuid4().hex[:16]}"
 
@@ -854,4 +877,5 @@ __all__ = [
     "redact_tool_call",
     "reduce_action_groups",
     "restore_action_history",
+    "restore_progress_circuit",
 ]

@@ -10881,7 +10881,23 @@ class SessionRunner:
             ),
             max_turns=max_turns,
         )
+        from openai4s.agent.ledger import restore_progress_circuit
+        from openai4s.agent.progress_circuit import (
+            NO_PROGRESS_STOP_REASON,
+            ProgressCircuit,
+            attach_progress_circuit,
+        )
+
+        try:
+            restored_circuit = restore_progress_circuit(
+                self.store,
+                rid,
+                branch_id=getattr(st, "branch_id", None),
+            )
+        except Exception:  # noqa: BLE001 — a missing ledger must not break a turn
+            restored_circuit = ProgressCircuit()
         state = RunState(st.messages, max_turns=max_turns)
+        attach_progress_circuit(state, restored_circuit)
         try:
             result = engine.run(state)
         except AutoBudgetDenied as denied:
@@ -10890,6 +10906,25 @@ class SessionRunner:
             return denied.reason
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
+        if result.stop_reason == NO_PROGRESS_STOP_REASON:
+            language = response_language(latest_user_text)
+            notice = (
+                "已停止重复动作。请编辑提示或显式继续。"
+                if language == "zh"
+                else (
+                    "Stopped repeating actions. "
+                    "Edit the prompt or continue explicitly."
+                )
+            )
+            assistant_visible.append({"at": int(time.time() * 1000), "text": notice})
+            emit(
+                {
+                    "type": "text_chunk",
+                    "frame_id": rid,
+                    "block_type": "text",
+                    "chunk": "\n\n" + notice + "\n",
+                }
+            )
         self._telemetry_turn(st, result)
         self._freeze_auto_budget_tokens(st)
         return result.stop_reason
