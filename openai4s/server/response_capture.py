@@ -75,7 +75,17 @@ SCHEMA_VERSION = 1
 #: deliberately *not* here: it is shared with `/environments/status` and
 #: `/kernel/packages`, and eliding by name is depth-blind, so listing it would
 #: quietly drop two unrelated routes' contracts as well.
-_MACHINE_STATE_KEYS = frozenset({"sandbox", "default_host", "gpu_name", "cuda_version"})
+#:
+#: `facts` is `doctor.Check.facts` on `POST /diagnostics/checks`: the sandbox
+#: backend and its self-test result, the R launcher path, disk headroom --
+#: every key is a probe of the host the daemon runs on. Freezing the shape
+#: observed on one machine called every other machine a breaking change (a
+#: macOS capture froze `backend: string` and `rscript_path`; the Linux runner
+#: answered `null` and no R). The name is unique to that route in the frozen
+#: document.
+_MACHINE_STATE_KEYS = frozenset(
+    {"sandbox", "default_host", "gpu_name", "cuda_version", "facts"}
+)
 
 #: A different failure that looks like the one above, and must not be fixed the
 #: same way.
