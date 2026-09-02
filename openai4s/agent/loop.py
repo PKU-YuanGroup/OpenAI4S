@@ -729,6 +729,7 @@ class Agent:
                             tool_schema_provider=lambda state: with_finalize_response(
                                 tool_catalog.specs_for(state.messages)
                             ),
+                            workspace_provider=lambda _s: run_cwd,
                         )
                     ),
                     event_sink=event_sink,

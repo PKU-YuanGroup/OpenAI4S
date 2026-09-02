@@ -10873,6 +10873,7 @@ class SessionRunner:
                 archive_sink=lambda payload: self._archive_compaction_record(
                     st, dict(payload)
                 ),
+                workspace_provider=lambda _s: str(st.local_workspace),
             ),
             event_sink=events,
             cancellation=EventCancellation(st.cancel),

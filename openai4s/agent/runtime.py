@@ -150,6 +150,8 @@ class CompactionPolicy:
     ``metadata_provider`` is the persistence-neutral seam for Web runtimes to
     attach branch, ledger cursor, recovery pointer, and Kernel generation.  If
     omitted, the same keys are read from ``RunState.metadata``.
+    ``workspace_provider`` returns the kernel cwd so oversized outputs can be
+    copied next to the worker; a raising provider is treated as no workspace.
     """
 
     cfg: Any
@@ -163,6 +165,7 @@ class CompactionPolicy:
         Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]] | None
     ) = None
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None
+    workspace_provider: Callable[[RunState], str | None] | None = None
     minimum_yield_ratio: float = 0.10
     max_low_yield_attempts: int = 2
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS
@@ -203,6 +206,14 @@ class CompactionPolicy:
         calibration: float,
     ) -> Sequence[Mapping[str, Any]]:
         metadata = self._metadata(state)
+        workspace: str | None = None
+        provider = self.workspace_provider
+        if provider is not None:
+            try:
+                provided = provider(state)
+            except Exception:
+                provided = None
+            workspace = None if provided is None else str(provided)
         try:
             messages = externalize_large_outputs(
                 state.messages,
@@ -210,6 +221,7 @@ class CompactionPolicy:
                 threshold_chars=self.large_output_chars,
                 archive_metadata=metadata,
                 artifact_archiver=self.artifact_archiver,
+                workspace=workspace,
             )
         except Exception as error:  # noqa: BLE001 - preserve the live context
             state.metadata["last_externalization_error"] = str(error)[:500]

@@ -430,17 +430,17 @@ def _confined_blob_path(archive_dir: Path, digest: str) -> Path:
     return candidate
 
 
-def _write_content_blob(
-    archive_dir: Path,
+_WORKSPACE_CONTEXT_DIR = ".openai4s/context"
+
+
+def _content_blob_payload(
     content: Any,
     message: Mapping[str, Any],
     metadata: CompactionArchiveMetadata,
-) -> tuple[str, str]:
+) -> tuple[str, dict[str, Any]]:
     safe_content = _json_safe(content)
     canonical = _json_text(safe_content).encode("utf-8")
     digest = hashlib.sha256(canonical).hexdigest()
-    path = _confined_blob_path(archive_dir, digest)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": 2,
         "kind": "context_content_blob",
@@ -453,6 +453,11 @@ def _write_content_blob(
         },
         "metadata": metadata.as_dict(),
     }
+    return digest, payload
+
+
+def _write_exclusive_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("x", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -460,7 +465,49 @@ def _write_content_blob(
         # Content addressing makes a concurrent/pre-existing identical blob a
         # successful deduplicated write.
         pass
+
+
+def _write_content_blob(
+    archive_dir: Path,
+    content: Any,
+    message: Mapping[str, Any],
+    metadata: CompactionArchiveMetadata,
+) -> tuple[str, str]:
+    digest, payload = _content_blob_payload(content, message, metadata)
+    path = _confined_blob_path(archive_dir, digest)
+    _write_exclusive_json(path, payload)
     return digest, str(path.relative_to(archive_dir.expanduser().resolve()))
+
+
+def _workspace_context_ref(digest: str) -> str:
+    """Return a workspace-relative, content-addressed archive path.
+
+    The filename is the SHA-256 hex digest alone.  The returned string is
+    always posix-style and never includes an absolute path or ``$HOME``.
+    """
+    if not _HEX_SHA256_RE.fullmatch(digest):
+        raise ValueError("archive digest must be a lowercase SHA-256 hex string")
+    return f"{_WORKSPACE_CONTEXT_DIR}/{digest}.json"
+
+
+def _confined_workspace_blob_path(workspace: Path, digest: str) -> Path:
+    rel = _workspace_context_ref(digest)
+    root = workspace.expanduser().resolve()
+    candidate = (root / rel).resolve()
+    if root != candidate and root not in candidate.parents:
+        raise ValueError("workspace archive path escaped the kernel workspace")
+    return candidate
+
+
+def _write_workspace_content_blob(
+    workspace: Path | str,
+    digest: str,
+    payload: Mapping[str, Any],
+) -> str:
+    rel = _workspace_context_ref(digest)
+    path = _confined_workspace_blob_path(Path(workspace), digest)
+    _write_exclusive_json(path, payload)
+    return rel
 
 
 def _preview(content: Any, limit: int) -> str:
@@ -481,19 +528,22 @@ def externalize_large_outputs(
     artifact_archiver: (
         Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]] | None
     ) = None,
+    workspace: Path | str | None = None,
 ) -> list[dict]:
     """Archive oversized outputs and return context-safe message copies.
 
-    No write occurs when ``archive_dir`` is absent.  Paths are derived solely
-    from a validated digest below that directory; message content can never
-    choose an output path.
+    No write occurs when ``archive_dir``, ``artifact_archiver``, and
+    ``workspace`` are all absent.  Paths are derived solely from a validated
+    digest; message content can never choose an output path.  Markers and
+    ``content_archive`` never carry an absolute path or ``$HOME``.
     """
     if threshold_chars <= 0:
         raise ValueError("threshold_chars must be positive")
     if preview_chars < 0:
         raise ValueError("preview_chars must be non-negative")
     result = [dict(message) for message in messages]
-    if archive_dir is None and artifact_archiver is None:
+    workspace_root = Path(workspace) if workspace else None
+    if archive_dir is None and artifact_archiver is None and workspace_root is None:
         return messages if isinstance(messages, list) else result
     root = Path(archive_dir) if archive_dir is not None else None
     metadata = CompactionArchiveMetadata.from_mapping(archive_metadata)
@@ -530,7 +580,10 @@ def externalize_large_outputs(
                 f"version_id: {version_id}\n"
                 f"sha256: {digest}\n"
                 f"original_chars: {_content_chars(content)}\n"
-                f"preview: {_preview(content, preview_chars)}"
+                f"preview: {_preview(content, preview_chars)}\n"
+                "[system] This is a preview, not the output. Read it back with "
+                f"open(host.artifact_path({version_id!r})).read() "
+                "(JSON, key 'content')."
             )
             artifact_ref = {
                 "artifact_id": artifact_id,
@@ -541,22 +594,50 @@ def externalize_large_outputs(
             result[index]["artifact_refs"] = [artifact_ref]
             result[index]["content_archive"] = artifact_ref
         else:
-            assert root is not None
-            digest, relative_path = _write_content_blob(
-                root, content, message, metadata
-            )
-            result[index]["content"] = (
-                "[Large output archived]\n"
-                f"sha256: {digest}\n"
-                f"archive_ref: {relative_path}\n"
-                f"original_chars: {_content_chars(content)}\n"
-                f"preview: {_preview(content, preview_chars)}"
-            )
-            result[index]["content_archive"] = {
-                "sha256": digest,
-                "archive_ref": relative_path,
-                "original_chars": _content_chars(content),
-            }
+            digest, payload = _content_blob_payload(content, message, metadata)
+            relative_path: str | None = None
+            if root is not None:
+                digest, relative_path = _write_content_blob(
+                    root, content, message, metadata
+                )
+            workspace_ref: str | None = None
+            if workspace_root is not None:
+                workspace_ref = _write_workspace_content_blob(
+                    workspace_root, digest, payload
+                )
+            if workspace_ref is not None:
+                result[index]["content"] = (
+                    "[Large output archived]\n"
+                    f"sha256: {digest}\n"
+                    f"original_chars: {_content_chars(content)}\n"
+                    f"preview: {_preview(content, preview_chars)}\n"
+                    "[system] This is a preview, not the output. Do not infer "
+                    "what is in the gap; read the full text with "
+                    f"json.load(open({workspace_ref!r}))['content'] "
+                    "if you need it."
+                )
+                archive: dict[str, Any] = {
+                    "sha256": digest,
+                    "original_chars": _content_chars(content),
+                    "workspace_ref": workspace_ref,
+                }
+                if relative_path is not None:
+                    archive["archive_ref"] = relative_path
+                result[index]["content_archive"] = archive
+            else:
+                assert relative_path is not None
+                result[index]["content"] = (
+                    "[Large output archived]\n"
+                    f"sha256: {digest}\n"
+                    f"archive_ref: {relative_path}\n"
+                    f"original_chars: {_content_chars(content)}\n"
+                    f"preview: {_preview(content, preview_chars)}"
+                )
+                result[index]["content_archive"] = {
+                    "sha256": digest,
+                    "archive_ref": relative_path,
+                    "original_chars": _content_chars(content),
+                }
         changed = True
     if changed:
         return result
