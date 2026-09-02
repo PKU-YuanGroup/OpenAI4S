@@ -49,6 +49,7 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_agent_engine.py`](test_agent_engine.py) | 单独用 fake port 驱动 `AgentEngine`。最后那个测试才是这个模块的要点：引擎不许 import 任何运行时基础设施。其余的钉住路由优先级、可重放的历史分组，以及取消究竟在哪几个时刻取胜。 |
 | [`test_agent_hybrid.py`](test_agent_hybrid.py) | 关于 hybrid `Agent` 门面的两个测试：原生调用压过代码、且它的规范历史能活到下一轮；被复用的 agent 在接新任务前会清掉上一次的提交。 |
 | [`test_agent_profile_repository.py`](test_agent_profile_repository.py) | 落在 SQLite 里的具名 agent profile，主要是那些别扭的地方——假值的老式序列化、列表读取时的 JSON 解码边界，以及 upsert 必须扛住的“先读后写”那段空隙。 |
+| [`test_agent_progress_circuit.py`](test_agent_progress_circuit.py) | 通用 Agent 无进展熔断：相同动作 / malformed / 同类 error / 长文本阈值，不同参数与 reasoning 插入不得误报，以及从 Action Ledger 而非活着的 `RunState` 重建重启/压缩状态。触发后是 `no_progress`，绝不是 completed。 |
 | [`test_agent_runtime.py`](test_agent_runtime.py) | 纯引擎与真实基础设施之间的本地适配器。两条规则占主导：原生调用解析出错或超出上限时绝不许下发，同时也绝不许把 Tool 结果弄丢。compaction 会把尾部撑开，好让 assistant 的 Tool group 保持原子；一个熔断器会掐掉反复低收益的 compaction。 |
 | [`test_analysis_skills.py`](test_analysis_skills.py) | 内置的分析类 Skill 在这里是真的被执行，不只是被列出来。它的数据审计能抓出分组泄漏，AUC 会处理并列，bootstrap 是确定性的。 |
 | [`test_annotation_repository.py`](test_annotation_repository.py) | 图像 annotation。一共三个测试，真正要紧的是并发钉图时的序号分配——它必须是原子的。 |
