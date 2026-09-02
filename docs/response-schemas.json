@@ -8548,6 +8548,103 @@
         "type": "object"
       }
     },
+    "GET /diagnostics/status [ok]": {
+      "schema": {
+        "properties": {
+          "environment": {
+            "properties": {
+              "machine": {
+                "type": "string"
+              },
+              "openai4s": {
+                "type": "string"
+              },
+              "platform": {
+                "type": "string"
+              },
+              "python": {
+                "type": "string"
+              },
+              "release": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "machine",
+              "openai4s",
+              "platform",
+              "python",
+              "release"
+            ],
+            "type": "object"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "security": {
+            "properties": {
+              "compute_confinement": {
+                "type": "string"
+              },
+              "egress": {
+                "type": "string"
+              },
+              "kernel_sandbox": {
+                "type": "string"
+              },
+              "permissions": {
+                "properties": {
+                  "data_dir_owner_only": {
+                    "type": "boolean"
+                  },
+                  "db_owner_only": {
+                    "type": "boolean"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "platform": {
+                    "type": "string"
+                  },
+                  "supported": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "data_dir_owner_only",
+                  "db_owner_only",
+                  "detail",
+                  "platform",
+                  "supported"
+                ],
+                "type": "object"
+              },
+              "secret_store_mode": {
+                "type": "string"
+              },
+              "structured_logs": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "compute_confinement",
+              "egress",
+              "kernel_sandbox",
+              "permissions",
+              "secret_store_mode",
+              "structured_logs"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "environment",
+          "request_id",
+          "security"
+        ],
+        "type": "object"
+      }
+    },
     "GET /doubao-search/config [ok]": {
       "schema": {
         "properties": {
@@ -28301,6 +28398,138 @@
         "type": "object"
       }
     },
+    "POST /diagnostics/checks [ok]": {
+      "schema": {
+        "properties": {
+          "checks": {
+            "items": {
+              "properties": {
+                "detail": {
+                  "type": "string"
+                },
+                "facts": {
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "backend": {
+                      "type": "string"
+                    },
+                    "byoc_providers": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "configured_connectors": {
+                      "type": "integer"
+                    },
+                    "confinement_backend": {
+                      "type": "string"
+                    },
+                    "confinement_mode": {
+                      "type": "string"
+                    },
+                    "confinement_network_isolated": {
+                      "type": "boolean"
+                    },
+                    "confinement_state": {
+                      "type": "string"
+                    },
+                    "daemon_python": {
+                      "type": "string"
+                    },
+                    "data_dir": {
+                      "type": "string"
+                    },
+                    "egress_mode": {
+                      "type": "string"
+                    },
+                    "enforced": {
+                      "type": "boolean"
+                    },
+                    "environments": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "free_gb": {
+                      "type": "number"
+                    },
+                    "mode": {
+                      "type": "string"
+                    },
+                    "network_allowed": {
+                      "type": "boolean"
+                    },
+                    "network_policy": {
+                      "type": "string"
+                    },
+                    "prebuilt_environments": {
+                      "type": "integer"
+                    },
+                    "rscript": {
+                      "type": "boolean"
+                    },
+                    "rscript_path": {
+                      "type": "string"
+                    },
+                    "science_databases": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "self_test_passed": {
+                      "type": "boolean"
+                    },
+                    "ssh_family": {
+                      "type": "boolean"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "remedy": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "detail",
+                "facts",
+                "name",
+                "remedy",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checks",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "POST /diagnostics/status [error]": {
       "schema": {
         "properties": {
@@ -32367,69 +32596,11 @@
           "error": {
             "type": "string"
           },
-          "outcome": {
-            "type": "string"
-          },
           "request_id": {
             "type": "string"
           },
           "status": {
             "type": "integer"
-          },
-          "task": {
-            "properties": {
-              "created_at": {
-                "type": "integer"
-              },
-              "job_id": {
-                "type": "string"
-              },
-              "live": {
-                "type": "boolean"
-              },
-              "outputs": {
-                "properties": {
-                  "file_count": {
-                    "type": "integer"
-                  },
-                  "total_bytes": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "file_count",
-                  "total_bytes"
-                ],
-                "type": "object"
-              },
-              "provider": {
-                "type": "string"
-              },
-              "status": {
-                "type": "string"
-              },
-              "terminal": {
-                "type": "boolean"
-              },
-              "terminal_at": {
-                "type": "integer"
-              },
-              "updated_at": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "created_at",
-              "job_id",
-              "live",
-              "outputs",
-              "provider",
-              "status",
-              "terminal",
-              "terminal_at",
-              "updated_at"
-            ],
-            "type": "object"
           }
         },
         "required": [
@@ -32511,6 +32682,7 @@
               "outputs",
               "provider",
               "status",
+              "submitted_at",
               "terminal",
               "updated_at"
             ],

@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from .actions import Action, CodeCell, FinalizeAction, NativeToolBatch
 from .models import ExecutionOutcome, ModelReply, RunState
@@ -174,33 +174,20 @@ class ProgressCircuit:
     def tripped(self) -> bool:
         return self.trip_reason in PROGRESS_REASONS
 
-    def would_block_action(self, action: Action | None) -> bool:
-        """Refuse a native dispatch that would be a repeat past threshold.
+    def observe_routed_action(self, action: Action | None, reply: ModelReply) -> None:
+        """A prose reply is observed here; native/code/finalize wait for execution.
 
-        Long-text / malformed trips are enforced at the next turn boundary so
-        the current group's Action Ledger row is still written.
+        Every trip is enforced at the next turn boundary (the Engine checks
+        ``tripped`` before calling the model again), so the current group's
+        Action Ledger row is always written first. There is deliberately no
+        pre-dispatch refusal: a threshold is reached only inside an
+        ``observe_*`` call, which trips immediately, so such a refusal could
+        never fire.
         """
 
-        if not isinstance(action, NativeToolBatch) or not action.calls:
-            return False
-        if self.tripped:
-            return True
-        if all(_call_is_malformed(call) for call in action.calls):
-            blocked = self.malformed_streak >= MALFORMED_THRESHOLD
-        else:
-            fingerprint = fingerprint_native_calls(action.calls)
-            blocked = (
-                fingerprint == self.same_action_fingerprint
-                and self.same_action_streak >= SAME_ACTION_THRESHOLD
-            )
-        if blocked:
-            self._maybe_trip()
-        return blocked
-
-    def observe_routed_action(self, action: Action | None, reply: ModelReply) -> None:
         if isinstance(action, (NativeToolBatch, CodeCell, FinalizeAction)):
             return
-        self.observe_assistant_text(reply.content, reasoning=reply.reasoning)
+        self.observe_assistant_text(reply.content)
 
     def observe_execution(
         self, action: Action | None, outcome: ExecutionOutcome
@@ -232,10 +219,11 @@ class ProgressCircuit:
         self._observe_tool_results(results or ())
         self._maybe_trip()
 
-    def observe_assistant_text(self, content: str, *, reasoning: Any = None) -> None:
-        if _is_reasoning_insert(content, reasoning):
-            return
-        normalized = _normalize_whitespace(content)
+    def observe_assistant_text(self, content: str) -> None:
+        # Anything shorter than the long-text floor -- an empty content with a
+        # reasoning insert included -- is not observed at all, so it neither
+        # counts as a repeat nor resets a streak.
+        normalized = _normalize_whitespace(content if isinstance(content, str) else "")
         if len(normalized) < LONG_TEXT_MIN_CHARS:
             return
         previous = self.long_text_normalized
@@ -266,10 +254,7 @@ class ProgressCircuit:
             self.observe_code_progress()
             return
         if kind == _NO_ACTION_KIND:
-            self.observe_assistant_text(
-                _group_assistant_text(group),
-                reasoning=_group_reasoning(group),
-            )
+            self.observe_assistant_text(_group_assistant_text(group))
 
     def _observe_native_group(self, group: Mapping[str, Any]) -> None:
         events = [
@@ -405,23 +390,6 @@ def _group_assistant_text(group: Mapping[str, Any]) -> str:
     return ""
 
 
-def _group_reasoning(group: Mapping[str, Any]) -> Any:
-    message = group.get("assistant_message")
-    if isinstance(message, Mapping):
-        return message.get("reasoning")
-    return None
-
-
-def _is_reasoning_insert(content: str, reasoning: Any) -> bool:
-    text = content if isinstance(content, str) else ""
-    normalized = _normalize_whitespace(text)
-    if len(normalized) >= LONG_TEXT_MIN_CHARS:
-        return False
-    if reasoning not in (None, "", {}, (), []):
-        return True
-    return not normalized
-
-
 def _normalize_whitespace(text: str) -> str:
     return _WS_RE.sub(" ", text.strip())
 
@@ -463,19 +431,6 @@ def _result_text(value: Any) -> str:
     return str(value)
 
 
-def iter_progress_reasons() -> Iterable[str]:
-    return tuple(
-        sorted(
-            (
-                PROGRESS_REASON_SAME_ACTION,
-                PROGRESS_REASON_MALFORMED,
-                PROGRESS_REASON_TOOL_ERROR,
-                PROGRESS_REASON_LONG_TEXT,
-            )
-        )
-    )
-
-
 __all__ = [
     "LONG_TEXT_MIN_CHARS",
     "LONG_TEXT_THRESHOLD",
@@ -495,7 +450,6 @@ __all__ = [
     "circuit_from_state",
     "fingerprint_native_calls",
     "is_provider_transient_error",
-    "iter_progress_reasons",
     "normalize_tool_error",
     "reconstruct_progress_circuit",
 ]

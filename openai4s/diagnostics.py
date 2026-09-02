@@ -623,17 +623,12 @@ def security_posture(cfg: Any) -> dict:
     a posture that could disagree with the code would be worse than none, since
     it would be believed.
     """
-    report: dict[str, Any] = {}
-    try:
-        from openai4s.security.permissions import posture
-
-        report["permissions"] = posture(Path(cfg.data_dir), Path(cfg.db_path))
-    except Exception as e:  # noqa: BLE001
-        # `str(e)` here landed in `report.json`, which is the one file the
-        # bundle has always shipped -- so a probe that failed put its own
-        # exception text into a shareable archive, path, command and all. The
-        # type is the part that is bounded and the part that is actionable.
-        report["permissions"] = _probe_failure(e)
+    # The passive projection is the base: the same permission stats and the
+    # same env knobs, so the CLI bundle and the web GET cannot disagree about
+    # a knob one of them forgot. (`_probe_failure` on a failed permissions
+    # probe: `str(e)` here once landed in `report.json` -- path, command and
+    # all -- and the type is the part that is bounded and actionable.)
+    report: dict[str, Any] = passive_security_posture(cfg)
     store = None
     try:
         from openai4s.store import get_store
@@ -658,14 +653,6 @@ def security_posture(cfg: Any) -> dict:
             report["secret_store"] = store.secrets.posture()
         except Exception as e:  # noqa: BLE001
             report["secret_store"] = _probe_failure(e)
-    for name, env in (
-        ("kernel_sandbox", "OPENAI4S_KERNEL_SANDBOX"),
-        ("compute_confinement", "OPENAI4S_COMPUTE_CONFINEMENT"),
-        ("secret_store_mode", "OPENAI4S_SECRET_STORE"),
-        ("egress", "OPENAI4S_EGRESS"),
-        ("structured_logs", "OPENAI4S_STRUCTURED_LOGS"),
-    ):
-        report[name] = os.environ.get(env, "(default)")
     return report
 
 

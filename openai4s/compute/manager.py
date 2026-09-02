@@ -3352,7 +3352,21 @@ class ComputeManager:
         return ComputeError(str(error), "receipt_unconfirmed", indeterminate=True)
 
     def _record_unconfirmed_cancel(self, job: dict, error: ComputeError) -> None:
-        """Leave the job live and record that a cancel was asked, not granted."""
+        """Leave the job live and record that a cancel was asked, not granted.
+
+        Only a job that is still live carries the note. `_persist` is an
+        unconditional UPDATE, so if the poll thread committed a terminal
+        state between the pre-check and the failed terminate, writing here
+        would overwrite the terminal row's own `reason` with "may still be
+        running" and append a cancel event to a finished job.
+        """
+        if self._store is not None:
+            try:
+                row = self._store.get_compute_job(job["job_id"]) or {}
+            except Exception:  # noqa: BLE001 - bookkeeping must not mask the cancel
+                row = {}
+            if row.get("status") in states.TERMINAL_STATES:
+                return
         self._persist(
             job["job_id"],
             reason=(
@@ -3418,11 +3432,31 @@ class ComputeManager:
             if mapped is error:
                 raise
             raise mapped from error
+        except Exception as error:  # noqa: BLE001
+            # A helper that died before reading stdin (BrokenPipeError), a
+            # reply file that is not JSON, an OSError from Popen: none is a
+            # ComputeError, and every one of them leaves the remote in a state
+            # this side cannot confirm. Unmapped, they escaped with no
+            # `cancel_unconfirmed` record and no `indeterminate` flag, so the
+            # SDK read them as a definite rejection.
+            mapped = ComputeError(
+                f"cancel failed on {job.get('alias') or job['provider']}: "
+                f"{type(error).__name__}: {error}; the remote job may still be "
+                f"running",
+                "receipt_unconfirmed",
+                indeterminate=True,
+            )
+            self._record_unconfirmed_cancel(job, mapped)
+            raise mapped from error
         conflict = self._commit_terminal(
             job,
             states.CANCELLED,
             event="cancelled",
             terminal_at=_now_ms(),
+            # An earlier unconfirmed attempt may have left "may still be
+            # running and billing" on the row; a confirmed stop clears it,
+            # or the Task Centre keeps warning about a job that is over.
+            reason="",
             termination_reason=states.REASON_USER_CANCELLED,
         )
         if conflict is not None:

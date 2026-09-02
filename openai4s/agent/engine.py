@@ -103,14 +103,13 @@ class AgentEngine:
             self.event_sink.emit(ReplyReceived(reply, turn))
             action = route_action(reply.content, reply.tool_calls)
             state.last_action = action
+            # A trip is enforced at the top of the next iteration, before the
+            # model is called again: every threshold trips inside the
+            # observe_* call that reaches it, so a refusal here would never
+            # fire -- and if it did, it would drop the routed reply from the
+            # Action Ledger (ActionRouted is what records it) and from the
+            # team usage ledger.
             circuit.observe_routed_action(action, reply)
-            if circuit.would_block_action(action):
-                return self._finish(
-                    state,
-                    None,
-                    NO_PROGRESS_STOP_REASON,
-                    progress_reason=circuit.trip_reason,
-                )
             self.event_sink.emit(ActionRouted(action, turn))
             outcome = self.executor.execute(action, reply, state)
             if not isinstance(outcome, ExecutionOutcome):

@@ -640,7 +640,7 @@ def test_replacing_a_draft_asset_and_its_manifest_together_is_caught(tmp_path):
     attestation.write_text(
         json.dumps(
             release_receipts.build_stage_attestation(
-                version="0.2.0", source_sha=SHA, assets=[wheel]
+                version="0.2.0", source_sha=SHA, assets=[wheel], workflow_run_id="7100"
             )
         ),
         "utf-8",
@@ -670,7 +670,7 @@ def test_an_attestation_for_another_version_is_refused(tmp_path):
     target.write_text(
         json.dumps(
             release_receipts.build_stage_attestation(
-                version="0.2.0", source_sha=SHA, assets=[wheel]
+                version="0.2.0", source_sha=SHA, assets=[wheel], workflow_run_id="7100"
             )
         ),
         "utf-8",

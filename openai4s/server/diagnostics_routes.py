@@ -87,9 +87,19 @@ class _BundleGate:
             self._last[principal] = now
             return "ok"
 
-    def end(self) -> None:
+    def end(self, principal: str | None = None, *, delivered: bool = True) -> None:
+        """Release single-flight; forget the cooldown stamp if nothing shipped.
+
+        The stamp is written at ``try_begin`` so two admins cannot race past
+        it, but a 413 or a generation error delivered no bundle, and holding
+        the operator to "wait 60 seconds between downloads" after a download
+        that never happened is the wrong refusal. A disconnect mid-stream
+        keeps the stamp: the generation cost was paid.
+        """
         with self._lock:
             self._in_flight = False
+            if not delivered and principal is not None:
+                self._last.pop(principal, None)
 
     def reset(self) -> None:
         with self._lock:
@@ -198,6 +208,7 @@ def _bundle(handler: Any, cfg: Any) -> None:
         )
         return
     tmp_path: Path | None = None
+    delivered = False
     try:
         fd, name = tempfile.mkstemp(prefix=BUNDLE_TEMP_PREFIX, suffix=".zip")
         os.close(fd)
@@ -222,10 +233,13 @@ def _bundle(handler: Any, cfg: Any) -> None:
         request_id = _request_id(handler)
         if request_id:
             extra["X-Request-Id"] = request_id
+        # From here the bundle exists and is being sent; a disconnect
+        # mid-stream still counts against the cooldown.
+        delivered = True
         stream(tmp_path, _ZIP_TYPE, extra)
     finally:
         _unlink(tmp_path)
-        _GATE.end()
+        _GATE.end(principal, delivered=delivered)
 
 
 def handle(self: Any, method: str, sub: str, *, cfg: Any) -> bool:

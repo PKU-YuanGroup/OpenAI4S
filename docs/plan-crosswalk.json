@@ -81,7 +81,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a8d0bda63f13a00a40258e880979015e7a794e98e9beb8116d0d0690e99a9ccf"
+      "evidence_digest": "643142c60495637cf2f0f62217eedd8bc8aac726ac914d24392e086a5aa40b6a"
     },
     {
       "source": "R1",
@@ -314,7 +314,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a40c8903a82b59efc00f158c51c6adb3aea5c75866af6e9c3f1b8be9f004fbcc"
+      "evidence_digest": "6bf175beec2fea2b3ba1b5d6e1de0076984cd16b863f44822243949f7c0ce3b9"
     },
     {
       "source": "R3",
@@ -453,7 +453,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a8d0bda63f13a00a40258e880979015e7a794e98e9beb8116d0d0690e99a9ccf"
+      "evidence_digest": "643142c60495637cf2f0f62217eedd8bc8aac726ac914d24392e086a5aa40b6a"
     },
     {
       "source": "R5",
@@ -564,7 +564,7 @@
       "tests": "tests/test_compute_task_centre.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "a8d0bda63f13a00a40258e880979015e7a794e98e9beb8116d0d0690e99a9ccf"
+      "evidence_digest": "643142c60495637cf2f0f62217eedd8bc8aac726ac914d24392e086a5aa40b6a"
     },
     {
       "source": "R6",

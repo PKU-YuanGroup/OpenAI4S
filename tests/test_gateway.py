@@ -6474,3 +6474,53 @@ def test_daemon_lifetime_threads_do_not_inherit_a_request_id():
             f"{name} is a daemon-lifetime thread and must not inherit a "
             "request's correlation id"
         )
+
+
+def test_no_progress_stop_is_a_failed_turn_with_a_stable_code(monkeypatch, tmp_path):
+    """A tripped no-progress circuit is projected like `max_turns`, not `completed`.
+
+    `_loop` returns `no_progress`; before this branch existed the turn kept
+    the `completed` default, so the frame/turn record, the review gate and the
+    Timeline all called a turn that did nothing a success while the Action
+    Ledger's terminal for the same turn was `failed`.
+    """
+    from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def fake_ensure(st):
+        st.dispatcher = SimpleNamespace(last_output=None)
+        st.messages = [{"role": "system", "content": "sys"}]
+        st.booted = True
+
+    def trip(st, emit, visible):
+        del emit, visible
+        st.last_engine_completion = None
+        st.last_model_prose = ""
+        return NO_PROGRESS_STOP_REASON
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", trip)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+
+    result = runner.run_message(fid, "default", "list the files again")
+
+    assert result["status"] == "failed"
+    assert result.get("code") == NO_PROGRESS_STOP_REASON
+    assert "Stopped repeating actions" in str(result.get("error") or "")
+    messages = store.list_messages(fid)
+    assert messages[-1]["role"] == "assistant"
+    assert "Stopped repeating actions" in messages[-1]["content"]
+    assert hub.events[-1]["type"] == "frame_update"
+    assert hub.events[-1]["status"] == "failed"
+    notices = [
+        event
+        for event in hub.events
+        if event.get("type") == "text_chunk"
+        and "Stopped repeating actions" in event.get("chunk", "")
+    ]
+    assert len(notices) == 1, "the notice is streamed exactly once"

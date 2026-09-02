@@ -449,6 +449,49 @@ def test_team_visibility_is_applied_before_limit_and_does_not_fill_slots(server)
     assert store._frames.count_projects(visible_to_user_id=bob["id"]) == 10
 
 
+def test_team_visibility_is_applied_on_the_offset_compat_path_too(server):
+    """The executed-offset window filters and counts inside SQL like keyset does.
+
+    The keyset test above is the only visibility coverage the paging suite
+    had; a regression that post-filtered or counted unfiltered rows on the
+    offset branch would have leaked hidden counts to a member unnoticed.
+    """
+    _cfg, runner, client = server
+    store = runner.store
+    alice = store.team.create_user(username="alice", password="fake-a")
+    bob = store.team.create_user(username="bob", password="fake-b")
+    alice_ids, bob_ids = [], []
+    for owner, ids, base in ((alice, alice_ids, 1_000), (bob, bob_ids, 2_000)):
+        for index in range(6):
+            pid = f"{owner['username']}-{index:02d}"
+            store.create_project(project_id=pid, name=pid)
+            store.governance.set_member(pid, owner["id"])
+            frame = store.new_frame(project_id=pid, kind="turn", status="ready")
+            with store._lock:
+                store._conn.execute(
+                    "UPDATE frames SET created_at=?, updated_at=? WHERE frame_id=?",
+                    (base + index, base + index, frame),
+                )
+                store._conn.commit()
+            ids.append(pid)
+
+    seen: list[str] = []
+    for offset in (0, 4):
+        status, page = client.get(
+            f"/projects?limit=4&offset={offset}", visible_to=alice["id"]
+        )
+        assert status == 200
+        assert page["total"] == 6
+        assert page["next_cursor"] is None
+        seen.extend(row["project_id"] for row in page["projects"])
+    assert seen == sorted(alice_ids, reverse=True)
+    assert set(seen).isdisjoint(bob_ids)
+    status, tail = client.get("/projects?limit=4&offset=4", visible_to=alice["id"])
+    assert tail["has_more"] is False
+    status, everyone = client.get("/projects?limit=4&offset=0")
+    assert everyone["total"] == 12
+
+
 def test_another_principal_cannot_reuse_a_cursor(server):
     _cfg, runner, client = server
     store = runner.store

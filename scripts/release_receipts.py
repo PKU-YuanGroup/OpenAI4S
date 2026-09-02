@@ -442,8 +442,14 @@ def verify_stage_attestation(
             f"stage attestation is for version {document.get('version')!r}, not "
             f"{version!r}"
         )
-    if not str(document.get("workflow_run_id") or document.get("source_sha") or ""):
-        raise ReceiptError("stage attestation records no workflow run id or candidate")
+    # Both facts, each on its own: `or`-ing them together made the run-id
+    # requirement vacuous, because a schema-2 attestation always carries a
+    # source SHA, so an attestation binding no workflow run passed.
+    if not str(document.get("workflow_run_id") or ""):
+        raise ReceiptError("stage attestation records no workflow run id")
+    candidate = str(document.get("candidate_sha") or document.get("source_sha") or "")
+    if not candidate:
+        raise ReceiptError("stage attestation records no candidate commit")
     if document.get("workflow_inputs") is not None:
         try:
             normalize_workflow_inputs(document.get("workflow_inputs"))

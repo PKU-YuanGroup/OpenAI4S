@@ -2766,8 +2766,27 @@ class Store:
     def project_session_ids(self, project_id: str) -> list[str]:
         return self._frames.project_session_ids(project_id)
 
-    def list_projects(self) -> list[dict]:
-        return self._frames.list_projects()
+    def list_projects(
+        self,
+        *,
+        q: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        before: tuple[int | None, str] | None = None,
+        visible_to_user_id: str | None = None,
+    ) -> list[dict]:
+        return self._frames.list_projects(
+            q=q,
+            limit=limit,
+            offset=offset,
+            before=before,
+            visible_to_user_id=visible_to_user_id,
+        )
+
+    def count_projects(
+        self, *, q: str | None = None, visible_to_user_id: str | None = None
+    ) -> int:
+        return self._frames.count_projects(q=q, visible_to_user_id=visible_to_user_id)
 
     # --- messages --------------------------------------------------------
     def add_message(

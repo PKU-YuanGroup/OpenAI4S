@@ -2298,6 +2298,15 @@ def main() -> int:
         except ValueError as error:
             print(f"::error::workflow inputs are not JSON: {error}", file=sys.stderr)
             return 2
+        # Validate here, on the same footing as the JSON parse: `Pipeline()`
+        # normalises the inputs in its constructor, and a closed-set failure
+        # there (`macos_asset: signed`, a JSON list) was an uncaught traceback
+        # with exit 1 rather than the `::error::` annotation the parse gets.
+        try:
+            release_receipts.normalize_workflow_inputs(inputs)
+        except release_receipts.ReceiptError as error:
+            print(f"::error::workflow inputs are not valid: {error}", file=sys.stderr)
+            return 2
 
     pipeline = Pipeline(
         args.version,

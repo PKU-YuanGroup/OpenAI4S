@@ -325,3 +325,24 @@ def test_the_container_series_is_a_required_check_suite_gate():
     assert any(
         gate.name == "ci-tests-py3.14" for gate in release_gates.CHECK_SUITE_GATES
     )
+
+
+def test_stage_attestation_without_a_workflow_run_id_is_refused(tmp_path, monkeypatch):
+    """The run-id requirement must not be satisfied by the candidate SHA.
+
+    `verify_stage_attestation` once checked `workflow_run_id or source_sha`,
+    and a schema-2 attestation always carries a source SHA, so an attestation
+    binding no workflow run at all passed the gate that schema 2 exists to
+    enforce -- while `verify_build_receipts` refused the same omission.
+    """
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    wheel = tmp_path / "openai4s-0.2.0-py3-none-any.whl"
+    wheel.write_bytes(b"bytes")
+    document = release_receipts.build_stage_attestation(
+        version="0.2.0", source_sha=SHA, assets=[wheel], workflow_run_id=""
+    )
+    assert document["workflow_run_id"] == ""
+    target = tmp_path / release_receipts.STAGE_ATTESTATION_NAME
+    target.write_text(json.dumps(document), "utf-8")
+    with pytest.raises(release_receipts.ReceiptError, match="workflow run id"):
+        release_receipts.verify_stage_attestation(target, version="0.2.0")

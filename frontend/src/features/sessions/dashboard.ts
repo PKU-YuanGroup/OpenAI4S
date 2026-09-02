@@ -45,24 +45,43 @@ function projectCopy(kind: "more" | "retry" | "no-match" | "error"): string {
   return "无法加载项目。";
 }
 
+/** Keystroke debounce for the project search; Enter flushes it. */
+export const PROJECT_SEARCH_DEBOUNCE_MS = 150;
+let searchTimer = 0;
+
+function searchProjectsNow(): void {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = 0;
+  }
+  void loadProjects({ q: String(projectsQuery.value || "") }).then(() =>
+    renderDashProjects(),
+  );
+}
+
 export function bindProjectSearch(): void {
   const input = $("#dash-project-search") as HTMLInputElement | null;
   if (!input || input.dataset.bound === "1") return;
   input.dataset.bound = "1";
   input.addEventListener("input", () => {
     projectsQuery.value = input.value;
-    void loadProjects().then(() => renderDashProjects());
+    // One request per pause, not one per keystroke: each request runs the
+    // activity aggregate plus a count on the daemon's single SQLite
+    // connection, and the generation counter only discards stale replies
+    // client-side.
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(searchProjectsNow, PROJECT_SEARCH_DEBOUNCE_MS);
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
       input.value = "";
       projectsQuery.value = "";
-      void loadProjects().then(() => renderDashProjects());
+      searchProjectsNow();
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      void loadProjects().then(() => renderDashProjects());
+      searchProjectsNow();
     }
   });
 }
@@ -111,7 +130,8 @@ export function paintDashSkeleton(): void {
 export async function loadDashboard(): Promise<void> {
   bindProjectSearch();
   paintDashSkeleton();
-  await loadProjects();
+  // The search box persists across dashboard visits; the list must match it.
+  await loadProjects({ q: String(projectsQuery.value || "") });
   let frames: SessionLike[] = [];
   try {
     const d = (await api("/frames?limit=50")) as { frames?: SessionLike[] };

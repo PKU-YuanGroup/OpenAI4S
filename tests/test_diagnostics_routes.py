@@ -413,6 +413,7 @@ def test_access_audit_does_not_carry_sensitive_fields(tmp_path, monkeypatch):
         node.close()
 
 
+@pytest.mark.stubbed_backend
 def test_explicit_checks_call_doctor_report(tmp_path, monkeypatch):
     called: list[str] = []
     monkeypatch.setattr(
@@ -513,6 +514,7 @@ def test_client_cannot_choose_the_output_path(tmp_path):
         node.close()
 
 
+@pytest.mark.stubbed_backend
 def test_single_flight_returns_429(tmp_path, monkeypatch):
     node, admin, _member = _admin_daemon(tmp_path)
     hold = threading.Event()
@@ -570,6 +572,7 @@ def test_per_principal_cooldown_returns_429(tmp_path):
         node.close()
 
 
+@pytest.mark.stubbed_backend
 def test_bundle_over_32_mib_is_413(tmp_path, monkeypatch):
     node, admin, _member = _admin_daemon(tmp_path)
     monkeypatch.setattr("openai4s.server.diagnostics_routes.BUNDLE_MAX_BYTES", 64)
@@ -591,6 +594,7 @@ def test_bundle_over_32_mib_is_413(tmp_path, monkeypatch):
         node.close()
 
 
+@pytest.mark.stubbed_backend
 def test_temp_files_return_to_baseline_on_complete_disconnect_and_error(
     tmp_path, monkeypatch
 ):

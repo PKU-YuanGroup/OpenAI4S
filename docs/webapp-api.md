@@ -349,6 +349,17 @@ success response body. Serializer shapes are in §4.
 | `GET /onboarding` | Redacted first-run state: which of the four decisions — model path, the explicit Test, environment/network readiness, first Project — are already satisfied. Derived entirely from stored state, so opening the wizard contacts no provider and cannot be used to probe whether a key works. No credential value appears in the payload. |
 | `POST /onboarding/complete` | Marks first-run finished. In team mode this is admin-only (`403 admin_only`): the state is installation-wide, so a member dismissing it would be deciding for everyone. |
 
+### Diagnostics
+
+All three are admin-only in team mode on every verb (`403 admin_only`, never
+404) and answer with `Cache-Control: no-store`.
+
+| Method & path | Behavior |
+| --- | --- |
+| `GET /diagnostics/status` | Passive security posture (`security`, `environment`, `request_id`): permission stats plus the sandbox / egress / secret-store / confinement env knobs. No network, no child process, no Store open. |
+| `POST /diagnostics/checks` | The full `doctor.report()` — the same probes the CLI `doctor` runs, side effects included (a temp sandbox self-test, environment root walks). `{"status","checks":[…],"request_id"}`. |
+| `POST /diagnostics/bundle` | Streams the redacted support zip (`application/zip`, `Content-Disposition: attachment`). The body is ignored — the client cannot name the output path. One generation in flight per process and one per principal per 60 s (`429 rate_limited`; a 413 or a failed generation does not spend the cooldown); `413 payload_too_large` above 32 MiB. |
+
 ### Models and model profiles
 
 **Readiness is local; reachability is asked for.** Every profile carries a
@@ -851,6 +862,9 @@ the route index so the surface is discoverable from one place.
 | `POST /compute/jobs` | Body `{command|code,kind("bash"),cwd?,deadline_s?}` → job row. `deadline_s` defaults to one hour and is refused above 24 h with `job_bad_deadline`; there is no unbounded run. **Local code-exec endpoint** — protected only by the Origin check + loopback bind. |
 | `POST /compute/jobs/{id}/cancel` | Cancel result. |
 | `GET /compute/jobs/{id}` | Job row, plus `output`. |
+| `GET /frames/{fid}/compute/tasks` | This session's remote compute work (owner-scoped; another session's jobs are neither listed nor counted). Opening it does not contact a provider. |
+| `POST /frames/{fid}/compute/tasks/{job_id}/refresh` | Contacts the remote for ONE job because a person asked; the probe is also the harvest. |
+| `POST /frames/{fid}/compute/tasks/{job_id}/cancel` | Body must be `{"confirm": true}` (`400 confirmation_required` otherwise, with zero remote calls). `200 {"outcome":"cancel_confirmed","task"}` only when the provider confirmed the stop; `202 {"outcome":"cancel_indeterminate","reason","hint","task"}` when it could not (`remote_unreachable` / `receipt_unconfirmed` / `provider_cancel_unsupported`) — the job stays live and **may still be running and billing**; `409 already_terminal` when the job reached a terminal state first (the real state rides on `task.status`); `404 not_found` for a job this session does not own. |
 
 A job row carries `status` from `queued|running|done|failed|cancelled|timeout|abandoned`.
 The last two are distinct on purpose: `timeout` is the daemon stopping a job that

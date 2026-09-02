@@ -156,6 +156,12 @@ def decode_project_cursor(
         stamp = payload["t"]
         if stamp is not None:
             stamp = int(stamp)
+            # SQLite binds a 64-bit integer. A forged cursor carrying a wider
+            # value passed this decoder and then raised OverflowError at bind
+            # time, which is not a ValueError and so surfaced as a 500 rather
+            # than the documented 400 `invalid_cursor`.
+            if not -(2**63) <= stamp < 2**63:
+                raise ValueError("last_active_at out of range")
         return (stamp, project_id)
     except ValueError:
         raise

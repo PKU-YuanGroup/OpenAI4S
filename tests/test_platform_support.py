@@ -299,16 +299,19 @@ def test_every_tested_version_is_a_claimed_version():
     harmless -- it is the shape of a claim that drifted, and whichever side is
     wrong, the two disagreeing is the bug.
 
-    The container runtime is the one deliberate exception: it is claimed by
-    the Dockerfile and the support matrix, not by a wheel classifier, and
-    `test_the_container_interpreter_is_tested_and_gated` is what keeps that
-    claim honest.
+    No exemption for the container's series: an interpreter the published
+    image runs is one the wheel supports, so it is claimed by a classifier
+    like every other tested version. Exempting whatever the Dockerfile names
+    would let a FROM bump to an unclaimed series pass this check silently.
     """
     tested, claimed = _ci_tested_versions(), _classifier_versions()
-    extra = tested - claimed - {_dockerfile_series()}
-    assert not extra, (
-        f"CI tests Python {sorted(extra)}, which the classifiers do not claim "
-        "and the Dockerfile does not ship"
+    extra = tested - claimed
+    assert (
+        not extra
+    ), f"CI tests Python {sorted(extra)}, which the classifiers do not claim"
+    assert _dockerfile_series() in claimed, (
+        f"the container ships Python {_dockerfile_series()}, which the "
+        "classifiers do not claim"
     )
 
 

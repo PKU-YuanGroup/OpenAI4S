@@ -195,6 +195,28 @@ UNOBSERVABLE_WIDER_TYPES: dict[str, dict[tuple[str, ...], dict[str, Any]]] = {
 }
 
 
+def _widened(observed: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    """Union the declared members INTO the observed type; never replace it.
+
+    Replacing `type` wholesale made the table a blindfold: a route that
+    regressed to emitting an integer there was rewritten to the declared
+    `["null", "string"]` on both sides of `--check`, so the one field the
+    table names was the one field the gate could no longer see. A union
+    restores the unobservable member and still lets a genuinely new member
+    surface as drift.
+    """
+    merged = dict(observed)
+    for key, value in override.items():
+        if key != "type":
+            merged[key] = value
+            continue
+        seen = observed.get("type")
+        seen_members = [seen] if isinstance(seen, str) else list(seen or [])
+        declared = [value] if isinstance(value, str) else list(value)
+        merged["type"] = sorted(set(seen_members) | set(declared))
+    return merged
+
+
 def widen_unobservable_types(route: str, schema: dict[str, Any]) -> dict[str, Any]:
     """Restore types the suite structurally cannot observe. See the table."""
 
@@ -210,7 +232,7 @@ def widen_unobservable_types(route: str, schema: dict[str, Any]) -> dict[str, An
         if isinstance(properties, dict):
             result["properties"] = {
                 key: (
-                    {**apply(value, path + (key,)), **overrides[path + (key,)]}
+                    _widened(apply(value, path + (key,)), overrides[path + (key,)])
                     if path + (key,) in overrides
                     else apply(value, path + (key,))
                 )
@@ -561,8 +583,31 @@ def install(gateway_module, recorder: Recorder):
                     return raw(code, body, ctype, extra)
                 return raw(code, body, ctype, extra=extra, security=security)
 
+            # The fourth writer. `_send_static_bytes` carries JSON for the
+            # diagnostics routes (their `Cache-Control: no-store` cannot go
+            # through `_json`), and a writer the suite-side recorder does not
+            # wrap is a route whose real 200 is never frozen.
+            static = getattr(self, "_send_static_bytes", None)
+            had_own_static = "_send_static_bytes" in self.__dict__
+
+            def observing_static(code, body, ctype, extra=None, security=None):
+                try:
+                    payload = _json_payload(body, ctype)
+                    route = getattr(self, "_capture_route", None)
+                    if payload is not None:
+                        recorder.observe(method, sub, code, payload, route=route)
+                    else:
+                        recorder.observe_raw(
+                            method, sub, code, ctype, len(body or b""), route=route
+                        )
+                except Exception:  # noqa: BLE001 - never break a response
+                    pass
+                return static(code, body, ctype, extra, security)
+
             self._json = observing
             self._send = observing_send
+            if callable(static):
+                self._send_static_bytes = observing_static
             try:
                 return inner_api(self, method, sub)
             finally:
@@ -574,6 +619,11 @@ def install(gateway_module, recorder: Recorder):
                     self._send = raw
                 else:
                     self.__dict__.pop("_send", None)
+                if callable(static):
+                    if had_own_static:
+                        self._send_static_bytes = static
+                    else:
+                        self.__dict__.pop("_send_static_bytes", None)
 
         handler_class._api = _api
         return handler_class
@@ -688,7 +738,7 @@ def _probe_handler(
     query: dict[str, list[str]] | None = None,
     body: dict | None = None,
 ):
-    """A handler whose three response writers report into ``recorder``.
+    """A handler whose four response writers report into ``recorder``.
 
     Shared by the parameterless sweep and the seeded pass below, because a
     second copy of "how a probe answers" is how one of them comes to record a
@@ -767,12 +817,32 @@ def _probe_handler(
     # synthetic handler. Left unstubbed, the diagnostics routes publish
     # whatever their *other* verbs produced, which is the exact lie the
     # comment above describes. Mirrors the real method's signature.
-    handler._send_static_bytes = (
-        lambda code, body, ctype, extra=None, security=None: recorder.observe_raw(
-            method, path, code, ctype, len(body or b""), route=route
-        )
-    )
+    #
+    # A JSON body through this writer is still a JSON contract. Recording it
+    # as opaque bytes left every diagnostics 200/403/413/429 shape out of the
+    # frozen schema while `docs/response-contract.json` listed the route as
+    # `json` -- a contract that named the kind and froze nothing.
+    def _stub_static_bytes(code, body, ctype, extra=None, security=None):
+        payload = _json_payload(body, ctype)
+        if payload is not None:
+            recorder.observe(method, path, code, payload, route=route)
+            return
+        recorder.observe_raw(method, path, code, ctype, len(body or b""), route=route)
+
+    handler._send_static_bytes = _stub_static_bytes
     return handler
+
+
+def _json_payload(body: Any, ctype: Any) -> Any:
+    """The decoded document when a static-bytes response is JSON, else None."""
+    kind = str(ctype or "").split(";")[0].strip().lower()
+    if kind != "application/json" or not body:
+        return None
+    try:
+        text = body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body
+        return json.loads(text)
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 #: What a seeded capture writes. Fixed rather than generated: the artifacts it

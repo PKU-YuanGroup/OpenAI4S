@@ -690,7 +690,12 @@ def _delegate_result_status(result: Any) -> str:
     task_status = result.get("task_status")
     if isinstance(task_status, str):
         return _DELEGATE_STEP_STATUS.get(task_status, "error")
-    if result.get("stop_reason") in ("stopped", "cancelled", "max_turns"):
+    if result.get("stop_reason") in (
+        "stopped",
+        "cancelled",
+        "max_turns",
+        "no_progress",
+    ):
         return "warning"
     if result.get("error"):
         return "error"
@@ -2732,14 +2737,23 @@ class HostDispatcher:
     @staticmethod
     def _compute_guard(fn: Callable[[], Any]) -> Any:
         """Map ComputeError -> the soft-fail wire shape the SDK's _compute_call
-        expects ({error, error_kind, concurrency}); the SDK re-raises it as a
-        RuntimeError carrying .error_kind."""
+        expects ({error, error_kind, indeterminate, concurrency}); the SDK
+        re-raises it as a RuntimeError carrying .error_kind / .indeterminate.
+
+        `indeterminate` travels explicitly: the manager sets it for kinds the
+        SDK cannot infer (a `transient` submit whose container may already
+        exist), and a cell that reads it as False resubmits and double-bills.
+        """
         from openai4s.compute import ComputeError
 
         try:
             return fn()
         except ComputeError as e:
-            out: dict[str, Any] = {"error": str(e), "error_kind": e.error_kind}
+            out: dict[str, Any] = {
+                "error": str(e),
+                "error_kind": e.error_kind,
+                "indeterminate": bool(getattr(e, "indeterminate", False)),
+            }
             if e.concurrency is not None:
                 out["concurrency"] = e.concurrency
             return out

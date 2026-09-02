@@ -856,10 +856,54 @@ def restore_progress_circuit(
 
     ``RunState.metadata`` is only a process cache. Callers that resume after a
     restart or compaction must use this entry point rather than a checkpoint.
+
+    Only the groups after the latest external ``user`` group matter, so the
+    branch is scanned once WITHOUT event payloads to find that ordinal and
+    only the epoch's groups are read with events. Reading the whole branch
+    with every event decoded on every Web message was O(session) per turn
+    for a circuit that, right after ``append_user``, is empty by definition.
+    A store that cannot narrow the read (or a branch with no local user
+    group, whose epoch may start in an inherited prefix) takes the full,
+    fork-aware path.
     """
 
     from .progress_circuit import reconstruct_progress_circuit
 
+    list_groups = getattr(store, "list_action_groups", None)
+    if callable(list_groups):
+        try:
+            outline = list_groups(
+                root_frame_id,
+                branch_id=branch_id or root_frame_id,
+                include_events=False,
+            )
+        except TypeError:
+            outline = None
+        if outline:
+            user_group: Mapping[str, Any] | None = None
+            for group in outline:
+                if str(group.get("kind") or "") == "user":
+                    user_group = group
+            last_user = None if user_group is None else user_group.get("ordinal")
+            if isinstance(last_user, int) and not isinstance(last_user, bool):
+                # The epoch is anchored on the user group itself, so it rides
+                # along (events are irrelevant for a user row); the groups
+                # after it are the only ones read with their events.
+                epoch: list[Mapping[str, Any]] = [dict(user_group or {})]
+                if any(
+                    isinstance(group.get("ordinal"), int)
+                    and group["ordinal"] > last_user
+                    for group in outline
+                ):
+                    epoch.extend(
+                        dict(group)
+                        for group in list_groups(
+                            root_frame_id,
+                            branch_id=branch_id or root_frame_id,
+                            after_ordinal=last_user,
+                        )
+                    )
+                return reconstruct_progress_circuit(epoch)
     return reconstruct_progress_circuit(
         branch_action_groups(store, root_frame_id, branch_id=branch_id)
     )

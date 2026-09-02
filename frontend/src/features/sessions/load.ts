@@ -15,7 +15,6 @@ import {
   projectsHasMore,
   projectsLoadError,
   projectsNextCursor,
-  projectsQuery,
   projectsTotal,
   sessionPages,
   sessions,
@@ -111,7 +110,10 @@ export function projectDashView(opts: {
   hasMore: boolean;
   loadingMore: boolean;
 }): ProjectDashView {
-  if (opts.error) return { kind: "error" };
+  // A failed "Load more" keeps the rows already on screen (loadProjects only
+  // clears the store on a failed replace), so the card must keep them too:
+  // the Load-more button doubles as the retry.
+  if (opts.error && !opts.count) return { kind: "error" };
   if (!opts.count) return { kind: opts.query.trim() ? "no-match" : "empty" };
   return {
     kind: "list",
@@ -121,8 +123,20 @@ export function projectDashView(opts: {
 }
 
 let _projectsLoadGen = 0;
+/** The `q` the current page set was loaded with; an append continues it. */
+let _projectsLoadedQuery = "";
 
-export async function loadProjects(opts?: { append?: boolean }): Promise<void> {
+/**
+ * Load the first page (`replace`) or the next page (`append`) of projects.
+ *
+ * Only the dashboard search passes `q`. Every other caller — open/create/
+ * rename/delete project, session-package import, the onboarding wizard —
+ * wants the unfiltered directory, because `projects.value` also backs the
+ * project name in the header, the project switcher and the session labels.
+ * Reading the search signal here for all of them leaked a dashboard filter
+ * into places that had no search box to clear it from.
+ */
+export async function loadProjects(opts?: { append?: boolean; q?: string }): Promise<void> {
   const append = !!opts?.append;
   if (
     append &&
@@ -135,7 +149,7 @@ export async function loadProjects(opts?: { append?: boolean }): Promise<void> {
     return;
   }
   const gen = ++_projectsLoadGen;
-  const q = normalizeProjectQuery(String(projectsQuery.value || ""));
+  const q = append ? _projectsLoadedQuery : normalizeProjectQuery(String(opts?.q ?? ""));
   const cursor = append ? projectsNextCursor.value : null;
   const path = projectListQuery({ q, cursor });
   try {
@@ -149,6 +163,7 @@ export async function loadProjects(opts?: { append?: boolean }): Promise<void> {
     } | null;
     if (gen !== _projectsLoadGen) return;
     const incoming = (d && d.projects) || [];
+    if (!append) _projectsLoadedQuery = q;
     projects.value = mergeProjectPage(
       (projects.value as ProjectLike[]) || [],
       incoming,

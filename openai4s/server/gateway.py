@@ -56,6 +56,7 @@ from openai4s.agent.ledger import (
 )
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
+from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
 from openai4s.agent.task_modes import TaskMode, resolve_task_mode, task_mode_prompt
 from openai4s.config import (
@@ -109,6 +110,7 @@ from openai4s.server import (
     local_auth,
     onboarding_routes,
     orchestration_routes,
+    project_listing,
     retrieval_source,
     team_policy,
     team_routes,
@@ -3340,59 +3342,28 @@ class SessionRunner:
                 503, "remote compute is not available here", "no_provider"
             ) from error
 
-        from openai4s.compute.manager import ComputeError
-
-        def _indeterminate_reason(error: BaseException) -> str:
-            kind = str(getattr(error, "error_kind", "") or "")
-            if kind in {
-                "remote_unreachable",
-                "receipt_unconfirmed",
-                "provider_cancel_unsupported",
-            }:
-                return kind
-            message = str(error).lower()
-            if (
-                kind == "invalid_request"
-                or "unsupported" in message
-                or "not support" in message
-            ):
-                return "provider_cancel_unsupported"
-            if (
-                "could not reach" in message
-                or "timed out" in message
-                or "timeout" in message
-                or "deadline" in message
-            ):
-                return "remote_unreachable"
-            return "receipt_unconfirmed"
+        from openai4s.compute.manager import CANCEL_INDETERMINATE_REASONS, ComputeError
 
         try:
             outcome = manager.cancel({"job_id": job_id})
-        except ComputeError as error:
+        except Exception as error:  # noqa: BLE001
             kind = str(getattr(error, "error_kind", "") or "")
-            if kind == "not_found":
+            if isinstance(error, ComputeError) and kind == "not_found":
                 raise GatewayError(404, f"no such job {job_id}", "not_found") from error
             record_diagnostic(
                 error, surface="compute:cancel", request_id=correlation_id()
             )
             record = self.store.get_compute_job(job_id) or {"job_id": job_id}
+            # `ComputeManager.cancel` already maps every failure onto the
+            # closed cancel-reason set (`_cancel_failure`); anything that
+            # arrives without one of those kinds is an unconfirmed receipt.
             return {
                 "outcome": "cancel_indeterminate",
-                "reason": _indeterminate_reason(error),
-                "hint": (
-                    "cancel could not be confirmed; the job may still be "
-                    "running and billing"
+                "reason": (
+                    kind
+                    if kind in CANCEL_INDETERMINATE_REASONS
+                    else "receipt_unconfirmed"
                 ),
-                "task": compute_tasks.public_task(record),
-            }
-        except Exception as error:  # noqa: BLE001
-            record_diagnostic(
-                error, surface="compute:cancel", request_id=correlation_id()
-            )
-            record = self.store.get_compute_job(job_id) or {"job_id": job_id}
-            return {
-                "outcome": "cancel_indeterminate",
-                "reason": "receipt_unconfirmed",
                 "hint": (
                     "cancel could not be confirmed; the job may still be "
                     "running and billing"
@@ -9879,6 +9850,32 @@ class SessionRunner:
                             "chunk": "\n\n" + err_text + "\n",
                         }
                     )
+                elif loop_reason == NO_PROGRESS_STOP_REASON:
+                    # The generic no-progress circuit tripped. Like
+                    # `max_turns` this is a product outcome with a stable
+                    # code, and the Engine forced `completion=None` on it, so
+                    # the turn is failed here rather than left at the
+                    # `completed` default -- otherwise the review gate arms
+                    # on a non-answer and the Ledger's `failed` terminal
+                    # disagrees with the frame's status.
+                    status = "failed"
+                    failure_meta["code"] = NO_PROGRESS_STOP_REASON
+                    err_text = (
+                        "已停止重复动作。请编辑提示或显式继续。"
+                        if response_language(user_text) == "zh"
+                        else (
+                            "Stopped repeating actions. "
+                            "Edit the prompt or continue explicitly."
+                        )
+                    )
+                    emit(
+                        {
+                            "type": "text_chunk",
+                            "frame_id": root_frame_id,
+                            "block_type": "text",
+                            "chunk": "\n\n" + err_text + "\n",
+                        }
+                    )
             except Exception as e:  # noqa: BLE001
                 status = "failed"
                 # Projected ONCE, before anything is shown or stored, and every
@@ -11008,7 +11005,6 @@ class SessionRunner:
         )
         from openai4s.agent.ledger import restore_progress_circuit
         from openai4s.agent.progress_circuit import (
-            NO_PROGRESS_STOP_REASON,
             ProgressCircuit,
             attach_progress_circuit,
         )
@@ -11031,25 +11027,9 @@ class SessionRunner:
             return denied.reason
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
-        if result.stop_reason == NO_PROGRESS_STOP_REASON:
-            language = response_language(latest_user_text)
-            notice = (
-                "已停止重复动作。请编辑提示或显式继续。"
-                if language == "zh"
-                else (
-                    "Stopped repeating actions. "
-                    "Edit the prompt or continue explicitly."
-                )
-            )
-            assistant_visible.append({"at": int(time.time() * 1000), "text": notice})
-            emit(
-                {
-                    "type": "text_chunk",
-                    "frame_id": rid,
-                    "block_type": "text",
-                    "chunk": "\n\n" + notice + "\n",
-                }
-            )
+        # A `no_progress` stop is projected by `run_message`, next to
+        # `max_turns`: it is a failed turn with a stable code, not a notice
+        # appended to a turn that then records itself as completed.
         self._telemetry_turn(st, result)
         self._freeze_auto_budget_tokens(st)
         return result.stop_reason
@@ -15257,126 +15237,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
             if sub == "/projects" and method == "GET":
-                from openai4s.storage.frames import (
-                    PROJECT_PAGE_DEFAULT,
-                    PROJECT_PAGE_MAX,
-                    PROJECT_Q_MAX_CODEPOINTS,
-                    decode_project_cursor,
-                    encode_project_cursor,
-                    project_filter_fingerprint,
-                )
-
                 # Team visibility is a WHERE conjunct on the listing SQL
-                # (INV-13), not a post-filter after LIMIT: hidden rows must
-                # not occupy page slots or forge the end of the list.
-                filt = self._team_visibility_filter()
-                raw_q = (q.get("q") or [None])[0]
-                raw_limit = (q.get("limit") or [None])[0]
-                raw_cursor = (q.get("cursor") or [None])[0]
-                raw_offset = (q.get("offset") or [None])[0]
-                paging = any(
-                    value not in (None, "")
-                    for value in (raw_q, raw_limit, raw_cursor, raw_offset)
+                # (INV-13), not a post-filter after LIMIT; the parameter
+                # table, keyset paging and the compat modes live in
+                # `project_listing`, through the Store facade.
+                envelope = project_listing.list_projects_page(
+                    store, q, visible_to_user_id=self._team_visibility_filter()
                 )
-                search = "" if raw_q in (None, "") else str(raw_q).strip()
-                if len(search) > PROJECT_Q_MAX_CODEPOINTS:
-                    raise GatewayError(
-                        400,
-                        "q must be at most 128 Unicode code points",
-                        "invalid_q",
-                    )
-                team_scope = "" if filt is None else str(filt)
-                fingerprint = project_filter_fingerprint(
-                    q=search, team_scope=team_scope
-                )
-                if raw_cursor not in (None, "") and raw_offset not in (None, ""):
-                    raise GatewayError(
-                        400,
-                        "cursor and offset cannot be combined",
-                        "bad_request",
-                    )
-                before = None
-                if raw_cursor not in (None, ""):
-                    try:
-                        before = decode_project_cursor(
-                            str(raw_cursor), fingerprint=fingerprint
-                        )
-                    except ValueError as exc:
-                        raise GatewayError(
-                            400,
-                            f"invalid cursor: {exc}",
-                            "invalid_cursor",
-                        ) from exc
-                offset = None
-                if raw_offset not in (None, ""):
-                    try:
-                        offset = int(raw_offset)
-                    except (TypeError, ValueError) as exc:
-                        raise GatewayError(
-                            400, "offset must be an integer", "invalid_offset"
-                        ) from exc
-                    if offset < 0:
-                        raise GatewayError(
-                            400,
-                            "offset must be at least 0",
-                            "invalid_offset",
-                        )
-                repo = store._frames
-                if not paging:
-                    projects = repo.list_projects(visible_to_user_id=filt)
-                    self._json(
-                        {
-                            "projects": [_project_json(p) for p in projects],
-                            "total": len(projects),
-                        }
-                    )
-                    return
-                if raw_limit in (None, ""):
-                    limit = PROJECT_PAGE_DEFAULT
-                else:
-                    try:
-                        limit = int(raw_limit)
-                    except (TypeError, ValueError) as exc:
-                        raise GatewayError(
-                            400, "limit must be an integer", "invalid_limit"
-                        ) from exc
-                    if limit < 1:
-                        raise GatewayError(
-                            400, "limit must be at least 1", "invalid_limit"
-                        )
-                    limit = min(limit, PROJECT_PAGE_MAX)
-                keyset = offset is None
-                rows = repo.list_projects(
-                    q=search or None,
-                    limit=limit + 1 if keyset else limit,
-                    offset=offset,
-                    before=before,
-                    visible_to_user_id=filt,
-                )
-                total = repo.count_projects(q=search or None, visible_to_user_id=filt)
-                if keyset:
-                    has_more = len(rows) > limit
-                    page = rows[:limit]
-                    next_cursor = None
-                    if has_more and page:
-                        tail = page[-1]
-                        next_cursor = encode_project_cursor(
-                            last_active_at=tail.get("last_active_raw"),
-                            project_id=str(tail["project_id"]),
-                            fingerprint=fingerprint,
-                        )
-                else:
-                    page = rows
-                    has_more = (offset or 0) + len(page) < total
-                    next_cursor = None
-                self._json(
-                    {
-                        "projects": [_project_json(p) for p in page],
-                        "total": total,
-                        "next_cursor": next_cursor,
-                        "has_more": has_more,
-                    }
-                )
+                envelope["projects"] = [_project_json(p) for p in envelope["projects"]]
+                self._json(envelope)
                 return
             if sub == "/projects" and method == "POST":
                 b = self._body()

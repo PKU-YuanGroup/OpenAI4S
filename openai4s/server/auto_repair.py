@@ -128,7 +128,14 @@ def _classify_repair_fn(fn: Any) -> str:
             continue
         accepted.append(param)
     names = [param.name for param in accepted]
-    if "admission" in names or len(accepted) >= 3:
+    if "admission" in names:
+        return "metered"
+    # A third parameter counts only when the callable REQUIRES it. A legacy
+    # two-parameter repair with an optional extra (`artifact_writer=None`)
+    # would otherwise be classified metered by arity alone: it would escape
+    # the legacy refusal under an active budget and receive the admission
+    # object positionally in a slot that was never meant for it.
+    if len(accepted) >= 3 and accepted[2].default is inspect.Parameter.empty:
         return "metered"
     return "legacy"
 

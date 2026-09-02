@@ -341,11 +341,32 @@ def _extract_network_mapping(nested_lines: list[str]) -> dict[str, Any] | None:
     return None
 
 
+def _split_top_level(text: str) -> list[str]:
+    """Split on commas outside ``[...]``; a flow list inside a flow mapping
+    must stay one part, or ``domains: [a, b]`` becomes ``['[a']`` plus a
+    key-less fragment that is silently dropped."""
+    parts: list[str] = []
+    buffer: list[str] = []
+    depth = 0
+    for char in text:
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            parts.append("".join(buffer))
+            buffer = []
+            continue
+        buffer.append(char)
+    parts.append("".join(buffer))
+    return parts
+
+
 def _parse_inline_network(rest: str) -> dict[str, Any]:
     inner = rest.strip()[1:-1]
     mode = None
     domains: list[str] = []
-    for part in inner.split(","):
+    for part in _split_top_level(inner):
         if ":" not in part:
             continue
         key, _, value = part.partition(":")

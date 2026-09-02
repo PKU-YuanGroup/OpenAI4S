@@ -55,4 +55,13 @@ describe("project directory paging", () => {
       projectDashView({ error: false, count: 3, query: "", hasMore: true, loadingMore: true }),
     ).toEqual({ kind: "list", showMore: true, loadingMore: true });
   });
+
+  it("keeps the loaded rows when a load-more fails, so the button is the retry", () => {
+    // loadProjects only clears the store on a failed *replace*; a failed
+    // append leaves the pages already fetched, and the card must not
+    // discard them behind a whole-list error box.
+    expect(
+      projectDashView({ error: true, count: 100, query: "", hasMore: true, loadingMore: false }),
+    ).toEqual({ kind: "list", showMore: true, loadingMore: false });
+  });
 });

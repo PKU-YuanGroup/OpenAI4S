@@ -226,6 +226,12 @@ export function SkillImport() {
                   method: "POST",
                   body: JSON.stringify({ content }),
                 });
+                // The write has landed: every reader of the cached catalog
+                // (composer autocomplete, palette, send-time mention
+                // resolution) must see the new Skill even if the review pane
+                // is dismissed by Escape, the backdrop or the header X rather
+                // than the Close button below.
+                dropSkillsCatalog();
                 setReview(rec(r.review));
                 setSaving(false);
                 hint(t("toast.skill.imported", asString(r.name)));

@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import inspect
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import fields
@@ -50,17 +51,30 @@ DURABLE_DELTA_KINDS = frozenset(
         "completion_delivery",
     }
 )
+#: Each consumer names the ONE method whose source contains its
+#: ``reserve(... consumer="<name>" ...)`` call. `inspect_budget_wiring()`
+#: checks for that literal, not for the substring ``auto_budget``: the
+#: substring test was satisfied by a comment, a helper name, or an unrelated
+#: `self._auto_budget()` in the same method, which is how `repair_turn` could
+#: be registered against `AutoRepairService.run` -- a method that never
+#: reserves it -- and still read as wired.
 SINK_REGISTRY = {
     "review": (
         "openai4s.server.scientific_review",
         "ScientificReviewService.evaluate",
     ),
     "repair": ("openai4s.server.auto_repair", "AutoRepairService.run"),
-    "model": ("openai4s.server.gateway", "SessionRunner._loop"),
+    "model": (
+        "openai4s.server.gateway",
+        "SessionRunner._invoke_model_with_auto_budget",
+    ),
     "extra_cell": ("openai4s.server.gateway", "SessionRunner._loop"),
-    "native_tool": ("openai4s.server.gateway", "SessionRunner._loop"),
+    "native_tool": (
+        "openai4s.server.gateway",
+        "SessionRunner._invoke_control_with_auto_budget",
+    ),
     "repeated_finding": ("openai4s.server.auto_repair", "AutoRepairService.run"),
-    "repair_turn": ("openai4s.server.auto_repair", "AutoRepairService.run"),
+    "repair_turn": ("openai4s.server.auto_repair", "RepairTurnAdmission.admit_turn"),
     "token": (
         "openai4s.server.scientific_review",
         "ScientificReviewService.evaluate",
@@ -267,7 +281,10 @@ def inspect_budget_wiring() -> dict[str, Any]:
         except (OSError, TypeError):
             missing_sinks.append(consumer)
             continue
-        if "auto_budget" not in source:
+        # Structural: the registered method must itself reserve THIS consumer.
+        if not re.search(
+            r'consumer\s*=\s*["\']' + re.escape(consumer) + r'["\']', source
+        ):
             missing_sinks.append(consumer)
     # A named-unwired consumer is still a missing sink. Publishing the
     # hole is not the same as wiring it; Stage 12 must refuse GA until

@@ -199,3 +199,34 @@ def test_imported_gpu_skill_catalog_readiness_is_not_a_boolean(tmp_path):
     assert row["readiness"]["checked_locally"] is True
     assert row["readiness"]["probed"] is False
     assert imported["review"]["readiness"]["state"] == row["readiness"]["state"]
+
+
+def test_flow_style_network_mapping_keeps_every_domain():
+    """`network: {mode: host_only, domains: [a, b]}` is one declaration.
+
+    The inline parser split the mapping on every comma before it looked at
+    the bracketed list, so the second domain vanished and the first kept its
+    `[` -- and the strict import gate certified that allowlist. The block
+    spelling of the same declaration parsed correctly, so two YAML spellings
+    of one declaration produced different allowlists.
+    """
+    from openai4s.skills_loader.capabilities import (
+        parse_network_frontmatter,
+        validate_network_frontmatter_strict,
+    )
+
+    raw = (
+        "---\n"
+        "name: flow-net\n"
+        "description: d\n"
+        "capabilities:\n"
+        "  network: {mode: host_only, domains: [a.example, b.example]}\n"
+        "---\n"
+        "body\n"
+    )
+    strict = validate_network_frontmatter_strict(raw)
+    tolerant = parse_network_frontmatter(raw)
+    assert strict is not None and tolerant is not None
+    assert strict.mode == "host_only"
+    assert list(strict.domains) == ["a.example", "b.example"]
+    assert list(tolerant.domains) == ["a.example", "b.example"]

@@ -105,5 +105,9 @@ export async function downloadDiagnosticsBundle(): Promise<void> {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  // Deferred like every other object-URL site in this tree (sessions/actions,
+  // islands/viewer): the specs intend the click to capture the blob
+  // synchronously, but WebKit has not honoured that on adjacent blob-URL
+  // paths, and a same-tick revoke is the one pattern with no upside.
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 }

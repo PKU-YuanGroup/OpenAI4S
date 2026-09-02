@@ -3364,14 +3364,10 @@ async function cancelComputeTask(jobId: string, button: HTMLButtonElement): Prom
       hint?: string;
       task?: { status?: string };
     };
+    // `already_terminal` arrives as HTTP 409, which `api()` throws; it is
+    // handled in the catch below, not here.
     if (result && result.outcome === "cancel_indeterminate") {
       hint(result.hint || COMPUTE_MAY_STILL_BILL, true);
-    } else if (result && result.outcome === "already_terminal") {
-      hint(
-        "The job already ended as " +
-          String((result.task && result.task.status) || "terminal") +
-          ".",
-      );
     }
     await loadWorkbenchState(id, true);
   } catch (e) {
