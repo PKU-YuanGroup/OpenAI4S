@@ -164,6 +164,67 @@ def route_for(path: str, patterns=None) -> str | None:
     return None
 
 
+#: Fields whose real type is wider than anything the offline suite can reach,
+#: with the reason the suite cannot reach it. Applied at write time, like
+#: `elide_machine_state`, so observation and merging stay untouched.
+#:
+#: A recapture infers the type from what it saw. When a field is only ever
+#: null in the offline suite, that narrows the frozen type -- and the tool
+#: calls the narrowing additive, because dropping a member cannot break a
+#: client reading the value. It breaks the *check* instead: on a machine
+#: whose responses do carry the wider member, the same route then reads as a
+#: breaking change. The alternative to this table is a human restoring the
+#: same line after every regenerate, which is not a contract but a habit.
+#:
+#: Add an entry only with the structural reason the suite cannot observe it.
+#: "No test happens to cover it" is a coverage gap -- write the test instead.
+UNOBSERVABLE_WIDER_TYPES: dict[str, dict[tuple[str, ...], dict[str, Any]]] = {
+    "GET /orchestration/jobs/([^/]+) [ok]": {
+        ("allocation", "reason"): {
+            # `Reason` is an enum, so this is a string whenever it is set.
+            # The route emits `allocation` only when `active_allocation`
+            # returns a row, and that query filters to active phases -- a
+            # terminal job reports `allocation: None`. A reason is written to
+            # a still-active allocation only while a cancel is in flight, so
+            # observing it needs a test to catch a race between the cancel
+            # and the terminal transition. A flaky test asserting a type is
+            # worse than this line.
+            "type": ["null", "string"],
+        },
+    },
+}
+
+
+def widen_unobservable_types(route: str, schema: dict[str, Any]) -> dict[str, Any]:
+    """Restore types the suite structurally cannot observe. See the table."""
+
+    overrides = UNOBSERVABLE_WIDER_TYPES.get(route)
+    if not overrides or not isinstance(schema, dict):
+        return schema
+
+    def apply(node: Any, path: tuple[str, ...]) -> Any:
+        if not isinstance(node, dict):
+            return node
+        result = dict(node)
+        properties = result.get("properties")
+        if isinstance(properties, dict):
+            result["properties"] = {
+                key: (
+                    {**apply(value, path + (key,)), **overrides[path + (key,)]}
+                    if path + (key,) in overrides
+                    else apply(value, path + (key,))
+                )
+                for key, value in properties.items()
+            }
+        for nested in ("items", "values"):
+            child = result.get(nested)
+            if isinstance(child, dict):
+                result[nested] = apply(child, path)
+        return result
+
+    return apply(schema, ())
+
+
 def elide_machine_state(schema: dict[str, Any]) -> dict[str, Any]:
     """Replace machine-state subtrees with an opaque object.
 
@@ -381,7 +442,11 @@ class Recorder:
             # unrelated new test that happens to touch a route produce a diff,
             # and the file is worth reviewing only when a shape moved.
             "routes": {
-                key: {"schema": elide_machine_state(self.shapes[key])}
+                key: {
+                    "schema": widen_unobservable_types(
+                        key, elide_machine_state(self.shapes[key])
+                    )
+                }
                 for key in sorted(self.shapes)
             },
         }

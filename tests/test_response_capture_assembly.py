@@ -316,3 +316,57 @@ def test_successful_assembly_consumes_its_shares(tmp_path):
     assert response_capture.assemble(destination) == 1
     assert not share.exists()
     assert response_capture.assemble(destination) == 0
+
+
+def test_an_unobservable_type_survives_a_recapture():
+    """The widening is applied at write time, so a recapture cannot narrow it.
+
+    `GET /orchestration/jobs/{id}` reports `allocation` only while
+    `active_allocation` returns a row -- a terminal job reports `None` -- and
+    a `reason` reaches a still-active allocation only mid-cancel. The offline
+    suite therefore only ever sees `null` there, and a plain recapture infers
+    `"null"`, dropping the string the enum produces in a real cancel. The
+    tool grades that additive because narrowing cannot break a reader; what
+    it breaks is the next `--check` on a machine that does observe a string.
+
+    Before the table this was restored by hand after every regenerate --
+    four times in one release. A type that survives only because someone
+    remembers is not frozen.
+    """
+
+    from openai4s.server import response_capture
+
+    route = "GET /orchestration/jobs/([^/]+) [ok]"
+    assert route in response_capture.UNOBSERVABLE_WIDER_TYPES
+    narrowed = {
+        "type": "object",
+        "properties": {
+            "allocation": {
+                "type": "object",
+                "properties": {
+                    "phase": {"type": "string"},
+                    "reason": {"type": "null"},
+                },
+            }
+        },
+    }
+
+    # Through `document()`, not the helper: the helper being correct while
+    # nothing calls it is the failure this test exists to catch. Reverting
+    # the call site has to turn this red.
+    recorder = response_capture.Recorder()
+    recorder.shapes[route] = narrowed
+    written = recorder.document()["routes"][route]["schema"]
+    allocation = written["properties"]["allocation"]["properties"]
+    assert allocation["reason"]["type"] == ["null", "string"]
+    # Only the declared field moves; its siblings are untouched.
+    assert allocation["phase"] == {"type": "string"}
+    # And the input is not mutated, so merging upstream still sees what it saw.
+    assert narrowed["properties"]["allocation"]["properties"]["reason"] == {
+        "type": "null"
+    }
+
+    untouched = response_capture.widen_unobservable_types(
+        "GET /elsewhere [ok]", narrowed
+    )
+    assert untouched == narrowed
