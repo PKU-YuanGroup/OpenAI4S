@@ -1,7 +1,8 @@
 """Generation-aware context compaction and content-addressed output archives.
 
 The public ``estimate_tokens`` / ``should_compact`` / ``safe_keep_recent`` /
-``compact`` entry points remain compatible with the original implementation.
+``keep_recent_by_tokens`` / ``compact`` entry points remain compatible with
+the original implementation.
 The V2 helpers make the policy's previously implicit contracts explicit:
 
 * text, images, native tool calls, and provider wire state are budgeted
@@ -65,6 +66,16 @@ HANDOFF_FIELDS = (
 
 _CODE_FENCE_RE = re.compile(r"(^|\n)\s*`{3,}(?:python|py|r)\s*\n", re.IGNORECASE)
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# CJK punctuation, hiragana/katakana, extension A, unified ideographs,
+# Hangul syllables, and half/fullwidth forms.  One findall counts them.
+_CJK_CHAR_RE = re.compile(
+    "[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
+    "\uac00-\ud7af\uff00-\uffef]"
+)
+_PREVIOUS_HANDOFF_PREFIX = (
+    "PREVIOUS HANDOFF (authoritative; carry every fact forward; "
+    "Decisions, Done and Key Artifacts are append-only — never drop an item):\n"
+)
 
 
 class CompactionSummaryError(RuntimeError):
@@ -215,8 +226,17 @@ def _json_text(value: Any) -> str:
 
 
 def _chars_to_tokens(value: str) -> int:
-    # Round up so small structured values are never estimated as free.
-    return max(1, (len(value) + 3) // 4) if value else 0
+    """CJK characters cost 1 token each; remaining characters 4-to-1.
+
+    Empty input stays 0.  Any non-empty string is at least 1.  ASCII rounding
+    matches the historical ``(len + 3) // 4`` ceiling so 4000 Latin characters
+    still estimate as 1000 tokens.
+    """
+    if not value:
+        return 0
+    cjk = len(_CJK_CHAR_RE.findall(value))
+    rest = len(value) - cjk
+    return max(1, cjk + (rest + 3) // 4)
 
 
 def _content_estimate(content: Any) -> tuple[int, int]:
@@ -398,6 +418,120 @@ def safe_keep_recent(messages: list[dict], minimum: int = 4) -> int:
             start = segment.start
             break
     return len(messages) - start
+
+
+def keep_recent_by_tokens(messages: list[dict], token_budget: int) -> int:
+    """Return an atomic tail whose unexpanded estimate fits ``token_budget``.
+
+    Messages are accumulated from the end until adding one more would exceed
+    the budget.  The count is then expanded with :func:`safe_keep_recent` so
+    a code/observation pair or assistant/tool batch is never split.  The
+    expansion may push the kept estimate above ``token_budget``.
+    """
+    if token_budget < 0:
+        raise ValueError("token_budget must be non-negative")
+    if token_budget == 0 or not messages:
+        return 0
+    kept = 0
+    tokens = 0
+    for index in range(len(messages) - 1, -1, -1):
+        cost = estimate_context([messages[index]]).total
+        if tokens + cost > token_budget:
+            break
+        tokens += cost
+        kept += 1
+    return safe_keep_recent(messages, kept)
+
+
+def _existing_handoff_text(messages: Sequence[Mapping[str, Any]]) -> str | None:
+    parts = [
+        str(message.get("content") or "")
+        for message in messages
+        if message.get("compaction_handoff")
+    ]
+    text = "\n\n".join(part for part in parts if part.strip())
+    return text or None
+
+
+def _summary_batches(
+    messages: Sequence[Mapping[str, Any]], chunk_budget: int
+) -> list[list[dict]]:
+    """Group atomic segments into batches whose estimate fits ``chunk_budget``.
+
+    A single atomic segment that itself exceeds the budget becomes its own
+    batch; segments are never split.
+    """
+    if not messages:
+        return []
+    batches: list[list[dict]] = []
+    current: list[dict] = []
+    current_tokens = 0
+    for segment in segment_messages(messages):
+        piece = list(messages[segment.start : segment.end])
+        piece_tokens = estimate_context(piece).total
+        if current and current_tokens + piece_tokens > chunk_budget:
+            batches.append(current)
+            current = []
+            current_tokens = 0
+        if not current and piece_tokens > chunk_budget:
+            batches.append(piece)
+            continue
+        current.extend(piece)
+        current_tokens += piece_tokens
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _compaction_windows(
+    projected: list[dict], *, keep_recent: int, context_budget: int
+) -> tuple[list[dict], list[dict], list[dict]] | None:
+    """Return ``(head, middle, tail)`` or ``None`` when compacting is a no-op.
+
+    Head is the first two non-handoff messages.  Handoff notes are stripped
+    from middle.  The tail is ``max(keep_recent, 0.25 * context_budget)``;
+    a token tail that would leave no middle falls back to ``keep_recent``.
+    """
+    head: list[dict] = []
+    head_last_index = -1
+    for index, message in enumerate(projected):
+        if message.get("compaction_handoff"):
+            continue
+        head.append(message)
+        head_last_index = index
+        if len(head) == 2:
+            break
+    if len(head) < 2:
+        return None
+    middle_start = head_last_index + 1
+    count_keep = safe_keep_recent(projected, keep_recent)
+    token_keep = keep_recent_by_tokens(projected, int(0.25 * context_budget))
+    tail_count = max(count_keep, token_keep)
+    tail_start = len(projected) - tail_count
+    if tail_start <= middle_start:
+        tail_count = count_keep
+        tail_start = len(projected) - tail_count
+        if tail_start <= middle_start:
+            return None
+    middle = [
+        projected[index]
+        for index in range(middle_start, tail_start)
+        if not projected[index].get("compaction_handoff")
+    ]
+    if not middle:
+        return None
+    return head, middle, projected[tail_start:]
+
+
+def _summary_user_content(
+    batch: Sequence[Mapping[str, Any]],
+    metadata: CompactionArchiveMetadata,
+    prev: str | None,
+) -> str:
+    body = _summary_input(batch, metadata)
+    if not prev:
+        return body
+    return _PREVIOUS_HANDOFF_PREFIX + prev + "\n\n" + body
 
 
 def _content_chars(content: Any) -> int:
@@ -732,6 +866,7 @@ def compact(
     ) = None,
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None,
     tool_schemas: Iterable[Mapping[str, Any]] = (),
+    context_budget: int | None = None,
 ) -> list[dict]:
     """Return a shorter, replay-safe message list or a no-op projection."""
     metadata = CompactionArchiveMetadata.from_mapping(archive_metadata)
@@ -742,25 +877,42 @@ def compact(
         archive_metadata=metadata,
         artifact_archiver=artifact_archiver,
     )
-    atomic_keep = safe_keep_recent(projected, keep_recent)
-    tail_start = len(projected) - atomic_keep
-    middle_start = min(2, len(projected))
-    if tail_start <= middle_start:
+    budget = int(
+        cfg.context_window_tokens if context_budget is None else context_budget
+    )
+    windows = _compaction_windows(
+        projected, keep_recent=keep_recent, context_budget=budget
+    )
+    if windows is None:
+        return projected
+    head, middle, tail = windows
+
+    prev = _existing_handoff_text(projected)
+    chunk_budget = min(48_000, int(0.3 * budget))
+    batches = _summary_batches(middle, chunk_budget)
+    if not batches:
         return projected
 
-    head = projected[:middle_start]
-    middle = projected[middle_start:tail_start]
-    tail = projected[tail_start:]
-    summary_res = chat(
-        [
-            {"role": "system", "content": _SUMMARY_SYSTEM},
-            {"role": "user", "content": _summary_input(middle, metadata)},
-        ],
-        cfg.llm,
-        max_tokens=_summary_max_tokens(cfg),
-    )
-    raw_summary = summary_res.get("content", "") or ""
-    _require_usable_summary(raw_summary, summary_res.get("finish_reason"))
+    chunk_estimates: list[int] = []
+    raw_summary = ""
+    for batch in batches:
+        chunk_estimates.append(estimate_context(batch).total)
+        summary_res = chat(
+            [
+                {"role": "system", "content": _SUMMARY_SYSTEM},
+                {
+                    "role": "user",
+                    "content": _summary_user_content(batch, metadata, prev),
+                },
+            ],
+            cfg.llm,
+            max_tokens=_summary_max_tokens(cfg),
+        )
+        raw_summary = _require_usable_summary(
+            summary_res.get("content", "") or "",
+            summary_res.get("finish_reason"),
+        )
+        prev = raw_summary
     handoff = _normalize_handoff(raw_summary, metadata)
     note = {
         "role": "system",
@@ -783,6 +935,8 @@ def compact(
             estimate_context(projected, tool_schemas),
             estimate_context(result, tool_schemas),
             archive_sink=archive_sink,
+            summary_chunks=len(batches),
+            summary_chunk_estimates=chunk_estimates,
         )
     return result
 
@@ -797,6 +951,8 @@ def _archive(
     after: ContextEstimate | None = None,
     *,
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None,
+    summary_chunks: int = 1,
+    summary_chunk_estimates: Sequence[int] | None = None,
 ) -> Path:
     """Write one raw compaction archive and return its path.
 
@@ -819,6 +975,10 @@ def _archive(
         "metadata": (metadata or CompactionArchiveMetadata()).as_dict(),
         "summary": summary,
         "handoff": handoff if handoff is not None else summary,
+        "summary_chunks": int(summary_chunks),
+        "summary_chunk_estimates": [
+            int(value) for value in (summary_chunk_estimates or ())
+        ],
         "context_estimate_before": (before or estimate_context(middle)).as_dict(),
         "context_estimate_after": (after or ContextEstimate()).as_dict(),
         "compacted_messages": safe_middle,
@@ -840,6 +1000,7 @@ __all__ = [
     "estimate_context",
     "estimate_tokens",
     "externalize_large_outputs",
+    "keep_recent_by_tokens",
     "load_archived_content",
     "safe_keep_recent",
     "segment_messages",
