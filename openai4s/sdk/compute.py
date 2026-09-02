@@ -10,6 +10,20 @@ from typing import Any, Callable
 # for from inside the kernel worker.
 from openai4s.compute.states import TERMINAL_STATES as _TERMINAL_STATUSES
 
+# Kinds a failed cancel may carry. The host's `_compute_guard` currently
+# forwards `error` + `error_kind` only, so this namespace infers
+# `indeterminate` from the kind when the wire omits the flag. A caller that
+# treats any exception as "the job is gone" is the failure this exists to
+# prevent.
+_INDETERMINATE_CANCEL_KINDS = frozenset(
+    {
+        "unknown_state",
+        "remote_unreachable",
+        "receipt_unconfirmed",
+        "provider_cancel_unsupported",
+    }
+)
+
 
 class SessionConcurrencyFull(RuntimeError):
     """Raised by submit_job(on_full="raise") when this session's
@@ -141,7 +155,12 @@ class _ComputeJob:
         never auto-cancel; the remote work keeps running and keeps billing
         until you poll it terminal or cancel it. Call this (or ``c.close()``)
         when you actually want to stop the remote work and free the
-        allocation."""
+        allocation.
+
+        A raised error with ``.indeterminate is True`` (or
+        ``error_kind`` in the closed cancel-indeterminate set) means the
+        remote did not confirm the stop. Do not treat that as cancelled.
+        """
         return self._compute_call(
             "cancel", {"job_id": self._job_id, "provider": self._provider}
         )
@@ -588,8 +607,13 @@ def _compute_call(
     result = host_call(f"compute_{op}", [kw])
     if isinstance(result, dict) and result.get("error") and "status" not in result:
         error = RuntimeError(f"host.compute.{op}: {result['error']}")
-        error.error_kind = result.get("error_kind")
+        error_kind = result.get("error_kind")
+        error.error_kind = error_kind
         error.concurrency = result.get("concurrency")
+        if "indeterminate" in result:
+            error.indeterminate = bool(result.get("indeterminate"))
+        else:
+            error.indeterminate = error_kind in _INDETERMINATE_CANCEL_KINDS
         raise error
     return result
 

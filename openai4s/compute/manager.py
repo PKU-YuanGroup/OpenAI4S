@@ -97,7 +97,27 @@ def _confinement_mode(value: str | None = None) -> str:
 # Error kinds that, by themselves, mean "the remote may or may not have acted".
 # Everything else is a definite rejection *only* when the raiser says so —
 # `indeterminate` is the explicit signal, and this set is merely its default.
-_INDETERMINATE_KINDS = frozenset({"unknown_state"})
+_INDETERMINATE_KINDS = frozenset(
+    {
+        "unknown_state",
+        # Closed-set cancel reasons. A failed cancel is never a confirmed
+        # stop: the remote may still be running and billing.
+        "remote_unreachable",
+        "receipt_unconfirmed",
+        "provider_cancel_unsupported",
+    }
+)
+
+# HTTP / Task Center map these kinds onto `cancel_indeterminate`. They are
+# also the default `indeterminate=True` kinds above, so a caller that only
+# reads `error_kind` cannot mistake them for a confirmed cancel.
+CANCEL_INDETERMINATE_REASONS = frozenset(
+    {
+        "remote_unreachable",
+        "receipt_unconfirmed",
+        "provider_cancel_unsupported",
+    }
+)
 
 
 class ComputeError(RuntimeError):
@@ -3261,7 +3281,7 @@ class ComputeManager:
                 f"job {job['job_id']!r} has no recorded remote process to "
                 f"signal; inspect {job.get('workdir')} on {job.get('alias')} "
                 f"by hand",
-                "unknown_state",
+                "receipt_unconfirmed",
                 indeterminate=True,
             )
         try:
@@ -3273,7 +3293,7 @@ class ComputeManager:
             raise ComputeError(
                 f"cancel could not reach {job['alias']}: {e}; the remote "
                 f"job may still be running",
-                "unknown_state",
+                "remote_unreachable",
                 indeterminate=True,
             )
         if proc.returncode != 0:
@@ -3285,7 +3305,7 @@ class ComputeManager:
                 f"cancel failed on {job['alias']} (exit {proc.returncode}): "
                 f"{proc.stderr.decode('utf-8', 'replace').strip() or 'no stderr'}"
                 f"; the remote job may still be running",
-                "unknown_state",
+                "receipt_unconfirmed",
                 indeterminate=True,
             )
 
@@ -3301,24 +3321,103 @@ class ComputeManager:
                 Path(td),
             )
 
+    def _cancel_failure(self, error: ComputeError) -> ComputeError:
+        """Map a terminate failure onto the closed-set cancel reasons.
+
+        Confirmed cancel is a separate path. Anything short of a provider
+        agreeing that the job is gone stays indeterminate so a caller cannot
+        render it as cancelled.
+        """
+        kind = error.error_kind
+        if kind in CANCEL_INDETERMINATE_REASONS:
+            if error.indeterminate:
+                return error
+            return ComputeError(str(error), kind, indeterminate=True)
+        message = str(error).lower()
+        if (
+            kind == "invalid_request"
+            or "unsupported" in message
+            or "not support" in message
+        ):
+            return ComputeError(
+                str(error), "provider_cancel_unsupported", indeterminate=True
+            )
+        if (
+            "could not reach" in message
+            or "timed out" in message
+            or "timeout" in message
+            or "deadline" in message
+        ):
+            return ComputeError(str(error), "remote_unreachable", indeterminate=True)
+        return ComputeError(str(error), "receipt_unconfirmed", indeterminate=True)
+
+    def _record_unconfirmed_cancel(self, job: dict, error: ComputeError) -> None:
+        """Leave the job live and record that a cancel was asked, not granted."""
+        self._persist(
+            job["job_id"],
+            reason=(
+                "cancel could not be confirmed; the job may still be "
+                "running and billing"
+            ),
+        )
+        self._event(
+            job["job_id"],
+            "cancel_unconfirmed",
+            {
+                "error_kind": error.error_kind,
+                "indeterminate": True,
+            },
+        )
+
     def cancel(self, kw: dict) -> dict:
         with self._lock:
             job = self._jobs.get(kw["job_id"])
         if job is None:
             raise ComputeError(f"no such job {kw['job_id']!r}", "not_found")
+        current = job.get("status")
+        if current in states.TERMINAL_STATES:
+            # Already over. Signalling a finished job is not a cancel, and it
+            # would be a remote call made for a fact we already hold.
+            return {
+                "status": current,
+                "conflict": {
+                    "requested": states.CANCELLED,
+                    "actual": current,
+                },
+                "hint": (
+                    "the job reached a terminal state before the cancel "
+                    "landed; the recorded outcome is unchanged"
+                ),
+            }
         fam, rest = self._split(job["provider"])
-        if fam == "ssh":
-            self._terminate_ssh_job(job)
-        else:
-            sandbox_id = job.get("sandbox_id")
-            if not sandbox_id:
-                raise ComputeError(
-                    f"job {job['job_id']!r} has no recorded sandbox to "
-                    f"terminate; it may still be running and billing",
-                    "unknown_state",
-                    indeterminate=True,
-                )
-            self._terminate_sandbox(rest, sandbox_id)
+        try:
+            if fam == "ssh":
+                self._terminate_ssh_job(job)
+            else:
+                sandbox_id = job.get("sandbox_id")
+                if not sandbox_id:
+                    raise ComputeError(
+                        f"job {job['job_id']!r} has no recorded sandbox to "
+                        f"terminate; it may still be running and billing",
+                        "receipt_unconfirmed",
+                        indeterminate=True,
+                    )
+                try:
+                    self._terminate_sandbox(rest, sandbox_id)
+                except ComputeError as error:
+                    raise self._cancel_failure(error) from error
+        except ComputeError as error:
+            if error.error_kind == "not_found":
+                raise
+            mapped = (
+                error
+                if error.error_kind in CANCEL_INDETERMINATE_REASONS
+                else self._cancel_failure(error)
+            )
+            self._record_unconfirmed_cancel(job, mapped)
+            if mapped is error:
+                raise
+            raise mapped from error
         conflict = self._commit_terminal(
             job,
             states.CANCELLED,

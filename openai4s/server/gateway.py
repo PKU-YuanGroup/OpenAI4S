@@ -3304,6 +3304,122 @@ class SessionRunner:
         task["polled"] = True
         return task
 
+    def cancel_compute_task(
+        self, root_frame_id: str, job_id: str, body: dict | None = None
+    ) -> dict:
+        """Ask the remote to stop ONE job, because a person confirmed.
+
+        Only ``{"confirm": true}`` reaches a provider. Anything else is a 400
+        with zero remote calls. Stop, closing the page, deleting the session,
+        a timeout UI, and a daemon restart never come through here.
+
+        A confirmed kill is the only path that returns ``cancel_confirmed``.
+        Unreachable remotes, unconfirmed receipts, and providers that cannot
+        confirm a cancel all return ``cancel_indeterminate`` and leave the job
+        live: the work may still be running and billing. A race with a natural
+        completion reports the real terminal state rather than cancelled.
+        """
+        if not isinstance(body, Mapping) or body.get("confirm") is not True:
+            raise GatewayError(
+                400,
+                'cancelling a remote job requires {"confirm": true}',
+                "confirmation_required",
+            )
+        workspace = self.active_workspace_for(root_frame_id)
+        dispatcher = build_dispatcher(
+            self.cfg, frame_id=root_frame_id, workspace=workspace
+        )
+        try:
+            manager = dispatcher.compute
+        except Exception as error:  # noqa: BLE001 - no provider configured
+            record_diagnostic(
+                error, surface="compute:provider", request_id=correlation_id()
+            )
+            raise GatewayError(
+                503, "remote compute is not available here", "no_provider"
+            ) from error
+
+        from openai4s.compute.manager import ComputeError
+
+        def _indeterminate_reason(error: BaseException) -> str:
+            kind = str(getattr(error, "error_kind", "") or "")
+            if kind in {
+                "remote_unreachable",
+                "receipt_unconfirmed",
+                "provider_cancel_unsupported",
+            }:
+                return kind
+            message = str(error).lower()
+            if (
+                kind == "invalid_request"
+                or "unsupported" in message
+                or "not support" in message
+            ):
+                return "provider_cancel_unsupported"
+            if (
+                "could not reach" in message
+                or "timed out" in message
+                or "timeout" in message
+                or "deadline" in message
+            ):
+                return "remote_unreachable"
+            return "receipt_unconfirmed"
+
+        try:
+            outcome = manager.cancel({"job_id": job_id})
+        except ComputeError as error:
+            kind = str(getattr(error, "error_kind", "") or "")
+            if kind == "not_found":
+                raise GatewayError(404, f"no such job {job_id}", "not_found") from error
+            record_diagnostic(
+                error, surface="compute:cancel", request_id=correlation_id()
+            )
+            record = self.store.get_compute_job(job_id) or {"job_id": job_id}
+            return {
+                "outcome": "cancel_indeterminate",
+                "reason": _indeterminate_reason(error),
+                "hint": (
+                    "cancel could not be confirmed; the job may still be "
+                    "running and billing"
+                ),
+                "task": compute_tasks.public_task(record),
+            }
+        except Exception as error:  # noqa: BLE001
+            record_diagnostic(
+                error, surface="compute:cancel", request_id=correlation_id()
+            )
+            record = self.store.get_compute_job(job_id) or {"job_id": job_id}
+            return {
+                "outcome": "cancel_indeterminate",
+                "reason": "receipt_unconfirmed",
+                "hint": (
+                    "cancel could not be confirmed; the job may still be "
+                    "running and billing"
+                ),
+                "task": compute_tasks.public_task(record),
+            }
+
+        record = self.store.get_compute_job(job_id) or {
+            "job_id": job_id,
+            **(outcome or {}),
+        }
+        task = compute_tasks.public_task(record)
+        if isinstance(outcome, Mapping) and outcome.get("conflict"):
+            actual = str(
+                (outcome.get("conflict") or {}).get("actual")
+                or outcome.get("status")
+                or task.get("status")
+                or ""
+            )
+            return {
+                "outcome": "already_terminal",
+                "error": "the job already reached a terminal state",
+                "code": "already_terminal",
+                "status": actual,
+                "task": task,
+            }
+        return {"outcome": "cancel_confirmed", "task": task}
+
     def workspace_for(self, root_frame_id: str) -> Path:
         ws = self._ws_root / root_frame_id
         ws.mkdir(parents=True, exist_ok=True)
@@ -17717,6 +17833,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if store.get_frame(fid) is None:
                     raise GatewayError(404, "session not found")
                 self._json(runner.refresh_compute_task(fid, job_id))
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/compute/tasks/([^/]+)/cancel", sub)
+            if m and method == "POST":
+                # Confirm-gated: missing confirm never reaches a provider.
+                fid, job_id = m.groups()
+                if store.get_frame(fid) is None:
+                    raise GatewayError(404, "session not found")
+                result = runner.cancel_compute_task(fid, job_id, self._body() or {})
+                outcome = result.get("outcome")
+                code = 200
+                if outcome == "cancel_indeterminate":
+                    code = 202
+                elif outcome == "already_terminal":
+                    code = 409
+                self._json(result, code)
                 return
             if sub == "/compute/jobs" and method == "GET":
                 self._json({"jobs": _jobs_mgr.list()})
