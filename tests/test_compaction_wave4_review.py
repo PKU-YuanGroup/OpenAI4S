@@ -492,6 +492,44 @@ def test_a_planted_file_at_the_digest_path_is_not_endorsed(tmp_path):
     assert again[-1]["content_archive"]["workspace_ref"] == ref
 
 
+def test_chunk_budget_leaves_room_for_the_previous_handoff(monkeypatch):
+    """Every summary request carries the previous handoff ahead of its chunk;
+    a chunk sized without it can push a later call past the window."""
+    budget = 40_000
+    big_prev = "\n\n".join(
+        f"## {field}\n- " + "prior " * 450 for field in comp_mod.HANDOFF_FIELDS
+    )
+    prev_tokens = estimate_context([{"role": "user", "content": big_prev}]).total
+    assert 0.12 * budget < prev_tokens < 0.18 * budget
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "system",
+            "content": comp_mod.COMPACTION_NOTE_PREFIX + big_prev,
+            "compaction_handoff": True,
+        },
+    ]
+    for index in range(60):
+        messages.append(
+            {"role": "assistant", "content": f"```python\nprint({index})\n```"}
+        )
+        messages.append(
+            {"role": "user", "content": f"[Observation]\n{index}\n" + "中文测试" * 500}
+        )
+    sent: list[int] = []
+
+    def fake_chat(chat_messages, llm_cfg, **kwargs):
+        sent.append(estimate_context([chat_messages[1]]).total)
+        return {"content": _handoff(), "finish_reason": "stop"}
+
+    monkeypatch.setattr(comp_mod, "chat", fake_chat)
+    compact(messages, get_config(), context_budget=budget)
+
+    assert len(sent) >= 2
+    assert max(sent) < 0.35 * budget, f"a request carried {max(sent)} tokens"
+
+
 # --- V12: a reopened breaker gets its full failure budget back ---------------
 
 

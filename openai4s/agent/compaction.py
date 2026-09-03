@@ -462,34 +462,42 @@ def _existing_handoff_text(messages: Sequence[Mapping[str, Any]]) -> str | None:
     return text or None
 
 
-def _summary_batches(
-    messages: Sequence[Mapping[str, Any]], chunk_budget: int
-) -> list[list[dict]]:
-    """Group atomic segments into batches whose estimate fits ``chunk_budget``.
+def _summary_pieces(
+    messages: Sequence[Mapping[str, Any]], metadata: CompactionArchiveMetadata
+) -> list[tuple[list[dict], int]]:
+    """Atomic segments, each priced as the transcript text the model receives.
 
-    A single atomic segment that itself exceeds the budget becomes its own
-    batch; segments are never split.
+    The cost is the serialized ``_summary_input`` form, not the raw message
+    estimate: the JSON wrapping is part of what the request carries.
     """
-    if not messages:
-        return []
-    batches: list[list[dict]] = []
-    current: list[dict] = []
-    current_tokens = 0
+    pieces: list[tuple[list[dict], int]] = []
     for segment in segment_messages(messages):
         piece = list(messages[segment.start : segment.end])
-        piece_tokens = estimate_context(piece).total
-        if current and current_tokens + piece_tokens > chunk_budget:
-            batches.append(current)
-            current = []
-            current_tokens = 0
-        if not current and piece_tokens > chunk_budget:
-            batches.append(piece)
-            continue
-        current.extend(piece)
-        current_tokens += piece_tokens
-    if current:
-        batches.append(current)
-    return batches
+        pieces.append((piece, _chars_to_tokens(_summary_input(piece, metadata))))
+    return pieces
+
+
+def _next_summary_batch(
+    pieces: Sequence[tuple[list[dict], int]], start: int, limit: int
+) -> tuple[list[dict], int]:
+    """Take segments from ``start`` while they fit ``limit``; at least one.
+
+    A single atomic segment that itself exceeds the limit becomes its own
+    batch; segments are never split.  Returns the batch and the next index.
+    """
+    batch: list[dict] = []
+    used = 0
+    index = start
+    while index < len(pieces):
+        piece, cost = pieces[index]
+        if batch and used + cost > limit:
+            break
+        batch.extend(piece)
+        used += cost
+        index += 1
+        if used > limit:
+            break
+    return batch, index
 
 
 def _compaction_windows(
@@ -1086,16 +1094,26 @@ def compact(
     head, middle, tail = windows
 
     prev = _existing_handoff_text(projected)
-    chunk_budget = min(48_000, int(0.3 * budget))
-    batches = _summary_batches(middle, chunk_budget)
-    if not batches:
+    pieces = _summary_pieces(middle, metadata)
+    if not pieces:
         return projected
 
+    # Each request carries the previous handoff ahead of the chunk, and that
+    # handoff is bounded only by the summary output cap, so the chunk is
+    # sized against what is left of the budget after it -- never below a
+    # floor, so an outsized handoff shortens chunks rather than zeroing them.
+    chunk_budget = min(48_000, int(0.3 * budget))
+    chunk_floor = max(1, chunk_budget // 6)
     chunk_estimates: list[int] = []
     raw_summary = ""
     cap = _summary_output_cap(cfg)
     max_tokens = _summary_max_tokens(cfg, cap)
-    for batch in batches:
+    index = 0
+    while index < len(pieces):
+        reserve = _chars_to_tokens(_PREVIOUS_HANDOFF_PREFIX + prev) if prev else 0
+        batch, index = _next_summary_batch(
+            pieces, index, max(chunk_floor, chunk_budget - reserve)
+        )
         chunk_estimates.append(estimate_context(batch).total)
         raw_summary = _summary_chunk(
             [
@@ -1128,7 +1146,7 @@ def compact(
             estimate_context(projected, tool_schemas),
             estimate_context(result, tool_schemas),
             archive_sink=archive_sink,
-            summary_chunks=len(batches),
+            summary_chunks=len(chunk_estimates),
             summary_chunk_estimates=chunk_estimates,
         )
     return result
