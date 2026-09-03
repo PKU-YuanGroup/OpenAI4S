@@ -599,6 +599,27 @@ def _content_blob_payload(
     return digest, payload
 
 
+def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
+    """Refuse a pre-existing file at a digest path unless it is that content.
+
+    The workspace copy lives where a cell can write, so a file already at
+    ``<sha256>.json`` cannot be trusted for its name: a Skill could plant
+    different bytes there and the marker would then endorse them as the host
+    archive.  The digest is recomputed from the file's ``content`` the same
+    way ``load_archived_content`` checks it.
+    """
+    digest = str(payload.get("sha256") or "")
+    try:
+        existing = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError("existing archive blob is unreadable") from error
+    if not isinstance(existing, Mapping) or existing.get("sha256") != digest:
+        raise ValueError("existing archive blob does not match its digest")
+    canonical = _json_text(existing.get("content")).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != digest:
+        raise ValueError("existing archive blob does not match its digest")
+
+
 def _write_exclusive_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -606,8 +627,8 @@ def _write_exclusive_json(path: Path, payload: Mapping[str, Any]) -> None:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
     except FileExistsError:
         # Content addressing makes a concurrent/pre-existing identical blob a
-        # successful deduplicated write.
-        pass
+        # successful deduplicated write -- an identical one only.
+        _verify_existing_blob(path, payload)
 
 
 def _write_content_blob(
