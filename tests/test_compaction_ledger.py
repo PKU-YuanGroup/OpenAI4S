@@ -6,7 +6,7 @@ import copy
 from typing import Any, Mapping, Sequence
 
 from openai4s.agent.actions import CodeCell
-from openai4s.agent.compaction import HANDOFF_FIELDS
+from openai4s.agent.compaction import COMPACTION_NOTE_PREFIX, HANDOFF_FIELDS
 from openai4s.agent.events import ActionRouted, OutcomeProduced, ReplyReceived
 from openai4s.agent.ledger import (
     RuntimeActionLedger,
@@ -82,7 +82,13 @@ def _code_messages(index: int, fill: str = "") -> list[dict]:
 
 
 def _handoff_note(text: str) -> dict:
-    return {"role": "system", "content": text, "compaction_handoff": True}
+    # The restored note reproduces what compact() built in memory, framing
+    # line included; the archive payload carries only the body.
+    return {
+        "role": "system",
+        "content": COMPACTION_NOTE_PREFIX + text,
+        "compaction_handoff": True,
+    }
 
 
 def _legacy_reduce_action_groups(
@@ -188,7 +194,9 @@ def test_second_compaction_replaces_the_earlier_note(tmp_path):
         _handoff_note("## Objective\nsecond"),
         *expected_tail,
     ]
-    assert not any(item.get("content") == "## Objective\nfirst" for item in history)
+    assert not any(
+        "## Objective\nfirst" in str(item.get("content") or "") for item in history
+    )
     store.close()
 
 
