@@ -4,6 +4,40 @@ SolubleMPNN is not a package of its own. It is ProteinMPNN retrained on a solubl
 
 The soluble prior costs a few points of native recovery to buy its surface bias, and that drop is the prior working rather than a bug. But the weights were trained on structures soluble enough to crystallise, which is not the same sentence as expresses solubly in E. coli at 37 °C. A SolubleMPNN sequence is therefore a better bet than a vanilla one, not a solved expression problem. It still has to fold, express, stay out of the inclusion bodies, and do the job it was designed for, and only the bench settles the last three.
 
+## Install
+
+A Skill is a directory of files, so installing one is copying that directory
+somewhere an agent looks. With Node 18+ and nothing cloned:
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install solublempnn --target claude
+```
+
+`--target claude` writes to `~/.claude/skills`, `claude-project` to
+`./.claude/skills`, `openai4s` to `<data_dir>/user-skills`, and `--dir <path>`
+to anywhere you name; `--dry-run` prints the resolved absolute path and writes
+nothing. A reinstall refuses to overwrite a copy you have edited, and
+`uninstall` removes only the files it wrote. The same command under the
+package's published name, which is not on npm yet, is
+`npx openai4s-skills install solublempnn`.
+
+Without Node, take the directory itself — and turn it into a `.zip` if an
+upload field wants one:
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/solublempnn
+python3 -m zipfile -c solublempnn.zip solublempnn
+```
+
+The click-through form of that same download is the
+[repository zip](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip):
+unzip it and copy `skills/solublempnn/` out. If you already run OpenAI4S there
+is nothing to install — the wheel ships every bundled Skill, and a bundled
+Skill takes precedence over a same-named copy in `<data_dir>/user-skills`.
+Targets, provenance, and what the installer refuses to do:
+[`tools/skills-installer/`](../../tools/skills-installer/README.md).
+
 ## Files
 
 | File | Responsibility |

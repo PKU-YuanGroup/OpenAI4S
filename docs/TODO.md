@@ -18,14 +18,19 @@ is a factual record of the v0.3 plan and is validated by
 - [ ] **Publish `openai4s-skills` to npm.** The package is complete and gated
       (`node tools/skills-installer/selftest.mjs`,
       `node tools/skills-installer/check_package.mjs`), and `npm pack` produces
-      6.4 MiB carrying all 602 Skills. Until it is published,
+      6.5 MiB carrying all 604 Skills. Until it is published,
       `npx openai4s-skills …` does not resolve; `npx github:PKU-YuanGroup/OpenAI4S install --all`
-      works today and is what the README shows alongside it. The name is
+      works today and is what every doc site leads with — the root README,
+      `docs/skills.md`, `tools/skills-installer/`, and each Skill's own page. The name is
       unclaimed on the registry as of 2026-08-23.
       *Done when:* `npm publish --access public` has run from a clean checkout
-      of the released tag and `npx openai4s-skills list` works on a machine
-      with no checkout. Needs an npm account with publish rights — no automated
-      agent should hold that credential.
+      of the released tag, `npx openai4s-skills list` works on a machine with
+      no checkout, and the 90 bilingual Skill pages whose `## Install` section
+      says the package is not on npm yet have stopped saying it
+      (`grep -rl openai4s-skills skills/` finds all 90; the Chinese sentence
+      wraps mid-phrase, so grep for the command name and not for the claim).
+      Needs an npm account with publish rights — no automated agent should hold
+      that credential.
 
 ## CI and supply chain
 

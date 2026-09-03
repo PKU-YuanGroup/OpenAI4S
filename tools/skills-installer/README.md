@@ -1,4 +1,4 @@
-# Skills installer (`npx openai4s-skills`)
+# Skills installer (`openai4s-skills`)
 
 [中文说明](README_zh.md)
 
@@ -6,16 +6,18 @@ Copies OpenAI4S's bundled Skill library onto a machine — into Claude Code, int
 an OpenAI4S data directory, or into any directory named on the command line.
 
 ```bash
-npx openai4s-skills list
-npx openai4s-skills install --all                 # the 43 curated Skills
-npx openai4s-skills install --collection bioskills # the 561 pinned recipes
-npx openai4s-skills install alphafold2 boltz --target claude
-npx openai4s-skills installed
-npx openai4s-skills uninstall --all
+npx github:PKU-YuanGroup/OpenAI4S list
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned recipes
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
+npx github:PKU-YuanGroup/OpenAI4S installed
+npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
 
-`npx github:PKU-YuanGroup/OpenAI4S <command>` runs the same CLI straight from
-the repository, with no npm publication involved.
+That is the form that works today: it runs the CLI straight from the
+repository, with no npm publication involved. The package's own name is
+`openai4s-skills`, and once it is published `npx openai4s-skills <command>`
+runs exactly the same code — until then that name does not resolve.
 
 ## Files
 

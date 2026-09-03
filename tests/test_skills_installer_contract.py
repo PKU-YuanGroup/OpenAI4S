@@ -17,6 +17,7 @@ which is the failure mode the marker policy exists to prevent.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,27 @@ def _skill_dirs() -> list[Path]:
         if (child / SKILL_MARKER).is_file():
             found.append(child)
     return found
+
+
+def test_the_published_description_counts_the_skills_it_actually_ships():
+    """The count npm shows a stranger is the one nothing was checking.
+
+    Three hand-written counts of the same library drifted apart: this
+    description said 603, `install.mjs` said 602, and the tree held 604 — none
+    of them wrong when they were written, all of them wrong together. A number
+    in prose that no gate reads has a shelf life, so this is the gate: adding a
+    Skill now fails here until the published description follows. The comment
+    in `install.mjs` dropped its number instead, because nothing can check a
+    comment and a second uncheckable count is what produced this.
+    """
+
+    description = _package()["description"]
+    stated = re.search(r"(\d+)\s+scientific recipes", description)
+    assert stated, f"description no longer states a recipe count: {description!r}"
+    assert int(stated.group(1)) == len(_skill_dirs()), (
+        f"package.json advertises {stated.group(1)} recipes; "
+        f"skills/ holds {len(_skill_dirs())}"
+    )
 
 
 def test_the_installer_can_name_every_bundled_skill():

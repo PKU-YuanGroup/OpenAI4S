@@ -10,6 +10,42 @@ The upstream work is MIT-licensed; its exact license text is preserved in
 `LICENSE`. OpenAI4S treats the collection as a pinned, read-only third-party
 resource, not as 561 independently maintained OpenAI4S implementations.
 
+## Install
+
+This is a collection rather than one Skill: 561 recipe directories behind a
+single catalog entry. With Node 18+ and nothing cloned:
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
+```
+
+`--target claude` writes to `~/.claude/skills`, `claude-project` to
+`./.claude/skills`, `openai4s` to `<data_dir>/user-skills`, and `--dir <path>`
+to anywhere you name; `--dry-run` prints the resolved absolute path and writes
+nothing. A reinstall refuses to overwrite a copy you have edited, and
+`uninstall` removes only the files it wrote. Name one recipe instead of the
+whole collection when one is all you want —
+`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`
+— and `MANIFEST.json` is where those names come from. The published-name form,
+`npx openai4s-skills install --collection bioskills`, runs the identical CLI;
+that package is not on npm yet.
+
+Without Node, take the tree itself — and turn it into a `.zip` if an upload
+field wants one:
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/bioskills
+python3 -m zipfile -c bioskills.zip bioskills
+```
+
+The click-through form of that same download is the
+[repository zip](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip):
+unzip it and copy `skills/bioskills/` out. If you already run OpenAI4S there is
+nothing to install — the wheel ships the pinned collection exactly as it stands
+here. Targets, provenance, and what the installer refuses to do:
+[`tools/skills-installer/`](../../tools/skills-installer/README.md).
+
 ## What is included
 
 The collection covers 63 categories, including sequence and alignment I/O,

@@ -9,6 +9,40 @@
 上游采用 MIT 许可证，原文完整保存在 `LICENSE`。OpenAI4S 将这批内容视为一份固定版本、
 只读的第三方资源，而不是 561 个由 OpenAI4S 分别维护的实现。
 
+## 安装
+
+这里是一个集合，而不是单个 Skill：一个目录条目背后是 561 份配方。有 Node 18+ 即
+可，无需先克隆仓库：
+
+```bash
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
+```
+
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入
+`./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则
+写到你指定的任意位置；`--dry-run` 只打印解析出的绝对路径，不写任何文件。重装时
+若目标副本被你改过则拒绝覆盖，`uninstall` 也只删除它自己写过的文件。只想要其中
+一份配方时直接点名即可——
+`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`
+——名字都在 `MANIFEST.json` 里。发布名写法
+`npx openai4s-skills install --collection bioskills` 跑的是同一套 CLI，只是这个
+包还没有发布到 npm。
+
+没有 Node 时，直接取这棵目录树——需要 `.zip` 上传时再打包：
+
+```bash
+curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
+  | tar -xz --strip-components=2 OpenAI4S-main/skills/bioskills
+python3 -m zipfile -c bioskills.zip bioskills
+```
+
+同一份内容的图形界面版本是点击下载整个
+[仓库 zip 包](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip)：解压
+后把 `skills/bioskills/` 拷出来即可。如果你本来就在跑 OpenAI4S，那这里没有任何
+东西需要安装——wheel 自带的就是此处这份固定版集合。目标目录、来源记录，以及安装
+器拒绝去做的那些事：
+[`tools/skills-installer/`](../../tools/skills-installer/README_zh.md)。
+
 ## 包含内容
 
 资源包覆盖 63 个类别，包括序列与比对文件 I/O、变异检测、表达与表观组学、单细胞与空间

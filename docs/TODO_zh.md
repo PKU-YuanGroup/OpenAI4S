@@ -14,14 +14,18 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 
 - [ ] **把 `openai4s-skills` 发布到 npm。** 包已经完整并有关卡把守
       （`node tools/skills-installer/selftest.mjs`、
-      `node tools/skills-installer/check_package.mjs`），`npm pack` 产出 6.4 MiB、
-      带着全部 602 个 Skill。在发布之前，`npx openai4s-skills …` 解析不到；
-      `npx github:PKU-YuanGroup/OpenAI4S install --all` 今天就能用，README 里也是
-      和它并列写的。截至 2026-08-23，这个名字在 registry 上没人占。
+      `node tools/skills-installer/check_package.mjs`），`npm pack` 产出 6.5 MiB、
+      带着全部 604 个 Skill。在发布之前，`npx openai4s-skills …` 解析不到；
+      `npx github:PKU-YuanGroup/OpenAI4S install --all` 今天就能用，也是各处文档
+      打头的写法——根 README、`docs/skills.md`、`tools/skills-installer/`，以及
+      每个 Skill 自己的页面。截至 2026-08-23，这个名字在 registry 上没人占。
       *做完的标准：* 在已发布 tag 的干净 checkout 上跑过
-      `npm publish --access public`，并且在一台没有 checkout 的机器上
-      `npx openai4s-skills list` 可用。这需要一个有发布权限的 npm 账号——
-      任何自动化 agent 都不该持有这份凭据。
+      `npm publish --access public`，在一台没有 checkout 的机器上
+      `npx openai4s-skills list` 可用，并且那 90 个在 `## Install` / `## 安装`
+      一节里写着"这个包还没有发布到 npm"的双语 Skill 页面都已经改掉这句话
+      （`grep -rl openai4s-skills skills/` 一次列全 90 个；中文那句会在半句处
+      换行，所以要按命令名去 grep，而不是按这句话本身）。这需要一个有发布权限的
+      npm 账号——任何自动化 agent 都不该持有这份凭据。
 
 ## CI 与供应链
 

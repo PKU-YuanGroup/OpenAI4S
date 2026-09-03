@@ -211,14 +211,14 @@ An official image ships to GitHub Packages with each release — `docker pull gh
 The 604 bundled Skills are recipes — prose, code, and the operational knowledge to run them — and nothing about them is OpenAI4S-specific. One command copies them onto a machine, from this repository:
 
 ```bash
-npx openai4s-skills install --all                  # the 43 curated Skills
-npx openai4s-skills install --collection bioskills # the 561 pinned bioinformatics recipes
-npx openai4s-skills install alphafold2 boltz --target claude
-npx openai4s-skills list
-npx openai4s-skills uninstall --all
+npx github:PKU-YuanGroup/OpenAI4S install --all                  # the 43 curated Skills
+npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills # the 561 pinned bioinformatics recipes
+npx github:PKU-YuanGroup/OpenAI4S install alphafold2 boltz --target claude
+npx github:PKU-YuanGroup/OpenAI4S list
+npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
 
-`--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written, and `--dry-run` writes nothing at all. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited and an uninstall removes only files it wrote. To run it straight from this repository with nothing published in between: `npx github:PKU-YuanGroup/OpenAI4S install --all`.
+Those forms run the CLI straight from this repository, with nothing published in between; `npx openai4s-skills …` is the same CLI under the package's published name, which is not on npm yet. `--target claude` writes to `~/.claude/skills`, `--target openai4s` to `<data_dir>/user-skills`, and `--dir <path>` anywhere you name; the resolved absolute path is printed before anything is written, and `--dry-run` writes nothing at all. Every installed file's SHA-256 goes into a manifest beside the Skills, so a reinstall refuses to overwrite a Skill you have edited and an uninstall removes only files it wrote. Every Skill page under [`skills/`](skills/) carries an **Install** section with its own name already filled in, so you can install from whichever page you landed on.
 
 If you already run OpenAI4S, you already have all 604 — a bundled Skill takes precedence over a same-named one in your data directory. The command exists for the other direction.
 
