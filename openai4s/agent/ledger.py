@@ -621,6 +621,52 @@ class RuntimeActionLedger:
         self.terminal_recorded = True
         return group
 
+    def append_compaction(
+        self,
+        handoff: str,
+        covered_through_ordinal: int,
+        archive_id: str | None = None,
+    ) -> dict:
+        """Append a kind=compaction group that old reducers skip.
+
+        ``assistant_message`` is left unset so a pre-compaction
+        ``reduce_action_groups`` treats the row as incomplete and continues
+        without raising, replaying the full uncompacted history.  Coverage
+        and the handoff text live on the event payload, matching
+        ``append_terminal``.
+        """
+        group = self.store.append_action_group(
+            root_frame_id=self.root_frame_id,
+            branch_id=self.branch_id,
+            turn_id=self.turn_id,
+            kind="compaction",
+            provider=self.provider,
+            model=self.model,
+            assistant_message=None,
+        )
+        self.store.append_action_event(
+            group_id=group["group_id"],
+            type="compaction",
+            result={
+                "handoff": _redact_free_text(str(handoff or ""), frozenset()),
+                "covered_through_ordinal": int(covered_through_ordinal),
+                "archive_id": archive_id,
+            },
+        )
+        return group
+
+    def covered_through_ordinal(self, compacted_messages: Sequence[Any]) -> int:
+        """Map compact() middle messages onto this branch's coverage bound.
+
+        See :func:`compaction_cover_ordinal` for the group→message rule.
+        """
+        return compaction_cover_ordinal(
+            branch_action_groups(
+                self.store, self.root_frame_id, branch_id=self.branch_id
+            ),
+            compacted_messages,
+        )
+
 
 def _terminal_reasons(groups: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     reasons: dict[str, str] = {}
@@ -684,18 +730,94 @@ def _synthetic_tool_result(
     }
 
 
-def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Reduce immutable groups into canonical messages after the system prompt.
+def _group_ordinal(group: Mapping[str, Any]) -> int:
+    try:
+        return int(group.get("ordinal") or 0)
+    except (TypeError, ValueError):
+        return 0
 
-    Each group contributes either a complete message unit or nothing.  In
-    particular, native assistant declarations are always followed by exactly
-    one tool result per declared call, including synthetic crash/cancel results.
+
+def _compaction_event_fields(group: Mapping[str, Any]) -> tuple[int, str]:
+    """Read handoff text and coverage bound from a compaction group."""
+    for event in group.get("events") or ():
+        if not isinstance(event, Mapping) or event.get("type") != "compaction":
+            continue
+        payload = event.get("result")
+        if not isinstance(payload, Mapping):
+            payload = event
+        handoff = payload.get("handoff")
+        if handoff is None:
+            handoff = event.get("handoff")
+        covered = payload.get("covered_through_ordinal")
+        if covered is None:
+            covered = event.get("covered_through_ordinal")
+        try:
+            covered_ordinal = int(covered)
+        except (TypeError, ValueError):
+            covered_ordinal = -1
+        return covered_ordinal, str(handoff or "")
+    return -1, ""
+
+
+def _apply_compaction(
+    history: list[tuple[int, dict[str, Any]]],
+    group: Mapping[str, Any],
+) -> list[tuple[int, dict[str, Any]]]:
+    """Keep the earliest user, drop covered messages, insert the new handoff.
+
+    A later compaction replaces any earlier handoff note.  Observation
+    messages also have ``role=user``; the head is the minimum-ordinal user
+    message, which is the original task (ledger has no system prompt).
     """
-    history: list[dict[str, Any]] = []
+    covered, handoff = _compaction_event_fields(group)
+    user_messages = [
+        (ordinal, message)
+        for ordinal, message in history
+        if message.get("role") == "user" and not message.get("compaction_handoff")
+    ]
+    first_user = min(user_messages, key=lambda item: item[0]) if user_messages else None
+    kept: list[tuple[int, dict[str, Any]]] = []
+    skipped_head = False
+    for ordinal, message in history:
+        if (
+            not skipped_head
+            and first_user is not None
+            and ordinal == first_user[0]
+            and message.get("role") == "user"
+        ):
+            skipped_head = True
+            continue
+        if message.get("compaction_handoff"):
+            continue
+        if ordinal <= covered:
+            continue
+        kept.append((ordinal, message))
+    note = {
+        "role": "system",
+        "content": handoff,
+        "compaction_handoff": True,
+    }
+    out: list[tuple[int, dict[str, Any]]] = []
+    if first_user is not None:
+        out.append(first_user)
+    out.append((_group_ordinal(group), note))
+    out.extend(kept)
+    return out
+
+
+def _reduce_action_groups_annotated(
+    groups: Sequence[Mapping[str, Any]],
+) -> list[tuple[int, dict[str, Any]]]:
+    """Reduce groups into ``(ordinal, message)`` pairs, applying compaction."""
+    history: list[tuple[int, dict[str, Any]]] = []
     terminal = _terminal_reasons(groups)
     for group in groups:
         kind = str(group.get("kind") or "")
         if kind == "terminal":
+            continue
+        ordinal = _group_ordinal(group)
+        if kind == "compaction":
+            history = _apply_compaction(history, group)
             continue
         raw_message = group.get("assistant_message")
         message = (
@@ -705,7 +827,7 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         )
         if kind in {"user", "system", "permission_resolution"}:
             if message and message.get("role") in {"user", "system"}:
-                history.append(message)
+                history.append((ordinal, message))
             continue
         if message is None or message.get("role") != "assistant":
             # A corrupt/incomplete group must not leak a partial action.
@@ -752,7 +874,7 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                     result.setdefault("wire_id", call.wire_id)
                     result.setdefault("name", call.name)
                 unit.append(result)
-            history.extend(unit)
+            history.extend((ordinal, item) for item in unit)
             continue
 
         observation_messages: list[dict[str, Any]] = []
@@ -792,8 +914,74 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
             else:
                 detail = "[Observation]\nERROR:\nexecution was interrupted before an observation was recorded"
             observation_messages = [{"role": "user", "content": detail}]
-        history.extend([message, *observation_messages])
+        history.extend((ordinal, item) for item in (message, *observation_messages))
     return history
+
+
+def compaction_cover_ordinal(
+    groups: Sequence[Mapping[str, Any]],
+    compacted_messages: Sequence[Any],
+) -> int:
+    """Map compact() middle messages onto the last fully covered group ordinal.
+
+    compact() keeps a two-message head (system prompt + first task) and a
+    recent tail.  The Action Ledger has no system prompt, so the head is the
+    earliest user message.  Each remaining group contributes the same
+    messages ``reduce_action_groups`` would emit.
+
+    Primary rule: drop handoff notes, skip the head user, then treat the next
+    ``len(compacted_messages)`` reconstructed messages as the compacted
+    middle.  The cover bound is the ordinal of the last group whose messages
+    all lie in that middle.  A group that straddles middle/tail is not
+    covered, so restore cannot drop a tail observation from the same cell.
+
+    Fallback: if the compacted count cannot be aligned with the reconstructed
+    body, ``covered_through = latest_ordinal - n_tail_groups``.  When no tail
+    is identifiable, ``n_tail_groups`` is 0 (cover through the latest group
+    rather than invent a tail).
+    """
+    annotated = _reduce_action_groups_annotated(groups)
+    latest = 0
+    for group in groups:
+        ordinal = _group_ordinal(group)
+        if ordinal > latest:
+            latest = ordinal
+    n_middle = len(compacted_messages)
+    body = [
+        (ordinal, message)
+        for ordinal, message in annotated
+        if not message.get("compaction_handoff")
+    ]
+    if not body:
+        return latest
+    rest = body[1:]
+    if n_middle <= len(rest):
+        middle = rest[:n_middle]
+        tail = rest[n_middle:]
+        tail_ordinals = {ordinal for ordinal, _ in tail}
+        n_tail_groups = len(tail_ordinals)
+        fully_covered = [
+            ordinal for ordinal, _ in middle if ordinal not in tail_ordinals
+        ]
+        if fully_covered:
+            return fully_covered[-1]
+        return max(0, latest - n_tail_groups)
+    return latest
+
+
+def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Reduce immutable groups into canonical messages after the system prompt.
+
+    Each group contributes either a complete message unit or nothing.  In
+    particular, native assistant declarations are always followed by exactly
+    one tool result per declared call, including synthetic crash/cancel results.
+
+    A ``kind="compaction"`` group keeps the earliest user message, drops every
+    other message whose group ordinal is ``<= covered_through_ordinal``,
+    inserts the structured handoff note, and lets later groups append
+    normally.  A later compaction replaces the previous note.
+    """
+    return [message for _, message in _reduce_action_groups_annotated(groups)]
 
 
 def branch_action_groups(
@@ -850,6 +1038,7 @@ __all__ = [
     "REDACTED",
     "RuntimeActionLedger",
     "branch_action_groups",
+    "compaction_cover_ordinal",
     "new_turn_id",
     "redact_tool_call",
     "reduce_action_groups",
