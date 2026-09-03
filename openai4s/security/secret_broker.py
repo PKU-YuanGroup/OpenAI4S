@@ -228,6 +228,16 @@ def _run(argv: list[str], stdin: str | None = None) -> subprocess.CompletedProce
         input=stdin.encode("utf-8") if stdin is not None else None,
         capture_output=True,
         timeout=_CLI_TIMEOUT_S,
+        # `security ... -w` reads the password with readpassphrase(3), which
+        # opens /dev/tty in preference to stdin whenever the process has a
+        # controlling terminal. A daemon started from a shell (`./start.sh`)
+        # inherits one, so the CLI prompts on the user's terminal, ignores the
+        # value we pipe in, and hangs until _CLI_TIMEOUT_S — the self-test then
+        # reports the keychain as "present but unusable". A fresh session has
+        # no controlling terminal, which is exactly the case readpassphrase
+        # handles by falling back to stdin. Harmless for secret-tool, which
+        # reads stdin unconditionally.
+        start_new_session=True,
     )
 
 

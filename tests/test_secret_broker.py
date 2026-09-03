@@ -402,6 +402,32 @@ def test_macos_keychain_account_contains_store_namespace(monkeypatch):
 
 
 @pytest.mark.stubbed_backend
+def test_cli_runs_detached_from_the_controlling_terminal(monkeypatch):
+    """`security -w` takes the password from /dev/tty, not stdin, whenever the
+    process has a controlling terminal — so a daemon launched from a shell
+    prompts on that shell and hangs until the CLI timeout. Detaching into a new
+    session is what makes readpassphrase(3) fall back to the stdin we feed it.
+    Regression guard: the kwarg must reach subprocess.run, alongside the value
+    on stdin and never in argv."""
+    import openai4s.security.secret_broker as module
+
+    seen = {}
+
+    def fake_subprocess_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_subprocess_run)
+    module._run(["security", "add-generic-password", "-w"], stdin="s3cret\ns3cret\n")
+
+    assert seen["kwargs"]["start_new_session"] is True
+    assert seen["kwargs"]["input"] == b"s3cret\ns3cret\n"
+    assert seen["kwargs"]["timeout"] == module._CLI_TIMEOUT_S
+    assert "s3cret" not in seen["argv"]
+
+
+@pytest.mark.stubbed_backend
 def test_secret_service_attributes_contain_store_namespace(monkeypatch):
     import openai4s.security.secret_broker as module
 
