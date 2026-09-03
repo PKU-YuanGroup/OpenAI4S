@@ -31,6 +31,7 @@ from .actions import (
     NativeToolBatch,
     NativeToolCall,
 )
+from .compaction import COMPACTION_NOTE_PREFIX
 from .events import (
     ActionRouted,
     AgentEvent,
@@ -792,9 +793,14 @@ def _apply_compaction(
         if ordinal <= covered:
             continue
         kept.append((ordinal, message))
+    content = str(handoff or "")
+    if content and not content.startswith(COMPACTION_NOTE_PREFIX):
+        # Restore must hand the model the same note compact() built in memory;
+        # a bare handoff reads as standing instruction, not compacted history.
+        content = COMPACTION_NOTE_PREFIX + content
     note = {
         "role": "system",
-        "content": handoff,
+        "content": content,
         "compaction_handoff": True,
     }
     out: list[tuple[int, dict[str, Any]]] = []

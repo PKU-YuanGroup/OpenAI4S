@@ -72,6 +72,13 @@ _CJK_CHAR_RE = re.compile(
     "[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
     "\uac00-\ud7af\uff00-\uffef]"
 )
+# The framing that tells the model this system message is compacted history
+# rather than standing instruction. Restore must reproduce it byte for byte,
+# so it is a shared constant instead of a literal in each of the two paths.
+COMPACTION_NOTE_PREFIX = (
+    "[compacted history — earlier atomic action groups were archived "
+    "and summarized; runtime continuity is stated explicitly below]\n\n"
+)
 _PREVIOUS_HANDOFF_PREFIX = (
     "PREVIOUS HANDOFF (authoritative; carry every fact forward; "
     "Decisions, Done and Key Artifacts are append-only — never drop an item):\n"
@@ -999,11 +1006,7 @@ def compact(
     handoff = _normalize_handoff(raw_summary, metadata)
     note = {
         "role": "system",
-        "content": (
-            "[compacted history — earlier atomic action groups were archived "
-            "and summarized; runtime continuity is stated explicitly below]\n\n"
-            + handoff
-        ),
+        "content": COMPACTION_NOTE_PREFIX + handoff,
         "compaction_handoff": True,
     }
     result = head + [note] + tail
@@ -1073,6 +1076,7 @@ def _archive(
 
 
 __all__ = [
+    "COMPACTION_NOTE_PREFIX",
     "CompactionArchiveMetadata",
     "CompactionSummaryError",
     "ContextEstimate",
