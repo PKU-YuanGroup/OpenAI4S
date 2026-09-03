@@ -37,6 +37,11 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
       配置并按计划调度它。最新的真实周一证据仍是旧配置开出的两个独立 PR：
       pre-commit [#140](https://github.com/PKU-YuanGroup/OpenAI4S/pull/140) 与
       GitHub Actions [#141](https://github.com/PKU-YuanGroup/OpenAI4S/pull/141)。
+      目前接受的已知代价：`ignore` 同样会过滤安全更新，而 multi-ecosystem 分组
+      只做版本更新，所以被分组名字的小版本/补丁安全修复会进周一批次，而不是当天
+      单独开安全 PR。同一 ecosystem 同一目录写两个 `updates` 条目也不是选项参考
+      文档明确允许的形状，只有 Dependabot 维护者的示例这么写；离线测试钉住的是
+      条目级键的词汇表，不是 GitHub 是否接受。
       *做完的标准：* 有一个 Dependabot PR 同时带着不止一个 ecosystem 的更新，
       且下一个周一的运行照常开 PR。
 

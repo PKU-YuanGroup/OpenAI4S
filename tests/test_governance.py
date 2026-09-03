@@ -126,21 +126,22 @@ def test_pr_ci_resolves_every_action_version_comment_with_pinact():
     current pinact-action otherwise edits the checkout, and validation would
     appear green after silently repairing the evidence it was meant to check.
     """
-    workflow = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
 
-    assert re.search(r"^\s{2}pull_request:\s*$", workflow, re.MULTILINE)
-    assert re.search(r"^\s{2}action-pins:\s*$", workflow, re.MULTILINE)
-    pinact_use = re.search(
-        r"uses: suzuki-shunsuke/pinact-action@[0-9a-f]{40} " r"# v\d+\.\d+\.\d+",
-        workflow,
-    )
-    assert pinact_use
-
-    pinact_step = workflow[pinact_use.end() :]
-    pinact_inputs = pinact_step.split("\n\n", 1)[0]
-    assert re.search(r'^\s+fix:\s+["\']false["\']\s*$', pinact_inputs, re.MULTILINE)
-    assert re.search(r'^\s+verify:\s+["\']true["\']\s*$', pinact_inputs, re.MULTILINE)
-    assert "no_api:" not in pinact_inputs
+    # PyYAML reads the bare `on` key as YAML 1.1's boolean True.
+    assert "pull_request" in workflow[True]
+    pinact_steps = [
+        step
+        for step in workflow["jobs"]["action-pins"]["steps"]
+        if str(step.get("uses", "")).startswith("suzuki-shunsuke/pinact-action@")
+    ]
+    assert len(pinact_steps) == 1
+    # Exact equality, read from the parsed step rather than a text window:
+    # `no_api` would turn `verify` into a no-op, and any other input changes
+    # what the job attests. The SHA-plus-comment shape of the `uses:` line is
+    # already PINNED_ACTION's job over every workflow.
+    assert pinact_steps[0]["with"] == {"fix": "false", "verify": "true"}
 
 
 def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
@@ -216,6 +217,34 @@ def test_release_setup_uv_never_persists_a_cross_run_cache():
     )
 
 
+DEPENDABOT_ENTRY_KEYS = {
+    "allow",
+    "assignees",
+    "commit-message",
+    "cooldown",
+    "directories",
+    "directory",
+    "exclude-paths",
+    "groups",
+    "ignore",
+    "insecure-external-code-execution",
+    "labels",
+    "milestone",
+    "multi-ecosystem-group",
+    "name",
+    "open-pull-requests-limit",
+    "package-ecosystem",
+    "patterns",
+    "pull-request-branch-name",
+    "rebase-strategy",
+    "registries",
+    "schedule",
+    "target-branch",
+    "vendor",
+    "versioning-strategy",
+}
+
+
 def test_dependabot_batches_routine_updates_across_ecosystems_on_monday():
     """The historical hand-built batch and its fallbacks form a partition.
 
@@ -236,6 +265,14 @@ def test_dependabot_batches_routine_updates_across_ecosystems_on_monday():
     }
 
     updates = config["updates"]
+    # The entry-level vocabulary of SchemaStore's dependabot-2.0.json. GitHub's
+    # validator refuses the whole file on one unknown key, which stops every
+    # ecosystem's PRs, so an entry-level `update-types`, `exclude-patterns` or
+    # `dependency-type` (all `groups:`-only keys) has to fail here, offline.
+    for entry in updates:
+        assert set(entry) <= DEPENDABOT_ENTRY_KEYS, sorted(
+            set(entry) - DEPENDABOT_ENTRY_KEYS
+        )
     by_ecosystem = {
         ecosystem: [
             entry for entry in updates if entry["package-ecosystem"] == ecosystem
@@ -278,13 +315,19 @@ def test_dependabot_batches_routine_updates_across_ecosystems_on_monday():
         }
 
     routine_uv = {"mypy", "pytest", "pytest-xdist", "pre-commit"}
+    ignore_majors = {
+        "dependency-name": "*",
+        "update-types": ["version-update:semver-major"],
+    }
     semver_minor_patch = {
         "version-update:semver-minor",
         "version-update:semver-patch",
     }
     assert set(grouped["uv"]["patterns"]) == routine_uv
-    assert grouped["uv"]["allow"] == [{"dependency-type": "development"}]
-    assert grouped["uv"]["update-types"] == ["minor", "patch"]
+    # `update-types` is a `groups:`-only key, so the minor/patch boundary of a
+    # multi-ecosystem entry is an `ignore` of majors; no `allow:` filter,
+    # because every name is a `[dependency-groups] dev` entry already.
+    assert grouped["uv"]["ignore"] == [ignore_majors]
     uv_ignores = {
         rule["dependency-name"]: set(rule["update-types"])
         for rule in fallback["uv"]["ignore"]
@@ -309,7 +352,7 @@ def test_dependabot_batches_routine_updates_across_ecosystems_on_monday():
     assert fallback["pre-commit"]["open-pull-requests-limit"] == 3
 
     assert grouped["github-actions"]["patterns"] == ["*"]
-    assert grouped["github-actions"]["update-types"] == ["minor", "patch"]
+    assert grouped["github-actions"]["ignore"] == [ignore_majors]
     action_ignores = {
         rule["dependency-name"]: set(rule["update-types"])
         for rule in fallback["github-actions"]["ignore"]

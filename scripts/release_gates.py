@@ -159,6 +159,7 @@ CHECK_SUITE_GATES: tuple[Gate, ...] = (
     Gate("ci-tests-py3.10", CHECK_SUITE_KIND, check_name="Offline tests (py3.10)"),
     Gate("ci-tests-py3.12", CHECK_SUITE_KIND, check_name="Offline tests (py3.12)"),
     Gate("ci-tests-py3.13", CHECK_SUITE_KIND, check_name="Offline tests (py3.13)"),
+    Gate("ci-tests-py3.14", CHECK_SUITE_KIND, check_name="Offline tests (py3.14)"),
     Gate(
         "ci-browser-chromium",
         CHECK_SUITE_KIND,

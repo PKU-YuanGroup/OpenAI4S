@@ -308,7 +308,7 @@ jobs:
         # addopts already passes -q; a second -q would suppress the summary line.
         #
         # `-n auto` because this one command *was* CI: 1094 of this job's 1122
-        # seconds were spent here, and the other sixteen jobs put together came
+        # seconds were spent here, and every other job put together came
         # to under eight minutes. Nothing else on the critical path was worth
         # optimising while the suite ran on one core.
         #

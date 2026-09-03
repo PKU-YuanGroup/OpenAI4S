@@ -43,6 +43,13 @@ is a factual record of the v0.3 plan and is validated by
       The latest live Monday evidence is still two separate PRs from the old
       configuration: pre-commit [#140](https://github.com/PKU-YuanGroup/OpenAI4S/pull/140)
       and GitHub Actions [#141](https://github.com/PKU-YuanGroup/OpenAI4S/pull/141).
+      Known cost, accepted for now: `ignore` also filters security updates
+      and a multi-ecosystem group only does version updates, so a minor/patch
+      security fix for a grouped name arrives in the Monday batch rather than
+      as a same-day security PR. Two `updates` entries per ecosystem and
+      directory is also a shape the options reference does not grant, only a
+      Dependabot maintainer's example does; the offline test pins the
+      entry-level key vocabulary, not GitHub's acceptance.
       *Done when:* a single Dependabot PR carries updates from more than one
       ecosystem, and the following Monday's run still opens PRs normally.
 

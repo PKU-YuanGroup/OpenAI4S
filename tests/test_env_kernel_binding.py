@@ -31,7 +31,6 @@ import stat
 import subprocess
 import sys
 import types
-import venv
 from pathlib import Path
 
 import pytest
@@ -40,6 +39,7 @@ from openai4s.config import Config
 from openai4s.kernel import Kernel
 from openai4s.kernel import environments as envmod
 from openai4s.kernel.env_generations import EnvironmentError_, EnvironmentStore
+from tests._envs import real_python_prefix
 
 
 @pytest.fixture(autouse=True)
@@ -71,10 +71,7 @@ def _sha(path: Path) -> str:
 
 def _real_python_prefix(prefix: Path) -> Path:
     """A real venv whose interpreter self-reports this exact prefix."""
-    # A copied python-build-standalone launcher loses its runtime tree on
-    # Linux 3.10; pyvenv.cfg plus a link keeps it runnable and prefix-aware.
-    venv.EnvBuilder(with_pip=False, symlinks=True).create(prefix)
-    return prefix
+    return real_python_prefix(prefix)
 
 
 def _build_generation(store: EnvironmentStore, name: str, spec: Path) -> str:

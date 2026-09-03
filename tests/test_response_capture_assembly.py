@@ -201,11 +201,10 @@ def test_a_share_publish_failure_makes_the_xdist_run_fail(tmp_path):
     not_a_directory.write_text("occupied", encoding="utf-8")
     env = dict(os.environ)
     env["OPENAI4S_CAPTURE_SCHEMAS"] = str(not_a_directory / "captured.json")
-    # This contract needs only a real xdist controller/worker and the repository
-    # conftest.  Keep its behavior and timing independent of unrelated pytest
-    # entry-point plugins that happen to be present in an optional environment;
-    # xdist itself is loaded explicitly below rather than mocked.
-    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    # Plugins autoload exactly as they do for `scripts/capture_response_schemas.py`
+    # and the CI suite: this is the only end-to-end exercise of share
+    # publication surviving xdist's worker-finished hook ordering, so it has to
+    # run under the plugin set the real gate runs under, not a narrower one.
     target = (
         "tests/test_response_capture_assembly.py::"
         "test_an_unsplit_run_has_nothing_to_assemble"
@@ -218,8 +217,6 @@ def test_a_share_publish_failure_makes_the_xdist_run_fail(tmp_path):
             "pytest",
             "-q",
             "--no-header",
-            "-p",
-            "xdist.plugin",
             "-n",
             "1",
             "--dist",

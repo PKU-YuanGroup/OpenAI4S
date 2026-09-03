@@ -16,20 +16,33 @@ updates:
   - package-ecosystem: "uv"
     directory: "/"
     # Only the four direct development tools join the cross-ecosystem PR, and
-    # only for minor/patch bumps. The regular uv entry immediately below ignores
-    # exactly this subset at exactly these levels, leaving their majors and all
-    # production dependency updates on the ordinary Dependabot path.
+    # only for minor/patch bumps. `update-types` is a `groups:`-only key: at
+    # this level it is outside the schema (SchemaStore dependabot-2.0.json
+    # rejects it, and GitHub's validator refuses the whole file on an unknown
+    # key, which stops every ecosystem's PRs), so the boundary is spelled as an
+    # `ignore` of majors instead. The regular uv entry immediately below
+    # ignores exactly this subset at exactly the complementary levels, leaving
+    # their majors and all production dependency updates on the ordinary
+    # Dependabot path. No `allow:` filter: the four names are all
+    # `[dependency-groups] dev` already, and `allow` beside a multi-ecosystem
+    # group is undocumented.
     patterns: ["mypy", "pytest", "pytest-xdist", "pre-commit"]
     multi-ecosystem-group: "routine-dependencies"
-    allow:
-      - dependency-type: "development"
-    update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
+    # Known cost of the partition: `ignore` also filters Dependabot *security*
+    # updates, and a multi-ecosystem group only does version updates. A
+    # minor/patch security fix for one of the four names therefore arrives in
+    # the Monday batch rather than as its own same-day security PR. The old
+    # per-ecosystem `groups:` never filtered; this is the trade for one
+    # cross-ecosystem PR. Watch the Dependabot alerts tab for these names.
     ignore:
       - dependency-name: "mypy"
         update-types:
@@ -110,14 +123,20 @@ updates:
     # github-actions is SemVer-classified, so this preserves the former
     # workflow-actions group's minor/patch boundary. Action majors can change
     # OIDC publishing and code-scanning behavior and stay out of this batch.
+    # Written as an `ignore` of majors for the same schema reason as the uv
+    # entry above: `update-types` is not an entry-level key.
     patterns: ["*"]
     multi-ecosystem-group: "routine-dependencies"
-    update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     # Minor/patch updates are owned by the multi-ecosystem job. Ignoring only
     # those levels here keeps every Action major on its focused review path.
+    # Same security-update cost as the uv entry above: a patched Action
+    # arrives in the Monday batch, not as a same-day security PR.
     schedule:
       interval: "weekly"
       day: "monday"

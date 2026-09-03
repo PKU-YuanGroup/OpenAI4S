@@ -1067,6 +1067,9 @@ def test_a_missing_generation_manifest_is_caught(tmp_path):
     report = verify_bringup(tmp_path)
     assert report["ok"] is False
     assert "env_generation" in _problem_ids(report)
+    # Absence is reported as absence. The lstat probe must not turn a missing
+    # generation into an I/O-fault-sounding "cannot be inspected" first line.
+    assert "cannot be inspected" not in json.dumps(report)
 
 
 def test_a_generation_that_is_not_ready_is_caught(tmp_path):

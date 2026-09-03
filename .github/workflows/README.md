@@ -32,6 +32,11 @@ same file. What is given up: a credential committed and later removed is no
 longer flagged. If that matters again, run gitleaks over history once by hand
 rather than reinstating a scheduled job with a list to feed.
 
+The pinact job in `ci.yml` is the one default PR check that needs the network:
+it resolves every action's full SHA against the exact `vX.Y.Z` tag its inline
+comment claims. Every other default check stays offline, and none of them
+receives a repository secret.
+
 ## Files
 
 | File | Purpose |

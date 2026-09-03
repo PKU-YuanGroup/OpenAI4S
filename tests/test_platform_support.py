@@ -202,12 +202,15 @@ def _linux_series() -> str:
 
 
 def _container_series() -> str:
-    """The CPython series selected by both Dockerfile stages."""
+    """The CPython series the container image runs.
+
+    Read from the first stage only; that both stages agree is the contract
+    `test_container_deployment.py` already owns.
+    """
     text = (_ROOT / "Dockerfile").read_text("utf-8")
-    matches = re.findall(r"^FROM python:(\d+\.\d+)-slim-bookworm@", text, re.M)
-    assert matches, "the container's Python series is not where this reads"
-    assert len(set(matches)) == 1, "the container stages use different Python series"
-    return matches[0]
+    match = re.search(r"^FROM python:(\d+\.\d+)-", text, re.M)
+    assert match, "the container's Python series is not where this reads"
+    return match.group(1)
 
 
 def test_every_shipped_interpreter_is_claimed_and_tested():

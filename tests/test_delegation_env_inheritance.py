@@ -19,7 +19,6 @@ code too.
 from __future__ import annotations
 
 import sys
-import venv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,6 +33,7 @@ from openai4s.kernel import environments as envmod
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.artifacts import ArtifactManager
 from openai4s.store import get_store
+from tests._envs import real_python_prefix
 
 
 class ScriptedLLM:
@@ -68,11 +68,7 @@ def _fresh_discovery():
 
 def _fake_env(root: Path, name: str) -> Path:
     """A real venv whose interpreter self-reports the selected env path."""
-    env_dir = root / name
-    # A copied python-build-standalone launcher loses its runtime tree on
-    # Linux 3.10; pyvenv.cfg plus a link keeps it runnable and prefix-aware.
-    venv.EnvBuilder(with_pip=False, symlinks=True).create(env_dir)
-    return env_dir
+    return real_python_prefix(root / name)
 
 
 def _env_spec(env_dir: Path) -> KernelEnvSpec:
