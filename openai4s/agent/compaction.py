@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from openai4s.config import Config
-from openai4s.llm import chat
+from openai4s.llm import chat, get_model_capabilities
 from openai4s.prompts import SUMMARY_FORK
 
 _SUMMARY_SYSTEM = SUMMARY_FORK
@@ -241,6 +241,8 @@ def _chars_to_tokens(value: str) -> int:
     """
     if not value:
         return 0
+    if value.isascii():
+        return max(1, (len(value) + 3) // 4)
     cjk = len(_CJK_CHAR_RE.findall(value))
     rest = len(value) - cjk
     return max(1, cjk + (rest + 3) // 4)
@@ -610,14 +612,12 @@ def _write_exclusive_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _write_content_blob(
     archive_dir: Path,
-    content: Any,
-    message: Mapping[str, Any],
-    metadata: CompactionArchiveMetadata,
-) -> tuple[str, str]:
-    digest, payload = _content_blob_payload(content, message, metadata)
+    digest: str,
+    payload: Mapping[str, Any],
+) -> str:
     path = _confined_blob_path(archive_dir, digest)
     _write_exclusive_json(path, payload)
-    return digest, str(path.relative_to(archive_dir.expanduser().resolve()))
+    return str(path.relative_to(archive_dir.expanduser().resolve()))
 
 
 def _workspace_context_ref(digest: str) -> str:
@@ -697,8 +697,26 @@ def externalize_large_outputs(
             or _content_chars(content) <= threshold_chars
         ):
             continue
-        canonical = _json_text(_json_safe(content)).encode("utf-8")
-        digest = hashlib.sha256(canonical).hexdigest()
+        digest, payload = _content_blob_payload(content, message, metadata)
+        original_chars = _content_chars(content)
+        # The kernel-readable copy is written on every path, and best-effort:
+        # the workspace is agent-writable, so a cell can leave
+        # ``.openai4s/context`` occupied, unreadable, or symlinked out, and
+        # losing the copy must not lose the compaction (the archive or the
+        # Artifact still holds the bytes).
+        workspace_ref: str | None = None
+        if workspace_root is not None:
+            try:
+                workspace_ref = _write_workspace_content_blob(
+                    workspace_root, digest, payload
+                )
+            except (OSError, ValueError):
+                workspace_ref = None
+        read_back = (
+            f"json.load(open({workspace_ref!r}))['content']"
+            if workspace_ref is not None
+            else None
+        )
         if artifact_archiver is not None:
             archived = dict(
                 artifact_archiver(
@@ -706,7 +724,7 @@ def externalize_large_outputs(
                     message,
                     {
                         "sha256": digest,
-                        "original_chars": _content_chars(content),
+                        "original_chars": original_chars,
                         "metadata": metadata.as_dict(),
                     },
                 )
@@ -720,46 +738,44 @@ def externalize_large_outputs(
                 f"artifact_id: {artifact_id}\n"
                 f"version_id: {version_id}\n"
                 f"sha256: {digest}\n"
-                f"original_chars: {_content_chars(content)}\n"
+                f"original_chars: {original_chars}\n"
                 f"preview: {_preview(content, preview_chars)}\n"
                 "[system] This is a preview, not the output. Read it back with "
                 f"open(host.artifact_path({version_id!r})).read() "
-                "(JSON, key 'content')."
+                "(JSON, key 'content')"
+                + (f", or from any cell with {read_back}." if read_back else ".")
             )
             artifact_ref = {
                 "artifact_id": artifact_id,
                 "version_id": version_id,
                 "sha256": digest,
-                "original_chars": _content_chars(content),
+                "original_chars": original_chars,
             }
             result[index]["artifact_refs"] = [artifact_ref]
-            result[index]["content_archive"] = artifact_ref
+            archive = dict(artifact_ref)
+            if workspace_ref is not None:
+                archive["workspace_ref"] = workspace_ref
+            result[index]["content_archive"] = archive
         else:
-            digest, payload = _content_blob_payload(content, message, metadata)
             relative_path: str | None = None
             if root is not None:
-                digest, relative_path = _write_content_blob(
-                    root, content, message, metadata
-                )
-            workspace_ref: str | None = None
-            if workspace_root is not None:
-                workspace_ref = _write_workspace_content_blob(
-                    workspace_root, digest, payload
-                )
+                relative_path = _write_content_blob(root, digest, payload)
+            if workspace_ref is None and relative_path is None:
+                # Nothing durable holds the bytes; the output stays inline.
+                continue
             if workspace_ref is not None:
                 result[index]["content"] = (
                     "[Large output archived]\n"
                     f"sha256: {digest}\n"
-                    f"original_chars: {_content_chars(content)}\n"
+                    f"original_chars: {original_chars}\n"
                     f"preview: {_preview(content, preview_chars)}\n"
                     "[system] This is a preview, not the output. Do not infer "
                     "what is in the gap; read the full text with "
-                    f"json.load(open({workspace_ref!r}))['content'] "
-                    "if you need it."
+                    f"{read_back} if you need it."
                 )
-                archive: dict[str, Any] = {
+                archive = {
                     "sha256": digest,
-                    "original_chars": _content_chars(content),
+                    "original_chars": original_chars,
                     "workspace_ref": workspace_ref,
                 }
                 if relative_path is not None:
@@ -771,13 +787,13 @@ def externalize_large_outputs(
                     "[Large output archived]\n"
                     f"sha256: {digest}\n"
                     f"archive_ref: {relative_path}\n"
-                    f"original_chars: {_content_chars(content)}\n"
+                    f"original_chars: {original_chars}\n"
                     f"preview: {_preview(content, preview_chars)}"
                 )
                 result[index]["content_archive"] = {
                     "sha256": digest,
                     "archive_ref": relative_path,
-                    "original_chars": _content_chars(content),
+                    "original_chars": original_chars,
                 }
         changed = True
     if changed:
@@ -915,30 +931,97 @@ def _summary_input(
     )
 
 
-def _summary_max_tokens(cfg: Config) -> int:
+def _summary_output_cap(cfg: Config) -> int | None:
+    """The model's declared output cap, or ``None`` when it is unknown.
+
+    ``chat()`` validates ``max_tokens`` against this cap before any request,
+    so a summary call above it fails without ever reaching the provider.
+    """
+    llm = getattr(cfg, "llm", None)
+    try:
+        capabilities = get_model_capabilities(
+            str(getattr(llm, "provider", "") or ""),
+            getattr(llm, "model", None),
+            base_url=getattr(llm, "base_url", None),
+        )
+    except Exception:  # noqa: BLE001 - an unknown cap is not a compaction error
+        return None
+    cap = getattr(capabilities, "max_output_tokens", None)
+    return int(cap) if isinstance(cap, int) and cap > 0 else None
+
+
+def _summary_max_tokens(cfg: Config, cap: int | None = None) -> int:
     raw = (os.environ.get("OPENAI4S_COMPACTION_SUMMARY_MAX_TOKENS") or "").strip()
+    wanted = 0
     if raw:
         try:
-            parsed = int(raw)
+            wanted = int(raw)
         except ValueError:
-            parsed = 0
-        if parsed > 0:
-            return parsed
-    return max(8192, int(getattr(cfg.llm, "max_tokens", 0) or 0))
+            wanted = 0
+    if wanted <= 0:
+        wanted = max(8192, int(getattr(cfg.llm, "max_tokens", 0) or 0))
+    return min(wanted, cap) if cap else wanted
 
 
-def _require_usable_summary(summary: str, finish_reason: Any) -> str:
+# Provider adapters pass their own stop reason through unnormalized: OpenAI
+# Chat says ``length``, Anthropic ``max_tokens``, Gemini ``MAX_TOKENS``, and the
+# Responses wire reports truncation only as ``provider_finish_reason``
+# ``incomplete`` (its ``finish_reason`` is always ``stop``).
+_TRUNCATED_FINISH = frozenset(
+    {"length", "max_tokens", "max_output_tokens", "incomplete"}
+)
+
+
+def _summary_truncated(reply: Mapping[str, Any]) -> bool:
+    return any(
+        str(reply.get(key) or "").strip().lower() in _TRUNCATED_FINISH
+        for key in ("finish_reason", "provider_finish_reason")
+    )
+
+
+def _require_usable_summary(
+    summary: str, finish_reason: Any, provider_finish_reason: Any = None
+) -> str:
     text = (summary or "").strip()
+    truncated = _summary_truncated(
+        {
+            "finish_reason": finish_reason,
+            "provider_finish_reason": provider_finish_reason,
+        }
+    )
     if not text:
         raise CompactionSummaryError(
             f"compaction summary was empty (finish_reason={finish_reason!r})"
         )
-    if finish_reason == "length" and not _handoff_titles_complete(text):
+    if truncated and not _handoff_titles_complete(text):
         raise CompactionSummaryError(
             "compaction summary was truncated before all handoff fields "
             f"(finish_reason={finish_reason!r})"
         )
     return text
+
+
+def _summary_chunk(
+    request: list[dict[str, Any]], cfg: Config, max_tokens: int, cap: int | None
+) -> str:
+    """One chunk summary; a truncated reply gets one retry at double budget."""
+    reply = chat(request, cfg.llm, max_tokens=max_tokens)
+    try:
+        return _require_usable_summary(
+            reply.get("content", "") or "",
+            reply.get("finish_reason"),
+            reply.get("provider_finish_reason"),
+        )
+    except CompactionSummaryError:
+        retry = min(2 * max_tokens, cap) if cap else 2 * max_tokens
+        if not _summary_truncated(reply) or retry <= max_tokens:
+            raise
+    reply = chat(request, cfg.llm, max_tokens=retry)
+    return _require_usable_summary(
+        reply.get("content", "") or "",
+        reply.get("finish_reason"),
+        reply.get("provider_finish_reason"),
+    )
 
 
 def compact(
@@ -967,8 +1050,12 @@ def compact(
         artifact_archiver=artifact_archiver,
         workspace=workspace,
     )
+    # A provider that answers 0 (a deployment whose max_output equals its
+    # window) means "unknown", not "no room": fall back to the config window.
     budget = int(
-        cfg.context_window_tokens if context_budget is None else context_budget
+        context_budget
+        if context_budget is not None and int(context_budget) > 0
+        else cfg.context_window_tokens
     )
     windows = _compaction_windows(
         projected, keep_recent=keep_recent, context_budget=budget
@@ -985,9 +1072,11 @@ def compact(
 
     chunk_estimates: list[int] = []
     raw_summary = ""
+    cap = _summary_output_cap(cfg)
+    max_tokens = _summary_max_tokens(cfg, cap)
     for batch in batches:
         chunk_estimates.append(estimate_context(batch).total)
-        summary_res = chat(
+        raw_summary = _summary_chunk(
             [
                 {"role": "system", "content": _SUMMARY_SYSTEM},
                 {
@@ -995,12 +1084,9 @@ def compact(
                     "content": _summary_user_content(batch, metadata, prev),
                 },
             ],
-            cfg.llm,
-            max_tokens=_summary_max_tokens(cfg),
-        )
-        raw_summary = _require_usable_summary(
-            summary_res.get("content", "") or "",
-            summary_res.get("finish_reason"),
+            cfg,
+            max_tokens,
+            cap,
         )
         prev = raw_summary
     handoff = _normalize_handoff(raw_summary, metadata)

@@ -81,6 +81,8 @@ class LedgerStore(Protocol):
 
     def append_tool_action_group(self, **values: Any) -> dict: ...
 
+    def append_action_group_with_events(self, **values: Any) -> dict: ...
+
     def list_action_groups(self, root_frame_id: str, **filters: Any) -> list[dict]: ...
 
 
@@ -625,7 +627,7 @@ class RuntimeActionLedger:
     def append_compaction(
         self,
         handoff: str,
-        covered_through_ordinal: int,
+        covered_through_group_id: str | None,
         archive_id: str | None = None,
     ) -> dict:
         """Append a kind=compaction group that old reducers skip.
@@ -634,34 +636,39 @@ class RuntimeActionLedger:
         ``reduce_action_groups`` treats the row as incomplete and continues
         without raising, replaying the full uncompacted history.  Coverage
         and the handoff text live on the event payload, matching
-        ``append_terminal``.
+        ``append_terminal``.  Group and event land in one transaction: a
+        compaction group without its event would restore an empty note in
+        place of the previous handoff.
         """
-        group = self.store.append_action_group(
+        return self.store.append_action_group_with_events(
             root_frame_id=self.root_frame_id,
-            branch_id=self.branch_id,
+            branch_id=self.branch_id or self.root_frame_id,
             turn_id=self.turn_id,
             kind="compaction",
-            provider=self.provider,
-            model=self.model,
-            assistant_message=None,
+            group_id=f"ag-{uuid.uuid4().hex[:16]}",
+            admission_operation="action_group:append",
+            events=[
+                {
+                    "type": "compaction",
+                    "result": {
+                        "handoff": _redact_free_text(str(handoff or ""), frozenset()),
+                        "covered_through_group_id": (
+                            str(covered_through_group_id)
+                            if covered_through_group_id
+                            else None
+                        ),
+                        "archive_id": archive_id,
+                    },
+                }
+            ],
         )
-        self.store.append_action_event(
-            group_id=group["group_id"],
-            type="compaction",
-            result={
-                "handoff": _redact_free_text(str(handoff or ""), frozenset()),
-                "covered_through_ordinal": int(covered_through_ordinal),
-                "archive_id": archive_id,
-            },
-        )
-        return group
 
-    def covered_through_ordinal(self, compacted_messages: Sequence[Any]) -> int:
+    def covered_through_group_id(self, compacted_messages: Sequence[Any]) -> str | None:
         """Map compact() middle messages onto this branch's coverage bound.
 
-        See :func:`compaction_cover_ordinal` for the group→message rule.
+        See :func:`compaction_cover_group_id` for the group→message rule.
         """
-        return compaction_cover_ordinal(
+        return compaction_cover_group_id(
             branch_action_groups(
                 self.store, self.root_frame_id, branch_id=self.branch_id
             ),
@@ -731,70 +738,59 @@ def _synthetic_tool_result(
     }
 
 
-def _group_ordinal(group: Mapping[str, Any]) -> int:
-    try:
-        return int(group.get("ordinal") or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _compaction_event_fields(group: Mapping[str, Any]) -> tuple[int, str]:
-    """Read handoff text and coverage bound from a compaction group."""
+def _compaction_event_fields(group: Mapping[str, Any]) -> tuple[str | None, str]:
+    """Read the coverage bound (a group id) and handoff text from a group."""
     for event in group.get("events") or ():
         if not isinstance(event, Mapping) or event.get("type") != "compaction":
             continue
         payload = event.get("result")
         if not isinstance(payload, Mapping):
             payload = event
-        handoff = payload.get("handoff")
-        if handoff is None:
-            handoff = event.get("handoff")
-        covered = payload.get("covered_through_ordinal")
-        if covered is None:
-            covered = event.get("covered_through_ordinal")
-        try:
-            covered_ordinal = int(covered)
-        except (TypeError, ValueError):
-            covered_ordinal = -1
-        return covered_ordinal, str(handoff or "")
-    return -1, ""
+        handoff = str(payload.get("handoff") or "")
+        covered = payload.get("covered_through_group_id")
+        return (str(covered) if covered else None), handoff
+    return None, ""
 
 
 def _apply_compaction(
     history: list[tuple[int, dict[str, Any]]],
-    group: Mapping[str, Any],
+    note_index: int,
+    covered_index: int,
+    handoff: str,
 ) -> list[tuple[int, dict[str, Any]]]:
     """Keep the earliest user, drop covered messages, insert the new handoff.
 
-    A later compaction replaces any earlier handoff note.  Observation
-    messages also have ``role=user``; the head is the minimum-ordinal user
-    message, which is the original task (ledger has no system prompt).
+    Positions are indexes into the branch's spliced group sequence, never
+    ordinals: ordinals restart at 0 on a forked branch behind the inherited
+    parent prefix, so they do not order that sequence.  A later compaction
+    replaces any earlier handoff note.  Observation messages also have
+    ``role=user``; the head is the first user message, which is the original
+    task (ledger has no system prompt).
     """
-    covered, handoff = _compaction_event_fields(group)
     user_messages = [
-        (ordinal, message)
-        for ordinal, message in history
+        (index, message)
+        for index, message in history
         if message.get("role") == "user" and not message.get("compaction_handoff")
     ]
     first_user = min(user_messages, key=lambda item: item[0]) if user_messages else None
     kept: list[tuple[int, dict[str, Any]]] = []
     skipped_head = False
-    for ordinal, message in history:
+    for index, message in history:
         if (
             not skipped_head
             and first_user is not None
-            and ordinal == first_user[0]
+            and index == first_user[0]
             and message.get("role") == "user"
         ):
             skipped_head = True
             continue
         if message.get("compaction_handoff"):
             continue
-        if ordinal <= covered:
+        if index <= covered_index:
             continue
-        kept.append((ordinal, message))
-    content = str(handoff or "")
-    if content and not content.startswith(COMPACTION_NOTE_PREFIX):
+        kept.append((index, message))
+    content = handoff
+    if not content.startswith(COMPACTION_NOTE_PREFIX):
         # Restore must hand the model the same note compact() built in memory;
         # a bare handoff reads as standing instruction, not compacted history.
         content = COMPACTION_NOTE_PREFIX + content
@@ -806,7 +802,7 @@ def _apply_compaction(
     out: list[tuple[int, dict[str, Any]]] = []
     if first_user is not None:
         out.append(first_user)
-    out.append((_group_ordinal(group), note))
+    out.append((note_index, note))
     out.extend(kept)
     return out
 
@@ -814,16 +810,33 @@ def _apply_compaction(
 def _reduce_action_groups_annotated(
     groups: Sequence[Mapping[str, Any]],
 ) -> list[tuple[int, dict[str, Any]]]:
-    """Reduce groups into ``(ordinal, message)`` pairs, applying compaction."""
+    """Reduce groups into ``(position, message)`` pairs, applying compaction.
+
+    ``position`` is the group's index in ``groups`` — the branch's spliced
+    sequence — which is the only axis that orders an inherited parent prefix
+    and the child's own groups together.
+    """
     history: list[tuple[int, dict[str, Any]]] = []
     terminal = _terminal_reasons(groups)
-    for group in groups:
+    positions: dict[str, int] = {}
+    for index, group in enumerate(groups):
+        group_id = str(group.get("group_id") or "")
+        if group_id and group_id not in positions:
+            positions[group_id] = index
+    for index, group in enumerate(groups):
         kind = str(group.get("kind") or "")
         if kind == "terminal":
             continue
-        ordinal = _group_ordinal(group)
         if kind == "compaction":
-            history = _apply_compaction(history, group)
+            covered_id, handoff = _compaction_event_fields(group)
+            if not handoff.strip():
+                # A group without its event (or with nothing to hand over)
+                # covers nothing and must not erase the previous note.
+                continue
+            covered_index = positions.get(covered_id or "", -1)
+            if covered_index >= index:
+                covered_index = -1
+            history = _apply_compaction(history, index, covered_index, handoff)
             continue
         raw_message = group.get("assistant_message")
         message = (
@@ -833,7 +846,7 @@ def _reduce_action_groups_annotated(
         )
         if kind in {"user", "system", "permission_resolution"}:
             if message and message.get("role") in {"user", "system"}:
-                history.append((ordinal, message))
+                history.append((index, message))
             continue
         if message is None or message.get("role") != "assistant":
             # A corrupt/incomplete group must not leak a partial action.
@@ -880,7 +893,7 @@ def _reduce_action_groups_annotated(
                     result.setdefault("wire_id", call.wire_id)
                     result.setdefault("name", call.name)
                 unit.append(result)
-            history.extend((ordinal, item) for item in unit)
+            history.extend((index, item) for item in unit)
             continue
 
         observation_messages: list[dict[str, Any]] = []
@@ -920,59 +933,51 @@ def _reduce_action_groups_annotated(
             else:
                 detail = "[Observation]\nERROR:\nexecution was interrupted before an observation was recorded"
             observation_messages = [{"role": "user", "content": detail}]
-        history.extend((ordinal, item) for item in (message, *observation_messages))
+        history.extend((index, item) for item in (message, *observation_messages))
     return history
 
 
-def compaction_cover_ordinal(
+def compaction_cover_group_id(
     groups: Sequence[Mapping[str, Any]],
     compacted_messages: Sequence[Any],
-) -> int:
-    """Map compact() middle messages onto the last fully covered group ordinal.
+) -> str | None:
+    """Map compact() middle messages onto the last fully covered group.
 
     compact() keeps a two-message head (system prompt + first task) and a
     recent tail.  The Action Ledger has no system prompt, so the head is the
     earliest user message.  Each remaining group contributes the same
     messages ``reduce_action_groups`` would emit.
 
-    Primary rule: drop handoff notes, skip the head user, then treat the next
+    Drop handoff notes, skip the head user, then treat the next
     ``len(compacted_messages)`` reconstructed messages as the compacted
-    middle.  The cover bound is the ordinal of the last group whose messages
-    all lie in that middle.  A group that straddles middle/tail is not
-    covered, so restore cannot drop a tail observation from the same cell.
+    middle.  The cover bound is the id of the last group whose messages all
+    lie in that middle.  A group that straddles middle/tail is not covered,
+    so restore cannot drop a tail observation from the same cell.
 
-    Fallback: if the compacted count cannot be aligned with the reconstructed
-    body, ``covered_through = latest_ordinal - n_tail_groups``.  When no tail
-    is identifiable, ``n_tail_groups`` is 0 (cover through the latest group
-    rather than invent a tail).
+    When the count cannot be aligned with the reconstructed body — the live
+    history carried a message the ledger has no group for, or the reverse —
+    the answer is ``None``: nothing is provably covered, and a bound guessed
+    in the other direction deletes the tail compact() deliberately kept.
     """
     annotated = _reduce_action_groups_annotated(groups)
-    latest = 0
-    for group in groups:
-        ordinal = _group_ordinal(group)
-        if ordinal > latest:
-            latest = ordinal
     n_middle = len(compacted_messages)
     body = [
-        (ordinal, message)
-        for ordinal, message in annotated
+        (index, message)
+        for index, message in annotated
         if not message.get("compaction_handoff")
     ]
-    if not body:
-        return latest
+    if not body or n_middle <= 0:
+        return None
     rest = body[1:]
-    if n_middle <= len(rest):
-        middle = rest[:n_middle]
-        tail = rest[n_middle:]
-        tail_ordinals = {ordinal for ordinal, _ in tail}
-        n_tail_groups = len(tail_ordinals)
-        fully_covered = [
-            ordinal for ordinal, _ in middle if ordinal not in tail_ordinals
-        ]
-        if fully_covered:
-            return fully_covered[-1]
-        return max(0, latest - n_tail_groups)
-    return latest
+    if n_middle > len(rest):
+        return None
+    middle = rest[:n_middle]
+    tail_indexes = {index for index, _ in rest[n_middle:]}
+    fully_covered = [index for index, _ in middle if index not in tail_indexes]
+    if not fully_covered:
+        return None
+    group_id = str(groups[fully_covered[-1]].get("group_id") or "")
+    return group_id or None
 
 
 def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -983,9 +988,9 @@ def reduce_action_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict[str, 
     one tool result per declared call, including synthetic crash/cancel results.
 
     A ``kind="compaction"`` group keeps the earliest user message, drops every
-    other message whose group ordinal is ``<= covered_through_ordinal``,
-    inserts the structured handoff note, and lets later groups append
-    normally.  A later compaction replaces the previous note.
+    other message from a group at or before ``covered_through_group_id`` in
+    the branch sequence, inserts the structured handoff note, and lets later
+    groups append normally.  A later compaction replaces the previous note.
     """
     return [message for _, message in _reduce_action_groups_annotated(groups)]
 
@@ -1044,7 +1049,7 @@ __all__ = [
     "REDACTED",
     "RuntimeActionLedger",
     "branch_action_groups",
-    "compaction_cover_ordinal",
+    "compaction_cover_group_id",
     "new_turn_id",
     "redact_tool_call",
     "reduce_action_groups",

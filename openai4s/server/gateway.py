@@ -10668,16 +10668,17 @@ class SessionRunner:
     ) -> str:
         """Persist one compaction archive and record it on the Action Ledger.
 
-        ``covered_through_ordinal`` is the last group whose restore messages
+        ``covered_through_group_id`` is the last group whose restore messages
         all lie in ``payload["compacted_messages"]``.  compact() keeps a
         two-message head (system prompt + first task) and a recent tail; the
         ledger has no system prompt, so the head is the earliest user group.
         Walk the current branch groups through the same group→message
         correspondence ``reduce_action_groups`` uses, take the next
         ``len(compacted_messages)`` messages after that user (handoff notes
-        excluded), and use the last fully covered group's ordinal.  If that
-        count cannot be aligned, fall back to ``latest_ordinal - n_tail_groups``
-        (``n_tail_groups`` is 0 when no tail is identifiable).
+        excluded), and use the last fully covered group.  If that count
+        cannot be aligned the bound is ``None`` — the note is recorded and
+        nothing is dropped on restore — rather than a guess that would
+        delete the tail compact() kept.
 
         ``action_ledger`` is the same writer ``_loop`` passes to
         ``metadata_provider``.  When omitted, ``st.active_action_ledger`` is
@@ -10718,7 +10719,7 @@ class SessionRunner:
         if ledger is not None:
             ledger.append_compaction(
                 handoff=str(payload.get("handoff") or ""),
-                covered_through_ordinal=ledger.covered_through_ordinal(compacted),
+                covered_through_group_id=ledger.covered_through_group_id(compacted),
                 archive_id=str(archive_id) if archive_id else None,
             )
         return archive_id
@@ -10890,11 +10891,19 @@ class SessionRunner:
                     else model_tools
                 ),
                 context_budget_provider=lambda _state: (
+                    # Same fallback as ``_child_context_budget``: an entry
+                    # whose usable window is 0 still knows its raw window.
                     get_model_capabilities(
                         llm_cfg.provider,
                         llm_cfg.model,
                         base_url=llm_cfg.base_url,
                     ).usable_context_tokens
+                    or get_model_capabilities(
+                        llm_cfg.provider,
+                        llm_cfg.model,
+                        base_url=llm_cfg.base_url,
+                    ).context_window_tokens
+                    or None
                 ),
                 artifact_archiver=lambda content, message, archive: (
                     self._archive_context_output(st, content, dict(message), archive)
@@ -10902,7 +10911,7 @@ class SessionRunner:
                 archive_sink=lambda payload: self._archive_compaction_record(
                     st, dict(payload), action_ledger
                 ),
-                workspace_provider=lambda _s: str(st.local_workspace),
+                workspace_provider=lambda _s: str(st.workspace),
             ),
             event_sink=events,
             cancellation=EventCancellation(st.cancel),

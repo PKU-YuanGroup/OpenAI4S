@@ -39,11 +39,11 @@ from .actions import (
 from .compaction import (
     DEFAULT_LARGE_OUTPUT_CHARS,
     CompactionArchiveMetadata,
+    ContextEstimate,
     compact,
     estimate_context,
     externalize_large_outputs,
     safe_keep_recent,
-    should_compact,
 )
 from .control import (
     call_reaches_dispatcher,
@@ -57,11 +57,6 @@ from .finalize import (
     note_execution_evidence,
 )
 from .models import ExecutionOutcome, ModelReply, RunState
-
-# Import-time binding. Tests patch `should_compact` to force compaction on
-# small fixtures; production compares identity and uses the calibrated trigger
-# instead of calling compaction.py's helper (owned by a parallel change).
-_SHOULD_COMPACT = should_compact
 
 LogFn = Callable[..., None]
 
@@ -227,6 +222,10 @@ class CompactionPolicy:
             state.metadata["last_externalization_error"] = str(error)[:500]
             self.log(f"[context output kept inline] Artifact archive failed: {error}")
             messages = state.messages
+            # compact() externalizes again on its way in; handing it the same
+            # workspace would fail the same way and count as a compaction
+            # failure, tripping the breaker over a write that is best-effort.
+            workspace = None
         before = estimate_context(messages, tool_schemas)
         state.metadata["context_estimate"] = before.as_dict()
         calibrated_total = before.total * calibration
@@ -246,20 +245,32 @@ class CompactionPolicy:
             # retry.  Without this the breaker permanently disables compaction
             # for the run and the context grows unbounded into a provider 4xx.
             if before.total < self.circuit_open_total * self.circuit_retry_growth:
-                self.log(
-                    "[compaction skipped] circuit breaker open after "
+                reason = (
                     f"{self.low_yield_streak} low-yield attempts"
+                    if self.low_yield_streak
+                    else f"{self.failure_streak} consecutive failures"
                 )
+                self.log(f"[compaction skipped] circuit breaker open after {reason}")
                 return messages
             self.log(
                 "[compaction retry] context grew "
                 f"{before.total} >= {self.circuit_retry_growth}x "
                 f"{self.circuit_open_total}; reopening compaction"
             )
+            # A reopened breaker gets its full budget back on both counters;
+            # the failure streak counts *consecutive* failures, and the trip
+            # that opened the circuit is not one of the retry's.
             self.circuit_open = False
             self.low_yield_streak = 0
+            self.failure_streak = 0
             self.circuit_open_total = 0
 
+        # compact() hands the durable record to the sink from inside its
+        # archive step, before this policy has decided whether the projection
+        # is adopted.  Buffer it: a rejected compaction recorded as applied
+        # makes the history a restart rebuilds disagree with the one the run
+        # kept using.
+        deferred: list[Mapping[str, Any]] = []
         try:
             prepared = compact(
                 messages,
@@ -269,23 +280,13 @@ class CompactionPolicy:
                 archive_metadata=metadata,
                 large_output_chars=self.large_output_chars,
                 artifact_archiver=self.artifact_archiver,
-                archive_sink=self.archive_sink,
+                archive_sink=deferred.append if self.archive_sink is not None else None,
                 tool_schemas=tool_schemas,
                 context_budget=context_budget,
                 workspace=workspace,
             )
         except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
-            self.failure_streak += 1
-            state.metadata["last_compaction_error"] = str(error)[:500]
-            self.log(f"[compaction skipped] durable archive failed: {error}")
-            if self.failure_streak >= self.max_failure_attempts:
-                self.circuit_open = True
-                self.circuit_open_total = before.total
-                self.log(
-                    "[compaction circuit open] "
-                    f"{self.failure_streak} consecutive failures: {error}"
-                )
-            return messages
+            return self._compaction_failed(state, before, error, messages)
         self.failure_streak = 0
         after = estimate_context(prepared, tool_schemas)
         gain = max(0, before.total - after.total)
@@ -317,7 +318,33 @@ class CompactionPolicy:
         if after.total >= before.total:
             state.metadata["context_estimate"] = before.as_dict()
             return messages
+        if self.archive_sink is not None:
+            try:
+                for payload in deferred:
+                    self.archive_sink(payload)
+            except Exception as error:  # noqa: BLE001 - unrecorded is not adopted
+                state.metadata["context_estimate"] = before.as_dict()
+                return self._compaction_failed(state, before, error, messages)
         return prepared
+
+    def _compaction_failed(
+        self,
+        state: RunState,
+        before: ContextEstimate,
+        error: BaseException,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> Sequence[Mapping[str, Any]]:
+        self.failure_streak += 1
+        state.metadata["last_compaction_error"] = str(error)[:500]
+        self.log(f"[compaction skipped] durable archive failed: {error}")
+        if self.failure_streak >= self.max_failure_attempts:
+            self.circuit_open = True
+            self.circuit_open_total = before.total
+            self.log(
+                "[compaction circuit open] "
+                f"{self.failure_streak} consecutive failures: {error}"
+            )
+        return messages
 
     def _calibration_ratio(self, state: RunState) -> float:
         previous = _positive_float(state.metadata.get("context_estimate_calibration"))
@@ -346,15 +373,7 @@ class CompactionPolicy:
         context_budget: int | None,
         calibrated_total: float,
     ) -> bool:
-        if should_compact is not _SHOULD_COMPACT:
-            return bool(
-                should_compact(
-                    messages,
-                    self.cfg,
-                    tool_schemas=tool_schemas,
-                    context_budget=context_budget,
-                )
-            )
+        del messages, tool_schemas  # accounted for in ``calibrated_total``
         window = int(
             context_budget
             if context_budget is not None
@@ -377,13 +396,17 @@ class CompactionPolicy:
 
     def _context_budget(self, state: RunState) -> int | None:
         try:
-            return (
+            budget = (
                 self.context_budget_provider(state)
                 if self.context_budget_provider is not None
                 else None
             )
         except Exception:  # noqa: BLE001 - config fallback remains available
             return None
+        # 0 is what a capability entry whose max_output equals its window
+        # reports; it means "unknown", and a zero window would compact on
+        # every turn with a zero chunk budget.
+        return int(budget) if budget is not None and int(budget) > 0 else None
 
     def _metadata(self, state: RunState) -> CompactionArchiveMetadata:
         source = (

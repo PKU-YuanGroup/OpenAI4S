@@ -10,7 +10,7 @@ from openai4s.agent.compaction import COMPACTION_NOTE_PREFIX, HANDOFF_FIELDS
 from openai4s.agent.events import ActionRouted, OutcomeProduced, ReplyReceived
 from openai4s.agent.ledger import (
     RuntimeActionLedger,
-    compaction_cover_ordinal,
+    compaction_cover_group_id,
     reduce_action_groups,
     restore_action_history,
 )
@@ -160,7 +160,7 @@ def test_restore_keeps_head_handoff_and_uncovered_groups(tmp_path):
     # Numbered among the 10 code/observation groups: cover through the 6th
     # (groups[6]), restore messages from the 7th-10th (groups[7:11]).
     sixth = groups[6]
-    ledger.append_compaction("## Objective\nX", sixth["ordinal"])
+    ledger.append_compaction("## Objective\nX", sixth["group_id"])
 
     history = restore_action_history(store, "root-compact")
     expected_tail: list[dict] = []
@@ -182,8 +182,8 @@ def test_second_compaction_replaces_the_earlier_note(tmp_path):
         _append_code_observation(ledger, index)
 
     groups = store.list_action_groups("root-stack")
-    ledger.append_compaction("## Objective\nfirst", groups[4]["ordinal"])
-    ledger.append_compaction("## Objective\nsecond", groups[7]["ordinal"])
+    ledger.append_compaction("## Objective\nfirst", groups[4]["group_id"])
+    ledger.append_compaction("## Objective\nsecond", groups[7]["group_id"])
 
     history = restore_action_history(store, "root-stack")
     expected_tail: list[dict] = []
@@ -207,14 +207,14 @@ def test_compaction_group_is_structurally_compatible_with_legacy_reduce(tmp_path
     for index in range(4):
         _append_code_observation(ledger, index)
     groups_before = store.list_action_groups("root-compat")
-    ledger.append_compaction("## Objective\nX", groups_before[2]["ordinal"])
+    ledger.append_compaction("## Objective\nX", groups_before[2]["group_id"])
 
     groups = store.list_action_groups("root-compat")
     compaction = next(group for group in groups if group["kind"] == "compaction")
     assert compaction["assistant_message"] is None
     event = compaction["events"][0]
     assert event["type"] == "compaction"
-    assert event["result"]["covered_through_ordinal"] == groups_before[2]["ordinal"]
+    assert event["result"]["covered_through_group_id"] == groups_before[2]["group_id"]
 
     legacy = _legacy_reduce_action_groups(groups)
     full = [
@@ -238,7 +238,7 @@ def test_restore_survives_store_close_and_reopen(tmp_path):
     for index in range(10):
         _append_code_observation(ledger, index)
     groups = store.list_action_groups("root-reopen")
-    ledger.append_compaction("## Objective\nX", groups[6]["ordinal"])
+    ledger.append_compaction("## Objective\nX", groups[6]["group_id"])
     before = restore_action_history(store, "root-reopen")
     store.close()
 
@@ -260,8 +260,10 @@ def test_covered_through_maps_middle_count_onto_last_fully_covered_group(tmp_pat
     compacted_messages: list[dict] = []
     for index in range(6):
         compacted_messages.extend(_code_messages(index))
-    assert compaction_cover_ordinal(groups, compacted_messages) == groups[6]["ordinal"]
-    assert ledger.covered_through_ordinal(compacted_messages) == groups[6]["ordinal"]
+    assert (
+        compaction_cover_group_id(groups, compacted_messages) == groups[6]["group_id"]
+    )
+    assert ledger.covered_through_group_id(compacted_messages) == groups[6]["group_id"]
     store.close()
 
 

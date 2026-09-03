@@ -61,6 +61,7 @@ def _restored_note(handoff_body: str) -> dict:
         },
         {
             "ordinal": 1,
+            "group_id": "ag-code-0",
             "kind": "code",
             "assistant_message": {
                 "role": "assistant",
@@ -82,7 +83,7 @@ def _restored_note(handoff_body: str) -> dict:
                     "type": "compaction",
                     "result": {
                         "handoff": handoff_body,
-                        "covered_through_ordinal": 1,
+                        "covered_through_group_id": "ag-code-0",
                         "archive_id": "a1",
                     },
                 }

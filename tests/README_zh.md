@@ -50,6 +50,15 @@ OpenAI4S 的离线正确性门禁。`uv run pytest` 用确定性 fake 跑完这�
 | [`test_agent_hybrid.py`](test_agent_hybrid.py) | 关于 hybrid `Agent` 门面的两个测试：原生调用压过代码、且它的规范历史能活到下一轮；被复用的 agent 在接新任务前会清掉上一次的提交。 |
 | [`test_agent_profile_repository.py`](test_agent_profile_repository.py) | 落在 SQLite 里的具名 agent profile，主要是那些别扭的地方——假值的老式序列化、列表读取时的 JSON 解码边界，以及 upsert 必须扛住的“先读后写”那段空隙。 |
 | [`test_agent_runtime.py`](test_agent_runtime.py) | 纯引擎与真实基础设施之间的本地适配器。两条规则占主导：原生调用解析出错或超出上限时绝不许下发，同时也绝不许把 Tool 结果弄丢。compaction 会把尾部撑开，好让 assistant 的 Tool group 保持原子；一个熔断器会掐掉反复低收益的 compaction。 |
+| [`test_compaction_summary_robustness.py`](test_compaction_summary_robustness.py) | 长程修复的 Lane A。摘要调用拿到真实的输出预算（`max(8192, cfg.llm.max_tokens)`，可用环境变量覆盖）且不再设 temperature；空的或被截断的摘要抛 `CompactionSummaryError`，而不是把中段归档到一条模型随后会信以为真的占位符后面；摘要输入去掉 `wire_state` 并截断工具参数。 |
+| [`test_compaction_cli_budget.py`](test_compaction_cli_budget.py) | Lane B。CLI 现在把 Web 循环早已有的、由 provider 推导的上下文预算和工具 schema 计量交给 `CompactionPolicy`，所以一次性的 `openai4s run` 按模型真实窗口压缩，而不是按配置默认值。 |
+| [`test_compaction_failure_breaker.py`](test_compaction_failure_breaker.py) | Lane C。连续两次压缩失败打开熔断，上下文增长 1.5× 后重新闭合；一次成功清零连击；上一条回复的真实 `input_tokens` 校准估算（钳在 [0.5, 8]），低估也能触发。 |
+| [`test_compaction_chunked_summary.py`](test_compaction_chunked_summary.py) | Lane D。过长的中段按有界滚动分块摘要——每次 `chat()` 输入低于预算的 0.35×，上一份 handoff 向前传递并从 transcript JSON 中排除——保留尾部按 token 选取、绝不拆开原子对，CJK 字符按每字一 token 估算。 |
+| [`test_compaction_externalize_retrieval.py`](test_compaction_externalize_retrieval.py) | Lane E。超大输出被复制到 kernel 能 `json.load` 的工作区相对路径 `.openai4s/context/<sha256>.json`，标记只写这个路径、不含任何绝对路径，仅由摘要构成的文件名无法被内容操纵。 |
+| [`test_compaction_ledger.py`](test_compaction_ledger.py) | Lane F。压缩是一条 `assistant_message=None` 的 `kind="compaction"` Action Ledger group：旧 reducer 跳过它并重放完整历史，新 reducer 保留首条 user、丢弃被覆盖的 group、插入 handoff；覆盖边界是消息全部落在被压缩中段里的最后一个 group；daemon 经 `_seed_messages` 重建时恢复的是压缩后的视图。 |
+| [`test_compaction_wave2_integration.py`](test_compaction_wave2_integration.py) | Lane D 与 E 之间、两条车道各自的树都覆盖不到的缝：`compact()` 必须把 `workspace` 传进 `externalize_large_outputs`，policy 必须把它传进 `compact()`。 |
+| [`test_compaction_wave3_integration.py`](test_compaction_wave3_integration.py) | Lane D 与 F 之间的缝：ledger 恢复出的 note 必须与 `compact()` 在内存里构造的逐字节相同（共享 `COMPACTION_NOTE_PREFIX`），恢复一条已带框架句的 note 不得再加一次前缀。 |
+| [`test_compaction_wave4_review.py`](test_compaction_wave4_review.py) | Wave 4 审阅在各车道集成后发现的问题。持久 ledger 记录只为 policy 采纳的压缩写入；覆盖按分支拼接序列中的 group id 判定（fork 后 ordinal 从 0 重新计数），任何错位都判为一无所覆而不是覆盖到尾部；缺少 event 的压缩 group 被跳过而不是当作空 note 应用；摘要 `max_tokens` 钳到模型声明的上限，被截断的分块（`length`/`max_tokens`/`MAX_TOKENS`/`incomplete`，重试一次）绝不用占位符补齐；上下文预算为 0 意味着未知；工作区 `.openai4s/context` 被占用只损失 kernel 副本、不损失压缩；Artifact 路径同样写这份副本；重新闭合的熔断拿回完整的失败预算。 |
 | [`test_analysis_skills.py`](test_analysis_skills.py) | 内置的分析类 Skill 在这里是真的被执行，不只是被列出来。它的数据审计能抓出分组泄漏，AUC 会处理并列，bootstrap 是确定性的。 |
 | [`test_annotation_repository.py`](test_annotation_repository.py) | 图像 annotation。一共三个测试，真正要紧的是并发钉图时的序号分配——它必须是原子的。 |
 | [`test_artifact_control_tools.py`](test_artifact_control_tools.py) | Artifact 恢复是这里最危险的操作，所以这个模块大半在讲它怎么拒绝：损坏的快照、不可信的 ID、版本切出之后又被改动过的工作区。恢复始终要过审批，store 写失败时会回滚。 |

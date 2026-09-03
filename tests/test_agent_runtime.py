@@ -421,8 +421,6 @@ def test_compaction_expands_tail_to_keep_assistant_tool_group_atomic(monkeypatch
     ]
     captured = {}
 
-    monkeypatch.setattr(runtime, "should_compact", lambda messages, cfg, **kwargs: True)
-
     def fake_compact(
         messages,
         cfg,
@@ -443,7 +441,11 @@ def test_compaction_expands_tail_to_keep_assistant_tool_group_atomic(monkeypatch
         return messages
 
     monkeypatch.setattr(runtime, "compact", fake_compact)
-    cfg = SimpleNamespace(compaction_dir="archive")
+    # A one-token window with a zero trigger ratio forces compaction on any
+    # non-empty history; the policy has a single trigger path.
+    cfg = SimpleNamespace(
+        compaction_dir="archive", context_window_tokens=1, compaction_trigger_ratio=0.0
+    )
 
     prepared = CompactionPolicy(cfg).prepare(RunState(messages))
 
@@ -464,14 +466,19 @@ def test_compaction_circuit_breaker_stops_repeated_low_yield_calls(monkeypatch):
         {"role": "assistant", "content": "recent"},
     ]
     attempts = []
-    monkeypatch.setattr(runtime, "should_compact", lambda messages, cfg, **kwargs: True)
 
     def no_yield(messages, cfg, **kwargs):
         attempts.append(kwargs)
         return messages
 
     monkeypatch.setattr(runtime, "compact", no_yield)
-    policy = CompactionPolicy(SimpleNamespace(compaction_dir="archive"))
+    policy = CompactionPolicy(
+        SimpleNamespace(
+            compaction_dir="archive",
+            context_window_tokens=1,
+            compaction_trigger_ratio=0.0,
+        )
+    )
     state = RunState(messages)
 
     policy.prepare(state)
