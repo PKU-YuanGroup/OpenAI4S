@@ -385,8 +385,8 @@ def test_macos_keychain_account_contains_store_namespace(monkeypatch):
     namespace = "a" * 32
     calls = []
 
-    def fake_run(argv, stdin=None):
-        calls.append((argv, stdin))
+    def fake_run(argv, stdin=None, *, detach_from_tty=False):
+        calls.append((argv, stdin, detach_from_tty))
         return SimpleNamespace(returncode=0, stdout=b"saved-value\n", stderr=b"")
 
     monkeypatch.setattr(module, "_run", fake_run)
@@ -396,35 +396,49 @@ def test_macos_keychain_account_contains_store_namespace(monkeypatch):
     backend.delete(namespace, "llm", "llm_api_key")
 
     expected_account = f"v2/{namespace}/llm/llm_api_key"
-    for argv, _stdin in calls:
+    for argv, _stdin, _detach_from_tty in calls:
         assert argv[argv.index("-a") + 1] == expected_account
         assert "saved-value" not in argv
 
 
 @pytest.mark.stubbed_backend
-def test_cli_runs_detached_from_the_controlling_terminal(monkeypatch):
+def test_only_keychain_write_runs_detached_from_the_controlling_terminal(monkeypatch):
     """`security -w` takes the password from /dev/tty, not stdin, whenever the
     process has a controlling terminal — so a daemon launched from a shell
     prompts on that shell and hangs until the CLI timeout. Detaching into a new
     session is what makes readpassphrase(3) fall back to the stdin we feed it.
-    Regression guard: the kwarg must reach subprocess.run, alongside the value
-    on stdin and never in argv."""
+    Regression guard: only that write detaches; reads, deletes, and Linux's
+    stdin-native secret-tool keep normal foreground job control."""
     import openai4s.security.secret_broker as module
 
-    seen = {}
+    calls = []
 
     def fake_subprocess_run(argv, **kwargs):
-        seen["argv"] = argv
-        seen["kwargs"] = kwargs
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        calls.append((argv, kwargs))
+        stdout = b"s3cret\n" if "find-generic-password" in argv else b""
+        if argv[:2] == ["secret-tool", "lookup"]:
+            stdout = b"s3cret"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
 
     monkeypatch.setattr(module.subprocess, "run", fake_subprocess_run)
-    module._run(["security", "add-generic-password", "-w"], stdin="s3cret\ns3cret\n")
+    namespace = "c" * 32
+    keychain = module.KeychainBackend()
+    keychain.put(namespace, "llm", "llm_api_key", "s3cret")
+    assert keychain.get(namespace, "llm", "llm_api_key") == "s3cret"
+    keychain.delete(namespace, "llm", "llm_api_key")
+    secret_service = module.SecretServiceBackend()
+    secret_service.put(namespace, "llm", "llm_api_key", "s3cret")
+    assert secret_service.get(namespace, "llm", "llm_api_key") == "s3cret"
+    secret_service.delete(namespace, "llm", "llm_api_key")
 
-    assert seen["kwargs"]["start_new_session"] is True
-    assert seen["kwargs"]["input"] == b"s3cret\ns3cret\n"
-    assert seen["kwargs"]["timeout"] == module._CLI_TIMEOUT_S
-    assert "s3cret" not in seen["argv"]
+    assert len(calls) == 6
+    detached = [argv for argv, kwargs in calls if kwargs["start_new_session"]]
+    assert detached == [calls[0][0]]
+    assert "add-generic-password" in detached[0]
+    assert calls[0][1]["input"] == b"s3cret\ns3cret\n"
+    for argv, kwargs in calls:
+        assert kwargs["timeout"] == module._CLI_TIMEOUT_S
+        assert "s3cret" not in argv
 
 
 @pytest.mark.stubbed_backend
