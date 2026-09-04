@@ -327,30 +327,18 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   void loadSessions();
 }
 
-let composerWatch: MutationObserver | null = null;
+type ComposerDispatch = (text: string) => unknown;
 
-export function bindComposer(): void {
+/**
+ * Bind the composer keydown and the two mode toggles. `main.tsx` calls this
+ * right after `render(<App/>)`, the same post-render slot as `bootChrome()`:
+ * `installSend()` runs at module import, before Shell has rendered
+ * `#composer`, so it stays DOM-free (the F-17 `bootArtifacts` /
+ * `finishArtifactsBoot` split). Idempotent through the `data-send-bound`
+ * markers. `dispatch` is a seam for tests; production dispatches `send`.
+ */
+export function bindComposer(dispatch: ComposerDispatch = send): void {
   if (typeof document === "undefined") return;
-  if (bindComposerNow() || composerWatch) return;
-  // installSend() runs at module import, before Shell.tsx has rendered
-  // #composer, so this first pass finds nothing -- and nothing ever tried
-  // again: Enter inserted a newline and no typed message could be sent. Same
-  // ordering bindComposerAutocomplete already handles: bind when the node
-  // appears, then stop watching.
-  if (typeof MutationObserver !== "function") return;
-  composerWatch = new MutationObserver(() => {
-    if (!bindComposerNow()) return;
-    composerWatch?.disconnect();
-    composerWatch = null;
-  });
-  composerWatch.observe(document.documentElement || document.body, {
-    childList: true,
-    subtree: true,
-  });
-}
-
-/** Bind whatever is mounted; true once #composer carries the keydown handler. */
-function bindComposerNow(): boolean {
   const planToggle = document.getElementById("plan-toggle");
   if (planToggle && !planToggle.dataset.sendBound) {
     planToggle.dataset.sendBound = "1";
@@ -380,15 +368,23 @@ function bindComposerNow(): boolean {
   const c = document.getElementById("composer") as HTMLTextAreaElement | null;
   if (c && !c.dataset.sendBound) {
     c.dataset.sendBound = "1";
+    // One dispatch at a time. send() clears the composer only after its first
+    // awaits (POST /frames on a fresh session, the skills catalog for a /skill
+    // token), so a held or double Enter inside that window would create a
+    // second session and send the same text twice.
+    let inFlight: Promise<unknown> | null = null;
     c.addEventListener("keydown", (e) => {
       if (e.isComposing || e.keyCode === 229) return;
       const ac = (globalThis as { ac?: { open?: boolean } }).ac;
       if (ac && ac.open) return;
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        void send(c.value);
-      }
+      if (e.key !== "Enter" || e.shiftKey) return;
+      e.preventDefault();
+      if (inFlight) return;
+      const pending = Promise.resolve(dispatch(c.value));
+      inFlight = pending;
+      void pending.finally(() => {
+        if (inFlight === pending) inFlight = null;
+      });
     });
   }
-  return !!c && c.dataset.sendBound === "1";
 }
