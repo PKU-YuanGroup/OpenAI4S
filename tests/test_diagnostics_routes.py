@@ -259,6 +259,7 @@ def test_member_always_gets_the_same_403(tmp_path):
         node.close()
 
 
+@pytest.mark.stubbed_backend
 def test_member_still_gets_403_while_an_admin_bundle_is_in_flight(
     tmp_path, monkeypatch
 ):
@@ -483,7 +484,6 @@ def test_bundle_download_has_zero_canary_hits(tmp_path, monkeypatch):
         blob = _payload(raw)
         for canary in CANARIES:
             assert canary.encode() not in blob, canary
-        assert BUNDLE_FILENAME.encode()  # filename is the fixed public name
         with zipfile.ZipFile(__import__("io").BytesIO(blob)) as archive:
             names = archive.namelist()
             joined = " ".join(names)

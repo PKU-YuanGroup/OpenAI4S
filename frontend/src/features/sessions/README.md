@@ -22,6 +22,8 @@ F-13 dashboard / projects / sessions. Pagination and sort are pure functions. Wi
 | [`index.ts`](index.ts) | Public re-exports; installs window names on import. |
 | [`lane.ts`](lane.ts) | `isReady` wrapper for later-lane window names. |
 | [`load.ts`](load.ts) | `loadSessions` cursor walk, `loadProjects` keyset pages (no `offset`), folders, `renderSessions`. |
+| [`dashboard.projects.test.ts`](dashboard.projects.test.ts) | What the project card shows after a repaint that is not a full load, and what opening a session leaves in the store. The running badge is annotated from the frames the dashboard last fetched — including the 4s poll's, or a repaint paints "1 running" beside a Running card that poll just emptied — and leaving for the workspace reloads the unfiltered directory the header and switcher read, keeping the list it had when that background reload fails. |
+| [`load.replace.test.ts`](load.replace.test.ts) | A Load-more clicked while a debounced search is still in flight is refused: before the gate it took a newer generation with the *old* query and cursor, so the search reply was discarded as stale and page two of the previous filter landed under the new box text. |
 | [`load.projects.test.ts`](load.projects.test.ts) | Project-list query string has no `offset`; merge/dedupe; empty / retry / load-more view states. |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / earlier bar. |
 | [`paging.test.ts`](paging.test.ts) | Pagination constants, session sort, walk/dedupe, dashboard filters. |

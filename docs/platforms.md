@@ -73,8 +73,7 @@ and the test that enforces the rest deliberately does not enforce this.
 
 **3.15 and later are admitted by `>=3.10` and are not claimed.** The bound is
 left open rather than capped so a new interpreter does not block installation,
-but nothing here has run on one. 3.14 is claimed as the container runtime
-only: the wheel classifiers still stop at 3.13.
+but nothing here has run on one.
 
 ## What "unsupported" means here
 

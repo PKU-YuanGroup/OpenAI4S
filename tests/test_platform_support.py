@@ -266,15 +266,13 @@ def test_the_shipped_interpreter_is_claimed_and_tested():
     )
 
 
-def test_the_container_interpreter_is_tested_and_gated():
-    """The published image runs 3.14. Until this check, CI and the release
-    gate stopped at 3.13, so a 3.14-only failure shipped as a green
-    container smoke."""
+def test_the_container_interpreter_is_a_release_gate():
+    """The published image runs 3.14. Until this check the release gate
+    stopped at 3.13, so a 3.14-only failure shipped as a green container
+    smoke. That the series is claimed and in the CI matrix is
+    `test_every_shipped_interpreter_is_claimed_and_tested`'s row; this one
+    reads the Dockerfile so a FROM bump cannot outrun the gate list."""
     shipped = _container_series()
-    assert shipped in _ci_tested_versions(), (
-        f"the container ships Python {shipped}, which the CI offline-test "
-        "matrix never runs"
-    )
     from scripts import release_gates
 
     names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
@@ -291,21 +289,12 @@ def test_every_tested_version_is_a_claimed_version():
     something the package tells installers it does not offer. That is not
     harmless -- it is the shape of a claim that drifted, and whichever side is
     wrong, the two disagreeing is the bug.
-
-    No exemption for the container's series: an interpreter the published
-    image runs is one the wheel supports, so it is claimed by a classifier
-    like every other tested version. Exempting whatever the Dockerfile names
-    would let a FROM bump to an unclaimed series pass this check silently.
     """
     tested, claimed = _ci_tested_versions(), _classifier_versions()
     extra = tested - claimed
     assert (
         not extra
     ), f"CI tests Python {sorted(extra)}, which the classifiers do not claim"
-    assert _container_series() in claimed, (
-        f"the container ships Python {_container_series()}, which the "
-        "classifiers do not claim"
-    )
 
 
 def test_the_floor_is_tested_and_no_claim_sits_below_it():

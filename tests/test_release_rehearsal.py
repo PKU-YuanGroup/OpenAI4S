@@ -124,6 +124,24 @@ def test_macos_omit_cannot_carry_a_dmg():
         )
 
 
+def test_a_stapled_image_with_a_nonzero_spctl_assessment_is_still_notarized():
+    """`describe_macos_image.py` records `spctl` as informational and derives
+    `notarized` from the staple; this predicate must not answer differently
+    for the same evidence, or one gate calls the image verified and the next
+    refuses it."""
+    notary = {
+        "requested": True,
+        "submitted": True,
+        "stapled": True,
+        "stapler_returncode": 0,
+        "spctl_returncode": 3,
+        "post_staple_sha256": "a" * 64,
+    }
+    assert release_receipts.notary_succeeded(notary) is True
+    assert not release_receipts.notary_succeeded({**notary, "stapler_returncode": 65})
+    assert not release_receipts.notary_succeeded({**notary, "post_staple_sha256": ""})
+
+
 def test_no_notary_success_means_zero_dmgs():
     with pytest.raises(ReceiptError, match="notarization success"):
         release_receipts.verify_rehearsal(

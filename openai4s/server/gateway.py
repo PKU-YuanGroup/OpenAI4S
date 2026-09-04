@@ -3343,6 +3343,7 @@ class SessionRunner:
             ) from error
 
         from openai4s.compute.manager import CANCEL_INDETERMINATE_REASONS, ComputeError
+        from openai4s.compute.states import REASON_CANCEL_UNCONFIRMED
 
         try:
             outcome = manager.cancel({"job_id": job_id})
@@ -3362,7 +3363,7 @@ class SessionRunner:
                 "reason": (
                     kind
                     if kind in CANCEL_INDETERMINATE_REASONS
-                    else "receipt_unconfirmed"
+                    else REASON_CANCEL_UNCONFIRMED
                 ),
                 "hint": (
                     "cancel could not be confirmed; the job may still be "

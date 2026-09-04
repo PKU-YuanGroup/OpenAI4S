@@ -912,6 +912,9 @@ class Pipeline:
                             "check_run_id": row["check_run_id"],
                             "run_id": row["run_id"],
                             "url": row["url"],
+                            # The stage attestation copies these rows; without
+                            # the commit they name, its `head_sha` was "".
+                            "head_sha": str(row.get("head_sha") or ""),
                         }
                         for row in receipt.get("checks", [])
                     ],
@@ -964,6 +967,9 @@ class Pipeline:
                             "check_run_id": row["check_run_id"],
                             "run_id": row["run_id"],
                             "url": row["url"],
+                            # The stage attestation copies these rows; without
+                            # the commit they name, its `head_sha` was "".
+                            "head_sha": str(row.get("head_sha") or ""),
                         }
                         for row in receipt.get("checks", [])
                     ],
@@ -1365,7 +1371,6 @@ class Pipeline:
         """
         if self.dry_run:
             return StepResult("evidence", True, "would seal the evidence bundle")
-
         payload = self.report(planned=STEPS, sealing=True)
         carried = [
             path
@@ -1488,6 +1493,32 @@ class Pipeline:
                 )
             except release_receipts.ReceiptError as error:
                 raise ReleaseError(str(error)) from error
+            # Schema 2 records the workflow run and the dispatch inputs on
+            # every build receipt; until here they were required non-empty
+            # and never compared, so a receipt from an earlier dispatch -- or
+            # one built under publish=true during a rehearsal -- verified as
+            # long as the SHA and the digests matched.
+            for kind, document in build_receipts.items():
+                recorded_run = str(document.get("workflow_run_id") or "")
+                if self.workflow_run_id and recorded_run != self.workflow_run_id:
+                    raise ReleaseError(
+                        f"build receipt {kind} is from workflow run "
+                        f"{recorded_run or '<none>'}; this is run "
+                        f"{self.workflow_run_id}"
+                    )
+                # `verify_build_receipts` already refused a receipt without
+                # recorded inputs, so every document here carries them.
+                recorded_inputs = dict(document.get("workflow_inputs") or {})
+                if self.workflow_inputs is not None:
+                    for flag in ("publish", "pypi_only"):
+                        if bool(recorded_inputs.get(flag)) != bool(
+                            self.workflow_inputs[flag]
+                        ):
+                            raise ReleaseError(
+                                f"build receipt {kind} was built with "
+                                f"{flag}={bool(recorded_inputs.get(flag))}; this "
+                                f"dispatch has {flag}={bool(self.workflow_inputs[flag])}"
+                            )
             macos_receipt = build_receipts.get("macos") or {}
             dmg_count = sum(1 for asset in self.assets if Path(asset).suffix == ".dmg")
             notary = macos_receipt.get("notary")
@@ -2132,6 +2163,32 @@ class Pipeline:
             for result in self.results:
                 if result.name == "test":
                     linux_boundary = result.facts.get("linux_boundary")
+            if linux_boundary is None and "test" not in self.performed:
+                # A partial run (`--only evidence`) has no test result in this
+                # process. The boundary facts still come from the quality
+                # receipt that step verifies -- never from the empty default,
+                # which sealed `ci_attestation: missing` for a candidate whose
+                # gate had passed. No receipt, no seal. A `--mode local` run
+                # whose test step ran here and attested nothing keeps that
+                # empty default: on a laptop, `missing` is the true statement.
+                # Resolved before the try: a moved tag is a provenance
+                # failure with its own message, not a missing receipt.
+                frozen = self._frozen_sha()
+                try:
+                    receipt = verify_quality_receipt(
+                        self.assets_dir / QUALITY_RECEIPT_NAME,
+                        expected_sha=frozen,
+                    )
+                except ReleaseError as error:
+                    raise ReleaseError(
+                        "the evidence bundle cannot be sealed without the quality "
+                        f"receipt's boundary facts: {error}"
+                    ) from error
+                linux_boundary = receipt.get(
+                    "linux_boundary"
+                ) or release_gates.build_linux_boundary(
+                    receipt.get("checks") or [], receipt.get("platform_checks") or []
+                )
             document["sandbox"] = _sandbox_posture(linux_boundary=linux_boundary)
         return document
 

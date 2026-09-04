@@ -126,6 +126,25 @@ class CountingExecutor:
         return ExecutionOutcome()
 
 
+class PollingExecutor(CountingExecutor):
+    """The same call, answered differently each time -- a poll."""
+
+    def __init__(self, contents):
+        super().__init__()
+        self.contents = list(contents)
+
+    def execute(self, action, reply, state):
+        outcome = super().execute(action, reply, state)
+        if not isinstance(action, NativeToolBatch) or not self.contents:
+            return outcome
+        content = self.contents.pop(0)
+        return ExecutionOutcome(
+            tuple(
+                {**message, "content": content} for message in outcome.history_messages
+            )
+        )
+
+
 def _engine(replies, executor=None, *, max_turns=10, **overrides):
     model = FakeModel(replies)
     executor = executor or CountingExecutor()
@@ -162,6 +181,51 @@ def test_same_action_three_times_blocks_fourth_dispatch():
     assert result.completion is None
     assert len(executor.dispatched) == 3
     assert len(model.calls) == 3
+
+
+def test_an_identical_poll_whose_results_move_is_progress_not_a_loop():
+    """`collect_children(timeout=300)`, `exec_peek`, `compute_result` are
+    called again with the same arguments by design; the answer moving is the
+    progress. Counting the call alone failed the turn on the third poll --
+    the one that delivered the child's finished output."""
+    executor = PollingExecutor(
+        [
+            '{"status": "running", "progress": "10%"}',
+            '{"status": "running", "progress": "55%"}',
+            '{"status": "running", "progress": "90%"}',
+            '{"status": "completed", "output": "done"}',
+            '{"status": "completed", "output": "done"}',
+        ]
+    )
+    engine, model, executor = _engine(
+        _native_replies(5, name="collect_children", arguments={"timeout": 300}),
+        executor,
+        max_turns=5,
+    )
+
+    result = engine.run([{"role": "user", "content": "wait for the child"}])
+
+    # Five polls, four distinct answers: the turn limit ends the run, not the
+    # circuit, and every poll was dispatched.
+    assert result.stop_reason == "max_turns"
+    assert result.progress_reason is None
+    assert len(executor.dispatched) == 5
+
+
+def test_an_identical_poll_whose_results_stopped_moving_still_trips():
+    """The control: a status payload that never changes is the loop."""
+    executor = PollingExecutor(['{"status": "running"}'] * 5)
+    engine, model, executor = _engine(
+        _native_replies(5, name="collect_children", arguments={"timeout": 300}),
+        executor,
+        max_turns=10,
+    )
+
+    result = engine.run([{"role": "user", "content": "wait for the child"}])
+
+    assert result.stop_reason == NO_PROGRESS_STOP_REASON
+    assert result.progress_reason == PROGRESS_REASON_SAME_ACTION
+    assert len(executor.dispatched) == 3
 
 
 def test_malformed_twice_trips_without_a_third_provider_call():
@@ -245,7 +309,13 @@ def test_reasoning_insert_does_not_reset_same_action_streak():
     assert len(model.calls) == 4
 
 
-def _record_same_action(store, root: str, count: int) -> None:
+def _record_same_action(store, root: str, count: int, *, contents=None) -> None:
+    """`count` identical `list_dir` groups; `contents` varies each result.
+
+    The default result is the one `CountingExecutor` produces, because the
+    same-action streak now continues across a restart only when the persisted
+    answer is the answer the live path sees again.
+    """
     for index in range(count):
         ledger = RuntimeActionLedger(store, root, f"turn-{index}")
         if index == 0:
@@ -284,7 +354,9 @@ def _record_same_action(store, root: str, count: int) -> None:
                             "tool_call_id": call.id,
                             "wire_id": call.wire_id,
                             "name": call.name,
-                            "content": "ok",
+                            "content": (
+                                "list_dir ok" if contents is None else contents[index]
+                            ),
                             "is_error": False,
                         },
                     )
@@ -292,6 +364,45 @@ def _record_same_action(store, root: str, count: int) -> None:
                 index,
             )
         )
+
+
+def test_restore_from_the_ledger_applies_the_result_delta_rule(tmp_path):
+    """The persisted result rows carry content, so a restart reads the same
+    poll the live path saw: three moving answers are one streak of length
+    one, and only trailing identical answers count."""
+    store = Store(tmp_path / "poll.db")
+    root = store.new_frame(project_id="default", status="ready")
+    _record_same_action(
+        store, root, 4, contents=["10%", "55%", "completed", "completed"]
+    )
+
+    restored = restore_progress_circuit(store, root)
+    assert not restored.tripped
+    assert restored.same_action_streak == 2
+    store.close()
+
+
+def test_an_empty_epoch_is_restored_without_reading_a_single_group(tmp_path):
+    """Right after `append_user` the epoch is empty by construction. The
+    restore used to prove that by decoding every group on the branch."""
+    store = Store(tmp_path / "empty-epoch.db")
+    root = store.new_frame(project_id="default", status="ready")
+    _record_same_action(store, root, 3)
+    RuntimeActionLedger(store, root, "turn-next").append_user(
+        {"role": "user", "content": "try something else"}
+    )
+    reads = []
+    original = store.list_action_groups
+
+    def counting(*args, **kwargs):
+        reads.append(kwargs)
+        return original(*args, **kwargs)
+
+    store.list_action_groups = counting  # type: ignore[method-assign]
+    restored = restore_progress_circuit(store, root)
+    assert restored == ProgressCircuit()
+    assert reads == []
+    store.close()
 
 
 def test_restart_rebuilds_from_ledger_not_live_runstate(tmp_path):

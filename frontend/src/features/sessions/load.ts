@@ -125,6 +125,22 @@ export function projectDashView(opts: {
 let _projectsLoadGen = 0;
 /** The `q` the current page set was loaded with; an append continues it. */
 let _projectsLoadedQuery = "";
+/**
+ * A replace (first page, possibly a new `q`) awaiting its reply. An append
+ * admitted meanwhile would take a newer generation with the *old* query and
+ * cursor, and the generation guard would then discard the search reply in
+ * favour of page two of the previous filter.
+ */
+let _projectsReplaceInFlight = false;
+
+export function projectsReplaceInFlight(): boolean {
+  return _projectsReplaceInFlight;
+}
+
+/** The `q` the current `projects.value` page set was loaded with. */
+export function projectsLoadedQuery(): string {
+  return _projectsLoadedQuery;
+}
 
 /**
  * Load the first page (`replace`) or the next page (`append`) of projects.
@@ -141,7 +157,7 @@ export async function loadProjects(opts?: { append?: boolean; q?: string }): Pro
   if (
     append &&
     !canLoadMoreProjects({
-      loadingMore: !!_projectsLoadingMore.value,
+      loadingMore: !!_projectsLoadingMore.value || _projectsReplaceInFlight,
       hasMore: !!projectsHasMore.value,
       cursor: projectsNextCursor.value,
     })
@@ -154,7 +170,10 @@ export async function loadProjects(opts?: { append?: boolean; q?: string }): Pro
   const path = projectListQuery({ q, cursor });
   try {
     if (append) _projectsLoadingMore.value = true;
-    else projectsLoadError.value = false;
+    else {
+      projectsLoadError.value = false;
+      _projectsReplaceInFlight = true;
+    }
     const d = (await api(path)) as {
       projects?: ProjectLike[];
       next_cursor?: string | null;
@@ -184,7 +203,11 @@ export async function loadProjects(opts?: { append?: boolean; q?: string }): Pro
       projectsTotal.value = 0;
     }
   } finally {
-    if (gen === _projectsLoadGen) _projectsLoadingMore.value = false;
+    // A superseded request leaves both flags to the newest one to clear.
+    if (gen === _projectsLoadGen) {
+      _projectsLoadingMore.value = false;
+      _projectsReplaceInFlight = false;
+    }
   }
 }
 

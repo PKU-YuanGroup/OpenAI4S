@@ -107,6 +107,16 @@ def normalize_notary(raw: Any, *, required: bool) -> dict[str, Any] | None:
 
 
 def notary_succeeded(notary: Mapping[str, Any] | None) -> bool:
+    """A stapled ticket bound to the post-staple bytes.
+
+    This is the same definition `describe_macos_image.py` writes as
+    ``notarized`` and `release_pipeline.signing_state` reads: ``stapler
+    validate`` succeeded and the digest is the image's. ``spctl`` is recorded
+    beside it as the assessment a first launch performs, and it stays
+    informational here too -- it is a Gatekeeper *policy* answer that depends
+    on the runner's own state, and requiring it made this gate refuse an
+    image the sibling gate had just called ``verified``.
+    """
     if not isinstance(notary, Mapping):
         return False
     return bool(
@@ -114,7 +124,6 @@ def notary_succeeded(notary: Mapping[str, Any] | None) -> bool:
         and notary.get("submitted")
         and notary.get("stapled")
         and notary.get("stapler_returncode") == 0
-        and notary.get("spctl_returncode") == 0
         and str(notary.get("post_staple_sha256") or "")
     )
 
@@ -314,6 +323,11 @@ def verify_build_receipts(
             )
         if not str(document.get("workflow_run_id") or ""):
             raise ReceiptError(f"build receipt {path.name} records no workflow run id")
+        if not isinstance(document.get("workflow_inputs"), Mapping):
+            # The writer always records them; a receipt without them would
+            # otherwise be normalized to the defaults and escape the
+            # publish/pypi_only comparison staging performs.
+            raise ReceiptError(f"build receipt {path.name} records no workflow inputs")
         try:
             normalize_workflow_inputs(document.get("workflow_inputs"))
         except ReceiptError as error:

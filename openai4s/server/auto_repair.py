@@ -45,19 +45,6 @@ def declare_deterministic_repair(fn: Any) -> Any:
     return fn
 
 
-def adapt_legacy_repair_fn(fn: Any, *, deterministic: bool = False) -> Any:
-    """Explicit adapter for a two-parameter repair_fn.
-
-    Pass ``deterministic=True`` when the callable never invokes a provider.
-    Otherwise AutoRepairService refuses to run it as metered while a budget
-    envelope is active; unmigrated callables do not break stored runs.
-    """
-
-    if deterministic:
-        return declare_deterministic_repair(fn)
-    return fn
-
-
 class RepairTurnAdmission:
     """Per-round admission context passed to a metered repair_fn.
 
@@ -140,20 +127,27 @@ def _classify_repair_fn(fn: Any) -> str:
     return "legacy"
 
 
+def _admission_by_keyword(fn: Any) -> bool:
+    """Whether a metered repair_fn names its third parameter ``admission``."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return "admission" in sig.parameters
+
+
 def _invoke_repair_fn(
     fn: Any,
     snapshot: Mapping[str, Any],
     material: Sequence[Mapping[str, Any]],
     admission: RepairTurnAdmission,
+    *,
+    kind: str,
+    by_keyword: bool,
 ) -> Mapping[str, Any]:
-    kind = _classify_repair_fn(fn)
     if kind != "metered":
         return fn(snapshot, material)
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return fn(snapshot, material, admission)
-    if "admission" in sig.parameters:
+    if by_keyword:
         return fn(snapshot, material, admission=admission)
     return fn(snapshot, material, admission)
 
@@ -269,6 +263,12 @@ class AutoRepairService:
         self.config = config
         self.scientific_review = scientific_review
         self.repair_fn = repair_fn or apply_claim_repair
+        # The callable never changes after construction; its shape was being
+        # re-derived by three signature inspections on every repair round.
+        self._repair_kind = _classify_repair_fn(self.repair_fn)
+        self._admission_by_keyword = self._repair_kind == "metered" and (
+            _admission_by_keyword(self.repair_fn)
+        )
 
     @property
     def feature_enabled(self) -> bool:
@@ -324,7 +324,7 @@ class AutoRepairService:
                 return current
             pending_ids: list[str] = []
             active_budget = budget is not None and bool(run_id)
-            if _classify_repair_fn(self.repair_fn) == "legacy" and active_budget:
+            if self._repair_kind == "legacy" and active_budget:
                 raise RuntimeError(
                     "repair_fn must declare deterministic or accept admission; "
                     "refusing to run an unmetered repair as metered"
@@ -380,7 +380,12 @@ class AutoRepairService:
             try:
                 repair_payload = dict(
                     _invoke_repair_fn(
-                        self.repair_fn, snapshot, material, turn_admission
+                        self.repair_fn,
+                        snapshot,
+                        material,
+                        turn_admission,
+                        kind=self._repair_kind,
+                        by_keyword=self._admission_by_keyword,
                     )
                 )
             except AutoBudgetDenied as denied:

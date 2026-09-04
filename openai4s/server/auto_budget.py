@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import fields
 from typing import Any
 
+from openai4s.agent.progress_circuit import canonical_arguments as _canonical_arguments
 from openai4s.config import GUARDIAN_BUDGET_FIELDS, AutoModeBudgets
 from openai4s.server.guardian_enforce import (
     DEFAULT_CONSECUTIVE_DENIAL_LIMIT,
@@ -698,23 +699,6 @@ class AutoBudgetAdmission:
             return list(guardian_denial_history(self.store, root_frame_id))
         except Exception:  # noqa: BLE001 - projection must not fail the GET
             return []
-
-
-def _canonical_arguments(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _canonical_arguments(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_canonical_arguments(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        if isinstance(value, bool) or not isinstance(value, float):
-            return value
-        if value != value or value in (float("inf"), float("-inf")):
-            return None
-        return value
-    return str(value)
 
 
 __all__ = [

@@ -52,7 +52,16 @@ def _is_top_level_key(line: str) -> bool:
 
 
 def _key_of(line: str) -> str:
-    return line.split(":", 1)[0].strip()
+    """The key of a top-level line, folded the way `_parse_frontmatter` folds it.
+
+    The loader lowercases every key and keeps the *last* occurrence. Matching
+    case-sensitively here meant a document written with `Name:` was not
+    recognised as owning that field: a fresh `name:` was prepended and the
+    capitalised original preserved after it -- which is the one the loader
+    then read. An edit that did not take effect, and an import stamped
+    `origin: user` that loaded as whatever `Origin:` the author wrote.
+    """
+    return line.split(":", 1)[0].strip().lower()
 
 
 def split_document(text: str) -> tuple[list[str], str]:
@@ -96,6 +105,23 @@ def _drop_field(lines: list[str], key: str) -> list[str]:
     return out
 
 
+def _scalar_lines(key: str, value: str) -> list[str]:
+    """One owned field as the lines `_parse_frontmatter` reads back as it.
+
+    A value with newlines -- the loader returns a `description: |` block with
+    its line breaks intact -- cannot be written as a bare `key: value`: the
+    continuation lines would land at column 0, where the next parse reads
+    them as top-level keys. An imported `description: |` whose second line
+    said `capabilities: ...` became a real field, and the description lost
+    every line but the first. The block scalar the loader already understands
+    keeps the value whole.
+    """
+    text = str(value or "")
+    if "\n" not in text:
+        return [f"{key}: {text}"]
+    return [f"{key}: |", *(f"  {line}" for line in text.splitlines())]
+
+
 def rewrite(
     original: str, *, name: str, description: str, origin: str, body: str
 ) -> str:
@@ -122,9 +148,9 @@ def rewrite(
         preserved.pop(0)
 
     head = [
-        f"name: {name}",
-        f"description: {description}",
-        f"origin: {origin}",
+        *_scalar_lines("name", name),
+        *_scalar_lines("description", description),
+        *_scalar_lines("origin", origin),
     ]
     frontmatter = "\n".join(head + preserved)
     return f"---\n{frontmatter}\n---\n\n{(body or '').strip()}\n"

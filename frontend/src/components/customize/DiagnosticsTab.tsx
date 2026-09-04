@@ -155,7 +155,10 @@ export function DiagnosticsTab() {
           {copied ? text.copied : text.copy}
         </button>
       </CustRow>
-      <CustRow name={text.runChecks} desc={checks}>
+      <CustRow
+        name={text.runChecks}
+        desc={checks ? <pre class="cust-checks">{checks}</pre> : undefined}
+      >
         <button
           type="button"
           class="outline-btn small"

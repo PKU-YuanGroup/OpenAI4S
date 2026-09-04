@@ -972,6 +972,36 @@ class ActionLedgerRepository:
             ),
         )
 
+    def latest_group_ordinal(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        kind: str | None = None,
+    ) -> int | None:
+        """The highest ordinal on a branch, optionally of one ``kind``.
+
+        Walks ``ux_action_group_ordinal`` backwards and stops at the first
+        match, so finding the epoch anchor (the latest ``user`` group) costs
+        an index probe rather than a ``SELECT *`` over every blob on the
+        branch. ``None`` when the branch has no such group.
+        """
+        root_frame_id = _required_text("root_frame_id", root_frame_id)
+        branch_id = _required_text("branch_id", branch_id or root_frame_id)
+        clauses = ["root_frame_id=?", "branch_id=?"]
+        params: list[Any] = [root_frame_id, branch_id]
+        if kind is not None:
+            clauses.append("kind=?")
+            params.append(_required_text("kind", kind))
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT ordinal FROM action_groups WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY ordinal DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return None if row is None else int(row["ordinal"])
+
     def _next_group_ordinal_locked(self, root_frame_id: str, branch_id: str) -> int:
         row = self._connection.execute(
             "SELECT COALESCE(MAX(ordinal),-1)+1 AS n FROM action_groups "

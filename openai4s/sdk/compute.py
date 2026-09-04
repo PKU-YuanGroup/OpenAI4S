@@ -8,21 +8,15 @@ from typing import Any, Callable
 # host and this namespace came to disagree about which states are final.
 # ``states`` is pure constants with no dependencies, so it is safe to reach
 # for from inside the kernel worker.
+from openai4s.compute.states import INDETERMINATE_KINDS as _INDETERMINATE_CANCEL_KINDS
 from openai4s.compute.states import TERMINAL_STATES as _TERMINAL_STATUSES
 
-# Kinds a failed cancel may carry. The host's `_compute_guard` currently
-# forwards `error` + `error_kind` only, so this namespace infers
-# `indeterminate` from the kind when the wire omits the flag. A caller that
-# treats any exception as "the job is gone" is the failure this exists to
-# prevent.
-_INDETERMINATE_CANCEL_KINDS = frozenset(
-    {
-        "unknown_state",
-        "remote_unreachable",
-        "receipt_unconfirmed",
-        "provider_cancel_unsupported",
-    }
-)
+# The host's `_compute_guard` forwards `indeterminate` explicitly for every
+# `ComputeError`, and that flag wins below. The kind-based fallback covers a
+# reply without the flag: a dispatcher soft-fail (`{"error": ...}` with no
+# kind) and a cluster worker whose checkout is newer than its daemon. A
+# caller that treats any exception as "the job is gone" is the failure this
+# exists to prevent, so the fallback errs toward indeterminate.
 
 
 class SessionConcurrencyFull(RuntimeError):

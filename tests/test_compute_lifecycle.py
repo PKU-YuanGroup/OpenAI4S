@@ -534,6 +534,42 @@ def test_cancel_maps_unsupported_terminate_to_provider_cancel_unsupported(
     assert get_store(cfg.db_path).get_compute_job(job_id)["status"] != states.CANCELLED
 
 
+def test_a_provider_not_found_on_terminate_is_an_unconfirmed_cancel(
+    byoc, monkeypatch, cfg
+):
+    """The provider no longer knows the sandbox this side still holds. That is
+    not "no such job" -- the job exists and may be billing -- and a plain
+    re-raise of the provider's kind rendered it as a 404."""
+
+    def submit_ok(op, stage):
+        if op == "create":
+            _reply(stage, {"ok": True, "sandbox_id": "sbx-gone"})
+        else:
+            _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(submit_ok)
+    )
+    job_id = byoc.submit({"provider": "byoc:fake", "command": "train.py"})["job_id"]
+
+    def gone(op, stage):
+        if op == "terminate":
+            _reply(stage, {"ok": False, "kind": "not_found", "msg": "no such sandbox"})
+            return 0
+        _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", _fake_popen(gone))
+    with pytest.raises(ComputeError) as error:
+        byoc.cancel({"job_id": job_id})
+    assert error.value.error_kind == states.REASON_CANCEL_UNCONFIRMED
+    assert error.value.indeterminate is True
+    row = get_store(cfg.db_path).get_compute_job(job_id)
+    assert row["status"] != states.CANCELLED
+    assert "may still be running and billing" in (row["reason"] or "")
+
+
 # --------------------------------------------------------------------------
 # the status write itself
 # --------------------------------------------------------------------------

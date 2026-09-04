@@ -3339,6 +3339,17 @@ class Store:
     ) -> dict | None:
         return self._actions.get_group(group_id, include_events=include_events)
 
+    def latest_action_group_ordinal(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        kind: str | None = None,
+    ) -> int | None:
+        return self._actions.latest_group_ordinal(
+            root_frame_id, branch_id=branch_id, kind=kind
+        )
+
     def list_action_groups(
         self,
         root_frame_id: str,

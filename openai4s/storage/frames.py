@@ -20,6 +20,7 @@ from openai4s.execution.dependencies import (
     normalize_string_list,
 )
 from openai4s.storage.deletion import SessionDeletionRepository
+from openai4s.storage.like import like_contains
 
 
 def visible_session_clause(
@@ -94,12 +95,6 @@ def visible_session_clause(
 PROJECT_PAGE_DEFAULT = 100
 PROJECT_PAGE_MAX = 100
 PROJECT_Q_MAX_CODEPOINTS = 128
-
-
-def _like_contains(value: str) -> str:
-    """A substring LIKE pattern that treats ``\\``, ``%`` and ``_`` as literals."""
-    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
 
 
 def project_filter_fingerprint(*, q: str, team_scope: str) -> str:
@@ -191,7 +186,7 @@ def _project_listing_filters(
             f"({alias}.name LIKE ? ESCAPE '\\' "
             f"OR {alias}.description LIKE ? ESCAPE '\\')"
         )
-        pattern = _like_contains(query)
+        pattern = like_contains(query)
         params.extend([pattern, pattern])
     if visible_to_user_id is not None:
         clauses.append(
@@ -518,9 +513,13 @@ class FrameRepository:
             "a.last_active_at AS last_active_raw " + _ACTIVITY_JOIN + where + order
         )
         bind: list[Any] = list(params)
-        if limit is not None:
+        if limit is not None or offset is not None:
+            # OFFSET is only grammatical after LIMIT; a negative LIMIT is
+            # SQLite's "unbounded". Emitting the clause under ``limit`` alone
+            # switched the order to keyset for an offset-only call and then
+            # returned the whole table from row 0, with no error.
             sql += " LIMIT ?"
-            bind.append(max(1, int(limit)))
+            bind.append(-1 if limit is None else max(1, int(limit)))
             if offset is not None:
                 sql += " OFFSET ?"
                 bind.append(max(0, int(offset)))

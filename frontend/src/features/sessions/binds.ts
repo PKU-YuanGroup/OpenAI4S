@@ -9,6 +9,7 @@ export const binds = {
   startDashPoll: (() => {}) as () => void,
   stopDashPoll: (() => {}) as () => void,
   renderDashProjects: (() => {}) as () => void,
+  renderProjMenu: (() => {}) as () => void,
   renderSessions: (() => {}) as () => void,
   showDashboard: (() => {}) as () => void,
   showWorkspace: (() => {}) as () => void,

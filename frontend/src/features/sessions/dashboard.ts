@@ -19,6 +19,8 @@ import {
   canLoadMoreProjects,
   loadProjects,
   projectDashView,
+  projectsLoadedQuery,
+  projectsReplaceInFlight,
   type ProjectLike,
 } from "./load";
 import {
@@ -89,7 +91,7 @@ export function bindProjectSearch(): void {
 export async function loadMoreProjects(): Promise<void> {
   if (
     !canLoadMoreProjects({
-      loadingMore: !!_projectsLoadingMore.value,
+      loadingMore: !!_projectsLoadingMore.value || projectsReplaceInFlight(),
       hasMore: !!projectsHasMore.value,
       cursor: projectsNextCursor.value,
     })
@@ -127,6 +129,11 @@ export function paintDashSkeleton(): void {
   if (sc && !sc.childElementCount) sc.appendChild(skel(4));
 }
 
+/** The root frames the dashboard last loaded; a search or Load-more repaint
+ * annotates its fresh server rows (which carry no `running_count`) from
+ * these, so the running badge survives a keystroke. */
+let _dashFrames: SessionLike[] = [];
+
 export async function loadDashboard(): Promise<void> {
   bindProjectSearch();
   paintDashSkeleton();
@@ -139,7 +146,7 @@ export async function loadDashboard(): Promise<void> {
   } catch {
     frames = [];
   }
-  annotateRunningCounts(projects.value as ProjectLike[], frames);
+  _dashFrames = frames;
   renderDashProjects();
   renderDashRunning(frames);
   renderDashRecent(frames);
@@ -150,6 +157,7 @@ export function renderDashProjects(): void {
   if (!pc) return;
   pc.innerHTML = "";
   const list = projects.value as ProjectLike[];
+  annotateRunningCounts(list, _dashFrames);
   const view = projectDashView({
     error: !!projectsLoadError.value,
     count: list.length,
@@ -162,9 +170,10 @@ export function renderDashProjects(): void {
     const retry = el("button", "outline-btn small", projectCopy("retry"));
     retry.type = "button";
     retry.id = "dash-projects-retry";
-    retry.onclick = () => {
-      void loadProjects().then(() => renderDashProjects());
-    };
+    // The same request the box would issue: a failed *filtered* load retried
+    // without `q` painted the whole directory under a box still showing the
+    // filter, and Load-more then walked the unfiltered set.
+    retry.onclick = () => searchProjectsNow();
     pc.appendChild(box);
     pc.appendChild(retry);
     return;
@@ -361,6 +370,10 @@ export async function refreshDashRunning(): Promise<void> {
     return;
   }
   if ($("#dashboard")?.classList.contains("hidden")) return;
+  // The project repaints annotate from these; leaving them at the last full
+  // load would paint "1 running" beside a Running card this poll just
+  // emptied -- a wrong badge where the old code merely had none.
+  _dashFrames = frames;
   renderDashRunning(frames);
 }
 
@@ -398,6 +411,30 @@ export function showDashboard(): void {
 
 export function showWorkspace(): void {
   stopDashPoll();
+  // A debounced search still pending must not fire after navigation: it
+  // would supersede the workspace's unfiltered load and paint the filtered
+  // page into the hidden card.
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = 0;
+  }
+  // The workspace header, the switcher and the session labels read
+  // `projects.value` as the whole directory. Opening a session from a
+  // dashboard card leaves the search box's page in place; reload it here
+  // so a project outside the filter does not render under a fallback name.
+  if (projectsLoadedQuery() !== "") {
+    const filtered = projects.value as ProjectLike[];
+    void loadProjects().then(() => {
+      // `loadProjects` empties the store when a *replace* fails, which is
+      // right for the dashboard card (it renders an error and a Retry) and
+      // wrong for this background refresh: an emptied store is exactly the
+      // fallback-name symptom this reload exists to remove.
+      if (projectsLoadError.value && !(projects.value as ProjectLike[]).length) {
+        projects.value = filtered;
+      }
+      binds.renderProjMenu();
+    });
+  }
   $("#dashboard")?.classList.add("hidden");
   $("#workspace")?.classList.remove("hidden");
   const view = $("#conv-view");

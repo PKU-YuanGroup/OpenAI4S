@@ -22,6 +22,8 @@ F-13 仪表盘 / 项目 / 会话。分页与排序是纯函数。窗口契约名
 | [`index.ts`](index.ts) | 对外 re-export；import 时挂 window 名字。 |
 | [`lane.ts`](lane.ts) | 用 `isReady` 包一层，调用后续车道的 window 名字。 |
 | [`load.ts`](load.ts) | `loadSessions` 游标走页、`loadProjects` keyset 分页（不发 `offset`）、文件夹、`renderSessions`。 |
+| [`dashboard.projects.test.ts`](dashboard.projects.test.ts) | 非整页加载的重绘之后项目卡片显示什么，以及打开会话后项目仓库里留下什么。运行中徽标依据仪表盘最近取到的 frame 标注——包含 4 秒轮询取到的那批，否则重绘会在刚被该轮询清空的「运行中」卡片旁边画出「1 running」——而离开仪表盘进入工作区时会重新加载页眉与切换器所读的完整目录，并在这次后台加载失败时保留原有列表。 |
+| [`load.replace.test.ts`](load.replace.test.ts) | 防抖搜索还在等回复时点击「加载更多」会被拒绝：此前它会拿到更新的代号却带着**旧**查询和旧游标发请求，搜索回复因此被当作过期丢弃，旧筛选的第二页落在了新输入的搜索框下面。 |
 | [`load.projects.test.ts`](load.projects.test.ts) | 项目列表查询串不含 `offset`；合并/去重；空态 / 重试 / 加载更多的视图状态。 |
 | [`messages.ts`](messages.ts) | `fetchRecentMessages` / `fetchOlderMessages` / `fetchAllMessages` / 更早消息条。 |
 | [`paging.test.ts`](paging.test.ts) | 分页常量、会话排序、走页/去重、仪表盘过滤。 |

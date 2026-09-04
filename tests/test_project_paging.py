@@ -385,6 +385,25 @@ def test_limit_and_offset_errors(server):
     status, body = client.get("/projects?limit=1&offset=-1")
     assert status == 400
     assert body["code"] == "invalid_offset"
+    # Above SQLite's INTEGER: ``int()`` accepts it, the bind raised
+    # OverflowError, and the route answered 500 for a documented 400.
+    status, body = client.get("/projects?limit=1&offset=9223372036854775808")
+    assert status == 400
+    assert body["code"] == "invalid_offset"
+    # Forms ``int()`` admits that are not query-parameter integers.
+    for raw in ("1_0", "+3", "%EF%BC%93", "%203"):
+        status, body = client.get(f"/projects?limit=1&offset={raw}")
+        assert status == 400, raw
+        assert body["code"] == "invalid_offset", raw
+    # CPython refuses `int()` on more than 4300 digits with a ValueError of
+    # its own; a digit string that long is still a 400, for either parameter.
+    huge = "1" * 4301
+    status, body = client.get(f"/projects?limit=1&offset={huge}")
+    assert status == 400
+    assert body["code"] == "invalid_offset"
+    status, body = client.get(f"/projects?limit={huge}")
+    assert status == 400
+    assert body["code"] == "invalid_limit"
     fingerprint = project_filter_fingerprint(q="", team_scope="")
     cursor = encode_project_cursor(
         last_active_at=1, project_id="p0000", fingerprint=fingerprint
@@ -392,6 +411,22 @@ def test_limit_and_offset_errors(server):
     status, body = client.get(f"/projects?limit=1&offset=0&cursor={cursor}")
     assert status == 400
     assert body["code"] == "bad_request"
+
+
+def test_a_nul_in_q_is_refused_rather_than_truncating_the_filter(server):
+    """SQLite LIKE stops at an embedded NUL, so ``lab\\x00zzz`` used to match
+    every project named ``lab``: a filter silently widened, not applied."""
+    _cfg, runner, client = server
+    store = runner.store
+    store.create_project(name="alpha lab")
+    store.create_project(name="gamma")
+    status, body = client.get("/projects?limit=10&q=lab%00zzzz")
+    assert status == 400
+    assert body["code"] == "invalid_q"
+    # The repository itself no longer truncates either: the pattern keeps the
+    # rest of the needle, so it matches nothing rather than everything.
+    assert store.list_projects(q="lab\x00zzzz", limit=10) == []
+    assert [r["name"] for r in store.list_projects(q="lab", limit=10)] == ["alpha lab"]
 
 
 def test_team_visibility_is_applied_before_limit_and_does_not_fill_slots(server):
@@ -490,6 +525,17 @@ def test_team_visibility_is_applied_on_the_offset_compat_path_too(server):
     assert tail["has_more"] is False
     status, everyone = client.get("/projects?limit=4&offset=0")
     assert everyone["total"] == 12
+
+
+def test_the_repository_honours_offset_without_limit(server):
+    """The facade forwards every keyword; the repository emitted OFFSET only
+    under LIMIT, so ``offset=3`` alone answered all five rows in keyset order."""
+    _cfg, runner, _client = server
+    store = runner.store
+    for index in range(5):
+        store.create_project(project_id=f"p{index}", name=f"p{index}")
+    rows = store.list_projects(offset=3)
+    assert [row["project_id"] for row in rows] == ["p1", "p0"]
 
 
 def test_another_principal_cannot_reuse_a_cursor(server):

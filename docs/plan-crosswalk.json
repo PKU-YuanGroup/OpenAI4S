@@ -149,7 +149,7 @@
       "tests": "tests/test_compute_owner_and_harvest.py,tests/test_compute_harvest_safety.py,tests/test_compute_lifecycle.py,tests/test_compute_trust_boundary.py,tests/test_artifact_scope_closure.py,tests/test_materialisation_atomicity.py,tests/test_stage11_remote_compute.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "d844b94002fdac0b288902589011a0e27d46ca66c11c53fe4aca2d180059f8b5"
+      "evidence_digest": "366457648a55792feb79c71496547c8ec042fad6127632a1b58bb16d5fe01902"
     },
     {
       "source": "R2",

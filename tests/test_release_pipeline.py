@@ -768,6 +768,62 @@ def test_local_mode_builds_an_unsigned_image_without_pretending(assets, monkeypa
     assert verify["facts"]["signatures"][dmg.name]["developer_id"] is False
 
 
+def test_local_mode_seals_without_a_quality_receipt(assets, monkeypatch):
+    """A laptop run has no CI-produced quality receipt. Its test step ran here
+    and attested no boundary, so the bundle says `missing` -- the true
+    statement -- rather than refusing to seal."""
+    import zipfile
+
+    from scripts.release_pipeline import StepResult
+
+    (assets / "quality-receipt.json").unlink()
+    monkeypatch.delenv("OPENAI4S_MACOS_SIGNING_IDENTITY", raising=False)
+    # The shape a laptop's own test step leaves behind: it ran here, it
+    # attested no boundary (there is no CI receipt to read one from).
+    pipeline = _pipeline(assets, mode="local")
+    pipeline.assets = sorted(
+        path for path in assets.glob("*") if path.name.endswith((".whl", ".tar.gz"))
+    )
+    pipeline.performed.append("test")
+    pipeline.results.append(StepResult("test", True, "offline suite passed"))
+    result = pipeline.step_evidence()
+    assert result.ok, result
+    with zipfile.ZipFile(assets / "openai4s-0.2.0-evidence.zip") as archive:
+        sealed = json.loads(archive.read("release-report.json"))
+    assert sealed["sandbox"]["linux_boundary"]["ci_attestation"]["status"] == "missing"
+
+
+def test_the_runners_own_run_id_is_the_default_the_receipts_are_checked_against(
+    assets, monkeypatch
+):
+    """`Pipeline` reads GITHUB_RUN_ID when no run id is passed. That is the
+    production binding -- and the reason tests/conftest.py purges the
+    variable: on an Actions runner every fixture pinned to 7100 would
+    otherwise be refused."""
+    _signed_dmg(assets, notarized=True)
+    monkeypatch.setenv("GITHUB_RUN_ID", "424242")
+    report = _pipeline(assets, mode="release", gh=_gh_for(assets)).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    assert "this is run 424242" in report["steps"][-1]["detail"]
+
+
+def test_a_build_receipt_without_recorded_inputs_is_refused(assets):
+    """The writer always records the dispatch inputs; a reader that defaulted
+    a missing object would exempt that receipt from the publish/pypi_only
+    comparison it was recorded for."""
+    from scripts import release_receipts
+
+    path = assets / release_receipts.build_receipt_name("dist")
+    document = json.loads(path.read_text("utf-8"))
+    del document["workflow_inputs"]
+    path.write_text(json.dumps(document), "utf-8")
+    with pytest.raises(release_receipts.ReceiptError, match="workflow inputs"):
+        release_receipts.verify_build_receipts(
+            [path], expected_sha=FAKE_HEAD, assets_dir=assets, required_kinds=("dist",)
+        )
+
+
 def test_a_missing_receipt_is_not_read_as_a_signature(tmp_path):
     dmg = tmp_path / "x.dmg"
     dmg.write_bytes(b"not really an image")
@@ -797,6 +853,80 @@ def test_a_developer_id_image_with_no_notarization_cannot_be_published(
     detail = report["steps"][-1]["detail"]
     assert "notarization" in detail
     assert "omit the macOS asset" in detail
+
+
+def test_a_build_receipt_from_another_workflow_run_is_refused(assets):
+    """Schema 2 records the run id; the fixtures record 7100. Requiring it
+    non-empty proved nothing about *this* dispatch."""
+    _signed_dmg(assets, notarized=True)
+    report = _pipeline(
+        assets, mode="release", gh=_gh_for(assets), workflow_run_id="7101"
+    ).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    assert "workflow run 7100" in report["steps"][-1]["detail"]
+    assert "7101" in report["steps"][-1]["detail"]
+
+    same = _pipeline(
+        assets, mode="release", gh=_gh_for(assets), workflow_run_id="7100"
+    ).run()
+    assert same["ok"], same
+
+
+def test_a_receipt_built_under_publish_true_cannot_serve_a_rehearsal(assets):
+    """The flags that make a dispatch a rehearsal are compared, so a
+    publish=true build cannot be staged by a publish=false run (or vice
+    versa) on the strength of matching digests."""
+    _signed_dmg(assets, notarized=True)
+    rehearsal = {"tag": "v0.2.0", "publish": False, "pypi_only": False}
+    ok = _pipeline(
+        assets,
+        mode="release",
+        gh=_gh_for(assets),
+        workflow_run_id="7100",
+        workflow_inputs={**rehearsal, "macos_asset": "notarized"},
+    ).run()
+    assert ok["ok"], ok
+
+    report = _pipeline(
+        assets,
+        mode="release",
+        gh=_gh_for(assets),
+        workflow_run_id="7100",
+        workflow_inputs={**rehearsal, "publish": True, "macos_asset": "notarized"},
+    ).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "verify"
+    assert "publish=False" in report["steps"][-1]["detail"]
+
+
+def test_a_partial_run_seals_the_receipts_boundary_not_an_empty_default(assets):
+    """`--only evidence` sealed `ci_attestation: missing` for a candidate
+    whose gate had passed: the test step had not run in that process, and
+    the report fell through to `build_linux_boundary([], [])`. The facts
+    come from the quality receipt, in every process; without it, no seal."""
+    import zipfile
+
+    from scripts import release_gates
+
+    report = _pipeline(assets, only="evidence").run()
+    assert report["ok"], report
+    with zipfile.ZipFile(assets / "openai4s-0.2.0-evidence.zip") as archive:
+        sealed = json.loads(archive.read("release-report.json"))
+    receipt = json.loads((assets / "quality-receipt.json").read_text("utf-8"))
+    expected = receipt.get("linux_boundary") or release_gates.build_linux_boundary(
+        receipt.get("checks") or [], receipt.get("platform_checks") or []
+    )
+    assert sealed["sandbox"]["linux_boundary"] == expected
+    assert sealed["sandbox"]["linux_boundary"] != release_gates.build_linux_boundary(
+        [], []
+    )
+
+    (assets / "quality-receipt.json").unlink()
+    refused = _pipeline(assets, only="evidence").run()
+    assert refused["ok"] is False
+    assert refused["stopped_at"] == "evidence"
+    assert "quality receipt" in refused["steps"][-1]["detail"]
 
 
 def test_a_notarized_developer_id_image_is_publishable(assets, monkeypatch):
@@ -882,6 +1012,32 @@ def test_verify_records_post_staple_digest_and_assessment_returncodes(assets):
     assert verify["facts"]["stapler_returncode"][name] == 0
     assert verify["facts"]["spctl_returncode"][name] == 0
     assert verify["facts"]["macos_asset"] == "present"
+
+
+def test_a_moved_tag_is_reported_as_a_moved_tag_when_sealing(assets):
+    """The sealing fallback resolves the frozen SHA before it opens the
+    receipt, so a checkout that drifted is named as such rather than as a
+    receipt that cannot be read."""
+    report = _pipeline(
+        assets, only="evidence", source_sha="b" * 40, runner=_git_aware()
+    ).run()
+    assert report["ok"] is False
+    assert report["stopped_at"] == "evidence"
+    detail = report["steps"][-1]["detail"]
+    assert "the tag moved between jobs" in detail
+    assert "quality receipt" not in detail
+
+
+def test_the_copied_check_rows_keep_the_commit_they_were_attested_at(assets):
+    """The stage attestation is built from these rows. Without `head_sha`
+    every attested check named no commit -- a provenance row that looks
+    filled in and decides nothing."""
+    pipeline = _pipeline(assets, mode="release", gh=_gh_for(assets))
+    result = pipeline.step_test()
+    assert result.ok
+    rows = result.facts["checks"]
+    assert rows
+    assert {row["head_sha"] for row in rows} == {FAKE_HEAD}
 
 
 def test_staging_records_the_linux_full_boundary_check_run_id(assets):

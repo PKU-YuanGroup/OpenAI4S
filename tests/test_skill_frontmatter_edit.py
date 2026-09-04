@@ -194,6 +194,61 @@ def test_import_rewrite_keeps_unknown_nested_keys_comments_and_network():
     assert body.strip() == "Original imported body."
 
 
+def test_capitalised_owned_keys_are_replaced_not_duplicated():
+    """`_parse_frontmatter` lowercases keys and keeps the last occurrence. A
+    document written with `Name:` / `Origin:` was not recognised as owning
+    those fields: fresh lowercase lines were prepended and the capitalised
+    originals kept after them -- and the loader read the originals. An edit
+    that did not take effect; an import stamped `origin: user` that loaded
+    as whatever the author had written."""
+    pasted = """---
+Name: Old Name
+Description: old description
+Origin: personal
+requirements: [gpu]
+---
+
+Body.
+"""
+    out = frontmatter_edit.rewrite_import(
+        pasted, name="new-name", description="new description", body="Body."
+    )
+    meta, _ = _parse_frontmatter(out)
+    assert meta["name"] == "new-name"
+    assert meta["description"] == "new description"
+    assert meta["origin"] == frontmatter_edit.IMPORT_ORIGIN
+    assert meta["requirements"] == "[gpu]"
+    assert "Old Name" not in out and "Origin:" not in out
+
+
+def test_a_multi_line_description_is_written_back_as_a_block_not_as_keys():
+    """The loader returns a `description: |` block with its newlines. Written
+    back as a bare `description: <value>`, the continuation landed at column
+    0: the description lost every line but the first, and a second line that
+    named a key became a real top-level field of the imported skill."""
+    pasted = """---
+name: demo
+description: |
+  First line.
+  capabilities: injected
+  Third line.
+---
+
+Body.
+"""
+    meta, body = _parse_frontmatter(pasted)
+    out = frontmatter_edit.rewrite_import(
+        pasted, name=meta["name"], description=meta["description"], body=body
+    )
+    again, _ = _parse_frontmatter(out)
+    assert again["description"] == meta["description"]
+    assert (
+        "First line." in again["description"] and "Third line." in again["description"]
+    )
+    assert "capabilities" not in again
+    assert again["origin"] == frontmatter_edit.IMPORT_ORIGIN
+
+
 def test_import_rewrite_from_empty_seed_cannot_invent_dropped_fields():
     """If import forgets to pass the pasted document, nothing but the
     owned fields exists to keep. This is the hollow-test trap: a fixture

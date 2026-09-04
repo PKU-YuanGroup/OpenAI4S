@@ -10,8 +10,8 @@ import pytest
 from openai4s.config import AutoModeBudgets, AutoModeConfig, Config, RoadmapFeatureFlags
 from openai4s.server.auto_repair import (
     AutoRepairService,
-    adapt_legacy_repair_fn,
     apply_claim_repair,
+    declare_deterministic_repair,
 )
 from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
 from openai4s.server.scientific_review import ScientificReviewService
@@ -283,11 +283,11 @@ def test_apply_claim_repair_is_declared_deterministic():
     assert getattr(apply_claim_repair, "openai4s_deterministic_repair") is True
 
 
-def test_legacy_adapter_marks_deterministic_without_changing_bytes():
+def test_declaring_a_legacy_repair_deterministic_does_not_change_its_bytes():
     def fn(snapshot, findings):
         return apply_claim_repair(snapshot, findings)
 
-    adapted = adapt_legacy_repair_fn(fn, deterministic=True)
+    adapted = declare_deterministic_repair(fn)
     assert getattr(adapted, "openai4s_deterministic_repair") is True
     snapshot = {
         "candidate_answer": "n=99",

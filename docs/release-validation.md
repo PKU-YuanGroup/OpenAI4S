@@ -249,9 +249,12 @@ matrix and in the quality-receipt check-suite gates. Container smoke is not a
 substitute for that matrix.
 
 A candidate SHA is not publishable on the strength of a `publish=true`
-dispatch. Schema-2 build receipts and the stage attestation record the
-candidate commit, the workflow run id, the dispatch inputs, check-run ids,
-notary/staple results, and artifact checksums. `publish=false` is a
+dispatch. Schema-2 build receipts record the candidate commit, the workflow
+run id, the dispatch inputs, the builder platform and artifact checksums (the
+macOS receipt also the notary/staple result). Check-run ids are recorded on
+the stage attestation only: they come from the quality receipt, and the
+`--check-runs-json` slot on a build receipt exists but the workflow does not
+fill it, so a build receipt's `check_runs` is `[]`. `publish=false` is a
 rehearsal: PyPI and the public GitHub Release must not change, and
 `macos_asset=omit` (or a missing notary success) means DMG count is zero.
 Old schema-1 receipts remain readable JSON and cannot satisfy this gate.

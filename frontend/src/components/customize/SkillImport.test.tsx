@@ -174,5 +174,9 @@ describe("SkillImport review", () => {
       method: "POST",
       body: JSON.stringify({ content: "---\nname: cryo-import\n---\nbody" }),
     });
+    // The cached catalog is dropped as soon as the import lands, not only by
+    // the Close button: Escape, the backdrop and the header X dismiss the
+    // review pane too, and every reader of the catalog must see the new Skill.
+    expect(mocks.dropSkillsCatalog).toHaveBeenCalledTimes(1);
   });
 });

@@ -94,30 +94,12 @@ def _confinement_mode(value: str | None = None) -> str:
     return mode
 
 
-# Error kinds that, by themselves, mean "the remote may or may not have acted".
-# Everything else is a definite rejection *only* when the raiser says so —
-# `indeterminate` is the explicit signal, and this set is merely its default.
-_INDETERMINATE_KINDS = frozenset(
-    {
-        "unknown_state",
-        # Closed-set cancel reasons. A failed cancel is never a confirmed
-        # stop: the remote may still be running and billing.
-        "remote_unreachable",
-        "receipt_unconfirmed",
-        "provider_cancel_unsupported",
-    }
-)
-
-# HTTP / Task Center map these kinds onto `cancel_indeterminate`. They are
-# also the default `indeterminate=True` kinds above, so a caller that only
-# reads `error_kind` cannot mistake them for a confirmed cancel.
-CANCEL_INDETERMINATE_REASONS = frozenset(
-    {
-        "remote_unreachable",
-        "receipt_unconfirmed",
-        "provider_cancel_unsupported",
-    }
-)
+# The vocabulary lives in `compute.states` (the kernel-side SDK and the
+# gateway read the same names); these bindings keep this module's importers
+# working. `indeterminate` on the error is the explicit signal, and
+# `_INDETERMINATE_KINDS` is merely its default.
+_INDETERMINATE_KINDS = states.INDETERMINATE_KINDS
+CANCEL_INDETERMINATE_REASONS = states.CANCEL_INDETERMINATE_REASONS
 
 
 class ComputeError(RuntimeError):
@@ -3349,7 +3331,9 @@ class ComputeManager:
             or "deadline" in message
         ):
             return ComputeError(str(error), "remote_unreachable", indeterminate=True)
-        return ComputeError(str(error), "receipt_unconfirmed", indeterminate=True)
+        return ComputeError(
+            str(error), states.REASON_CANCEL_UNCONFIRMED, indeterminate=True
+        )
 
     def _record_unconfirmed_cancel(self, job: dict, error: ComputeError) -> None:
         """Leave the job live and record that a cancel was asked, not granted.
@@ -3413,21 +3397,16 @@ class ComputeManager:
                     raise ComputeError(
                         f"job {job['job_id']!r} has no recorded sandbox to "
                         f"terminate; it may still be running and billing",
-                        "receipt_unconfirmed",
+                        states.REASON_CANCEL_UNCONFIRMED,
                         indeterminate=True,
                     )
-                try:
-                    self._terminate_sandbox(rest, sandbox_id)
-                except ComputeError as error:
-                    raise self._cancel_failure(error) from error
+                self._terminate_sandbox(rest, sandbox_id)
         except ComputeError as error:
-            if error.error_kind == "not_found":
-                raise
-            mapped = (
-                error
-                if error.error_kind in CANCEL_INDETERMINATE_REASONS
-                else self._cancel_failure(error)
-            )
+            # Every terminate failure is an unconfirmed stop, a provider's
+            # `not_found` for a sandbox this side still holds included: that
+            # is not "no such job" (the job exists and may be billing), and
+            # `_cancel_failure` returns an already-closed-set error untouched.
+            mapped = self._cancel_failure(error)
             self._record_unconfirmed_cancel(job, mapped)
             if mapped is error:
                 raise
@@ -3443,7 +3422,7 @@ class ComputeManager:
                 f"cancel failed on {job.get('alias') or job['provider']}: "
                 f"{type(error).__name__}: {error}; the remote job may still be "
                 f"running",
-                "receipt_unconfirmed",
+                states.REASON_CANCEL_UNCONFIRMED,
                 indeterminate=True,
             )
             self._record_unconfirmed_cancel(job, mapped)

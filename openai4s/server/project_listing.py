@@ -21,6 +21,7 @@ Rows come back as the repository's dicts; the gateway applies its own
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 from openai4s.server.errors import GatewayError
@@ -41,13 +42,40 @@ def _first(query: Mapping[str, Any], key: str) -> str | None:
     return None if value in (None, "") else str(value)
 
 
-def _int_param(raw: str, *, name: str, minimum: int, code: str) -> int:
+#: The largest value SQLite can bind as an INTEGER. ``int()`` accepts
+#: anything Python can represent, and a bound parameter above this raises
+#: ``OverflowError`` -- not ``ValueError`` -- at execution, which the gateway
+#: reported as a 500 for a request the failure table promises a 400.
+_SQLITE_INTEGER_MAX = 2**63 - 1
+
+#: Nineteen digits cover SQLite's INTEGER; anything longer is not a value this
+#: route can bind, and CPython's `int()` refuses more than 4300 digits with a
+#: ValueError of its own -- which is why the form check bounds the length
+#: rather than letting `int()` decide.
+_INTEGER_FORM = re.compile(r"-?[0-9]{1,19}")
+
+
+def _int_param(
+    raw: str,
+    *,
+    name: str,
+    minimum: int,
+    code: str,
+    maximum: int | None = None,
+) -> int:
+    # ``int()`` alone also admits ``1_0``, ``+3``, surrounding whitespace and
+    # full-width digits; a query parameter is an ASCII decimal or it is not
+    # an integer.
+    if not _INTEGER_FORM.fullmatch(raw):
+        raise GatewayError(400, f"{name} must be an integer", code)
     try:
         value = int(raw)
-    except (TypeError, ValueError) as exc:
+    except ValueError as exc:  # pragma: no cover - the form check precludes it
         raise GatewayError(400, f"{name} must be an integer", code) from exc
     if value < minimum:
         raise GatewayError(400, f"{name} must be at least {minimum}", code)
+    if maximum is not None and value > maximum:
+        raise GatewayError(400, f"{name} is out of range", code)
     return value
 
 
@@ -77,6 +105,11 @@ def list_projects_page(
             "q must be at most 128 Unicode code points",
             "invalid_q",
         )
+    if "\x00" in search:
+        # SQLite LIKE stops at an embedded NUL, so ``lab\x00zzz`` would have
+        # matched every project named ``lab`` -- a filter silently widened
+        # rather than applied.
+        raise GatewayError(400, "q must not contain NUL", "invalid_q")
     if not paging:
         rows = store.list_projects(visible_to_user_id=visible_to_user_id)
         return {"projects": rows, "total": len(rows)}
@@ -93,7 +126,13 @@ def list_projects_page(
             raise GatewayError(400, f"invalid cursor: {exc}", "invalid_cursor") from exc
     offset = None
     if raw_offset is not None:
-        offset = _int_param(raw_offset, name="offset", minimum=0, code="invalid_offset")
+        offset = _int_param(
+            raw_offset,
+            name="offset",
+            minimum=0,
+            code="invalid_offset",
+            maximum=_SQLITE_INTEGER_MAX,
+        )
     if raw_limit is None:
         limit = PROJECT_PAGE_DEFAULT
     else:

@@ -28,7 +28,6 @@ from openai4s.server.auto_budget import (
 from openai4s.server.auto_mode import AutoModeService
 from openai4s.server.auto_repair import (
     AutoRepairService,
-    adapt_legacy_repair_fn,
     apply_claim_repair,
     declare_deterministic_repair,
 )
@@ -1079,7 +1078,7 @@ def test_legacy_repair_fn_is_refused_as_metered(tmp_path):
         scientific_review=SimpleNamespace(
             evaluate=lambda *a, **k: {"verdict": "pass", "findings": []}
         ),
-        repair_fn=adapt_legacy_repair_fn(legacy, deterministic=True),
+        repair_fn=declare_deterministic_repair(legacy),
     ).run(
         initial=_issues_initial(),
         result_review_mode="auto_fix",

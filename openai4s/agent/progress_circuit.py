@@ -17,6 +17,10 @@ from typing import Any, Mapping, Protocol, Sequence
 from .actions import Action, CodeCell, FinalizeAction, NativeToolBatch
 from .models import ExecutionOutcome, ModelReply, RunState
 
+#: An Engine ``stop_reason`` (and the ``frame_update.code`` a failed turn
+#: carries). Distinct from Auto Mode's ``loop_detected`` terminal, whose
+#: ``no_progress_turn_limit`` is a budget *field*; the harness fixture's
+#: ``loop_kind: no_progress`` mirrors that field name, not this reason.
 NO_PROGRESS_STOP_REASON = "no_progress"
 PROGRESS_REASON_SAME_ACTION = "same_action"
 PROGRESS_REASON_MALFORMED = "consecutive_malformed"
@@ -116,6 +120,29 @@ def fingerprint_native_calls(calls: Sequence[_CallLike]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def fingerprint_native_results(results: Sequence[Mapping[str, Any]]) -> str:
+    """Hash the ordered tool results: name, error flag, normalized content.
+
+    Call ids are excluded, as in `fingerprint_native_calls`. Numbers are
+    deliberately *not* collapsed the way `normalize_tool_error` collapses
+    them: "10%" then "55%" is the delta a poll exists to observe.
+    """
+
+    payload = [
+        {
+            "name": str(message.get("name") or ""),
+            "is_error": bool(message.get("is_error")),
+            "content": _normalize_whitespace(_result_text(message.get("content"))),
+        }
+        for message in results
+        if isinstance(message, Mapping)
+    ]
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def normalize_tool_error(value: Any) -> str:
     """Collapse ids/numbers so the same error class compares equal."""
 
@@ -162,6 +189,11 @@ def reconstruct_progress_circuit(
 @dataclass
 class ProgressCircuit:
     same_action_fingerprint: str | None = None
+    #: The result the last counted call came back with. A poll is the same
+    #: call every time -- `collect_children(timeout=...)`, `exec_peek`,
+    #: `compute_result` are designed to be repeated with identical
+    #: arguments -- and it is progress exactly when the answer moves.
+    same_result_digest: str | None = None
     same_action_streak: int = 0
     malformed_streak: int = 0
     error_fingerprint: str | None = None
@@ -211,10 +243,20 @@ class ProgressCircuit:
             return
         self.malformed_streak = 0
         fingerprint = fingerprint_native_calls(calls)
-        if fingerprint == self.same_action_fingerprint:
+        # A group without result rows (an interrupted batch) keeps counting on
+        # the call alone; with results, the same call counts only when the
+        # answer did not move either. The ledger persists result content, so
+        # the reconstruct path applies the identical rule; persisted content
+        # is redacted, so across a restart a secret-bearing answer reads as
+        # "moved" -- the side that does not count.
+        digest = fingerprint_native_results(results) if results else None
+        if fingerprint == self.same_action_fingerprint and (
+            digest is None or digest == self.same_result_digest
+        ):
             self.same_action_streak += 1
         else:
             self.same_action_fingerprint = fingerprint
+            self.same_result_digest = digest
             self.same_action_streak = 1
         self._observe_tool_results(results or ())
         self._maybe_trip()
@@ -309,6 +351,7 @@ class ProgressCircuit:
 
     def _reset_same_action(self) -> None:
         self.same_action_fingerprint = None
+        self.same_result_digest = None
         self.same_action_streak = 0
 
     def _reset_error(self) -> None:
