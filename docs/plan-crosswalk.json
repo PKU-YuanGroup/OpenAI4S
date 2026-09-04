@@ -578,7 +578,7 @@
       "tests": "tests/test_local_job_envelope.py,tests/test_local_job_lifecycle.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
+      "evidence_digest": "865dc95c3bae6c29af3fe8b6ea468dd567dde6c1bc5ddd2ad42a3cbb756df650"
     },
     {
       "source": "R6",
@@ -703,7 +703,7 @@
       "tests": "tests/test_local_job_lifecycle.py,tests/test_local_job_envelope.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
+      "evidence_digest": "865dc95c3bae6c29af3fe8b6ea468dd567dde6c1bc5ddd2ad42a3cbb756df650"
     },
     {
       "source": "R7",

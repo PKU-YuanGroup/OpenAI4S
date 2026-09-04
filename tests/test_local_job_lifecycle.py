@@ -60,6 +60,31 @@ def _wait(job_id, manager, timeout=30):
     return manager.get(job_id)
 
 
+def _wait_receipt(job_id, jobs_root, timeout=30):
+    """Wait for the RECEIPT to reach a terminal status, not just memory.
+
+    `_run` publishes the terminal status and only then, in its `finally`,
+    calls `_persist`. `_wait` polls `manager.get`, which reads memory, so it
+    returns while the receipt on disk can still say `queued` -- and a second
+    manager built in that window reads the receipt, not memory, and adopts the
+    job as `abandoned`. Verified by delaying `_persist`: memory says `done`,
+    the receipt says `queued`, the second manager says `abandoned`, which is
+    exactly how this failed on a loaded CI runner.
+    """
+
+    receipt = Path(jobs_root) / "receipts" / f"{job_id}.json"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            status = json.loads(receipt.read_text(encoding="utf-8")).get("status")
+        except (OSError, ValueError):
+            status = None
+        if status in TERMINAL:
+            return status
+        time.sleep(0.02)
+    return None
+
+
 def _alive(pid: int | None) -> bool:
     if not pid:
         return False
@@ -308,6 +333,9 @@ def test_a_cleanly_finished_job_leaves_no_receipt_behind(tmp_path):
     first = _manager(tmp_path)
     submitted = first.submit("echo done")
     _wait(submitted["id"], first)
+    # The second manager reads the receipt, so the receipt is what has to have
+    # settled -- waiting on the in-memory status alone is the race above.
+    assert _wait_receipt(submitted["id"], tmp_path / "jobs") == "done"
 
     second = JobManager(root=tmp_path / "jobs")
 
