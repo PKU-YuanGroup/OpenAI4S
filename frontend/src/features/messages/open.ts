@@ -228,6 +228,10 @@ export async function openConversation(
   resetSessionScoped();
   enableComposer(true);
   hideCancel();
+  // turnDone is the normal clear. resumeWatch resyncs through this opener when
+  // the terminal WS event was missed, and must not leave markTurnStopping's
+  // spinner up after the composer is already unlocked.
+  hint("");
   if (_resumeTimer.value != null) {
     clearTimeout(_resumeTimer.value as ReturnType<typeof setTimeout>);
   }

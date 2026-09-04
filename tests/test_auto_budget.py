@@ -686,6 +686,100 @@ def test_a_cancelled_calls_late_denial_cannot_trip_the_next_turn(tmp_path):
     store.close()
 
 
+def test_a_cancelled_calls_late_admit_cannot_charge_or_trip_the_next_turn(
+    tmp_path,
+):
+    """Stop releases the turn; chat_fn may start on the detached thread after.
+
+    Admission used to re-read ``st.active_auto_mode_run_id``. A queued
+    follow-up can install the next run before that thread admits, so the
+    abandoned call reserved the new run; a denial then tripped it and set
+    the shared cancel Event. Pin the run the owning turn captured.
+    """
+
+    store = _store(tmp_path)
+    _start(store)
+    _start(
+        store,
+        run_id="auto-run-NEXT",
+        idempotency_key="turn-2:auto-run",
+        root_frame_id="root-2",
+        branch_id="root-2",
+        turn_id="turn-2",
+        execution_id="execution-2",
+    )
+    # The live run is already in the extra-token phase and would deny if
+    # this leftover call admitted against it.
+    store.freeze_auto_mode_budget_initial_tokens(
+        "auto-run-NEXT", 1, extra_token_multiplier=1.0
+    )
+    runner = object.__new__(gateway_mod.SessionRunner)
+    runner.store = store
+    runner.cfg = Config()
+    state = SimpleNamespace(
+        active_auto_mode_run_id="auto-run-NEXT",
+        active_action_group_id=None,
+        cell_index=1,
+        auto_budget_terminal_reason=None,
+        cancel=threading.Event(),
+    )
+    provider_calls = {"n": 0}
+
+    def provider(*_args, **_kwargs):
+        provider_calls["n"] += 1
+        return {"usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    runner._invoke_model_with_auto_budget(
+        state,
+        [{"role": "user", "content": "abandoned"}],
+        _llm("agent"),
+        provider,
+        run_id="auto-run-1",
+    )
+
+    assert provider_calls["n"] == 1
+    assert not state.cancel.is_set(), "a late admit cancelled the following turn"
+    assert state.auto_budget_terminal_reason is None
+    next_rows = store.list_auto_mode_budget_reservations("auto-run-NEXT")
+    old_rows = store.list_auto_mode_budget_reservations("auto-run-1")
+    assert [item for item in next_rows if item["consumer"] in {"model", "token"}] == []
+    assert [item["consumer"] for item in old_rows if item["consumer"] == "model"] == [
+        "model"
+    ]
+    store.close()
+
+
+def test_admit_auto_budget_uses_the_pinned_run_not_the_live_id(tmp_path):
+    store = _store(tmp_path)
+    _start(store)
+    _start(
+        store,
+        run_id="auto-run-NEXT",
+        idempotency_key="turn-2:auto-run",
+        root_frame_id="root-2",
+        branch_id="root-2",
+        turn_id="turn-2",
+        execution_id="execution-2",
+    )
+    runner = object.__new__(gateway_mod.SessionRunner)
+    runner.store = store
+    runner.cfg = Config()
+    state = SimpleNamespace(active_auto_mode_run_id="auto-run-NEXT")
+
+    admission = runner._admit_auto_budget(
+        state,
+        consumer="model",
+        action_group_id="late-admit",
+        enforce_field_limit=False,
+        run_id="auto-run-1",
+    )
+
+    assert admission["reservation"]["run_id"] == "auto-run-1"
+    next_rows = store.list_auto_mode_budget_reservations("auto-run-NEXT")
+    assert [item for item in next_rows if item["consumer"] == "model"] == []
+    store.close()
+
+
 def test_a_live_denial_still_cancels_its_own_turn(tmp_path):
     """The pin must not disarm the ordinary path it was added to protect."""
 

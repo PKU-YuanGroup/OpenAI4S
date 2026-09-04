@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const loadSessionsMock = vi.hoisted(() => vi.fn<() => Promise<void>>());
+const hintMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../sessions/load", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../sessions/load")>();
   return { ...actual, loadSessions: loadSessionsMock };
+});
+
+vi.mock("../sessions/chrome", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../sessions/chrome")>();
+  return { ...actual, hint: hintMock };
 });
 
 import { isContractStub, isReady } from "../../compat/stub";
@@ -54,6 +60,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   loadSessionsMock.mockReset();
+  hintMock.mockReset();
   resetStoreFields();
 });
 
@@ -254,5 +261,20 @@ describe("F-10 window exports", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(reconcileB).not.toHaveBeenCalled();
+  });
+
+  it("clears a leftover Stopping hint when resyncing an idle conversation", async () => {
+    vi.stubGlobal("fetch", async (input: string | URL | Request) =>
+      jsonResponse(responseBody(String(input))),
+    );
+    sessions.value = [{ id: "frame-idle", project_id: "proj", name: "Idle" }];
+    const target: Record<string, unknown> = {};
+    installMessages(target);
+    hintMock.mockClear();
+    await (target.openConversation as (fid: string, pid?: string | null) => Promise<void>)(
+      "frame-idle",
+      "proj",
+    );
+    expect(hintMock).toHaveBeenCalledWith("");
   });
 });

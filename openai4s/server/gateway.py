@@ -6076,10 +6076,17 @@ class SessionRunner:
     def _auto_budget(self) -> AutoBudgetAdmission:
         return AutoBudgetAdmission(self.store, self.cfg.auto_mode.budgets)
 
-    def _auto_budget_extra_phase(self, st: SessionState) -> bool:
+    def _auto_budget_extra_phase(
+        self, st: SessionState, run_id: str | None = None
+    ) -> bool:
+        owning = (
+            str(run_id or "")
+            if run_id is not None
+            else str(st.active_auto_mode_run_id or "")
+        )
         return AutoBudgetAdmission(
             self.store, self.cfg.auto_mode.budgets
-        ).token_phase_active(str(st.active_auto_mode_run_id or ""))
+        ).token_phase_active(owning)
 
     def _admit_auto_budget(
         self,
@@ -6091,13 +6098,22 @@ class SessionRunner:
         amount: int = 1,
         enforce_field_limit: bool = True,
         token_upper_bound: int | None = None,
+        run_id: str | None = None,
     ) -> dict | None:
-        run_id = str(st.active_auto_mode_run_id or "")
-        if not run_id:
+        # Prefer the caller-pinned id. ``chat_fn`` now starts on the detached
+        # provider thread, and Stop can install the next Auto Mode run before
+        # that thread admits; re-reading the live id would reserve (and a
+        # denial would trip) a turn that never asked to stop.
+        owning = (
+            str(run_id or "")
+            if run_id is not None
+            else str(st.active_auto_mode_run_id or "")
+        )
+        if not owning:
             return None
-        admission_id = f"{run_id}:{consumer}:{action_group_id}"
+        admission_id = f"{owning}:{consumer}:{action_group_id}"
         return self._auto_budget().reserve(
-            run_id=run_id,
+            run_id=owning,
             admission_id=admission_id,
             consumer=consumer,
             action_group_id=action_group_id,
@@ -6138,17 +6154,27 @@ class SessionRunner:
         messages: Any,
         cfg: Any,
         provider_call: Callable[..., Any],
+        *,
+        run_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
         """Admit model/token spend before crossing the provider boundary."""
 
         admission = None
         token_admission = None
-        run_id = str(st.active_auto_mode_run_id or "")
+        # Pin at entry (or from the owning turn's closure). Admit must not
+        # independently re-read the live id: a queued follow-up can replace it
+        # between this capture and ``reserve()``.
+        pinned = (
+            str(run_id or "")
+            if run_id is not None
+            else str(st.active_auto_mode_run_id or "")
+        )
+        run_id = pinned
         group_id = execution_action_group(
             getattr(st, "active_action_group_id", None) or f"model:{st.cell_index}"
         )
-        extra = self._auto_budget_extra_phase(st)
+        extra = self._auto_budget_extra_phase(st, run_id=run_id)
         try:
             admission = self._admit_auto_budget(
                 st,
@@ -6156,6 +6182,7 @@ class SessionRunner:
                 action_group_id=group_id,
                 amount=1,
                 enforce_field_limit=False,
+                run_id=run_id,
             )
             if extra and admission is not None:
                 bound = token_upper_bound(
@@ -6181,6 +6208,7 @@ class SessionRunner:
                     amount=bound,
                     enforce_field_limit=False,
                     token_upper_bound=bound,
+                    run_id=run_id,
                 )
         except AutoBudgetDenied as denied:
             if admission is not None and token_admission is None:
@@ -10974,10 +11002,15 @@ class SessionRunner:
         def _llm_quota_gate() -> None:
             self.enforce_llm_quota(st.root_frame_id)
 
+        # Captured while this turn still owns the session. ``chat_fn`` runs on
+        # the provider thread; Stop can release the owner and install the next
+        # run before that thread even enters ``_invoke_model_with_auto_budget``.
+        pinned_auto_run_id = str(st.active_auto_mode_run_id or "")
+
         def _auto_budget_chat(messages, cfg, **kwargs):
             # auto_budget sink: model inference admission before provider call.
             return self._invoke_model_with_auto_budget(
-                st, messages, cfg, chat, **kwargs
+                st, messages, cfg, chat, run_id=pinned_auto_run_id, **kwargs
             )
 
         engine = AgentEngine(

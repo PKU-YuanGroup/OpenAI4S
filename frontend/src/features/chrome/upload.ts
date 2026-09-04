@@ -93,6 +93,7 @@ export function createUploadSession(
   const existing = shared ? UPLOAD_STATE.creations.get(key) : null;
   if (existing) return existing;
   const navigationGen = _openGen.value || 0;
+  const self: { promise: Promise<string> | null } = { promise: null };
   const creating = (async (): Promise<string> => {
     const f = (await api("/frames", {
       method: "POST",
@@ -103,6 +104,14 @@ export function createUploadSession(
     })) as { id?: string } | null;
     const frameId = (f && f.id) || "";
     if (!frameId) throw new Error("session creation returned no id");
+    // Name the destination before openConversation. POST has already published
+    // the id; waiting until this promise settles left targetFrameId null and
+    // forced matchers to treat any same-project unresolved batch as ours.
+    for (const pending of UPLOAD_STATE.pending) {
+      if (pending.targetSource === self.promise && pending.targetFrameId === null) {
+        pending.targetFrameId = frameId;
+      }
+    }
     // The upload began with no conversation. Open the one it created only if
     // the user has not navigated to another conversation OR another empty
     // project while the request was in flight. The upload remains bound to
@@ -126,6 +135,7 @@ export function createUploadSession(
     }
     return frameId;
   })();
+  self.promise = creating;
   if (shared) {
     UPLOAD_STATE.creations.set(key, creating);
     void creating
@@ -152,14 +162,7 @@ export function uploadBatchMatches(
     (!batch.frameAtSelection &&
       !!creationPromise &&
       batch.targetSource === creationPromise &&
-      batch.projectId === projectId) ||
-    // createUploadSession publishes currentId as soon as POST /frames answers
-    // and only resolves after loadSessions() + openConversation().  In that gap
-    // the batch has a live destination that neither id above can name yet, so
-    // matching on the ids alone let Enter cross the barrier and post the message
-    // before the bytes.  An unresolved batch in this project is by construction
-    // bound to the same single-flight frame: wait for it.
-    (!batch.frameAtSelection && batch.targetFrameId === null && batch.projectId === projectId)
+      batch.projectId === projectId)
   );
 }
 

@@ -141,19 +141,62 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
     expect(currentId.value).toBeNull();
   });
 
-  it("uploadBatchMatches: an unresolved batch in the same project matches on project alone", () => {
-    // createUploadSession publishes currentId before it resolves; during that
-    // gap neither id names the destination. Matching on ids alone let Enter
-    // cross the barrier.
+  it("uploadBatchMatches: an unresolved same-project batch does not match a sibling session", () => {
+    // The old project-only clause treated any first-session attach as this
+    // send's destination. Opening an existing conversation after attaching
+    // from an empty composer then blocked Enter on that sibling's bytes.
     const unresolved = batch({ projectId: "proj_1" });
-    expect(uploadBatchMatches(unresolved, "frame_published", "proj_1", null)).toBe(true);
-    expect(uploadBatchMatches(unresolved, "frame_published", "proj_other", null)).toBe(false);
+    expect(uploadBatchMatches(unresolved, "sibling_existing", "proj_1", null)).toBe(false);
+    expect(uploadBatchMatches(unresolved, "sibling_existing", "proj_other", null)).toBe(false);
     const creation = Promise.resolve("frame_x");
+    const pending = batch({ projectId: "proj_2", targetSource: creation });
+    expect(uploadBatchMatches(pending, null, "proj_2", creation)).toBe(true);
+    expect(uploadBatchMatches(pending, "sibling_existing", "proj_2", null)).toBe(false);
     const adopted = batch({ projectId: "proj_2", targetSource: creation, targetFrameId: "frame_x" });
     expect(uploadBatchMatches(adopted, null, "proj_2", creation)).toBe(true);
+    expect(uploadBatchMatches(adopted, "frame_x", "proj_2", null)).toBe(true);
+    expect(uploadBatchMatches(adopted, "sibling_existing", "proj_2", null)).toBe(false);
     const settled = batch({ frameAtSelection: "frame_a", targetFrameId: "frame_a" });
     expect(uploadBatchMatches(settled, "frame_a", null, null)).toBe(true);
     expect(uploadBatchMatches(settled, "frame_b", null, null)).toBe(false);
+  });
+
+  it("createUploadSession names pending batches as soon as POST /frames answers", async () => {
+    const calls = stubFetch(() => ({ id: "frame_new" }));
+    currentId.value = "already_open";
+    const creating = createUploadSession("proj_1");
+    const pending = batch({ projectId: "proj_1", targetSource: creating });
+    UPLOAD_STATE.pending.add(pending);
+    expect(await creating).toBe("frame_new");
+    expect(pending.targetFrameId).toBe("frame_new");
+    expect(uploadBatchMatches(pending, "frame_new", "proj_1", null)).toBe(true);
+    expect(uploadBatchMatches(pending, "sibling_existing", "proj_1", null)).toBe(false);
+    expect(calls.filter((c) => c.path === "/frames")).toHaveLength(1);
+  });
+
+  it("waitForPendingUploads does not wait on a sibling session's first-session upload", async () => {
+    stubFetch((path) => (path === "/frames" ? { id: "frame_new" } : {}));
+    class HungReader {
+      result: string | null = null;
+      error: unknown = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+      readAsDataURL(): void {
+        /* never finishes — the sibling send must not await this batch */
+      }
+    }
+    vi.stubGlobal("FileReader", HungReader);
+    currentId.value = null;
+    project.value = "proj_1";
+    void uploadFiles([file("big.bin")]);
+    expect(UPLOAD_STATE.pending.size).toBe(1);
+    // Navigate to an existing conversation in the same project while the
+    // first-session batch is still unresolved.
+    currentId.value = "sibling_existing";
+    const ready = await waitForPendingUploads("sibling_existing", "proj_1", null);
+    expect(ready.ok).toBe(true);
+    expect(UPLOAD_STATE.pending.size).toBe(1);
   });
 
   it("uploadFailureMatches keys on the frame when there is one, else the project", () => {
