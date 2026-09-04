@@ -7,6 +7,7 @@ type KeyEvent = {
   shiftKey?: boolean;
   isComposing?: boolean;
   keyCode?: number;
+  target?: unknown;
   preventDefault: () => void;
 };
 type Listener = (e: KeyEvent) => void;
@@ -20,10 +21,14 @@ function fakeToggle() {
 }
 
 function fakeComposer() {
+  return { id: "composer", value: "" };
+}
+
+/** The document root the Enter handler is delegated on. */
+function fakeRoot() {
   const listeners: Record<string, Listener[]> = {};
   return {
     dataset: {} as Record<string, string>,
-    value: "",
     listeners,
     addEventListener: (type: string, fn: Listener) => {
       (listeners[type] ||= []).push(fn);
@@ -32,12 +37,20 @@ function fakeComposer() {
 }
 
 function stubDocument(nodes: Record<string, unknown>) {
+  const root = fakeRoot();
   vi.stubGlobal("document", {
+    documentElement: root,
     getElementById: (id: string) => nodes[id] ?? null,
   });
+  return root;
 }
 
-const enter = (): KeyEvent => ({ key: "Enter", preventDefault: vi.fn() });
+const enter = (target: unknown, extra: Partial<KeyEvent> = {}): KeyEvent => ({
+  key: "Enter",
+  target,
+  preventDefault: vi.fn(),
+  ...extra,
+});
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
@@ -45,17 +58,16 @@ afterEach(() => {
 });
 
 describe("bindComposer", () => {
-  it("binds #composer and the mode toggles once, however often it is called", () => {
-    const composer = fakeComposer();
+  it("binds the Enter handler and the mode toggles once, however often it is called", () => {
     const plan = fakeToggle();
     const explore = fakeToggle();
-    stubDocument({ composer, "plan-toggle": plan, "explore-toggle": explore });
+    const root = stubDocument({ composer: fakeComposer(), "plan-toggle": plan, "explore-toggle": explore });
 
     bindComposer(vi.fn());
     bindComposer(vi.fn());
 
-    expect(composer.dataset.sendBound).toBe("1");
-    expect(composer.listeners.keydown).toHaveLength(1);
+    expect(root.dataset.sendBound).toBe("1");
+    expect(root.listeners.keydown).toHaveLength(1);
     expect(plan.dataset.sendBound).toBe("1");
     expect(typeof plan.onclick).toBe("function");
     expect(explore.dataset.sendBound).toBe("1");
@@ -67,44 +79,62 @@ describe("bindComposer", () => {
     // composer. An import-time bind found nothing and never tried again,
     // which is how Enter shipped dead. The bind belongs to the post-render
     // slot in main.tsx, next to bootChrome(), not to install.
-    const composer = fakeComposer();
-    stubDocument({ composer });
+    const root = stubDocument({ composer: fakeComposer() });
 
     installSend({});
 
-    expect(composer.dataset.sendBound).toBeUndefined();
-    expect(composer.listeners.keydown).toBeUndefined();
+    expect(root.dataset.sendBound).toBeUndefined();
+    expect(root.listeners.keydown).toBeUndefined();
   });
 
-  it("Enter dispatches the composer text; Shift+Enter, IME and an open autocomplete do not", () => {
+  it("Enter dispatches the composer text; Shift+Enter, IME, an open autocomplete and other targets do not", () => {
     const composer = fakeComposer();
-    stubDocument({ composer });
+    const root = stubDocument({ composer });
     const dispatch = vi.fn(() => Promise.resolve());
     bindComposer(dispatch);
-    const onKey = composer.listeners.keydown![0]!;
+    const onKey = root.listeners.keydown![0]!;
     composer.value = "hello";
 
     for (const e of [
-      { key: "Enter", shiftKey: true, preventDefault: vi.fn() },
-      { key: "Enter", isComposing: true, preventDefault: vi.fn() },
-      { key: "Enter", keyCode: 229, preventDefault: vi.fn() },
-      { key: "a", preventDefault: vi.fn() },
+      enter(composer, { shiftKey: true }),
+      enter(composer, { isComposing: true }),
+      enter(composer, { keyCode: 229 }),
+      enter(composer, { key: "a" }),
+      enter({ id: "conv-title", value: "not the composer" }),
     ]) {
       onKey(e);
       expect(e.preventDefault).not.toHaveBeenCalled();
     }
     vi.stubGlobal("ac", { open: true });
-    const withAutocomplete = enter();
+    const withAutocomplete = enter(composer);
     onKey(withAutocomplete);
     expect(withAutocomplete.preventDefault).not.toHaveBeenCalled();
     vi.stubGlobal("ac", undefined);
     expect(dispatch).not.toHaveBeenCalled();
 
-    const plain = enter();
+    const plain = enter(composer);
     onKey(plain);
     expect(plain.preventDefault).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledWith("hello");
+  });
+
+  it("keeps sending after #composer is re-created, with no rebind", () => {
+    // The handler is delegated on the document root. A keyed or conditional
+    // composer subtree, or a second render(), replaces the textarea node; a
+    // node-bound listener would be gone with it and nothing would rebind.
+    const first = fakeComposer();
+    const root = stubDocument({ composer: first });
+    const dispatch = vi.fn(() => Promise.resolve());
+    bindComposer(dispatch);
+    const onKey = root.listeners.keydown![0]!;
+
+    const replacement = fakeComposer();
+    replacement.value = "after remount";
+    onKey(enter(replacement));
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith("after remount");
   });
 
   it("drops a repeated Enter while the previous dispatch is still in flight", async () => {
@@ -113,7 +143,7 @@ describe("bindComposer", () => {
     // double Enter inside that window created a second session and sent the
     // same text twice.
     const composer = fakeComposer();
-    stubDocument({ composer });
+    const root = stubDocument({ composer });
     let settle!: () => void;
     const dispatch = vi.fn(
       () =>
@@ -122,14 +152,13 @@ describe("bindComposer", () => {
         }),
     );
     bindComposer(dispatch);
-    const onKey = composer.listeners.keydown![0]!;
+    const onKey = root.listeners.keydown![0]!;
     composer.value = "hello";
 
-    const first = enter();
-    const repeat = enter();
-    onKey(first);
+    const repeat = enter(composer);
+    onKey(enter(composer));
     onKey(repeat);
-    onKey(enter());
+    onKey(enter(composer));
     expect(dispatch).toHaveBeenCalledTimes(1);
     // The key is still consumed: a swallowed Enter must not insert a newline.
     expect(repeat.preventDefault).toHaveBeenCalledTimes(1);
@@ -137,7 +166,7 @@ describe("bindComposer", () => {
     settle();
     await tick();
     composer.value = "again";
-    onKey(enter());
+    onKey(enter(composer));
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch).toHaveBeenLastCalledWith("again");
   });

@@ -335,7 +335,9 @@ type ComposerDispatch = (text: string) => unknown;
  * `installSend()` runs at module import, before Shell has rendered
  * `#composer`, so it stays DOM-free (the F-17 `bootArtifacts` /
  * `finishArtifactsBoot` split). Idempotent through the `data-send-bound`
- * markers. `dispatch` is a seam for tests; production dispatches `send`.
+ * markers; the Enter handler is delegated on the document root so a
+ * re-created textarea needs no rebind. `dispatch` is a seam for tests;
+ * production dispatches `send`.
  */
 export function bindComposer(dispatch: ComposerDispatch = send): void {
   if (typeof document === "undefined") return;
@@ -365,15 +367,22 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       hint(exploreMode.value ? t("explore.toggle.on") : "");
     };
   }
-  const c = document.getElementById("composer") as HTMLTextAreaElement | null;
-  if (c && !c.dataset.sendBound) {
-    c.dataset.sendBound = "1";
+  // Delegated on the document root, not on the node: a re-created #composer
+  // (a keyed or conditional subtree, a second render()) keeps its Enter
+  // handler with nothing to rebind. Bubble phase, so the autocomplete's
+  // capture listener on the node still shields it with
+  // stopImmediatePropagation while ac.open.
+  const root = document.documentElement;
+  if (root && !root.dataset.sendBound) {
+    root.dataset.sendBound = "1";
     // One dispatch at a time. send() clears the composer only after its first
     // awaits (POST /frames on a fresh session, the skills catalog for a /skill
     // token), so a held or double Enter inside that window would create a
     // second session and send the same text twice.
     let inFlight: Promise<unknown> | null = null;
-    c.addEventListener("keydown", (e) => {
+    root.addEventListener("keydown", (e) => {
+      const c = e.target as HTMLTextAreaElement | null;
+      if (!c || c.id !== "composer") return;
       if (e.isComposing || e.keyCode === 229) return;
       const ac = (globalThis as { ac?: { open?: boolean } }).ac;
       if (ac && ac.open) return;
