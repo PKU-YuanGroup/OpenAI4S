@@ -3977,9 +3977,17 @@ def test_api_unknown_route_returns_error_envelope(tmp_path):
     assert "detail" not in body
 
 
-def test_projects_route_has_no_pagination_semantics(tmp_path):
-    """GET /api/projects ignores ?limit&offset (the frontend sends them):
-    every project is always returned and `total` is just the list length."""
+def test_projects_route_still_answers_an_unparameterized_request_in_full(tmp_path):
+    """An old client that sends nothing still gets every project.
+
+    This asserted that `?limit&offset` were ignored outright. P1-2 gave the
+    route real paging, and report section 9 is explicit that `offset` is
+    *executed* during the compatibility window rather than ignored -- so
+    that half of the old claim was a record of behaviour the plan set out to
+    change, not a contract to defend. The half that survives is the one the
+    window exists for: no parameters means no paging.
+    `tests/test_project_paging.py` owns the parameterized side.
+    """
     cfg = _cfg(tmp_path)
     runner = gateway_mod.SessionRunner(cfg, _Hub())
     handler_cls = gateway_mod.make_handler(cfg, _Hub(), runner)
@@ -3988,8 +3996,7 @@ def test_projects_route_has_no_pagination_semantics(tmp_path):
     for i in range(3):
         store.create_project(name=f"p{i}", description="", context="")
     replies = []
-    # limit=1&offset=1 as parse_qs would deliver them — must have no effect
-    handler._query = lambda: {"limit": ["1"], "offset": ["1"]}
+    handler._query = lambda: {}
     handler._body = lambda: {}
     handler._json = lambda obj, code=200: replies.append((code, obj))
 
@@ -6467,3 +6474,53 @@ def test_daemon_lifetime_threads_do_not_inherit_a_request_id():
             f"{name} is a daemon-lifetime thread and must not inherit a "
             "request's correlation id"
         )
+
+
+def test_no_progress_stop_is_a_failed_turn_with_a_stable_code(monkeypatch, tmp_path):
+    """A tripped no-progress circuit is projected like `max_turns`, not `completed`.
+
+    `_loop` returns `no_progress`; before this branch existed the turn kept
+    the `completed` default, so the frame/turn record, the review gate and the
+    Timeline all called a turn that did nothing a success while the Action
+    Ledger's terminal for the same turn was `failed`.
+    """
+    from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
+
+    cfg = _cfg(tmp_path)
+    hub = _Hub()
+    runner = gateway_mod.SessionRunner(cfg, hub, start_idle_sweeper=False)
+    store = get_store(cfg.db_path)
+    fid = store.new_frame(kind="turn", project_id="default", status="ready")
+
+    def fake_ensure(st):
+        st.dispatcher = SimpleNamespace(last_output=None)
+        st.messages = [{"role": "system", "content": "sys"}]
+        st.booted = True
+
+    def trip(st, emit, visible):
+        del emit, visible
+        st.last_engine_completion = None
+        st.last_model_prose = ""
+        return NO_PROGRESS_STOP_REASON
+
+    monkeypatch.setattr(runner, "_ensure_runtime", fake_ensure)
+    monkeypatch.setattr(runner, "_loop", trip)
+    monkeypatch.setattr(runner, "_spawn_title_summary", lambda *a, **k: None)
+
+    result = runner.run_message(fid, "default", "list the files again")
+
+    assert result["status"] == "failed"
+    assert result.get("code") == NO_PROGRESS_STOP_REASON
+    assert "Stopped repeating actions" in str(result.get("error") or "")
+    messages = store.list_messages(fid)
+    assert messages[-1]["role"] == "assistant"
+    assert "Stopped repeating actions" in messages[-1]["content"]
+    assert hub.events[-1]["type"] == "frame_update"
+    assert hub.events[-1]["status"] == "failed"
+    notices = [
+        event
+        for event in hub.events
+        if event.get("type") == "text_chunk"
+        and "Stopped repeating actions" in event.get("chunk", "")
+    ]
+    assert len(notices) == 1, "the notice is streamed exactly once"

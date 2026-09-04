@@ -155,6 +155,34 @@ def test_canonical_groups_events_and_normalized_assistant_message_roundtrip(tmp_
     reopened.close()
 
 
+def test_latest_group_ordinal_is_an_index_probe_per_kind_and_branch(tmp_path):
+    store = _store(tmp_path)
+    for ordinal, kind in enumerate(("user", "native_tools", "user", "code")):
+        store.append_action_group(
+            group_id=f"ag-{ordinal}",
+            root_frame_id="root-1",
+            turn_id="turn-1",
+            kind=kind,
+            provider="ark",
+            model="science-model",
+            assistant_content="",
+            assistant_message={"role": "assistant", "content": ""},
+            created_at=100 + ordinal,
+        )
+    assert store.latest_action_group_ordinal("root-1") == 3
+    assert store.latest_action_group_ordinal("root-1", kind="user") == 2
+    assert store.latest_action_group_ordinal("root-1", kind="finalize") is None
+    assert store.latest_action_group_ordinal("root-1", branch_id="other") is None
+    assert store.latest_action_group_ordinal("root-2") is None
+    plan = store._actions._connection.execute(
+        "EXPLAIN QUERY PLAN SELECT ordinal FROM action_groups WHERE "
+        "root_frame_id=? AND branch_id=? AND kind=? ORDER BY ordinal DESC LIMIT 1",
+        ("root-1", "root-1", "user"),
+    ).fetchall()
+    assert any("ux_action_group_ordinal" in str(tuple(row)) for row in plan), plan
+    store.close()
+
+
 def test_groups_and_events_cannot_overwrite_and_tool_group_is_atomic(tmp_path):
     store = _store(tmp_path)
     original = store.append_action_group(

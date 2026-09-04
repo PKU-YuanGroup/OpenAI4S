@@ -266,6 +266,22 @@ def test_the_shipped_interpreter_is_claimed_and_tested():
     )
 
 
+def test_the_container_interpreter_is_a_release_gate():
+    """The published image runs 3.14. Until this check the release gate
+    stopped at 3.13, so a 3.14-only failure shipped as a green container
+    smoke. That the series is claimed and in the CI matrix is
+    `test_every_shipped_interpreter_is_claimed_and_tested`'s row; this one
+    reads the Dockerfile so a FROM bump cannot outrun the gate list."""
+    shipped = _container_series()
+    from scripts import release_gates
+
+    names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
+    assert f"Offline tests (py{shipped})" in names, (
+        f"the container ships Python {shipped}, which the release gate does "
+        "not require at the candidate SHA"
+    )
+
+
 def test_every_tested_version_is_a_claimed_version():
     """The other direction, and the cheaper one.
 
@@ -275,10 +291,10 @@ def test_every_tested_version_is_a_claimed_version():
     wrong, the two disagreeing is the bug.
     """
     tested, claimed = _ci_tested_versions(), _classifier_versions()
-    assert not (tested - claimed), (
-        f"CI tests Python {sorted(tested - claimed)}, which the classifiers do "
-        "not claim"
-    )
+    extra = tested - claimed
+    assert (
+        not extra
+    ), f"CI tests Python {sorted(extra)}, which the classifiers do not claim"
 
 
 def test_the_floor_is_tested_and_no_claim_sits_below_it():

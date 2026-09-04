@@ -1,13 +1,28 @@
 /** Home dashboard. app.js:6616-6764, 2685. */
 
-import { t } from "../../i18n";
-import { currentId, projects } from "../../stores/session";
+import { LANG, t } from "../../i18n";
+import {
+  _projectsLoadingMore,
+  currentId,
+  projects,
+  projectsHasMore,
+  projectsLoadError,
+  projectsNextCursor,
+  projectsQuery,
+} from "../../stores/session";
 import { _dashPoll } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
 import { ensureActivateKeys } from "./chrome";
 import { $, ago, el, navURL, syncMobileChrome } from "./dom";
-import { loadProjects } from "./load";
+import {
+  canLoadMoreProjects,
+  loadProjects,
+  projectDashView,
+  projectsLoadedQuery,
+  projectsReplaceInFlight,
+  type ProjectLike,
+} from "./load";
 import {
   annotateRunningCounts,
   filterRootFrames,
@@ -16,18 +31,76 @@ import {
   type SessionLike,
 } from "./paging";
 
-type ProjectLike = {
-  project_id?: string;
-  id?: string;
-  name?: string;
-  conversation_count?: number;
-  last_active_at?: string;
-  updated_at?: string;
-  running_count?: number;
-};
-
 let exampleTimer = 0;
 let visBound = false;
+
+function projectCopy(kind: "more" | "retry" | "no-match" | "error"): string {
+  if (LANG === "en") {
+    if (kind === "more") return "Load more";
+    if (kind === "retry") return "Retry";
+    if (kind === "no-match") return "No matching projects";
+    return "Could not load projects.";
+  }
+  if (kind === "more") return "加载更多";
+  if (kind === "retry") return "重试";
+  if (kind === "no-match") return "没有匹配的项目";
+  return "无法加载项目。";
+}
+
+/** Keystroke debounce for the project search; Enter flushes it. */
+export const PROJECT_SEARCH_DEBOUNCE_MS = 150;
+let searchTimer = 0;
+
+function searchProjectsNow(): void {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = 0;
+  }
+  void loadProjects({ q: String(projectsQuery.value || "") }).then(() =>
+    renderDashProjects(),
+  );
+}
+
+export function bindProjectSearch(): void {
+  const input = $("#dash-project-search") as HTMLInputElement | null;
+  if (!input || input.dataset.bound === "1") return;
+  input.dataset.bound = "1";
+  input.addEventListener("input", () => {
+    projectsQuery.value = input.value;
+    // One request per pause, not one per keystroke: each request runs the
+    // activity aggregate plus a count on the daemon's single SQLite
+    // connection, and the generation counter only discards stale replies
+    // client-side.
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(searchProjectsNow, PROJECT_SEARCH_DEBOUNCE_MS);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      input.value = "";
+      projectsQuery.value = "";
+      searchProjectsNow();
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      searchProjectsNow();
+    }
+  });
+}
+
+export async function loadMoreProjects(): Promise<void> {
+  if (
+    !canLoadMoreProjects({
+      loadingMore: !!_projectsLoadingMore.value || projectsReplaceInFlight(),
+      hasMore: !!projectsHasMore.value,
+      cursor: projectsNextCursor.value,
+    })
+  ) {
+    return;
+  }
+  await loadProjects({ append: true });
+  renderDashProjects();
+}
 
 function stopExamplePoll(): void {
   if (exampleTimer) {
@@ -56,9 +129,16 @@ export function paintDashSkeleton(): void {
   if (sc && !sc.childElementCount) sc.appendChild(skel(4));
 }
 
+/** The root frames the dashboard last loaded; a search or Load-more repaint
+ * annotates its fresh server rows (which carry no `running_count`) from
+ * these, so the running badge survives a keystroke. */
+let _dashFrames: SessionLike[] = [];
+
 export async function loadDashboard(): Promise<void> {
+  bindProjectSearch();
   paintDashSkeleton();
-  await loadProjects();
+  // The search box persists across dashboard visits; the list must match it.
+  await loadProjects({ q: String(projectsQuery.value || "") });
   let frames: SessionLike[] = [];
   try {
     const d = (await api("/frames?limit=50")) as { frames?: SessionLike[] };
@@ -66,7 +146,7 @@ export async function loadDashboard(): Promise<void> {
   } catch {
     frames = [];
   }
-  annotateRunningCounts(projects.value as ProjectLike[], frames);
+  _dashFrames = frames;
   renderDashProjects();
   renderDashRunning(frames);
   renderDashRecent(frames);
@@ -77,7 +157,35 @@ export function renderDashProjects(): void {
   if (!pc) return;
   pc.innerHTML = "";
   const list = projects.value as ProjectLike[];
-  if (!list.length) pc.appendChild(el("div", "dash-empty", t("dash.projects.empty")));
+  annotateRunningCounts(list, _dashFrames);
+  const view = projectDashView({
+    error: !!projectsLoadError.value,
+    count: list.length,
+    query: String(projectsQuery.value || ""),
+    hasMore: !!projectsHasMore.value,
+    loadingMore: !!_projectsLoadingMore.value,
+  });
+  if (view.kind === "error") {
+    const box = el("div", "dash-empty", projectCopy("error"));
+    const retry = el("button", "outline-btn small", projectCopy("retry"));
+    retry.type = "button";
+    retry.id = "dash-projects-retry";
+    // The same request the box would issue: a failed *filtered* load retried
+    // without `q` painted the whole directory under a box still showing the
+    // filter, and Load-more then walked the unfiltered set.
+    retry.onclick = () => searchProjectsNow();
+    pc.appendChild(box);
+    pc.appendChild(retry);
+    return;
+  }
+  if (view.kind === "empty") {
+    pc.appendChild(el("div", "dash-empty", t("dash.projects.empty")));
+    return;
+  }
+  if (view.kind === "no-match") {
+    pc.appendChild(el("div", "dash-empty", projectCopy("no-match")));
+    return;
+  }
   list.forEach((p) => {
     const row = el("div", "d-row");
     const main = el("div", "d-main");
@@ -102,6 +210,20 @@ export function renderDashProjects(): void {
     ensureActivateKeys(row);
     pc.appendChild(row);
   });
+  if (view.showMore) {
+    const more = el(
+      "button",
+      "outline-btn small",
+      view.loadingMore ? t("common.loading") : projectCopy("more"),
+    );
+    more.type = "button";
+    more.id = "dash-projects-more";
+    (more as HTMLButtonElement).disabled = view.loadingMore;
+    more.onclick = () => {
+      void loadMoreProjects();
+    };
+    pc.appendChild(more);
+  }
 }
 
 function exampleSeedCta(): HTMLElement {
@@ -248,6 +370,10 @@ export async function refreshDashRunning(): Promise<void> {
     return;
   }
   if ($("#dashboard")?.classList.contains("hidden")) return;
+  // The project repaints annotate from these; leaving them at the last full
+  // load would paint "1 running" beside a Running card this poll just
+  // emptied -- a wrong badge where the old code merely had none.
+  _dashFrames = frames;
   renderDashRunning(frames);
 }
 
@@ -285,6 +411,30 @@ export function showDashboard(): void {
 
 export function showWorkspace(): void {
   stopDashPoll();
+  // A debounced search still pending must not fire after navigation: it
+  // would supersede the workspace's unfiltered load and paint the filtered
+  // page into the hidden card.
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = 0;
+  }
+  // The workspace header, the switcher and the session labels read
+  // `projects.value` as the whole directory. Opening a session from a
+  // dashboard card leaves the search box's page in place; reload it here
+  // so a project outside the filter does not render under a fallback name.
+  if (projectsLoadedQuery() !== "") {
+    const filtered = projects.value as ProjectLike[];
+    void loadProjects().then(() => {
+      // `loadProjects` empties the store when a *replace* fails, which is
+      // right for the dashboard card (it renders an error and a Retry) and
+      // wrong for this background refresh: an emptied store is exactly the
+      // fallback-name symptom this reload exists to remove.
+      if (projectsLoadError.value && !(projects.value as ProjectLike[]).length) {
+        projects.value = filtered;
+      }
+      binds.renderProjMenu();
+    });
+  }
   $("#dashboard")?.classList.add("hidden");
   $("#workspace")?.classList.remove("hidden");
   const view = $("#conv-view");

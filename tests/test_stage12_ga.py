@@ -49,6 +49,28 @@ def test_stage12_kill_switch_declares_ga_without_changing_legacy_defaults():
     )
 
 
+def test_stage12_refuses_ga_when_a_consumer_is_named_unwired(monkeypatch):
+    """UNWIRED_CONSUMERS keys are missing sinks. Naming the hole refuses GA."""
+
+    from openai4s.server import auto_budget as budget_mod
+
+    monkeypatch.setattr(
+        budget_mod,
+        "UNWIRED_CONSUMERS",
+        {"phantom": "named unwired for the fail-closed probe"},
+    )
+    inventory = inspect_budget_wiring()
+    assert "phantom" in inventory["missing_sinks"]
+    assert inventory["ga_ready"] is False
+    cfg = Config(roadmap_features=RoadmapFeatureFlags(stage12_auto_mode_ga=True))
+    status = rollout_status(cfg)
+    assert official_stage12_enabled(cfg) is True
+    assert status["active_phase"] == "shadow"
+    assert status["ga_refused"] is True
+    assert "budget_sink_unwired" in status["ga_blocked_on"]
+    assert status["auto_budget"]["ga_ready"] is False
+
+
 def test_stage12_refuses_ga_when_a_budget_authority_or_sink_is_missing(monkeypatch):
     inventory = inspect_budget_wiring()
     assert inventory["ga_ready"] is True

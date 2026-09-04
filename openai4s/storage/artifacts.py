@@ -30,6 +30,7 @@ from openai4s.storage.artifact_observations import (
     ArtifactObservationRepository,
 )
 from openai4s.storage.frames import visible_session_clause
+from openai4s.storage.like import like_contains
 
 Clock = Callable[[], int]
 Execute = Callable[[str, tuple], None]
@@ -117,17 +118,6 @@ def env_snapshot_id(
         ]
     )
     return "env-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
-
-
-def _like_contains(value: str) -> str:
-    """A substring LIKE pattern that treats ``%``, ``_`` and ``\\`` as literals.
-
-    The Artifact index searches *filename* only. An unescaped ``%`` in the
-    query would match every filename, which is how a filter that looks
-    precise becomes an unscoped listing.
-    """
-    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
 
 
 def _encode_source(source: Any) -> str | None:
@@ -1634,7 +1624,8 @@ class ArtifactRepository:
         query = (filename_query or "").strip()
         if query:
             clauses.append("a.filename LIKE ? ESCAPE '\\'")
-            params.append(_like_contains(query))
+            # An unescaped ``%`` in a filename query would match every filename.
+            params.append(like_contains(query))
         if content_type:
             clauses.append("a.content_type=?")
             params.append(content_type)

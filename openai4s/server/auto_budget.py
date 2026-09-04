@@ -14,11 +14,13 @@ import hashlib
 import importlib
 import inspect
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import fields
 from typing import Any
 
+from openai4s.agent.progress_circuit import canonical_arguments as _canonical_arguments
 from openai4s.config import GUARDIAN_BUDGET_FIELDS, AutoModeBudgets
 from openai4s.server.guardian_enforce import (
     DEFAULT_CONSECUTIVE_DENIAL_LIMIT,
@@ -50,32 +52,41 @@ DURABLE_DELTA_KINDS = frozenset(
         "completion_delivery",
     }
 )
+#: Each consumer names the ONE method whose source contains its
+#: ``reserve(... consumer="<name>" ...)`` call. `inspect_budget_wiring()`
+#: checks for that literal, not for the substring ``auto_budget``: the
+#: substring test was satisfied by a comment, a helper name, or an unrelated
+#: `self._auto_budget()` in the same method, which is how `repair_turn` could
+#: be registered against `AutoRepairService.run` -- a method that never
+#: reserves it -- and still read as wired.
 SINK_REGISTRY = {
     "review": (
         "openai4s.server.scientific_review",
         "ScientificReviewService.evaluate",
     ),
     "repair": ("openai4s.server.auto_repair", "AutoRepairService.run"),
-    "model": ("openai4s.server.gateway", "SessionRunner._loop"),
+    "model": (
+        "openai4s.server.gateway",
+        "SessionRunner._invoke_model_with_auto_budget",
+    ),
     "extra_cell": ("openai4s.server.gateway", "SessionRunner._loop"),
-    "native_tool": ("openai4s.server.gateway", "SessionRunner._loop"),
+    "native_tool": (
+        "openai4s.server.gateway",
+        "SessionRunner._invoke_control_with_auto_budget",
+    ),
     "repeated_finding": ("openai4s.server.auto_repair", "AutoRepairService.run"),
+    "repair_turn": ("openai4s.server.auto_repair", "RepairTurnAdmission.admit_turn"),
     "token": (
         "openai4s.server.scientific_review",
         "ScientificReviewService.evaluate",
     ),
 }
 #: Consumers with a published limit that nothing currently reserves against,
-#: and why. `repair_turn` maps to `repair_turns_per_round`, but the shipped
-#: Repair executor (`apply_claim_repair`) is deterministic and runs no agent
-#: turns, so the limit is dormant rather than broken. It stops being dormant
-#: the moment a caller injects an LLM-driven `repair_fn`: the turns happen
-#: inside that callable, where `AutoRepairService` cannot see them, and the
-#: limit would silently permit any number. Wire it there, and delete the
-#: entry here -- the projection already reports this field as measured.
-UNWIRED_CONSUMERS = {
-    "repair_turn": "no sink: the shipped Repair executor runs no agent turns",
-}
+#: and why. An empty mapping means every CONSUMERS member is in
+#: SINK_REGISTRY. `inspect_budget_wiring()` treats every key here as a
+#: missing sink -- naming an unwired field is not GA-ready, it is a
+#: fail-closed inventory of known holes.
+UNWIRED_CONSUMERS: dict[str, str] = {}
 FIELD_AUTHORITIES = {
     **{
         name: "auto_budget"
@@ -271,7 +282,19 @@ def inspect_budget_wiring() -> dict[str, Any]:
         except (OSError, TypeError):
             missing_sinks.append(consumer)
             continue
-        if "auto_budget" not in source:
+        # Structural: the registered method must itself reserve THIS consumer.
+        if not re.search(
+            r'consumer\s*=\s*["\']' + re.escape(consumer) + r'["\']', source
+        ):
+            missing_sinks.append(consumer)
+    # A named-unwired consumer is still a missing sink. Publishing the
+    # hole is not the same as wiring it; Stage 12 must refuse GA until
+    # the key is deleted from this mapping because a real sink exists.
+    for consumer in UNWIRED_CONSUMERS:
+        if consumer not in missing_sinks:
+            missing_sinks.append(consumer)
+    for consumer in sorted(CONSUMERS - set(SINK_REGISTRY) - set(UNWIRED_CONSUMERS)):
+        if consumer not in missing_sinks:
             missing_sinks.append(consumer)
     return {
         "field_authorities": dict(FIELD_AUTHORITIES),
@@ -678,28 +701,12 @@ class AutoBudgetAdmission:
             return []
 
 
-def _canonical_arguments(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _canonical_arguments(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_canonical_arguments(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        if isinstance(value, bool) or not isinstance(value, float):
-            return value
-        if value != value or value in (float("inf"), float("-inf")):
-            return None
-        return value
-    return str(value)
-
-
 __all__ = [
     "CONSUMERS",
     "DURABLE_DELTA_KINDS",
     "FIELD_AUTHORITIES",
     "SINK_REGISTRY",
+    "UNWIRED_CONSUMERS",
     "TERMINAL_USER_TRUTH",
     "AutoBudgetAdmission",
     "AutoBudgetDenied",

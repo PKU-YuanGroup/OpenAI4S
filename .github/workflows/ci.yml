@@ -279,9 +279,13 @@ jobs:
           # depth-1 checkout does not contain those objects, so the check can
           # only skip. Deepening one job makes it a check CI actually performs
           # instead of one that is enforced on developer machines and nowhere
-          # else; deepening all four would pay for the same answer three times
-          # more.
-          fetch-depth: ${{ matrix.python-version == '3.12' && 0 || 1 }}
+          # else; deepening all four would pay for the same answer twice more.
+          #
+          # Written as `!= '3.12' && 1 || 0` on purpose. The `cond && 0 || 1`
+          # form never yields 0: `0` is falsy in the expression language, so
+          # `true && 0` falls through to `|| 1`, and every row -- the 3.12 one
+          # included -- fetched depth 1 while this comment claimed otherwise.
+          fetch-depth: ${{ matrix.python-version != '3.12' && 1 || 0 }}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
@@ -297,6 +301,10 @@ jobs:
       # here even though the core is stdlib-only: the science-dependent test
       # modules importorskip pandas/matplotlib, so without the extra they
       # silently skip and the jobs stop validating the interpreters we ship.
+      # One step for both rather than one per interpreter: two conditions
+      # for the same install drift apart, and the row that loses the extra
+      # keeps passing while it stops validating anything. (Job-level `if:`
+      # cannot see `matrix`, which is why this is a step-level condition.)
       - name: Install dev and science dependencies
         if: matrix.python-version == '3.13' || matrix.python-version == '3.14'
         run: uv sync --locked --extra science

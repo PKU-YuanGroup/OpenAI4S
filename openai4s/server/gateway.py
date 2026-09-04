@@ -56,6 +56,7 @@ from openai4s.agent.ledger import (
 )
 from openai4s.agent.loop import SYSTEM_PROMPT
 from openai4s.agent.models import RunState
+from openai4s.agent.progress_circuit import NO_PROGRESS_STOP_REASON
 from openai4s.agent.runtime import ChatModel, CompactionPolicy, CompletionSignal
 from openai4s.agent.task_modes import TaskMode, resolve_task_mode, task_mode_prompt
 from openai4s.config import (
@@ -102,12 +103,14 @@ from openai4s.server import (
     compute_session_routes,
     compute_tasks,
     contract,
+    diagnostics_routes,
     file_routes,
     governance_routes,
     kernel_routes,
     local_auth,
     onboarding_routes,
     orchestration_routes,
+    project_listing,
     retrieval_source,
     team_policy,
     team_routes,
@@ -3303,6 +3306,100 @@ class SessionRunner:
         # provider. The listing says `polled: False` for the same reason.
         task["polled"] = True
         return task
+
+    def cancel_compute_task(
+        self, root_frame_id: str, job_id: str, body: dict | None = None
+    ) -> dict:
+        """Ask the remote to stop ONE job, because a person confirmed.
+
+        Only ``{"confirm": true}`` reaches a provider. Anything else is a 400
+        with zero remote calls. Stop, closing the page, deleting the session,
+        a timeout UI, and a daemon restart never come through here.
+
+        A confirmed kill is the only path that returns ``cancel_confirmed``.
+        Unreachable remotes, unconfirmed receipts, and providers that cannot
+        confirm a cancel all return ``cancel_indeterminate`` and leave the job
+        live: the work may still be running and billing. A race with a natural
+        completion reports the real terminal state rather than cancelled.
+        """
+        if not isinstance(body, Mapping) or body.get("confirm") is not True:
+            raise GatewayError(
+                400,
+                'cancelling a remote job requires {"confirm": true}',
+                "confirmation_required",
+            )
+        workspace = self.active_workspace_for(root_frame_id)
+        dispatcher = build_dispatcher(
+            self.cfg, frame_id=root_frame_id, workspace=workspace
+        )
+        try:
+            manager = dispatcher.compute
+        except Exception as error:  # noqa: BLE001 - no provider configured
+            record_diagnostic(
+                error, surface="compute:provider", request_id=correlation_id()
+            )
+            raise GatewayError(
+                503, "remote compute is not available here", "no_provider"
+            ) from error
+
+        from openai4s.compute.manager import CANCEL_INDETERMINATE_REASONS, ComputeError
+        from openai4s.compute.states import REASON_CANCEL_UNCONFIRMED
+
+        try:
+            outcome = manager.cancel({"job_id": job_id})
+        except Exception as error:  # noqa: BLE001
+            kind = str(getattr(error, "error_kind", "") or "")
+            if isinstance(error, ComputeError) and kind == "not_found":
+                raise GatewayError(404, f"no such job {job_id}", "not_found") from error
+            record_diagnostic(
+                error, surface="compute:cancel", request_id=correlation_id()
+            )
+            record = self.store.get_compute_job(job_id) or {"job_id": job_id}
+            # `ComputeManager.cancel` already maps every failure onto the
+            # closed cancel-reason set (`_cancel_failure`); anything that
+            # arrives without one of those kinds is an unconfirmed receipt.
+            return {
+                "outcome": "cancel_indeterminate",
+                "reason": (
+                    kind
+                    if kind in CANCEL_INDETERMINATE_REASONS
+                    else REASON_CANCEL_UNCONFIRMED
+                ),
+                "hint": (
+                    "cancel could not be confirmed; the job may still be "
+                    "running and billing"
+                ),
+                "task": compute_tasks.public_task(record),
+            }
+
+        record = self.store.get_compute_job(job_id) or {
+            "job_id": job_id,
+            **(outcome or {}),
+        }
+        task = compute_tasks.public_task(record)
+        if isinstance(outcome, Mapping) and outcome.get("conflict"):
+            actual = str(
+                (outcome.get("conflict") or {}).get("actual")
+                or outcome.get("status")
+                or task.get("status")
+                or ""
+            )
+            # The real terminal state rides on `task`, not on the envelope.
+            # `status` in an error envelope is the integer HTTP status
+            # everywhere but one pinned legacy route; a second route
+            # declaring both types is the collision
+            # `test_the_envelope_status_is_the_http_status_except_where_a_route_owns_it`
+            # exists to make somebody answer for. `task["status"]` already
+            # carries `actual`, and the UI already reads it from there.
+            task = dict(task)
+            task.setdefault("status", actual)
+            return {
+                "outcome": "already_terminal",
+                "error": "the job already reached a terminal state",
+                "code": "already_terminal",
+                "task": task,
+            }
+        return {"outcome": "cancel_confirmed", "task": task}
 
     def workspace_for(self, root_frame_id: str) -> Path:
         ws = self._ws_root / root_frame_id
@@ -9754,6 +9851,32 @@ class SessionRunner:
                             "chunk": "\n\n" + err_text + "\n",
                         }
                     )
+                elif loop_reason == NO_PROGRESS_STOP_REASON:
+                    # The generic no-progress circuit tripped. Like
+                    # `max_turns` this is a product outcome with a stable
+                    # code, and the Engine forced `completion=None` on it, so
+                    # the turn is failed here rather than left at the
+                    # `completed` default -- otherwise the review gate arms
+                    # on a non-answer and the Ledger's `failed` terminal
+                    # disagrees with the frame's status.
+                    status = "failed"
+                    failure_meta["code"] = NO_PROGRESS_STOP_REASON
+                    err_text = (
+                        "已停止重复动作。请编辑提示或显式继续。"
+                        if response_language(user_text) == "zh"
+                        else (
+                            "Stopped repeating actions. "
+                            "Edit the prompt or continue explicitly."
+                        )
+                    )
+                    emit(
+                        {
+                            "type": "text_chunk",
+                            "frame_id": root_frame_id,
+                            "block_type": "text",
+                            "chunk": "\n\n" + err_text + "\n",
+                        }
+                    )
             except Exception as e:  # noqa: BLE001
                 status = "failed"
                 # Projected ONCE, before anything is shown or stored, and every
@@ -10881,7 +11004,22 @@ class SessionRunner:
             ),
             max_turns=max_turns,
         )
+        from openai4s.agent.ledger import restore_progress_circuit
+        from openai4s.agent.progress_circuit import (
+            ProgressCircuit,
+            attach_progress_circuit,
+        )
+
+        try:
+            restored_circuit = restore_progress_circuit(
+                self.store,
+                rid,
+                branch_id=getattr(st, "branch_id", None),
+            )
+        except Exception:  # noqa: BLE001 — a missing ledger must not break a turn
+            restored_circuit = ProgressCircuit()
         state = RunState(st.messages, max_turns=max_turns)
+        attach_progress_circuit(state, restored_circuit)
         try:
             result = engine.run(state)
         except AutoBudgetDenied as denied:
@@ -10890,6 +11028,9 @@ class SessionRunner:
             return denied.reason
         st.last_engine_completion = result.completion
         st.last_model_prose = events.model_prose
+        # A `no_progress` stop is projected by `run_message`, next to
+        # `max_turns`: it is a failed turn with a stable code, not a notice
+        # appended to a turn that then records itself as completed.
         self._telemetry_turn(st, result)
         self._freeze_auto_budget_tokens(st)
         return result.stop_reason
@@ -14670,6 +14811,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 model_discovery=model_discovery,
             ):
                 return
+            if diagnostics_routes.handle(self, method, sub, cfg=cfg):
+                return
             if artifact_index_routes.handle(self, method, sub, q, store):
                 return
             # ---- identity / meta (no-auth local mode) ----
@@ -15095,22 +15238,15 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 )
                 return
             if sub == "/projects" and method == "GET":
-                projects = store.list_projects()
-                # Team mode (INV-13): a non-admin sees only projects they
-                # participate in — otherwise the list leaks every team's
-                # project names and agent-context prose.
-                filt = self._team_visibility_filter()
-                if filt is not None:
-                    allowed = store.governance.participant_project_ids(filt)
-                    projects = [
-                        p for p in projects if str(p.get("project_id")) in allowed
-                    ]
-                self._json(
-                    {
-                        "projects": [_project_json(p) for p in projects],
-                        "total": len(projects),
-                    }
+                # Team visibility is a WHERE conjunct on the listing SQL
+                # (INV-13), not a post-filter after LIMIT; the parameter
+                # table, keyset paging and the compat modes live in
+                # `project_listing`, through the Store facade.
+                envelope = project_listing.list_projects_page(
+                    store, q, visible_to_user_id=self._team_visibility_filter()
                 )
+                envelope["projects"] = [_project_json(p) for p in envelope["projects"]]
+                self._json(envelope)
                 return
             if sub == "/projects" and method == "POST":
                 b = self._body()
@@ -17000,6 +17136,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     description=b.get("description") or "",
                     body=b.get("body") or "",
                 )
+                # skill_capability_invalid is registered on SKILL_FAILURE_STATUS
+                # as 400; _skill_result_status projects it. Do not degrade the
+                # mode to unknown on this path — that is the historical reader.
                 self._json(imported, _skill_result_status(imported))
                 return
             m = re.fullmatch(r"/skills/([^/]+)/versions", sub)
@@ -17714,6 +17853,21 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if store.get_frame(fid) is None:
                     raise GatewayError(404, "session not found")
                 self._json(runner.refresh_compute_task(fid, job_id))
+                return
+            m = re.fullmatch(r"/frames/([^/]+)/compute/tasks/([^/]+)/cancel", sub)
+            if m and method == "POST":
+                # Confirm-gated: missing confirm never reaches a provider.
+                fid, job_id = m.groups()
+                if store.get_frame(fid) is None:
+                    raise GatewayError(404, "session not found")
+                result = runner.cancel_compute_task(fid, job_id, self._body() or {})
+                outcome = result.get("outcome")
+                code = 200
+                if outcome == "cancel_indeterminate":
+                    code = 202
+                elif outcome == "already_terminal":
+                    code = 409
+                self._json(result, code)
                 return
             if sub == "/compute/jobs" and method == "GET":
                 self._json({"jobs": _jobs_mgr.list()})
