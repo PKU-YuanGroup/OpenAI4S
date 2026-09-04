@@ -15,7 +15,7 @@ PR 需要交代清楚哪些事，以及 GitHub 展示的社区健康文件（贡
 | `CODE_OF_CONDUCT.md` | 社区行为准则，GitHub 会从仓库的社区概况页链接到它。 |
 | `CONTRIBUTING.md` | 治理文档：分支命名、PR/评审/发布政策、离线测试政策，以及带编号的 harness invariant。技术约定在根目录的 `CLAUDE.md` / `AGENTS.md` 里；这份文件负责流程侧。 |
 | `SECURITY.md` | 私密漏洞报告流程，GitHub 会从 Security 标签页链接到它。疑似漏洞一律走这个流程，绝不通过公开 issue。 |
-| `dependabot.yml` | 每周一为 `uv`、`npm`、`docker`、`pre-commit` 和 `github-actions` 五个生态提交依赖更新提案。`routine-dependencies` 多生态分组把四个 uv 开发工具的小版本/补丁升级、Black 之外的 pre-commit hook，以及 GitHub Action 的小版本/补丁升级合并为一个跨生态 PR。同一批生态另有带互补 ignore 规则的常规条目，只排除已被批次接管的更新类别，因此 uv 大版本与生产依赖、Black 和 Action 大版本仍各自恰好覆盖一次并走独立审查路径。npm 与 Docker 刻意保留各自独立的周一计划和 browser-tooling/base-image 生态内分组，因为它们不属于此前反复手工合并的范围。 |
+| `dependabot.yml` | 每周一为 `uv`、`npm`、`docker`、`pre-commit` 和 `github-actions` 五个生态提交依赖更新提案，各自限制了同时打开的 PR 数量；npm 与 Docker 条目分别持续更新带完整性锁定的浏览器驱动依赖图和按摘要固定的容器基础镜像。Action 升级合并成一个 PR；`uv` 合并开发依赖的小版本与补丁升级，`pre-commit` 也合并 hook 的小版本与补丁升级，`npm` 与 `docker` 出于同样的理由也各自合并——一个包一个 PR，就是一个包一整套 CI 矩阵。大版本被有意排除在所有分组之外，生产依赖则根本不分组，因此这两类仍然一个更新一个 PR——hook 的大版本升级是一次 lint 或代码风格政策的变更，必须单独审读，而不是作为版本表里的一行被合并掉。 |
 | `pull_request_template.md` | 提 PR 时要填的清单：分支政策、改了什么、实际跑了哪些命令（没跑的也要写明原因）、核心依赖政策，以及哪些内容绝不能出现在一个公开仓库里。 |
 
 ## 子目录

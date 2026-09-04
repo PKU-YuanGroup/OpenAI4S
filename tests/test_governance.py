@@ -245,127 +245,43 @@ DEPENDABOT_ENTRY_KEYS = {
 }
 
 
-def test_dependabot_batches_routine_updates_across_ecosystems_on_monday():
-    """The historical hand-built batch and its fallbacks form a partition.
+def test_dependabot_tracks_uv_hooks_and_workflow_actions():
+    config = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
 
-    Multi-ecosystem entries inherit the group's clock and require top-level
-    patterns. Their regular Monday siblings use complementary ignores so an
-    update is owned by exactly one job: the batch does not silently disable
-    majors, production dependencies, or Black. npm and Docker remain
-    independent because their policies were not part of the hand-built batch.
+    assert config.count("package-ecosystem:") == 5
+    for ecosystem in (
+        '"uv"',
+        '"npm"',
+        '"docker"',
+        '"pre-commit"',
+        '"github-actions"',
+    ):
+        assert f"package-ecosystem: {ecosystem}" in config
+
+
+def test_dependabot_entries_use_only_schema_keys():
+    """One unknown entry-level key stops every ecosystem's PRs.
+
+    GitHub's validator refuses the whole file, and the failure is visible only
+    on the repository's Dependabot tab. `update-types`, `exclude-patterns` and
+    `dependency-type` are `groups:`-only keys that read as if they belonged at
+    the entry level; this is where that mistake fails, offline. An entry may
+    also appear only once per ecosystem and directory: the options reference
+    grants a second entry only for a different `target-branch`.
     """
     yaml = pytest.importorskip("yaml")
-    config = yaml.safe_load(
+    updates = yaml.safe_load(
         (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
-    )
-
-    assert config["version"] == 2
-    assert config["multi-ecosystem-groups"] == {
-        "routine-dependencies": {"schedule": {"interval": "weekly", "day": "monday"}}
-    }
-
-    updates = config["updates"]
-    # The entry-level vocabulary of SchemaStore's dependabot-2.0.json. GitHub's
-    # validator refuses the whole file on one unknown key, which stops every
-    # ecosystem's PRs, so an entry-level `update-types`, `exclude-patterns` or
-    # `dependency-type` (all `groups:`-only keys) has to fail here, offline.
+    )["updates"]
     for entry in updates:
         assert set(entry) <= DEPENDABOT_ENTRY_KEYS, sorted(
             set(entry) - DEPENDABOT_ENTRY_KEYS
         )
-    by_ecosystem = {
-        ecosystem: [
-            entry for entry in updates if entry["package-ecosystem"] == ecosystem
-        ]
-        for ecosystem in {"uv", "npm", "docker", "pre-commit", "github-actions"}
-    }
-    assert len(updates) == 8
-    assert {name: len(entries) for name, entries in by_ecosystem.items()} == {
-        "uv": 2,
-        "npm": 1,
-        "docker": 1,
-        "pre-commit": 2,
-        "github-actions": 2,
-    }
-
-    attached = {"uv", "pre-commit", "github-actions"}
-    grouped = {}
-    fallback = {}
-    for ecosystem in attached:
-        grouped_entries = [
-            entry
-            for entry in by_ecosystem[ecosystem]
-            if "multi-ecosystem-group" in entry
-        ]
-        fallback_entries = [
-            entry
-            for entry in by_ecosystem[ecosystem]
-            if "multi-ecosystem-group" not in entry
-        ]
-        assert len(grouped_entries) == len(fallback_entries) == 1
-        entry = grouped[ecosystem] = grouped_entries[0]
-        fallback[ecosystem] = fallback_entries[0]
-        assert entry["multi-ecosystem-group"] == "routine-dependencies"
-        assert entry["patterns"]
-        assert "schedule" not in entry
-        assert "groups" not in entry
-        assert fallback[ecosystem]["schedule"] == {
-            "interval": "weekly",
-            "day": "monday",
-        }
-
-    routine_uv = {"mypy", "pytest", "pytest-xdist", "pre-commit"}
-    ignore_majors = {
-        "dependency-name": "*",
-        "update-types": ["version-update:semver-major"],
-    }
-    semver_minor_patch = {
-        "version-update:semver-minor",
-        "version-update:semver-patch",
-    }
-    assert set(grouped["uv"]["patterns"]) == routine_uv
-    # `update-types` is a `groups:`-only key, so the minor/patch boundary of a
-    # multi-ecosystem entry is an `ignore` of majors; no `allow:` filter,
-    # because every name is a `[dependency-groups] dev` entry already.
-    assert grouped["uv"]["ignore"] == [ignore_majors]
-    uv_ignores = {
-        rule["dependency-name"]: set(rule["update-types"])
-        for rule in fallback["uv"]["ignore"]
-    }
-    assert uv_ignores == {name: semver_minor_patch for name in routine_uv}
-    assert fallback["uv"]["open-pull-requests-limit"] == 5
-
-    pre_commit = yaml.safe_load(
-        (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    )
-    hook_repositories = {
-        item["repo"] for item in pre_commit["repos"] if item["repo"] != "local"
-    }
-    black = "https://github.com/psf/black"
-    routine_hooks = hook_repositories - {black}
-    assert set(grouped["pre-commit"]["patterns"]) == routine_hooks
-    assert {rule["dependency-name"] for rule in fallback["pre-commit"]["ignore"]} == (
-        routine_hooks
-    )
-    assert all("update-types" not in rule for rule in fallback["pre-commit"]["ignore"])
-    assert black in hook_repositories
-    assert fallback["pre-commit"]["open-pull-requests-limit"] == 3
-
-    assert grouped["github-actions"]["patterns"] == ["*"]
-    assert grouped["github-actions"]["ignore"] == [ignore_majors]
-    action_ignores = {
-        rule["dependency-name"]: set(rule["update-types"])
-        for rule in fallback["github-actions"]["ignore"]
-    }
-    assert action_ignores == {"*": semver_minor_patch}
-    assert fallback["github-actions"]["open-pull-requests-limit"] == 5
-
-    for ecosystem in ("npm", "docker"):
-        entry = by_ecosystem[ecosystem][0]
-        assert entry["schedule"] == {"interval": "weekly", "day": "monday"}
-        assert "multi-ecosystem-group" not in entry
-        assert entry["groups"]
-        assert entry["open-pull-requests-limit"] == 3
+    identities = [
+        (entry["package-ecosystem"], entry.get("directory"), entry.get("target-branch"))
+        for entry in updates
+    ]
+    assert len(identities) == len(set(identities))
 
 
 def test_branch_naming_policy_exempts_dependabot_by_ref_not_by_actor():

@@ -28,22 +28,21 @@ v0.3 计划的事实记录，由 `tests/test_progress_document.py` 校验。本�
 
 ## CI 与供应链
 
-- [ ] **观察新的周一跨 ecosystem 依赖批次。** 配置部分已经实现：
-      `routine-dependencies` 持有周一计划，并把选定的 uv 开发工具、Black 之外的
-      pre-commit hook，以及 GitHub Action 的小版本/补丁升级合并起来。带互补
-      ignore 规则的常规条目只排除这些已分组的更新类别，因此 uv 大版本和生产依赖、
-      Black、Action 大版本仍有覆盖。`tests/test_governance.py` 在离线环境中钉死了
-      这个分区以及 npm/Docker 的独立策略。工作树无法证明的是 GitHub 会接受合并后的
-      配置并按计划调度它。最新的真实周一证据仍是旧配置开出的两个独立 PR：
-      pre-commit [#140](https://github.com/PKU-YuanGroup/OpenAI4S/pull/140) 与
-      GitHub Actions [#141](https://github.com/PKU-YuanGroup/OpenAI4S/pull/141)。
-      目前接受的已知代价：`ignore` 同样会过滤安全更新，而 multi-ecosystem 分组
-      只做版本更新，所以被分组名字的小版本/补丁安全修复会进周一批次，而不是当天
-      单独开安全 PR。同一 ecosystem 同一目录写两个 `updates` 条目也不是选项参考
-      文档明确允许的形状，只有 Dependabot 维护者的示例这么写；离线测试钉住的是
-      条目级键的词汇表，不是 GitHub 是否接受。
+- [ ] **把周一的依赖 PR 跨 ecosystem 合批。** `groups:` 按设计是 per-ecosystem
+      的，所以 uv、pre-commit、github-actions 三路更新会分成三个 PR，至今已被
+      手工并到同一分支上至少四次（#75、#97、#131）。Dependabot 支持用配置解决：
+      顶层加 `multi-ecosystem-groups`，再给每个 `updates` 条目加
+      `multi-ecosystem-group: <名字>`。这次没做，是因为那些条目得交出各自的
+      `schedule:` 块，而配错会让 Dependabot 干脆不再开 PR——那比它要修的问题
+      更糟；这件事该有自己的 PR，并观察一个真实的周一。
       *做完的标准：* 有一个 Dependabot PR 同时带着不止一个 ecosystem 的更新，
       且下一个周一的运行照常开 PR。
+      第一次尝试学到的（已从 [#143](https://github.com/PKU-YuanGroup/OpenAI4S/pull/143)
+      中撤出，留待单独落地）：`update-types`、`exclude-patterns`、`dependency-type`
+      是只属于 `groups:` 的键，写在条目级会被拒绝；同一 ecosystem 同一目录写第二个
+      条目只是维护者示例里的写法；而这种成对条目所需的互补 `ignore` 同样会过滤
+      *安全*更新，现有的 `groups:` 从不会。`tests/test_governance.py` 现在会在离线
+      环境下对前两条直接失败。
 
 ## 最近关掉的，记下来免得再查一遍
 

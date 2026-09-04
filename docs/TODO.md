@@ -31,27 +31,26 @@ is a factual record of the v0.3 plan and is validated by
 
 ## CI and supply chain
 
-- [ ] **Observe the new cross-ecosystem Monday dependency batch.** The
-      configuration half is now implemented: `routine-dependencies` owns the
-      Monday schedule and groups the selected uv development tools,
-      non-Black pre-commit hooks, and GitHub Action minor/patch updates.
-      Complementary regular entries ignore exactly those grouped update
-      classes, so uv majors and production dependencies, Black, and Action
-      majors remain covered. `tests/test_governance.py` pins that partition and
-      the independent npm/Docker policies offline. What a worktree cannot
-      prove is that GitHub accepts the merged configuration and schedules it.
-      The latest live Monday evidence is still two separate PRs from the old
-      configuration: pre-commit [#140](https://github.com/PKU-YuanGroup/OpenAI4S/pull/140)
-      and GitHub Actions [#141](https://github.com/PKU-YuanGroup/OpenAI4S/pull/141).
-      Known cost, accepted for now: `ignore` also filters security updates
-      and a multi-ecosystem group only does version updates, so a minor/patch
-      security fix for a grouped name arrives in the Monday batch rather than
-      as a same-day security PR. Two `updates` entries per ecosystem and
-      directory is also a shape the options reference does not grant, only a
-      Dependabot maintainer's example does; the offline test pins the
-      entry-level key vocabulary, not GitHub's acceptance.
+- [ ] **Batch the Monday dependency PRs across ecosystems.** `groups:` is
+      per-ecosystem by construction, so the uv, pre-commit and github-actions
+      updates arrive as three PRs and have been consolidated onto one branch by
+      hand at least four times (#75, #97, #131). Dependabot supports doing this
+      in config: a top-level `multi-ecosystem-groups` key plus
+      `multi-ecosystem-group: <name>` on each `updates` entry. Not done here
+      because the entries would have to give up their own `schedule:` blocks
+      and a misconfiguration stops Dependabot opening PRs at all, which is a
+      worse failure than the one it fixes — it wants its own PR and one
+      observed Monday.
       *Done when:* a single Dependabot PR carries updates from more than one
       ecosystem, and the following Monday's run still opens PRs normally.
+      Learned on the first attempt (reverted out of
+      [#143](https://github.com/PKU-YuanGroup/OpenAI4S/pull/143) to land alone):
+      `update-types`, `exclude-patterns` and `dependency-type` are `groups:`-only
+      keys and are rejected at the entry level; a second entry for the same
+      ecosystem and directory is a shape only a maintainer's example uses; and
+      the complementary `ignore` such a pair needs also filters *security*
+      updates, which the current `groups:` never do. `tests/test_governance.py`
+      now fails offline on the first two.
 
 ## Closed recently, recorded so it is not re-investigated
 
