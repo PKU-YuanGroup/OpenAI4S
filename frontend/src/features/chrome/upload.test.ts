@@ -141,19 +141,55 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
     expect(currentId.value).toBeNull();
   });
 
-  it("uploadBatchMatches: an unresolved batch in the same project matches on project alone", () => {
-    // createUploadSession publishes currentId before it resolves; during that
-    // gap neither id names the destination. Matching on ids alone let Enter
-    // cross the barrier.
+  it("uploadBatchMatches: a sibling frame's bytes never hold up an unrelated send", () => {
+    // This used to match on project alone whenever the batch's destination was
+    // still unresolved, to cover the window where createUploadSession had
+    // published currentId but not yet resolved. That guess also caught a batch
+    // bound to a DIFFERENT frame: attach from an empty composer, open an
+    // existing conversation, and its next send waited on those bytes -- up to
+    // the full stall budget. The window is closed at the source now (the frame
+    // is published as soon as POST /frames answers), so the guess is gone.
     const unresolved = batch({ projectId: "proj_1" });
-    expect(uploadBatchMatches(unresolved, "frame_published", "proj_1", null)).toBe(true);
-    expect(uploadBatchMatches(unresolved, "frame_published", "proj_other", null)).toBe(false);
+    expect(uploadBatchMatches(unresolved, "frame_sibling", "proj_1", null)).toBe(false);
+
+    // What still matches: the send adopted the very creation the batch is on.
     const creation = Promise.resolve("frame_x");
     const adopted = batch({ projectId: "proj_2", targetSource: creation, targetFrameId: "frame_x" });
     expect(uploadBatchMatches(adopted, null, "proj_2", creation)).toBe(true);
+    // ...and once the destination is known, it matches by id on any path.
+    expect(uploadBatchMatches(adopted, "frame_x", null, null)).toBe(true);
+
     const settled = batch({ frameAtSelection: "frame_a", targetFrameId: "frame_a" });
     expect(uploadBatchMatches(settled, "frame_a", null, null)).toBe(true);
     expect(uploadBatchMatches(settled, "frame_b", null, null)).toBe(false);
+  });
+
+  it("createUploadSession names its frame as soon as POST /frames answers", () => {
+    // The property that made the project-wide guess unnecessary: callers wait
+    // for the destination, not for loadSessions()+openConversation().
+    stubDom();
+    let releaseSessions: () => void = () => {};
+    const sessionsHeld = new Promise<void>((resolve) => {
+      releaseSessions = resolve;
+    });
+    vi.stubGlobal("window", {
+      loadSessions: () => sessionsHeld,
+      openConversation: () => Promise.resolve(),
+    });
+    vi.stubGlobal("fetch", (_url: string) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify({ id: "frame_new" })),
+      }),
+    );
+
+    const pending = createUploadSession("proj_1");
+    // Resolves while the opening work is still parked on loadSessions().
+    return pending.then((frameId) => {
+      expect(frameId).toBe("frame_new");
+      releaseSessions();
+    });
   });
 
   it("uploadFailureMatches keys on the frame when there is one, else the project", () => {

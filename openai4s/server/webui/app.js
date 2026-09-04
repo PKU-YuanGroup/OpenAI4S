@@ -7161,7 +7161,11 @@ async function openConversation(fid, pid) {
   S.currentId = fid; $("#messages").innerHTML = ""; S.stream = null;
   closeTurnTicket();  // a ticket belongs to the session that issued it
   S.msgCursor = null; S.msgHasEarlier = false; S._msgEarlierLoading = false;  // the history window restarts at the newest page
-  S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden");
+  // The previous turn's composer hint goes with it. The resume watchdog
+  // resyncs by re-opening the conversation rather than calling turnDone, so
+  // without this a "Stopping…" spinner outlived the turn it described and
+  // kept spinning next to an already-unlocked composer.
+  S.running = false; enableComposer(true); $("#cancel-btn").classList.add("hidden"); hint("");
   clearTimeout(S._resumeTimer);  // stop any resume-watchdog from the previously open session
   const gen = S._openGen = (S._openGen || 0) + 1;  // guard async continuations against fast session-switching
   S.cells = []; S.kernels = []; S.liveCells = []; S._liveCell = null; S.dockArtifact = null; S.kernelFilter = null;
@@ -11074,10 +11078,18 @@ function createUploadSession(projectId, options) {
   const existing = shared ? UPLOAD_STATE.creations.get(key) : null;
   if (existing) return existing;
   const navigationGen = S._openGen || 0;
-  const creating = (async () => {
+  // Callers wait for the destination, not for the conversation to finish
+  // opening. Resolving only after loadSessions()+openConversation() left the
+  // frame unnameable for two round trips, and uploadBatchMatches had to guess
+  // ("any unresolved batch in this project") to cover that window -- a guess
+  // that made an unrelated send wait on a sibling frame's bytes.
+  let publishFrame, failFrame;
+  const frameReady = new Promise((resolve, reject) => { publishFrame = resolve; failFrame = reject; });
+  const settled = (async () => {
     const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: projectId || undefined, model: S.defaultModelName }) });
     const frameId = f && f.id;
     if (!frameId) throw new Error("session creation returned no id");
+    publishFrame(frameId);
     // The upload began with no conversation. Open the one it created only if
     // the user has not navigated to another conversation OR another empty
     // project while the request was in flight. The upload remains bound to
@@ -11093,32 +11105,30 @@ function createUploadSession(projectId, options) {
     }
     return frameId;
   })();
+  // A POST that fails must reject the waiters rather than hang them. Once the
+  // frame is published this is a no-op, so a later failure in the opening work
+  // cannot retract a destination the bytes are already bound to.
+  settled.catch(error => failFrame(error));
   if (shared) {
-    UPLOAD_STATE.creations.set(key, creating);
-    creating.finally(() => {
-      if (UPLOAD_STATE.creations.get(key) === creating) UPLOAD_STATE.creations.delete(key);
+    // The cache lives for the WHOLE flight, not just the POST: Attach and the
+    // first Send have to share one frame even while the conversation is still
+    // opening, or they split bytes from text across two sibling frames.
+    UPLOAD_STATE.creations.set(key, frameReady);
+    settled.finally(() => {
+      if (UPLOAD_STATE.creations.get(key) === frameReady) UPLOAD_STATE.creations.delete(key);
     }).catch(() => {});
-  } else {
-    creating.catch(() => {});
   }
-  return creating;
+  return frameReady;
 }
 
 function uploadBatchMatches(batch, frameId, projectId, creationPromise) {
   return batch.frameAtSelection === frameId
     || batch.targetFrameId === frameId
+    // Shared single-flight creation: this send adopted the very promise the
+    // batch is bound to, so they land in the same frame.
     || (!batch.frameAtSelection
         && !!creationPromise
         && batch.targetSource === creationPromise
-        && batch.projectId === projectId)
-    // createUploadSession publishes S.currentId as soon as POST /frames answers
-    // and only resolves after loadSessions() + openConversation().  In that gap
-    // the batch has a live destination that neither id above can name yet, so
-    // matching on the ids alone let Enter cross the barrier and post the message
-    // before the bytes.  An unresolved batch in this project is by construction
-    // bound to the same single-flight frame: wait for it.
-    || (!batch.frameAtSelection
-        && batch.targetFrameId === null
         && batch.projectId === projectId);
 }
 

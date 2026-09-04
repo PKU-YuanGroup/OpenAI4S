@@ -93,7 +93,18 @@ export function createUploadSession(
   const existing = shared ? UPLOAD_STATE.creations.get(key) : null;
   if (existing) return existing;
   const navigationGen = _openGen.value || 0;
-  const creating = (async (): Promise<string> => {
+  // Callers wait for the destination, not for the conversation to finish
+  // opening. Resolving only after loadSessions()+openConversation() left the
+  // frame unnameable for two round trips, and uploadBatchMatches had to guess
+  // ("any unresolved batch in this project") to cover that window -- a guess
+  // that made an unrelated send wait on a sibling frame's bytes.
+  let publishFrame!: (id: string) => void;
+  let failFrame!: (error: unknown) => void;
+  const frameReady = new Promise<string>((resolve, reject) => {
+    publishFrame = resolve;
+    failFrame = reject;
+  });
+  const settled = (async (): Promise<string> => {
     const f = (await api("/frames", {
       method: "POST",
       body: JSON.stringify({
@@ -103,6 +114,7 @@ export function createUploadSession(
     })) as { id?: string } | null;
     const frameId = (f && f.id) || "";
     if (!frameId) throw new Error("session creation returned no id");
+    publishFrame(frameId);
     // The upload began with no conversation. Open the one it created only if
     // the user has not navigated to another conversation OR another empty
     // project while the request was in flight. The upload remains bound to
@@ -126,17 +138,23 @@ export function createUploadSession(
     }
     return frameId;
   })();
+  // A POST that fails must reject the waiters rather than hang them. Once the
+  // frame is published this is a no-op, so a later failure in the opening work
+  // cannot retract a destination the bytes are already bound to.
+  void settled.catch((error: unknown) => failFrame(error));
   if (shared) {
-    UPLOAD_STATE.creations.set(key, creating);
-    void creating
+    // The cache lives for the WHOLE flight, not just the POST: Attach and the
+    // first Send have to share one frame even while the conversation is still
+    // opening, or they split bytes from text across two sibling frames.
+    UPLOAD_STATE.creations.set(key, frameReady);
+    void settled
       .finally(() => {
-        if (UPLOAD_STATE.creations.get(key) === creating) UPLOAD_STATE.creations.delete(key);
+        if (UPLOAD_STATE.creations.get(key) === frameReady) UPLOAD_STATE.creations.delete(key);
       })
       .catch(() => {});
-  } else {
-    void creating.catch(() => {});
   }
-  return creating;
+  void frameReady.catch(() => {});
+  return frameReady;
 }
 
 /** app.js:11107. */
@@ -149,17 +167,12 @@ export function uploadBatchMatches(
   return (
     batch.frameAtSelection === frameId ||
     batch.targetFrameId === frameId ||
+    // Shared single-flight creation: this send adopted the very promise the
+    // batch is bound to, so they land in the same frame.
     (!batch.frameAtSelection &&
       !!creationPromise &&
       batch.targetSource === creationPromise &&
-      batch.projectId === projectId) ||
-    // createUploadSession publishes currentId as soon as POST /frames answers
-    // and only resolves after loadSessions() + openConversation().  In that gap
-    // the batch has a live destination that neither id above can name yet, so
-    // matching on the ids alone let Enter cross the barrier and post the message
-    // before the bytes.  An unresolved batch in this project is by construction
-    // bound to the same single-flight frame: wait for it.
-    (!batch.frameAtSelection && batch.targetFrameId === null && batch.projectId === projectId)
+      batch.projectId === projectId)
   );
 }
 

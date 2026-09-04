@@ -6091,8 +6091,15 @@ class SessionRunner:
         amount: int = 1,
         enforce_field_limit: bool = True,
         token_upper_bound: int | None = None,
+        run_id: str | None = None,
     ) -> dict | None:
-        run_id = str(st.active_auto_mode_run_id or "")
+        # ``run_id`` pins the run this reservation belongs to. Reading it live
+        # is right on the owner thread, but the model path now runs on the
+        # detached provider thread after Stop released the turn: a queued
+        # follow-up can install a new run before that thread reserves, and the
+        # abandoned call would then charge -- and on denial trip -- the run
+        # belonging to a turn that never asked to stop.
+        run_id = str(st.active_auto_mode_run_id or "") if run_id is None else run_id
         if not run_id:
             return None
         admission_id = f"{run_id}:{consumer}:{action_group_id}"
@@ -6156,6 +6163,7 @@ class SessionRunner:
                 action_group_id=group_id,
                 amount=1,
                 enforce_field_limit=False,
+                run_id=run_id,
             )
             if extra and admission is not None:
                 bound = token_upper_bound(
@@ -6180,6 +6188,7 @@ class SessionRunner:
                     action_group_id=f"{group_id}:token",
                     amount=bound,
                     enforce_field_limit=False,
+                    run_id=run_id,
                     token_upper_bound=bound,
                 )
         except AutoBudgetDenied as denied:

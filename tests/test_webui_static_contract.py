@@ -1747,10 +1747,12 @@ def test_send_waits_for_bound_upload_batches_before_starting_a_turn() -> None:
     assert "results.length === 0" in wait
     assert "UPLOAD_STATE.failures.delete(failure)" not in wait
     assert "batch.targetSource === creationPromise" in APP_JS
-    # createUploadSession publishes S.currentId before it resolves, so for the
-    # whole loadSessions()+openConversation() gap the batch has a destination
-    # neither id can name. Matching on ids alone let Enter cross the barrier.
-    assert "batch.targetFrameId === null" in APP_JS
+    # The destination is published as soon as POST /frames answers, so the
+    # window where no id could name it is closed at the source. Matching "any
+    # unresolved batch in this project" would also catch a batch bound to a
+    # sibling frame and stall an unrelated send on its bytes.
+    assert "batch.targetFrameId === null" not in APP_JS
+    assert "publishFrame(frameId)" in create
     assert "UPLOAD_STATE.creations.get(key)" in create
     assert "navigationGen" in create and "workspaceVisible" in create
     assert "reader.onerror" in read and "reader.onabort" in read
