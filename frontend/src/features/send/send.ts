@@ -327,8 +327,30 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   void loadSessions();
 }
 
+let composerWatch: MutationObserver | null = null;
+
 export function bindComposer(): void {
   if (typeof document === "undefined") return;
+  if (bindComposerNow() || composerWatch) return;
+  // installSend() runs at module import, before Shell.tsx has rendered
+  // #composer, so this first pass finds nothing -- and nothing ever tried
+  // again: Enter inserted a newline and no typed message could be sent. Same
+  // ordering bindComposerAutocomplete already handles: bind when the node
+  // appears, then stop watching.
+  if (typeof MutationObserver !== "function") return;
+  composerWatch = new MutationObserver(() => {
+    if (!bindComposerNow()) return;
+    composerWatch?.disconnect();
+    composerWatch = null;
+  });
+  composerWatch.observe(document.documentElement || document.body, {
+    childList: true,
+    subtree: true,
+  });
+}
+
+/** Bind whatever is mounted; true once #composer carries the keydown handler. */
+function bindComposerNow(): boolean {
   const planToggle = document.getElementById("plan-toggle");
   if (planToggle && !planToggle.dataset.sendBound) {
     planToggle.dataset.sendBound = "1";
@@ -368,4 +390,5 @@ export function bindComposer(): void {
       }
     });
   }
+  return !!c && c.dataset.sendBound === "1";
 }
