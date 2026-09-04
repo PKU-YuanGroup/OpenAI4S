@@ -33,6 +33,7 @@ from openai4s.kernel import environments as envmod
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.artifacts import ArtifactManager
 from openai4s.store import get_store
+from tests._envs import real_python_prefix
 
 
 class ScriptedLLM:
@@ -66,11 +67,8 @@ def _fresh_discovery():
 
 
 def _fake_env(root: Path, name: str) -> Path:
-    """A conda-shaped env whose bin/python really is an interpreter."""
-    bin_dir = root / name / "bin"
-    bin_dir.mkdir(parents=True)
-    (bin_dir / "python").symlink_to(sys.executable)
-    return root / name
+    """A real venv whose interpreter self-reports the selected env path."""
+    return real_python_prefix(root / name)
 
 
 def _env_spec(env_dir: Path) -> KernelEnvSpec:

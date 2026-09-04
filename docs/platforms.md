@@ -40,13 +40,14 @@ fails on hardened and containerised hosts, and it would fail at *cell execution*
 time — long after the app looked like it had started successfully.
 ## Python versions
 
-| Version | `requires-python` | Classifier | CI offline suite | Ships in the `.dmg` |
-| --- | --- | --- | --- | --- |
-| 3.10 | admitted (the floor) | yes | yes | no |
-| 3.11 | admitted | yes | no — see below | no |
-| 3.12 | admitted | yes | yes (+ science + chemistry extras) | no |
-| 3.13 | admitted | yes | yes | **yes** |
-| 3.14+ | admitted by `>=3.10` | no | no | no |
+| Version | `requires-python` | Classifier | CI offline suite | Ships in the `.dmg` | Ships in the container |
+| --- | --- | --- | --- | --- | --- |
+| 3.10 | admitted (the floor) | yes | yes | no | no |
+| 3.11 | admitted | yes | no — see below | no | no |
+| 3.12 | admitted | yes | yes (+ science + chemistry extras) | no | no |
+| 3.13 | admitted | yes | yes | **yes** | no |
+| 3.14 | admitted | yes | yes | no | **yes** |
+| 3.15+ | admitted by `>=3.10` | no | no | no | no |
 
 Three files used to each claim something different, and the disagreement was
 invisible because nothing compared them. `requires-python` said `>=3.10`, the
@@ -57,19 +58,20 @@ single interpreter nothing in the repository exercised, on a version the
 package did not claim to support. A 3.13-only failure would have shipped green,
 because no job could see it.
 
-3.13 is now classified and tested. The reconciliation is enforced by
+3.13 and 3.14 are now classified and tested. The reconciliation is enforced by
 [`tests/test_platform_support.py`](../tests/test_platform_support.py), which
-reads all three files rather than restating them: a matrix written down in
-prose is correct on the day it is written.
+reads the package metadata, CI workflow, bundle scripts, and Dockerfile rather
+than restating them: a matrix written down in prose is correct on the day it is
+written.
 
 **3.11 is claimed and not directly tested, on purpose.** CI runs the floor
-(3.10), the shipped interpreter (3.13), and 3.12 with the optional science and
-chemistry extras. A version bracketed on both sides by tested ones is a
-different risk from one outside the tested range entirely, which is what 3.13
-was. Naming the gap is the point — it is a stated cost, not an oversight, and
-the test that enforces the rest deliberately does not enforce this.
+(3.10), the `.dmg` interpreter (3.13), the container interpreter (3.14), and
+3.12 with the optional science and chemistry extras. A version bracketed on
+both sides by tested ones is a different risk from one outside the tested range
+entirely. Naming the gap is the point — it is a stated cost, not an oversight,
+and the test that enforces the rest deliberately does not enforce this.
 
-**3.14 and later are admitted by `>=3.10` and are not claimed.** The bound is
+**3.15 and later are admitted by `>=3.10` and are not claimed.** The bound is
 left open rather than capped so a new interpreter does not block installation,
 but nothing here has run on one.
 

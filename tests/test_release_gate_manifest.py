@@ -218,7 +218,7 @@ def test_a_check_with_no_run_id_is_refused(tmp_path):
 def test_python_browser_and_linux_private_pid_checks_are_required():
     """Item 4's binding, asserted on the manifest rather than on prose."""
     names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
-    for version in ("3.10", "3.12", "3.13"):
+    for version in ("3.10", "3.12", "3.13", "3.14"):
         assert f"Offline tests (py{version})" in names
     for engine in ("chromium", "firefox", "webkit"):
         assert f"Browser workbench E2E ({engine})" in names

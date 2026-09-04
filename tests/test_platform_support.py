@@ -201,14 +201,26 @@ def _linux_series() -> str:
     return match.group(1)
 
 
+def _container_series() -> str:
+    """The CPython series the container image runs.
+
+    Read from the first stage only; that both stages agree is the contract
+    `test_container_deployment.py` already owns.
+    """
+    text = (_ROOT / "Dockerfile").read_text("utf-8")
+    match = re.search(r"^FROM python:(\d+\.\d+)-", text, re.M)
+    assert match, "the container's Python series is not where this reads"
+    return match.group(1)
+
+
 def test_every_shipped_interpreter_is_claimed_and_tested():
-    """Not just the DMG's. Both bundles embed a CPython, and the previous
-    version of this reconciliation read one of the two build scripts."""
+    """Every bundled or containerized CPython needs both public claims."""
     classifiers = _classifier_versions()
     tested = _ci_tested_versions()
     for label, series in (
         ("macOS .dmg", _dmg_series()),
         ("Linux tarball", _linux_series()),
+        ("container image", _container_series()),
     ):
         assert (
             series in classifiers

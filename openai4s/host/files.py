@@ -24,6 +24,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from openai4s.security.fsprobe import lstat_is_symlink
+
 #: Basenames that carry a credential wherever they appear, matched
 #: case-insensitively against the last path segment.
 _SECRET_BASENAMES = (
@@ -234,7 +236,7 @@ def _traverses_secret_symlink_path(workspace: Path, path: Path) -> bool:
             return True
 
         try:
-            is_link = current.is_symlink()
+            is_link = lstat_is_symlink(current)
         except OSError as error:
             raise _UnsafeAliasInspection(
                 "secret alias inspection could not read the path"
