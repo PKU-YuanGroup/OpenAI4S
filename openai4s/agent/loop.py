@@ -705,7 +705,7 @@ class Agent:
                     # retry backoff it is merely sleeping through.
                     cancellation=self.cancellation,
                     abandoned_reply=_account_abandoned_reply,
-                    call_scope=self.frame_id or None,
+                    call_scope=self._provider_call_scope(),
                 )
                 if self.cancellation is not None:
                     model = _CancellationAwareModel(
@@ -754,6 +754,35 @@ class Agent:
             completion=result.completion,
             turns=result.turns,
         )
+
+    def _provider_call_scope(self) -> str | None:
+        """The session a turn's detached provider calls are bounded against.
+
+        Not ``frame_id``: for a ``host.delegate`` child that is the *child*
+        frame, so every child got its own slots and one Stop on a fan-out could
+        leave up to the fan-out cap (48) billing while the session's own four
+        stayed free -- the exact hole the per-session bound was added to close.
+
+        The budget exists because the quota gate reads a ledger that has not
+        been charged for calls still in flight, and that ledger charges the
+        session root (``record_session_llm_usage`` resolves the same way). So
+        the bound has to be keyed on the root, or it is not bounding the thing
+        that can overrun.
+        """
+
+        frame_id = str(self.frame_id or "")
+        if not frame_id:
+            return None
+        store = getattr(self.dispatcher, "store", None)
+        resolve = getattr(store, "resolve_frame_scope", None)
+        if not callable(resolve):
+            return frame_id
+        try:
+            scope = resolve(frame_id)
+        except Exception:  # noqa: BLE001 - a bound must never fail the turn
+            return frame_id
+        root = scope.get("root_frame_id") if isinstance(scope, Mapping) else None
+        return str(root or frame_id)
 
     def _action_ledger(
         self, tool_catalog: Any, task: str

@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,6 +42,45 @@ def _tool_block(json_body: str) -> str:
     """Build a fenced ```tool block the way tests build ```python cells:
     three backticks + 'tool' + newline + the JSON + newline + three backticks."""
     return "```" + "tool\n" + json_body + "\n" + "```"
+
+
+def test_detached_call_budget_is_keyed_on_the_session_root(monkeypatch):
+    """A delegated child must not get its own slots.
+
+    The per-session bound exists because the team quota gate reads a ledger
+    that has not been charged for calls still in flight, and that ledger
+    charges the *session root*. Keying on `frame_id` gave every `host.delegate`
+    child a private scope, so one Stop on a fan-out could leave up to the
+    fan-out cap billing while the session's own four stayed free.
+    """
+
+    agent = Agent(use_skills=False, allow_delegate=False)
+
+    class _Frames:
+        def __init__(self):
+            self.asked = []
+
+        def resolve_frame_scope(self, frame_id, **_kwargs):
+            self.asked.append(frame_id)
+            # what the store answers for a delegated child frame
+            return {"frame_id": frame_id, "root_frame_id": "root-session"}
+
+    frames = _Frames()
+    agent.dispatcher = SimpleNamespace(store=frames)
+
+    agent.frame_id = "child-frame-7"
+    assert agent._provider_call_scope() == "root-session"
+    assert frames.asked == ["child-frame-7"]
+
+    # No frame at all keeps only the process-wide bound.
+    agent.frame_id = None
+    assert agent._provider_call_scope() is None
+
+    # A store that cannot resolve must not fail the turn; the frame is the
+    # honest fallback, and it still bounds *something*.
+    agent.frame_id = "solo-frame"
+    agent.dispatcher = SimpleNamespace(store=object())
+    assert agent._provider_call_scope() == "solo-frame"
 
 
 def test_code_as_action_cycle(monkeypatch):
