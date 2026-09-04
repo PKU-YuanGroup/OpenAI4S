@@ -21,7 +21,7 @@ import {
   rememberAdmission,
 } from "./admission";
 import { handleFrameUpdateTurn, registerSendHandlers } from "./handlers";
-import { bindComposer, send } from "./send";
+import { send } from "./send";
 import {
   buildStepCard,
   renderStoredStep,
@@ -143,9 +143,12 @@ const SEND_CONTRACT_NAMES = [
 export { SEND_CONTRACT_NAMES };
 
 /**
- * Assign F-11 contract names, register this lane's WS types, inject the
- * `frame_update` turn body, and bind the composer. Safe to call more than
- * once: WS handlers use `registerUnlessPresent`.
+ * Assign F-11 contract names, register this lane's WS types, and inject the
+ * `frame_update` turn body. Safe to call more than once: WS handlers use
+ * `registerUnlessPresent`. DOM-free by design: this runs at module import,
+ * before Shell has rendered `#composer`, so `main.tsx` calls `bindComposer()`
+ * after `render(<App/>)` instead (the F-17 `bootArtifacts` /
+ * `finishArtifactsBoot` split).
  */
 export function installSend(
   target: SendTarget = globalThis as unknown as SendTarget,
@@ -165,7 +168,6 @@ export function installSend(
   target.outstandingAdmissions = outstandingAdmissions;
   target.reconcileLastAdmission = reconcileLastAdmission;
   target.rememberAdmission = rememberAdmission;
-  if (typeof document !== "undefined") bindComposer();
 }
 
 const hostWindow = (globalThis as unknown as { window?: SendTarget }).window;
