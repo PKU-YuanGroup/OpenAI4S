@@ -75,7 +75,17 @@ SCHEMA_VERSION = 1
 #: deliberately *not* here: it is shared with `/environments/status` and
 #: `/kernel/packages`, and eliding by name is depth-blind, so listing it would
 #: quietly drop two unrelated routes' contracts as well.
-_MACHINE_STATE_KEYS = frozenset({"sandbox", "default_host", "gpu_name", "cuda_version"})
+#:
+#: `facts` is `doctor.Check.facts` on `POST /diagnostics/checks`: the sandbox
+#: backend and its self-test result, the R launcher path, disk headroom --
+#: every key is a probe of the host the daemon runs on. Freezing the shape
+#: observed on one machine called every other machine a breaking change (a
+#: macOS capture froze `backend: string` and `rscript_path`; the Linux runner
+#: answered `null` and no R). The name is unique to that route in the frozen
+#: document.
+_MACHINE_STATE_KEYS = frozenset(
+    {"sandbox", "default_host", "gpu_name", "cuda_version", "facts"}
+)
 
 #: A different failure that looks like the one above, and must not be fixed the
 #: same way.
@@ -162,6 +172,89 @@ def route_for(path: str, patterns=None) -> str | None:
         if len(bare) == len(route) or bare[len(route)] == "/":
             return route
     return None
+
+
+#: Fields whose real type is wider than anything the offline suite can reach,
+#: with the reason the suite cannot reach it. Applied at write time, like
+#: `elide_machine_state`, so observation and merging stay untouched.
+#:
+#: A recapture infers the type from what it saw. When a field is only ever
+#: null in the offline suite, that narrows the frozen type -- and the tool
+#: calls the narrowing additive, because dropping a member cannot break a
+#: client reading the value. It breaks the *check* instead: on a machine
+#: whose responses do carry the wider member, the same route then reads as a
+#: breaking change. The alternative to this table is a human restoring the
+#: same line after every regenerate, which is not a contract but a habit.
+#:
+#: Add an entry only with the structural reason the suite cannot observe it.
+#: "No test happens to cover it" is a coverage gap -- write the test instead.
+UNOBSERVABLE_WIDER_TYPES: dict[str, dict[tuple[str, ...], dict[str, Any]]] = {
+    "GET /orchestration/jobs/([^/]+) [ok]": {
+        ("allocation", "reason"): {
+            # `Reason` is an enum, so this is a string whenever it is set.
+            # The route emits `allocation` only when `active_allocation`
+            # returns a row, and that query filters to active phases -- a
+            # terminal job reports `allocation: None`. A reason is written to
+            # a still-active allocation only while a cancel is in flight, so
+            # observing it needs a test to catch a race between the cancel
+            # and the terminal transition. A flaky test asserting a type is
+            # worse than this line.
+            "type": ["null", "string"],
+        },
+    },
+}
+
+
+def _widened(observed: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    """Union the declared members INTO the observed type; never replace it.
+
+    Replacing `type` wholesale made the table a blindfold: a route that
+    regressed to emitting an integer there was rewritten to the declared
+    `["null", "string"]` on both sides of `--check`, so the one field the
+    table names was the one field the gate could no longer see. A union
+    restores the unobservable member and still lets a genuinely new member
+    surface as drift.
+    """
+    merged = dict(observed)
+    for key, value in override.items():
+        if key != "type":
+            merged[key] = value
+            continue
+        seen = observed.get("type")
+        seen_members = [seen] if isinstance(seen, str) else list(seen or [])
+        declared = [value] if isinstance(value, str) else list(value)
+        merged["type"] = sorted(set(seen_members) | set(declared))
+    return merged
+
+
+def widen_unobservable_types(route: str, schema: dict[str, Any]) -> dict[str, Any]:
+    """Restore types the suite structurally cannot observe. See the table."""
+
+    overrides = UNOBSERVABLE_WIDER_TYPES.get(route)
+    if not overrides or not isinstance(schema, dict):
+        return schema
+
+    def apply(node: Any, path: tuple[str, ...]) -> Any:
+        if not isinstance(node, dict):
+            return node
+        result = dict(node)
+        properties = result.get("properties")
+        if isinstance(properties, dict):
+            result["properties"] = {
+                key: (
+                    _widened(apply(value, path + (key,)), overrides[path + (key,)])
+                    if path + (key,) in overrides
+                    else apply(value, path + (key,))
+                )
+                for key, value in properties.items()
+            }
+        for nested in ("items", "values"):
+            child = result.get(nested)
+            if isinstance(child, dict):
+                result[nested] = apply(child, path)
+        return result
+
+    return apply(schema, ())
 
 
 def elide_machine_state(schema: dict[str, Any]) -> dict[str, Any]:
@@ -381,7 +474,11 @@ class Recorder:
             # unrelated new test that happens to touch a route produce a diff,
             # and the file is worth reviewing only when a shape moved.
             "routes": {
-                key: {"schema": elide_machine_state(self.shapes[key])}
+                key: {
+                    "schema": widen_unobservable_types(
+                        key, elide_machine_state(self.shapes[key])
+                    )
+                }
                 for key in sorted(self.shapes)
             },
         }
@@ -496,8 +593,31 @@ def install(gateway_module, recorder: Recorder):
                     return raw(code, body, ctype, extra)
                 return raw(code, body, ctype, extra=extra, security=security)
 
+            # The fourth writer. `_send_static_bytes` carries JSON for the
+            # diagnostics routes (their `Cache-Control: no-store` cannot go
+            # through `_json`), and a writer the suite-side recorder does not
+            # wrap is a route whose real 200 is never frozen.
+            static = getattr(self, "_send_static_bytes", None)
+            had_own_static = "_send_static_bytes" in self.__dict__
+
+            def observing_static(code, body, ctype, extra=None, security=None):
+                try:
+                    payload = _json_payload(body, ctype)
+                    route = getattr(self, "_capture_route", None)
+                    if payload is not None:
+                        recorder.observe(method, sub, code, payload, route=route)
+                    else:
+                        recorder.observe_raw(
+                            method, sub, code, ctype, len(body or b""), route=route
+                        )
+                except Exception:  # noqa: BLE001 - never break a response
+                    pass
+                return static(code, body, ctype, extra, security)
+
             self._json = observing
             self._send = observing_send
+            if callable(static):
+                self._send_static_bytes = observing_static
             try:
                 return inner_api(self, method, sub)
             finally:
@@ -509,6 +629,11 @@ def install(gateway_module, recorder: Recorder):
                     self._send = raw
                 else:
                     self.__dict__.pop("_send", None)
+                if callable(static):
+                    if had_own_static:
+                        self._send_static_bytes = static
+                    else:
+                        self.__dict__.pop("_send_static_bytes", None)
 
         handler_class._api = _api
         return handler_class
@@ -623,7 +748,7 @@ def _probe_handler(
     query: dict[str, list[str]] | None = None,
     body: dict | None = None,
 ):
-    """A handler whose three response writers report into ``recorder``.
+    """A handler whose four response writers report into ``recorder``.
 
     Shared by the parameterless sweep and the seeded pass below, because a
     second copy of "how a probe answers" is how one of them comes to record a
@@ -693,7 +818,41 @@ def _probe_handler(
         recorder.observe_raw(method, path, 200, ctype, size, route=route)
 
     handler._stream_file = _stub_stream
+
+    # The fourth writer, arriving the same way the third did. P1-3's
+    # diagnostics routes need `Cache-Control: no-store`, which `_json`
+    # hard-wires as `no-cache`, so they send through `_send_static_bytes` --
+    # which, like `_stream_file`, builds headers straight on the
+    # BaseHTTPRequestHandler and raises inside `send_response` on this
+    # synthetic handler. Left unstubbed, the diagnostics routes publish
+    # whatever their *other* verbs produced, which is the exact lie the
+    # comment above describes. Mirrors the real method's signature.
+    #
+    # A JSON body through this writer is still a JSON contract. Recording it
+    # as opaque bytes left every diagnostics 200/403/413/429 shape out of the
+    # frozen schema while `docs/response-contract.json` listed the route as
+    # `json` -- a contract that named the kind and froze nothing.
+    def _stub_static_bytes(code, body, ctype, extra=None, security=None):
+        payload = _json_payload(body, ctype)
+        if payload is not None:
+            recorder.observe(method, path, code, payload, route=route)
+            return
+        recorder.observe_raw(method, path, code, ctype, len(body or b""), route=route)
+
+    handler._send_static_bytes = _stub_static_bytes
     return handler
+
+
+def _json_payload(body: Any, ctype: Any) -> Any:
+    """The decoded document when a static-bytes response is JSON, else None."""
+    kind = str(ctype or "").split(";")[0].strip().lower()
+    if kind != "application/json" or not body:
+        return None
+    try:
+        text = body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body
+        return json.loads(text)
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return None
 
 
 #: What a seeded capture writes. Fixed rather than generated: the artifacts it

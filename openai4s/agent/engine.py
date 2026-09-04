@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, cast
 
 from .actions import route_action
 from .events import (
@@ -28,6 +28,12 @@ from .ports import (
     NullEventSink,
     PassthroughContext,
     ReplyInterceptor,
+)
+from .progress_circuit import (
+    NO_PROGRESS_STOP_REASON,
+    ProgressCircuit,
+    attach_progress_circuit,
+    circuit_from_state,
 )
 
 
@@ -71,6 +77,14 @@ class AgentEngine:
             completion = self.completion.completion()
             if completion is not None:
                 return self._finish(state, completion, "submitted")
+            circuit = self._circuit(state)
+            if circuit.tripped:
+                return self._finish(
+                    state,
+                    None,
+                    NO_PROGRESS_STOP_REASON,
+                    progress_reason=circuit.trip_reason,
+                )
             turn = state.turn
             self.event_sink.emit(TurnStarted(turn))
             prepared = self.context_policy.prepare(state)
@@ -89,10 +103,18 @@ class AgentEngine:
             self.event_sink.emit(ReplyReceived(reply, turn))
             action = route_action(reply.content, reply.tool_calls)
             state.last_action = action
+            # A trip is enforced at the top of the next iteration, before the
+            # model is called again: every threshold trips inside the
+            # observe_* call that reaches it, so a refusal here would never
+            # fire -- and if it did, it would drop the routed reply from the
+            # Action Ledger (ActionRouted is what records it) and from the
+            # team usage ledger.
+            circuit.observe_routed_action(action, reply)
             self.event_sink.emit(ActionRouted(action, turn))
             outcome = self.executor.execute(action, reply, state)
             if not isinstance(outcome, ExecutionOutcome):
                 raise TypeError("executor must return ExecutionOutcome")
+            circuit.observe_execution(action, outcome)
             state.messages.extend(dict(message) for message in outcome.history_messages)
             state.turn += 1
             self.event_sink.emit(OutcomeProduced(outcome, turn))
@@ -129,15 +151,40 @@ class AgentEngine:
             value if isinstance(value, ModelReply) else ModelReply.from_mapping(value)
         )
 
+    def _circuit(self, state: RunState) -> ProgressCircuit:
+        existing = circuit_from_state(state)
+        if existing is not None:
+            return existing
+        binder = getattr(self.executor, "bind_progress_circuit", None)
+        if callable(binder):
+            cast(Callable[[RunState], None], binder)(state)
+            existing = circuit_from_state(state)
+            if existing is not None:
+                return existing
+        circuit = ProgressCircuit()
+        attach_progress_circuit(state, circuit)
+        return circuit
+
     def _finish(
-        self, state: RunState, completion: Any, stop_reason: str
+        self,
+        state: RunState,
+        completion: Any,
+        stop_reason: str,
+        *,
+        progress_reason: str | None = None,
     ) -> EngineResult:
+        if stop_reason != NO_PROGRESS_STOP_REASON:
+            progress_reason = None
+            completion_value = completion
+        else:
+            completion_value = None
         result = EngineResult(
             tuple(dict(message) for message in state.messages),
-            completion,
+            completion_value,
             stop_reason,
             state.turn,
             state.last_reply,
+            progress_reason=progress_reason,
         )
         self.event_sink.emit(RunFinished(result))
         return result

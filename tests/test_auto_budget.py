@@ -11,8 +11,11 @@ import pytest
 from openai4s.config import AutoModeBudgets, AutoModeConfig, Config, RoadmapFeatureFlags
 from openai4s.server import gateway as gateway_mod
 from openai4s.server.auto_budget import (
+    CONSUMERS,
     FIELD_AUTHORITIES,
+    SINK_REGISTRY,
     TERMINAL_USER_TRUTH,
+    UNWIRED_CONSUMERS,
     AutoBudgetAdmission,
     AutoBudgetDenied,
     canonical_action_fingerprint,
@@ -23,9 +26,14 @@ from openai4s.server.auto_budget import (
     verifiable_token_usage,
 )
 from openai4s.server.auto_mode import AutoModeService
-from openai4s.server.auto_repair import AutoRepairService
+from openai4s.server.auto_repair import (
+    AutoRepairService,
+    apply_claim_repair,
+    declare_deterministic_repair,
+)
 from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
 from openai4s.server.scientific_review import ScientificReviewService
+from openai4s.server.stage12_ga import rollout_status
 from openai4s.storage.auto_mode import (
     AutoBudgetConflictError,
     create_auto_mode_budget_schema,
@@ -779,6 +787,7 @@ def test_repair_budget_exhaustion_is_not_a_pass(tmp_path):
         "snapshot": broken,
     }
 
+    @declare_deterministic_repair
     def noop_repair(snapshot, findings):
         del findings
         return {
@@ -842,10 +851,12 @@ def test_repeated_finding_reservations_are_settled_not_left_reserved(tmp_path):
         scientific_review=SimpleNamespace(
             evaluate=lambda *a, **k: {"verdict": "pass", "findings": []}
         ),
-        repair_fn=lambda snapshot, findings: {
-            "changed": True,
-            "candidate_answer": "corrected",
-        },
+        repair_fn=declare_deterministic_repair(
+            lambda snapshot, findings: {
+                "changed": True,
+                "candidate_answer": "corrected",
+            }
+        ),
     )
     service.run(
         initial={
@@ -873,20 +884,22 @@ def test_every_declared_consumer_has_a_sink_or_is_named_unwired():
 
     `repair_turn` sat in CONSUMERS with a limit, a projected `used`, and no
     reserve call anywhere -- so the field read as measured while measuring
-    nothing. Splitting the inventory means a consumer cannot be silently
-    unmeasured: it is either wired, or it is named here with a reason.
+    nothing. It is now wired through AutoRepairService; UNWIRED_CONSUMERS
+    stays as the fail-closed inventory for any future hole.
     """
 
-    from openai4s.server.auto_budget import (
-        CONSUMERS,
-        SINK_REGISTRY,
-        UNWIRED_CONSUMERS,
-    )
-
+    assert "repair_turn" in SINK_REGISTRY
+    assert "repair_turn" not in UNWIRED_CONSUMERS
     assert not (set(SINK_REGISTRY) & set(UNWIRED_CONSUMERS))
     assert set(SINK_REGISTRY) | set(UNWIRED_CONSUMERS) == set(
         CONSUMERS
     ), "a consumer is neither wired to a sink nor declared unwired"
+    inventory = inspect_budget_wiring()
+    assert inventory["missing_sinks"] == []
+    assert inventory["sink_bypass_count"] == 0
+    assert inventory["ga_ready"] is True
+    assert FIELD_AUTHORITIES["repair_turns_per_round"] == "auto_budget"
+    assert "repair_turn" in inventory["sinks"]
 
 
 def test_missing_token_ceiling_pauses_only_once_ceilings_bind(tmp_path, monkeypatch):
@@ -938,3 +951,373 @@ def test_missing_token_ceiling_pauses_only_once_ceilings_bind(tmp_path, monkeypa
     second = service.evaluate(_snapshot(), **call)
     assert second["reason"] == "budget_measurement_unavailable"
     store.close()
+
+
+def _stage5_cfg(**budget_overrides) -> Config:
+    return Config(
+        roadmap_features=RoadmapFeatureFlags(stage5_auto_repair=True),
+        auto_mode=AutoModeConfig(
+            result_review_mode="auto_fix",
+            approvals_reviewer="auto_review",
+            budgets=AutoModeBudgets(**budget_overrides),
+        ),
+    )
+
+
+def _issues_initial() -> dict:
+    return {
+        "verdict": "issues",
+        "snapshot": {"candidate_answer": "wrong"},
+        "findings": [
+            {"severity": "high", "fingerprint": "same-finding", "finding_id": "f-1"}
+        ],
+    }
+
+
+def test_named_unwired_consumer_is_a_missing_sink_and_refuses_ga(monkeypatch):
+    """Naming a hole is not GA-ready. inspect_budget_wiring fail-closes it."""
+
+    from openai4s.server import auto_budget as budget_mod
+
+    monkeypatch.setattr(
+        budget_mod,
+        "UNWIRED_CONSUMERS",
+        {"phantom": "named unwired for the fail-closed probe"},
+    )
+    inventory = inspect_budget_wiring()
+    assert "phantom" in inventory["missing_sinks"]
+    assert inventory["ga_ready"] is False
+    assert inventory["sink_bypass_count"] >= 1
+    status = rollout_status(
+        Config(roadmap_features=RoadmapFeatureFlags(stage12_auto_mode_ga=True))
+    )
+    assert status["auto_budget"]["ga_ready"] is False
+    assert status["ga_refused"] is True
+    assert "budget_sink_unwired" in status["ga_blocked_on"]
+
+
+def test_thirteenth_repair_turn_does_not_invoke_the_provider(tmp_path):
+    """Per-round limit 12: the 12th provider call runs, the 13th does not.
+
+    Counts the real callable, not a mocked budget counter, against a real
+    SQLite reservation ledger.
+    """
+
+    store = _store(tmp_path)
+    _start(store, budgets=_budgets(repair_turns_per_round=12, max_repair_rounds=2))
+    provider_calls = {"n": 0}
+
+    def provider():
+        provider_calls["n"] += 1
+        return "ok"
+
+    def metered_repair(snapshot, findings, admission=None):
+        del findings
+        for _ in range(13):
+            admission.run_provider(provider)
+        return {
+            "changed": True,
+            "self_certified": False,
+            "candidate_answer": snapshot.get("candidate_answer"),
+            "after_version_ids": [],
+        }
+
+    result = AutoRepairService(
+        store=store,
+        config=_stage5_cfg(repair_turns_per_round=12, max_repair_rounds=2),
+        scientific_review=SimpleNamespace(
+            evaluate=lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("re-review must not run after turn denial")
+            )
+        ),
+        repair_fn=metered_repair,
+    ).run(
+        initial=_issues_initial(),
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        run_id="auto-run-1",
+    )
+    assert provider_calls["n"] == 12
+    assert result.get("stop_reason") == "budget_exhausted"
+    assert result.get("verdict") != "pass"
+    turn_rows = [
+        item
+        for item in store.list_auto_mode_budget_reservations("auto-run-1")
+        if item["consumer"] == "repair_turn"
+    ]
+    assert len(turn_rows) == 12
+    assert [item["state"] for item in turn_rows] == ["committed"] * 12
+    usage = AutoBudgetAdmission(store).project_usage("auto-run-1")
+    meter = usage["budget_usage"]["repair_turns_per_round"]
+    assert meter["authority"] == "auto_budget"
+    assert meter["used"] == 12
+    assert meter["reserved"] == 0
+    assert meter["remaining"] == 0
+    store.close()
+
+
+def test_deterministic_repair_does_not_consume_repair_turns(tmp_path):
+    store = _store(tmp_path)
+    _start(store, budgets=_budgets(max_repair_rounds=2))
+    result = AutoRepairService(
+        store=store,
+        config=_stage5_cfg(max_repair_rounds=2),
+        scientific_review=SimpleNamespace(
+            evaluate=lambda *a, **k: {"verdict": "pass", "findings": []}
+        ),
+        repair_fn=apply_claim_repair,
+    ).run(
+        initial={
+            "verdict": "issues",
+            "snapshot": {
+                "candidate_answer": "resid.csv has n=99 and mean=2.0",
+                "adapters": [
+                    {
+                        "adapter": "table",
+                        "complete": True,
+                        "summary": {
+                            "row_count": 2,
+                            "columns": {"value": {"mean": 2.0}},
+                        },
+                    }
+                ],
+                "artifacts": [],
+            },
+            "findings": [
+                {
+                    "severity": "high",
+                    "fingerprint": "n-claim",
+                    "finding_id": "f-1",
+                }
+            ],
+        },
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        run_id="auto-run-1",
+    )
+    assert result.get("verdict") == "pass"
+    turn_rows = [
+        item
+        for item in store.list_auto_mode_budget_reservations("auto-run-1")
+        if item["consumer"] == "repair_turn"
+    ]
+    assert turn_rows == []
+    usage = AutoBudgetAdmission(store).project_usage("auto-run-1")
+    assert usage["budget_usage"]["repair_turns_per_round"]["used"] == 0
+    assert usage["budget_usage"]["repair_turns_per_round"]["reserved"] == 0
+    store.close()
+
+
+def test_legacy_repair_fn_is_refused_as_metered(tmp_path):
+    store = _store(tmp_path)
+    _start(store)
+    called = {"n": 0}
+
+    def legacy(snapshot, findings):
+        called["n"] += 1
+        del snapshot, findings
+        return {"changed": True, "candidate_answer": "x"}
+
+    with pytest.raises(RuntimeError, match="unmetered"):
+        AutoRepairService(
+            store=store,
+            config=_stage5_cfg(),
+            scientific_review=SimpleNamespace(evaluate=lambda *a, **k: {}),
+            repair_fn=legacy,
+        ).run(
+            initial=_issues_initial(),
+            result_review_mode="auto_fix",
+            agent_cfg=_llm("agent"),
+            reviewer_cfg=_llm("reviewer"),
+            run_id="auto-run-1",
+        )
+    assert called["n"] == 0
+    adapted = AutoRepairService(
+        store=store,
+        config=_stage5_cfg(),
+        scientific_review=SimpleNamespace(
+            evaluate=lambda *a, **k: {"verdict": "pass", "findings": []}
+        ),
+        repair_fn=declare_deterministic_repair(legacy),
+    ).run(
+        initial=_issues_initial(),
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        run_id="auto-run-1",
+    )
+    assert called["n"] == 1
+    assert adapted.get("verdict") == "pass"
+    store.close()
+
+
+def test_repair_turn_exception_marks_unknown_not_released(tmp_path):
+    store = _store(tmp_path)
+    _start(store, budgets=_budgets(repair_turns_per_round=12))
+
+    def boom(snapshot, findings, admission=None):
+        del snapshot, findings
+        admission.admit_turn()
+        raise RuntimeError("provider response was lost")
+
+    with pytest.raises(RuntimeError, match="lost"):
+        AutoRepairService(
+            store=store,
+            config=_stage5_cfg(repair_turns_per_round=12),
+            scientific_review=SimpleNamespace(evaluate=lambda *a, **k: {}),
+            repair_fn=boom,
+        ).run(
+            initial=_issues_initial(),
+            result_review_mode="auto_fix",
+            agent_cfg=_llm("agent"),
+            reviewer_cfg=_llm("reviewer"),
+            run_id="auto-run-1",
+        )
+    turn_rows = [
+        item
+        for item in store.list_auto_mode_budget_reservations("auto-run-1")
+        if item["consumer"] == "repair_turn"
+    ]
+    assert turn_rows
+    assert [item["state"] for item in turn_rows] == ["unknown"]
+    finding_rows = [
+        item
+        for item in store.list_auto_mode_budget_reservations("auto-run-1")
+        if item["consumer"] == "repeated_finding"
+    ]
+    repair_rows = [
+        item
+        for item in store.list_auto_mode_budget_reservations("auto-run-1")
+        if item["consumer"] == "repair"
+    ]
+    assert [item["state"] for item in finding_rows] == ["unknown"]
+    assert [item["state"] for item in repair_rows] == ["unknown"]
+    store.close()
+
+
+def test_repair_turn_restart_does_not_increase_remaining(tmp_path):
+    path = tmp_path / "repair-turn-restart.db"
+    store = Store(path)
+    _start(store, budgets=_budgets(repair_turns_per_round=12))
+
+    def three_turns(snapshot, findings, admission=None):
+        del findings
+        for _ in range(3):
+            admission.admit_turn()
+        return {
+            "changed": True,
+            "self_certified": False,
+            "candidate_answer": snapshot.get("candidate_answer"),
+            "after_version_ids": [],
+        }
+
+    AutoRepairService(
+        store=store,
+        config=_stage5_cfg(repair_turns_per_round=12),
+        scientific_review=SimpleNamespace(
+            evaluate=lambda *a, **k: {"verdict": "pass", "findings": []}
+        ),
+        repair_fn=three_turns,
+    ).run(
+        initial=_issues_initial(),
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+        run_id="auto-run-1",
+    )
+    before = AutoBudgetAdmission(store).project_usage("auto-run-1")
+    remaining_before = before["budget_usage"]["repair_turns_per_round"]["remaining"]
+    used_before = before["budget_usage"]["repair_turns_per_round"]["used"]
+    assert used_before == 3
+    store.close()
+    reopened = Store(path)
+    after = AutoBudgetAdmission(reopened).project_usage("auto-run-1")
+    assert after["budget_usage"]["repair_turns_per_round"]["used"] == used_before
+    assert (
+        after["budget_usage"]["repair_turns_per_round"]["remaining"] == remaining_before
+    )
+    reopened.close()
+
+
+def test_parent_and_child_share_repair_turn_root(tmp_path):
+    store = _store(tmp_path)
+    _start(store, budgets=_budgets(repair_turns_per_round=12))
+    store.ensure_auto_mode_budget_state(
+        "child-run",
+        root_run_id="auto-run-1",
+        started_at=200,
+    )
+    for index in range(6):
+        store.reserve_auto_mode_budget(
+            run_id="auto-run-1",
+            admission_id=f"p-turn-{index}",
+            consumer="repair_turn",
+            action_group_id=f"p-turn-{index}",
+            amount=1,
+        )
+    for index in range(6):
+        store.reserve_auto_mode_budget(
+            run_id="child-run",
+            admission_id=f"c-turn-{index}",
+            consumer="repair_turn",
+            action_group_id=f"c-turn-{index}",
+            amount=1,
+        )
+    with pytest.raises(AutoBudgetDenied) as denied:
+        store.reserve_auto_mode_budget(
+            run_id="child-run",
+            admission_id="c-turn-6",
+            consumer="repair_turn",
+            action_group_id="c-turn-6",
+            amount=1,
+        )
+    assert denied.value.reason == "budget_exhausted"
+    store.close()
+
+
+def test_concurrent_last_repair_turn_has_one_winner(tmp_path):
+    path = tmp_path / "repair-turn-race.db"
+    store_a = Store(path)
+    _start(store_a, budgets=_budgets(repair_turns_per_round=2))
+    first = store_a.reserve_auto_mode_budget(
+        run_id="auto-run-1",
+        admission_id="turn-0",
+        consumer="repair_turn",
+        action_group_id="turn-0",
+        amount=1,
+    )
+    store_a.commit_auto_mode_budget(
+        first["reservation"]["admission_id"], committed_amount=1
+    )
+    store_b = Store(path)
+    outcomes: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def attempt(store: Store, admission_id: str) -> None:
+        barrier.wait()
+        try:
+            store.reserve_auto_mode_budget(
+                run_id="auto-run-1",
+                admission_id=admission_id,
+                consumer="repair_turn",
+                action_group_id=admission_id,
+                amount=1,
+            )
+            outcomes.append("ok")
+        except AutoBudgetDenied:
+            outcomes.append("denied")
+
+    threads = [
+        threading.Thread(target=attempt, args=(store_a, "turn-a")),
+        threading.Thread(target=attempt, args=(store_b, "turn-b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert outcomes.count("ok") == 1
+    assert outcomes.count("denied") == 1
+    store_a.close()
+    store_b.close()

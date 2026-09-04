@@ -341,6 +341,7 @@ class RuntimeActionLedger:
             self.append_terminal(
                 event.result.stop_reason,
                 completion=event.result.completion,
+                progress_reason=getattr(event.result, "progress_reason", None),
             )
 
     def _append_action(
@@ -618,6 +619,7 @@ class RuntimeActionLedger:
         *,
         completion: Any = None,
         error: Any = None,
+        progress_reason: Any = None,
     ) -> dict | None:
         if self.terminal_recorded:
             return None
@@ -635,6 +637,8 @@ class RuntimeActionLedger:
             payload["completion"] = _redact_value(completion, frozenset())
         if error is not None:
             payload["error"] = _redact_value(error, frozenset())
+        if progress_reason:
+            payload["progress_reason"] = str(progress_reason)
         self.store.append_action_event(
             group_id=group["group_id"],
             type=(
@@ -868,6 +872,59 @@ def restore_action_history(
     )
 
 
+def restore_progress_circuit(
+    store: LedgerStore,
+    root_frame_id: str,
+    *,
+    branch_id: str | None = None,
+) -> Any:
+    """Rebuild the generic no-progress circuit from durable action groups.
+
+    ``RunState.metadata`` is only a process cache. Callers that resume after a
+    restart or compaction must use this entry point rather than a checkpoint.
+
+    Only the groups after the latest external ``user`` group matter. That
+    anchor is found with an index probe (the latest ``user`` ordinal) and a
+    second probe says whether anything follows it; only then are the epoch's
+    groups read with their events. The earlier "outline" pass still ran
+    ``SELECT *`` over every group on the branch -- wire state, assistant
+    message and usage blobs included, under the Store lock -- on every Web
+    message, for a circuit that, right after ``append_user``, is empty by
+    definition. A store that cannot answer the probes (or a branch with no
+    local user group, whose epoch may start in an inherited prefix) takes
+    the full, fork-aware path.
+    """
+
+    from .progress_circuit import reconstruct_progress_circuit
+
+    latest = getattr(store, "latest_action_group_ordinal", None)
+    list_groups = getattr(store, "list_action_groups", None)
+    if callable(latest) and callable(list_groups):
+        selected = branch_id or root_frame_id
+        try:
+            last_user = latest(root_frame_id, branch_id=selected, kind="user")
+        except TypeError:
+            last_user = None
+        if isinstance(last_user, int) and not isinstance(last_user, bool):
+            # The epoch is anchored on the user group itself, so it rides
+            # along (events are irrelevant for a user row); the groups after
+            # it are the only ones read with their events.
+            anchor: Mapping[str, Any] = {"kind": "user", "ordinal": last_user}
+            if latest(root_frame_id, branch_id=selected) == last_user:
+                return reconstruct_progress_circuit([anchor])
+            epoch = [anchor]
+            epoch.extend(
+                dict(group)
+                for group in list_groups(
+                    root_frame_id, branch_id=selected, after_ordinal=last_user
+                )
+            )
+            return reconstruct_progress_circuit(epoch)
+    return reconstruct_progress_circuit(
+        branch_action_groups(store, root_frame_id, branch_id=branch_id)
+    )
+
+
 def new_turn_id() -> str:
     return f"turn-{uuid.uuid4().hex[:16]}"
 
@@ -880,4 +937,5 @@ __all__ = [
     "redact_tool_call",
     "reduce_action_groups",
     "restore_action_history",
+    "restore_progress_circuit",
 ]

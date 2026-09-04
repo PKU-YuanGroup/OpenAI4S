@@ -29,7 +29,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import types
 from pathlib import Path
 
@@ -39,6 +38,7 @@ from openai4s.config import Config
 from openai4s.kernel import Kernel
 from openai4s.kernel import environments as envmod
 from openai4s.kernel.env_generations import EnvironmentError_, EnvironmentStore
+from tests._envs import real_python_prefix
 
 
 @pytest.fixture(autouse=True)
@@ -69,10 +69,8 @@ def _sha(path: Path) -> str:
 
 
 def _real_python_prefix(prefix: Path) -> Path:
-    """A prefix whose bin/python really is an interpreter."""
-    (prefix / "bin").mkdir(parents=True, exist_ok=True)
-    (prefix / "bin" / "python").symlink_to(sys.executable)
-    return prefix
+    """A real venv whose interpreter self-reports this exact prefix."""
+    return real_python_prefix(prefix)
 
 
 def _build_generation(store: EnvironmentStore, name: str, spec: Path) -> str:
@@ -216,8 +214,7 @@ def test_a_generation_environment_wins_over_a_conda_env_of_the_same_name(
 ):
     """The pointer is the explicit act; a scanned directory is an inference."""
     conda_root = tmp_path / "conda-envs"
-    (conda_root / "science" / "bin").mkdir(parents=True)
-    (conda_root / "science" / "bin" / "python").symlink_to(sys.executable)
+    real_python_prefix(conda_root / "science")
     monkeypatch.setenv("OPENAI4S_ENV_ROOTS", str(conda_root))
 
     spec = tmp_path / "science.yml"

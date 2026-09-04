@@ -721,6 +721,7 @@ body.sidebar-collapsed #sidebar{width:0;min-width:0;padding:0;overflow:hidden;bo
 .nb-revive .solid-btn{cursor:pointer}
 .cust-input{flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--line,#8883);border-radius:8px;background:var(--bg,transparent);color:var(--ink,inherit);font:inherit}
 .cust-row .ds{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.cust-row .ds .cust-checks{flex-basis:100%;margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:11px;line-height:1.5}
 .cust-row .prof-warn{color:var(--danger)}
 .cust-row .prof-probe.ok{color:var(--success-text)}
 .cust-row .prof-probe.bad{color:var(--danger)}

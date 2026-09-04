@@ -17,32 +17,19 @@ is a factual record of the v0.3 plan and is validated by
 
 - [ ] **Publish `openai4s-skills` to npm.** The package is complete and gated
       (`node tools/skills-installer/selftest.mjs`,
-      `node tools/skills-installer/check_package.mjs`), and `npm pack` produces
-      6.4 MiB carrying all 602 Skills. Until it is published,
+      `node tools/skills-installer/check_package.mjs`). From a clean checkout,
+      the released `v0.2.0` tag passes all 16 installer self-tests and packs
+      2,212 files / 603 Skills / 6.4 MB; current `main` packs 2,236 files /
+      604 Skills / 6.5 MB. Until it is published,
       `npx openai4s-skills …` does not resolve; `npx github:PKU-YuanGroup/OpenAI4S install --all`
-      works today and is what the README shows alongside it. The name is
-      unclaimed on the registry as of 2026-08-23.
+      works today and is what the README shows alongside it. A live
+      `npm view openai4s-skills version` still returned `E404` on 2026-09-01.
       *Done when:* `npm publish --access public` has run from a clean checkout
       of the released tag and `npx openai4s-skills list` works on a machine
       with no checkout. Needs an npm account with publish rights — no automated
       agent should hold that credential.
 
 ## CI and supply chain
-
-- [ ] **Validate action pins before merge, not after.** `scorecard.yml`
-      triggers on `push: branches: [main]` and the Saturday cron only, so a
-      pin edited there never executes for a PR — a SHA that does not resolve
-      merges fully green and first shows up as SARIF quietly no longer
-      reaching code scanning. `tests/test_governance.py` now requires every
-      `uses:` in every workflow to be a 40-hex SHA carrying a `# vX.Y.Z`
-      comment, but it cannot check that the comment names the SHA beside it:
-      dereferencing a tag needs the network and the suite is offline by
-      design. There is no workflow linter either — `actionlint`, `zizmor`,
-      `pinact` and `ratchet` appear nowhere in the tree.
-      *Done when:* a PR-triggered check fails on a `uses:` line whose SHA does
-      not dereference to the tag in its comment. `pinact --check` is the
-      smallest thing that does this; an `actionlint` job would also cover the
-      schema mistakes no test here looks for.
 
 - [ ] **Batch the Monday dependency PRs across ecosystems.** `groups:` is
       per-ecosystem by construction, so the uv, pre-commit and github-actions
@@ -56,31 +43,33 @@ is a factual record of the v0.3 plan and is validated by
       observed Monday.
       *Done when:* a single Dependabot PR carries updates from more than one
       ecosystem, and the following Monday's run still opens PRs normally.
-
-- [ ] **The offline suite does not pass on CPython 3.14, which is now the
-      container's interpreter.** `Dockerfile` moved to `python:3.14-slim-bookworm`
-      while `ci.yml`'s matrix is `["3.10", "3.12", "3.13"]`, so nothing in CI
-      runs the suite there; `Container image builds and serves` boots the
-      daemon in the built image but does not run tests. Run by hand on 3.14:
-      **6 failed, 7855 passed**. All six share one cause, and it is a CPython
-      change rather than a defect here — invoked through a **bare symlink**,
-      3.13 reports the symlink path in `sys.executable` while 3.14 reports the
-      resolved real binary. `_real_python_prefix` in
-      `tests/test_env_kernel_binding.py` builds `prefix/bin/python` as exactly
-      such a symlink, and the fixtures observe the env binding through that
-      self-report (`test_env_kernel_binding.py` ×2,
-      `test_delegation_env_inheritance.py` ×3, `test_benchmark_bringup.py` ×1).
-      A control run of the same tests on 3.13 in the same worktree passes, so
-      this is 3.14-specific. The kernel execs the interpreter it is handed
-      either way; what moved is what the cell reports about itself — which is
-      also what artifact provenance records as `interpreter`.
-      *Done when:* the suite is green on 3.14 — most likely by giving the
-      fixture a real prefix (a `pyvenv.cfg`) instead of a bare symlink, so the
-      assertion keeps its strength on both versions rather than being relaxed
-      to accept a resolved path — and 3.14 is in the `ci.yml` matrix so it
-      cannot regress again.
+      Learned on the first attempt (reverted out of
+      [#143](https://github.com/PKU-YuanGroup/OpenAI4S/pull/143) to land alone):
+      `update-types`, `exclude-patterns` and `dependency-type` are `groups:`-only
+      keys and are rejected at the entry level; a second entry for the same
+      ecosystem and directory is a shape only a maintainer's example uses; and
+      the complementary `ignore` such a pair needs also filters *security*
+      updates, which the current `groups:` never do. `tests/test_governance.py`
+      now fails offline on the first two.
 
 ## Closed recently, recorded so it is not re-investigated
+
+Action-pin identity is now checked in ordinary pull-request CI. The
+`action-pins` job runs a commit-pinned `pinact-action` in validation-only mode
+with tag verification enabled, while the offline governance test continues to
+require every workflow action to carry an exact 40-hex SHA and `# vX.Y.Z`
+claim. A real pinact run accepted the current tree; a negative control that
+paired Checkout's `v7.0.1` SHA with a `# v7.0.0` comment failed on the identity
+mismatch.
+
+CPython 3.14 is now a classified and CI-tested interpreter, including the
+science extra used by the 3.14 container. Environment-binding fixtures create
+real pip-free virtual environments instead of bare interpreter symlinks, so
+their exact `sys.executable` assertion remains meaningful on 3.13 and 3.14.
+The bring-up verifier uses fail-closed `lstat` inspection rather than the
+3.14 `Path.is_symlink()` behavior that suppresses probe errors, and the nested
+xdist capture test explicitly loads only the plugin its contract exercises.
+The final locked Python 3.14.4 run completed with **8094 passed, 23 skipped**.
 
 The local kernel worker now spawns into its own session, so a signal aimed at
 the daemon's process group is no longer aimed at every cell under it — the

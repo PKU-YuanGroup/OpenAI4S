@@ -2,7 +2,14 @@
 
 import { publicText } from "../scrub/scrub";
 import { t } from "../../i18n";
-import { _openGen, editingProject, project, projects, sessions } from "../../stores/session";
+import {
+  _openGen,
+  editingProject,
+  project,
+  projects,
+  projectsQuery,
+  sessions,
+} from "../../stores/session";
 import { _modalMode } from "../../stores/ui";
 import { api, apiErrorText } from "./api";
 import { binds } from "./binds";
@@ -226,6 +233,8 @@ export async function openProjectResearchView(initialTab = "timeline"): Promise<
   void select(initialTab === "lineage" ? "lineage" : "timeline");
 }
 
+binds.renderProjMenu = () => renderProjMenu();
+
 export function renderProjMenu(): void {
   const current = $("#proj-current");
   if (current) current.textContent = project.value ? projName(project.value) : t("proj.current.allSessions");
@@ -366,9 +375,12 @@ export async function submitProjectModal(): Promise<void> {
           context: ($("#pm-ctx") as HTMLTextAreaElement | null)?.value,
         }),
       });
-      await loadProjects();
+      // The dashboard keeps its search box across visits; a repaint must
+      // load the page that box describes, not the unfiltered directory.
+      const dashVisible = !$("#dashboard")?.classList.contains("hidden");
+      await loadProjects({ q: dashVisible ? String(projectsQuery.value || "") : "" });
       renderProjMenu();
-      if (!$("#dashboard")?.classList.contains("hidden")) binds.renderDashProjects();
+      if (dashVisible) binds.renderDashProjects();
       closeProjectModal();
     } else {
       await createProject(
