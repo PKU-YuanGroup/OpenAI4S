@@ -301,16 +301,12 @@ jobs:
       # here even though the core is stdlib-only: the science-dependent test
       # modules importorskip pandas/matplotlib, so without the extra they
       # silently skip and the jobs stop validating the interpreters we ship.
+      # One step for both rather than one per interpreter: two conditions
+      # for the same install drift apart, and the row that loses the extra
+      # keeps passing while it stops validating anything. (Job-level `if:`
+      # cannot see `matrix`, which is why this is a step-level condition.)
       - name: Install dev and science dependencies
         if: matrix.python-version == '3.13' || matrix.python-version == '3.14'
-        run: uv sync --locked --extra science
-      # The container's interpreter. Job-level `if:` cannot see `matrix`,
-      # so the extra install stays a step-level condition like the rows
-      # above. Science is not optional: without it the science-dependent
-      # modules importorskip and this job would stop validating the
-      # runtime the published image actually runs.
-      - name: Install dev and science dependencies
-        if: matrix.python-version == '3.14'
         run: uv sync --locked --extra science
       - name: Byte-compile all first-party sources
         run: uv run python -m compileall -q openai4s openai4s_compute_provider harness tests
