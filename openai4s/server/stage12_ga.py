@@ -47,7 +47,10 @@ def rollout_status(config: Any) -> dict[str, Any]:
         blocked_on.append("budget_authority_missing")
     if inventory.get("duplicate_authorities"):
         blocked_on.append("budget_authority_duplicate")
-    if inventory.get("missing_sinks") or inventory.get("sink_bypass_count"):
+    # missing_sinks includes UNWIRED_CONSUMERS keys: naming a hole is not
+    # GA-ready. inspect_budget_wiring fail-closes that inventory.
+    missing_sinks = inventory.get("missing_sinks") or []
+    if missing_sinks or inventory.get("sink_bypass_count"):
         blocked_on.append("budget_sink_unwired")
     return {
         "ga_kill_switch_armed": enabled,

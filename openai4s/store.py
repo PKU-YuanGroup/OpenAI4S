@@ -2766,8 +2766,27 @@ class Store:
     def project_session_ids(self, project_id: str) -> list[str]:
         return self._frames.project_session_ids(project_id)
 
-    def list_projects(self) -> list[dict]:
-        return self._frames.list_projects()
+    def list_projects(
+        self,
+        *,
+        q: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        before: tuple[int | None, str] | None = None,
+        visible_to_user_id: str | None = None,
+    ) -> list[dict]:
+        return self._frames.list_projects(
+            q=q,
+            limit=limit,
+            offset=offset,
+            before=before,
+            visible_to_user_id=visible_to_user_id,
+        )
+
+    def count_projects(
+        self, *, q: str | None = None, visible_to_user_id: str | None = None
+    ) -> int:
+        return self._frames.count_projects(q=q, visible_to_user_id=visible_to_user_id)
 
     # --- messages --------------------------------------------------------
     def add_message(
@@ -3319,6 +3338,17 @@ class Store:
         self, group_id: str, *, include_events: bool = True
     ) -> dict | None:
         return self._actions.get_group(group_id, include_events=include_events)
+
+    def latest_action_group_ordinal(
+        self,
+        root_frame_id: str,
+        *,
+        branch_id: str | None = None,
+        kind: str | None = None,
+    ) -> int | None:
+        return self._actions.latest_group_ordinal(
+            root_frame_id, branch_id=branch_id, kind=kind
+        )
 
     def list_action_groups(
         self,

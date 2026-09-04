@@ -28,15 +28,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 BUILD_RECEIPT_FORMAT = "openai4s-build-receipt"
-BUILD_RECEIPT_SCHEMA_VERSION = 1
+BUILD_RECEIPT_SCHEMA_VERSION = 2
 
 STAGE_ATTESTATION_FORMAT = "openai4s-stage-attestation"
-STAGE_ATTESTATION_SCHEMA_VERSION = 1
+STAGE_ATTESTATION_SCHEMA_VERSION = 2
 STAGE_ATTESTATION_NAME = "stage-attestation.json"
+
+MACOS_ASSET_VALUES = frozenset({"omit", "notarized"})
 
 #: Suffix for a per-artifact-group build receipt: `build-receipt-<kind>.json`.
 BUILD_RECEIPT_PREFIX = "build-receipt-"
@@ -44,6 +47,161 @@ BUILD_RECEIPT_PREFIX = "build-receipt-"
 
 class ReceiptError(Exception):
     """A receipt or attestation is not proof. Do not release."""
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no", ""}:
+            return False
+    if value in (0, 1):
+        return bool(value)
+    raise ReceiptError(f"workflow input is not a boolean: {value!r}")
+
+
+def normalize_workflow_inputs(raw: Any) -> dict[str, Any]:
+    """Closed-set dispatch inputs. Unknown keys are ignored, missing ones default."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise ReceiptError("workflow inputs must be an object")
+    macos_asset = str(raw.get("macos_asset") or "omit").strip() or "omit"
+    if macos_asset not in MACOS_ASSET_VALUES:
+        raise ReceiptError(
+            f"macos_asset must be omit or notarized, got {macos_asset!r}"
+        )
+    return {
+        "tag": str(raw.get("tag") or ""),
+        "publish": _as_bool(raw.get("publish", False)),
+        "pypi_only": _as_bool(raw.get("pypi_only", False)),
+        "macos_asset": macos_asset,
+    }
+
+
+def normalize_notary(raw: Any, *, required: bool) -> dict[str, Any] | None:
+    if raw is None:
+        if required:
+            raise ReceiptError("macos build receipt records no notary result")
+        return None
+    if not isinstance(raw, Mapping):
+        raise ReceiptError("notary result is not an object")
+    stapler = raw.get("stapler_returncode")
+    spctl = raw.get("spctl_returncode")
+    try:
+        stapler_code = None if stapler is None else int(stapler)
+        spctl_code = None if spctl is None else int(spctl)
+    except (TypeError, ValueError) as error:
+        raise ReceiptError(f"notary return codes are not integers: {error}") from error
+    return {
+        "requested": bool(raw.get("requested")),
+        "submitted": bool(raw.get("submitted")),
+        "stapled": bool(raw.get("stapled")),
+        "stapler_returncode": stapler_code,
+        "spctl_returncode": spctl_code,
+        "post_staple_sha256": str(raw.get("post_staple_sha256") or ""),
+    }
+
+
+def notary_succeeded(notary: Mapping[str, Any] | None) -> bool:
+    """A stapled ticket bound to the post-staple bytes.
+
+    This is the same definition `describe_macos_image.py` writes as
+    ``notarized`` and `release_pipeline.signing_state` reads: ``stapler
+    validate`` succeeded and the digest is the image's. ``spctl`` is recorded
+    beside it as the assessment a first launch performs, and it stays
+    informational here too -- it is a Gatekeeper *policy* answer that depends
+    on the runner's own state, and requiring it made this gate refuse an
+    image the sibling gate had just called ``verified``.
+    """
+    if not isinstance(notary, Mapping):
+        return False
+    return bool(
+        notary.get("requested")
+        and notary.get("submitted")
+        and notary.get("stapled")
+        and notary.get("stapler_returncode") == 0
+        and str(notary.get("post_staple_sha256") or "")
+    )
+
+
+def normalize_check_runs(raw: Any) -> list[dict[str, str]]:
+    if raw in (None, ()):
+        return []
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ReceiptError("check_runs must be a list")
+    rows: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise ReceiptError("a check_runs row is not an object")
+        rows.append(
+            {
+                "name": str(item.get("name") or ""),
+                "check_run_id": str(item.get("check_run_id") or ""),
+                "head_sha": str(item.get("head_sha") or ""),
+            }
+        )
+    return rows
+
+
+def workflow_run_id_from(explicit: str = "") -> str:
+    return str(explicit or os.environ.get("GITHUB_RUN_ID") or "").strip()
+
+
+def verify_rehearsal(
+    *,
+    workflow_inputs: Mapping[str, Any],
+    candidate_sha: str,
+    expected_sha: str,
+    workflow_run_id: str,
+    dmg_count: int,
+    notary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """A non-publish run's receipt. publish=true cannot masquerade as this."""
+    inputs = normalize_workflow_inputs(workflow_inputs)
+    if inputs["publish"]:
+        raise ReceiptError("a publish=true run is not a rehearsal")
+    if inputs["pypi_only"]:
+        raise ReceiptError("pypi_only is not a rehearsal")
+    if not expected_sha or candidate_sha != expected_sha:
+        raise ReceiptError(
+            f"rehearsal candidate {candidate_sha[:12] or '<none>'} is not "
+            f"{expected_sha[:12] or '<none>'}"
+        )
+    if not workflow_run_id:
+        raise ReceiptError("rehearsal receipt records no workflow run id")
+    if inputs["macos_asset"] == "omit" and dmg_count:
+        raise ReceiptError("macos_asset=omit cannot carry a DMG")
+    if dmg_count and not notary_succeeded(notary):
+        raise ReceiptError("no notarization success receipt; DMG count must be zero")
+    return inputs
+
+
+def _notary_from_codesign_sidecars(artifacts: Sequence[Path]) -> dict[str, Any] | None:
+    """Read stapler/spctl evidence written beside a DMG by the macOS job."""
+    for artifact in artifacts:
+        sidecar = Path(str(artifact) + ".codesign.json")
+        if not sidecar.is_file():
+            continue
+        try:
+            payload = json.loads(sidecar.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        notarized = bool(payload.get("notarized"))
+        return {
+            "requested": True,
+            "submitted": notarized,
+            "stapled": notarized,
+            "stapler_returncode": payload.get("stapler_returncode"),
+            "spctl_returncode": payload.get("spctl_returncode"),
+            "post_staple_sha256": str(payload.get("post_staple_sha256") or ""),
+        }
+    return None
 
 
 def _digest(path: Path) -> str:
@@ -73,6 +231,11 @@ def build_build_receipt(
     kind: str,
     source_sha: str,
     artifacts: Sequence[Path],
+    *,
+    workflow_run_id: str = "",
+    workflow_inputs: Mapping[str, Any] | None = None,
+    check_runs: Sequence[Mapping[str, Any]] = (),
+    notary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What one build job produced, and from what.
 
@@ -81,6 +244,11 @@ def build_build_receipt(
     For a notarized DMG this hashes the *post-staple* bytes: the macOS job
     staples first, then calls this, so the digest staging verifies is the
     digest a user downloads.
+
+    Schema 2 also binds the candidate commit, the workflow run, the dispatch
+    inputs, optional check-run ids, and — for a macOS image — the notary
+    and staple result. Old schema-1 receipts remain readable JSON but cannot
+    satisfy this pipeline.
     """
     from scripts import release_gates
 
@@ -89,14 +257,25 @@ def build_build_receipt(
             "a build receipt with no source SHA binds nothing; the workflow must "
             "pass the frozen SHA"
         )
-    return {
+    document: dict[str, Any] = {
         "format": BUILD_RECEIPT_FORMAT,
         "schema_version": BUILD_RECEIPT_SCHEMA_VERSION,
         "kind": str(kind),
         "source_sha": str(source_sha),
+        "candidate_sha": str(source_sha),
+        "workflow_run_id": workflow_run_id_from(workflow_run_id),
+        "workflow_inputs": normalize_workflow_inputs(workflow_inputs),
+        "check_runs": normalize_check_runs(check_runs),
         "builder": release_gates.builder_facts(),
         "artifacts": _artifact_rows(artifacts),
     }
+    if notary is None and str(kind) == "macos":
+        notary = _notary_from_codesign_sidecars(artifacts)
+    if notary is not None or str(kind) == "macos":
+        recorded = normalize_notary(notary, required=False)
+        if recorded is not None:
+            document["notary"] = recorded
+    return document
 
 
 def verify_build_receipts(
@@ -136,6 +315,32 @@ def verify_build_receipts(
         if kind in seen:
             raise ReceiptError(f"two build receipts claim kind {kind!r}")
         recorded = str(document.get("source_sha") or "")
+        candidate = str(document.get("candidate_sha") or recorded)
+        if candidate != recorded:
+            raise ReceiptError(
+                f"build receipt {path.name} candidate_sha {candidate[:12]} "
+                f"disagrees with source_sha {recorded[:12]}"
+            )
+        if not str(document.get("workflow_run_id") or ""):
+            raise ReceiptError(f"build receipt {path.name} records no workflow run id")
+        if not isinstance(document.get("workflow_inputs"), Mapping):
+            # The writer always records them; a receipt without them would
+            # otherwise be normalized to the defaults and escape the
+            # publish/pypi_only comparison staging performs.
+            raise ReceiptError(f"build receipt {path.name} records no workflow inputs")
+        try:
+            normalize_workflow_inputs(document.get("workflow_inputs"))
+        except ReceiptError as error:
+            raise ReceiptError(f"build receipt {path.name} {error}") from error
+        try:
+            normalize_check_runs(document.get("check_runs") or [])
+        except ReceiptError as error:
+            raise ReceiptError(f"build receipt {path.name} {error}") from error
+        if document.get("notary") is not None:
+            try:
+                normalize_notary(document.get("notary"), required=False)
+            except ReceiptError as error:
+                raise ReceiptError(f"build receipt {path.name} {error}") from error
         if recorded != expected_sha:
             # The retag case. The gates ran on one commit; this artifact was
             # built from another.
@@ -183,6 +388,11 @@ def build_stage_attestation(
     version: str,
     source_sha: str,
     assets: Sequence[Path],
+    workflow_run_id: str = "",
+    workflow_inputs: Mapping[str, Any] | None = None,
+    check_runs: Sequence[Mapping[str, Any]] = (),
+    linux_boundary: Mapping[str, Any] | None = None,
+    notary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The exact asset set the staging job verified, recorded outside the draft."""
     from scripts import release_gates
@@ -192,14 +402,28 @@ def build_stage_attestation(
     rows = _artifact_rows(assets)
     if not rows:
         raise ReceiptError("a stage attestation with no assets binds nothing")
-    return {
+    document: dict[str, Any] = {
         "format": STAGE_ATTESTATION_FORMAT,
         "schema_version": STAGE_ATTESTATION_SCHEMA_VERSION,
         "version": str(version),
         "source_sha": str(source_sha),
+        "candidate_sha": str(source_sha),
+        "workflow_run_id": workflow_run_id_from(workflow_run_id),
+        "workflow_inputs": normalize_workflow_inputs(workflow_inputs),
+        "check_runs": normalize_check_runs(check_runs),
         "attested_by": release_gates.builder_facts(),
         "assets": rows,
     }
+    if linux_boundary is not None:
+        try:
+            document["linux_boundary"] = release_gates.verify_linux_boundary(
+                linux_boundary
+            )
+        except release_gates.GateManifestError as error:
+            raise ReceiptError(str(error)) from error
+    if notary is not None:
+        document["notary"] = normalize_notary(notary, required=False)
+    return document
 
 
 def verify_stage_attestation(
@@ -232,6 +456,26 @@ def verify_stage_attestation(
             f"stage attestation is for version {document.get('version')!r}, not "
             f"{version!r}"
         )
+    # Both facts, each on its own: `or`-ing them together made the run-id
+    # requirement vacuous, because a schema-2 attestation always carries a
+    # source SHA, so an attestation binding no workflow run passed.
+    if not str(document.get("workflow_run_id") or ""):
+        raise ReceiptError("stage attestation records no workflow run id")
+    candidate = str(document.get("candidate_sha") or document.get("source_sha") or "")
+    if not candidate:
+        raise ReceiptError("stage attestation records no candidate commit")
+    if document.get("workflow_inputs") is not None:
+        try:
+            normalize_workflow_inputs(document.get("workflow_inputs"))
+        except ReceiptError as error:
+            raise ReceiptError(f"stage attestation {error}") from error
+    if document.get("linux_boundary") is not None:
+        from scripts import release_gates
+
+        try:
+            release_gates.verify_linux_boundary(document.get("linux_boundary"))
+        except release_gates.GateManifestError as error:
+            raise ReceiptError(f"stage attestation {error}") from error
     rows = document.get("assets")
     if not isinstance(rows, list) or not rows:
         raise ReceiptError("stage attestation lists no assets")
@@ -269,12 +513,73 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--kind", required=True, help="dist | macos | linux | windows")
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--workflow-run-id", default="")
+    parser.add_argument(
+        "--workflow-inputs-json",
+        default="",
+        help="dispatch inputs as JSON: tag, publish, pypi_only, macos_asset",
+    )
+    parser.add_argument(
+        "--notary-json",
+        default="",
+        help="notary/staple result as JSON (macos kind)",
+    )
+    parser.add_argument(
+        "--check-runs-json",
+        default="",
+        help="check-run identifiers as a JSON list",
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("artifacts", nargs="+", type=Path)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
+    inputs = None
+    if args.workflow_inputs_json:
+        try:
+            inputs = json.loads(args.workflow_inputs_json)
+        except ValueError as error:
+            print(
+                f"::error::workflow-inputs-json is not JSON: {error}", file=sys.stderr
+            )
+            return 2
+    elif os.environ.get("OPENAI4S_RELEASE_INPUTS_JSON"):
+        try:
+            inputs = json.loads(os.environ["OPENAI4S_RELEASE_INPUTS_JSON"])
+        except ValueError as error:
+            print(
+                f"::error::OPENAI4S_RELEASE_INPUTS_JSON is not JSON: {error}",
+                file=sys.stderr,
+            )
+            return 2
+    notary = None
+    if args.notary_json:
+        try:
+            notary = json.loads(args.notary_json)
+        except ValueError as error:
+            print(f"::error::notary-json is not JSON: {error}", file=sys.stderr)
+            return 2
+    check_runs: Sequence[Mapping[str, Any]] = ()
+    if args.check_runs_json:
+        try:
+            loaded = json.loads(args.check_runs_json)
+        except ValueError as error:
+            print(f"::error::check-runs-json is not JSON: {error}", file=sys.stderr)
+            return 2
+        if not isinstance(loaded, list):
+            print("::error::check-runs-json must be a list", file=sys.stderr)
+            return 2
+        check_runs = loaded
+
     try:
-        document = build_build_receipt(args.kind, args.source_sha, args.artifacts)
+        document = build_build_receipt(
+            args.kind,
+            args.source_sha,
+            args.artifacts,
+            workflow_run_id=args.workflow_run_id,
+            workflow_inputs=inputs,
+            check_runs=check_runs,
+            notary=notary,
+        )
     except ReceiptError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 2

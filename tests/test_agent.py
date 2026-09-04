@@ -332,6 +332,57 @@ def test_max_turns_stop(monkeypatch):
     assert result["stop_reason"] == "max_turns"
 
 
+def test_repeated_native_tool_trips_no_progress(monkeypatch, tmp_path):
+    """Same native tool+args three times must stop as no_progress, not completed."""
+
+    provider_calls = []
+
+    def chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        index = len(provider_calls)
+        call = {
+            "id": f"loop-{index}",
+            "wire_id": f"loop-{index}",
+            "name": "list_dir",
+            "ordinal": 0,
+            "raw_arguments": '{"path":"."}',
+            "arguments": {"path": "."},
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        provider_calls.append(call)
+        return {
+            "content": "",
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            },
+        }
+
+    monkeypatch.setattr(loop_mod, "chat", chat)
+    agent = Agent(
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=10,
+        workspace=tmp_path,
+    )
+    result = agent.run("list the workspace repeatedly")
+
+    assert result["stop_reason"] == "no_progress"
+    assert result["submitted_output"] is None
+    assert len(provider_calls) == 3
+    groups = agent.dispatcher.store.list_action_groups(agent.frame_id)
+    kinds = [group["kind"] for group in groups]
+    assert kinds.count("native_tools") == 3
+    assert kinds[-1] == "terminal"
+    terminal = groups[-1]["events"][0]
+    assert terminal["type"] == "failed"
+    assert terminal["result"]["reason"] == "no_progress"
+    assert "completion" not in terminal["result"]
+
+
 # ---- R execution channel (```r) -------------------------------------------
 
 

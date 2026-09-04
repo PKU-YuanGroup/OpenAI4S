@@ -92,6 +92,11 @@ def emit(event: str, *, store: Any = None, **fields: Any) -> None:
 #: web turn — and `plan` is a successful plan-mode exit. Both were absent, so
 #: they fell to the unknown fallback and reported `error`, inverting the
 #: success metric this exists to measure.
+#:
+#: `no_progress` is the progress circuit's stop (openai4s/agent/progress_circuit.py):
+#: a bounded stop like `max_turns`, which every other projection in the
+#: product treats as its sibling. Left unmapped it counted as `error`, the
+#: bucket reserved for a failure this table has not seen.
 _OUTCOME = {
     "completed": "ok",
     "done": "ok",
@@ -100,6 +105,7 @@ _OUTCOME = {
     "plan": "ok",
     "cancelled": "cancelled",
     "max_turns": "timeout",
+    "no_progress": "timeout",
     "failed": "error",
 }
 

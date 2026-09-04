@@ -564,8 +564,15 @@ def test_unreadable_environment_layout_is_reported_not_raised(tmp_path):
 
     assert report["ok"] is False
     assert "env_generation" in _problem_ids(report)
+    # 3.13: Path.is_symlink() raises on a mode-0 directory, so the layout
+    # probe reports "cannot be inspected". 3.14's is_symlink() returns False
+    # without raising; the same unreadable tree then fails at snapshot with
+    # Permission denied. Either way the verifier must report, not raise.
     assert any(
-        "layout cannot be inspected" in problem for problem in report["problems"]
+        "cannot be inspected" in problem
+        or "cannot be resolved" in problem
+        or "Permission denied" in problem
+        for problem in report["problems"]
     )
 
 

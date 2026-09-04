@@ -5,6 +5,7 @@ import { api } from "../../features/customize/api";
 import { custTab } from "../../features/customize/actions";
 import { getLayout, setLayout, type LayoutName } from "../../features/customize/layout";
 import { useAlive } from "./use-timer-lease";
+import { DiagnosticsTab } from "./DiagnosticsTab";
 import { CustRow, Hdr, Seg } from "./ui";
 
 export function GeneralTab() {
@@ -83,6 +84,7 @@ export function GeneralTab() {
           {t("cust.general.configureBtn")}
         </button>
       </CustRow>
+      <DiagnosticsTab />
     </div>
   );
 }

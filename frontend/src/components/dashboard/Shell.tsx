@@ -74,6 +74,16 @@ export function Shell() {
               <span class="ci" data-icon="box" data-icon-size="18" />{" "}
               <span data-i18n="dash.col.projects">Projects</span>
             </div>
+            <input
+              id="dash-project-search"
+              type="search"
+              data-i18n-ph="palette.action.search"
+              placeholder="Search"
+              autocomplete="off"
+              spellcheck={false}
+              aria-controls="dash-projects"
+              style="width:100%;margin:0 0 8px;box-sizing:border-box"
+            />
             <div id="dash-projects" class="dash-card" />
           </section>
           <section class="dash-col sessions">
