@@ -327,7 +327,19 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   void loadSessions();
 }
 
-export function bindComposer(): void {
+type ComposerDispatch = (text: string) => unknown;
+
+/**
+ * Bind the composer keydown and the two mode toggles. `main.tsx` calls this
+ * right after `render(<App/>)`, the same post-render slot as `bootChrome()`:
+ * `installSend()` runs at module import, before Shell has rendered
+ * `#composer`, so it stays DOM-free (the F-17 `bootArtifacts` /
+ * `finishArtifactsBoot` split). Idempotent through the `data-send-bound`
+ * markers; the Enter handler is delegated on the document root so a
+ * re-created textarea needs no rebind. `dispatch` is a seam for tests;
+ * production dispatches `send`.
+ */
+export function bindComposer(dispatch: ComposerDispatch = send): void {
   if (typeof document === "undefined") return;
   const planToggle = document.getElementById("plan-toggle");
   if (planToggle && !planToggle.dataset.sendBound) {
@@ -355,17 +367,33 @@ export function bindComposer(): void {
       hint(exploreMode.value ? t("explore.toggle.on") : "");
     };
   }
-  const c = document.getElementById("composer") as HTMLTextAreaElement | null;
-  if (c && !c.dataset.sendBound) {
-    c.dataset.sendBound = "1";
-    c.addEventListener("keydown", (e) => {
+  // Delegated on the document root, not on the node: a re-created #composer
+  // (a keyed or conditional subtree, a second render()) keeps its Enter
+  // handler with nothing to rebind. Bubble phase, so the autocomplete's
+  // capture listener on the node still shields it with
+  // stopImmediatePropagation while ac.open.
+  const root = document.documentElement;
+  if (root && !root.dataset.sendBound) {
+    root.dataset.sendBound = "1";
+    // One dispatch at a time. send() clears the composer only after its first
+    // awaits (POST /frames on a fresh session, the skills catalog for a /skill
+    // token), so a held or double Enter inside that window would create a
+    // second session and send the same text twice.
+    let inFlight: Promise<unknown> | null = null;
+    root.addEventListener("keydown", (e) => {
+      const c = e.target as HTMLTextAreaElement | null;
+      if (!c || c.id !== "composer") return;
       if (e.isComposing || e.keyCode === 229) return;
       const ac = (globalThis as { ac?: { open?: boolean } }).ac;
       if (ac && ac.open) return;
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        void send(c.value);
-      }
+      if (e.key !== "Enter" || e.shiftKey) return;
+      e.preventDefault();
+      if (inFlight) return;
+      const pending = Promise.resolve(dispatch(c.value));
+      inFlight = pending;
+      void pending.finally(() => {
+        if (inFlight === pending) inFlight = null;
+      });
     });
   }
 }
