@@ -58,6 +58,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from openai4s.security.fsprobe import lstat_kind
+
 #: What a generation id may look like. One path component: the ids this module
 #: mints are ``env-<16 hex>``, and the charset stays a little wider than that so
 #: a directory made by hand still resolves — but never wide enough to contain a
@@ -377,15 +379,17 @@ class EnvironmentStore:
         env_dir = self._env_dir(name)
         generations = self._generations_dir(name)
         root = self.root.resolve()
-        if env_dir.is_symlink() or generations.is_symlink():
+        # lstat-based kinds: a tree this process cannot inspect is reported
+        # unsafe rather than, as pathlib answers on 3.14, "not a symlink".
+        try:
+            for path in (env_dir, generations):
+                if lstat_kind(path) not in (None, "dir"):
+                    return False
+            for path in (env_dir / "apply.lock", env_dir / "history.jsonl"):
+                if lstat_kind(path) not in (None, "file"):
+                    return False
+        except OSError:
             return False
-        if env_dir.exists() and not env_dir.is_dir():
-            return False
-        if generations.exists() and not generations.is_dir():
-            return False
-        for path in (env_dir / "apply.lock", env_dir / "history.jsonl"):
-            if path.is_symlink() or (path.exists() and not path.is_file()):
-                return False
         try:
             if env_dir.resolve().parent != root:
                 return False

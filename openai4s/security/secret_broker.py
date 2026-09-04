@@ -222,12 +222,28 @@ class _Backend:
         raise NotImplementedError
 
 
-def _run(argv: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
+def _run(
+    argv: list[str],
+    stdin: str | None = None,
+    *,
+    detach_from_tty: bool = False,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         argv,
         input=stdin.encode("utf-8") if stdin is not None else None,
         capture_output=True,
         timeout=_CLI_TIMEOUT_S,
+        # `security ... -w` reads the password with readpassphrase(3), which
+        # opens /dev/tty in preference to stdin whenever the process has a
+        # controlling terminal. A daemon started from a shell (`./start.sh`)
+        # inherits one, so the CLI prompts on the user's terminal, ignores the
+        # value we pipe in, and hangs until _CLI_TIMEOUT_S — the self-test then
+        # reports the keychain as "present but unusable". A fresh session has
+        # no controlling terminal, which is exactly the case readpassphrase
+        # handles by falling back to stdin. Only that write opts in: unrelated
+        # reads/deletes and secret-tool should keep normal foreground job
+        # control rather than outlive a suspended or stopped daemon.
+        start_new_session=detach_from_tty,
     )
 
 
@@ -264,6 +280,7 @@ class KeychainBackend(_Backend):
                 "-w",
             ],
             stdin=f"{secret}\n{secret}\n",
+            detach_from_tty=True,
         )
         if proc.returncode != 0:
             raise SecretBrokerError(

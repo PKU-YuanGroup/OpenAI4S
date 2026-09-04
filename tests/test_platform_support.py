@@ -201,33 +201,26 @@ def _linux_series() -> str:
     return match.group(1)
 
 
-def _dockerfile_series() -> str:
-    """The interpreter the published container image runs.
+def _container_series() -> str:
+    """The CPython series the container image runs.
 
-    The image is a third shipped runtime, next to the .dmg and the Linux
-    tarball. Reading the Dockerfile rather than restating 3.14 here is the
-    mutation the release gate needs: change the FROM line to an unlisted
-    series and this fails instead of the container silently leaving the
-    tested matrix.
+    Read from the first stage only; that both stages agree is the contract
+    `test_container_deployment.py` already owns.
     """
     text = (_ROOT / "Dockerfile").read_text("utf-8")
-    matches = re.findall(r"^FROM python:(\d+\.\d+)[^\n]*", text, re.M)
-    assert matches, "Dockerfile FROM python:X.Y is not where this reads"
-    series = set(matches)
-    assert (
-        len(series) == 1
-    ), f"Dockerfile names more than one Python series: {sorted(series)}"
-    return matches[0]
+    match = re.search(r"^FROM python:(\d+\.\d+)-", text, re.M)
+    assert match, "the container's Python series is not where this reads"
+    return match.group(1)
 
 
 def test_every_shipped_interpreter_is_claimed_and_tested():
-    """Not just the DMG's. Both bundles embed a CPython, and the previous
-    version of this reconciliation read one of the two build scripts."""
+    """Every bundled or containerized CPython needs both public claims."""
     classifiers = _classifier_versions()
     tested = _ci_tested_versions()
     for label, series in (
         ("macOS .dmg", _dmg_series()),
         ("Linux tarball", _linux_series()),
+        ("container image", _container_series()),
     ):
         assert (
             series in classifiers
@@ -277,7 +270,7 @@ def test_the_container_interpreter_is_tested_and_gated():
     """The published image runs 3.14. Until this check, CI and the release
     gate stopped at 3.13, so a 3.14-only failure shipped as a green
     container smoke."""
-    shipped = _dockerfile_series()
+    shipped = _container_series()
     assert shipped in _ci_tested_versions(), (
         f"the container ships Python {shipped}, which the CI offline-test "
         "matrix never runs"
@@ -309,8 +302,8 @@ def test_every_tested_version_is_a_claimed_version():
     assert (
         not extra
     ), f"CI tests Python {sorted(extra)}, which the classifiers do not claim"
-    assert _dockerfile_series() in claimed, (
-        f"the container ships Python {_dockerfile_series()}, which the "
+    assert _container_series() in claimed, (
+        f"the container ships Python {_container_series()}, which the "
         "classifiers do not claim"
     )
 

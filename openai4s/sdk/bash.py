@@ -26,6 +26,7 @@ from openai4s.execution.process_group import (
     group_alive,
     stop_process_group,
 )
+from openai4s.security.fsprobe import lstat_is_symlink
 
 #: What the caller is shown, and now also what is retained. The tail is kept:
 #: for a command that failed, the end is what explains it.
@@ -204,7 +205,7 @@ def _workspace_snapshot(workspace: Path) -> tuple[dict[str, tuple[int, int]], bo
             dirs[:] = [
                 name
                 for name in dirs
-                if not (Path(root) / name).is_symlink()
+                if not lstat_is_symlink(Path(root) / name)
                 and name not in {".git", ".venv", "node_modules", "__pycache__"}
             ]
             for name in names:
