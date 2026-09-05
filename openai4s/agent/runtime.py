@@ -39,6 +39,7 @@ from .actions import (
 from .compaction import (
     DEFAULT_LARGE_OUTPUT_CHARS,
     CompactionArchiveMetadata,
+    CompactionCancelled,
     ContextEstimate,
     compact,
     estimate_context,
@@ -161,6 +162,9 @@ class CompactionPolicy:
     ) = None
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None
     workspace_provider: Callable[[RunState], str | None] | None = None
+    # Polled between summary chunks and handed to each summary ``chat()``;
+    # the engine's own cancellation seam never reaches those calls.
+    should_cancel: Callable[[], bool] | None = None
     minimum_yield_ratio: float = 0.10
     max_low_yield_attempts: int = 2
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS
@@ -290,7 +294,14 @@ class CompactionPolicy:
                 tool_schemas=tool_schemas,
                 context_budget=context_budget,
                 workspace=workspace,
+                should_cancel=self.should_cancel,
             )
+        except CompactionCancelled as error:
+            # The user stopped the run; that is not a compaction failure and
+            # must not count toward the breaker.
+            state.metadata["last_compaction_error"] = str(error)[:500]
+            self.log(f"[compaction cancelled] {error}")
+            return messages, before
         except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
             return self._compaction_failed(state, before, error, messages), before
         after = estimate_context(prepared, tool_schemas)

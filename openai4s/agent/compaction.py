@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -94,6 +95,10 @@ _PREVIOUS_HANDOFF_PREFIX = (
 
 class CompactionSummaryError(RuntimeError):
     """The compaction LLM returned an empty or truncated-incomplete summary."""
+
+
+class CompactionCancelled(RuntimeError):
+    """The run was cancelled between summary chunks; nothing was adopted."""
 
 
 @dataclass(frozen=True)
@@ -665,6 +670,29 @@ class _TornBlob(ValueError):
     """A file at a digest path that is not a blob at all (torn or garbage)."""
 
 
+def _read_bounded(path: Path, limit: int) -> bytes:
+    """Read at most ``limit`` bytes without following a symlink or blocking."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        chunks: list[bytes] = []
+        remaining = limit
+        while remaining > 0:
+            piece = os.read(fd, min(65_536, remaining))
+            if not piece:
+                break
+            chunks.append(piece)
+            remaining -= len(piece)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def content_digest(content: Any) -> str:
+    """The SHA-256 every archive path names for ``content``."""
+    return hashlib.sha256(_json_text(content).encode("utf-8")).hexdigest()
+
+
 def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
     """Refuse a pre-existing file at a digest path unless it is that content.
 
@@ -673,10 +701,25 @@ def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
     different bytes there and the marker would then endorse them as the host
     archive.  The digest is recomputed from the file's ``content`` the same
     way ``load_archived_content`` checks it.
+
+    Nor can the *object* be trusted: a FIFO there would park the daemon's
+    turn thread in a plain read forever, a symlink would read some other
+    file, and a huge file would be swallowed whole.  ``lstat`` first, a
+    bounded no-follow non-blocking read second, JSON last.
     """
     digest = str(payload.get("sha256") or "")
+    expected = len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+    limit = 2 * expected + 1_048_576
     try:
-        existing = json.loads(path.read_text("utf-8"))
+        info = os.lstat(path)
+    except OSError as error:
+        raise _TornBlob("existing archive blob is unreadable") from error
+    if not stat.S_ISREG(info.st_mode):
+        raise _TornBlob("existing archive blob is not a regular file")
+    if info.st_size > limit:
+        raise ValueError("existing archive blob is larger than this content")
+    try:
+        existing = json.loads(_read_bounded(path, limit).decode("utf-8"))
     except (OSError, ValueError) as error:
         raise _TornBlob("existing archive blob is unreadable") from error
     try:
@@ -1190,23 +1233,42 @@ _SUMMARY_TEMPERATURE = 0.2
 
 
 def _summary_chunk(
-    request: list[dict[str, Any]], cfg: Config, max_tokens: int, cap: int | None
+    request: list[dict[str, Any]],
+    cfg: Config,
+    max_tokens: int,
+    cap: int | None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> str:
     """One chunk summary; a truncated reply gets one retry at double budget.
 
     ``cap`` is the bound the retry may grow to: the model's declared output
-    cap, or the room the window leaves when that cap is unknown.
+    cap, or the room the window leaves when that cap is unknown.  The retry
+    is issued on *any* truncation, headings or not: a cut that leaves every
+    heading in place lands in the last, append-only sections (Key
+    Artifacts), and carried forward as "authoritative" it never comes back.
+    A reply still truncated after the retry is accepted when its headings
+    are complete; that is the best the budget allows.
     """
+    extra: dict[str, Any] = {}
+    if should_cancel is not None:
+        extra["should_cancel"] = should_cancel
     reply = chat(
-        request, cfg.llm, max_tokens=max_tokens, temperature=_SUMMARY_TEMPERATURE
+        request,
+        cfg.llm,
+        max_tokens=max_tokens,
+        temperature=_SUMMARY_TEMPERATURE,
+        **extra,
     )
-    try:
-        return _require_usable_summary(reply)
-    except CompactionSummaryError:
+    if _summary_truncated(reply):
         retry = min(2 * max_tokens, cap) if cap else 2 * max_tokens
-        if not _summary_truncated(reply) or retry <= max_tokens:
-            raise
-    reply = chat(request, cfg.llm, max_tokens=retry, temperature=_SUMMARY_TEMPERATURE)
+        if retry > max_tokens:
+            reply = chat(
+                request,
+                cfg.llm,
+                max_tokens=retry,
+                temperature=_SUMMARY_TEMPERATURE,
+                **extra,
+            )
     return _require_usable_summary(reply)
 
 
@@ -1225,8 +1287,14 @@ def compact(
     tool_schemas: Iterable[Mapping[str, Any]] = (),
     context_budget: int | None = None,
     workspace: Path | str | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[dict]:
-    """Return a shorter, replay-safe message list or a no-op projection."""
+    """Return a shorter, replay-safe message list or a no-op projection.
+
+    ``should_cancel`` is polled between summary chunks and handed to each
+    ``chat()``; a cancelled run raises :class:`CompactionCancelled` instead
+    of finishing N blocking summary calls the user already stopped.
+    """
     metadata = CompactionArchiveMetadata.from_mapping(archive_metadata)
     projected = externalize_large_outputs(
         messages,
@@ -1276,6 +1344,8 @@ def compact(
     max_tokens = _summary_max_tokens(cfg, bound)
     index = 0
     while index < len(pieces):
+        if should_cancel is not None and should_cancel():
+            raise CompactionCancelled("run cancelled between summary chunks")
         preamble = _summary_preamble(prev)
         reserve = _chars_to_tokens(preamble) + header_tokens
         batch, index = _next_summary_batch(
@@ -1290,6 +1360,7 @@ def compact(
             cfg,
             max_tokens,
             bound,
+            should_cancel,
         )
         prev = raw_summary
     # Idempotent like the ledger restore: a handoff that already carries the
@@ -1373,7 +1444,9 @@ def _archive(
 __all__ = [
     "COMPACTION_NOTE_PREFIX",
     "CompactionArchiveMetadata",
+    "CompactionCancelled",
     "CompactionSummaryError",
+    "content_digest",
     "ContextEstimate",
     "ContextSegment",
     "DEFAULT_LARGE_OUTPUT_CHARS",

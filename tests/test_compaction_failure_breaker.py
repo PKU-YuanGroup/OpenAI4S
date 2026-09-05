@@ -360,3 +360,24 @@ def test_a_failing_archive_sink_trips_the_breaker(monkeypatch):
     assert policy.circuit_reason == "2 consecutive failures"
     assert len(summaries) == 2, "the breaker did not stop the summaries"
     assert state.metadata["compaction_circuit_open"] is True
+
+
+def test_a_cancelled_compaction_is_not_a_failure(monkeypatch):
+    """Stop pressed mid-compaction returns the live context untouched and
+    leaves the breaker alone: a cancellation is not a consecutive failure."""
+
+    def cancelled(messages, cfg, **kwargs):
+        del messages, cfg
+        assert kwargs["should_cancel"]() is True
+        raise comp_mod.CompactionCancelled("run cancelled between summary chunks")
+
+    monkeypatch.setattr(runtime, "compact", cancelled)
+    logs: list[str] = []
+    policy = _policy(should_cancel=lambda: True, log=logs.append)
+    state = RunState(_messages_with_total_at_least(_trigger_tokens() + 1))
+
+    prepared = policy.prepare(state)
+
+    assert list(prepared) == state.messages
+    assert policy.failure_streak == 0 and policy.circuit_open is False
+    assert any(line.startswith("[compaction cancelled]") for line in logs), logs

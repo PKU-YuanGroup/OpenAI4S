@@ -597,3 +597,68 @@ def test_an_unknown_output_cap_is_bounded_by_the_window(monkeypatch, tmp_path):
     assert captured
     assert all(0 < call["max_tokens"] <= window - chunk_budget for call in captured)
     assert all(call["max_tokens"] < 8192 for call in captured)
+
+
+def test_a_truncated_summary_with_complete_headings_is_retried_once(
+    monkeypatch, tmp_path
+):
+    """A reply the provider reports as truncated used to be accepted without
+    the retry whenever every heading was present -- but a cut that leaves the
+    headings in place lands in the last, append-only section (Key Artifacts),
+    and carried forward as "authoritative" those items never come back.  Any
+    truncation earns the one retry; a still-truncated complete reply is then
+    accepted as the best the budget allows."""
+    cfg = _cfg()
+    captured: list[int] = []
+
+    def fake_chat(messages, llm_cfg, **kwargs):
+        captured.append(int(kwargs["max_tokens"]))
+        return {"content": _handoff("cut"), "finish_reason": "length"}
+
+    monkeypatch.setattr(comp_mod, "chat", fake_chat)
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        *(m for i in range(6) for m in _code_messages(i)),
+    ]
+    result = compact(
+        messages, cfg, keep_recent=2, archive_dir=tmp_path, context_budget=200_000
+    )
+
+    assert captured == [8192, 16384], captured
+    assert any(m.get("compaction_handoff") for m in result)
+
+
+def test_a_live_only_message_inside_the_middle_covers_nothing(tmp_path):
+    """The count-based alignment absorbed a live-only excess shorter than the
+    tail and slid the bound into the tail compact() kept.  Both ends of the
+    compacted middle must be the messages the ledger reconstructs there; an
+    externalized live message still aligns through its content digest."""
+    store = get_store(tmp_path / "openai4s.db")
+    ledger = RuntimeActionLedger(store, "root-inject", "turn-1")
+    ledger.append_user({"role": "user", "content": "task"})
+    for index in range(6):
+        _append_code_observation(ledger, index)
+    groups = store.list_action_groups("root-inject")
+
+    injected = [
+        *_code_messages(0),
+        *_code_messages(1),
+        *_code_messages(2),
+        {"role": "user", "content": "[system] a notice the ledger never saw"},
+        *_code_messages(3),
+    ]
+    assert compaction_cover_group_id(groups, injected) is None
+
+    aligned = [m for i in range(4) for m in _code_messages(i)]
+    assert compaction_cover_group_id(groups, aligned) == groups[4]["group_id"]
+
+    externalized = [*_code_messages(0), *_code_messages(1)]
+    raw = externalized[-1]["content"]
+    externalized[-1] = {
+        "role": "user",
+        "content": "[Large output archived]\nsha256: …",
+        "content_archive": {"sha256": comp_mod.content_digest(raw)},
+    }
+    assert compaction_cover_group_id(groups, externalized) == groups[2]["group_id"]
+    store.close()

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -339,3 +340,54 @@ def test_a_users_own_prompt_after_a_cancelled_cell_stays_inline(tmp_path):
         assert projected[3]["content"] == content
         assert "content_archive" not in projected[3]
     assert not list((tmp_path / "archive").rglob("*.json"))
+
+
+def test_a_fifo_at_the_digest_path_cannot_block_the_turn(tmp_path):
+    """A cell can replace ``.openai4s/context/<sha>.json`` with a FIFO; a plain
+    read of it parks the daemon's turn thread forever, and no OSError ever
+    fires to reach the best-effort guard.  The existing object is inspected
+    with ``lstat`` and read without following or blocking; a non-file there
+    is replaced by the blob."""
+    workspace = tmp_path / "ws"
+    messages = _observation_messages("[Observation]\n" + ("p" * 20_000))
+    honest = externalize_large_outputs(messages, None, workspace=workspace)
+    ref = honest[2]["content_archive"]["workspace_ref"]
+    planted = workspace / ref
+    planted.unlink()
+    os.mkfifo(planted)
+
+    outcome: list = []
+    worker = threading.Thread(
+        target=lambda: outcome.append(
+            externalize_large_outputs(messages, None, workspace=workspace)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "externalization blocked on the planted FIFO"
+    assert outcome[0][2]["content_archive"]["workspace_ref"] == ref
+    assert planted.is_file()
+    assert json.loads(planted.read_text("utf-8"))["content"] == messages[2]["content"]
+
+
+def test_a_symlink_at_the_digest_path_is_neither_followed_nor_endorsed(tmp_path):
+    """A symlink planted at the digest path must not make the daemon read the
+    file it points at, and the target must stay untouched."""
+    workspace = tmp_path / "ws"
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not read me", "utf-8")
+    messages = _observation_messages("[Observation]\n" + ("s" * 20_000))
+    honest = externalize_large_outputs(messages, None, workspace=workspace)
+    ref = honest[2]["content_archive"]["workspace_ref"]
+    planted = workspace / ref
+    planted.unlink()
+    os.symlink(secret, planted)
+
+    projected = externalize_large_outputs(messages, None, workspace=workspace)
+
+    # Confinement refuses the resolved target outside the workspace before
+    # anything is read; the planted link is neither followed nor endorsed.
+    assert secret.read_text("utf-8") == "do not read me"
+    assert "content_archive" not in projected[2]
+    assert planted.is_symlink()

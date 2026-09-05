@@ -339,3 +339,29 @@ def test_image_parts_are_omitted_from_the_summarizer_transcript(monkeypatch):
         messages[2:], comp_mod.CompactionArchiveMetadata()
     )
     assert max(cost for _, cost in pieces) < 4_000
+
+
+def test_compaction_stops_between_chunks_when_the_run_is_cancelled(monkeypatch):
+    """Chunked summarization is N blocking LLM calls the engine's own
+    cancellation never reaches.  ``should_cancel`` is polled between chunks
+    and handed to each call, so a stopped run does not finish every chunk."""
+    cfg = get_config()
+    seen: list = []
+    stop = {"flag": False}
+
+    def fake_chat(chat_messages, cfg_, **kwargs):
+        del chat_messages, cfg_
+        seen.append(kwargs.get("should_cancel"))
+        stop["flag"] = True
+        return {"content": _headings("x"), "finish_reason": "stop"}
+
+    monkeypatch.setattr(comp_mod, "chat", fake_chat)
+    with pytest.raises(comp_mod.CompactionCancelled):
+        compact(
+            _history(60),
+            cfg,
+            keep_recent=2,
+            context_budget=_BUDGET,
+            should_cancel=lambda: stop["flag"],
+        )
+    assert len(seen) == 1 and callable(seen[0])

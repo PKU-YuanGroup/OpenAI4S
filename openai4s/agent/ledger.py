@@ -31,7 +31,7 @@ from .actions import (
     NativeToolBatch,
     NativeToolCall,
 )
-from .compaction import COMPACTION_NOTE_PREFIX
+from .compaction import COMPACTION_NOTE_PREFIX, content_digest
 from .events import (
     ActionRouted,
     AgentEvent,
@@ -937,6 +937,25 @@ def _reduce_action_groups_annotated(
     return history
 
 
+def _same_message(reconstructed: Mapping[str, Any], live: Any) -> bool:
+    """Whether a ledger-reconstructed message is the live message compact() saw.
+
+    The live copy may have been externalized, in which case its content is a
+    marker and ``content_archive`` names the digest of the original bytes
+    the ledger still holds.
+    """
+    if not isinstance(live, Mapping):
+        return False
+    if live.get("role") != reconstructed.get("role"):
+        return False
+    if live.get("content") == reconstructed.get("content"):
+        return True
+    archive = live.get("content_archive")
+    if isinstance(archive, Mapping) and archive.get("sha256"):
+        return content_digest(reconstructed.get("content")) == archive["sha256"]
+    return False
+
+
 def compaction_cover_group_id(
     groups: Sequence[Mapping[str, Any]],
     compacted_messages: Sequence[Any],
@@ -972,6 +991,15 @@ def compaction_cover_group_id(
     if n_middle > len(rest):
         return None
     middle = rest[:n_middle]
+    # The count alone cannot tell a live-only message inside the middle from
+    # a shorter ledger: both ends of the compacted middle must be the same
+    # messages the ledger reconstructs there, or the bound would slide into
+    # the tail compact() kept.
+    if not (
+        _same_message(middle[0][1], compacted_messages[0])
+        and _same_message(middle[-1][1], compacted_messages[-1])
+    ):
+        return None
     tail_indexes = {index for index, _ in rest[n_middle:]}
     fully_covered = [index for index, _ in middle if index not in tail_indexes]
     if not fully_covered:

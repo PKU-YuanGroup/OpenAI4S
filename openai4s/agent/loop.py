@@ -712,6 +712,11 @@ class Agent:
                         tool_catalog.specs_for(state.messages)
                     ),
                     workspace_provider=lambda _s: run_cwd,
+                    should_cancel=(
+                        (lambda: bool(self.cancellation.cancelled()))
+                        if self.cancellation is not None
+                        else None
+                    ),
                 )
                 context_policy = self.context_policy or CompactionPolicy(
                     self.cfg, **policy_providers

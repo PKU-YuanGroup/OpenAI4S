@@ -10910,6 +10910,7 @@ class SessionRunner:
                     st, dict(payload), action_ledger
                 ),
                 workspace_provider=lambda _s: str(st.workspace),
+                should_cancel=st.cancel.is_set,
             ),
             event_sink=events,
             cancellation=EventCancellation(st.cancel),
