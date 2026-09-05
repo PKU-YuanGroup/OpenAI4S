@@ -85,7 +85,9 @@ def test_chunked_summary_bounds_each_chat_call(monkeypatch, tmp_path):
 
     def fake_chat(chat_messages, cfg, **kwargs):
         del cfg
-        assert kwargs.get("temperature") is None
+        # Explicit and low: every wire substitutes ``cfg.temperature`` for an
+        # omitted kwarg, so omission is not a thing the summarizer can ask for.
+        assert kwargs.get("temperature") == comp_mod._SUMMARY_TEMPERATURE
         calls.append(copy.deepcopy(list(chat_messages)))
         user = _user_content(chat_messages)
         found = _ROUND_MARKER_RE.findall(user)
@@ -249,3 +251,91 @@ def test_chars_to_tokens_counts_cjk_as_one():
     assert _chars_to_tokens("a" * 4000) == 1000
     assert _chars_to_tokens("") == 0
     assert _chars_to_tokens("x") == 1
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: the previous note's banner is neither shown to the
+# summarizer nor doubled, and image parts never ride the transcript as text.
+# ---------------------------------------------------------------------------
+
+
+def test_the_previous_note_banner_is_neither_shown_nor_doubled(monkeypatch):
+    """The note's banner is framing for the live model.  Fed to the summarizer
+    under PREVIOUS HANDOFF it was echoed back, and ``compact()`` then prepended
+    it a second time while the ledger restore prepended it once -- the two
+    projections of one session diverged by exactly the banner."""
+    from openai4s.agent.ledger import _apply_compaction
+
+    cfg = get_config()
+    users: list[str] = []
+
+    def echo_chat(chat_messages, cfg_, **kwargs):
+        del cfg_, kwargs
+        user = _user_content(chat_messages)
+        users.append(user)
+        if comp_mod._PREVIOUS_HANDOFF_PREFIX in user:
+            # Carry the previous handoff forward verbatim, as instructed.
+            prev = user.split(comp_mod._PREVIOUS_HANDOFF_PREFIX, 1)[1]
+            return {
+                "content": prev.split("\n\nHOST RUNTIME FACT", 1)[0],
+                "finish_reason": "stop",
+            }
+        return {"content": _headings("first"), "finish_reason": "stop"}
+
+    monkeypatch.setattr(comp_mod, "chat", echo_chat)
+    first = compact(_history(12), cfg, keep_recent=2, context_budget=_BUDGET)
+    assert any(m.get("compaction_handoff") for m in first)
+    second = compact(
+        first + _code_obs_rounds(12, payload=_ZH_PAYLOAD, start=12),
+        cfg,
+        keep_recent=2,
+        context_budget=_BUDGET,
+    )
+    note = next(m for m in second if m.get("compaction_handoff"))
+
+    assert note["content"].count(comp_mod.COMPACTION_NOTE_PREFIX) == 1
+    assert all(comp_mod.COMPACTION_NOTE_PREFIX not in user for user in users)
+    handoff = note["content"].removeprefix(comp_mod.COMPACTION_NOTE_PREFIX)
+    restored = _apply_compaction([(0, {"role": "user", "content": "t"})], 1, 0, handoff)
+    assert restored[1][1]["content"] == note["content"]
+
+
+def test_image_parts_are_omitted_from_the_summarizer_transcript(monkeypatch):
+    """A pinned figure's base64 rode the transcript as text: priced at tens of
+    thousands of tokens by the chunker, a flat 1024 by ``estimate_context``,
+    and shipped alone to the provider as one over-budget chunk."""
+    cfg = get_config()
+    payload = "A" * 300_000
+    figure = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what is in this plot?"},
+            {"type": "image", "data": payload, "mime": "image/png"},
+        ],
+    }
+    # The figure sits early in the middle; the token tail keeps the last
+    # rounds, so it is summarized rather than retained.
+    messages = [
+        *_history(2),
+        figure,
+        *_code_obs_rounds(8, payload=_ZH_PAYLOAD, start=2),
+    ]
+    calls: list[str] = []
+
+    def fake_chat(chat_messages, cfg_, **kwargs):
+        del cfg_, kwargs
+        calls.append(_user_content(chat_messages))
+        return {"content": _headings("x"), "finish_reason": "stop"}
+
+    monkeypatch.setattr(comp_mod, "chat", fake_chat)
+    compact(messages, cfg, keep_recent=2, context_budget=_BUDGET)
+
+    assert calls
+    assert all(payload[:64] not in user for user in calls)
+    assert any(
+        '"omitted": true' in user and "what is in this plot?" in user for user in calls
+    )
+    pieces = comp_mod._summary_pieces(
+        messages[2:], comp_mod.CompactionArchiveMetadata()
+    )
+    assert max(cost for _, cost in pieces) < 4_000

@@ -449,7 +449,12 @@ def test_artifact_path_also_writes_the_kernel_readable_copy(tmp_path):
             for key in ("artifact_id", "version_id", "sha256", "original_chars")
         }
     ]
-    assert f"json.load(open({ref!r}))['content']" in projected[-1]["content"]
+    # The read-back is anchored on the env every worker exports, and is
+    # given for both kernels: R has no ``host`` and cannot run Python.
+    text = projected[-1]["content"]
+    assert f"os.environ['OPENAI4S_WORKSPACE'], {ref!r}" in text
+    assert f"Sys.getenv('OPENAI4S_WORKSPACE'), {ref!r}" in text
+    assert "from any cell" not in text
 
 
 def test_a_planted_file_at_the_digest_path_is_not_endorsed(tmp_path):
@@ -557,3 +562,38 @@ def test_reopened_breaker_gets_a_fresh_failure_budget(monkeypatch):
     assert policy.failure_streak == 1
     policy.prepare(state)
     assert len(calls) == 4
+
+
+def test_an_unknown_output_cap_is_bounded_by_the_window(monkeypatch, tmp_path):
+    """Local and private endpoints declare no output cap.  The 8192 floor was
+    then sent unclamped, and a self-hosted model whose window is smaller than
+    prompt + 8192 rejected every summary request (vLLM/SGLang answer 400)
+    until the breaker opened.  With no cap the request is bounded by the room
+    the window leaves after the chunk; a declared cap is untouched."""
+    cfg = _cfg()
+    cfg.llm = SimpleNamespace(
+        provider="ark",
+        model="local-8k",
+        base_url="http://127.0.0.1:8000/v1",
+        max_tokens=4096,
+    )
+    assert comp_mod._summary_output_cap(cfg) is None
+    captured: list[dict] = []
+
+    def fake_chat(messages, llm_cfg, **kwargs):
+        captured.append(dict(kwargs))
+        return {"content": _handoff(), "finish_reason": "stop"}
+
+    monkeypatch.setattr(comp_mod, "chat", fake_chat)
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        *(m for i in range(6) for m in _code_messages(i)),
+    ]
+    window = 8192
+    compact(messages, cfg, keep_recent=2, archive_dir=tmp_path, context_budget=window)
+
+    chunk_budget = min(48_000, int(0.3 * window))
+    assert captured
+    assert all(0 < call["max_tokens"] <= window - chunk_budget for call in captured)
+    assert all(call["max_tokens"] < 8192 for call in captured)

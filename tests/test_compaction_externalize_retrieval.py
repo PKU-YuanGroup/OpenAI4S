@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import openai4s.agent.compaction as comp_mod
 import openai4s.agent.runtime as runtime
 from openai4s.agent.compaction import externalize_large_outputs
 from openai4s.agent.models import RunState
@@ -172,6 +176,16 @@ def test_artifact_archiver_marker_includes_host_artifact_path():
     assert "open(host.artifact_path('v-context')).read()" in text
 
 
+def _marker_python_snippet(text: str) -> tuple[str, str]:
+    """The exact Python one-liner the marker hands the model, split at the
+    imports, so the test runs the model's instructions verbatim rather than
+    a hand-written equivalent that happens to import what the marker omits."""
+    match = re.search(r"Python: (.+?); R: ", text)
+    assert match, text
+    imports, expression = match.group(1).split("; ", 1)
+    return imports, expression
+
+
 def test_kernel_reads_externalized_workspace_blob(tmp_path):
     original = "[Observation]\n" + ("z" * 20_000)
     projected = externalize_large_outputs(
@@ -179,10 +193,149 @@ def test_kernel_reads_externalized_workspace_blob(tmp_path):
         tmp_path / "compaction",
         workspace=tmp_path,
     )
-    ref = projected[2]["content_archive"]["workspace_ref"]
+    imports, expression = _marker_python_snippet(projected[2]["content"])
     with Kernel(cwd=str(tmp_path)) as kernel:
+        # A cell that changed directory can still follow the marker: the
+        # read-back is anchored on OPENAI4S_WORKSPACE, not the cwd.
         result = kernel.execute(
-            "import json\n" f"print(json.load(open({ref!r}))['content'][:40])",
+            f"import os\nos.chdir('/')\n{imports}\nprint(({expression})[:40])"
         )
     assert result["error"] is None
     assert result["stdout"].strip() == original[:40]
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: the digest path is written atomically, a torn or planted
+# file is handled per root, a symlink loop costs only the kernel copy, and a
+# user's own prompt is never mistaken for an output.
+# ---------------------------------------------------------------------------
+
+
+def _torn_dump(prefix_chars: int = 200):
+    """A ``json.dump`` that writes a prefix and then hits ENOSPC."""
+
+    def dump(payload, handle, **kwargs):
+        handle.write(json.dumps(payload, **kwargs)[:prefix_chars])
+        raise OSError(28, "No space left on device")
+
+    return dump
+
+
+def test_a_torn_write_leaves_no_file_at_the_digest_path(tmp_path, monkeypatch):
+    """A crash or ENOSPC mid-write used to leave a truncated ``<sha>.json`` at
+    the content-addressed path; every later externalization then rejected it
+    as unreadable, forever, and on the host archive that repeat failure
+    tripped the compaction breaker.  The bytes now land by rename only."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    messages = _observation_messages("[Observation]\n" + ("t" * 20_000))
+    real_dump = json.dump
+    monkeypatch.setattr(json, "dump", _torn_dump())
+    with pytest.raises(OSError):
+        externalize_large_outputs(messages, tmp_path / "archive", workspace=workspace)
+    monkeypatch.setattr(json, "dump", real_dump)
+
+    for root in (tmp_path / "archive", workspace / ".openai4s"):
+        assert not list(root.rglob("*.json")), "a torn blob was left behind"
+        assert not list(root.rglob("*.tmp")), "a temp file was left behind"
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "archive", workspace=workspace
+    )
+    archive = projected[2]["content_archive"]
+    assert "archive_ref" in archive and "workspace_ref" in archive
+    restored = comp_mod.load_archived_content(tmp_path / "archive", archive["sha256"])
+    assert restored == messages[2]["content"]
+
+
+def test_a_torn_file_at_the_digest_path_is_repaired(tmp_path):
+    """Garbage at ``<sha>.json`` (a torn write from a pre-fix build, or junk a
+    cell left there) is not a blob and endorses nothing: it is replaced with
+    the right bytes on both roots instead of poisoning every later
+    externalization of that content."""
+    workspace = tmp_path / "ws"
+    messages = _observation_messages("[Observation]\n" + ("r" * 20_000))
+    honest = externalize_large_outputs(
+        messages, tmp_path / "archive", workspace=workspace
+    )
+    archive = honest[2]["content_archive"]
+    host_path = tmp_path / "archive" / archive["archive_ref"]
+    ws_path = workspace / archive["workspace_ref"]
+    for path in (host_path, ws_path):
+        path.write_text('{"sha256": "', "utf-8")
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "archive", workspace=workspace
+    )
+    assert projected[2]["content_archive"] == archive
+    for path in (host_path, ws_path):
+        assert json.loads(path.read_text("utf-8"))["content"] == messages[2]["content"]
+
+
+def test_a_foreign_blob_is_replaced_only_under_the_host_archive(tmp_path):
+    """A well-formed blob holding different content is a planted file in the
+    agent-writable workspace (left alone, not referenced) but a host-owned
+    inconsistency under the compaction directory (replaced)."""
+    workspace = tmp_path / "ws"
+    messages = _observation_messages("[Observation]\n" + ("f" * 20_000))
+    honest = externalize_large_outputs(
+        messages, tmp_path / "archive", workspace=workspace
+    )
+    archive = honest[2]["content_archive"]
+    host_path = tmp_path / "archive" / archive["archive_ref"]
+    ws_path = workspace / archive["workspace_ref"]
+    foreign = json.dumps({"sha256": archive["sha256"], "content": "planted"})
+    host_path.write_text(foreign, "utf-8")
+    ws_path.write_text(foreign, "utf-8")
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "archive", workspace=workspace
+    )
+    again = projected[2]["content_archive"]
+    assert again["archive_ref"] == archive["archive_ref"]
+    assert "workspace_ref" not in again
+    assert json.loads(host_path.read_text("utf-8"))["content"] == (
+        messages[2]["content"]
+    )
+    assert ws_path.read_text("utf-8") == foreign, "the planted file was rewritten"
+
+
+def test_a_symlink_loop_at_the_context_dir_costs_only_the_kernel_copy(tmp_path):
+    """``Path.resolve`` raises RuntimeError, not OSError, for a symlink loop on
+    CPython 3.10-3.12, and a cell can plant one at ``.openai4s/context``.
+    It must cost the workspace copy, not the whole turn's externalization."""
+    workspace = tmp_path / "ws"
+    (workspace / ".openai4s").mkdir(parents=True)
+    os.symlink("context", workspace / ".openai4s" / "context")
+    messages = _observation_messages("[Observation]\n" + ("l" * 20_000))
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "archive", workspace=workspace
+    )
+    archive = projected[2]["content_archive"]
+    assert "archive_ref" in archive and "workspace_ref" not in archive
+
+
+def test_a_users_own_prompt_after_a_cancelled_cell_stays_inline(tmp_path):
+    """A Stop-cancelled cell leaves the assistant's code reply with no
+    observation, so the user's NEXT message directly follows a code action.
+    A pasted prompt or a pinned figure is the user's request, never an
+    output to preview away."""
+    paste = "please look at this log:\n" + ("line\n" * 5_000)
+    figure = [
+        {"type": "text", "text": "what is in this plot?"},
+        {"type": "image", "data": "A" * 30_000, "mime": "image/png"},
+    ]
+    for content in (paste, figure):
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "```python\nprint(1)\n```"},
+            {"role": "user", "content": content},
+        ]
+        projected = externalize_large_outputs(
+            messages, tmp_path / "archive", workspace=tmp_path / "ws"
+        )
+        assert projected[3]["content"] == content
+        assert "content_archive" not in projected[3]
+    assert not list((tmp_path / "archive").rglob("*.json"))

@@ -131,7 +131,7 @@ def _positive_float(value: Any) -> float | None:
         return None
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if parsed <= 0 or parsed != parsed or parsed == float("inf"):
         return None
@@ -173,6 +173,9 @@ class CompactionPolicy:
     circuit_retry_growth: float = 1.5
     max_failure_attempts: int = 2
     failure_streak: int = field(default=0, init=False)
+    # Which breaker tripped, as the skip log and metadata report it.  Both
+    # streak counters can be non-zero at once, so neither one says.
+    circuit_reason: str | None = field(default=None, init=False)
 
     def prepare(self, state: RunState) -> Sequence[Mapping[str, Any]]:
         if self.minimum_yield_ratio < 0 or self.minimum_yield_ratio >= 1:
@@ -185,13 +188,19 @@ class CompactionPolicy:
         ratio = self._calibration_ratio(state)
         tool_schemas = self._tool_schemas(state)
         context_budget = self._context_budget(state)
-        prepared = self._prepare(state, tool_schemas, context_budget, ratio)
+        prepared, sent = self._prepare(state, tool_schemas, context_budget, ratio)
         state.metadata["compaction_failure_streak"] = self.failure_streak
         state.metadata["compaction_circuit_open"] = self.circuit_open
-        state.metadata["context_estimate_sent"] = estimate_context(
-            prepared, tool_schemas
-        ).total
+        state.metadata["compaction_circuit_reason"] = self.circuit_reason
+        # The estimate of the list actually returned, which the next reply's
+        # ``input_tokens`` calibrates against; ``_prepare`` priced it already.
+        state.metadata["context_estimate_sent"] = sent.total
         return prepared
+
+    def _trip(self, reason: str, before: ContextEstimate) -> None:
+        self.circuit_open = True
+        self.circuit_open_total = before.total
+        self.circuit_reason = reason
 
     def _prepare(
         self,
@@ -199,7 +208,8 @@ class CompactionPolicy:
         tool_schemas: Sequence[Mapping[str, Any]],
         context_budget: int | None,
         calibration: float,
-    ) -> Sequence[Mapping[str, Any]]:
+    ) -> tuple[Sequence[Mapping[str, Any]], ContextEstimate]:
+        """Return the messages to send and the estimate of exactly that list."""
         metadata = self._metadata(state)
         workspace: str | None = None
         provider = self.workspace_provider
@@ -232,12 +242,9 @@ class CompactionPolicy:
         state.metadata["context_estimate_calibrated_total"] = calibrated_total
 
         if not self._should_trigger(
-            messages,
-            tool_schemas=tool_schemas,
-            context_budget=context_budget,
-            calibrated_total=calibrated_total,
+            context_budget=context_budget, calibrated_total=calibrated_total
         ):
-            return messages
+            return messages, before
         if self.circuit_open:
             # The breaker prevents *repeated futile* compaction, not compaction
             # forever: once the context has grown materially past the size at
@@ -245,13 +252,11 @@ class CompactionPolicy:
             # retry.  Without this the breaker permanently disables compaction
             # for the run and the context grows unbounded into a provider 4xx.
             if before.total < self.circuit_open_total * self.circuit_retry_growth:
-                reason = (
-                    f"{self.low_yield_streak} low-yield attempts"
-                    if self.low_yield_streak
-                    else f"{self.failure_streak} consecutive failures"
+                self.log(
+                    "[compaction skipped] circuit breaker open after "
+                    f"{self.circuit_reason}"
                 )
-                self.log(f"[compaction skipped] circuit breaker open after {reason}")
-                return messages
+                return messages, before
             self.log(
                 "[compaction retry] context grew "
                 f"{before.total} >= {self.circuit_retry_growth}x "
@@ -261,6 +266,7 @@ class CompactionPolicy:
             # the failure streak counts *consecutive* failures, and the trip
             # that opened the circuit is not one of the retry's.
             self.circuit_open = False
+            self.circuit_reason = None
             self.low_yield_streak = 0
             self.failure_streak = 0
             self.circuit_open_total = 0
@@ -286,18 +292,15 @@ class CompactionPolicy:
                 workspace=workspace,
             )
         except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
-            return self._compaction_failed(state, before, error, messages)
-        self.failure_streak = 0
+            return self._compaction_failed(state, before, error, messages), before
         after = estimate_context(prepared, tool_schemas)
         gain = max(0, before.total - after.total)
         ratio = gain / max(1, before.total)
-        state.metadata["context_estimate"] = after.as_dict()
         state.metadata["last_compaction_yield_ratio"] = ratio
         if ratio < self.minimum_yield_ratio:
             self.low_yield_streak += 1
             if self.low_yield_streak >= self.max_low_yield_attempts:
-                self.circuit_open = True
-                self.circuit_open_total = before.total
+                self._trip(f"{self.low_yield_streak} low-yield attempts", before)
             self.log(
                 "[compaction low-yield] "
                 f"ratio={ratio:.3f} streak={self.low_yield_streak} "
@@ -316,16 +319,21 @@ class CompactionPolicy:
         # projection.  It still counts as a low-yield attempt and remains in
         # the audit archive, allowing the breaker to stop a second recurrence.
         if after.total >= before.total:
-            state.metadata["context_estimate"] = before.as_dict()
-            return messages
+            # compact() itself worked; the streak counts exceptions, not gain.
+            self.failure_streak = 0
+            return messages, before
         if self.archive_sink is not None:
             try:
                 for payload in deferred:
                     self.archive_sink(payload)
             except Exception as error:  # noqa: BLE001 - unrecorded is not adopted
-                state.metadata["context_estimate"] = before.as_dict()
-                return self._compaction_failed(state, before, error, messages)
-        return prepared
+                # The streak is still live here on purpose: a sink that keeps
+                # failing must trip the breaker like any other repeated
+                # failure instead of buying a fresh summary every turn.
+                return self._compaction_failed(state, before, error, messages), before
+        self.failure_streak = 0
+        state.metadata["context_estimate"] = after.as_dict()
+        return prepared, after
 
     def _compaction_failed(
         self,
@@ -338,8 +346,7 @@ class CompactionPolicy:
         state.metadata["last_compaction_error"] = str(error)[:500]
         self.log(f"[compaction skipped] durable archive failed: {error}")
         if self.failure_streak >= self.max_failure_attempts:
-            self.circuit_open = True
-            self.circuit_open_total = before.total
+            self._trip(f"{self.failure_streak} consecutive failures", before)
             self.log(
                 "[compaction circuit open] "
                 f"{self.failure_streak} consecutive failures: {error}"
@@ -366,14 +373,9 @@ class CompactionPolicy:
         return ratio
 
     def _should_trigger(
-        self,
-        messages: Sequence[Mapping[str, Any]],
-        *,
-        tool_schemas: Sequence[Mapping[str, Any]],
-        context_budget: int | None,
-        calibrated_total: float,
+        self, *, context_budget: int | None, calibrated_total: float
     ) -> bool:
-        del messages, tool_schemas  # accounted for in ``calibrated_total``
+        """``calibrated_total`` already prices messages and tool schemas."""
         window = int(
             context_budget
             if context_budget is not None

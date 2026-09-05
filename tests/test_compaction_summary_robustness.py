@@ -104,31 +104,37 @@ def test_complete_handoff_is_injected_after_head(monkeypatch):
     assert "## Active Kernel Generation" in note["content"]
 
 
-def test_summary_chat_max_tokens_and_omits_temperature(monkeypatch):
+def test_summary_chat_max_tokens_and_pins_a_low_temperature(monkeypatch):
+    """The summary call carries a real output budget and an explicit, low
+    temperature.  "No temperature" is not achievable: every JSON wire fills
+    an omitted kwarg with the session's ``cfg.temperature`` (0.7 by default),
+    so omitting it here would sample the handoff at the main-turn setting."""
     captured = _stub_chat(
         monkeypatch, {"content": _complete_handoff(), "finish_reason": "stop"}
     )
     cfg = get_config()
     messages = _compactable_messages()
+    low = comp_mod._SUMMARY_TEMPERATURE
+    assert 0 < low < cfg.llm.temperature
 
     monkeypatch.delenv("OPENAI4S_COMPACTION_SUMMARY_MAX_TOKENS", raising=False)
     captured.clear()
     comp_mod.compact(messages, cfg, keep_recent=1)
     assert captured[-1].get("max_tokens") >= 8192
-    assert captured[-1].get("temperature") is None
+    assert captured[-1].get("temperature") == low
 
     monkeypatch.setenv("OPENAI4S_COMPACTION_SUMMARY_MAX_TOKENS", "20000")
     captured.clear()
     comp_mod.compact(messages, cfg, keep_recent=1)
     assert captured[-1]["max_tokens"] == 20000
-    assert captured[-1].get("temperature") is None
+    assert captured[-1].get("temperature") == low
 
     monkeypatch.delenv("OPENAI4S_COMPACTION_SUMMARY_MAX_TOKENS", raising=False)
     monkeypatch.setattr(cfg.llm, "max_tokens", 32768)
     captured.clear()
     comp_mod.compact(messages, cfg, keep_recent=1)
     assert captured[-1]["max_tokens"] == 32768
-    assert captured[-1].get("temperature") is None
+    assert captured[-1].get("temperature") == low
 
 
 def test_summary_input_strips_wire_state_and_reasoning():

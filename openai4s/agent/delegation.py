@@ -1145,6 +1145,19 @@ class _SteeringContextPolicy:
         self._child = child
         self._tree = tree
 
+    def bind_runtime(self, **providers: Any) -> None:
+        """Fill in providers only the child's ``Agent.run`` can build.
+
+        The tool catalogue and the kernel cwd exist only inside the run, so
+        the loop hands them in after construction; a provider the base policy
+        already carries (the child's own context budget) is kept.  Without
+        this a child priced its trigger without tool schemas and never got
+        the kernel-readable copy of an oversized output.
+        """
+        for name, value in providers.items():
+            if getattr(self._base, name, None) is None:
+                setattr(self._base, name, value)
+
     def prepare(self, state: Any) -> Sequence[Mapping[str, Any]]:
         boundary = int(getattr(state, "turn", 0)) + 1
         self._child.mark_boundary(boundary)

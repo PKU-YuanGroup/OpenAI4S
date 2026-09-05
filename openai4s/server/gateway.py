@@ -10893,16 +10893,14 @@ class SessionRunner:
                 context_budget_provider=lambda _state: (
                     # Same fallback as ``_child_context_budget``: an entry
                     # whose usable window is 0 still knows its raw window.
-                    get_model_capabilities(
-                        llm_cfg.provider,
-                        llm_cfg.model,
-                        base_url=llm_cfg.base_url,
+                    (
+                        caps := get_model_capabilities(
+                            llm_cfg.provider,
+                            llm_cfg.model,
+                            base_url=llm_cfg.base_url,
+                        )
                     ).usable_context_tokens
-                    or get_model_capabilities(
-                        llm_cfg.provider,
-                        llm_cfg.model,
-                        base_url=llm_cfg.base_url,
-                    ).context_window_tokens
+                    or caps.context_window_tokens
                     or None
                 ),
                 artifact_archiver=lambda content, message, archive: (

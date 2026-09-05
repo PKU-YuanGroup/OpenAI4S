@@ -20,10 +20,12 @@ Store, Gateway, provider, or kernel dependency.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -66,11 +68,16 @@ HANDOFF_FIELDS = (
 
 _CODE_FENCE_RE = re.compile(r"(^|\n)\s*`{3,}(?:python|py|r)\s*\n", re.IGNORECASE)
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-# CJK punctuation, hiragana/katakana, extension A, unified ideographs,
-# Hangul syllables, and half/fullwidth forms.  One findall counts them.
-_CJK_CHAR_RE = re.compile(
-    "[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
-    "\uac00-\ud7af\uff00-\uffef]"
+# Hangul jamo, CJK punctuation, hiragana/katakana, bopomofo, Hangul
+# compatibility jamo, extension A, unified ideographs, Hangul syllables,
+# compatibility ideographs, half/fullwidth forms, and the supplementary
+# ideographic planes.  Runs are matched rather than single characters: a
+# per-character ``findall`` over a megabyte of Chinese allocates one string
+# per ideograph just to count them, and this runs on every estimate.
+_CJK_RUN_RE = re.compile(
+    "[\u1100-\u11ff\u3000-\u303f\u3040-\u30ff\u3100-\u312f\u3130-\u318f"
+    "\u31a0-\u31bf\u3400-\u4dbf\u4e00-\u9fff\ua960-\ua97f\uac00-\ud7af"
+    "\ud7b0-\ud7ff\uf900-\ufaff\uff00-\uffef\U00020000-\U0003ffff]+"
 )
 # The framing that tells the model this system message is compacted history
 # rather than standing instruction. Restore must reproduce it byte for byte,
@@ -243,7 +250,7 @@ def _chars_to_tokens(value: str) -> int:
         return 0
     if value.isascii():
         return max(1, (len(value) + 3) // 4)
-    cjk = len(_CJK_CHAR_RE.findall(value))
+    cjk = sum(len(run) for run in _CJK_RUN_RE.findall(value))
     rest = len(value) - cjk
     return max(1, cjk + (rest + 3) // 4)
 
@@ -453,8 +460,12 @@ def keep_recent_by_tokens(messages: list[dict], token_budget: int) -> int:
 
 
 def _existing_handoff_text(messages: Sequence[Mapping[str, Any]]) -> str | None:
+    # The note's banner is framing for the live model, not handoff content.
+    # Shown under "PREVIOUS HANDOFF (carry every fact forward)" the
+    # summarizer echoes it, and compact() would then prepend it a second
+    # time while the ledger restore prepends it once.
     parts = [
-        str(message.get("content") or "")
+        str(message.get("content") or "").removeprefix(COMPACTION_NOTE_PREFIX)
         for message in messages
         if message.get("compaction_handoff")
     ]
@@ -467,13 +478,16 @@ def _summary_pieces(
 ) -> list[tuple[list[dict], int]]:
     """Atomic segments, each priced as the transcript text the model receives.
 
-    The cost is the serialized ``_summary_input`` form, not the raw message
-    estimate: the JSON wrapping is part of what the request carries.
+    The cost is the serialized transcript form, not the raw message estimate:
+    the JSON wrapping is part of what the request carries.  The runtime
+    header ``_summary_input`` prepends is priced once per request by the
+    caller, not once per segment here.
     """
+    del metadata  # the header is the caller's reserve, not a per-piece cost
     pieces: list[tuple[list[dict], int]] = []
     for segment in segment_messages(messages):
         piece = list(messages[segment.start : segment.end])
-        pieces.append((piece, _chars_to_tokens(_summary_input(piece, metadata))))
+        pieces.append((piece, _chars_to_tokens(_summary_transcript(piece))))
     return pieces
 
 
@@ -540,15 +554,21 @@ def _compaction_windows(
     return head, middle, projected[tail_start:]
 
 
+def _summary_preamble(prev: str | None) -> str:
+    """The previous handoff as it precedes a chunk, or ``""`` for the first.
+
+    Built once so the reserve that sizes the chunk and the request body are
+    the same bytes.
+    """
+    return _PREVIOUS_HANDOFF_PREFIX + prev + "\n\n" if prev else ""
+
+
 def _summary_user_content(
     batch: Sequence[Mapping[str, Any]],
     metadata: CompactionArchiveMetadata,
     prev: str | None,
 ) -> str:
-    body = _summary_input(batch, metadata)
-    if not prev:
-        return body
-    return _PREVIOUS_HANDOFF_PREFIX + prev + "\n\n" + body
+    return _summary_preamble(prev) + _summary_input(batch, metadata)
 
 
 def _content_chars(content: Any) -> int:
@@ -565,20 +585,38 @@ def _large_output_candidate(messages: Sequence[Mapping[str, Any]], index: int) -
         return not _has_code_action(message) and not message.get("tool_calls")
     if role != "user" or index < 2:
         return False
-    content = str(message.get("content") or "")
-    if content.startswith(("[Observation]", "[Tool Results]", "[Tool result]")):
-        return True
-    return index > 0 and _has_code_action(messages[index - 1])
+    content = message.get("content")
+    # Only the runtime's own observation shapes are outputs.  Every user-role
+    # message the runtime synthesizes after a code action carries one of
+    # these prefixes; a user's own next prompt after a Stop-cancelled cell
+    # (no observation between them) and a pinned figure's multimodal parts
+    # are not, and must never be replaced by a preview marker.
+    if not isinstance(content, str):
+        return False
+    return content.startswith(("[Observation]", "[Tool Results]", "[Tool result]"))
+
+
+def _confine(root: Path, relative: str | Path, what: str) -> Path:
+    """Resolve ``relative`` below ``root`` or raise ``ValueError``.
+
+    Both blob roots (the host archive and the kernel workspace) share this
+    one check so neither can be hardened without the other.
+    """
+    base = root.expanduser().resolve()
+    candidate = (base / relative).resolve()
+    if base != candidate and base not in candidate.parents:
+        raise ValueError(f"archive path escaped the {what}")
+    return candidate
 
 
 def _confined_blob_path(archive_dir: Path, digest: str) -> Path:
     if not _HEX_SHA256_RE.fullmatch(digest):
         raise ValueError("archive digest must be a lowercase SHA-256 hex string")
-    root = archive_dir.expanduser().resolve()
-    candidate = (root / "blobs" / digest[:2] / f"{digest}.json").resolve()
-    if root != candidate and root not in candidate.parents:
-        raise ValueError("archive path escaped the authorized compaction directory")
-    return candidate
+    return _confine(
+        archive_dir,
+        Path("blobs") / digest[:2] / f"{digest}.json",
+        "authorized compaction directory",
+    )
 
 
 _WORKSPACE_CONTEXT_DIR = ".openai4s/context"
@@ -607,6 +645,26 @@ def _content_blob_payload(
     return digest, payload
 
 
+def _verify_blob_payload(existing: Any, digest: str) -> Any:
+    """Return the ``content`` of a blob payload whose digest checks out.
+
+    The one check behind both the read path (``load_archived_content``) and
+    the dedup-write path (``_verify_existing_blob``): the recorded digest
+    must match and the content must hash to it.
+    """
+    if not isinstance(existing, Mapping) or existing.get("sha256") != digest:
+        raise ValueError("archived content digest metadata does not match")
+    content = existing.get("content")
+    canonical = _json_text(content).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != digest:
+        raise ValueError("archived content failed SHA-256 verification")
+    return content
+
+
+class _TornBlob(ValueError):
+    """A file at a digest path that is not a blob at all (torn or garbage)."""
+
+
 def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
     """Refuse a pre-existing file at a digest path unless it is that content.
 
@@ -620,23 +678,48 @@ def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
     try:
         existing = json.loads(path.read_text("utf-8"))
     except (OSError, ValueError) as error:
-        raise ValueError("existing archive blob is unreadable") from error
-    if not isinstance(existing, Mapping) or existing.get("sha256") != digest:
-        raise ValueError("existing archive blob does not match its digest")
-    canonical = _json_text(existing.get("content")).encode("utf-8")
-    if hashlib.sha256(canonical).hexdigest() != digest:
-        raise ValueError("existing archive blob does not match its digest")
-
-
-def _write_exclusive_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+        raise _TornBlob("existing archive blob is unreadable") from error
     try:
-        with path.open("x", encoding="utf-8") as handle:
+        _verify_blob_payload(existing, digest)
+    except ValueError as error:
+        raise ValueError("existing archive blob does not match its digest") from error
+
+
+def _write_exclusive_json(
+    path: Path, payload: Mapping[str, Any], *, host_owned: bool
+) -> None:
+    """Write ``payload`` at its digest path atomically, or dedupe against it.
+
+    Only a complete file ever appears at the digest path: the bytes go to a
+    sibling temp file and are renamed into place, so a crash, ENOSPC, or a
+    concurrent writer can never leave a torn ``<sha256>.json`` that every
+    later externalization would then reject forever.  A file already there
+    is accepted only if it *is* this content.  A torn one (not JSON at all)
+    is replaced on both roots.  A well-formed file with different content is
+    replaced only under the host-owned archive; in the agent-writable
+    workspace it is left alone and the caller records no reference to it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            _verify_existing_blob(path, payload)
+            return
+        except _TornBlob:
+            pass
+        except ValueError:
+            if not host_owned:
+                raise
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
-    except FileExistsError:
-        # Content addressing makes a concurrent/pre-existing identical blob a
-        # successful deduplicated write -- an identical one only.
-        _verify_existing_blob(path, payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _write_content_blob(
@@ -645,7 +728,7 @@ def _write_content_blob(
     payload: Mapping[str, Any],
 ) -> str:
     path = _confined_blob_path(archive_dir, digest)
-    _write_exclusive_json(path, payload)
+    _write_exclusive_json(path, payload, host_owned=True)
     return str(path.relative_to(archive_dir.expanduser().resolve()))
 
 
@@ -661,12 +744,7 @@ def _workspace_context_ref(digest: str) -> str:
 
 
 def _confined_workspace_blob_path(workspace: Path, digest: str) -> Path:
-    rel = _workspace_context_ref(digest)
-    root = workspace.expanduser().resolve()
-    candidate = (root / rel).resolve()
-    if root != candidate and root not in candidate.parents:
-        raise ValueError("workspace archive path escaped the kernel workspace")
-    return candidate
+    return _confine(workspace, _workspace_context_ref(digest), "kernel workspace")
 
 
 def _write_workspace_content_blob(
@@ -676,7 +754,7 @@ def _write_workspace_content_blob(
 ) -> str:
     rel = _workspace_context_ref(digest)
     path = _confined_workspace_blob_path(Path(workspace), digest)
-    _write_exclusive_json(path, payload)
+    _write_exclusive_json(path, payload, host_owned=False)
     return rel
 
 
@@ -686,6 +764,45 @@ def _preview(content: Any, limit: int) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _read_back_hint(workspace_ref: str | None) -> str | None:
+    """How a Python or R cell opens the workspace copy.
+
+    Anchored on ``OPENAI4S_WORKSPACE``, which is exported into every Python
+    and R worker's environment: the hint survives a cell that changed
+    directory, works in a kernel that has no ``host`` object (R), and never
+    prints an absolute path or ``$HOME`` into the context.
+    """
+    if workspace_ref is None:
+        return None
+    return (
+        f"read the full text: JSON at {workspace_ref!r} under the kernel "
+        "workspace ($OPENAI4S_WORKSPACE), key 'content' -- Python: import json, "
+        "os; json.load(open(os.path.join(os.environ['OPENAI4S_WORKSPACE'], "
+        f"{workspace_ref!r})))['content']; R: jsonlite::fromJSON(file.path("
+        f"Sys.getenv('OPENAI4S_WORKSPACE'), {workspace_ref!r}))$content"
+    )
+
+
+def _archived_marker(
+    title: str,
+    fields: Sequence[tuple[str, Any]],
+    preview: str,
+    guidance: str | None,
+) -> str:
+    """The one marker shape every archive branch renders.
+
+    ``guidance`` is the ``[system]`` sentence telling the model the marker is
+    a preview and how to read the bytes back; the archive-only branch has
+    none because its ``archive_ref`` is relative to a host directory no cell
+    can open, and its exact text is a frozen pre-retrieval contract.
+    """
+    lines = [title, *(f"{key}: {value}" for key, value in fields)]
+    lines.append(f"preview: {preview}")
+    if guidance:
+        lines.append(guidance)
+    return "\n".join(lines)
 
 
 def externalize_large_outputs(
@@ -720,17 +837,17 @@ def externalize_large_outputs(
     changed = False
     for index, message in enumerate(messages):
         content = message.get("content")
-        if (
-            content is None
-            or not _large_output_candidate(messages, index)
-            or _content_chars(content) <= threshold_chars
-        ):
+        if content is None or not _large_output_candidate(messages, index):
+            continue
+        original_chars = _content_chars(content)
+        if original_chars <= threshold_chars:
             continue
         digest, payload = _content_blob_payload(content, message, metadata)
-        original_chars = _content_chars(content)
+        preview = _preview(content, preview_chars)
         # The kernel-readable copy is written on every path, and best-effort:
         # the workspace is agent-writable, so a cell can leave
-        # ``.openai4s/context`` occupied, unreadable, or symlinked out, and
+        # ``.openai4s/context`` occupied, unreadable, or symlinked out (a
+        # symlink loop is a RuntimeError from Path.resolve on 3.10-3.12), and
         # losing the copy must not lose the compaction (the archive or the
         # Artifact still holds the bytes).
         workspace_ref: str | None = None
@@ -739,13 +856,9 @@ def externalize_large_outputs(
                 workspace_ref = _write_workspace_content_blob(
                     workspace_root, digest, payload
                 )
-            except (OSError, ValueError):
+            except (OSError, ValueError, RuntimeError):
                 workspace_ref = None
-        read_back = (
-            f"json.load(open({workspace_ref!r}))['content']"
-            if workspace_ref is not None
-            else None
-        )
+        read_back = _read_back_hint(workspace_ref)
         if artifact_archiver is not None:
             archived = dict(
                 artifact_archiver(
@@ -762,17 +875,19 @@ def externalize_large_outputs(
             version_id = str(archived.get("version_id") or "")
             if not artifact_id or not version_id:
                 raise ValueError("artifact archiver must return artifact_id/version_id")
-            result[index]["content"] = (
-                "[Large output archived as Artifact]\n"
-                f"artifact_id: {artifact_id}\n"
-                f"version_id: {version_id}\n"
-                f"sha256: {digest}\n"
-                f"original_chars: {original_chars}\n"
-                f"preview: {_preview(content, preview_chars)}\n"
-                "[system] This is a preview, not the output. Read it back with "
+            result[index]["content"] = _archived_marker(
+                "[Large output archived as Artifact]",
+                (
+                    ("artifact_id", artifact_id),
+                    ("version_id", version_id),
+                    ("sha256", digest),
+                    ("original_chars", original_chars),
+                ),
+                preview,
+                "[system] This is a preview, not the output. Do not infer what "
+                "is in the gap. From a Python cell, read it back with "
                 f"open(host.artifact_path({version_id!r})).read() "
-                "(JSON, key 'content')"
-                + (f", or from any cell with {read_back}." if read_back else ".")
+                "(JSON, key 'content')" + (f"; or {read_back}." if read_back else "."),
             )
             artifact_ref = {
                 "artifact_id": artifact_id,
@@ -793,14 +908,14 @@ def externalize_large_outputs(
                 # Nothing durable holds the bytes; the output stays inline.
                 continue
             if workspace_ref is not None:
-                result[index]["content"] = (
-                    "[Large output archived]\n"
-                    f"sha256: {digest}\n"
-                    f"original_chars: {original_chars}\n"
-                    f"preview: {_preview(content, preview_chars)}\n"
+                # The marker names only the path a cell can open; the host
+                # ``archive_ref`` rides on ``content_archive`` for the host.
+                result[index]["content"] = _archived_marker(
+                    "[Large output archived]",
+                    (("sha256", digest), ("original_chars", original_chars)),
+                    preview,
                     "[system] This is a preview, not the output. Do not infer "
-                    "what is in the gap; read the full text with "
-                    f"{read_back} if you need it."
+                    f"what is in the gap; {read_back}.",
                 )
                 archive = {
                     "sha256": digest,
@@ -812,12 +927,15 @@ def externalize_large_outputs(
                 result[index]["content_archive"] = archive
             else:
                 assert relative_path is not None
-                result[index]["content"] = (
-                    "[Large output archived]\n"
-                    f"sha256: {digest}\n"
-                    f"archive_ref: {relative_path}\n"
-                    f"original_chars: {original_chars}\n"
-                    f"preview: {_preview(content, preview_chars)}"
+                result[index]["content"] = _archived_marker(
+                    "[Large output archived]",
+                    (
+                        ("sha256", digest),
+                        ("archive_ref", relative_path),
+                        ("original_chars", original_chars),
+                    ),
+                    preview,
+                    None,
                 )
                 result[index]["content_archive"] = {
                     "sha256": digest,
@@ -833,13 +951,7 @@ def externalize_large_outputs(
 def load_archived_content(archive_dir: Path | str, digest: str) -> Any:
     """Resolve a content hash only inside an authorized compaction directory."""
     path = _confined_blob_path(Path(archive_dir), digest)
-    payload = json.loads(path.read_text("utf-8"))
-    if payload.get("sha256") != digest:
-        raise ValueError("archived content digest metadata does not match")
-    canonical = _json_text(payload.get("content")).encode("utf-8")
-    if hashlib.sha256(canonical).hexdigest() != digest:
-        raise ValueError("archived content failed SHA-256 verification")
-    return payload.get("content")
+    return _verify_blob_payload(json.loads(path.read_text("utf-8")), digest)
 
 
 def _runtime_handoff_value(metadata: CompactionArchiveMetadata) -> str:
@@ -902,15 +1014,21 @@ def _normalize_handoff(summary: str, metadata: CompactionArchiveMetadata) -> str
 
 
 def _truncate_summary_arg(value: Any, limit: int = _SUMMARY_TOOL_ARG_CHARS) -> Any:
+    """Cut a tool argument to ``limit`` characters, marker included.
+
+    Non-string arguments are rendered with the module's canonical
+    ``_json_text`` so the cut point does not depend on insertion order.
+    """
     if isinstance(value, str):
-        if len(value) <= limit:
-            return value
-        return f"{value[:limit]}... [truncated, original_chars={len(value)}]"
-    safe = _json_safe(value)
-    rendered = json.dumps(safe, ensure_ascii=False)
+        safe: Any = value
+        rendered = value
+    else:
+        safe = _json_safe(value)
+        rendered = _json_text(safe)
     if len(rendered) <= limit:
         return safe
-    return f"{rendered[:limit]}... [truncated, original_chars={len(rendered)}]"
+    marker = f"... [truncated, original_chars={len(rendered)}]"
+    return rendered[: max(0, limit - len(marker))] + marker
 
 
 def _summary_tool_call(call: Any) -> Any:
@@ -931,8 +1049,44 @@ def _summary_tool_call(call: Any) -> Any:
     return slim
 
 
+_IMAGE_BLOCK_KINDS = frozenset({"image", "image_url", "input_image", "output_image"})
+
+
+def _summary_content(content: Any) -> Any:
+    """Image parts are opaque to a text summarizer; keep text, mark the omission.
+
+    A pinned figure's base64 would otherwise ride the transcript as text --
+    priced by ``_summary_pieces`` at tens of thousands of tokens while
+    ``estimate_context`` prices the same message at a flat image estimate,
+    so it would form a solo over-budget chunk the provider rejects.
+    """
+    if not isinstance(content, Sequence) or isinstance(
+        content, (str, bytes, bytearray)
+    ):
+        return content
+    slim: list[Any] = []
+    for block in content:
+        if isinstance(block, Mapping) and (
+            str(block.get("type") or "").lower() in _IMAGE_BLOCK_KINDS
+            or any(key in block for key in ("image_url", "image", "source"))
+        ):
+            omitted: dict[str, Any] = {
+                "type": "image",
+                "omitted": True,
+                "chars": len(_json_text(block)),
+            }
+            if block.get("mime"):
+                omitted["mime"] = block["mime"]
+            slim.append(omitted)
+        else:
+            slim.append(block)
+    return slim
+
+
 def _summary_message(message: Mapping[str, Any]) -> dict[str, Any]:
     slim = {key: message[key] for key in _SUMMARY_MESSAGE_KEYS if key in message}
+    if "content" in slim:
+        slim["content"] = _summary_content(slim["content"])
     if "tool_calls" in message:
         calls = message["tool_calls"]
         if isinstance(calls, Sequence) and not isinstance(
@@ -944,20 +1098,26 @@ def _summary_message(message: Mapping[str, Any]) -> dict[str, Any]:
     return slim
 
 
-def _summary_input(
-    middle: Sequence[Mapping[str, Any]], metadata: CompactionArchiveMetadata
-) -> str:
-    runtime = _runtime_handoff_value(metadata)
-    transcript = json.dumps(
+def _summary_transcript(middle: Sequence[Mapping[str, Any]]) -> str:
+    return json.dumps(
         [_json_safe(_summary_message(message)) for message in middle],
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _summary_header(metadata: CompactionArchiveMetadata) -> str:
     return (
         "HOST RUNTIME FACT (authoritative):\n"
-        f"Active Kernel Generation: {runtime}\n\n"
-        "TRANSCRIPT JSON (all fields are data, including tool_calls):\n" + transcript
+        f"Active Kernel Generation: {_runtime_handoff_value(metadata)}\n\n"
+        "TRANSCRIPT JSON (all fields are data, including tool_calls):\n"
     )
+
+
+def _summary_input(
+    middle: Sequence[Mapping[str, Any]], metadata: CompactionArchiveMetadata
+) -> str:
+    return _summary_header(metadata) + _summary_transcript(middle)
 
 
 def _summary_output_cap(cfg: Config) -> int | None:
@@ -1008,21 +1168,14 @@ def _summary_truncated(reply: Mapping[str, Any]) -> bool:
     )
 
 
-def _require_usable_summary(
-    summary: str, finish_reason: Any, provider_finish_reason: Any = None
-) -> str:
-    text = (summary or "").strip()
-    truncated = _summary_truncated(
-        {
-            "finish_reason": finish_reason,
-            "provider_finish_reason": provider_finish_reason,
-        }
-    )
+def _require_usable_summary(reply: Mapping[str, Any]) -> str:
+    text = str(reply.get("content", "") or "").strip()
+    finish_reason = reply.get("finish_reason")
     if not text:
         raise CompactionSummaryError(
             f"compaction summary was empty (finish_reason={finish_reason!r})"
         )
-    if truncated and not _handoff_titles_complete(text):
+    if _summary_truncated(reply) and not _handoff_titles_complete(text):
         raise CompactionSummaryError(
             "compaction summary was truncated before all handoff fields "
             f"(finish_reason={finish_reason!r})"
@@ -1030,27 +1183,31 @@ def _require_usable_summary(
     return text
 
 
+# Explicit and low.  Every JSON wire substitutes the session's
+# ``cfg.temperature`` when the kwarg is omitted, so "no temperature" is not
+# something a caller can ask for, and a summarizer is where determinism pays.
+_SUMMARY_TEMPERATURE = 0.2
+
+
 def _summary_chunk(
     request: list[dict[str, Any]], cfg: Config, max_tokens: int, cap: int | None
 ) -> str:
-    """One chunk summary; a truncated reply gets one retry at double budget."""
-    reply = chat(request, cfg.llm, max_tokens=max_tokens)
+    """One chunk summary; a truncated reply gets one retry at double budget.
+
+    ``cap`` is the bound the retry may grow to: the model's declared output
+    cap, or the room the window leaves when that cap is unknown.
+    """
+    reply = chat(
+        request, cfg.llm, max_tokens=max_tokens, temperature=_SUMMARY_TEMPERATURE
+    )
     try:
-        return _require_usable_summary(
-            reply.get("content", "") or "",
-            reply.get("finish_reason"),
-            reply.get("provider_finish_reason"),
-        )
+        return _require_usable_summary(reply)
     except CompactionSummaryError:
         retry = min(2 * max_tokens, cap) if cap else 2 * max_tokens
         if not _summary_truncated(reply) or retry <= max_tokens:
             raise
-    reply = chat(request, cfg.llm, max_tokens=retry)
-    return _require_usable_summary(
-        reply.get("content", "") or "",
-        reply.get("finish_reason"),
-        reply.get("provider_finish_reason"),
-    )
+    reply = chat(request, cfg.llm, max_tokens=retry, temperature=_SUMMARY_TEMPERATURE)
+    return _require_usable_summary(reply)
 
 
 def compact(
@@ -1104,13 +1261,23 @@ def compact(
     # floor, so an outsized handoff shortens chunks rather than zeroing them.
     chunk_budget = min(48_000, int(0.3 * budget))
     chunk_floor = max(1, chunk_budget // 6)
+    header = _summary_header(metadata)
+    header_tokens = _chars_to_tokens(header)
     chunk_estimates: list[int] = []
     raw_summary = ""
     cap = _summary_output_cap(cfg)
-    max_tokens = _summary_max_tokens(cfg, cap)
+    # An unknown cap (local and private endpoints report none) means the
+    # window is shared by prompt and completion: bound the request by what
+    # the window leaves after the chunk rather than by nothing, so a small
+    # self-hosted window is not asked for 8192 completion tokens it cannot
+    # hold.  A declared cap is authoritative and untouched.
+    room = budget - chunk_budget - _chars_to_tokens(_SUMMARY_SYSTEM) - header_tokens
+    bound = cap if cap else max(1, room)
+    max_tokens = _summary_max_tokens(cfg, bound)
     index = 0
     while index < len(pieces):
-        reserve = _chars_to_tokens(_PREVIOUS_HANDOFF_PREFIX + prev) if prev else 0
+        preamble = _summary_preamble(prev)
+        reserve = _chars_to_tokens(preamble) + header_tokens
         batch, index = _next_summary_batch(
             pieces, index, max(chunk_floor, chunk_budget - reserve)
         )
@@ -1118,17 +1285,21 @@ def compact(
         raw_summary = _summary_chunk(
             [
                 {"role": "system", "content": _SUMMARY_SYSTEM},
-                {
-                    "role": "user",
-                    "content": _summary_user_content(batch, metadata, prev),
-                },
+                {"role": "user", "content": preamble + _summary_input(batch, metadata)},
             ],
             cfg,
             max_tokens,
-            cap,
+            bound,
         )
         prev = raw_summary
-    handoff = _normalize_handoff(raw_summary, metadata)
+    # Idempotent like the ledger restore: a handoff that already carries the
+    # banner (a model reproducing framing it saw elsewhere) is not prefixed
+    # twice, so the in-memory note and the restored note stay byte-identical.
+    handoff = (
+        _normalize_handoff(raw_summary, metadata)
+        .removeprefix(COMPACTION_NOTE_PREFIX)
+        .strip()
+    )
     note = {
         "role": "system",
         "content": COMPACTION_NOTE_PREFIX + handoff,
@@ -1146,7 +1317,6 @@ def compact(
             estimate_context(projected, tool_schemas),
             estimate_context(result, tool_schemas),
             archive_sink=archive_sink,
-            summary_chunks=len(chunk_estimates),
             summary_chunk_estimates=chunk_estimates,
         )
     return result
@@ -1162,13 +1332,15 @@ def _archive(
     after: ContextEstimate | None = None,
     *,
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None,
-    summary_chunks: int = 1,
     summary_chunk_estimates: Sequence[int] | None = None,
 ) -> Path:
     """Write one raw compaction archive and return its path.
 
     Positional ``middle, summary`` remain supported for older private callers.
+    ``summary_chunks`` is derived from the estimates so the two can never
+    disagree; a caller that records no estimates records zero chunks.
     """
+    estimates = [int(value) for value in (summary_chunk_estimates or ())]
     archive_dir = archive_dir.expanduser().resolve()
     archive_dir.mkdir(parents=True, exist_ok=True)
     safe_middle = [_json_safe(message) for message in middle]
@@ -1186,10 +1358,8 @@ def _archive(
         "metadata": (metadata or CompactionArchiveMetadata()).as_dict(),
         "summary": summary,
         "handoff": handoff if handoff is not None else summary,
-        "summary_chunks": int(summary_chunks),
-        "summary_chunk_estimates": [
-            int(value) for value in (summary_chunk_estimates or ())
-        ],
+        "summary_chunks": len(estimates),
+        "summary_chunk_estimates": estimates,
         "context_estimate_before": (before or estimate_context(middle)).as_dict(),
         "context_estimate_after": (after or ContextEstimate()).as_dict(),
         "compacted_messages": safe_middle,
