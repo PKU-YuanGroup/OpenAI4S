@@ -7,7 +7,7 @@ try {
   playwright = await import(fallback);
 }
 const { chromium } = playwright;
-import { authenticate } from "./browser_auth.mjs";
+import { authenticate, waitUntil } from "./browser_auth.mjs";
 
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 const executablePath = process.env.OPENAI4S_BROWSER_EXECUTABLE || undefined;
@@ -74,21 +74,6 @@ async function apiRetryWhileCaptureBusy(path, { method = "GET", data } = {}) {
 async function requireOne(selector, message = selector) {
   const count = await page.locator(selector).count();
   if (count !== 1) throw new Error(`expected one ${message}, found ${count}`);
-}
-
-async function waitUntil(label, predicate, timeoutMs = 20000, intervalMs = 60) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const value = await predicate();
-      if (value) return value;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  throw new Error(`timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
 async function ensureDockOpen() {

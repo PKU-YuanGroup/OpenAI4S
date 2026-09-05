@@ -31,7 +31,7 @@ try {
   playwright = await import(fallback);
 }
 const { chromium } = playwright;
-import { authenticate } from "./browser_auth.mjs";
+import { authenticate, waitUntil } from "./browser_auth.mjs";
 
 const baseUrl = process.env.OPENAI4S_BROWSER_URL || "http://127.0.0.1:8760/";
 const executablePath = process.env.OPENAI4S_BROWSER_EXECUTABLE || undefined;
@@ -45,24 +45,6 @@ page.on("pageerror", (error) => pageErrors.push(String(error)));
 const failures = [];
 function check(label, condition, detail) {
   if (!condition) failures.push(`${label}${detail ? `: ${detail}` : ""}`);
-}
-
-// Same shape as browser_smoke.mjs's helper, and here for the same reason: the
-// shell's CSP has no 'unsafe-eval', so page.waitForFunction is refused and
-// every wait has to be a locator or an evaluate poll.
-async function waitUntil(label, predicate, timeoutMs = 20000, intervalMs = 60) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const value = await predicate();
-      if (value) return value;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  throw new Error(`timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
 async function api(path, { method = "GET", data } = {}) {
@@ -294,20 +276,16 @@ try {
     `${composerChips.unresolved} unresolved chips`,
   );
 
-  // The upload barrier, its failure latch and the New-session single flight
-  // live in `app.js`. `main` has since flipped the default shell to the Vite
-  // workbench (gateway `_legacy_webui`: only OPENAI4S_WEBUI=legacy serves
-  // app.js), and the workbench is still the pre-fix port -- `upload.ts` is a
-  // fire-and-forget FileReader and `actions.ts` still calls turnDone on a
-  // cancel ack. So these globals are simply absent there:
-  //
-  //   turnDone / UPLOAD_STATE / grow / newSession -> undefined on the dist shell
-  //
-  // Asserting the fixed behaviour against a shell that does not carry the fix
-  // is not a test, it is a guaranteed failure. Scope the three blocks to the
-  // shell that has the code, and say loudly when they did not run -- a silent
-  // pass here would read as coverage of the default shell, which is exactly
-  // what this file's header warns against.
+  // The three blocks below reach `UPLOAD_STATE`, `turnDone`, `grow` and
+  // `newSession` as page globals. `app.js` has them as globals; the Vite
+  // workbench (the default shell -- only OPENAI4S_WEBUI=legacy serves app.js)
+  // carries the same upload barrier, failure latch and New-session single
+  // flight but keeps them module-scoped, so the same lookups resolve to
+  // `undefined` there. Asserting through globals that do not exist is not a
+  // test, it is a guaranteed failure: scope the blocks to the shell that
+  // exposes them, and say loudly when they did not run -- a silent pass here
+  // would read as coverage of the default shell, which is exactly what this
+  // file's header warns against.
   const legacyUploadShell = await page.evaluate(() =>
     typeof UPLOAD_STATE !== "undefined" && typeof turnDone === "function");
   if (!legacyUploadShell) {

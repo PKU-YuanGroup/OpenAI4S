@@ -41,6 +41,7 @@ import {
   pendingUploadsFor,
   uploadFailureMatches,
   waitForPendingUploads,
+  type UploadCreation,
   type UploadResult,
 } from "../chrome/upload";
 import { effProject } from "../customize/host";
@@ -245,7 +246,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     }
   }
   let dispatchFrameId = sourceFrameId;
-  let dispatchCreation: Promise<string> | null = null;
+  let dispatchCreation: UploadCreation | null = null;
   let dispatchOpenGen = sourceOpenGen;
   try {
     // Catalog preflight can be cold. A draft and its pinned annotations belong
@@ -264,20 +265,36 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     // frames and bind the bytes and message to different workspaces.
     if (!dispatchFrameId) {
       // A failed initial upload has no frame to bind to because creating that
-      // frame may itself have failed. Keep it latched to the empty composer so
-      // a second Enter cannot silently create a clean frame and ask the agent
-      // to list files that never arrived. Selecting files again clears/replaces
-      // this failure.
+      // frame may itself have failed. Refuse THIS Enter so it cannot silently
+      // create a clean frame and ask the agent to list files that never
+      // arrived -- then consume the failure, the same policy as the bound path
+      // below. Left latched, every later Enter in this project's empty
+      // composer (plain text included) was refused with the stale upload
+      // error until the user re-attached.
       const priorFailure = [...UPLOAD_STATE.failures].find((failure) =>
         uploadFailureMatches(failure, null, sendProjectId),
       );
       if (priorFailure) {
         const failed = priorFailure.results && priorFailure.results[0];
         hint(t("upload.failed", apiErrorText(failed && failed.error)), true);
+        [...UPLOAD_STATE.failures].forEach((previous) => {
+          if (uploadFailureMatches(previous, null, sendProjectId)) {
+            UPLOAD_STATE.failures.delete(previous);
+          }
+        });
         return;
       }
       dispatchCreation = createUploadSession(sendProjectId);
       dispatchFrameId = await dispatchCreation;
+      // The shared creation adopts the frame it created and opens it
+      // (loadSessions + openConversation) AFTER publishing the id. Dispatching
+      // before that finished let openConversation's reset -- closeTurnTicket,
+      // enableComposer(true), a hidden Stop, a wiped #messages and a bumped
+      // _openGen -- land in the middle of the turn this send had just
+      // started; with an attachment in flight the bump made the guard below
+      // drop the message silently. Wait for the opening, so the generation
+      // captured next is the one the conversation will keep.
+      await dispatchCreation.opened;
     }
     dispatchOpenGen = _openGen.value || 0;
     // This is the LAST await before the message POST. A FileReader/upload
@@ -341,6 +358,19 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   // there is no dispatch frame. It is here so the pinned id is a `string` for
   // every use below, where reading `currentId` again is the bug being fixed.
   if (!dispatchFrameId) return;
+  // Mint the admission id before this send changes any state: minting can
+  // refuse (no platform CSPRNG), and refusing after the draft was cleared and
+  // the turn locked would strand the composer behind a turn never posted.
+  const annIds = anns.map((x) => annotationId(x)).filter(Boolean);
+  let admissionId = "";
+  if (annIds.length) {
+    try {
+      admissionId = mintAdmissionId();
+    } catch (error) {
+      hint(t("toast.sendFailed", apiErrorText(error)), true);
+      return;
+    }
+  }
   const g = $(".generated");
   if (g) g.remove();
   const es = $(".empty-session");
@@ -385,10 +415,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   if (composer && composer.value === composerDraft) composer.value = "";
   grow();
   renderComposerRefChips();
-  const annIds = anns.map((x) => annotationId(x)).filter(Boolean);
-  let admissionId = "";
   if (annIds.length) {
-    admissionId = mintAdmissionId();
     rememberAdmission(dispatchFrameId, admissionId);
     setLocalAnnotationStatus(annIds, "pending");
     callLane("refreshAllStages");

@@ -8,10 +8,11 @@ import { hint } from "./chrome";
 import { showDashboard, showWorkspace } from "./dashboard";
 import { $ } from "./dom";
 import { loadProjects, loadSessions } from "./load";
-import { createUploadSession } from "../chrome/upload";
+import { adoptCreatedFrame, createUploadSession } from "../chrome/upload";
 import { openConversation } from "../messages/open";
 import { renderProjMenu } from "./projects";
-import { sub } from "../ws/connect";
+import { resetNotebookCellCaches } from "../notebook/chrome";
+import { unsub } from "../ws/connect";
 
 /**
  * F-11 owns `resumeWatch` (send/ticket.ts). This lane carried a
@@ -35,16 +36,27 @@ export async function newSession(projectId?: string): Promise<void> {
     // With a conversation already open there is nothing to share: uploads bind
     // to currentId directly, so the only thing the shared promise could do is
     // collapse two deliberate New-session clicks into one frame.
-    const frameId = await createUploadSession(targetProject, { fresh: !!currentId.value });
+    const creation = createUploadSession(targetProject, { fresh: !!currentId.value });
+    const frameId = await creation;
     if ((project.value || null) !== targetProject) return;
-    if (currentId.value !== frameId) {
-      // Publish the destination before awaiting the sidebar refresh, so a file
-      // selected in that interval binds to this exact new conversation.
-      currentId.value = frameId;
-      sub(frameId);
-      await loadSessions();
-      if (currentId.value !== frameId || (project.value || null) !== targetProject) return;
-      await openConversation(frameId, targetProject);
+    if (currentId.value === frameId) {
+      // The shared creation adopted its own frame and is still opening it.
+      // Callers such as openProject await this function for the conversation,
+      // not for the id: resolving here left them racing an open that had not
+      // happened yet.
+      await creation.opened;
+    } else {
+      // Release the previous conversation the way openConversation would,
+      // BEFORE the new id is published: openConversation derives "previous"
+      // from currentId, and publishing first made it see the new frame as its
+      // own predecessor -- the old subscription and the notebook caches were
+      // then never released, and A's artifact events kept landing in B.
+      const previous = currentId.value;
+      if (previous && previous !== frameId) {
+        unsub(previous);
+        resetNotebookCellCaches(previous, frameId);
+      }
+      await adoptCreatedFrame(frameId, targetProject, { loadSessions, openConversation });
     }
     if (currentId.value === frameId) $("#composer")?.focus();
   } catch (e) {

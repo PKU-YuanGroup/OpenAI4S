@@ -118,8 +118,66 @@ describe("F-20 composer uploads (app.js:11049-11199)", () => {
     expect(await a).toBe("frame_1");
     expect(await fresh).toBe("frame_2");
     expect(calls.filter((c) => c.path === "/frames")).toHaveLength(2);
-    // The shared entry is released once it settles, so the next Attach re-creates.
+    // The shared entry is released once the whole flight (`opened`) settles,
+    // so the next Attach re-creates.
+    await a.opened;
     expect(UPLOAD_STATE.creations.size).toBe(0);
+  });
+
+  it("createUploadSession's `opened` settles only after the adopted conversation opened", async () => {
+    // The first send used to dispatch as soon as the id was published, while
+    // the creation was still running loadSessions()+openConversation(); the
+    // open then reset the turn it had just started. `opened` is the seam a
+    // sender awaits so its dispatch follows the reset instead of racing it.
+    stubDom();
+    const order: string[] = [];
+    let releaseSessions: () => void = () => {};
+    const sessionsHeld = new Promise<void>((resolve) => {
+      releaseSessions = resolve;
+    });
+    vi.stubGlobal("window", {
+      loadSessions: () => {
+        order.push("loadSessions");
+        return sessionsHeld;
+      },
+      openConversation: (fid: string) => {
+        order.push(`openConversation:${fid}`);
+        return Promise.resolve();
+      },
+    });
+    stubFetch(() => ({ id: "frame_new" }));
+    currentId.value = null;
+    project.value = "proj_1";
+
+    const creation = createUploadSession("proj_1");
+    expect(await creation).toBe("frame_new");
+    // Published and subscribed before the sidebar refresh resolves...
+    expect(currentId.value).toBe("frame_new");
+    expect(order).toEqual(["loadSessions"]);
+    let opened = false;
+    void creation.opened.then(() => {
+      opened = true;
+    });
+    await Promise.resolve();
+    expect(opened).toBe(false); // ...and `opened` waits for the open itself.
+    releaseSessions();
+    await creation.opened;
+    expect(order).toEqual(["loadSessions", "openConversation:frame_new"]);
+    expect(UPLOAD_STATE.creations.size).toBe(0);
+  });
+
+  it("createUploadSession's `opened` settles without adopting when the frame was not adopted", async () => {
+    stubDom();
+    vi.stubGlobal("window", {
+      loadSessions: () => Promise.reject(new Error("must not be called")),
+      openConversation: () => Promise.reject(new Error("must not be called")),
+    });
+    stubFetch(() => ({ id: "frame_new" }));
+    currentId.value = "already_open";
+    const creation = createUploadSession("proj_1", { fresh: true });
+    expect(await creation).toBe("frame_new");
+    await expect(creation.opened).resolves.toBeUndefined();
+    expect(currentId.value).toBe("already_open");
   });
 
   it("createUploadSession does not adopt the new frame when the user navigated away", async () => {

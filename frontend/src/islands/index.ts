@@ -9,8 +9,10 @@ import { setRenderViewerImpl } from "../features/artifacts/ui";
 import {
   annotationId,
   annotationIsHeld,
-  annotationStatus,
   annotationsFor,
+  annotationStatus,
+  closeAnnotDraft,
+  closeAnnotPop,
   loadAnnotations,
   openAnnotations,
   openPinPop,
@@ -74,6 +76,11 @@ export function installIslands(target?: Target): void {
   host.openAnnotations = openAnnotations;
   host.loadAnnotations = loadAnnotations;
   host.updateAnnotBadge = updateAnnotBadge;
+  // openConversation closes the previous conversation's annotation draft and
+  // view popover through `callLane`; with neither installed the switch left
+  // both behind.
+  host.closeAnnotDraft = closeAnnotDraft;
+  host.closeAnnotPop = closeAnnotPop;
   host.refreshAllStages = refreshAllStages;
   host.openKetcher = openKetcher;
   host.renderLocatorComments = renderLocatorComments;

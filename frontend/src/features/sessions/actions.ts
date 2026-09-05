@@ -4,7 +4,7 @@ import { t } from "../../i18n";
 import { artifacts } from "../../stores/artifacts";
 import { defaultModelName, models } from "../../stores/customize";
 import { _openGen, _titleName, currentId, folders, project, sessions } from "../../stores/session";
-import { exploreMode, planMode, running } from "../../stores/stream";
+import { exploreMode, pendingExecutionId, planMode, running } from "../../stores/stream";
 import { API, ApiError, api, apiErrorText } from "./api";
 import { hint, openMenu, type MenuItem } from "./chrome";
 import { openConversation, resumeWatch } from "./conversation";
@@ -254,7 +254,7 @@ export function sessionMenu(anchor: Element, fid: string): void {
       onClick: async () => {
         try {
           const result = await scopedExecutionRequest(fid, "cancel", "session menu cancel");
-          if (result && result.ok) markTurnStopping(fid);
+          if (cancelNamedTheRunningTurn(result)) markTurnStopping(fid);
         } catch (error) {
           hint(t("nb.action.failed", apiErrorText(error)), true);
         }
@@ -712,6 +712,22 @@ export function markTurnStopping(fid: string | null | undefined): void {
   resumeWatch(fid, _openGen.value);
 }
 
+/**
+ * An accepted cancel names the execution it stopped. Apply "Stopping…" only
+ * when that is still the execution this client is running: the WebSocket can
+ * deliver cancelled(A) and processing(B) -- a queued follow-up -- before the
+ * HTTP response returns, and marking then would hide Stop and pin the spinner
+ * on B, which nobody cancelled.
+ */
+export function cancelNamedTheRunningTurn(
+  result: { ok?: boolean; execution_id?: unknown } | null | undefined,
+): boolean {
+  if (!result || !result.ok) return false;
+  const named = result.execution_id == null ? "" : String(result.execution_id);
+  const current = pendingExecutionId.value;
+  return !named || !current || named === current;
+}
+
 export async function cancelTurn(): Promise<void> {
   // `currentId` can move while the request is in flight; the turn this cancel
   // was aimed at is the one markTurnStopping has to be told about.
@@ -719,7 +735,7 @@ export async function cancelTurn(): Promise<void> {
   if (!fid) return;
   try {
     const result = await scopedExecutionRequest(fid, "cancel", "composer cancel");
-    if (result && result.ok) markTurnStopping(fid);
+    if (cancelNamedTheRunningTurn(result)) markTurnStopping(fid);
   } catch (error) {
     hint(t("nb.action.failed", apiErrorText(error)), true);
   }

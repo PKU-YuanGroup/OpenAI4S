@@ -7106,14 +7106,22 @@ async function newSession(projectId) {
     // With a conversation already open there is nothing to share: uploads bind
     // to S.currentId directly, so the only thing the shared promise could do is
     // collapse two deliberate New-session clicks into one frame.
-    const frameId = await createUploadSession(targetProject, { fresh: !!S.currentId });
+    const creation = createUploadSession(targetProject, { fresh: !!S.currentId });
+    const frameId = await creation;
     if ((S.project || null) !== targetProject) return;
-    if (S.currentId !== frameId) {
-      // Publish the destination before awaiting the sidebar refresh, so a file
-      // selected in that interval binds to this exact new conversation.
-      S.currentId = frameId; sub(frameId); await loadSessions();
-      if (S.currentId !== frameId || (S.project || null) !== targetProject) return;
-      await openConversation(frameId, targetProject);
+    if (S.currentId === frameId) {
+      // The shared creation adopted its own frame and is still opening it.
+      // Callers such as openProject await this function for the conversation,
+      // not for the id.
+      await creation.opened;
+    } else {
+      // Release the previous conversation the way openConversation would,
+      // BEFORE the new id is published: openConversation derives "previous"
+      // from S.currentId, and publishing first made it see the new frame as
+      // its own predecessor -- the old subscription was then never released.
+      const previous = S.currentId;
+      if (previous && previous !== frameId) unsub(previous);
+      await adoptCreatedFrame(frameId, targetProject);
     }
     if (S.currentId === frameId) $("#composer").focus();
   } catch (e) { hint(t("folder.create.failed", apiErrorText(e)), true); }
@@ -7522,7 +7530,7 @@ function sessionMenu(anchor, fid) {
   const frame = S.sessions.find(x => x.id === fid) || {};
   const items = [{ label: t("folder.menu.rename"), icon: "pencil", onClick: () => renameFrame(fid) }];
   if (frame.running || (fid === S.currentId && S.running)) items.push({ label: t("sessionMenu.cancel"), icon: "stop", onClick: async () => {
-    try { const result = await scopedExecutionRequest(fid, "cancel", "session menu cancel"); if (result && result.ok) markTurnStopping(fid); }
+    try { const result = await scopedExecutionRequest(fid, "cancel", "session menu cancel"); if (cancelNamedTheRunningTurn(result)) markTurnStopping(fid); }
     catch (error) { hint(t("nb.action.failed", apiErrorText(error)), true); }
     loadSessions();
   } });
@@ -7761,7 +7769,7 @@ async function renameFrame(fid) {
 async function deleteSession(fid) {
   try { await api("/frames/" + fid, { method: "DELETE" }); } catch (e) { hint(t("toast.deleteFailed", apiErrorText(e)), true); return; }
   const wasCurrent = fid === S.currentId; await loadSessions();
-  if (wasCurrent) { let ss = S.sessions; if (S.project) ss = ss.filter(f => f.project_id === S.project); if (ss.length) openConversation(ss[0].id, ss[0].project_id); else { S.currentId = null; $("#messages").innerHTML = ""; setTitle(t("conv.title.default")); S.artifacts = []; renderFilesGrid(); } }
+  if (wasCurrent) { let ss = S.sessions; if (S.project) ss = ss.filter(f => f.project_id === S.project); if (ss.length) openConversation(ss[0].id, ss[0].project_id); else { S._openGen = (S._openGen || 0) + 1; S.currentId = null; $("#messages").innerHTML = ""; setTitle(t("conv.title.default")); S.artifacts = []; renderFilesGrid(); } }
 }
 async function duplicateSession(fid) {
   const f = S.sessions.find(x => x.id === fid) || {};
@@ -7821,8 +7829,18 @@ function sendFeedback(key, rating) {
 async function cancelTurn() {
   if (!S.currentId) return;
   const fid = S.currentId;
-  try { const result = await scopedExecutionRequest(fid, "cancel", "composer cancel"); if (result && result.ok) markTurnStopping(fid); }
+  try { const result = await scopedExecutionRequest(fid, "cancel", "composer cancel"); if (cancelNamedTheRunningTurn(result)) markTurnStopping(fid); }
   catch (error) { hint(t("nb.action.failed", apiErrorText(error)), true); }
+}
+// An accepted cancel names the execution it stopped. Apply "Stopping…" only
+// when that is still the execution this client is running: the WebSocket can
+// deliver cancelled(A) and processing(B) -- a queued follow-up -- before the
+// HTTP response returns, and marking then would hide Stop and pin the spinner
+// on B, which nobody cancelled.
+function cancelNamedTheRunningTurn(result) {
+  if (!result || !result.ok) return false;
+  const named = result.execution_id == null ? "" : String(result.execution_id);
+  return !named || !S.pendingExecutionId || named === S.pendingExecutionId;
 }
 function markTurnStopping(fid) {
   if (!fid || fid !== S.currentId) return;
@@ -8026,19 +8044,33 @@ async function send(text, opts) {
     // frames and bind the bytes and message to different workspaces.
     if (!dispatchFrameId) {
       // A failed initial upload has no frame to bind to because creating that
-      // frame may itself have failed. Keep it latched to the empty composer so
-      // a second Enter cannot silently create a clean frame and ask the agent
-      // to list files that never arrived. Selecting files again clears/replaces
-      // this failure.
+      // frame may itself have failed. Refuse THIS Enter so it cannot silently
+      // create a clean frame and ask the agent to list files that never
+      // arrived -- then consume the failure, the same policy as the bound path
+      // below. Left latched, every later Enter in this project's empty
+      // composer (plain text included) was refused with the stale upload
+      // error until the user re-attached.
       const priorFailure = [...UPLOAD_STATE.failures].find(failure =>
         uploadFailureMatches(failure, null, sendProjectId));
       if (priorFailure) {
         const failed = priorFailure.results && priorFailure.results[0];
         hint(t("upload.failed", apiErrorText(failed && failed.error)), true);
+        [...UPLOAD_STATE.failures].forEach(previous => {
+          if (uploadFailureMatches(previous, null, sendProjectId)) UPLOAD_STATE.failures.delete(previous);
+        });
         return;
       }
       dispatchCreation = createUploadSession(sendProjectId);
       dispatchFrameId = await dispatchCreation;
+      // The shared creation adopts the frame it created and opens it
+      // (loadSessions + openConversation) AFTER publishing the id. Dispatching
+      // before that finished let openConversation's reset -- closeTurnTicket,
+      // enableComposer(true), a hidden Stop, a wiped #messages and a bumped
+      // _openGen -- land in the middle of the turn this send had just started;
+      // with an attachment in flight the bump made the guard below drop the
+      // message silently. Wait for the opening, so the generation captured
+      // next is the one the conversation will keep.
+      await dispatchCreation.opened;
     }
     dispatchOpenGen = S._openGen || 0;
     // This is the LAST await before the message POST. A FileReader/upload
@@ -8116,6 +8148,19 @@ async function send(text, opts) {
   // frame all await, and another tab or a recovered turn can take ownership in
   // that window. Reading it any later is worse than useless -- by then this
   // very send has set it to true and every observation says "queued".
+  // Mint the admission id before this send changes any state: minting throws
+  // without a platform CSPRNG, and throwing after the draft was cleared and
+  // the turn locked would strand the composer behind a turn never posted.
+  const annIds = anns.map(x => x.id);
+  let admissionId = "";
+  if (annIds.length) {
+    try {
+      const bytes = new Uint8Array(16);
+      (self.crypto || window.crypto).getRandomValues(bytes);
+      admissionId = "resv-" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+    } catch (error) { hint(t("toast.sendFailed", apiErrorText(error)), true); return; }
+  }
+
   const sawRunningAtDispatch = S.running;
   const turnTicket = sawRunningAtDispatch ? null : openTurnTicket();
   // Declared out here, not inside the `try`: the catch needs it, and a
@@ -8128,8 +8173,7 @@ async function send(text, opts) {
   const composer = $("#composer");
   if (composer && composer.value === composerDraft) composer.value = "";
   grow(); renderComposerRefChips();
-  const annIds = anns.map(x => x.id);
-  // The admission id is generated HERE and stored BEFORE the request goes out.
+  // The admission id is generated above and stored BEFORE the request goes out.
   //
   // That ordering is the whole mechanism. The case this exists for is the one
   // where the client never sees the response -- a dropped connection, a closed
@@ -8140,11 +8184,7 @@ async function send(text, opts) {
   // 128 bits from the platform CSPRNG: it keys a claim on the user's own
   // unpublished comments, and it has to survive collision across sessions and
   // restarts.
-  let admissionId = "";
   if (annIds.length) {
-    const bytes = new Uint8Array(16);
-    (self.crypto || window.crypto).getRandomValues(bytes);
-    admissionId = "resv-" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
     rememberAdmission(dispatchFrameId, admissionId);
     // Optimistically "pending", never "sent". The server decides whether a pin
     // was consumed, and it can answer `pending` -- accepted, but the consume
@@ -11079,17 +11119,20 @@ function createUploadSession(projectId, options) {
   if (existing) return existing;
   const navigationGen = S._openGen || 0;
   // Callers wait for the destination, not for the conversation to finish
-  // opening. Resolving only after loadSessions()+openConversation() left the
-  // frame unnameable for two round trips, and uploadBatchMatches had to guess
-  // ("any unresolved batch in this project") to cover that window -- a guess
-  // that made an unrelated send wait on a sibling frame's bytes.
-  let publishFrame, failFrame;
-  const frameReady = new Promise((resolve, reject) => { publishFrame = resolve; failFrame = reject; });
-  const settled = (async () => {
+  // opening: the id is published as soon as POST /frames answers, and the
+  // opening work lives on the chained `opened` promise (which never rejects,
+  // so a failure there cannot retract a destination the bytes are already
+  // bound to). Resolving only after loadSessions()+openConversation() left
+  // the frame unnameable for two round trips, and uploadBatchMatches had to
+  // guess ("any unresolved batch in this project") to cover that window -- a
+  // guess that made an unrelated send wait on a sibling frame's bytes.
+  const frameReady = (async () => {
     const f = await api("/frames", { method: "POST", body: JSON.stringify({ project_id: projectId || undefined, model: S.defaultModelName }) });
     const frameId = f && f.id;
     if (!frameId) throw new Error("session creation returned no id");
-    publishFrame(frameId);
+    return frameId;
+  })();
+  frameReady.opened = frameReady.then(async (frameId) => {
     // The upload began with no conversation. Open the one it created only if
     // the user has not navigated to another conversation OR another empty
     // project while the request was in flight. The upload remains bound to
@@ -11100,25 +11143,30 @@ function createUploadSession(projectId, options) {
         && (S.project || null) === (projectId || null)
         && (S._openGen || 0) === navigationGen
         && workspaceVisible) {
-      S.currentId = frameId; sub(frameId); await loadSessions();
-      if (S.currentId === frameId && (S.project || null) === (projectId || null)) await openConversation(frameId, projectId);
+      await adoptCreatedFrame(frameId, projectId);
     }
-    return frameId;
-  })();
-  // A POST that fails must reject the waiters rather than hang them. Once the
-  // frame is published this is a no-op, so a later failure in the opening work
-  // cannot retract a destination the bytes are already bound to.
-  settled.catch(error => failFrame(error));
+  }).catch(() => {});
   if (shared) {
     // The cache lives for the WHOLE flight, not just the POST: Attach and the
     // first Send have to share one frame even while the conversation is still
     // opening, or they split bytes from text across two sibling frames.
     UPLOAD_STATE.creations.set(key, frameReady);
-    settled.finally(() => {
+    frameReady.opened.then(() => {
       if (UPLOAD_STATE.creations.get(key) === frameReady) UPLOAD_STATE.creations.delete(key);
-    }).catch(() => {});
+    });
   }
+  frameReady.catch(() => {});
   return frameReady;
+}
+
+// Publish a just-created frame as the open conversation, then finish opening
+// it. Shared by the creation's own adoption above and by newSession(), which
+// used to carry a second copy of the sequence with a different set of guards.
+// The id is published BEFORE the sidebar refresh so a file selected in that
+// interval binds to this exact new conversation.
+async function adoptCreatedFrame(frameId, projectId) {
+  S.currentId = frameId; sub(frameId); await loadSessions();
+  if (S.currentId === frameId && (S.project || null) === (projectId || null)) await openConversation(frameId, projectId);
 }
 
 function uploadBatchMatches(batch, frameId, projectId, creationPromise) {
@@ -11438,6 +11486,15 @@ function openCust(tab) {
 const CUST_LOAD_TIMEOUT_MS = 30000;
 function custLoadFailure(c, selected, request, message) {
   if (request !== S._custReq || !c.isConnected) return;
+  if (c.querySelector("input,textarea,select,button")) {
+    // The deadline races the WHOLE loader, and General, Connectors, Compute
+    // and Network paint their controls before their last await. A panel the
+    // user may already be typing into is annotated, never discarded; its late
+    // writes still land on the visible node.
+    c.setAttribute("aria-busy", "false");
+    c.appendChild(el("div", "timeline-error", message));
+    return;
+  }
   // Invalidate the original loader before detaching its node.  If the request
   // eventually settles, every late write lands on `c`, which is no longer the
   // visible panel, and its finally block cannot change the replacement.

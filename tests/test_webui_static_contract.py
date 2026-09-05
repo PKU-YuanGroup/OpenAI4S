@@ -1752,7 +1752,12 @@ def test_send_waits_for_bound_upload_batches_before_starting_a_turn() -> None:
     # unresolved batch in this project" would also catch a batch bound to a
     # sibling frame and stall an unrelated send on its bytes.
     assert "batch.targetFrameId === null" not in APP_JS
-    assert "publishFrame(frameId)" in create
+    # The id is the creation promise itself (it settles with POST /frames);
+    # the opening work lives on `opened`, which a sender awaits so its dispatch
+    # follows openConversation's reset instead of racing it.
+    assert "frameReady.opened = frameReady.then(" in create
+    assert "await adoptCreatedFrame(frameId, projectId)" in create
+    assert "await dispatchCreation.opened" in send
     assert "UPLOAD_STATE.creations.get(key)" in create
     assert "navigationGen" in create and "workspaceVisible" in create
     assert "reader.onerror" in read and "reader.onabort" in read
@@ -1760,6 +1765,12 @@ def test_send_waits_for_bound_upload_batches_before_starting_a_turn() -> None:
     # An explicit New session with a conversation already open has nothing to
     # strand, so it must not adopt an unrelated in-flight creation.
     assert "{ fresh: !!S.currentId }" in new_session
+    # The previous conversation is released BEFORE the new id is published
+    # (openConversation derives "previous" from S.currentId), and the shared
+    # path waits for the conversation, not just the id.
+    assert "if (previous && previous !== frameId) unsub(previous)" in new_session
+    assert "await creation.opened" in new_session
+    assert "await adoptCreatedFrame(frameId, targetProject)" in new_session
     # The refusal is a warning, not a life sentence: leaving it latched left
     # every later Enter in that conversation returning `upload.failed`.
     assert "UPLOAD_STATE.failures.delete(previous)" in send

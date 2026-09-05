@@ -47,10 +47,19 @@ export interface UploadFailure {
   results: UploadResult[];
 }
 
+/**
+ * A first-session creation: resolves to the frame id as soon as POST /frames
+ * answers, and carries `opened`, which settles once the conversation the
+ * creation adopted has finished opening (immediately when it adopted none).
+ * `opened` never rejects; a failure in the opening work cannot retract a
+ * destination the bytes are already bound to.
+ */
+export type UploadCreation = Promise<string> & { opened: Promise<void> };
+
 export const UPLOAD_STATE: {
   pending: Set<UploadBatch>;
   failures: Set<UploadFailure>;
-  creations: Map<string, Promise<string>>;
+  creations: Map<string, UploadCreation>;
 } = { pending: new Set(), failures: new Set(), creations: new Map() };
 
 /**
@@ -87,24 +96,20 @@ export function readUploadFile(file: File): Promise<string> {
 export function createUploadSession(
   projectId: string | null,
   options?: { fresh?: boolean },
-): Promise<string> {
+): UploadCreation {
   const shared = !(options && options.fresh);
   const key = projectId ? `project:${projectId}` : "project:<none>";
   const existing = shared ? UPLOAD_STATE.creations.get(key) : null;
   if (existing) return existing;
   const navigationGen = _openGen.value || 0;
   // Callers wait for the destination, not for the conversation to finish
-  // opening. Resolving only after loadSessions()+openConversation() left the
-  // frame unnameable for two round trips, and uploadBatchMatches had to guess
-  // ("any unresolved batch in this project") to cover that window -- a guess
-  // that made an unrelated send wait on a sibling frame's bytes.
-  let publishFrame!: (id: string) => void;
-  let failFrame!: (error: unknown) => void;
-  const frameReady = new Promise<string>((resolve, reject) => {
-    publishFrame = resolve;
-    failFrame = reject;
-  });
-  const settled = (async (): Promise<string> => {
+  // opening: the id is published as soon as POST /frames answers, and the
+  // opening work lives on a separate chained promise. Resolving only after
+  // loadSessions()+openConversation() left the frame unnameable for two
+  // round trips, and uploadBatchMatches had to guess ("any unresolved batch
+  // in this project") to cover that window -- a guess that made an unrelated
+  // send wait on a sibling frame's bytes.
+  const frameReady = (async (): Promise<string> => {
     const f = (await api("/frames", {
       method: "POST",
       body: JSON.stringify({
@@ -114,47 +119,64 @@ export function createUploadSession(
     })) as { id?: string } | null;
     const frameId = (f && f.id) || "";
     if (!frameId) throw new Error("session creation returned no id");
-    publishFrame(frameId);
-    // The upload began with no conversation. Open the one it created only if
-    // the user has not navigated to another conversation OR another empty
-    // project while the request was in flight. The upload remains bound to
-    // frameId either way.
-    const workspace = $("#workspace");
-    const workspaceVisible = !!workspace && !workspace.classList.contains("hidden");
-    if (
-      !currentId.value &&
-      (project.value || null) === (projectId || null) &&
-      (_openGen.value || 0) === navigationGen &&
-      workspaceVisible
-    ) {
-      currentId.value = frameId;
-      sub(frameId);
-      const loadSessions = hostFn("loadSessions");
-      if (isReady(loadSessions)) await loadSessions();
-      if (currentId.value === frameId && (project.value || null) === (projectId || null)) {
-        const openConversation = hostFn("openConversation");
-        if (isReady(openConversation)) await openConversation(frameId, projectId);
-      }
-    }
     return frameId;
-  })();
-  // A POST that fails must reject the waiters rather than hang them. Once the
-  // frame is published this is a no-op, so a later failure in the opening work
-  // cannot retract a destination the bytes are already bound to.
-  void settled.catch((error: unknown) => failFrame(error));
+  })() as UploadCreation;
+  frameReady.opened = frameReady
+    .then(async (frameId) => {
+      // The upload began with no conversation. Open the one it created only
+      // if the user has not navigated to another conversation OR another
+      // empty project while the request was in flight. The upload remains
+      // bound to frameId either way.
+      const workspace = $("#workspace");
+      const workspaceVisible = !!workspace && !workspace.classList.contains("hidden");
+      if (
+        !currentId.value &&
+        (project.value || null) === (projectId || null) &&
+        (_openGen.value || 0) === navigationGen &&
+        workspaceVisible
+      ) {
+        await adoptCreatedFrame(frameId, projectId);
+      }
+    })
+    .catch(() => {});
   if (shared) {
     // The cache lives for the WHOLE flight, not just the POST: Attach and the
     // first Send have to share one frame even while the conversation is still
     // opening, or they split bytes from text across two sibling frames.
     UPLOAD_STATE.creations.set(key, frameReady);
-    void settled
-      .finally(() => {
-        if (UPLOAD_STATE.creations.get(key) === frameReady) UPLOAD_STATE.creations.delete(key);
-      })
-      .catch(() => {});
+    void frameReady.opened.then(() => {
+      if (UPLOAD_STATE.creations.get(key) === frameReady) UPLOAD_STATE.creations.delete(key);
+    });
   }
   void frameReady.catch(() => {});
   return frameReady;
+}
+
+/**
+ * Publish a just-created frame as the open conversation, then finish opening
+ * it: sub, sidebar refresh, and openConversation if the user is still there.
+ * Shared by the creation's own adoption above and by newSession, which used
+ * to carry a second copy of the sequence with a different set of guards.
+ *
+ * The id is published BEFORE the sidebar refresh so a file selected in that
+ * interval binds to this exact new conversation.
+ */
+export async function adoptCreatedFrame(
+  frameId: string,
+  projectId: string | null,
+  fns: {
+    loadSessions?: (() => Promise<unknown> | unknown) | null;
+    openConversation?: ((fid: string, pid?: string | null) => Promise<unknown> | unknown) | null;
+  } = {},
+): Promise<void> {
+  currentId.value = frameId;
+  sub(frameId);
+  const loadSessions = fns.loadSessions ?? hostFn("loadSessions");
+  if (isReady(loadSessions)) await loadSessions();
+  if (currentId.value === frameId && (project.value || null) === (projectId || null)) {
+    const openConversation = fns.openConversation ?? hostFn("openConversation");
+    if (isReady(openConversation)) await openConversation(frameId, projectId);
+  }
 }
 
 /** app.js:11107. */
