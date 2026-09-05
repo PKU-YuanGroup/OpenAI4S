@@ -2488,3 +2488,52 @@ def test_wire_delegation_installs_live_event_and_child_step_sinks(tmp_path):
     step_event = next(ev for ev in hub.events if ev.get("type") == "step")
     assert step_event["step_id"] == "s-child-1"
     assert step_event["input"]["delegation"]["child_name"] == "helper"
+
+
+def test_model_path_budget_denial_ends_the_turn_as_budget_exhausted(
+    monkeypatch, tmp_path
+):
+    """An Auto Mode denial inside the provider call must not read as a Stop.
+
+    The provider call now runs on ChatModel's detached thread. When the
+    model-path denial set the shared cancel Event before re-raising, the owner
+    thread saw "cancelled" first and returned the no-op reply: ``_loop``'s
+    ``except AutoBudgetDenied`` was dead for the model path, the ledger
+    terminal said ``cancelled`` instead of ``budget_exhausted``, and the empty
+    reply was appended to the session history.
+    """
+    from openai4s.agent.ledger import branch_action_groups
+    from openai4s.storage.auto_mode import AutoBudgetDenied
+
+    dispatcher = SimpleNamespace(last_output=None)
+    runner, _hub, frame_id = _prepare_message_runner(monkeypatch, tmp_path, dispatcher)
+
+    def denying_admit(st, *, consumer, **kwargs):
+        del st, kwargs
+        if consumer == "model":
+            raise AutoBudgetDenied("budget_exhausted", "no headroom", field="max_cells")
+        return None
+
+    monkeypatch.setattr(runner, "_admit_auto_budget", denying_admit)
+    monkeypatch.setattr(
+        gateway_mod,
+        "chat",
+        lambda *a, **k: pytest.fail("admission denial must precede the provider call"),
+    )
+    try:
+        result = runner.run_message(frame_id, "default", "spend")
+        st = runner._state(frame_id, "default")
+        terminals = [
+            (event["type"], (event.get("result") or {}).get("reason"))
+            for group in branch_action_groups(runner.store, frame_id)
+            for event in group.get("events") or ()
+            if event.get("type") in {"completed", "cancelled", "failed"}
+        ]
+    finally:
+        runner.close()
+
+    assert result["status"] == "cancelled"
+    assert terminals[-1] == ("failed", "budget_exhausted")
+    assert st.auto_budget_terminal_reason == "budget_exhausted"
+    # Nothing was appended for the denied call: no empty assistant message.
+    assert st.messages[-1]["role"] == "user"

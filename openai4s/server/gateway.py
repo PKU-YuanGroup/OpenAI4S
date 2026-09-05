@@ -6197,7 +6197,7 @@ class SessionRunner:
                     self._settle_auto_budget(admission, started=False)
                 except Exception:  # noqa: BLE001 - denial remains fail-closed
                     pass
-            self._note_auto_budget_trip(st, denied, run_id=run_id)
+            self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
             raise
         try:
             result = provider_call(messages, cfg, **kwargs)
@@ -6222,7 +6222,7 @@ class SessionRunner:
                     "adapter token usage is not verifiable",
                     field="extra_token_multiplier",
                 )
-                self._note_auto_budget_trip(st, denied, run_id=run_id)
+                self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
                 raise denied
         try:
             self._settle_auto_budget(admission, started=True)
@@ -6233,7 +6233,7 @@ class SessionRunner:
                     committed_amount=usage_total,
                 )
         except AutoBudgetDenied as denied:
-            self._note_auto_budget_trip(st, denied, run_id=run_id)
+            self._note_auto_budget_trip(st, denied, run_id=run_id, cancel=False)
             raise
         return result
 
@@ -6243,6 +6243,7 @@ class SessionRunner:
         denied: AutoBudgetDenied,
         *,
         run_id: str | None = None,
+        cancel: bool = True,
     ) -> None:
         """Record an Auto Mode denial, and cancel the turn it belongs to.
 
@@ -6256,6 +6257,16 @@ class SessionRunner:
         A denial whose run is no longer the active one is still recorded
         against its own run -- the budget ledger should say that run tripped --
         but it must not touch this session's current cancel or terminal state.
+
+        ``cancel=False`` is for the model-path callers, which re-raise the
+        denial from inside the provider call. That call now runs on ChatModel's
+        detached provider thread: setting the shared cancel Event there, before
+        the raise, made the owner thread observe "cancelled" before it saw the
+        error, so the denial was swallowed into a cancelled no-op reply and the
+        turn was recorded as cancelled rather than budget-exhausted. The raise
+        is what ends the turn; ``_loop``'s handler records the terminal reason
+        and cancels on the owner thread, as it did when the call was
+        synchronous.
         """
 
         active = str(st.active_auto_mode_run_id or "")
@@ -6268,7 +6279,7 @@ class SessionRunner:
                 )
             except Exception:  # noqa: BLE001 - trip is already fail-closed
                 pass
-        if stale:
+        if stale or not cancel:
             return
         st.auto_budget_terminal_reason = denied.reason
         st.cancel.set()

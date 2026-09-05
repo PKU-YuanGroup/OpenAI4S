@@ -95,6 +95,16 @@ class AgentEngine:
 
             raw_reply = self.model.complete(state.messages, on_delta)
             reply = self._reply(raw_reply)
+            if reply.finish_reason == "cancelled":
+                # A model that observed cancellation mid-call answers with the
+                # canonical no-op reply. It is not history: appending its empty
+                # assistant message would leave a non-final empty turn in a
+                # session that outlives this run (the Web session list and the
+                # Action Ledger both alias ``state.messages``), and the
+                # Anthropic and Gemini wires reject exactly that on every
+                # later call. Finish here, before the reply is recorded or
+                # routed, the same way a cancellation seen between turns does.
+                return self._finish(state, None, "cancelled")
             intercepted = self.reply_interceptor.intercept(reply, state)
             if intercepted is not None:
                 reply = self._reply(intercepted)

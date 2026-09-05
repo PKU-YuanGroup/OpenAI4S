@@ -180,7 +180,10 @@ class _DetachedCall:
 # 128 process-wide is the resource ceiling. Four per session is the accounting
 # one: it leaves the ordinary Stop-then-retype flow untouched while keeping a
 # Stop-spam from stacking a hundred billed requests against a ledger that has
-# not been charged for any of them yet.
+# not been charged for any of them yet. Only the session's own turn is keyed
+# on a scope; delegated children pass ``call_scope=None`` (see
+# ``loop.Agent._provider_call_scope``) so that stopping a fan-out cannot
+# refuse the parent's next call.
 _PROVIDER_CALL_BUDGET = _DetachedCallBudget(128, per_scope_limit=4)
 
 
@@ -212,21 +215,29 @@ class _LateAccounting:
         reply: Mapping[str, Any],
     ) -> None:
         with self._start_lock:
-            if self._worker is None:
+            if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(
                     target=self._drain,
                     name="openai4s-late-accounting",
                     daemon=True,
                 )
                 self._worker.start()
-        self._pending.put((sink, reply))
+        # The worker is daemon-lifetime and deliberately carries no context of
+        # its own; each item carries the context of the turn that abandoned
+        # the call, so the one log line a failed metering can leave is stamped
+        # with that turn's request id instead of an empty one.
+        self._pending.put((carry_context(sink), reply))
 
     def _drain(self) -> None:
         while True:
             sink, reply = self._pending.get()
             try:
                 sink(reply)
-            except Exception:  # noqa: BLE001 - accounting is fail-soft
+            except BaseException:  # noqa: BLE001 - accounting is fail-soft
+                # Nothing may end this thread: a sink that raises outside
+                # ``Exception`` (a CancelledError from an async-flavoured
+                # sink, an injected fault) would otherwise kill the only
+                # drain and leave every later late reply queued forever.
                 _LOG.exception("failed to account for an abandoned model reply")
 
 
@@ -323,9 +334,8 @@ class ChatModel:
         # turn. Once this call has observed cancellation, it stays cancelled.
         cancelled = threading.Event()
         finished = threading.Event()
-        abandoned = threading.Event()
-        abandoned_reported = threading.Event()
-        abandoned_report_lock = threading.Lock()
+        report_lock = threading.Lock()
+        reported = False
         outcome: dict[str, Any] = {}
         deltas: queue.Queue[str] = queue.Queue()
 
@@ -347,16 +357,22 @@ class ChatModel:
         detached_call = _PROVIDER_CALL_BUDGET.track(self.call_scope)
 
         def report_abandoned_reply() -> None:
+            nonlocal reported
+            # ``cancelled`` is this call's monotonic latch. Every path that
+            # sets it ends with the owner returning ``abandon()``, never
+            # ``outcome["reply"]``, so a stored reply is by definition a late
+            # one. Read the latch itself, not ``is_cancelled()``: the provider
+            # thread's ``finally`` must not pull the shared Event into this.
             if (
-                not abandoned.is_set()
+                not cancelled.is_set()
                 or self.abandoned_reply is None
                 or "reply" not in outcome
             ):
                 return
-            with abandoned_report_lock:
-                if abandoned_reported.is_set():
+            with report_lock:
+                if reported:
                     return
-                abandoned_reported.set()
+                reported = True
                 sink = self.abandoned_reply
                 reply = outcome["reply"]
             # Handed off rather than called here: this runs from the provider
@@ -365,10 +381,9 @@ class ChatModel:
             _LATE_ACCOUNTING.submit(sink, reply)
 
         def abandon() -> Mapping[str, Any]:
-            # Mark this before inspecting outcome: the provider may be between
+            # Latch before inspecting outcome: the provider may be between
             # storing its reply and running its accounting callback.
             cancelled.set()
-            abandoned.set()
             # The owning turn is about to return while the request may still be
             # blocked in urllib. From here it is a detached call and counts
             # against the budget until its socket finally closes.

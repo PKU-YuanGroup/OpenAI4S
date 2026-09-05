@@ -32,7 +32,6 @@ from openai4s.agent.runtime import (
     LocalActionExecutor,
     TranscriptEventSink,
     TranscriptTurn,
-    _cancelled_model_reply,
     format_observation,
 )
 from openai4s.agent.task_modes import resolve_task_mode, task_mode_prompt
@@ -187,37 +186,6 @@ which did not run.
 
 Turn = TranscriptTurn
 _format_observation = format_observation
-
-
-class _CancellationAwareModel:
-    """Prevent a cancelled local Agent from executing a late model reply.
-
-    ``urllib`` cannot reliably abort a response already in flight.  Checking on
-    both sides of the blocking call still guarantees that cancellation starts
-    no *new* request and that a late reply cannot dispatch tools, code, or a
-    structured completion.  The engine observes cancellation immediately after
-    the resulting no-op outcome and exits with ``stop_reason=cancelled``.
-    """
-
-    def __init__(self, delegate: Any, cancelled: Callable[[], bool]) -> None:
-        self._delegate = delegate
-        self._cancelled = cancelled
-
-    def complete(
-        self,
-        messages: Sequence[Mapping[str, Any]],
-        on_delta: Callable[[str], None],
-    ) -> Mapping[str, Any]:
-        if self._is_cancelled():
-            return _cancelled_model_reply()
-        reply = self._delegate.complete(messages, on_delta)
-        return _cancelled_model_reply() if self._is_cancelled() else reply
-
-    def _is_cancelled(self) -> bool:
-        try:
-            return bool(self._cancelled())
-        except Exception:  # noqa: BLE001 - cancellation telemetry cannot crash a run
-            return False
 
 
 class _LedgerTranscriptEventSink:
@@ -701,18 +669,19 @@ class Agent:
                     tools=lambda messages: with_finalize_response(
                         tool_catalog.specs_for(messages)
                     ),
-                    # Complements the wrapper below: that one stops a late
-                    # reply from acting, this one lets the transport abandon a
-                    # retry backoff it is merely sleeping through.
+                    # ChatModel owns cancellation end to end: it refuses to
+                    # start a cancelled call, returns the canonical no-op reply
+                    # for one that is cancelled mid-flight while the request is
+                    # quarantined and metered through ``abandoned_reply``, and
+                    # lets the transport abandon a retry backoff it is merely
+                    # sleeping through. A second wrapper re-checking the raw
+                    # signal after ChatModel returned could only discard a reply
+                    # that was already delivered as real -- unmetered, since
+                    # ``abandon()`` never ran for it.
                     cancellation=self.cancellation,
                     abandoned_reply=_account_abandoned_reply,
                     call_scope=self._provider_call_scope(),
                 )
-                if self.cancellation is not None:
-                    model = _CancellationAwareModel(
-                        model,
-                        lambda: bool(self.cancellation.cancelled()),
-                    )
                 # The providers only this run can build: the live tool
                 # catalogue prices the trigger and the kernel cwd receives
                 # the kernel-readable copy of an oversized output.
@@ -781,18 +750,29 @@ class Agent:
     def _provider_call_scope(self) -> str | None:
         """The session a turn's detached provider calls are bounded against.
 
-        Not ``frame_id``: for a ``host.delegate`` child that is the *child*
-        frame, so every child got its own slots and one Stop on a fan-out could
-        leave up to the fan-out cap (48) billing while the session's own four
-        stayed free -- the exact hole the per-session bound was added to close.
-
         The budget exists because the quota gate reads a ledger that has not
         been charged for calls still in flight, and that ledger charges the
         session root (``record_session_llm_usage`` resolves the same way). So
-        the bound has to be keyed on the root, or it is not bounding the thing
-        that can overrun.
+        for the session's own turn the bound is keyed on the root, not on
+        whatever branch frame the turn happens to run in.
+
+        Delegated children are deliberately *not* keyed on the root (nor on
+        their own frame): see the comment below. Their detached calls are
+        bounded by the process ceiling alone.
         """
 
+        if self.delegate_depth > 0:
+            # A delegated child's detached calls count against the process
+            # ceiling only. Keyed on the session root they shared the root's
+            # four accounting slots, so one Stop on a fan-out -- or a parent
+            # cell's ordinary ``host.stop_child`` on a few in-flight siblings,
+            # with no Stop pressed at all -- filled them, and the parent's very
+            # next model call was refused as an internal error until the
+            # abandoned sockets closed. The per-session bound exists to keep a
+            # user's Stop-and-resend from stacking billed requests against a
+            # ledger not yet charged for them; children are stopped by code,
+            # and a fan-out of 48 cannot fit a four-slot bound.
+            return None
         frame_id = str(self.frame_id or "")
         if not frame_id:
             return None

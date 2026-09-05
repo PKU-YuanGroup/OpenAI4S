@@ -836,3 +836,126 @@ def test_format_observation_reminds_models_that_host_is_injected():
     )
 
     assert "never `import host`" in observation
+
+
+def test_a_reply_delivered_before_cancellation_keeps_its_usage(monkeypatch):
+    """Cancellation that lands after ChatModel returned a real reply.
+
+    ``ChatModel`` owns cancellation end to end: whatever it delivers as real
+    has passed its own final check, and a late Stop is observed by the engine
+    after the reply was recorded with its usage. There is no second wrapper
+    left to re-check the raw signal and swap the reply for the no-op without
+    ``abandon()`` -- which is the one exit that metered nothing.
+    """
+    from openai4s.agent.engine import AgentEngine
+    from openai4s.agent.events import ReplyReceived
+    from openai4s.agent.models import ExecutionOutcome
+
+    usage = {"prompt_tokens": 17, "completion_tokens": 3}
+    stop = threading.Event()
+    abandoned = []
+    model = ChatModel(
+        object(),
+        lambda messages, cfg, **kwargs: {"content": "real reply", "usage": dict(usage)},
+        cancellation=SimpleNamespace(cancelled=stop.is_set),
+        abandoned_reply=abandoned.append,
+    )
+
+    class StopRightAfterDelivery:
+        def complete(self, messages, on_delta):
+            reply = model.complete(messages, on_delta)
+            stop.set()  # Stop lands the instant the reply is delivered
+            return reply
+
+    received = []
+
+    class Events:
+        def emit(self, event):
+            if isinstance(event, ReplyReceived):
+                received.append(event.reply)
+
+    class Executor:
+        def execute(self, action, reply, state):
+            return ExecutionOutcome()
+
+    engine = AgentEngine(
+        StopRightAfterDelivery(),
+        Executor(),
+        event_sink=Events(),
+        cancellation=SimpleNamespace(cancelled=stop.is_set),
+    )
+    result = engine.run([{"role": "user", "content": "go"}])
+
+    assert result.stop_reason == "cancelled"
+    assert [reply.usage for reply in received] == [usage]
+    assert abandoned == []  # delivered as real: metered once, on the normal path
+
+
+def test_agent_composes_chat_model_without_a_second_cancellation_wrapper():
+    import ast
+    import inspect
+
+    import openai4s.agent.loop as loop_mod
+
+    tree = ast.parse(inspect.getsource(loop_mod))
+    assert not [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and "Cancellation" in node.name
+    ], "loop.py wraps ChatModel in a second cancellation check again"
+    chat_model_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ChatModel"
+    ]
+    assert chat_model_calls
+    assert all(
+        {"cancellation", "abandoned_reply"}
+        <= {keyword.arg for keyword in call.keywords}
+        for call in chat_model_calls
+    )
+
+
+def test_delegated_children_are_bounded_by_the_process_ceiling_only():
+    """A child's detached calls must not fill the session's accounting slots.
+
+    Keyed on the session root, one Stop on a fan-out -- or a parent cell's
+    ordinary ``host.stop_child`` on a few in-flight siblings -- filled the
+    root's four slots and the parent's very next model call was refused.
+    """
+    from openai4s.agent.loop import Agent
+
+    store = SimpleNamespace(resolve_frame_scope=lambda fid: {"root_frame_id": "root-1"})
+    root = Agent(use_skills=False, allow_delegate=False, frame_id="branch-1")
+    child = Agent(
+        use_skills=False, allow_delegate=False, frame_id="child-1", delegate_depth=1
+    )
+    # The scope is resolved through the dispatcher's Store at call time.
+    root.dispatcher = SimpleNamespace(store=store)
+    child.dispatcher = SimpleNamespace(store=store)
+    assert root._provider_call_scope() == "root-1"
+    assert child._provider_call_scope() is None
+
+
+def test_late_accounting_survives_a_sink_that_raises_a_base_exception():
+    accounting = runtime._LateAccounting()
+    first_done = threading.Event()
+    second = []
+    second_done = threading.Event()
+
+    def exploding(reply):
+        del reply
+        first_done.set()
+        raise KeyboardInterrupt("injected")
+
+    def recording(reply):
+        second.append(reply)
+        second_done.set()
+
+    accounting.submit(exploding, {"usage": {}})
+    assert first_done.wait(2)
+    accounting.submit(recording, {"usage": {"input_tokens": 1}})
+    assert second_done.wait(2), "the late-accounting worker died with its first sink"
+    assert second == [{"usage": {"input_tokens": 1}}]
