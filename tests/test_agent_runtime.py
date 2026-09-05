@@ -959,3 +959,53 @@ def test_late_accounting_survives_a_sink_that_raises_a_base_exception():
     accounting.submit(recording, {"usage": {"input_tokens": 1}})
     assert second_done.wait(2), "the late-accounting worker died with its first sink"
     assert second == [{"usage": {"input_tokens": 1}}]
+
+
+def test_call_context_is_captured_on_the_owning_thread_before_the_handoff():
+    """The provider thread must not read the session's identity itself.
+
+    On the Web path ``chat_fn`` used to snapshot the live Auto Mode run at its
+    own entry -- on the detached thread, possibly after Stop released the turn
+    and the next queued turn installed a new run. ``call_context`` is captured
+    by the owner before the thread starts and handed over as a value.
+    """
+    live = {"run": "run-of-this-turn"}
+    entered = threading.Event()
+    release = threading.Event()
+    seen = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        entered.set()
+        assert release.wait(5)
+        seen.append(kwargs.get("call_context"))
+        return {"content": "ok"}
+
+    model = ChatModel(
+        object(),
+        fake_chat,
+        cancellation=SimpleNamespace(cancelled=lambda: False),
+        call_context=lambda: {"run_id": live["run"]},
+    )
+    owner = threading.Thread(target=lambda: model.complete([], lambda _t: None))
+    owner.start()
+    assert entered.wait(2)
+    live["run"] = "run-installed-after-stop"  # the next turn moved in
+    release.set()
+    owner.join(2)
+    assert seen == [{"run_id": "run-of-this-turn"}]
+
+
+def test_call_context_is_absent_when_no_provider_asked_for_one():
+    seen = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        seen.append("call_context" in kwargs)
+        return {"content": "ok"}
+
+    ChatModel(object(), fake_chat).complete([], lambda _t: None)
+    ChatModel(
+        object(), fake_chat, cancellation=SimpleNamespace(cancelled=lambda: False)
+    ).complete([], lambda _t: None)
+    assert seen == [False, False]

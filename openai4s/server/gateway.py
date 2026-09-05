@@ -6081,6 +6081,23 @@ class SessionRunner:
             self.store, self.cfg.auto_mode.budgets
         ).token_phase_active(str(st.active_auto_mode_run_id or ""))
 
+    def _auto_budget_call_context(self, st: SessionState) -> dict[str, Any]:
+        """The Auto Mode identity one model call is charged against.
+
+        Captured by ``ChatModel`` on the owning thread before the provider
+        thread starts (``call_context``). Read live at ``chat_fn`` entry
+        instead, on the detached thread, it could already be the run the next
+        turn installed after Stop: the abandoned call would then reserve,
+        settle and -- on denial -- trip and cancel a turn that never made it.
+        """
+        return {
+            "run_id": str(st.active_auto_mode_run_id or ""),
+            "action_group_id": execution_action_group(
+                getattr(st, "active_action_group_id", None) or f"model:{st.cell_index}"
+            ),
+            "extra": self._auto_budget_extra_phase(st),
+        }
+
     def _admit_auto_budget(
         self,
         st: SessionState,
@@ -6145,17 +6162,29 @@ class SessionRunner:
         messages: Any,
         cfg: Any,
         provider_call: Callable[..., Any],
+        *,
+        run_id: str | None = None,
+        action_group_id: str | None = None,
+        extra: bool | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Admit model/token spend before crossing the provider boundary."""
+        """Admit model/token spend before crossing the provider boundary.
+
+        ``run_id`` / ``action_group_id`` / ``extra`` are the identity pinned by
+        the owning thread (``_auto_budget_call_context``); a direct caller that
+        omits them gets the live values, which is only right on that thread.
+        """
 
         admission = None
         token_admission = None
-        run_id = str(st.active_auto_mode_run_id or "")
-        group_id = execution_action_group(
-            getattr(st, "active_action_group_id", None) or f"model:{st.cell_index}"
-        )
-        extra = self._auto_budget_extra_phase(st)
+        if run_id is None or action_group_id is None or extra is None:
+            live = self._auto_budget_call_context(st)
+            run_id = live["run_id"] if run_id is None else run_id
+            action_group_id = (
+                live["action_group_id"] if action_group_id is None else action_group_id
+            )
+            extra = live["extra"] if extra is None else extra
+        group_id = action_group_id
         try:
             admission = self._admit_auto_budget(
                 st,
@@ -11026,8 +11055,19 @@ class SessionRunner:
 
         def _auto_budget_chat(messages, cfg, **kwargs):
             # auto_budget sink: model inference admission before provider call.
+            # The identity was pinned by ChatModel on the owning thread; this
+            # runs on the detached provider thread, where the live one may
+            # already be the next turn's.
+            context = kwargs.pop("call_context", None) or {}
             return self._invoke_model_with_auto_budget(
-                st, messages, cfg, chat, **kwargs
+                st,
+                messages,
+                cfg,
+                chat,
+                run_id=context.get("run_id"),
+                action_group_id=context.get("action_group_id"),
+                extra=context.get("extra"),
+                **kwargs,
             )
 
         engine = AgentEngine(
@@ -11046,6 +11086,7 @@ class SessionRunner:
                 # the request still billing. Naming the session here bounds how
                 # many of those one member can stack.
                 call_scope=rid,
+                call_context=lambda: self._auto_budget_call_context(st),
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,

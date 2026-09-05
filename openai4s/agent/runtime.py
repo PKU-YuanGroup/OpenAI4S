@@ -299,6 +299,14 @@ class ChatModel:
     #: one session can leave billing while the quota gate reads a ledger that
     #: has not been charged for them yet. None keeps only the process bound.
     call_scope: str | None = None
+    #: Optional per-call context, captured on the OWNING thread before any
+    #: hand-off and passed to ``chat_fn`` as ``call_context=``. The Web
+    #: wrapper pins its Auto Mode identity (run, action group, token phase)
+    #: through it: read at ``chat_fn`` entry instead, on the detached provider
+    #: thread, that identity could already belong to the turn admitted after
+    #: Stop, so the reservation, its settle and any denial landed on a run
+    #: that never made the call.
+    call_context: Callable[[], Mapping[str, Any]] | None = None
 
     def complete(
         self,
@@ -318,6 +326,10 @@ class ChatModel:
         else:
             source = self.tools
         kwargs: dict[str, Any] = {"tools": tuple(source)}
+        if self.call_context is not None:
+            # Here, on the owning thread: this is the last point at which the
+            # session state still describes the turn making this call.
+            kwargs["call_context"] = dict(self.call_context())
         copied_messages = [dict(message) for message in messages]
         if self.cancellation is None:
             if self.stream:
@@ -421,14 +433,10 @@ class ChatModel:
                 # not been sent yet, so there is nothing to salvage and a
                 # provider request that nobody will read still gets billed.
                 #
-                # It is also where the Auto Mode identity is decided: on the
-                # Web path `chat_fn` is `_invoke_model_with_auto_budget`, which
-                # snapshots the LIVE `active_auto_mode_run_id`, extra phase and
-                # action group at ITS entry. By now those belong to the turn
-                # that was admitted after Stop, so the reservation, its settle
-                # and any denial would all land on a run that never made this
-                # call. The pinned-id guards downstream cannot catch that: the
-                # pin and the live id agree -- on the wrong run.
+                # The Auto Mode identity is not decided here any more: the
+                # owning thread captured it in ``call_context`` before this
+                # thread started, so a run installed after Stop cannot be
+                # charged, settled or tripped by a call it never made.
                 if is_cancelled():
                     return
                 outcome["reply"] = self.chat_fn(

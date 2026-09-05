@@ -1321,3 +1321,50 @@ def test_concurrent_last_repair_turn_has_one_winner(tmp_path):
     assert outcomes.count("denied") == 1
     store_a.close()
     store_b.close()
+
+
+def test_pinned_identity_outranks_the_live_run_on_the_provider_thread(tmp_path):
+    """A detached call reserves against the run that made it, not the live one.
+
+    ``_invoke_model_with_auto_budget`` runs on ChatModel's provider thread.
+    Reading ``st.active_auto_mode_run_id`` there, after Stop released the turn
+    and the next turn installed its run, reserved and settled the NEW run's
+    budget for a request it never made. The owning thread pins the identity
+    through ``call_context`` before the hand-off; the wrapper must use it.
+    """
+    store = _store(tmp_path)
+    _start(store)  # no token phase: only the model admission is exercised
+    runner = object.__new__(gateway_mod.SessionRunner)
+    runner.store = store
+    runner.cfg = Config()
+    state = SimpleNamespace(
+        # The next turn is already running by the time the detached call admits.
+        active_auto_mode_run_id="auto-run-NEXT",
+        active_action_group_id=None,
+        cell_index=7,
+        auto_budget_terminal_reason=None,
+        cancel=threading.Event(),
+    )
+    pinned = runner._auto_budget_call_context(
+        SimpleNamespace(
+            active_auto_mode_run_id="auto-run-1",
+            active_action_group_id=None,
+            cell_index=1,
+        )
+    )
+    assert pinned["run_id"] == "auto-run-1"
+
+    runner._invoke_model_with_auto_budget(
+        state,
+        [{"role": "user", "content": "hi"}],
+        _llm("agent"),
+        lambda *a, **k: {"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        **pinned,
+    )
+    assert store.list_auto_mode_budget_reservations(
+        "auto-run-1"
+    ), "the pinned run was not charged"
+    assert (
+        store.list_auto_mode_budget_reservations("auto-run-NEXT") == []
+    ), "the live (next) run was charged by a call it never made"
+    store.close()
