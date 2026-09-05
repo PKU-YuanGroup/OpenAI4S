@@ -11,6 +11,7 @@ import {
   hint,
 } from "../../features/customize/host";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 import { DataProCard } from "./vendors/datapro";
 
@@ -38,6 +39,7 @@ export function ConnectorsTab() {
         if (!alive()) return;
         setConns(asList(d.connectors) as Record<string, unknown>[]);
         setDatapro(dp);
+        markCustomizeLoaded();
         try {
           const dir = await api("/connectors/directory");
           if (!alive()) return;
@@ -48,7 +50,9 @@ export function ConnectorsTab() {
         }
       } catch (e) {
         if (!alive()) return;
-        setErr(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setErr(message);
+        markCustomizeFailed(message);
       }
     })();
   }, [alive]);

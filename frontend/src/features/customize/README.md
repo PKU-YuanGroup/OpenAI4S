@@ -9,6 +9,8 @@ F-19 Customize domain logic. Tab state machine, timer lease (unmount clears ever
 | File | Responsibility |
 | --- | --- |
 | [`actions.ts`](actions.ts) | `openCust` / `custTab` / `closeCust`. Bumps generation so the pane remounts. |
+| [`load.ts`](load.ts) | Bounded first load per tab generation: `beginCustomizeLoad` / `markCustomizeLoaded` / `markCustomizeFailed` / `markCustomizeTimedOut`, `CUST_LOAD_TIMEOUT_MS` (30 s, as app.js). |
+| [`load.test.ts`](load.test.ts) | A `custTab()` starts a pending load; marks settle it once; the deadline only fires for the generation still pending. |
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`. Path must be a single leading slash. |
 | [`environment.ts`](environment.ts) | Skill readiness note; `sanitizeStandardProfileReadiness`. |
 | [`host.ts`](host.ts) | `hint` / `openViewer` / `loadModels` via `isReady`; `effProject`. |

@@ -174,9 +174,11 @@ class _DetachedCall:
                     self._budget._exit(self._scope)
 
 
-# A cancelled urllib call may remain blocked until its socket timeout. Bound
-# those detached calls so repeated Stop presses cannot grow threads/sockets
-# without limit; live requests are never charged against this budget.
+# A cancelled non-streaming urllib call may remain blocked until its response
+# or socket timeout (a streaming one ends at its next event: the transport
+# polls ``should_cancel`` per event and closes the response). Bound those
+# detached calls so repeated Stop presses cannot grow threads/sockets without
+# limit; live requests are never charged against this budget.
 # 128 process-wide is the resource ceiling. Four per session is the accounting
 # one: it leaves the ordinary Stop-then-retype flow untouched while keeping a
 # Stop-spam from stacking a hundred billed requests against a ledger that has
@@ -324,8 +326,11 @@ class ChatModel:
 
         # ``urllib`` cannot close a response which is blocked in another
         # thread. Running the provider call in a daemon thread still lets the
-        # owning Agent turn stop immediately: the request may finish against
-        # its normal network timeout, but its result is detached and inert.
+        # owning Agent turn stop immediately: a streaming request ends at its
+        # next event (the transport polls ``should_cancel`` per event and
+        # closes the response), a non-streaming one may finish against its
+        # normal network timeout, and either way its result is detached and
+        # inert.
         #
         # The per-call Event is deliberately monotonic. The Web coordinator
         # clears its shared cancellation Event when it admits the next queued

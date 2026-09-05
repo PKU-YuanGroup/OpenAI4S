@@ -14,6 +14,21 @@ export const customizeTab = signal<CustTab>("general");
  */
 export const customizeGeneration = signal(0);
 
+export type CustomizeLoadState = "loading" | "ready" | "failed" | "timeout";
+
+/**
+ * How far the active tab's first load has got, per generation. The pane
+ * annotates the tab from this: a "Loading…" line while it is pending, an
+ * error card with Retry when it failed or overran the deadline. The tab body
+ * itself stays mounted -- several tabs paint their controls before their
+ * data arrives, and a control the user is already using is never torn out.
+ */
+export const customizeLoad = signal<{
+  generation: number;
+  state: CustomizeLoadState;
+  error: string | null;
+}>({ generation: 0, state: "ready", error: null });
+
 export type NestedEditor =
   | { kind: "skill"; name: string | null }
   | { kind: "skill-import" }

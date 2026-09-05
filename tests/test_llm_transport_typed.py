@@ -497,3 +497,58 @@ def test_an_uncancelled_wait_sleeps_the_whole_delay():
     slept: list[float] = []
     assert transport_mod._wait(1.0, slept.append, lambda: False) is False
     assert sum(slept) == pytest.approx(1.0)
+
+
+def test_sse_stops_reading_at_the_next_event_once_cancelled(monkeypatch):
+    """Stop must reach a live stream, not just the retry backoff.
+
+    A cancelled streaming call used to keep its thread, its socket and the
+    provider's generation running to the end of the reply while every delta
+    was discarded on arrival. The read now ends at the first event dispatched
+    after cancellation, the response is closed, and the failure is neither
+    retried nor replayed.
+    """
+    closed = []
+    pulled = []
+
+    class _Stream:
+        def __iter__(self):
+            for n in range(1, 6):
+                pulled.append(n)
+                yield f'data: {{"delta":"chunk-{n}"}}\n'.encode()
+                yield b"\n"
+
+        def close(self):
+            closed.append(True)
+
+    calls = []
+
+    def urlopen(*a, **k):
+        calls.append(1)
+        return _Stream()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    seen = []
+    stop = []
+
+    def on_event(event):
+        seen.append(event)
+        stop.append(True)  # Stop lands right after the first delta is delivered
+
+    with pytest.raises(TransportError) as e:
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            on_event,
+            should_cancel=lambda: bool(stop),
+            sleep=_Recorder(),
+        )
+    assert "cancelled mid-stream" in str(e.value)
+    assert e.value.retryable is False
+    assert e.value.output_committed is True
+    assert seen == [{"delta": "chunk-1"}], "a delta was delivered after Stop"
+    assert pulled == [1, 2], "the stream was read past the event that observed Stop"
+    assert closed == [True], "the response was not closed"
+    assert len(calls) == 1
