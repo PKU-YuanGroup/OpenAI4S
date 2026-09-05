@@ -937,3 +937,100 @@ def test_private_scratch_does_not_lift_trusted_capture_parallel_limit():
         assert (FANOUT_CAP, SESSION_CAP, MAX_DEPTH) == (48, 1000, 4)
     finally:
         runner.close()
+
+
+# --------------------------------------------------------------------------
+# a child policy receives the providers only the run can build
+# --------------------------------------------------------------------------
+
+
+def test_steering_policy_binds_only_the_providers_it_lacks():
+    """`_SteeringContextPolicy` is built before the child's run exists, so it
+    cannot carry the tool catalogue or the kernel cwd.  The loop hands them in
+    afterwards; the child's own context budget (its model's window) must not
+    be overwritten by the parent's default in the process."""
+    from openai4s.agent.delegation import _SteeringContextPolicy
+    from openai4s.agent.runtime import CompactionPolicy
+
+    policy = object.__new__(_SteeringContextPolicy)
+    own_budget = lambda _state: 136_000  # noqa: E731 - identity is the point
+    policy._base = CompactionPolicy(get_config(), context_budget_provider=own_budget)
+
+    policy.bind_runtime(
+        context_budget_provider=lambda _state: 262_144,
+        tool_schema_provider=lambda _state: ({"name": "finalize_response"},),
+        workspace_provider=lambda _state: "/child/cwd",
+    )
+
+    assert policy._base.context_budget_provider is own_budget
+    assert policy._base.workspace_provider(None) == "/child/cwd"
+    assert policy._base.tool_schema_provider(None)[0]["name"] == "finalize_response"
+
+
+def test_the_loop_hands_a_wrapped_policy_the_run_providers(monkeypatch):
+    """The wiring half.  A context policy supplied from outside `Agent.run`
+    used to short-circuit the `or` that built the CLI policy with its
+    providers, so a delegated child priced its trigger without tool schemas
+    and never got the kernel-readable copy of an oversized output."""
+    import os
+
+    from openai4s.agent import Agent
+    from openai4s.agent.runtime import CompactionPolicy
+
+    arguments = {
+        "summary": "Done.",
+        "completion_bullets": ["Answered the question"],
+    }
+
+    def finalize_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        call = {
+            "id": "wrapped-finalize",
+            "wire_id": "wrapped-finalize",
+            "name": "finalize_response",
+            "ordinal": 0,
+            "raw_arguments": json.dumps(arguments),
+            "arguments": arguments,
+            "parse_error": None,
+            "provider_meta": {"provider": "test"},
+        }
+        return {
+            "content": "",
+            "tool_calls": [call],
+            "assistant_message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [call],
+            },
+        }
+
+    class Wrapped:
+        def __init__(self, cfg):
+            self._base = CompactionPolicy(cfg)
+            self.bound: dict = {}
+
+        def bind_runtime(self, **providers):
+            self.bound = dict(providers)
+            for name, value in providers.items():
+                if getattr(self._base, name, None) is None:
+                    setattr(self._base, name, value)
+
+        def prepare(self, state):
+            return self._base.prepare(state)
+
+    monkeypatch.setattr(loop_mod, "chat", finalize_chat)
+    cfg = get_config()
+    wrapped = Wrapped(cfg)
+    result = Agent(
+        cfg=cfg,
+        use_skills=False,
+        allow_delegate=False,
+        max_turns=1,
+        context_policy=wrapped,
+    ).run("submit a short answer")
+
+    assert result["stop_reason"] == "submitted"
+    assert wrapped._base.workspace_provider(None) == os.getcwd()
+    schemas = wrapped._base.tool_schema_provider(RunState([]))
+    names = {getattr(s, "name", None) or s.get("name") for s in schemas}
+    assert "finalize_response" in names

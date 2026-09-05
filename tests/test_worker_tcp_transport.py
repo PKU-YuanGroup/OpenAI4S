@@ -255,6 +255,12 @@ def test_a_replayed_credential_cannot_open_a_second_connection(gateway, authorit
     credential = authority.issue(allocation_id="alloc_1", epoch=0)
     assert _dial(gateway, credential.to_json())["ok"] is True
     assert _dial(gateway, credential.to_json()) == {"ok": False, "error": "refused"}
+    # The handshake reply goes out before the server thread registers the
+    # peer under its lock, so the count is a moment behind the reply on a
+    # busy runner; the second dial was refused either way.
+    deadline = time.monotonic() + 2.0
+    while gateway.accepted != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert gateway.accepted == 1
 
 

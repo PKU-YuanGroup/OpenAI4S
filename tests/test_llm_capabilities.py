@@ -220,7 +220,9 @@ def test_chat_enforces_output_limit_before_transport():
                 "cache_read_input_tokens": 3,
                 "cache_creation_input_tokens": 2,
             },
-            (12, 7, 3, 2, 0, 19),
+            # Anthropic's ``input_tokens`` is the uncached remainder only;
+            # the canonical count is the whole prompt: 12 + 3 + 2.
+            (17, 7, 3, 2, 0, 24),
         ),
         (
             "gemini",

@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from openai4s.agent.actions import NO_CODE_NUDGE, NO_NATIVE_COMPLETION_NUDGE
 from openai4s.agent.cell_record import DelegatedCellRecorder
+from openai4s.agent.delegation import _child_context_budget
 from openai4s.agent.engine import AgentEngine
 from openai4s.agent.finalize import with_finalize_response
 from openai4s.agent.ledger import RuntimeActionLedger, new_turn_id
@@ -701,6 +702,30 @@ class Agent:
                         model,
                         lambda: bool(self.cancellation.cancelled()),
                     )
+                # The providers only this run can build: the live tool
+                # catalogue prices the trigger and the kernel cwd receives
+                # the kernel-readable copy of an oversized output.
+                policy_providers: dict[str, Any] = dict(
+                    log=self._log,
+                    context_budget_provider=_child_context_budget(self.cfg),
+                    tool_schema_provider=lambda state: with_finalize_response(
+                        tool_catalog.specs_for(state.messages)
+                    ),
+                    workspace_provider=lambda _s: run_cwd,
+                    should_cancel=(
+                        (lambda: bool(self.cancellation.cancelled()))
+                        if self.cancellation is not None
+                        else None
+                    ),
+                )
+                context_policy = self.context_policy or CompactionPolicy(
+                    self.cfg, **policy_providers
+                )
+                bind_runtime = getattr(context_policy, "bind_runtime", None)
+                if self.context_policy is not None and callable(bind_runtime):
+                    # A delegated child's steering wrapper is built before the
+                    # run exists and cannot know the catalogue or cwd itself.
+                    bind_runtime(**policy_providers)
                 engine = AgentEngine(
                     model,
                     LocalActionExecutor(
@@ -719,9 +744,7 @@ class Agent:
                         ),
                         generation_recorder=self._generation_recorder,
                     ),
-                    context_policy=(
-                        self.context_policy or CompactionPolicy(self.cfg, log=self._log)
-                    ),
+                    context_policy=context_policy,
                     event_sink=event_sink,
                     cancellation=self.cancellation,
                     completion=CompletionSignal(lambda: self.dispatcher.last_output),

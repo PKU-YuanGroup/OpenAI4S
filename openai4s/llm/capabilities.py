@@ -75,6 +75,12 @@ class UsageMapping:
     cache_write: tuple[str, ...] = ()
     reasoning_tokens: tuple[str, ...] = ()
     total_tokens: tuple[str, ...] = ()
+    # The Anthropic Messages wire reports ``input_tokens`` as the *uncached*
+    # remainder only; OpenAI and Gemini report the whole prompt with the
+    # cached part as a subset.  Set this so the canonical ``input_tokens``
+    # always means the whole prompt, which is what a context estimate is
+    # calibrated against and what a cost table prices.
+    input_excludes_cache: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +225,7 @@ _ANTHROPIC_USAGE = UsageMapping(
     ),
     reasoning_tokens=("reasoning_tokens",),
     total_tokens=("total_tokens",),
+    input_excludes_cache=True,
 )
 
 _GEMINI_USAGE = UsageMapping(
@@ -1095,11 +1102,13 @@ def normalize_usage(
 ) -> dict[str, int]:
     """Map provider-native usage to one stable, backward-compatible shape.
 
-    ``input_tokens``/``output_tokens`` are canonical.  The legacy
-    ``prompt_tokens``/``completion_tokens`` aliases are intentionally retained
-    until all external consumers have migrated.  Cache and reasoning counters
-    are reported separately but are not added to ``total_tokens`` because most
-    providers already include them in input/output counts.
+    ``input_tokens``/``output_tokens`` are canonical, and ``input_tokens`` is
+    always the whole prompt: a wire whose native counter excludes cached
+    tokens (``UsageMapping.input_excludes_cache``) has them folded back in.
+    The legacy ``prompt_tokens``/``completion_tokens`` aliases are
+    intentionally retained until all external consumers have migrated.  Cache
+    and reasoning counters are reported separately as subsets of the input
+    count and are not added to ``total_tokens`` again.
     """
     raw: Mapping[str, Any] = usage if isinstance(usage, Mapping) else {}
     if isinstance(provider_or_mapping, UsageMapping):
@@ -1110,13 +1119,17 @@ def normalize_usage(
         ).usage_mapping
     input_tokens = _token_value(raw, mapping.input_tokens)
     output_tokens = _token_value(raw, mapping.output_tokens)
+    cache_read = _token_value(raw, mapping.cache_read)
+    cache_write = _token_value(raw, mapping.cache_write)
+    if mapping.input_excludes_cache:
+        input_tokens += cache_read + cache_write
     explicit_total = _token_value(raw, mapping.total_tokens)
     total = explicit_total if explicit_total else input_tokens + output_tokens
     result = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "cache_read": _token_value(raw, mapping.cache_read),
-        "cache_write": _token_value(raw, mapping.cache_write),
+        "cache_read": cache_read,
+        "cache_write": cache_write,
         "reasoning_tokens": _token_value(raw, mapping.reasoning_tokens),
         # Compatibility with existing Store/Gateway integrations.
         "prompt_tokens": input_tokens,

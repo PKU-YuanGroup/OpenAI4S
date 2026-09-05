@@ -43,6 +43,10 @@ epibench_eval/
 # per-directory README gate on a stray `git add -A`.
 paper/
 .openai4s-runtime/
+# The kernel-readable scratch the runtime writes beside a workspace
+# (observation spills, compaction context blobs); `openai4s run` in the
+# checkout puts it at the repo root.
+.openai4s/
 .claude/
 # GROMACS outputs
 *.xvg
