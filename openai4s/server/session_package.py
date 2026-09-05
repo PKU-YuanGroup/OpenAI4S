@@ -3230,9 +3230,8 @@ class SessionPackageService:
                 )
         return group_map, action_map, turn_map
 
-    @staticmethod
     def _remap_compaction_result(
-        result: Mapping[str, Any], group_map: Mapping[str, str]
+        self, result: Mapping[str, Any], group_map: Mapping[str, str]
     ) -> dict[str, Any]:
         """A compaction event names the last covered group; follow the remap.
 
@@ -3243,8 +3242,14 @@ class SessionPackageService:
         ``archive_id`` points at a ``compaction_archives`` row the package
         does not carry and the reducer never reads, so it is dropped rather
         than left dangling.
+
+        The handoff is untrusted package text like any other, and the
+        restore hands it to the model as a ``role=system`` note, so it gets
+        the same injection screen as imported messages and cells.
         """
         remapped = dict(result)
+        if "handoff" in remapped:
+            remapped["handoff"] = self._scan_untrusted_text(remapped.get("handoff"))
         covered = remapped.get("covered_through_group_id")
         if covered:
             mapped = group_map.get(str(covered))
