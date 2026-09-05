@@ -276,6 +276,11 @@ def test_a_replayed_credential_cannot_open_a_second_connection(gateway, authorit
     credential = authority.issue(allocation_id="alloc_1", epoch=0)
     assert _dial(gateway, credential.to_json())["ok"] is True
     assert _dial(gateway, credential.to_json()) == {"ok": False, "error": "refused"}
+    # Both sides of this merge found the same race and fixed it the same way;
+    # this keeps the named helper (reusable, and its 10s budget survives a
+    # loaded runner) and origin/main's point about why the assertion is still
+    # exact: the second dial was refused either way, so the count cannot climb
+    # past 1 while we wait for it.
     assert _settled_accepted(gateway, 1) == 1
 
 

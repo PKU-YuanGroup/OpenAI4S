@@ -43,11 +43,12 @@ from .actions import (
 from .compaction import (
     DEFAULT_LARGE_OUTPUT_CHARS,
     CompactionArchiveMetadata,
+    CompactionCancelled,
+    ContextEstimate,
     compact,
     estimate_context,
     externalize_large_outputs,
     safe_keep_recent,
-    should_compact,
 )
 from .control import (
     call_reaches_dispatcher,
@@ -464,13 +465,28 @@ class ChatModel:
         return outcome["reply"]
 
 
+def _positive_float(value: Any) -> float | None:
+    """Return a finite number strictly greater than zero, else ``None``."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed <= 0 or parsed != parsed or parsed == float("inf"):
+        return None
+    return parsed
+
+
 @dataclass
 class CompactionPolicy:
-    """Apply Context Policy V2 with a consecutive-low-yield breaker.
+    """Apply Context Policy V2 with low-yield and consecutive-failure breakers.
 
     ``metadata_provider`` is the persistence-neutral seam for Web runtimes to
     attach branch, ledger cursor, recovery pointer, and Kernel generation.  If
     omitted, the same keys are read from ``RunState.metadata``.
+    ``workspace_provider`` returns the kernel cwd so oversized outputs can be
+    copied next to the worker; a raising provider is treated as no workspace.
     """
 
     cfg: Any
@@ -484,6 +500,10 @@ class CompactionPolicy:
         Callable[[Any, Mapping[str, Any], dict[str, Any]], Mapping[str, Any]] | None
     ) = None
     archive_sink: Callable[[Mapping[str, Any]], Any] | None = None
+    workspace_provider: Callable[[RunState], str | None] | None = None
+    # Polled between summary chunks and handed to each summary ``chat()``;
+    # the engine's own cancellation seam never reaches those calls.
+    should_cancel: Callable[[], bool] | None = None
     minimum_yield_ratio: float = 0.10
     max_low_yield_attempts: int = 2
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS
@@ -494,30 +514,54 @@ class CompactionPolicy:
     circuit_open_total: int = field(default=0, init=False)
     # Multiple of ``circuit_open_total`` at which compaction is retried.
     circuit_retry_growth: float = 1.5
+    max_failure_attempts: int = 2
+    failure_streak: int = field(default=0, init=False)
+    # Which breaker tripped, as the skip log and metadata report it.  Both
+    # streak counters can be non-zero at once, so neither one says.
+    circuit_reason: str | None = field(default=None, init=False)
 
     def prepare(self, state: RunState) -> Sequence[Mapping[str, Any]]:
         if self.minimum_yield_ratio < 0 or self.minimum_yield_ratio >= 1:
             raise ValueError("minimum_yield_ratio must be in [0, 1)")
         if self.max_low_yield_attempts < 1:
             raise ValueError("max_low_yield_attempts must be positive")
+        if self.max_failure_attempts < 1:
+            raise ValueError("max_failure_attempts must be positive")
 
+        ratio = self._calibration_ratio(state)
+        tool_schemas = self._tool_schemas(state)
+        context_budget = self._context_budget(state)
+        prepared, sent = self._prepare(state, tool_schemas, context_budget, ratio)
+        state.metadata["compaction_failure_streak"] = self.failure_streak
+        state.metadata["compaction_circuit_open"] = self.circuit_open
+        state.metadata["compaction_circuit_reason"] = self.circuit_reason
+        # The estimate of the list actually returned, which the next reply's
+        # ``input_tokens`` calibrates against; ``_prepare`` priced it already.
+        state.metadata["context_estimate_sent"] = sent.total
+        return prepared
+
+    def _trip(self, reason: str, before: ContextEstimate) -> None:
+        self.circuit_open = True
+        self.circuit_open_total = before.total
+        self.circuit_reason = reason
+
+    def _prepare(
+        self,
+        state: RunState,
+        tool_schemas: Sequence[Mapping[str, Any]],
+        context_budget: int | None,
+        calibration: float,
+    ) -> tuple[Sequence[Mapping[str, Any]], ContextEstimate]:
+        """Return the messages to send and the estimate of exactly that list."""
         metadata = self._metadata(state)
-        try:
-            tool_schemas = tuple(
-                self.tool_schema_provider(state)
-                if self.tool_schema_provider is not None
-                else ()
-            )
-        except Exception:  # noqa: BLE001 - schema accounting is fail-soft
-            tool_schemas = ()
-        try:
-            context_budget = (
-                self.context_budget_provider(state)
-                if self.context_budget_provider is not None
-                else None
-            )
-        except Exception:  # noqa: BLE001 - config fallback remains available
-            context_budget = None
+        workspace: str | None = None
+        provider = self.workspace_provider
+        if provider is not None:
+            try:
+                provided = provider(state)
+            except Exception:
+                provided = None
+            workspace = None if provided is None else str(provided)
         try:
             messages = externalize_large_outputs(
                 state.messages,
@@ -525,21 +569,25 @@ class CompactionPolicy:
                 threshold_chars=self.large_output_chars,
                 archive_metadata=metadata,
                 artifact_archiver=self.artifact_archiver,
+                workspace=workspace,
             )
         except Exception as error:  # noqa: BLE001 - preserve the live context
             state.metadata["last_externalization_error"] = str(error)[:500]
             self.log(f"[context output kept inline] Artifact archive failed: {error}")
             messages = state.messages
+            # compact() externalizes again on its way in; handing it the same
+            # workspace would fail the same way and count as a compaction
+            # failure, tripping the breaker over a write that is best-effort.
+            workspace = None
         before = estimate_context(messages, tool_schemas)
         state.metadata["context_estimate"] = before.as_dict()
+        calibrated_total = before.total * calibration
+        state.metadata["context_estimate_calibrated_total"] = calibrated_total
 
-        if not should_compact(
-            messages,
-            self.cfg,
-            tool_schemas=tool_schemas,
-            context_budget=context_budget,
+        if not self._should_trigger(
+            context_budget=context_budget, calibrated_total=calibrated_total
         ):
-            return messages
+            return messages, before
         if self.circuit_open:
             # The breaker prevents *repeated futile* compaction, not compaction
             # forever: once the context has grown materially past the size at
@@ -549,18 +597,29 @@ class CompactionPolicy:
             if before.total < self.circuit_open_total * self.circuit_retry_growth:
                 self.log(
                     "[compaction skipped] circuit breaker open after "
-                    f"{self.low_yield_streak} low-yield attempts"
+                    f"{self.circuit_reason}"
                 )
-                return messages
+                return messages, before
             self.log(
                 "[compaction retry] context grew "
                 f"{before.total} >= {self.circuit_retry_growth}x "
                 f"{self.circuit_open_total}; reopening compaction"
             )
+            # A reopened breaker gets its full budget back on both counters;
+            # the failure streak counts *consecutive* failures, and the trip
+            # that opened the circuit is not one of the retry's.
             self.circuit_open = False
+            self.circuit_reason = None
             self.low_yield_streak = 0
+            self.failure_streak = 0
             self.circuit_open_total = 0
 
+        # compact() hands the durable record to the sink from inside its
+        # archive step, before this policy has decided whether the projection
+        # is adopted.  Buffer it: a rejected compaction recorded as applied
+        # makes the history a restart rebuilds disagree with the one the run
+        # kept using.
+        deferred: list[Mapping[str, Any]] = []
         try:
             prepared = compact(
                 messages,
@@ -570,23 +629,28 @@ class CompactionPolicy:
                 archive_metadata=metadata,
                 large_output_chars=self.large_output_chars,
                 artifact_archiver=self.artifact_archiver,
-                archive_sink=self.archive_sink,
+                archive_sink=deferred.append if self.archive_sink is not None else None,
                 tool_schemas=tool_schemas,
+                context_budget=context_budget,
+                workspace=workspace,
+                should_cancel=self.should_cancel,
             )
-        except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
+        except CompactionCancelled as error:
+            # The user stopped the run; that is not a compaction failure and
+            # must not count toward the breaker.
             state.metadata["last_compaction_error"] = str(error)[:500]
-            self.log(f"[compaction skipped] durable archive failed: {error}")
-            return messages
+            self.log(f"[compaction cancelled] {error}")
+            return messages, before
+        except Exception as error:  # noqa: BLE001 - compaction cannot kill a run
+            return self._compaction_failed(state, before, error, messages), before
         after = estimate_context(prepared, tool_schemas)
         gain = max(0, before.total - after.total)
         ratio = gain / max(1, before.total)
-        state.metadata["context_estimate"] = after.as_dict()
         state.metadata["last_compaction_yield_ratio"] = ratio
         if ratio < self.minimum_yield_ratio:
             self.low_yield_streak += 1
             if self.low_yield_streak >= self.max_low_yield_attempts:
-                self.circuit_open = True
-                self.circuit_open_total = before.total
+                self._trip(f"{self.low_yield_streak} low-yield attempts", before)
             self.log(
                 "[compaction low-yield] "
                 f"ratio={ratio:.3f} streak={self.low_yield_streak} "
@@ -605,9 +669,96 @@ class CompactionPolicy:
         # projection.  It still counts as a low-yield attempt and remains in
         # the audit archive, allowing the breaker to stop a second recurrence.
         if after.total >= before.total:
-            state.metadata["context_estimate"] = before.as_dict()
-            return messages
-        return prepared
+            # compact() itself worked; the streak counts exceptions, not gain.
+            self.failure_streak = 0
+            return messages, before
+        if self.archive_sink is not None:
+            try:
+                for payload in deferred:
+                    self.archive_sink(payload)
+            except Exception as error:  # noqa: BLE001 - unrecorded is not adopted
+                # The streak is still live here on purpose: a sink that keeps
+                # failing must trip the breaker like any other repeated
+                # failure instead of buying a fresh summary every turn.
+                return self._compaction_failed(state, before, error, messages), before
+        self.failure_streak = 0
+        state.metadata["context_estimate"] = after.as_dict()
+        return prepared, after
+
+    def _compaction_failed(
+        self,
+        state: RunState,
+        before: ContextEstimate,
+        error: BaseException,
+        messages: Sequence[Mapping[str, Any]],
+    ) -> Sequence[Mapping[str, Any]]:
+        self.failure_streak += 1
+        state.metadata["last_compaction_error"] = str(error)[:500]
+        self.log(f"[compaction skipped] durable archive failed: {error}")
+        if self.failure_streak >= self.max_failure_attempts:
+            self._trip(f"{self.failure_streak} consecutive failures", before)
+            self.log(
+                "[compaction circuit open] "
+                f"{self.failure_streak} consecutive failures: {error}"
+            )
+        return messages
+
+    def _calibration_ratio(self, state: RunState) -> float:
+        previous = _positive_float(state.metadata.get("context_estimate_calibration"))
+        if previous is None:
+            previous = 1.0
+        actual = 0.0
+        reply = state.last_reply
+        if reply is not None:
+            usage = reply.usage
+            if isinstance(usage, Mapping):
+                actual_value = _positive_float(usage.get("input_tokens"))
+                actual = actual_value if actual_value is not None else 0.0
+        sent = _positive_float(state.metadata.get("context_estimate_sent")) or 0.0
+        if actual > 0 and sent > 0:
+            ratio = min(8.0, max(0.5, actual / sent))
+        else:
+            ratio = previous
+        state.metadata["context_estimate_calibration"] = ratio
+        return ratio
+
+    def _should_trigger(
+        self, *, context_budget: int | None, calibrated_total: float
+    ) -> bool:
+        """``calibrated_total`` already prices messages and tool schemas."""
+        window = int(
+            context_budget
+            if context_budget is not None
+            else self.cfg.context_window_tokens
+        )
+        trigger = int(
+            window * float(getattr(self.cfg, "compaction_trigger_ratio", 0.75))
+        )
+        return calibrated_total > trigger
+
+    def _tool_schemas(self, state: RunState) -> tuple[Mapping[str, Any], ...]:
+        try:
+            return tuple(
+                self.tool_schema_provider(state)
+                if self.tool_schema_provider is not None
+                else ()
+            )
+        except Exception:  # noqa: BLE001 - schema accounting is fail-soft
+            return ()
+
+    def _context_budget(self, state: RunState) -> int | None:
+        try:
+            budget = (
+                self.context_budget_provider(state)
+                if self.context_budget_provider is not None
+                else None
+            )
+        except Exception:  # noqa: BLE001 - config fallback remains available
+            return None
+        # 0 is what a capability entry whose max_output equals its window
+        # reports; it means "unknown", and a zero window would compact on
+        # every turn with a zero chunk budget.
+        return int(budget) if budget is not None and int(budget) > 0 else None
 
     def _metadata(self, state: RunState) -> CompactionArchiveMetadata:
         source = (

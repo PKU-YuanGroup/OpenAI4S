@@ -10815,8 +10815,30 @@ class SessionRunner:
         return record
 
     def _archive_compaction_record(
-        self, st: SessionState, payload: dict[str, Any]
+        self,
+        st: SessionState,
+        payload: dict[str, Any],
+        action_ledger: RuntimeActionLedger | None = None,
     ) -> str:
+        """Persist one compaction archive and record it on the Action Ledger.
+
+        ``covered_through_group_id`` is the last group whose restore messages
+        all lie in ``payload["compacted_messages"]``.  compact() keeps a
+        two-message head (system prompt + first task) and a recent tail; the
+        ledger has no system prompt, so the head is the earliest user group.
+        Walk the current branch groups through the same group→message
+        correspondence ``reduce_action_groups`` uses, take the next
+        ``len(compacted_messages)`` messages after that user (handoff notes
+        excluded), and use the last fully covered group.  If that count
+        cannot be aligned the bound is ``None`` — the note is recorded and
+        nothing is dropped on restore — rather than a guess that would
+        delete the tail compact() kept.
+
+        ``action_ledger`` is the same writer ``_loop`` passes to
+        ``metadata_provider``.  When omitted, ``st.active_action_ledger`` is
+        used (set for the duration of ``engine.run``).  Callers without a
+        ledger skip the group append so archive-only tests stay valid.
+        """
         metadata = payload.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         compacted = payload.get("compacted_messages")
@@ -10832,7 +10854,7 @@ class SessionRunner:
             )
             if isinstance(ref, dict)
         ]
-        return self.store.archive_compaction(
+        archive_id = self.store.archive_compaction(
             frame_id=st.root_frame_id,
             project_id=st.project_id,
             branch_id=metadata.get("branch"),
@@ -10847,6 +10869,14 @@ class SessionRunner:
             context_after=(payload.get("context_estimate_after") or {}),
             artifact_refs=artifact_refs,
         )
+        ledger = action_ledger or getattr(st, "active_action_ledger", None)
+        if ledger is not None:
+            ledger.append_compaction(
+                handoff=str(payload.get("handoff") or ""),
+                covered_through_group_id=ledger.covered_through_group_id(compacted),
+                archive_id=str(archive_id) if archive_id else None,
+            )
+        return archive_id
 
     def _loop(
         self,
@@ -11034,18 +11064,26 @@ class SessionRunner:
                     else model_tools
                 ),
                 context_budget_provider=lambda _state: (
-                    get_model_capabilities(
-                        llm_cfg.provider,
-                        llm_cfg.model,
-                        base_url=llm_cfg.base_url,
+                    # Same fallback as ``_child_context_budget``: an entry
+                    # whose usable window is 0 still knows its raw window.
+                    (
+                        caps := get_model_capabilities(
+                            llm_cfg.provider,
+                            llm_cfg.model,
+                            base_url=llm_cfg.base_url,
+                        )
                     ).usable_context_tokens
+                    or caps.context_window_tokens
+                    or None
                 ),
                 artifact_archiver=lambda content, message, archive: (
                     self._archive_context_output(st, content, dict(message), archive)
                 ),
                 archive_sink=lambda payload: self._archive_compaction_record(
-                    st, dict(payload)
+                    st, dict(payload), action_ledger
                 ),
+                workspace_provider=lambda _s: str(st.workspace),
+                should_cancel=st.cancel.is_set,
             ),
             event_sink=events,
             cancellation=EventCancellation(st.cancel),

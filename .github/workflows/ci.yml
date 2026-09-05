@@ -209,6 +209,29 @@ jobs:
         run: |
           cd "${RUNNER_TEMP}"
           "${RUNNER_TEMP}/openai4s-release-venv/bin/python" "${GITHUB_WORKSPACE}/scripts/release_import_smoke.py"
+      # The one interpreter pyproject claims that no offline-tests leg runs.
+      # CPython 3.11 rejects a dataclass default 3.10 and 3.12+ both accept
+      # (a ``MappingProxyType`` was unhashable there), and one such default
+      # made the whole agent package unimportable on 3.11 while every job
+      # stayed green. Installing and importing the same wheel under 3.11 is
+      # cheap and catches that class without a fourth ten-minute matrix leg.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install the core wheel under the untested-but-claimed CPython 3.11
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_NO_INDEX: "1"
+        run: |
+          python3.11 -m venv "${RUNNER_TEMP}/openai4s-release-venv-311"
+          wheel_path="$(find dist -maxdepth 1 -name 'openai4s-*.whl' -print -quit)"
+          "${RUNNER_TEMP}/openai4s-release-venv-311/bin/python" -m pip install --no-deps "$wheel_path"
+      - name: Import installed modules and exercise the installed CLI on 3.11
+        env:
+          PYTHONPATH: ""
+        run: |
+          cd "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/openai4s-release-venv-311/bin/python" "${GITHUB_WORKSPACE}/scripts/release_import_smoke.py"
 
   windows-launcher:
     name: Windows launcher parses on Windows
