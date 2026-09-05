@@ -1,15 +1,21 @@
 /**
- * Composer send chain. Port of app.js:7908-8178.
+ * Composer send chain. Port of app.js:7954-8317.
  *
  * Plan-mode payload goes through F-07 `planModePayload` (dictionary), not the
  * drifted Chinese literal. Admission id is minted HERE and stored BEFORE the
  * request goes out.
+ *
+ * The dispatch discipline below is the shipped app.js one: one preparation
+ * owner per (frameId, projectId, openGen); a draft that belongs to the
+ * composer that started this call; the shared first-session creation promise
+ * that Attach and Send both adopt; and an upload barrier taken as the LAST
+ * await before the POST. After that barrier every use of the frame id is the
+ * pinned dispatch id, never whatever `currentId` happens to hold.
  */
 
 import { planModePayload, t } from "../../i18n/runtime";
 import {
   _environmentStatusRefreshFailed,
-  defaultModelName,
   skillsCatalog,
   standardProfileReadiness,
 } from "../../stores/customize";
@@ -28,6 +34,17 @@ import {
   planStatus,
   running,
 } from "../../stores/stream";
+import {
+  UPLOAD_STATE,
+  UPLOAD_WAIT_LIMIT_MS,
+  createUploadSession,
+  pendingUploadsFor,
+  uploadFailureMatches,
+  waitForPendingUploads,
+  type UploadCreation,
+  type UploadResult,
+} from "../chrome/upload";
+import { effProject } from "../customize/host";
 import { $, el } from "../messages/dom";
 import { down } from "../messages/scroll";
 import { runtimeSummary } from "../notebook/kernel";
@@ -66,6 +83,26 @@ type Annotation = {
   artifact_name?: string;
   body?: string;
   status?: string;
+};
+
+/**
+ * The single preparation owner. app.js keeps this on `S._sendPreparing`; here
+ * it is module state because nothing outside this chain may read or clear it.
+ */
+type SendPreparation = {
+  frameId: string | null;
+  projectId: string | null;
+  openGen: number;
+};
+
+let sendPreparing: SendPreparation | null = null;
+
+/** Barrier answer: `waitForPendingUploads`, or the stall timer's refusal. */
+type UploadBarrierResult = {
+  ok: boolean;
+  frameId: string | null;
+  failures: UploadResult[];
+  stalled?: boolean;
 };
 
 function annotationId(an: Annotation | null | undefined): string {
@@ -136,7 +173,12 @@ function mintAdmissionId(): string {
     (globalThis as { crypto?: Crypto }).crypto ||
     (typeof window !== "undefined" ? window.crypto : undefined);
   if (!cryptoObj || !cryptoObj.getRandomValues) {
-    return "resv-" + Date.now().toString(16).padStart(32, "0");
+    // app.js throws here rather than mint a non-CSPRNG id: 128 bits from the
+    // platform CSPRNG is the requirement, because this keys a claim on the
+    // user's own unpublished comments and has to survive collision across
+    // sessions and restarts. A timestamp is neither random nor unique -- two
+    // tabs in the same millisecond produce the same one.
+    throw new Error("admission id requires crypto.getRandomValues");
   }
   cryptoObj.getRandomValues(bytes);
   return "resv-" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -153,6 +195,32 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
   }
   const anns = openAnnotations();
   if (!text && !anns.length) return;
+  const composerAtStart = $("#composer") as HTMLTextAreaElement | null;
+  const composerDraft = composerAtStart ? composerAtStart.value : "";
+  const sourceFrameId = currentId.value || null;
+  const sourceProjectId = effProject() || project.value || null;
+  const sourceOpenGen = _openGen.value || 0;
+  // One preparation owner. Repeated Enter while FileReader is still working
+  // must not wake two identical sends when the same upload promise settles.
+  const activePreparation = sendPreparing;
+  if (
+    activePreparation &&
+    activePreparation.frameId === sourceFrameId &&
+    activePreparation.projectId === sourceProjectId &&
+    activePreparation.openGen === sourceOpenGen
+  ) {
+    // Say why. Returning silently here made a slow (or stuck) upload look like
+    // a dead composer: Enter did nothing and nothing explained it.
+    hint(t("upload.pendingSend"), false, true);
+    return;
+  }
+  const preparation: SendPreparation = {
+    frameId: sourceFrameId,
+    projectId: sourceProjectId,
+    openGen: sourceOpenGen,
+  };
+  sendPreparing = preparation;
+  const sendProjectId = sourceProjectId;
   const planNow = planMode.value && !opts.execute;
   const exploreNow = exploreMode.value && !planNow && !opts.execute;
   let skillDirective = "";
@@ -163,6 +231,8 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       return m;
     });
   }
+  // The full catalog includes lazy collection members, so fetching it can be
+  // noticeable on a cold send. Ordinary prose has nothing to resolve here.
   if (skillCandidates.length) {
     try {
       const cat = await loadSkillsCatalog();
@@ -175,17 +245,131 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       /* catalog is advisory */
     }
   }
-  if (!currentId.value) {
-    const f = (await api("/frames", {
-      method: "POST",
-      body: JSON.stringify({
-        project_id: project.value || undefined,
-        model: defaultModelName.value,
+  let dispatchFrameId = sourceFrameId;
+  let dispatchCreation: UploadCreation | null = null;
+  let dispatchOpenGen = sourceOpenGen;
+  try {
+    // Catalog preflight can be cold. A draft and its pinned annotations belong
+    // to the composer that started this function, not whichever session is
+    // visible after that await (including an A→B→A same-id ABA switch, which
+    // is the whole reason the generation is captured alongside the id).
+    if (
+      currentId.value !== sourceFrameId ||
+      (_openGen.value || 0) !== sourceOpenGen ||
+      (effProject() || project.value || null) !== sourceProjectId
+    ) {
+      return;
+    }
+    // Upload and send share the same first-session creation promise. Without
+    // that single flight, selecting a file and pressing Enter can create two
+    // frames and bind the bytes and message to different workspaces.
+    if (!dispatchFrameId) {
+      // A failed initial upload has no frame to bind to because creating that
+      // frame may itself have failed. Refuse THIS Enter so it cannot silently
+      // create a clean frame and ask the agent to list files that never
+      // arrived -- then consume the failure, the same policy as the bound path
+      // below. Left latched, every later Enter in this project's empty
+      // composer (plain text included) was refused with the stale upload
+      // error until the user re-attached.
+      const priorFailure = [...UPLOAD_STATE.failures].find((failure) =>
+        uploadFailureMatches(failure, null, sendProjectId),
+      );
+      if (priorFailure) {
+        const failed = priorFailure.results && priorFailure.results[0];
+        hint(t("upload.failed", apiErrorText(failed && failed.error)), true);
+        [...UPLOAD_STATE.failures].forEach((previous) => {
+          if (uploadFailureMatches(previous, null, sendProjectId)) {
+            UPLOAD_STATE.failures.delete(previous);
+          }
+        });
+        return;
+      }
+      dispatchCreation = createUploadSession(sendProjectId);
+      dispatchFrameId = await dispatchCreation;
+      // The shared creation adopts the frame it created and opens it
+      // (loadSessions + openConversation) AFTER publishing the id. Dispatching
+      // before that finished let openConversation's reset -- closeTurnTicket,
+      // enableComposer(true), a hidden Stop, a wiped #messages and a bumped
+      // _openGen -- land in the middle of the turn this send had just
+      // started; with an attachment in flight the bump made the guard below
+      // drop the message silently. Wait for the opening, so the generation
+      // captured next is the one the conversation will keep.
+      await dispatchCreation.opened;
+    }
+    dispatchOpenGen = _openGen.value || 0;
+    // This is the LAST await before the message POST. A FileReader/upload
+    // batch that starts during any earlier preflight is therefore included;
+    // after this barrier JavaScript runs synchronously through fetch().
+    // Announce the wait before taking it. This barrier can span a real upload,
+    // and an unexplained pause is indistinguishable from a broken Send.
+    if (pendingUploadsFor(dispatchFrameId, sendProjectId, dispatchCreation).length) {
+      hint(t("upload.pendingSend"), false, true);
+    }
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const uploadReady = await Promise.race<UploadBarrierResult>([
+      waitForPendingUploads(dispatchFrameId, sendProjectId, dispatchCreation),
+      // A hung /uploads must not pin the composer forever. Refusing rather
+      // than proceeding keeps the barrier's guarantee -- bytes never silently
+      // trail the turn that talks about them -- while `finally` below releases
+      // the preparation latch so the next Enter is live again.
+      new Promise<UploadBarrierResult>((resolve) => {
+        stallTimer = setTimeout(
+          () => resolve({ ok: false, stalled: true, frameId: dispatchFrameId, failures: [] }),
+          UPLOAD_WAIT_LIMIT_MS,
+        );
       }),
-    })) as { id: string };
-    currentId.value = f.id;
-    sub(f.id);
-    await loadSessions();
+    ]);
+    clearTimeout(stallTimer);
+    if (uploadReady.stalled) {
+      hint(t("upload.stalled"), true);
+      return;
+    }
+    if (!uploadReady.ok) {
+      const failure = uploadReady.failures[0];
+      hint(t("upload.failed", apiErrorText(failure && failure.error)), true);
+      // Reported once, then consumed. The refusal exists so this Enter cannot
+      // ask the agent about bytes that never arrived -- it was never meant to
+      // outlive the warning. Left latched, every later Enter in this
+      // conversation returned here, so abandoning the attachment cost the user
+      // their composer for the rest of the session.
+      [...UPLOAD_STATE.failures].forEach((previous) => {
+        if (uploadFailureMatches(previous, dispatchFrameId, sendProjectId)) {
+          UPLOAD_STATE.failures.delete(previous);
+        }
+      });
+      return;
+    }
+    // Navigation while preparation was in flight changes who owns the
+    // composer. Never send the old draft into the newly opened conversation.
+    if (
+      !dispatchFrameId ||
+      currentId.value !== dispatchFrameId ||
+      (_openGen.value || 0) !== dispatchOpenGen
+    ) {
+      return;
+    }
+  } catch (error) {
+    hint(t("toast.sendFailed", apiErrorText(error)), true);
+    return;
+  } finally {
+    if (sendPreparing === preparation) sendPreparing = null;
+  }
+  // Unreachable: the guard closing the barrier above already returned when
+  // there is no dispatch frame. It is here so the pinned id is a `string` for
+  // every use below, where reading `currentId` again is the bug being fixed.
+  if (!dispatchFrameId) return;
+  // Mint the admission id before this send changes any state: minting can
+  // refuse (no platform CSPRNG), and refusing after the draft was cleared and
+  // the turn locked would strand the composer behind a turn never posted.
+  const annIds = anns.map((x) => annotationId(x)).filter(Boolean);
+  let admissionId = "";
+  if (annIds.length) {
+    try {
+      admissionId = mintAdmissionId();
+    } catch (error) {
+      hint(t("toast.sendFailed", apiErrorText(error)), true);
+      return;
+    }
   }
   const g = $(".generated");
   if (g) g.remove();
@@ -210,6 +394,11 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     planPending.value = true;
   }
   if (skillDirective) payload += skillDirective;
+  // Read AFTER every await above and BEFORE this send touches `running`. The
+  // snapshot at the top of `send` is only good enough to decide how the bubble
+  // looks: the skills catalogue and, on a first message, creating the frame
+  // all await, and another tab or a recovered turn can take ownership in that
+  // window.
   const sawRunningAtDispatch = running.value;
   const turnTicketToken = sawRunningAtDispatch ? null : openTurnTicket();
   if (!turnTicketToken) hint(t("queue.accepted"));
@@ -219,22 +408,24 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     setCancelHidden(false);
     hint(t("toast.running"), false, true);
   }
+  // The textarea remains editable while FileReader/upload is pending. Clear
+  // only the draft that this invocation captured; text typed during that wait
+  // belongs to the next message and must survive.
   const composer = $("#composer") as HTMLTextAreaElement | null;
-  if (composer) composer.value = "";
+  if (composer && composer.value === composerDraft) composer.value = "";
   grow();
   renderComposerRefChips();
-  const annIds = anns.map((x) => annotationId(x)).filter(Boolean);
-  let admissionId = "";
-  if (annIds.length && currentId.value) {
-    admissionId = mintAdmissionId();
-    rememberAdmission(currentId.value, admissionId);
+  if (annIds.length) {
+    rememberAdmission(dispatchFrameId, admissionId);
     setLocalAnnotationStatus(annIds, "pending");
     callLane("refreshAllStages");
     callLane("updateAnnotBadge");
   }
-  if (currentId.value) sub(currentId.value);
+  // Guarantee this client is subscribed BEFORE the POST spawns the turn
+  // thread, on the pinned id the POST is about.
+  sub(dispatchFrameId);
   try {
-    const accepted = (await api(`/frames/${currentId.value}/message`, {
+    const accepted = (await api(`/frames/${dispatchFrameId}/message`, {
       method: "POST",
       body: JSON.stringify({
         input_data: { request: payload },
@@ -260,11 +451,11 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       if (accepted && accepted.annotation_reservation_id) {
         lastAnnotationReservation.value = accepted.annotation_reservation_id;
       }
-      if (admissionId && currentId.value && admissionSettled(said)) {
-        forgetAdmission(currentId.value, admissionId);
+      if (admissionId && admissionSettled(said)) {
+        forgetAdmission(dispatchFrameId, admissionId);
       }
       try {
-        if (currentId.value) await loadAnnotationsLocal(currentId.value);
+        await loadAnnotationsLocal(dispatchFrameId);
       } catch {
         /* reload is best-effort */
       }
@@ -272,10 +463,10 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
       callLane("updateAnnotBadge");
     }
   } catch (e) {
-    if (annIds.length && currentId.value) {
+    if (annIds.length) {
       const refused = !!(e && Number.isInteger((e as { status?: number }).status) && (e as { status: number }).status >= 400);
-      if (admissionId && refused) forgetAdmission(currentId.value, admissionId);
-      const reloaded = await loadAnnotationsLocal(currentId.value);
+      if (admissionId && refused) forgetAdmission(dispatchFrameId, admissionId);
+      const reloaded = await loadAnnotationsLocal(dispatchFrameId);
       if (!reloaded) setLocalAnnotationStatus(annIds, refused ? "open" : "pending");
       callLane("refreshAllStages");
       callLane("updateAnnotBadge");
@@ -305,7 +496,7 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
         typeof globalThis.confirm === "function" ? globalThis.confirm(t("model.rebind.confirm")) : false;
       if (ask) {
         try {
-          await api(`/frames/${encodeURIComponent(String(currentId.value))}/model-binding`, {
+          await api(`/frames/${encodeURIComponent(dispatchFrameId)}/model-binding`, {
             method: "POST",
           });
           hint(t("model.rebind.done"));
@@ -323,7 +514,12 @@ export async function send(text?: string | null, opts?: { execute?: boolean }): 
     void loadSessions();
     return;
   }
-  if (currentId.value) resumeWatch(currentId.value, _openGen.value);
+  // The async POST returns as soon as the job is accepted. Keep the composer
+  // locked until the authoritative WebSocket frame_update arrives; the status
+  // watchdog covers a missed terminal event after reconnects.
+  if (currentId.value === dispatchFrameId && (_openGen.value || 0) === dispatchOpenGen) {
+    resumeWatch(dispatchFrameId, dispatchOpenGen);
+  }
   void loadSessions();
 }
 
@@ -388,7 +584,18 @@ export function bindComposer(dispatch: ComposerDispatch = send): void {
       if (ac && ac.open) return;
       if (e.key !== "Enter" || e.shiftKey) return;
       e.preventDefault();
-      if (inFlight) return;
+      if (inFlight) {
+        // Dropping the keystroke is right -- one dispatch at a time -- but
+        // dropping it SILENTLY is the "dead composer" this branch's own
+        // preparation latch exists to explain. `send()`'s hint can never fire
+        // from here because the dispatch it guards never happens, so say the
+        // same thing at the point that actually swallowed the Enter, and only
+        // when a pending upload is the reason.
+        if (pendingUploadsFor(currentId.value || null, effProject() || project.value || null, null).length) {
+          hint(t("upload.pendingSend"), false, true);
+        }
+        return;
+      }
       const pending = Promise.resolve(dispatch(c.value));
       inFlight = pending;
       void pending.finally(() => {

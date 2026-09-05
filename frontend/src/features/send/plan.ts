@@ -7,6 +7,7 @@
  */
 
 import { t } from "../../i18n/runtime";
+import { turnDone } from "./turn";
 import { _openGen, currentId } from "../../stores/session";
 import { defaultModelName } from "../../stores/customize";
 import {
@@ -268,7 +269,7 @@ async function dispatchPlanTurn(
     return true;
   } catch (e) {
     hint(t(failedKey, apiErrorText(e)), true);
-    if (ownsTurnTicket(token)) callLane("turnDone", "failed");
+    if (ownsTurnTicket(token)) turnDone("failed");
     return false;
   }
 }

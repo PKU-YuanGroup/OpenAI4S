@@ -494,24 +494,46 @@ class RuntimeActionLedger:
 
         record_session_llm_usage(self.store, self.root_frame_id, usage)
 
-    def _reply_accounting(
-        self, reply: ModelReply
-    ) -> tuple[dict[str, int] | None, float | None]:
-        """Return canonical counters and a price-derived charge, if known."""
+    def record_abandoned_usage(self, usage: Mapping[str, Any] | None) -> None:
+        """Meter a cancelled provider call whose late reply cannot be replayed.
 
-        allowed = (
-            "input_tokens",
-            "output_tokens",
-            "cache_read",
-            "cache_write",
-            "reasoning_tokens",
-            "prompt_tokens",
-            "completion_tokens",
-            "total_tokens",
-        )
+        No action group is appended: the reply was deliberately quarantined
+        and must never become conversation history. Only the provider counters
+        are retained so Stop cannot bypass the team quota ledger.
+        """
+
+        self._record_team_usage(self._canonical_usage(usage))
+
+    _USAGE_KEYS = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_write",
+        "reasoning_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+    )
+
+    @classmethod
+    def _canonical_usage(cls, source: Any) -> dict[str, int] | None:
+        """The one usage normalisation every metered reply goes through.
+
+        Both the normal path (``_reply_accounting``) and the abandoned-reply
+        path (``record_abandoned_usage``) feed ``record_session_llm_usage``,
+        which reads the canonical ``input_tokens``/``output_tokens`` only. The
+        ``chat()`` facade already emits both key families, but a reply that
+        reached the ledger without it -- an injected transport, a test fake --
+        used to meter on one path and as zero on the other, depending on
+        which of the two hand-written coercions folded the OpenAI aliases.
+        One rule: allow-listed keys, non-negative ints, aliases folded into the
+        canonical names when those are absent.
+        """
+
+        if not isinstance(source, Mapping):
+            return None
         usage: dict[str, int] = {}
-        source = reply.usage if isinstance(reply.usage, Mapping) else {}
-        for key in allowed:
+        for key in cls._USAGE_KEYS:
             value = source.get(key)
             if value is None or isinstance(value, bool):
                 continue
@@ -521,6 +543,20 @@ class RuntimeActionLedger:
                 continue
             if parsed >= 0:
                 usage[key] = parsed
+        for canonical, alias in (
+            ("input_tokens", "prompt_tokens"),
+            ("output_tokens", "completion_tokens"),
+        ):
+            if canonical not in usage and alias in usage:
+                usage[canonical] = usage[alias]
+        return usage or None
+
+    def _reply_accounting(
+        self, reply: ModelReply
+    ) -> tuple[dict[str, int] | None, float | None]:
+        """Return canonical counters and a price-derived charge, if known."""
+
+        usage = self._canonical_usage(reply.usage)
         if not usage:
             return None, None
         if not self.provider:

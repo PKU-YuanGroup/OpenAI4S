@@ -88,3 +88,23 @@ export async function skipFirstRunWizard(page, baseUrl) {
     await wizard.waitFor({ state: "hidden", timeout: 10000 });
   }
 }
+
+/**
+ * Poll `predicate` until it returns a truthy value. Every browser script needs
+ * this: the workbench CSP has no 'unsafe-eval', so page.waitForFunction is
+ * refused and every wait has to be a locator or an evaluate poll.
+ */
+export async function waitUntil(label, predicate, timeoutMs = 20000, intervalMs = 60) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ""}`);
+}

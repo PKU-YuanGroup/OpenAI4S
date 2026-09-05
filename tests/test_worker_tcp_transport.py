@@ -251,17 +251,37 @@ def test_a_local_kernel_refuses_to_adopt_a_generation(tmp_path):
         kernel.adopt_authorization_generation("kernel:something-else")
 
 
+def _settled_accepted(gateway, expected: int, timeout: float = 10.0) -> int:
+    """Read ``accepted`` only once the server has had a chance to publish it.
+
+    ``_dial`` returns the moment the handshake line arrives, but ``accepted``
+    is incremented much further down ``_serve_peer`` -- after ``sendall``, the
+    blocking-mode switch, ``_enable_keepalive`` and the interrupt-hook lookup.
+    Sampling it straight after the dial therefore read a counter the server had
+    not published yet, which is why this passed on an idle machine and failed
+    on a loaded runner. Delaying ``_enable_keepalive`` by 300ms reproduces it
+    every time.
+
+    Waiting does not weaken the assertion: a refused peer never increments, so
+    the count cannot climb past ``expected`` while the caller holds it here.
+    """
+
+    deadline = time.monotonic() + timeout
+    while gateway.accepted < expected and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return gateway.accepted
+
+
 def test_a_replayed_credential_cannot_open_a_second_connection(gateway, authority):
     credential = authority.issue(allocation_id="alloc_1", epoch=0)
     assert _dial(gateway, credential.to_json())["ok"] is True
     assert _dial(gateway, credential.to_json()) == {"ok": False, "error": "refused"}
-    # The handshake reply goes out before the server thread registers the
-    # peer under its lock, so the count is a moment behind the reply on a
-    # busy runner; the second dial was refused either way.
-    deadline = time.monotonic() + 2.0
-    while gateway.accepted != 1 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert gateway.accepted == 1
+    # Both sides of this merge found the same race and fixed it the same way;
+    # this keeps the named helper (reusable, and its 10s budget survives a
+    # loaded runner) and origin/main's point about why the assertion is still
+    # exact: the second dial was refused either way, so the count cannot climb
+    # past 1 while we wait for it.
+    assert _settled_accepted(gateway, 1) == 1
 
 
 def test_await_worker_is_keyed_by_epoch(gateway, authority):

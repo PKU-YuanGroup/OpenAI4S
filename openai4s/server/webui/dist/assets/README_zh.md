@@ -8,7 +8,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `en-DtuUOBlM.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-C69Pp4bB.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-Da_E9o_t.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `zh-gS0NfuQ7.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `en-CPQbE2IT.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-BNySJcqm.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-DuHuvGEL.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `zh-cawl9S-h.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |

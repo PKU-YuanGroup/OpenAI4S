@@ -1,44 +1,18 @@
 /** openConversation, newSession, resumeWatch, routing. app.js:7087-7219, 2678-2706, 13231-13248. */
 
 import { t } from "../../i18n";
-import { _projArtFor, _tbl } from "../../stores/artifacts";
-import { defaultModelName } from "../../stores/customize";
-import {
-  _lineageFor,
-  _liveCell,
-} from "../../stores/notebook";
-import {
-  _msgEarlierLoading,
-  _openGen,
-  _titleName,
-  project,
-} from "../../stores/session";
-import {
-  _resumeTimer,
-  _resumeTok,
-} from "../../stores/stream";
-import {
-  _branchActionLoading,
-  _branchConversationTimer,
-  _recoveryActionLoading,
-  _timelineHistoryLoading,
-  _timelineHistoryReq,
-  _timelineRestoreFocusGroupId,
-  _workbenchLoading,
-  _workbenchReq,
-  _workbenchTimer,
-} from "../../stores/timeline";
-import { api, apiErrorText } from "./api";
+import { currentId, project } from "../../stores/session";
+import { apiErrorText } from "./api";
 import { binds } from "./binds";
 import { hint } from "./chrome";
 import { showDashboard, showWorkspace } from "./dashboard";
-import {
-  $,
-} from "./dom";
+import { $ } from "./dom";
 import { loadProjects, loadSessions } from "./load";
+import { adoptCreatedFrame, createUploadSession } from "../chrome/upload";
 import { openConversation } from "../messages/open";
 import { renderProjMenu } from "./projects";
-
+import { resetNotebookCellCaches } from "../notebook/chrome";
+import { unsub } from "../ws/connect";
 
 /**
  * F-11 owns `resumeWatch` (send/ticket.ts). This lane carried a
@@ -49,18 +23,42 @@ import { renderProjMenu } from "./projects";
  */
 export { resumeWatch } from "../send/ticket";
 
-export async function newSession(): Promise<void> {
+export async function newSession(projectId?: string): Promise<void> {
+  // onclick passes a MouseEvent, and `window.newSession` is reachable from the
+  // legacy shell too. Only an explicit string is a project override; a user
+  // click creates the new conversation in the active project.
+  const requestedProject = typeof projectId === "string" ? projectId : undefined;
+  const targetProject =
+    requestedProject === undefined ? project.value || null : requestedProject || null;
   try {
-    const f = (await api("/frames", {
-      method: "POST",
-      body: JSON.stringify({
-        project_id: project.value || undefined,
-        model: defaultModelName.value,
-      }),
-    })) as { id: string };
-    await loadSessions();
-    await openConversation(f.id, project.value);
-    $("#composer")?.focus();
+    // Empty-project auto creation, Attach, and the first Send all share this
+    // promise. They cannot create sibling frames and split bytes from text.
+    // With a conversation already open there is nothing to share: uploads bind
+    // to currentId directly, so the only thing the shared promise could do is
+    // collapse two deliberate New-session clicks into one frame.
+    const creation = createUploadSession(targetProject, { fresh: !!currentId.value });
+    const frameId = await creation;
+    if ((project.value || null) !== targetProject) return;
+    if (currentId.value === frameId) {
+      // The shared creation adopted its own frame and is still opening it.
+      // Callers such as openProject await this function for the conversation,
+      // not for the id: resolving here left them racing an open that had not
+      // happened yet.
+      await creation.opened;
+    } else {
+      // Release the previous conversation the way openConversation would,
+      // BEFORE the new id is published: openConversation derives "previous"
+      // from currentId, and publishing first made it see the new frame as its
+      // own predecessor -- the old subscription and the notebook caches were
+      // then never released, and A's artifact events kept landing in B.
+      const previous = currentId.value;
+      if (previous && previous !== frameId) {
+        unsub(previous);
+        resetNotebookCellCaches(previous, frameId);
+      }
+      await adoptCreatedFrame(frameId, targetProject, { loadSessions, openConversation });
+    }
+    if (currentId.value === frameId) $("#composer")?.focus();
   } catch (e) {
     hint(t("folder.create.failed", apiErrorText(e)), true);
   }

@@ -28,6 +28,7 @@ from openai4s.agent.events import (
     AgentEvent,
     OutcomeProduced,
     ReplyReceived,
+    RunFinished,
     TextDelta,
     TurnStarted,
 )
@@ -400,6 +401,16 @@ class WebEventSink:
                     ),
                     before_action=False,
                 )
+        elif isinstance(event, RunFinished):
+            # A run the engine ends as soon as the model answers with the
+            # cancelled no-op emits no ReplyReceived/ActionRouted for that
+            # turn, so nothing above flushes the prose tail or discards a code
+            # draft that was still streaming when Stop landed. Both are no-ops
+            # after a turn that did route its reply.
+            if self._streamer is not None:
+                self._streamer.finalize()
+            if self._code_draft is not None:
+                self._code_draft.clear("cancelled")
 
     def _ensure_streamer(self) -> ProseStreamer:
         if self._streamer is None:

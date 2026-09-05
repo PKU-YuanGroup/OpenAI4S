@@ -2,6 +2,7 @@
 
 import { LANG, t } from "../../i18n";
 import {
+  _openGen,
   _projectsLoadingMore,
   currentId,
   projects,
@@ -402,6 +403,12 @@ export function startDashPoll(): void {
 
 export function showDashboard(): void {
   navURL("/");
+  // app.js:2695 bumps here too. Going Home was the one navigation that left
+  // every parked continuation believing it still owned the view: an
+  // openConversation mid-load would paint into the hidden workspace and arm a
+  // resume watchdog that then exits stale on its first tick, stranding the
+  // composer disabled behind a spinner nothing clears.
+  _openGen.value = (_openGen.value || 0) + 1;
   $("#workspace")?.classList.add("hidden");
   $("#dashboard")?.classList.remove("hidden");
   currentId.value = null;

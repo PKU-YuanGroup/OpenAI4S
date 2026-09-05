@@ -1,7 +1,7 @@
 /** Tiny DOM helpers ported from app.js:3-4, 81, 2678-2706, 12918, 12927-12941. */
 
 import { t } from "../../i18n";
-import { currentId } from "../../stores/session";
+import { _openGen, currentId } from "../../stores/session";
 import { _messagesFollow } from "../../stores/ui";
 import { callLane } from "./lane";
 
@@ -143,6 +143,10 @@ export function closeModalEl(modal: HTMLElement | null): void {
 
 /** Clear the open-conversation chrome when no session remains. */
 export function clearConversationChrome(): void {
+  // Navigation: a continuation parked on an await for the conversation being
+  // cleared (an older history page, a resume tick) must see a stale token
+  // rather than paint into the emptied view.
+  _openGen.value = (_openGen.value || 0) + 1;
   currentId.value = null;
   const messages = $("#messages");
   if (messages) messages.innerHTML = "";

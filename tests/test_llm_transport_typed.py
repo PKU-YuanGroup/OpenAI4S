@@ -497,3 +497,101 @@ def test_an_uncancelled_wait_sleeps_the_whole_delay():
     slept: list[float] = []
     assert transport_mod._wait(1.0, slept.append, lambda: False) is False
     assert sum(slept) == pytest.approx(1.0)
+
+
+def test_sse_stops_reading_at_the_next_event_once_cancelled(monkeypatch):
+    """Stop must reach a live stream, not just the retry backoff.
+
+    A cancelled streaming call used to keep its thread, its socket and the
+    provider's generation running to the end of the reply while every delta
+    was discarded on arrival. The read now ends at the first event dispatched
+    after cancellation, the response is closed, and the failure is neither
+    retried nor replayed.
+    """
+    closed = []
+    pulled = []
+
+    class _Stream:
+        def __iter__(self):
+            for n in range(1, 6):
+                pulled.append(n)
+                yield f'data: {{"delta":"chunk-{n}"}}\n'.encode()
+                yield b"\n"
+
+        def close(self):
+            closed.append(True)
+
+    calls = []
+
+    def urlopen(*a, **k):
+        calls.append(1)
+        return _Stream()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    seen = []
+    stop = []
+
+    def on_event(event):
+        seen.append(event)
+        stop.append(True)  # Stop lands right after the first delta is delivered
+
+    with pytest.raises(TransportError) as e:
+        post_sse(
+            "https://x.invalid",
+            {},
+            {},
+            5,
+            on_event,
+            should_cancel=lambda: bool(stop),
+            sleep=_Recorder(),
+        )
+    assert "cancelled mid-stream" in str(e.value)
+    assert e.value.retryable is False
+    assert e.value.output_committed is True
+    assert seen == [{"delta": "chunk-1"}], "a delta was delivered after Stop"
+    assert pulled == [1, 2], "the stream was read past the event that observed Stop"
+    assert closed == [True], "the response was not closed"
+    assert len(calls) == 1
+
+
+def test_sse_drains_a_cancelled_stream_when_the_probe_says_so(monkeypatch):
+    """A metered session reads an abandoned stream to its terminal usage.
+
+    The probe's ``abort_stream=False`` keeps the read going after Stop: the
+    deltas are discarded upstream, the terminal usage event still arrives,
+    and the team ledger is charged for a call the provider billed.
+    """
+    closed = []
+
+    class _Stream:
+        def __iter__(self):
+            for n in range(1, 4):
+                yield f'data: {{"delta":"chunk-{n}"}}\n'.encode()
+                yield b"\n"
+            yield b'data: {"usage":{"prompt_tokens":9,"completion_tokens":3}}\n'
+            yield b"\n"
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Stream())
+
+    class _Probe:
+        abort_stream = False
+
+        def __call__(self):
+            return True  # Stop landed before the first event
+
+    seen = []
+    post_sse(
+        "https://x.invalid",
+        {},
+        {},
+        5,
+        seen.append,
+        should_cancel=_Probe(),
+        sleep=_Recorder(),
+    )
+    assert seen[-1] == {"usage": {"prompt_tokens": 9, "completion_tokens": 3}}
+    assert len(seen) == 4
+    assert closed == [True]

@@ -67,7 +67,7 @@
       "tests": "tests/test_delegation_control.py,tests/test_delegation_persistence.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "144af6b7c5a5e4ce8e2cde9437c9eda6fe9f6ba283ecf6aaff954c3978a20dd5"
+      "evidence_digest": "fb7807a090d78a5cffb02b91e878145df920b04bb4ba2957d703c9c67e2551b4"
     },
     {
       "source": "R1",
@@ -176,7 +176,7 @@
       "tests": "tests/test_memory_scope_and_budgets.py,tests/test_memory_edit_and_expiry_quota.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "2b978281101f7069f5bffec3290cd26506add869beb15aa90c9f5768300ee713"
+      "evidence_digest": "ee5153eaa7d823ead821c192b896daea477390f6b0e0c12f78e2212eeff6d4a2"
     },
     {
       "source": "R2",
@@ -190,7 +190,7 @@
       "tests": "tests/test_session_and_message_paging.py",
       "browser_evidence": "tests/browser_p1_controls.mjs",
       "external_evidence": "",
-      "evidence_digest": "79ada7da43c46422cd2b2aacf250cdb2a3cf4b5fdcc08af751aacf7cfbde68ef"
+      "evidence_digest": "40085cbfceab23dae20c277feb09562fbe0f271343f85898afe6e1a44afc7d35"
     },
     {
       "source": "R2",
@@ -578,7 +578,7 @@
       "tests": "tests/test_local_job_envelope.py,tests/test_local_job_lifecycle.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
+      "evidence_digest": "865dc95c3bae6c29af3fe8b6ea468dd567dde6c1bc5ddd2ad42a3cbb756df650"
     },
     {
       "source": "R6",
@@ -703,7 +703,7 @@
       "tests": "tests/test_local_job_lifecycle.py,tests/test_local_job_envelope.py",
       "browser_evidence": "",
       "external_evidence": "",
-      "evidence_digest": "cfc98145bfddbc6a8622d4d10a54976b87d5ec538ad40f99788a7f5ef4032d20"
+      "evidence_digest": "865dc95c3bae6c29af3fe8b6ea468dd567dde6c1bc5ddd2ad42a3cbb756df650"
     },
     {
       "source": "R7",
@@ -773,7 +773,7 @@
       "tests": "tests/test_notebook_export.py,tests/test_gateway_session_domain_routes.py",
       "browser_evidence": "tests/browser_smoke.mjs",
       "external_evidence": "",
-      "evidence_digest": "0dd434eef1955669359c08bdba33b78b3c2798cbf0caf4559a2a3e709950bb31"
+      "evidence_digest": "fc210b22c73e86d3ae5f2c4b3ec7cfd06a354ac6f77c506bda400ac597f3eef2"
     },
     {
       "source": "R7",

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { UPLOAD_STATE } from "../chrome/upload";
 import { installSend } from "./index";
 import { bindComposer } from "./send";
+import * as chrome from "../sessions/chrome";
+
+const hintSpy = vi.spyOn(chrome, "hint").mockImplementation(() => {});
 
 type KeyEvent = {
   key?: string;
@@ -169,5 +173,53 @@ describe("bindComposer", () => {
     onKey(enter(composer));
     expect(dispatch).toHaveBeenCalledTimes(2);
     expect(dispatch).toHaveBeenLastCalledWith("again");
+  });
+
+  it("a swallowed Enter says why when an upload is what it is waiting on", async () => {
+    // Dropping the keystroke is right; dropping it silently is the "dead
+    // composer" the send-side preparation latch exists to explain. That hint
+    // can never fire from here -- the dispatch it guards never happens -- so
+    // the guard has to say it, and only when a pending upload is the reason.
+    const composer = fakeComposer();
+    const root = stubDocument({ composer });
+    let settle!: () => void;
+    const dispatch = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    bindComposer(dispatch);
+    const onKey = root.listeners.keydown![0]!;
+    composer.value = "hello";
+    onKey(enter(composer));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+
+    // No upload in flight: the drop stays quiet rather than blaming uploads.
+    hintSpy.mockClear();
+    onKey(enter(composer));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(hintSpy).not.toHaveBeenCalled();
+
+    // With bytes actually pending for this destination, it explains itself.
+    const batch = {
+      frameAtSelection: null,
+      targetFrameId: null,
+      projectId: null,
+      targetSource: null,
+      targetPromise: null,
+      promise: null,
+    };
+    UPLOAD_STATE.pending.add(batch as never);
+    try {
+      hintSpy.mockClear();
+      onKey(enter(composer));
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(hintSpy).toHaveBeenCalled();
+    } finally {
+      UPLOAD_STATE.pending.delete(batch as never);
+    }
+    settle();
+    await tick();
   });
 });

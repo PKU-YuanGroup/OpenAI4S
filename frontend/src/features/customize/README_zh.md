@@ -9,6 +9,8 @@ F-19 Customize 领域逻辑。Tab 状态机、定时器租约（unmount 清掉�
 | 文件 | 职责 |
 | --- | --- |
 | [`actions.ts`](actions.ts) | `openCust` / `custTab` / `closeCust`。递增 generation 让面板重新挂载。 |
+| [`load.ts`](load.ts) | 每个 tab generation 的有界首次加载：`beginCustomizeLoad` / `markCustomizeLoaded` / `markCustomizeFailed` / `markCustomizeTimedOut`，`CUST_LOAD_TIMEOUT_MS`（30 秒，与 app.js 一致）。 |
+| [`load.test.ts`](load.test.ts) | `custTab()` 开始一次待定加载；标记只结算一次；超时只对仍在等待的 generation 生效。 |
 | [`api.ts`](api.ts) | `api` / `ApiError` / `apiErrorText`。路径必须是单个前导斜杠。 |
 | [`environment.ts`](environment.ts) | Skill readiness 文案；`sanitizeStandardProfileReadiness`。 |
 | [`host.ts`](host.ts) | 经 `isReady` 调用 `hint` / `openViewer` / `loadModels`；`effProject`。 |

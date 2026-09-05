@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
+
+import pytest
 
 import openai4s.agent.runtime as runtime
 from openai4s.agent.actions import CodeCell, NativeToolBatch, NativeToolCall
@@ -117,6 +121,280 @@ def test_chat_model_refreshes_callable_session_catalog_each_turn():
     model.complete([], lambda _delta: None)
 
     assert seen == [("first",), ("first", "second")]
+
+
+def test_chat_model_cancel_releases_owner_and_quarantines_late_provider_output():
+    entered = threading.Event()
+    release = threading.Event()
+    provider_done = threading.Event()
+    shared_cancel = threading.Event()
+    late_cancel_checks = []
+    deltas = []
+    abandoned = []
+    accounted = threading.Event()
+    result = {}
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        entered.set()
+        assert release.wait(5), "test did not release the fake provider"
+        late_cancel_checks.append(kwargs["should_cancel"]())
+        kwargs["on_delta"]("must not escape after Stop")
+        provider_done.set()
+        return {
+            "content": "late reply",
+            "usage": {"prompt_tokens": 17, "completion_tokens": 3},
+        }
+
+    def account(reply):
+        abandoned.append(reply["usage"])
+        accounted.set()
+
+    model = ChatModel(
+        object(),
+        fake_chat,
+        stream=True,
+        cancellation=SimpleNamespace(cancelled=shared_cancel.is_set),
+        abandoned_reply=account,
+    )
+    owner = threading.Thread(
+        target=lambda: result.setdefault("reply", model.complete([], deltas.append))
+    )
+    owner.start()
+    assert entered.wait(2), "fake provider call did not start"
+
+    shared_cancel.set()
+    owner.join(1)
+    assert not owner.is_alive(), "Stop waited for the blocked provider request"
+    assert result["reply"]["finish_reason"] == "cancelled"
+
+    # Admission of the next queued turn clears this shared Event. The old
+    # request's private latch must remain cancelled, or it can ABA-revive and
+    # stream its late response into the new turn.
+    shared_cancel.clear()
+    release.set()
+    assert provider_done.wait(2), "detached fake provider did not finish"
+    assert accounted.wait(2), "late provider usage was not accounted"
+    assert late_cancel_checks == [True]
+    assert deltas == []
+    assert abandoned == [{"prompt_tokens": 17, "completion_tokens": 3}]
+
+
+def test_a_call_cancelled_before_it_starts_never_reaches_the_provider():
+    """Stop can land between ``Thread.start()`` and ``chat_fn``'s first line.
+
+    The detached design exists because a urllib request already on the wire
+    cannot be recalled. In this window nothing has been sent yet, so there is
+    nothing to salvage: the request must not go out at all. It would be billed
+    for a turn nobody is reading, and on the Web path ``chat_fn`` is
+    ``_invoke_model_with_auto_budget``, which snapshots the LIVE Auto Mode run
+    id at its own entry -- by then the run of the turn admitted *after* Stop.
+    """
+
+    calls: list[dict] = []
+    probes = {"n": 0}
+
+    def cancelled_after_spawn() -> bool:
+        # False only for the pre-spawn check; true from the moment the thread
+        # could be running, whichever side of the handoff asks first.
+        probes["n"] += 1
+        return probes["n"] > 1
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        calls.append(kwargs)
+        return {"content": "must not be requested", "usage": {"prompt_tokens": 9}}
+
+    accounted: list[object] = []
+    model = ChatModel(
+        object(),
+        fake_chat,
+        cancellation=SimpleNamespace(cancelled=cancelled_after_spawn),
+        abandoned_reply=accounted.append,
+    )
+
+    reply = model.complete([], lambda _text: None)
+
+    assert reply["finish_reason"] == "cancelled"
+    assert calls == [], "a cancelled call still reached the provider"
+    # Nothing was requested, so there is no usage to meter and no reply to
+    # quarantine -- the accounting sink must stay untouched rather than
+    # inventing a zero.
+    assert accounted == []
+
+
+def test_chat_model_projects_stream_deltas_on_the_owning_thread():
+    shared_cancel = threading.Event()
+    provider_threads = []
+    callback_threads = []
+    deltas = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        provider_threads.append(threading.get_ident())
+        kwargs["on_delta"]("one")
+        kwargs["on_delta"]("two")
+        return {"content": "one two"}
+
+    owner_thread = threading.get_ident()
+    model = ChatModel(
+        object(),
+        fake_chat,
+        stream=True,
+        cancellation=SimpleNamespace(cancelled=shared_cancel.is_set),
+    )
+
+    def collect_delta(text):
+        callback_threads.append(threading.get_ident())
+        deltas.append(text)
+
+    reply = model.complete([], collect_delta)
+
+    assert reply["content"] == "one two"
+    assert provider_threads and provider_threads != [owner_thread]
+    assert callback_threads == [owner_thread, owner_thread]
+    assert deltas == ["one", "two"]
+
+
+def test_chat_model_bounds_detached_provider_calls(monkeypatch):
+    monkeypatch.setattr(
+        runtime,
+        "_PROVIDER_CALL_BUDGET",
+        runtime._DetachedCallBudget(1, per_scope_limit=4),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    shared_cancel = threading.Event()
+
+    def blocked_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        entered.set()
+        assert release.wait(5)
+        return {"content": "late"}
+
+    model = ChatModel(
+        object(),
+        blocked_chat,
+        cancellation=SimpleNamespace(cancelled=shared_cancel.is_set),
+    )
+    owner = threading.Thread(target=lambda: model.complete([], lambda _text: None))
+    owner.start()
+    assert entered.wait(2)
+    shared_cancel.set()
+    owner.join(1)
+    assert not owner.is_alive()
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding() == 1
+
+    second = ChatModel(
+        object(),
+        blocked_chat,
+        cancellation=SimpleNamespace(cancelled=lambda: False),
+    )
+    with pytest.raises(RuntimeError, match="cancelled model requests"):
+        second.complete([], lambda _text: None)
+
+    release.set()
+    deadline = time.monotonic() + 2
+    while runtime._PROVIDER_CALL_BUDGET.outstanding() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding() == 0
+
+
+def test_chat_model_budget_never_charges_a_live_provider_call():
+    """Only *detached* calls are bounded.
+
+    Charging every cancellable request would bound healthy concurrency: each
+    delegated child carries a cancellation, the fan-out cap of 48 is per node,
+    and the session cap is 1000 -- so a nested fan-out routinely holds more
+    live calls than the budget and would start refusing requests nobody
+    cancelled.
+    """
+
+    budget = runtime._DetachedCallBudget(2, per_scope_limit=99)
+    live = [budget.track() for _ in range(5)]
+    for _ in range(10):
+        budget.admit()  # no live call is charged, so admission stays open
+    assert budget.outstanding() == 0
+
+    live[0].detach()
+    live[1].detach()
+    assert budget.outstanding() == 2
+    with pytest.raises(RuntimeError, match="cancelled model requests"):
+        budget.admit()
+
+    live[0].settle()
+    budget.admit()
+    for call in live:
+        call.settle()
+    assert budget.outstanding() == 0
+
+
+def test_one_session_cannot_stack_cancelled_calls_against_a_stale_ledger(
+    monkeypatch,
+):
+    """Stop releases the turn while the request keeps billing.
+
+    ``enforce_llm_quota`` is check-then-call: it reads stored ``llm_*``
+    counters and reserves nothing for a call in flight, so every Stop-and-
+    resend passes a ledger that has not been charged for the request still
+    running. Only this budget decides how far one session can outrun its own
+    accounting, so the per-scope limit has to bite well before the process one.
+    """
+
+    monkeypatch.setattr(
+        runtime,
+        "_PROVIDER_CALL_BUDGET",
+        runtime._DetachedCallBudget(128, per_scope_limit=2),
+    )
+    release = threading.Event()
+    started = threading.Semaphore(0)
+
+    def blocked_chat(messages, cfg, **kwargs):
+        del messages, cfg, kwargs
+        started.release()
+        assert release.wait(5)
+        return {"content": "late"}
+
+    def stop_one(scope):
+        shared = threading.Event()
+        model = ChatModel(
+            object(),
+            blocked_chat,
+            cancellation=SimpleNamespace(cancelled=shared.is_set),
+            call_scope=scope,
+        )
+        owner = threading.Thread(target=lambda: model.complete([], lambda _t: None))
+        owner.start()
+        assert started.acquire(timeout=2)
+        shared.set()
+        owner.join(2)
+        assert not owner.is_alive()
+
+    try:
+        stop_one("frame-a")
+        stop_one("frame-a")
+        # A third Stop on the same session would be a third concurrent billed
+        # request against counters none of them have reached yet.
+        with pytest.raises(RuntimeError, match="this session already has"):
+            ChatModel(
+                object(),
+                blocked_chat,
+                cancellation=SimpleNamespace(cancelled=lambda: False),
+                call_scope="frame-a",
+            ).complete([], lambda _t: None)
+
+        # Another session is unaffected: the bound is per session, and the
+        # process ceiling is far away.
+        stop_one("frame-b")
+        assert runtime._PROVIDER_CALL_BUDGET.outstanding("frame-a") == 2
+        assert runtime._PROVIDER_CALL_BUDGET.outstanding("frame-b") == 1
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 5
+    while runtime._PROVIDER_CALL_BUDGET.outstanding() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runtime._PROVIDER_CALL_BUDGET.outstanding("frame-a") == 0
 
 
 def test_native_batch_returns_one_canonical_tool_message_per_call(monkeypatch):
@@ -558,3 +836,212 @@ def test_format_observation_reminds_models_that_host_is_injected():
     )
 
     assert "never `import host`" in observation
+
+
+def test_a_reply_delivered_before_cancellation_keeps_its_usage(monkeypatch):
+    """Cancellation that lands after ChatModel returned a real reply.
+
+    ``ChatModel`` owns cancellation end to end: whatever it delivers as real
+    has passed its own final check, and a late Stop is observed by the engine
+    after the reply was recorded with its usage. There is no second wrapper
+    left to re-check the raw signal and swap the reply for the no-op without
+    ``abandon()`` -- which is the one exit that metered nothing.
+    """
+    from openai4s.agent.engine import AgentEngine
+    from openai4s.agent.events import ReplyReceived
+    from openai4s.agent.models import ExecutionOutcome
+
+    usage = {"prompt_tokens": 17, "completion_tokens": 3}
+    stop = threading.Event()
+    abandoned = []
+    model = ChatModel(
+        object(),
+        lambda messages, cfg, **kwargs: {"content": "real reply", "usage": dict(usage)},
+        cancellation=SimpleNamespace(cancelled=stop.is_set),
+        abandoned_reply=abandoned.append,
+    )
+
+    class StopRightAfterDelivery:
+        def complete(self, messages, on_delta):
+            reply = model.complete(messages, on_delta)
+            stop.set()  # Stop lands the instant the reply is delivered
+            return reply
+
+    received = []
+
+    class Events:
+        def emit(self, event):
+            if isinstance(event, ReplyReceived):
+                received.append(event.reply)
+
+    class Executor:
+        def execute(self, action, reply, state):
+            return ExecutionOutcome()
+
+    engine = AgentEngine(
+        StopRightAfterDelivery(),
+        Executor(),
+        event_sink=Events(),
+        cancellation=SimpleNamespace(cancelled=stop.is_set),
+    )
+    result = engine.run([{"role": "user", "content": "go"}])
+
+    assert result.stop_reason == "cancelled"
+    assert [reply.usage for reply in received] == [usage]
+    assert abandoned == []  # delivered as real: metered once, on the normal path
+
+
+def test_agent_composes_chat_model_without_a_second_cancellation_wrapper():
+    import ast
+    import inspect
+
+    import openai4s.agent.loop as loop_mod
+
+    tree = ast.parse(inspect.getsource(loop_mod))
+    assert not [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and "Cancellation" in node.name
+    ], "loop.py wraps ChatModel in a second cancellation check again"
+    chat_model_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ChatModel"
+    ]
+    assert chat_model_calls
+    assert all(
+        {"cancellation", "abandoned_reply"}
+        <= {keyword.arg for keyword in call.keywords}
+        for call in chat_model_calls
+    )
+
+
+def test_delegated_children_are_bounded_by_the_process_ceiling_only():
+    """A child's detached calls must not fill the session's accounting slots.
+
+    Keyed on the session root, one Stop on a fan-out -- or a parent cell's
+    ordinary ``host.stop_child`` on a few in-flight siblings -- filled the
+    root's four slots and the parent's very next model call was refused.
+    """
+    from openai4s.agent.loop import Agent
+
+    store = SimpleNamespace(resolve_frame_scope=lambda fid: {"root_frame_id": "root-1"})
+    root = Agent(use_skills=False, allow_delegate=False, frame_id="branch-1")
+    child = Agent(
+        use_skills=False, allow_delegate=False, frame_id="child-1", delegate_depth=1
+    )
+    # The scope is resolved through the dispatcher's Store at call time.
+    root.dispatcher = SimpleNamespace(store=store)
+    child.dispatcher = SimpleNamespace(store=store)
+    assert root._provider_call_scope() == "root-1"
+    assert child._provider_call_scope() is None
+
+
+def test_late_accounting_survives_a_sink_that_raises_a_base_exception():
+    accounting = runtime._LateAccounting()
+    first_done = threading.Event()
+    second = []
+    second_done = threading.Event()
+
+    def exploding(reply):
+        del reply
+        first_done.set()
+        raise KeyboardInterrupt("injected")
+
+    def recording(reply):
+        second.append(reply)
+        second_done.set()
+
+    accounting.submit(exploding, {"usage": {}})
+    assert first_done.wait(2)
+    accounting.submit(recording, {"usage": {"input_tokens": 1}})
+    assert second_done.wait(2), "the late-accounting worker died with its first sink"
+    assert second == [{"usage": {"input_tokens": 1}}]
+
+
+def test_call_context_is_captured_on_the_owning_thread_before_the_handoff():
+    """The provider thread must not read the session's identity itself.
+
+    On the Web path ``chat_fn`` used to snapshot the live Auto Mode run at its
+    own entry -- on the detached thread, possibly after Stop released the turn
+    and the next queued turn installed a new run. ``call_context`` is captured
+    by the owner before the thread starts and handed over as a value.
+    """
+    live = {"run": "run-of-this-turn"}
+    entered = threading.Event()
+    release = threading.Event()
+    seen = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        entered.set()
+        assert release.wait(5)
+        seen.append(kwargs.get("call_context"))
+        return {"content": "ok"}
+
+    model = ChatModel(
+        object(),
+        fake_chat,
+        cancellation=SimpleNamespace(cancelled=lambda: False),
+        call_context=lambda: {"run_id": live["run"]},
+    )
+    owner = threading.Thread(target=lambda: model.complete([], lambda _t: None))
+    owner.start()
+    assert entered.wait(2)
+    live["run"] = "run-installed-after-stop"  # the next turn moved in
+    release.set()
+    owner.join(2)
+    assert seen == [{"run_id": "run-of-this-turn"}]
+
+
+def test_call_context_is_absent_when_no_provider_asked_for_one():
+    seen = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        seen.append("call_context" in kwargs)
+        return {"content": "ok"}
+
+    ChatModel(object(), fake_chat).complete([], lambda _t: None)
+    ChatModel(
+        object(), fake_chat, cancellation=SimpleNamespace(cancelled=lambda: False)
+    ).complete([], lambda _t: None)
+    assert seen == [False, False]
+
+
+def test_the_cancel_probe_carries_the_mid_stream_policy():
+    """Metered sessions drain an abandoned stream; the rest abort it."""
+    seen = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        seen.append(kwargs["should_cancel"].abort_stream)
+        return {"content": "ok"}
+
+    probe = SimpleNamespace(cancelled=lambda: False)
+    ChatModel(object(), fake_chat, cancellation=probe).complete([], lambda _t: None)
+    ChatModel(
+        object(), fake_chat, cancellation=probe, drain_cancelled_stream=True
+    ).complete([], lambda _t: None)
+    assert seen == [True, False]
+
+
+def test_a_delegated_child_of_a_metered_session_drains_too():
+    from openai4s.agent.loop import Agent
+
+    owners = {"root-1": {"user_id": "member-1", "project_id": "p"}}
+    store = SimpleNamespace(
+        resolve_frame_scope=lambda fid: {"root_frame_id": "root-1"},
+        team=SimpleNamespace(session_owner=lambda sid: owners.get(sid)),
+    )
+    child = Agent(
+        use_skills=False, allow_delegate=False, frame_id="child-1", delegate_depth=1
+    )
+    child.dispatcher = SimpleNamespace(store=store)
+    assert child._session_is_metered() is True
+    owners.clear()
+    assert child._session_is_metered() is False
+    child.dispatcher = None  # no Store at all: unmetered, never an error
+    assert child._session_is_metered() is False

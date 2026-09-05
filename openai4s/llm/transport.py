@@ -350,7 +350,7 @@ def post_sse(
             raise _http_error(e, provider=provider, operation="post_sse") from e
         except urllib.error.URLError as e:
             raise _url_error(e, provider=provider, operation="post_sse") from e
-        _consume(resp, on_event, provider=provider)
+        _consume(resp, on_event, provider=provider, should_cancel=should_cancel)
 
     return _retry_loop(
         attempt,
@@ -365,9 +365,26 @@ def post_sse(
     )
 
 
-def _consume(resp, on_event, *, provider: str | None) -> None:
+def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> None:
     data_lines: list[str] = []
     committed = False
+
+    # Two policies, chosen by the caller through the probe it hands over:
+    # abort the stream at the next event (the default -- frees the thread,
+    # the socket and the provider's generation within one chunk), or drain it
+    # to the end while the deltas are discarded upstream. Draining is what a
+    # metered session asks for: the team quota ledger is charged from the
+    # terminal usage event, and a stream closed before it would let a member
+    # Stop-and-resend past the quota with every abandoned call unbilled.
+    abort_stream = bool(getattr(should_cancel, "abort_stream", True))
+
+    def cancelled() -> bool:
+        if should_cancel is None or not abort_stream:
+            return False
+        try:
+            return bool(should_cancel())
+        except Exception:  # noqa: BLE001 - cancellation telemetry is fail-soft
+            return False
 
     def dispatch() -> None:
         nonlocal committed
@@ -377,6 +394,23 @@ def _consume(resp, on_event, *, provider: str | None) -> None:
         data_lines.clear()
         if not chunk or chunk == "[DONE]":
             return
+        # Stop reaches a live stream here, once per event. Until it did, a
+        # cancelled streaming call kept its thread, its socket and the
+        # provider's generation (and bill) running to the end of the reply --
+        # minutes for a long answer -- with every delta discarded on arrival;
+        # that lifetime is what the detached-call budget had to bound. Ending
+        # the read closes the response in ``finally`` and lets the abandoned
+        # call settle within one chunk. The cost is the terminal ``usage``
+        # event of a reply nobody will read: the deltas already delivered are
+        # its lower bound, and the provider stops generating at disconnect.
+        if cancelled():
+            raise TransportError(
+                "LLM event stream abandoned: the caller cancelled mid-stream",
+                provider=provider,
+                operation="post_sse",
+                retryable=False,
+                output_committed=committed,
+            )
         try:
             event = json.loads(chunk)
         except ValueError as e:

@@ -5,6 +5,7 @@ import { custTab } from "../../features/customize/actions";
 import { asList, asString, hint } from "../../features/customize/host";
 import { MEMORY_BLOCKS, memScopeLabel, memScopes } from "../../features/customize/memory";
 import { useAlive } from "./use-timer-lease";
+import { markCustomizeFailed, markCustomizeLoaded } from "../../features/customize/load";
 import { Empty, Hdr, IconGhost, Pill, Subhead, Toggle } from "./ui";
 
 export function MemoryTab() {
@@ -37,9 +38,12 @@ export function MemoryTab() {
         setCats(asList(cat.categories) as Record<string, unknown>[]);
         setCtx(context);
         setScope(active);
+        markCustomizeLoaded();
       } catch (e) {
         if (!alive()) return;
-        setErr(t("versions.load.err", (e as Error).message));
+        const message = t("versions.load.err", (e as Error).message);
+        setErr(message);
+        markCustomizeFailed(message);
       }
     })();
   }, [alive, active]);
