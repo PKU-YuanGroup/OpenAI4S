@@ -958,12 +958,13 @@ try {
     await page.locator(entry).click();
     await page.locator("#cust:not(.hidden)").waitFor({ state: "visible" });
     // The rendered heading is the shell-agnostic signal that a renderer ran.
-    // `aria-busy` is app.js's own settled marker (this PR added it); the
-    // workbench never sets it, so waiting on it there waits forever.
+    // `aria-busy` is the settled marker both shells set: app.js on its
+    // render root, the workbench on the same node while the tab's first
+    // fetch is pending. Read the panel only once it settled -- the workbench
+    // paints its controls immediately under a "Loading…" line, and reading
+    // before that line goes away would call a live panel "stuck on Loading".
     await page.locator("#cust-content .cust-h").first().waitFor({ state: "visible" });
-    if (legacyUploadShell) {
-      await page.locator('#cust-content[aria-busy="false"]').waitFor({ state: "attached" });
-    }
+    await page.locator('#cust-content[aria-busy="false"]').waitFor({ state: "attached" });
     const opened = await page.evaluate(() => ({
       active: document.querySelector(".cust-tab.active")?.dataset.tab || "",
       heading: document.querySelector("#cust-content .cust-h")?.textContent || "",
