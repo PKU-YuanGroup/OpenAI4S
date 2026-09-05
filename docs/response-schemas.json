@@ -453,6 +453,39 @@
         "type": "object"
       }
     },
+    "DELETE /artifacts/([^/]+)/sandbox-grant [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "DELETE /artifacts/([^/]+)/structure [error]": {
       "schema": {
         "properties": {
@@ -7189,6 +7222,31 @@
           "renderer",
           "trusted_html",
           "version_id"
+        ],
+        "type": "object"
+      }
+    },
+    "GET /artifacts/([^/]+)/sandbox-grant [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
         ],
         "type": "object"
       }
@@ -20490,6 +20548,39 @@
         "type": "object"
       }
     },
+    "PATCH /artifacts/([^/]+)/sandbox-grant [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
     "PATCH /artifacts/([^/]+)/structure [error]": {
       "schema": {
         "properties": {
@@ -27199,6 +27290,48 @@
           "path",
           "request_id",
           "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/sandbox-grant [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "POST /artifacts/([^/]+)/sandbox-grant [ok]": {
+      "schema": {
+        "properties": {
+          "expires_in": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_in",
+          "path"
         ],
         "type": "object"
       }
@@ -40198,6 +40331,39 @@
       }
     },
     "PUT /artifacts/([^/]+)/renderer [error]": {
+      "schema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "method",
+          "path",
+          "request_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "PUT /artifacts/([^/]+)/sandbox-grant [error]": {
       "schema": {
         "properties": {
           "code": {

@@ -16,6 +16,8 @@ who embeds a document rather than by what the document contains.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 
 def artifact_content_security_policy() -> str:
     """Policy for untrusted, user- or agent-authored Artifact bytes.
@@ -62,6 +64,64 @@ def artifact_content_security_policy() -> str:
     )
 
 
+def sandboxed_artifact_content_security_policy(app_origins: Sequence[str]) -> str:
+    """Policy for artifact bytes served on the *sandbox* origin.
+
+    This is the one place artifact HTML is allowed to execute, and it is safe
+    for a reason that has nothing to do with the script: the origin it runs on
+    holds no cookie, answers nothing but grant-scoped artifact bytes, and is
+    cross-origin with the app, so `parent.document` and the REST API are behind
+    the same-origin policy rather than behind a directive.
+
+    What stays closed is exfiltration. `default-src 'none'` with no host in any
+    fetch directive means a script here cannot beacon out -- not by `fetch`
+    (`connect-src 'none'`), not by an image URL, not by a form post. `'self'`
+    here is the sandbox origin, so a report still loads its own sibling files.
+
+    `frame-ancestors` names the app origins literally: `'self'` would mean the
+    sandbox origin, which is not who embeds this.
+    """
+    ancestors = " ".join(app_origins) if app_origins else "'none'"
+    return "; ".join(
+        [
+            "default-src 'none'",
+            # The document's own inline script is the point of this origin.
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "media-src 'self' data: blob:",
+            "connect-src 'none'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            f"frame-ancestors {ancestors}",
+            # `allow-same-origin` is safe here and not on the app origin: this
+            # document's origin is the sandbox, so keeping it buys `'self'` for
+            # sub-resources without granting reach into anything.
+            "sandbox allow-scripts allow-same-origin",
+        ]
+    )
+
+
+def sandboxed_artifact_security_headers(
+    app_origins: Sequence[str],
+) -> dict[str, str]:
+    """Headers for an executable artifact preview on the sandbox origin."""
+    headers = security_headers()
+    headers["Content-Security-Policy"] = sandboxed_artifact_content_security_policy(
+        app_origins
+    )
+    if app_origins:
+        # Dropped, not set to a permissive value: `X-Frame-Options` has no
+        # "these origins" form, and its non-standard `ALLOWALL` relies on
+        # browsers ignoring a value they cannot parse. `frame-ancestors` is
+        # the standard control and takes precedence wherever both appear, so
+        # the honest thing is to let it be the only one.
+        headers.pop("X-Frame-Options", None)
+    return headers
+
+
 def artifact_security_headers() -> dict[str, str]:
     """Hardened headers for an embeddable, untrusted Artifact document."""
     headers = security_headers()
@@ -90,11 +150,26 @@ def embeddable_security_headers() -> dict[str, str]:
     return headers
 
 
-def content_security_policy(*, frame_ancestors: str = "'none'") -> str:
+def content_security_policy(
+    *,
+    frame_ancestors: str = "'none'",
+    frame_src: Sequence[str] = (),
+) -> str:
     """Return the static UI-shell policy.
 
-    ``frame_ancestors`` is the one directive that varies by document, and it
-    varies because of who embeds it, not because of what it contains.
+    Two directives vary, and both vary by *who is on the other side of a
+    frame boundary* rather than by what this document contains:
+
+    ``frame_ancestors``
+        who may embed this document.
+    ``frame_src``
+        who this document may embed. It has to name the sandbox origin
+        explicitly: `default-src 'self'` is the `frame-src` fallback, and the
+        sandbox origin is deliberately a *different* origin, so the shell's own
+        policy refuses to frame it until it is named. That is not theoretical
+        -- it is what Chromium did, with "Framing 'http://localhost:PORT/'
+        violates ... default-src 'self'", while every response header on the
+        sandbox side was already correct.
     """
     script_src = ["'self'"]
     # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
@@ -122,16 +197,17 @@ def content_security_policy(*, frame_ancestors: str = "'none'") -> str:
             "object-src 'none'",
             "base-uri 'none'",
             "form-action 'self'",
+            " ".join(["frame-src", "'self'", *frame_src]),
             f"frame-ancestors {frame_ancestors}",
         ]
     )
     return policy
 
 
-def security_headers() -> dict[str, str]:
+def security_headers(*, frame_src: Sequence[str] = ()) -> dict[str, str]:
     """Headers applied to every response the gateway emits."""
     return {
-        "Content-Security-Policy": content_security_policy(),
+        "Content-Security-Policy": content_security_policy(frame_src=frame_src),
         # The gateway serves user/agent-authored artifacts; sniffing turns a
         # text/plain artifact into an executable document.
         "X-Content-Type-Options": "nosniff",
@@ -150,5 +226,7 @@ __all__ = [
     "artifact_security_headers",
     "content_security_policy",
     "embeddable_security_headers",
+    "sandboxed_artifact_content_security_policy",
+    "sandboxed_artifact_security_headers",
     "security_headers",
 ]
