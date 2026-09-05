@@ -681,6 +681,7 @@ class Agent:
                     cancellation=self.cancellation,
                     abandoned_reply=_account_abandoned_reply,
                     call_scope=self._provider_call_scope(),
+                    drain_cancelled_stream=self._session_is_metered(),
                 )
                 # The providers only this run can build: the live tool
                 # catalogue prices the trigger and the kernel cwd receives
@@ -746,6 +747,30 @@ class Agent:
             completion=result.completion,
             turns=result.turns,
         )
+
+    def _session_is_metered(self) -> bool:
+        """Whether the team ledger charges this run's session root.
+
+        A delegated child of a team-owned Web session meters through
+        ``_account_abandoned_reply`` like its parent, so its abandoned streams
+        must be drained for their usage too. No Store, no root, or no owner
+        reads as unmetered.
+        """
+
+        frame_id = str(self.frame_id or "")
+        if not frame_id:
+            return False
+        store = getattr(self.dispatcher, "store", None)
+        team = getattr(store, "team", None)
+        resolve = getattr(store, "resolve_frame_scope", None)
+        if team is None or not callable(resolve):
+            return False
+        try:
+            scope = resolve(frame_id)
+            root = scope.get("root_frame_id") if isinstance(scope, Mapping) else None
+            return team.session_owner(str(root or frame_id)) is not None
+        except Exception:  # noqa: BLE001 - metering must never fail the turn
+            return False
 
     def _provider_call_scope(self) -> str | None:
         """The session a turn's detached provider calls are bounded against.

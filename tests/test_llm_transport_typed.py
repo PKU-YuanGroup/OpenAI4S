@@ -552,3 +552,46 @@ def test_sse_stops_reading_at_the_next_event_once_cancelled(monkeypatch):
     assert pulled == [1, 2], "the stream was read past the event that observed Stop"
     assert closed == [True], "the response was not closed"
     assert len(calls) == 1
+
+
+def test_sse_drains_a_cancelled_stream_when_the_probe_says_so(monkeypatch):
+    """A metered session reads an abandoned stream to its terminal usage.
+
+    The probe's ``abort_stream=False`` keeps the read going after Stop: the
+    deltas are discarded upstream, the terminal usage event still arrives,
+    and the team ledger is charged for a call the provider billed.
+    """
+    closed = []
+
+    class _Stream:
+        def __iter__(self):
+            for n in range(1, 4):
+                yield f'data: {{"delta":"chunk-{n}"}}\n'.encode()
+                yield b"\n"
+            yield b'data: {"usage":{"prompt_tokens":9,"completion_tokens":3}}\n'
+            yield b"\n"
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Stream())
+
+    class _Probe:
+        abort_stream = False
+
+        def __call__(self):
+            return True  # Stop landed before the first event
+
+    seen = []
+    post_sse(
+        "https://x.invalid",
+        {},
+        {},
+        5,
+        seen.append,
+        should_cancel=_Probe(),
+        sleep=_Recorder(),
+    )
+    assert seen[-1] == {"usage": {"prompt_tokens": 9, "completion_tokens": 3}}
+    assert len(seen) == 4
+    assert closed == [True]

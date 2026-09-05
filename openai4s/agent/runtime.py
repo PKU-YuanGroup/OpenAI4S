@@ -254,6 +254,29 @@ def _allow_cell(_action: CodeCell) -> None:
     return None
 
 
+class _CancelProbe:
+    """The ``should_cancel`` the transport polls, plus the mid-stream policy.
+
+    ``abort_stream`` tells ``transport._consume`` whether Stop may end a live
+    stream at its next event (True: the default, frees the socket and the
+    provider's generation within one chunk) or must let it run to the end
+    with the deltas discarded (False: a metered session, whose team quota
+    ledger is charged from the terminal usage event that an aborted stream
+    never delivers). Handed over as an attribute rather than a second kwarg
+    because ``chat()`` and every provider adapter forward ``should_cancel``
+    untouched to ``post_sse``.
+    """
+
+    __slots__ = ("_probe", "abort_stream")
+
+    def __init__(self, probe: Callable[[], bool], *, abort_stream: bool) -> None:
+        self._probe = probe
+        self.abort_stream = abort_stream
+
+    def __call__(self) -> bool:
+        return self._probe()
+
+
 def _cancelled_model_reply() -> dict[str, Any]:
     """Return a normalized no-op reply for an abandoned provider call."""
 
@@ -307,6 +330,13 @@ class ChatModel:
     #: Stop, so the reservation, its settle and any denial landed on a run
     #: that never made the call.
     call_context: Callable[[], Mapping[str, Any]] | None = None
+    #: Read an abandoned stream to its end instead of closing it at the next
+    #: event. Set for a metered (team-owned) session: its quota ledger is
+    #: charged from the terminal usage event via ``abandoned_reply``, and a
+    #: stream closed before that event would leave every Stop-and-resend
+    #: unbilled against the very ledger ``quota_gate`` reads. The detached-call
+    #: budget then bounds how many such drains one session can stack.
+    drain_cancelled_stream: bool = False
 
     def complete(
         self,
@@ -340,9 +370,10 @@ class ChatModel:
         # thread. Running the provider call in a daemon thread still lets the
         # owning Agent turn stop immediately: a streaming request ends at its
         # next event (the transport polls ``should_cancel`` per event and
-        # closes the response), a non-streaming one may finish against its
-        # normal network timeout, and either way its result is detached and
-        # inert.
+        # closes the response) unless the session is metered and the stream
+        # must be drained for its usage, a non-streaming one may finish
+        # against its normal network timeout, and either way its result is
+        # detached and inert.
         #
         # The per-call Event is deliberately monotonic. The Web coordinator
         # clears its shared cancellation Event when it admits the next queued
@@ -418,7 +449,9 @@ class ChatModel:
                     deltas.put(text)
 
             kwargs["on_delta"] = emit_delta
-        kwargs["should_cancel"] = is_cancelled
+        kwargs["should_cancel"] = _CancelProbe(
+            is_cancelled, abort_stream=not self.drain_cancelled_stream
+        )
 
         def invoke() -> None:
             try:

@@ -1009,3 +1009,39 @@ def test_call_context_is_absent_when_no_provider_asked_for_one():
         object(), fake_chat, cancellation=SimpleNamespace(cancelled=lambda: False)
     ).complete([], lambda _t: None)
     assert seen == [False, False]
+
+
+def test_the_cancel_probe_carries_the_mid_stream_policy():
+    """Metered sessions drain an abandoned stream; the rest abort it."""
+    seen = []
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        seen.append(kwargs["should_cancel"].abort_stream)
+        return {"content": "ok"}
+
+    probe = SimpleNamespace(cancelled=lambda: False)
+    ChatModel(object(), fake_chat, cancellation=probe).complete([], lambda _t: None)
+    ChatModel(
+        object(), fake_chat, cancellation=probe, drain_cancelled_stream=True
+    ).complete([], lambda _t: None)
+    assert seen == [True, False]
+
+
+def test_a_delegated_child_of_a_metered_session_drains_too():
+    from openai4s.agent.loop import Agent
+
+    owners = {"root-1": {"user_id": "member-1", "project_id": "p"}}
+    store = SimpleNamespace(
+        resolve_frame_scope=lambda fid: {"root_frame_id": "root-1"},
+        team=SimpleNamespace(session_owner=lambda sid: owners.get(sid)),
+    )
+    child = Agent(
+        use_skills=False, allow_delegate=False, frame_id="child-1", delegate_depth=1
+    )
+    child.dispatcher = SimpleNamespace(store=store)
+    assert child._session_is_metered() is True
+    owners.clear()
+    assert child._session_is_metered() is False
+    child.dispatcher = None  # no Store at all: unmetered, never an error
+    assert child._session_is_metered() is False

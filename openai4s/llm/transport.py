@@ -369,8 +369,17 @@ def _consume(resp, on_event, *, provider: str | None, should_cancel=None) -> Non
     data_lines: list[str] = []
     committed = False
 
+    # Two policies, chosen by the caller through the probe it hands over:
+    # abort the stream at the next event (the default -- frees the thread,
+    # the socket and the provider's generation within one chunk), or drain it
+    # to the end while the deltas are discarded upstream. Draining is what a
+    # metered session asks for: the team quota ledger is charged from the
+    # terminal usage event, and a stream closed before it would let a member
+    # Stop-and-resend past the quota with every abandoned call unbilled.
+    abort_stream = bool(getattr(should_cancel, "abort_stream", True))
+
     def cancelled() -> bool:
-        if should_cancel is None:
+        if should_cancel is None or not abort_stream:
             return False
         try:
             return bool(should_cancel())

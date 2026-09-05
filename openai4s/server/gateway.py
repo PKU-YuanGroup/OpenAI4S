@@ -5213,6 +5213,18 @@ class SessionRunner:
         ):
             return fn(st.cancel)
 
+    def _session_is_metered(self, root_frame_id: str) -> bool:
+        """Whether the team ledger charges this session (it has an owner).
+
+        The same question ``enforce_llm_quota`` and ``record_session_llm_usage``
+        answer; a broken lookup reads as unmetered, which errs on the side of
+        freeing the abandoned call.
+        """
+        try:
+            return self.store.team.session_owner(root_frame_id) is not None
+        except Exception:  # noqa: BLE001 - ownership lookup is best-effort
+            return False
+
     def enforce_llm_quota(self, root_frame_id: str) -> None:
         """Team-mode LLM quota (M2-6), consulted before a provider request.
 
@@ -11087,6 +11099,10 @@ class SessionRunner:
                 # many of those one member can stack.
                 call_scope=rid,
                 call_context=lambda: self._auto_budget_call_context(st),
+                # A team-owned session is charged from the terminal usage
+                # event; an abandoned stream must be read to it, or every
+                # Stop-and-resend goes unbilled against the quota ledger.
+                drain_cancelled_stream=self._session_is_metered(rid),
             ),
             WebActionExecutor(
                 dispatcher=lambda: st.dispatcher,
