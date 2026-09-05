@@ -77,10 +77,10 @@ for arg in "$@"; do
 done
 cat > "{s}/job_script"
 jid=$(cat "{s}/next_job_id")
-printf '%s' "$jid" > "{s}/job_id"
-printf '%s' "$comment" > "{s}/job_comment"
-printf 'RUNNING' > "{s}/queue_state"
-printf '1' > "{s}/in_queue"
+put job_id "$jid"
+put job_comment "$comment"
+put queue_state 'RUNNING'
+put in_queue '1'
 # Run the script the way a node would: the exported variables, and
 # nothing else this shell happens to be carrying.
 (
@@ -92,8 +92,8 @@ printf '1' > "{s}/in_queue"
     unset IFS
   fi
   sh "{s}/job_script" > "{s}/job.out" 2>&1
-  printf 'COMPLETED' > "{s}/acct_state"
-  printf '0' > "{s}/in_queue"
+  put acct_state 'COMPLETED'
+  put in_queue '0'
 ) &
 echo "$jid"
 """,
@@ -131,14 +131,21 @@ case "$fmt" in
 esac
 """,
         "scancel": f"""
-printf '0' > "{s}/in_queue"
-printf 'CANCELLED' > "{s}/acct_state"
+put in_queue '0'
+put acct_state 'CANCELLED'
 if [ -f "{s}/worker_pid" ]; then kill "$(cat "{s}/worker_pid")" 2>/dev/null || true; fi
 """,
     }
     for name, body in scripts.items():
         path = bin_dir / name
-        path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        # `printf x > file` truncates, then writes: a reader between the two
+        # sees an empty file, and this fixture is read from another process
+        # while the backgrounded job is finishing.  Writes land by rename.
+        put = (
+            f'put() {{ printf \'%s\' "$2" > "{s}/.$1.$$.tmp" '
+            f'&& mv -f "{s}/.$1.$$.tmp" "{s}/$1"; }}\n'
+        )
+        path.write_text("#!/bin/sh\n" + put + body, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
@@ -147,7 +154,14 @@ if [ -f "{s}/worker_pid" ]; then kill "$(cat "{s}/worker_pid")" 2>/dev/null || t
 
         def read(self, name):
             target = state / name
-            return target.read_text(encoding="utf-8") if target.exists() else ""
+            # Every write is a non-empty value; an empty read is the window
+            # inside a non-atomic write, so wait it out briefly.
+            deadline = time.monotonic() + 2.0
+            while True:
+                text = target.read_text(encoding="utf-8") if target.exists() else ""
+                if text or not target.exists() or time.monotonic() > deadline:
+                    return text
+                time.sleep(0.01)
 
         def write(self, name, value):
             (state / name).write_text(value, encoding="utf-8")
