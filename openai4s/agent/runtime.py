@@ -389,6 +389,27 @@ class ChatModel:
 
         def invoke() -> None:
             try:
+                # Stop can land between `Thread.start()` below and this line:
+                # the owner may already have returned `abandon()` while this
+                # thread was still waiting for the GIL through the engine
+                # unwind and the next turn's admission.
+                #
+                # Running `chat_fn` then is not merely wasted. The whole reason
+                # a cancelled call is left running is that its urllib request
+                # is already on the wire and cannot be recalled -- here it has
+                # not been sent yet, so there is nothing to salvage and a
+                # provider request that nobody will read still gets billed.
+                #
+                # It is also where the Auto Mode identity is decided: on the
+                # Web path `chat_fn` is `_invoke_model_with_auto_budget`, which
+                # snapshots the LIVE `active_auto_mode_run_id`, extra phase and
+                # action group at ITS entry. By now those belong to the turn
+                # that was admitted after Stop, so the reservation, its settle
+                # and any denial would all land on a run that never made this
+                # call. The pinned-id guards downstream cannot catch that: the
+                # pin and the live id agree -- on the wrong run.
+                if is_cancelled():
+                    return
                 outcome["reply"] = self.chat_fn(
                     copied_messages,
                     self.cfg,

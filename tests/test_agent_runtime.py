@@ -180,6 +180,49 @@ def test_chat_model_cancel_releases_owner_and_quarantines_late_provider_output()
     assert abandoned == [{"prompt_tokens": 17, "completion_tokens": 3}]
 
 
+def test_a_call_cancelled_before_it_starts_never_reaches_the_provider():
+    """Stop can land between ``Thread.start()`` and ``chat_fn``'s first line.
+
+    The detached design exists because a urllib request already on the wire
+    cannot be recalled. In this window nothing has been sent yet, so there is
+    nothing to salvage: the request must not go out at all. It would be billed
+    for a turn nobody is reading, and on the Web path ``chat_fn`` is
+    ``_invoke_model_with_auto_budget``, which snapshots the LIVE Auto Mode run
+    id at its own entry -- by then the run of the turn admitted *after* Stop.
+    """
+
+    calls: list[dict] = []
+    probes = {"n": 0}
+
+    def cancelled_after_spawn() -> bool:
+        # False only for the pre-spawn check; true from the moment the thread
+        # could be running, whichever side of the handoff asks first.
+        probes["n"] += 1
+        return probes["n"] > 1
+
+    def fake_chat(messages, cfg, **kwargs):
+        del messages, cfg
+        calls.append(kwargs)
+        return {"content": "must not be requested", "usage": {"prompt_tokens": 9}}
+
+    accounted: list[object] = []
+    model = ChatModel(
+        object(),
+        fake_chat,
+        cancellation=SimpleNamespace(cancelled=cancelled_after_spawn),
+        abandoned_reply=accounted.append,
+    )
+
+    reply = model.complete([], lambda _text: None)
+
+    assert reply["finish_reason"] == "cancelled"
+    assert calls == [], "a cancelled call still reached the provider"
+    # Nothing was requested, so there is no usage to meter and no reply to
+    # quarantine -- the accounting sink must stay untouched rather than
+    # inventing a zero.
+    assert accounted == []
+
+
 def test_chat_model_projects_stream_deltas_on_the_owning_thread():
     shared_cancel = threading.Event()
     provider_threads = []
