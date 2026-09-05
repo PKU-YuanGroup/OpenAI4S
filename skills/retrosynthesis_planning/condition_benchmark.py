@@ -255,7 +255,7 @@ def evaluate_condition_predictions(
     count = len(rows)
     result = {
         "schema_version": 1,
-        "scenario_id": "reaction_condition_tuple_closed_vocab_v1",
+        "scenario_id": "reaction_condition_uspto_categorical_v1",
         "reaction_count": count,
         "exact_tuple_top_k_accuracy": {
             str(cutoff): sum(

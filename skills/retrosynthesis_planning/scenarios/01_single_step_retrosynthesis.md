@@ -180,22 +180,18 @@ private_evaluator/
 reference_repository/
 ├── README.md
 ├── environment.yml
-├── run.sh
-├── input/
-├── src/
-│   ├── validate_inputs.py
-│   ├── admit_checkpoint.py
-│   ├── run_inference.py
-│   ├── normalize_precursors.py
-│   └── build_outputs.py
-├── results/
-│   ├── predictions.jsonl
-│   ├── target_diagnostics.csv
-│   └── intermediate_results.json
-└── docs/
-    ├── methods.md
-    └── final_report.md
+├── pipelines/
+│   └── 01_single_step_retrosynthesis.py
+└── test_cases/
+    ├── install.py
+    ├── evaluate.py
+    ├── database_sources.json
+    └── 01_single_step_retrosynthesis.json
 ```
+
+仓库中的实际参考实现位于 `scenarios/pipelines/` 与
+`scenarios/test_cases/`。前者只读取安装后 workspace 的 `public/`，后者负责
+评测样例、数据库冻结状态、数据安装和 private evaluator；两者不得合并。
 
 ## 评估自动化实现难度
 

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "scenario": "multistep",
+  "scenario_id": "multistep_paroutes_budgeted_v1",
+  "query_source": "../queries/02_multistep_route_planning.query.md",
+  "dataset": {
+    "profile": "synthetic_protocol_smoke",
+    "license": "CC0-1.0",
+    "scientific_accuracy_claim": false
+  },
+  "public": {
+    "inputs.json": [{"target_id": "target_001", "target_smiles": "T"}],
+    "stock.json": ["A", "B"],
+    "config.json": {"max_routes": 3, "budget": {"expansions": 4}},
+    "model_outputs.json": [
+      {
+        "target_id": "target_001",
+        "routes": [
+          {
+            "solved": true,
+            "tree": {
+              "type": "molecule",
+              "smiles": "T",
+              "children": [
+                {
+                  "type": "reaction",
+                  "children": [
+                    {"type": "molecule", "smiles": "A", "children": []},
+                    {"type": "molecule", "smiles": "B", "children": []}
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "termination_reason": "solved",
+        "search_stats": {"expansions": 2}
+      }
+    ]
+  },
+  "private_evaluator": {
+    "references.json": [
+      {
+        "target_id": "target_001",
+        "routes": [
+          {
+            "tree": {
+              "type": "molecule",
+              "smiles": "T",
+              "children": [
+                {
+                  "type": "reaction",
+                  "children": [
+                    {"type": "molecule", "smiles": "A", "children": []},
+                    {"type": "molecule", "smiles": "B", "children": []}
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

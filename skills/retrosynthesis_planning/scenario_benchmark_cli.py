@@ -45,8 +45,8 @@ SCENARIO_IDS = {
     "multistep": "multistep_paroutes_budgeted_v1",
     "atom_mapping": "reaction_atom_mapping_curated_v1",
     "forward": "forward_prediction_uspto_mit_separated_v1",
-    "conditions": "reaction_condition_tuple_closed_vocab_v1",
-    "yield": "reaction_yield_distribution_shift_v1",
+    "conditions": "reaction_condition_uspto_categorical_v1",
+    "yield": "buchwald_hartwig_yield_ood_v1",
 }
 
 

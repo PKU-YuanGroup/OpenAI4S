@@ -1,8 +1,11 @@
 """Offline contracts for the six independent retrosynthesis science scenarios."""
 
+import hashlib
 import json
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -35,6 +38,12 @@ from retrosynthesis_planning.forward_benchmark import (  # noqa: E402
     evaluate_forward_predictions,
     normalize_forward_outputs,
     validate_forward_inputs,
+)
+from retrosynthesis_planning.gt_codebase import (  # noqa: E402
+    SCENARIO_IDS,
+    evaluate_workspace,
+    install_test_case,
+    run_pipeline,
 )
 from retrosynthesis_planning.multistep_benchmark import (  # noqa: E402
     evaluate_routes,
@@ -249,7 +258,7 @@ def test_yield_protocol_preserves_raw_predictions_and_reports_worst_group():
 def test_unified_cli_evaluates_hashed_condition_artifact(tmp_path):
     conditions = {slot: f"{slot}_a" for slot in SLOTS}
     artifact = build_intermediate_artifact(
-        "reaction_condition_tuple_closed_vocab_v1",
+        "reaction_condition_uspto_categorical_v1",
         [
             {
                 "reaction_id": "r1",
@@ -667,3 +676,118 @@ def test_snapshot_refuses_a_symlink_that_escapes_the_base(tmp_path):
     os.symlink(outside / "weights.bin", base / "models" / "weights.bin")
     with pytest.raises(ReactionModelDeploymentError, match="symlink"):
         snapshot_artifacts([base / "models"], base=base)
+
+
+def test_scenario_query_gt_and_generated_names_are_aligned(tmp_path):
+    scenarios = Path(get_config().skills_dir) / "retrosynthesis_planning" / "scenarios"
+    names = {
+        "single_step": "01_single_step_retrosynthesis",
+        "multistep": "02_multistep_route_planning",
+        "atom_mapping": "03_atom_mapping",
+        "forward": "04_forward_prediction",
+        "conditions": "05_condition_recommendation",
+        "yield": "06_yield_estimation",
+    }
+    manifest = json.loads(
+        (scenarios / "openai4s_codebases" / "generation_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entries = {entry["name"]: entry for entry in manifest["entries"]}
+    assert set(entries) == set(names.values())
+    for scenario, scenario_id in SCENARIO_IDS.items():
+        name = names[scenario]
+        entry = entries[name]
+        query_path = scenarios / "queries" / f"{name}.query.md"
+        gt_path = scenarios / "gt_codebases" / f"{name}.py"
+        case_path = scenarios / "test_cases" / f"{name}.json"
+        case = json.loads(case_path.read_text(encoding="utf-8"))
+        query = query_path.read_text(encoding="utf-8")
+        assert case["scenario_id"] == scenario_id
+        assert case["query_source"] == f"../queries/{name}.query.md"
+        assert "## Installed public inputs" in query
+        assert "private_evaluator" in query
+        for public_name in case["public"]:
+            assert f"PATH/public/{public_name}" in query
+        assert (
+            hashlib.sha256(query_path.read_bytes()).hexdigest() == entry["query_sha256"]
+        )
+        assert hashlib.sha256(gt_path.read_bytes()).hexdigest() == entry["gt_sha256"]
+        assert entry["query"] == str(
+            query_path.relative_to(get_config().skills_dir.parent)
+        )
+        assert entry["gt_codebase"] == str(
+            gt_path.relative_to(get_config().skills_dir.parent)
+        )
+        generated_path = scenarios / "openai4s_codebases" / f"{name}.py"
+        if entry["status"].startswith("generated"):
+            assert generated_path.is_file()
+            generated = generated_path.read_text(encoding="utf-8")
+            assert not any(
+                forbidden in generated
+                for forbidden in ("gt_codebase", "gt_codebases", "private_evaluator")
+            )
+            assert (
+                hashlib.sha256(generated_path.read_bytes()).hexdigest()
+                == entry["generated_sha256"]
+            )
+        else:
+            assert not generated_path.exists()
+
+        workspace = tmp_path / scenario
+        installation = install_test_case(case_path, workspace)
+        assert installation["ground_truth_boundary"] == "private_evaluator"
+        hidden = tmp_path / f"{scenario}-private"
+        (workspace / "private_evaluator").rename(hidden)
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            (str(get_config().skills_dir), environment.get("PYTHONPATH", ""))
+        )
+        completed = subprocess.run(
+            [sys.executable, str(gt_path), "--workspace", str(workspace)],
+            cwd=get_config().skills_dir.parent,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        artifact = json.loads(
+            (workspace / "results" / "intermediate_results.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert artifact["scenario_id"] == scenario_id
+        hidden.rename(workspace / "private_evaluator")
+        metrics = evaluate_workspace(scenario, workspace)
+        assert metrics["scenario_id"] == scenario_id
+
+
+def test_production_database_registry_fails_closed_until_frozen():
+    path = (
+        Path(get_config().skills_dir)
+        / "retrosynthesis_planning"
+        / "scenarios"
+        / "test_cases"
+        / "database_sources.json"
+    )
+    registry = json.loads(path.read_text(encoding="utf-8"))
+    assert set(registry["scenarios"]) == set(SCENARIO_IDS)
+    assert {row["release_status"] for row in registry["scenarios"].values()} == {
+        "not_frozen"
+    }
+
+
+def test_private_evaluator_rejects_a_tampered_frozen_artifact(tmp_path):
+    scenarios = Path(get_config().skills_dir) / "retrosynthesis_planning" / "scenarios"
+    workspace = tmp_path / "tampered"
+    install_test_case(
+        scenarios / "test_cases" / "04_forward_prediction.json", workspace
+    )
+    artifact = run_pipeline("forward", workspace)
+    artifact["records"][0]["predictions"][0]["isomeric_product"] = "tampered"
+    (workspace / "results" / "intermediate_results.json").write_text(
+        json.dumps(artifact), encoding="utf-8"
+    )
+    with pytest.raises(BenchmarkProtocolError, match="trajectory hash mismatch"):
+        evaluate_workspace("forward", workspace)

@@ -179,24 +179,18 @@ private_evaluator/
 reference_repository/
 ├── README.md
 ├── environment.yml
-├── run.sh
-├── input/
-├── src/
-│   ├── validate_data.py
-│   ├── audit_leakage.py
-│   ├── train_baselines.py
-│   ├── select_model.py
-│   ├── predict_yield.py
-│   ├── calibrate_uncertainty.py
-│   └── build_outputs.py
-├── results/
-│   ├── predictions.csv
-│   ├── validation_metrics.csv
-│   └── intermediate_results.json
-└── analysis/
-    ├── diagnostics.py
-    └── figures/
+├── pipelines/
+│   └── 06_yield_estimation.py
+└── test_cases/
+    ├── install.py
+    ├── evaluate.py
+    ├── database_sources.json
+    └── 06_yield_estimation.json
 ```
+
+仓库中的实际参考实现位于 `scenarios/pipelines/` 与
+`scenarios/test_cases/`。公开 pipeline 只能看到反应、split 与冻结模型输出；实验
+yield GT 保持在 private evaluator 边界。
 
 ## 评估自动化实现难度
 

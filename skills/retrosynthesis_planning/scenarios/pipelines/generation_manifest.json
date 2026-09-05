@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "generated_by": "repository_maintainers",
+  "generation_kind": "legacy_gt_aliases",
+  "generation_provenance": "Deprecated compatibility mapping; these files are not OpenAI4S-generated outputs.",
+  "shared_runtime": {
+    "path": "../../gt_codebase.py",
+    "sha256": "f4fa64a22749bae56be93d6007909fa466e1d4166553df40ecde4846d021b291"
+  },
+  "entries": [
+    {
+      "scenario": "single_step",
+      "scenario_id": "single_step_retrosynthesis_class_unknown_v1",
+      "query_source": "../queries/01_single_step_retrosynthesis.query.md",
+      "query_document_sha256": "0be7f2a209271ba9ef5e9380fd9425df71ba221d9721f90c2b19d9022d87e09f",
+      "entrypoint": "01_single_step_retrosynthesis.py",
+      "entrypoint_sha256": "71476582ed2a6e12fb4eb5cfc65a4a9cbc898caea32f3332df0bbae57210785a"
+    },
+    {
+      "scenario": "multistep",
+      "scenario_id": "multistep_paroutes_budgeted_v1",
+      "query_source": "../queries/02_multistep_route_planning.query.md",
+      "query_document_sha256": "da9543a63248800d3a067e40f85b9dad99f1e47ec91e85330d27fef662b67353",
+      "entrypoint": "02_multistep_route_planning.py",
+      "entrypoint_sha256": "a4ed638f7f661f9cce5808ef3b1af836370edccc708085c3c9e0f8dcf1d3bf69"
+    },
+    {
+      "scenario": "atom_mapping",
+      "scenario_id": "reaction_atom_mapping_curated_v1",
+      "query_source": "../queries/03_atom_mapping.query.md",
+      "query_document_sha256": "c54f7a32e2dc6cadf7c962ddf2378842cc2011654ee34454dd8ca8892757ec10",
+      "entrypoint": "03_atom_mapping.py",
+      "entrypoint_sha256": "e65c1c0621fddfc590f3c370e573ebbd4a39f3d0c4677af9f3bb455f72f451f9"
+    },
+    {
+      "scenario": "forward",
+      "scenario_id": "forward_prediction_uspto_mit_separated_v1",
+      "query_source": "../queries/04_forward_prediction.query.md",
+      "query_document_sha256": "0e337aca8ae1b065cef1db082c20b542a4627b4d6c0a39162ac6325c731f0496",
+      "entrypoint": "04_forward_prediction.py",
+      "entrypoint_sha256": "d100f170aeb41628e7bcf998b86f4e3e6da14827ba439f47403dc29d0af9eaa8"
+    },
+    {
+      "scenario": "conditions",
+      "scenario_id": "reaction_condition_uspto_categorical_v1",
+      "query_source": "../queries/05_condition_recommendation.query.md",
+      "query_document_sha256": "7ec6a76802ef6c27ec5131bc3a90dc7be93fc807ce3b310d99af26c56a45660c",
+      "entrypoint": "05_condition_recommendation.py",
+      "entrypoint_sha256": "2b877943da3d719550e22d162bd588f124371a7e3527de7b09564ea506116383"
+    },
+    {
+      "scenario": "yield",
+      "scenario_id": "buchwald_hartwig_yield_ood_v1",
+      "query_source": "../queries/06_yield_estimation.query.md",
+      "query_document_sha256": "bc9bc276d2c0eb2211b6253a6f5a31d89e0e63c23a6b372e19effeb2cb0806cd",
+      "entrypoint": "06_yield_estimation.py",
+      "entrypoint_sha256": "033f4d0ef208ee6ed51c05f8ba718ffafec2b7af7fc8601719da5f13483e0cea"
+    }
+  ]
+}
