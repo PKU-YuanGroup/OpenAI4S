@@ -26,11 +26,10 @@ import json
 import os
 import re
 import stat
-import tempfile
 import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from openai4s.config import Config
 from openai4s.llm import chat, get_model_capabilities
@@ -670,10 +669,31 @@ class _TornBlob(ValueError):
     """A file at a digest path that is not a blob at all (torn or garbage)."""
 
 
-def _read_bounded(path: Path, limit: int) -> bytes:
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+# Every component below a blob root is opened by descriptor with O_NOFOLLOW,
+# so a rename between the name check and the write cannot redirect it.  The
+# platforms without ``dir_fd`` never spawn a kernel (native Windows is
+# refused), so the path-based fallback there guards nothing that runs.
+# ``os.stat(..., follow_symlinks=False)`` rather than ``os.lstat``: the older
+# python-build-standalone macOS builds (3.10-3.12) leave ``lstat`` out of
+# ``supports_dir_fd`` while ``stat`` with ``dir_fd`` is there on every one.
+_DIR_FD_OK = (
+    os.name == "posix"
+    and all(
+        fn in os.supports_dir_fd
+        for fn in (os.open, os.mkdir, os.stat, os.unlink, os.rename)
+    )
+    and os.stat in os.supports_follow_symlinks
+)
+
+
+def _read_bounded(name: str, limit: int, *, dir_fd: int | None) -> bytes:
     """Read at most ``limit`` bytes without following a symlink or blocking."""
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags)
+    flags = os.O_RDONLY | _O_NONBLOCK | _O_NOFOLLOW | _O_CLOEXEC
+    fd = os.open(name, flags, dir_fd=dir_fd)
     try:
         chunks: list[bytes] = []
         remaining = limit
@@ -693,7 +713,9 @@ def content_digest(content: Any) -> str:
     return hashlib.sha256(_json_text(content).encode("utf-8")).hexdigest()
 
 
-def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
+def _verify_existing_blob(
+    name: str, payload: Mapping[str, Any], *, dir_fd: int | None
+) -> None:
     """Refuse a pre-existing file at a digest path unless it is that content.
 
     The workspace copy lives where a cell can write, so a file already at
@@ -705,13 +727,14 @@ def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
     Nor can the *object* be trusted: a FIFO there would park the daemon's
     turn thread in a plain read forever, a symlink would read some other
     file, and a huge file would be swallowed whole.  ``lstat`` first, a
-    bounded no-follow non-blocking read second, JSON last.
+    bounded no-follow non-blocking read second, JSON last.  ``name`` is
+    relative to ``dir_fd`` when one is given.
     """
     digest = str(payload.get("sha256") or "")
     expected = len(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
     limit = 2 * expected + 1_048_576
     try:
-        info = os.lstat(path)
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError as error:
         raise _TornBlob("existing archive blob is unreadable") from error
     if not stat.S_ISREG(info.st_mode):
@@ -719,7 +742,8 @@ def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
     if info.st_size > limit:
         raise ValueError("existing archive blob is larger than this content")
     try:
-        existing = json.loads(_read_bounded(path, limit).decode("utf-8"))
+        raw = _read_bounded(name, limit, dir_fd=dir_fd)
+        existing = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as error:
         raise _TornBlob("existing archive blob is unreadable") from error
     try:
@@ -728,41 +752,111 @@ def _verify_existing_blob(path: Path, payload: Mapping[str, Any]) -> None:
         raise ValueError("existing archive blob does not match its digest") from error
 
 
-def _write_exclusive_json(
-    path: Path, payload: Mapping[str, Any], *, host_owned: bool
+@contextlib.contextmanager
+def _open_below(root: Path, relative_dir: PurePosixPath) -> Iterator[int]:
+    """Yield a descriptor for ``root/relative_dir``, created if missing.
+
+    ``_confine`` checks the *name* once.  The workspace is agent-writable, so
+    a persistent cell can swap ``.openai4s`` or ``context`` for a symlink
+    between that check and the write; a path-based ``mkdir``/``replace``
+    would follow it and land the blob wherever the daemon can write.  Each
+    component is opened relative to its parent's descriptor with
+    ``O_NOFOLLOW`` and ``O_DIRECTORY``: a symlink is ELOOP, a file is
+    ENOTDIR, and the bytes go into the directory that was actually checked.
+    """
+    # The root is host-chosen and already resolved; creating it by name is
+    # not the race.  Everything below it is opened by descriptor.
+    os.makedirs(root, exist_ok=True)
+    handles = [os.open(str(root), os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)]
+    try:
+        for part in relative_dir.parts:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, dir_fd=handles[-1])
+            handles.append(
+                os.open(
+                    part,
+                    os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC,
+                    dir_fd=handles[-1],
+                )
+            )
+        yield handles[-1]
+    finally:
+        for handle in reversed(handles):
+            with contextlib.suppress(OSError):
+                os.close(handle)
+
+
+def _write_exclusive_json_at(
+    dir_fd: int | None, name: str, payload: Mapping[str, Any], *, host_owned: bool
 ) -> None:
-    """Write ``payload`` at its digest path atomically, or dedupe against it.
+    """Write ``payload`` at ``name`` atomically, or dedupe against what is there.
 
     Only a complete file ever appears at the digest path: the bytes go to a
     sibling temp file and are renamed into place, so a crash, ENOSPC, or a
     concurrent writer can never leave a torn ``<sha256>.json`` that every
     later externalization would then reject forever.  A file already there
-    is accepted only if it *is* this content.  A torn one (not JSON at all)
-    is replaced on both roots.  A well-formed file with different content is
-    replaced only under the host-owned archive; in the agent-writable
-    workspace it is left alone and the caller records no reference to it.
+    is accepted only if it *is* this content.  A torn one (not JSON at all,
+    or not a regular file) is replaced on both roots.  A well-formed file
+    with different content is replaced only under the host-owned archive; in
+    the agent-writable workspace it is left alone and the caller records no
+    reference to it.  ``name`` is relative to ``dir_fd``; with no descriptor
+    it is a full path.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
         try:
-            _verify_existing_blob(path, payload)
+            _verify_existing_blob(name, payload, dir_fd=dir_fd)
             return
         except _TornBlob:
             pass
         except ValueError:
             if not host_owned:
                 raise
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    base, leaf = os.path.split(name)
+    tmp = os.path.join(base, f".{leaf}.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    fd = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC,
+        0o644,
+        dir_fd=dir_fd,
+    )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        if dir_fd is None:
+            os.replace(tmp, name)
+        else:
+            # rename(2) replaces an existing entry atomically on POSIX; the
+            # descriptor pins the directory the name check looked at.
+            os.rename(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except BaseException:
         with contextlib.suppress(OSError):
-            os.unlink(tmp)
+            os.unlink(tmp, dir_fd=dir_fd)
         raise
+
+
+def _write_json_below(
+    root: Path, relative: str, payload: Mapping[str, Any], *, host_owned: bool
+) -> None:
+    rel = PurePosixPath(relative)
+    if not _DIR_FD_OK:
+        if not host_owned:
+            # Without descriptors the write would trust the name it checked;
+            # the kernel-readable copy is best-effort, so it is skipped here
+            # rather than written where a cell could redirect it.
+            raise OSError("workspace blob needs dir_fd support to be written safely")
+        target = root.joinpath(*rel.parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_exclusive_json_at(None, str(target), payload, host_owned=host_owned)
+        return
+    with _open_below(root, rel.parent) as dir_fd:
+        _write_exclusive_json_at(dir_fd, rel.name, payload, host_owned=host_owned)
 
 
 def _write_content_blob(
@@ -770,9 +864,10 @@ def _write_content_blob(
     digest: str,
     payload: Mapping[str, Any],
 ) -> str:
-    path = _confined_blob_path(archive_dir, digest)
-    _write_exclusive_json(path, payload, host_owned=True)
-    return str(path.relative_to(archive_dir.expanduser().resolve()))
+    _confined_blob_path(archive_dir, digest)  # digest shape and containment by name
+    rel = f"blobs/{digest[:2]}/{digest}.json"
+    _write_json_below(archive_dir.expanduser().resolve(), rel, payload, host_owned=True)
+    return rel
 
 
 def _workspace_context_ref(digest: str) -> str:
@@ -796,8 +891,9 @@ def _write_workspace_content_blob(
     payload: Mapping[str, Any],
 ) -> str:
     rel = _workspace_context_ref(digest)
-    path = _confined_workspace_blob_path(Path(workspace), digest)
-    _write_exclusive_json(path, payload, host_owned=False)
+    root = Path(workspace)
+    _confined_workspace_blob_path(root, digest)  # containment by name, once
+    _write_json_below(root.expanduser().resolve(), rel, payload, host_owned=False)
     return rel
 
 

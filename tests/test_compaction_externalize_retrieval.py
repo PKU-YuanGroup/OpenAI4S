@@ -212,16 +212,6 @@ def test_kernel_reads_externalized_workspace_blob(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _torn_dump(prefix_chars: int = 200):
-    """A ``json.dump`` that writes a prefix and then hits ENOSPC."""
-
-    def dump(payload, handle, **kwargs):
-        handle.write(json.dumps(payload, **kwargs)[:prefix_chars])
-        raise OSError(28, "No space left on device")
-
-    return dump
-
-
 def test_a_torn_write_leaves_no_file_at_the_digest_path(tmp_path, monkeypatch):
     """A crash or ENOSPC mid-write used to leave a truncated ``<sha>.json`` at
     the content-addressed path; every later externalization then rejected it
@@ -230,11 +220,16 @@ def test_a_torn_write_leaves_no_file_at_the_digest_path(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     messages = _observation_messages("[Observation]\n" + ("t" * 20_000))
-    real_dump = json.dump
-    monkeypatch.setattr(json, "dump", _torn_dump())
+
+    def no_space(_fd):
+        # The bytes are written; the flush to disk is what fails.
+        raise OSError(28, "No space left on device")
+
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", no_space)
     with pytest.raises(OSError):
         externalize_large_outputs(messages, tmp_path / "archive", workspace=workspace)
-    monkeypatch.setattr(json, "dump", real_dump)
+    monkeypatch.setattr(os, "fsync", real_fsync)
 
     for root in (tmp_path / "archive", workspace / ".openai4s"):
         assert not list(root.rglob("*.json")), "a torn blob was left behind"
@@ -391,3 +386,38 @@ def test_a_symlink_at_the_digest_path_is_neither_followed_nor_endorsed(tmp_path)
     assert secret.read_text("utf-8") == "do not read me"
     assert "content_archive" not in projected[2]
     assert planted.is_symlink()
+
+
+@pytest.mark.parametrize("swapped", [".openai4s", ".openai4s/context"])
+def test_a_component_swapped_for_a_symlink_after_the_name_check_is_refused(
+    tmp_path, monkeypatch, swapped
+):
+    """`_confine` resolves the name once; a persistent cell can swap
+    ``.openai4s`` or ``.openai4s/context`` for a symlink to any host-writable
+    directory between that check and the write.  A path-based
+    ``mkdir``/``replace`` followed it and landed the blob outside the
+    workspace while still returning ``workspace_ref``.  The write is now
+    anchored on directory descriptors opened with ``O_NOFOLLOW``, so the
+    swap is ELOOP and nothing is written."""
+    workspace = tmp_path / "ws"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = workspace / swapped
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, link)
+    # The name check answers as it did before the swap landed.
+    monkeypatch.setattr(
+        comp_mod,
+        "_confine",
+        lambda root, relative, what: root.expanduser().resolve() / relative,
+    )
+    messages = _observation_messages("[Observation]\n" + ("w" * 20_000))
+
+    projected = externalize_large_outputs(
+        messages, tmp_path / "archive", workspace=workspace
+    )
+
+    archive = projected[2]["content_archive"]
+    assert "archive_ref" in archive and "workspace_ref" not in archive
+    assert not list(outside.iterdir()), "the blob landed outside the workspace"
+    assert link.is_symlink(), "the planted link was replaced"
