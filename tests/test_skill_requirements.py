@@ -147,3 +147,86 @@ def test_readiness_is_not_enabledness():
     assert gpu_row["readiness"]["state"] in (READY, NEEDS_SETUP, UNKNOWN)
     # Enabled says nothing about whether it can run.
     assert gpu_row["enabled"] is True
+
+
+def test_strict_import_validator_rejects_what_the_historical_reader_degrades():
+    """parse_network_frontmatter must keep degrading illegal modes so a
+    third-party Skill still loads. The import gate is a new entry."""
+    from openai4s.skills_loader.capabilities import (
+        InvalidSkillCapability,
+        parse_network_frontmatter,
+        validate_network_frontmatter_strict,
+    )
+
+    raw = (
+        "---\nname: x\ncapabilities:\n  network:\n    mode: warp\n"
+        "    domains:\n      - example.org\n---\nbody\n"
+    )
+    degraded = parse_network_frontmatter(raw)
+    assert degraded is not None
+    assert degraded.mode == "unknown"
+    assert degraded.declaration == "unknown"
+    with pytest.raises(InvalidSkillCapability, match="mode"):
+        validate_network_frontmatter_strict(raw)
+    absent = "---\nname: x\ndescription: d\n---\nbody\n"
+    assert validate_network_frontmatter_strict(absent) is None
+    assert parse_network_frontmatter(absent) is None
+
+
+def test_imported_gpu_skill_catalog_readiness_is_not_a_boolean(tmp_path):
+    from openai4s.config import Config
+    from openai4s.server.skills import SkillCustomizationService
+
+    bundled = tmp_path / "bundled-skills"
+    bundled.mkdir()
+    config = Config(data_dir=tmp_path / "data", skills_dir=bundled)
+    service = SkillCustomizationService(SkillLoader(cfg=config))
+    imported = service.import_document(
+        content=(
+            "---\nname: needs-gpu\ndescription: gpu recipe\norigin: draft\n"
+            "requirements: [gpu]\n"
+            "capabilities:\n  network:\n    mode: none\n    domains: []\n"
+            "license: MIT\ncategory: analysis\n"
+            "# keep\n"
+            "x-vendor-ext:\n  nested:\n    keep: me\n---\n\n# body\n"
+        )
+    )
+    assert imported["ok"] is True
+    row = next(item for item in service.catalog() if item["name"] == "needs-gpu")
+    assert "gpu" in row["requirements"]
+    assert row["capabilities"]["network"]["mode"] == "none"
+    assert row["readiness"]["state"] in (READY, NEEDS_SETUP, UNKNOWN)
+    assert row["readiness"]["checked_locally"] is True
+    assert row["readiness"]["probed"] is False
+    assert imported["review"]["readiness"]["state"] == row["readiness"]["state"]
+
+
+def test_flow_style_network_mapping_keeps_every_domain():
+    """`network: {mode: host_only, domains: [a, b]}` is one declaration.
+
+    The inline parser split the mapping on every comma before it looked at
+    the bracketed list, so the second domain vanished and the first kept its
+    `[` -- and the strict import gate certified that allowlist. The block
+    spelling of the same declaration parsed correctly, so two YAML spellings
+    of one declaration produced different allowlists.
+    """
+    from openai4s.skills_loader.capabilities import (
+        parse_network_frontmatter,
+        validate_network_frontmatter_strict,
+    )
+
+    raw = (
+        "---\n"
+        "name: flow-net\n"
+        "description: d\n"
+        "capabilities:\n"
+        "  network: {mode: host_only, domains: [a.example, b.example]}\n"
+        "---\n"
+        "body\n"
+    )
+    strict = validate_network_frontmatter_strict(raw)
+    tolerant = parse_network_frontmatter(raw)
+    assert strict is not None and tolerant is not None
+    assert strict.mode == "host_only"
+    assert list(strict.domains) == ["a.example", "b.example"]
+    assert list(tolerant.domains) == ["a.example", "b.example"]

@@ -61,9 +61,14 @@ def _finalize_chat(messages, cfg, **kwargs):
     }
 
 
-# ~13k chars / ~3.2k estimated tokens, under DEFAULT_LARGE_OUTPUT_CHARS so
+# ~13k chars / ~3.2k estimated tokens each, under DEFAULT_LARGE_OUTPUT_CHARS so
 # externalization cannot shrink the estimate before should_compact sees it.
-_LONG_REPLY = "token-budget " * 1000
+# Each turn's prose differs by more than the no-progress circuit's
+# near-duplicate ratio (letters, not digits, which it normalizes away), so
+# ten long replies accumulate context instead of tripping ``no_progress``.
+_LONG_REPLIES = [
+    f"token-budget-{letter} {letter * 3} " * 800 for letter in "abcdefghij"
+]
 
 
 def _patch_capabilities(monkeypatch, impl):
@@ -109,7 +114,7 @@ def test_cli_compacts_against_model_usable_window(monkeypatch):
         ),
     )
     compact_calls = _count_compact(monkeypatch)
-    monkeypatch.setattr(loop_mod, "chat", ScriptedLLM([_LONG_REPLY] * 10))
+    monkeypatch.setattr(loop_mod, "chat", ScriptedLLM(list(_LONG_REPLIES)))
 
     result = Agent(use_skills=False, allow_delegate=False, max_turns=10).run(
         "accumulate enough context to force compaction"
@@ -125,7 +130,7 @@ def test_cli_capability_lookup_failure_falls_back_without_compacting(monkeypatch
 
     _patch_capabilities(monkeypatch, boom)
     compact_calls = _count_compact(monkeypatch)
-    monkeypatch.setattr(loop_mod, "chat", ScriptedLLM([_LONG_REPLY] * 10))
+    monkeypatch.setattr(loop_mod, "chat", ScriptedLLM(list(_LONG_REPLIES)))
 
     result = Agent(use_skills=False, allow_delegate=False, max_turns=10).run(
         "accumulate enough context that a 20k window would compact"

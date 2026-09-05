@@ -1632,11 +1632,16 @@ class DelegationRunner:
             result.get("stop_reason"), submitted, result.get("final_message"), missing
         )
 
-        if result.get("stop_reason") == "max_turns":
-            # A child that exhausted its turn budget did not finish its task;
-            # 'done' would launder exhaustion into success. The envelope keeps
-            # the raw stop_reason; the durable lifecycle records failure.
-            error = "max_turns exhausted before completion"
+        if result.get("stop_reason") in ("max_turns", "no_progress"):
+            # A child that exhausted its turn budget, or whose no-progress
+            # circuit tripped, did not finish its task; 'done' would launder
+            # that into success. The envelope keeps the raw stop_reason; the
+            # durable lifecycle records failure.
+            error = (
+                "max_turns exhausted before completion"
+                if result.get("stop_reason") == "max_turns"
+                else "no_progress: the child kept repeating the same action"
+            )
             out["error"] = error
             child.finish_failed(error, out)
             self._persist_status(child, "failed")
@@ -2210,7 +2215,7 @@ def _derive_task_status(
     failed when the child produced literally nothing. A terminated child that
     never submitted is failed regardless of what its transport said.
     """
-    if stop_reason == "max_turns":
+    if stop_reason in ("max_turns", "no_progress"):
         return "partial" if (submitted or final_message) else "failed"
     if not submitted and stop_reason != "submitted":
         return "failed"

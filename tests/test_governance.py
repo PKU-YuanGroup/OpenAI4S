@@ -21,11 +21,14 @@ USES_LINE = re.compile(r"^\s*-?\s*uses:")
 # identity at all, and let a bumped SHA keep a stale comment that tells every
 # future reader the wrong version.
 #
-# What this deliberately does NOT claim: that the comment names the SHA it sits
+# This regex deliberately does not claim that the comment names the SHA it sits
 # beside. Dereferencing a tag needs the network and this suite is offline by
-# design, so the identity check stays a human step -- what is mechanised here
-# is that there is always a claim to check.
-PINNED_ACTION = re.compile(r"^\s*-?\s*uses:\s*[^@\s]+@[0-9a-f]{40}\s+#\s*\S.*$")
+# design; the PR-triggered pinact job below carries that identity check. What is
+# mechanised here is the complementary local invariant: there is always a claim
+# for pinact to resolve, even when a workflow is added or renamed later.
+PINNED_ACTION = re.compile(
+    r"^\s*-?\s*uses:\s*[^@\s]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$"
+)
 
 
 def _uses_lines(name):
@@ -114,6 +117,33 @@ def test_every_workflow_pins_every_action_to_a_commit():
     assert moving == {}
 
 
+def test_pr_ci_resolves_every_action_version_comment_with_pinact():
+    """The networked half of the local all-workflow pinning contract.
+
+    A full SHA and a plausible-looking comment can agree syntactically while
+    naming different upstream objects. The default suite must stay offline, so
+    CI delegates only that dereference to pinact. `fix: false` is load-bearing:
+    current pinact-action otherwise edits the checkout, and validation would
+    appear green after silently repairing the evidence it was meant to check.
+    """
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+
+    # PyYAML reads the bare `on` key as YAML 1.1's boolean True.
+    assert "pull_request" in workflow[True]
+    pinact_steps = [
+        step
+        for step in workflow["jobs"]["action-pins"]["steps"]
+        if str(step.get("uses", "")).startswith("suzuki-shunsuke/pinact-action@")
+    ]
+    assert len(pinact_steps) == 1
+    # Exact equality, read from the parsed step rather than a text window:
+    # `no_api` would turn `verify` into a no-op, and any other input changes
+    # what the job attests. The SHA-plus-comment shape of the `uses:` line is
+    # already PINNED_ACTION's job over every workflow.
+    assert pinact_steps[0]["with"] == {"fix": "false", "verify": "true"}
+
+
 def test_credential_scanning_is_a_working_tree_scan_not_a_history_scan():
     """The Gitleaks history scan is gone; this pins what carries the load now.
 
@@ -187,6 +217,34 @@ def test_release_setup_uv_never_persists_a_cross_run_cache():
     )
 
 
+DEPENDABOT_ENTRY_KEYS = {
+    "allow",
+    "assignees",
+    "commit-message",
+    "cooldown",
+    "directories",
+    "directory",
+    "exclude-paths",
+    "groups",
+    "ignore",
+    "insecure-external-code-execution",
+    "labels",
+    "milestone",
+    "multi-ecosystem-group",
+    "name",
+    "open-pull-requests-limit",
+    "package-ecosystem",
+    "patterns",
+    "pull-request-branch-name",
+    "rebase-strategy",
+    "registries",
+    "schedule",
+    "target-branch",
+    "vendor",
+    "versioning-strategy",
+}
+
+
 def test_dependabot_tracks_uv_hooks_and_workflow_actions():
     config = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
 
@@ -199,6 +257,31 @@ def test_dependabot_tracks_uv_hooks_and_workflow_actions():
         '"github-actions"',
     ):
         assert f"package-ecosystem: {ecosystem}" in config
+
+
+def test_dependabot_entries_use_only_schema_keys():
+    """One unknown entry-level key stops every ecosystem's PRs.
+
+    GitHub's validator refuses the whole file, and the failure is visible only
+    on the repository's Dependabot tab. `update-types`, `exclude-patterns` and
+    `dependency-type` are `groups:`-only keys that read as if they belonged at
+    the entry level; this is where that mistake fails, offline. An entry may
+    also appear only once per ecosystem and directory: the options reference
+    grants a second entry only for a different `target-branch`.
+    """
+    yaml = pytest.importorskip("yaml")
+    updates = yaml.safe_load(
+        (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    )["updates"]
+    for entry in updates:
+        assert set(entry) <= DEPENDABOT_ENTRY_KEYS, sorted(
+            set(entry) - DEPENDABOT_ENTRY_KEYS
+        )
+    identities = [
+        (entry["package-ecosystem"], entry.get("directory"), entry.get("target-branch"))
+        for entry in updates
+    ]
+    assert len(identities) == len(set(identities))
 
 
 def test_branch_naming_policy_exempts_dependabot_by_ref_not_by_actor():

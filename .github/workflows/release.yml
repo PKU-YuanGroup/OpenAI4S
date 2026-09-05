@@ -298,9 +298,12 @@ jobs:
       - name: Receipt the distributions against the frozen SHA
         env:
           SHA: ${{ github.sha }}
+          OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           uv run --locked python scripts/release_receipts.py \
-            --kind dist --source-sha "$SHA" dist/*.whl dist/*.tar.gz
+            --kind dist --source-sha "$SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            dist/*.whl dist/*.tar.gz
       - name: Upload the exact distributions for publication
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -445,9 +448,12 @@ jobs:
         if: ${{ inputs.macos_asset == 'notarized' }}
         env:
           SHA: ${{ github.sha }}
+          OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           python3 scripts/release_receipts.py \
-            --kind macos --source-sha "$SHA" dist/*.dmg
+            --kind macos --source-sha "$SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            dist/*.dmg
       - name: Upload the verified app image
         if: ${{ inputs.macos_asset == 'notarized' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -506,9 +512,12 @@ jobs:
       - name: Receipt the bundle against the frozen SHA
         env:
           SHA: ${{ github.sha }}
+          OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           uv run --locked python scripts/release_receipts.py \
-            --kind linux --source-sha "$SHA" dist/OpenAI4S-*-linux-x86_64.tar.gz
+            --kind linux --source-sha "$SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            dist/OpenAI4S-*-linux-x86_64.tar.gz
       - name: Upload the verified bundle
         # The .sha256 sidecar travels because `windows-package` embeds it in the
         # zip, so the digest the Windows launcher checks against is the one this
@@ -568,9 +577,12 @@ jobs:
       - name: Receipt the package against the frozen SHA
         env:
           SHA: ${{ github.sha }}
+          OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           uv run --locked python scripts/release_receipts.py \
-            --kind windows --source-sha "$SHA" dist/OpenAI4S-*-windows-x86_64.zip
+            --kind windows --source-sha "$SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            dist/OpenAI4S-*-windows-x86_64.zip
       - name: Upload the verified package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -711,6 +723,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
           SHA: ${{ github.sha }}
+          OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         # Run from inside the checkout: the pipeline asks git which commit it
         # is releasing, and outside a work tree that question has no answer --
         # which the receipt check correctly refuses to guess at.
@@ -721,6 +734,7 @@ jobs:
             --mode release \
             --from-artifacts \
             --source-sha "$SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
             --stop-after reverify \
             --assets-dir ../assets \
             --json
@@ -844,10 +858,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
+          OPENAI4S_RELEASE_INPUTS_JSON: ${{ toJSON(github.event.inputs) }}
         run: |
           python source/scripts/release_pipeline.py \
             --version "${TAG#v}" \
             --mode release \
             --only publish \
             --attestation attestation/stage-attestation.json \
+            --workflow-run-id "$GITHUB_RUN_ID" \
             --json

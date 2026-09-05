@@ -15,7 +15,7 @@ import "./features/sessions";
 import "./i18n";
 import "./features/md";
 import "./features/messages";
-import "./features/send";
+import { bindComposer } from "./features/send";
 import "./features/timeline";
 import "./features/autocomplete";
 import "./features/table";
@@ -34,5 +34,8 @@ if (mount === null) {
   throw new Error("frontend: missing #app mount node");
 }
 render(<App />, mount);
+// F-11: installSend() ran at import, before #composer existed. render() is
+// synchronous, so Shell has committed the composer by now.
+bindComposer();
 bootChrome();
 bootAttention();

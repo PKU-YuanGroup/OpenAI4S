@@ -17,7 +17,7 @@ Source for the next workbench. F-03 mounts a Preact empty shell. Later F-series 
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-14 imports `features/notebook` (`installNotebook`). |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-13 imports `features/sessions`. Later items may add one module import here. |
 | [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-10 imports `features/messages`. |
-| [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-11 imports `features/send`. |
+| [`main.tsx`](main.tsx) | `preact.render` onto `#app`. F-05 imports `compat/window-exports`. F-06 imports `features/ws` (`bootWs`). F-11 imports `features/send` and calls `bindComposer()` after `render`, beside `bootChrome()`. |
 | [`vite-env.d.ts`](vite-env.d.ts) | Vite client types (`import.meta.env`). |
 
 ## Subdirectories

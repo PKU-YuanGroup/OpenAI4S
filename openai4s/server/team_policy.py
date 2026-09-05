@@ -258,7 +258,16 @@ INSTANCE_CONFIG_PREFIXES = ("/model-profiles/",)
 #:   the daemon for every member. This is the finding that put this table
 #:   here.
 DAEMON_OPERATION_PATHS = frozenset({"/compute/jobs"})
-DAEMON_OPERATION_PREFIXES = ("/compute/jobs/",)
+DAEMON_OPERATION_PREFIXES = (
+    "/compute/jobs/",
+    # Diagnostics: daemon-local posture and a redacted support zip. Admin-only
+    # on every verb, including GET, because the read is this machine's state.
+    # Members always receive the same 403 (`admin_only`) before any generation,
+    # rate-limit, or file is touched. 404 would hide a management surface the
+    # rest of this table does not hide; a 403-vs-429-vs-Content-Length split
+    # would tell a member whether an admin bundle is in flight.
+    "/diagnostics/",
+)
 
 #: Instance-global mutations beyond configuration: registering a remote
 #: compute provider (credentials, code on another host), installing

@@ -218,7 +218,7 @@ def test_a_check_with_no_run_id_is_refused(tmp_path):
 def test_python_browser_and_linux_private_pid_checks_are_required():
     """Item 4's binding, asserted on the manifest rather than on prose."""
     names = {gate.check_name for gate in release_gates.CHECK_SUITE_GATES}
-    for version in ("3.10", "3.12", "3.13"):
+    for version in ("3.10", "3.12", "3.13", "3.14"):
         assert f"Offline tests (py{version})" in names
     for engine in ("chromium", "firefox", "webkit"):
         assert f"Browser workbench E2E ({engine})" in names
@@ -399,7 +399,18 @@ def _pipeline_assets(tmp_path, *, source_sha=SHA):
     sdist = assets / "openai4s-0.2.0.tar.gz"
     sdist.write_bytes(b"sdist-bytes")
     _write(assets, _good_receipt(source_sha=source_sha))
-    receipt = release_receipts.build_build_receipt("dist", source_sha, [wheel, sdist])
+    receipt = release_receipts.build_build_receipt(
+        "dist",
+        source_sha,
+        [wheel, sdist],
+        workflow_run_id="7100",
+        workflow_inputs={
+            "tag": "v0.2.0",
+            "publish": False,
+            "pypi_only": False,
+            "macos_asset": "omit",
+        },
+    )
     (assets / release_receipts.build_receipt_name("dist")).write_text(
         json.dumps(receipt), "utf-8"
     )
@@ -466,7 +477,26 @@ def test_an_artifact_built_from_a_different_commit_is_refused(tmp_path):
     assets = _pipeline_assets(tmp_path)
     dmg = assets / "OpenAI4S-0.2.0-arm64.dmg"
     dmg.write_bytes(b"dmg-bytes")
-    stale = release_receipts.build_build_receipt("macos", OTHER_SHA, [dmg])
+    stale = release_receipts.build_build_receipt(
+        "macos",
+        OTHER_SHA,
+        [dmg],
+        workflow_run_id="7100",
+        workflow_inputs={
+            "tag": "v0.2.0",
+            "publish": False,
+            "pypi_only": False,
+            "macos_asset": "notarized",
+        },
+        notary={
+            "requested": True,
+            "submitted": True,
+            "stapled": True,
+            "stapler_returncode": 0,
+            "spctl_returncode": 0,
+            "post_staple_sha256": "0" * 64,
+        },
+    )
     (assets / release_receipts.build_receipt_name("macos")).write_text(
         json.dumps(stale), "utf-8"
     )
@@ -610,7 +640,7 @@ def test_replacing_a_draft_asset_and_its_manifest_together_is_caught(tmp_path):
     attestation.write_text(
         json.dumps(
             release_receipts.build_stage_attestation(
-                version="0.2.0", source_sha=SHA, assets=[wheel]
+                version="0.2.0", source_sha=SHA, assets=[wheel], workflow_run_id="7100"
             )
         ),
         "utf-8",
@@ -640,7 +670,7 @@ def test_an_attestation_for_another_version_is_refused(tmp_path):
     target.write_text(
         json.dumps(
             release_receipts.build_stage_attestation(
-                version="0.2.0", source_sha=SHA, assets=[wheel]
+                version="0.2.0", source_sha=SHA, assets=[wheel], workflow_run_id="7100"
             )
         ),
         "utf-8",

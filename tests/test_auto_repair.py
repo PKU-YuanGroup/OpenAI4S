@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from openai4s.config import AutoModeBudgets, AutoModeConfig, Config, RoadmapFeatureFlags
-from openai4s.server.auto_repair import AutoRepairService, apply_claim_repair
+from openai4s.server.auto_repair import (
+    AutoRepairService,
+    apply_claim_repair,
+    declare_deterministic_repair,
+)
 from openai4s.server.evidence_snapshot import freeze_evidence_snapshot
 from openai4s.server.scientific_review import ScientificReviewService
 
@@ -273,3 +277,90 @@ def test_budget_exhausted_repair_is_not_a_pass():
     )
     assert repaired.get("verdict") != "pass"
     assert repaired.get("stop_reason") in {"budget_exhausted", "loop_detected"}
+
+
+def test_apply_claim_repair_is_declared_deterministic():
+    assert getattr(apply_claim_repair, "openai4s_deterministic_repair") is True
+
+
+def test_declaring_a_legacy_repair_deterministic_does_not_change_its_bytes():
+    def fn(snapshot, findings):
+        return apply_claim_repair(snapshot, findings)
+
+    adapted = declare_deterministic_repair(fn)
+    assert getattr(adapted, "openai4s_deterministic_repair") is True
+    snapshot = {
+        "candidate_answer": "n=99",
+        "artifacts": [],
+        "adapters": [
+            {
+                "adapter": "table",
+                "complete": True,
+                "summary": {"row_count": 3, "columns": {}},
+            }
+        ],
+    }
+    assert adapted(snapshot, [])["candidate_answer"] == "n=3"
+
+
+def test_metered_repair_fn_without_budget_uses_inert_admission():
+    calls = {"n": 0}
+
+    def metered(snapshot, findings, admission=None):
+        del findings
+        admission.run_provider(lambda: calls.__setitem__("n", calls["n"] + 1))
+        return {
+            "changed": False,
+            "self_certified": False,
+            "candidate_answer": snapshot.get("candidate_answer"),
+        }
+
+    review = ScientificReviewService(store=None, config=_cfg(), chat_call=_pass_chat)
+    first = {
+        "verdict": "issues",
+        "findings": [{"severity": "high", "fingerprint": "stuck"}],
+        "snapshot": _table_snapshot("resid.csv has n=99 and mean=2.0"),
+    }
+    repaired = AutoRepairService(
+        store=None,
+        config=_cfg(),
+        scientific_review=review,
+        repair_fn=metered,
+    ).run(
+        initial=first,
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+    )
+    assert calls["n"] == 1
+    assert repaired.get("stop_reason") == "loop_detected"
+
+
+def test_undeclared_legacy_repair_fn_still_runs_without_a_budget_envelope():
+    def unmarked(snapshot, findings):
+        del findings
+        return {
+            "changed": True,
+            "self_certified": False,
+            "candidate_answer": snapshot.get("candidate_answer"),
+            "after_version_ids": [],
+        }
+
+    review = ScientificReviewService(store=None, config=_cfg(), chat_call=_pass_chat)
+    first = {
+        "verdict": "issues",
+        "findings": [{"severity": "high", "fingerprint": "stuck"}],
+        "snapshot": _table_snapshot("resid.csv has n=99 and mean=2.0"),
+    }
+    repaired = AutoRepairService(
+        store=None,
+        config=_cfg(),
+        scientific_review=review,
+        repair_fn=unmarked,
+    ).run(
+        initial=first,
+        result_review_mode="auto_fix",
+        agent_cfg=_llm("agent"),
+        reviewer_cfg=_llm("reviewer"),
+    )
+    assert repaired.get("verdict") != "pass"

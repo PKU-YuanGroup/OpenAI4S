@@ -591,6 +591,44 @@
         404
       ]
     },
+    "/diagnostics/bundle": {
+      "content_types": [
+        "application/json",
+        "application/zip"
+      ],
+      "kinds": [
+        "binary",
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/diagnostics/checks": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
+    "/diagnostics/status": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
+        200,
+        404
+      ]
+    },
     "/doubao-search/config": {
       "content_types": [
         "application/json"
@@ -937,6 +975,17 @@
       ],
       "statuses": [
         200,
+        404
+      ]
+    },
+    "/frames/([^/]+)/compute/tasks/([^/]+)/cancel": {
+      "content_types": [
+        "application/json"
+      ],
+      "kinds": [
+        "json"
+      ],
+      "statuses": [
         404
       ]
     },

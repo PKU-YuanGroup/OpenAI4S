@@ -29,8 +29,43 @@ from openai4s.server.session_package import (
     session_import_quarantine_key,
 )
 from openai4s.server.urls import artifact_version_url
+from openai4s.storage.artifact_observations import CAPTURE_KINDS
 from openai4s.storage.snapshots import revert_recovery_setting_key
 from openai4s.store import Store
+
+# P2-1 frozen portable observation contract. This version does not export
+# artifact_observations.json; these bounds are the fail-closed gate a future
+# importer must enforce before any Store write.
+PORTABLE_OBSERVATION_FILE = "artifact_observations.json"
+PORTABLE_OBSERVATION_MAX_RECORDS = 100_000
+PORTABLE_OBSERVATION_MAX_BYTES = 16 << 20
+PORTABLE_OBSERVATION_REQUIRED_FIELDS = frozenset(
+    {
+        "observation_id",
+        "artifact_id",
+        "version_id",
+        "producing_cell_id",
+        "capture_kind",
+        "filename",
+        "created_at",
+    }
+)
+PORTABLE_OBSERVATION_OPTIONAL_FIELDS = frozenset(
+    {
+        "frame_id",
+        "content_type",
+        "size_bytes",
+        "checksum",
+        "env_snapshot_id",
+        "source",
+        "input_version_ids",
+        "updated_at",
+    }
+)
+PORTABLE_OBSERVATION_FIELDS = (
+    PORTABLE_OBSERVATION_REQUIRED_FIELDS | PORTABLE_OBSERVATION_OPTIONAL_FIELDS
+)
+PORTABLE_OBSERVATION_FORBIDDEN_PATH_FIELDS = frozenset({"path", "snapshot_path"})
 
 
 def _canonical(value) -> bytes:
@@ -3366,5 +3401,601 @@ def test_session_package_rejects_a_compaction_cover_it_cannot_map(tmp_path):
         domain.create_checkpoint(root, reason="dangling cover")
         with pytest.raises(SessionPackageError):
             domain.session_import(domain.session_export(root)["data"])
+    finally:
+        store.close()
+
+
+def _package_identity_scope(files: dict[str, bytes]) -> dict[str, object]:
+    artifacts_doc = json.loads(files["artifacts.json"])
+    notebook = json.loads(files["notebook.json"])
+    environment = json.loads(files["environment.json"])
+    session = json.loads(files["session.json"])
+    snapshots = json.loads(files["snapshots.json"])
+    artifact_ids: set[str] = set()
+    version_ids: set[str] = set()
+    versions_by_artifact: dict[str, set[str]] = {}
+    for artifact in artifacts_doc.get("artifacts") or []:
+        artifact_id = artifact.get("artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            continue
+        artifact_ids.add(artifact_id)
+        owned: set[str] = set()
+        for version in artifact.get("versions") or []:
+            version_id = version.get("version_id")
+            if isinstance(version_id, str) and version_id:
+                owned.add(version_id)
+                version_ids.add(version_id)
+        versions_by_artifact[artifact_id] = owned
+    cell_ids = {
+        cell["producing_cell_id"]
+        for cell in notebook.get("cells") or []
+        if isinstance(cell.get("producing_cell_id"), str) and cell["producing_cell_id"]
+    }
+    env_ids = {
+        snapshot["snapshot_id"]
+        for snapshot in environment.get("artifact_environment_snapshots") or []
+        if isinstance(snapshot.get("snapshot_id"), str) and snapshot["snapshot_id"]
+    }
+    frame_ids = {str(session["source"]["root_frame_id"])}
+    for branch in snapshots.get("branches") or []:
+        branch_id = branch.get("branch_id")
+        if isinstance(branch_id, str) and branch_id:
+            frame_ids.add(branch_id)
+    return {
+        "artifact_ids": artifact_ids,
+        "version_ids": version_ids,
+        "versions_by_artifact": versions_by_artifact,
+        "cell_ids": cell_ids,
+        "env_ids": env_ids,
+        "frame_ids": frame_ids,
+    }
+
+
+def _valid_portable_observation(files: dict[str, bytes]) -> dict:
+    artifacts_doc = json.loads(files["artifacts.json"])
+    artifact = artifacts_doc["artifacts"][0]
+    version = next(item for item in artifact["versions"] if item.get("available"))
+    notebook = json.loads(files["notebook.json"])
+    producing_cell_id = (
+        version.get("producing_cell_id") or notebook["cells"][0]["producing_cell_id"]
+    )
+    session = json.loads(files["session.json"])
+    return {
+        "observation_id": "aco-portable-1",
+        "artifact_id": artifact["artifact_id"],
+        "version_id": version["version_id"],
+        "producing_cell_id": producing_cell_id,
+        "capture_kind": "version_created",
+        "filename": version["filename"],
+        "created_at": int(version.get("created_at") or 1),
+        "frame_id": session["source"]["root_frame_id"],
+        "content_type": version.get("content_type"),
+        "size_bytes": version.get("size_bytes"),
+        "checksum": version.get("checksum"),
+        "env_snapshot_id": version.get("env_snapshot_id"),
+        "source": version.get("source"),
+        "input_version_ids": [],
+        "updated_at": int(version.get("created_at") or 1),
+    }
+
+
+def _portable_observation_document(observations: list[dict]) -> bytes:
+    body = {"schema_version": 1, "observations": observations}
+    return _canonical(
+        {
+            **body,
+            "observations_sha256": hashlib.sha256(_canonical(body)).hexdigest(),
+        }
+    )
+
+
+def _frozen_portable_observation_preflight(
+    payload: bytes, *, scope: dict[str, object]
+) -> list[dict]:
+    """Fail closed on the frozen P2-1 observation file before any Store write.
+
+    This is the executable schema freeze, not a production importer. A future
+    enablement must reject with the same SessionPackageError class, the same
+    100,000 / 16 MiB bounds, and zero database changes.
+    """
+    if len(payload) > PORTABLE_OBSERVATION_MAX_BYTES:
+        raise SessionPackageError(
+            "artifact_observations.json exceeds the 16 MiB portable limit"
+        )
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, TypeError) as error:
+        raise SessionPackageError(
+            "invalid JSON document: artifact_observations.json"
+        ) from error
+    if not isinstance(document, dict):
+        raise SessionPackageError(
+            "JSON document must be an object: artifact_observations.json"
+        )
+    session_package_mod._assert_secret_free(document, path=PORTABLE_OBSERVATION_FILE)
+    if document.get("schema_version") != 1:
+        raise SessionPackageError("artifact_observations.json schema version mismatch")
+    observations = document.get("observations")
+    if not isinstance(observations, list):
+        raise SessionPackageError(
+            "artifact_observations.json.observations must be a list"
+        )
+    if len(observations) > PORTABLE_OBSERVATION_MAX_RECORDS:
+        raise SessionPackageError(
+            "session has too many artifact observations to package safely"
+        )
+    body = {
+        "schema_version": document.get("schema_version"),
+        "observations": observations,
+    }
+    if (
+        document.get("observations_sha256")
+        != hashlib.sha256(_canonical(body)).hexdigest()
+    ):
+        raise SessionPackageError("artifact_observations.json checksum mismatch")
+    artifact_ids = scope["artifact_ids"]
+    version_ids = scope["version_ids"]
+    versions_by_artifact = scope["versions_by_artifact"]
+    cell_ids = scope["cell_ids"]
+    env_ids = scope["env_ids"]
+    frame_ids = scope["frame_ids"]
+    seen_ids: set[str] = set()
+    seen_producers: set[tuple[str, str]] = set()
+    for index, item in enumerate(observations):
+        path = f"artifact_observations.json.observations[{index}]"
+        if not isinstance(item, dict):
+            raise SessionPackageError(f"{path} contains an invalid record")
+        leaked = PORTABLE_OBSERVATION_FORBIDDEN_PATH_FIELDS.intersection(item)
+        if leaked:
+            raise SessionPackageError(
+                f"{path} leaks filesystem path fields: " + ", ".join(sorted(leaked))
+            )
+        extra = set(item) - PORTABLE_OBSERVATION_FIELDS
+        if extra:
+            raise SessionPackageError(
+                f"{path} contains unknown observation fields: "
+                + ", ".join(sorted(extra))
+            )
+        missing = PORTABLE_OBSERVATION_REQUIRED_FIELDS.difference(item)
+        if missing:
+            raise SessionPackageError(
+                f"{path} is missing required fields: " + ", ".join(sorted(missing))
+            )
+        observation_id = item.get("observation_id")
+        artifact_id = item.get("artifact_id")
+        version_id = item.get("version_id")
+        producing_cell_id = item.get("producing_cell_id")
+        for identity, label, allowed in (
+            (observation_id, "observation", None),
+            (artifact_id, "artifact", artifact_ids),
+            (version_id, "artifact version", version_ids),
+            (producing_cell_id, "cell", cell_ids),
+        ):
+            if not isinstance(identity, str) or not identity or len(identity) > 512:
+                raise SessionPackageError(
+                    f"{path} {label} identity is missing or invalid"
+                )
+            if allowed is not None and identity not in allowed:
+                raise SessionPackageError(
+                    f"{path} {label} references an unknown identity"
+                )
+        if observation_id in seen_ids:
+            raise SessionPackageError(f"{path} duplicate observation identity")
+        seen_ids.add(str(observation_id))
+        producer_key = (str(version_id), str(producing_cell_id))
+        if producer_key in seen_producers:
+            raise SessionPackageError(
+                f"{path} duplicate producer observation for version"
+            )
+        seen_producers.add(producer_key)
+        owned = versions_by_artifact.get(str(artifact_id), set())
+        if version_id not in owned:
+            raise SessionPackageError(
+                f"{path} version does not belong to the referenced artifact"
+            )
+        if item.get("capture_kind") not in CAPTURE_KINDS:
+            raise SessionPackageError(f"{path} unknown artifact capture kind")
+        session_package_mod._safe_artifact_filename(item.get("filename"))
+        created_at = item.get("created_at")
+        if isinstance(created_at, bool) or not isinstance(created_at, int):
+            raise SessionPackageError(f"{path} created_at is invalid")
+        frame_id = item.get("frame_id")
+        if frame_id not in (None, ""):
+            if not isinstance(frame_id, str) or frame_id not in frame_ids:
+                raise SessionPackageError(
+                    f"{path} frame references an unknown identity"
+                )
+        env_snapshot_id = item.get("env_snapshot_id")
+        if env_snapshot_id not in (None, ""):
+            if not isinstance(env_snapshot_id, str) or env_snapshot_id not in env_ids:
+                raise SessionPackageError(
+                    f"{path} environment snapshot references an unknown identity"
+                )
+        checksum = item.get("checksum")
+        if checksum not in (None, ""):
+            if not isinstance(checksum, str) or len(checksum) != 64:
+                raise SessionPackageError(f"{path} checksum is invalid")
+        size_bytes = item.get("size_bytes")
+        if size_bytes is not None and (
+            isinstance(size_bytes, bool) or not isinstance(size_bytes, int)
+        ):
+            raise SessionPackageError(f"{path} size_bytes is invalid")
+        input_version_ids = item.get("input_version_ids")
+        if input_version_ids is None:
+            input_version_ids = []
+        if not isinstance(input_version_ids, list):
+            raise SessionPackageError(f"{path} input_version_ids must be a list")
+        for input_version_id in input_version_ids:
+            if (
+                not isinstance(input_version_id, str)
+                or not input_version_id
+                or input_version_id not in version_ids
+            ):
+                raise SessionPackageError(
+                    f"{path} input version references an unknown identity"
+                )
+    return observations
+
+
+def _probe_old_importer(domain, package: bytes) -> dict:
+    """Run the real schema-v1 importer and classify reject / ignore / crash."""
+    try:
+        imported = domain.session_import(package)
+    except SessionPackageError as error:
+        return {"outcome": "rejected", "error": str(error)}
+    except Exception as error:  # noqa: BLE001 - the probe must record crashes
+        return {
+            "outcome": "crashed",
+            "error": f"{type(error).__name__}: {error}",
+        }
+    return {"outcome": "imported", "result": imported}
+
+
+def _imported_observation_count(store, root_frame_id: str) -> int:
+    artifacts = store.list_artifacts({"root_frame_id": root_frame_id})
+    return sum(
+        len(
+            store.list_artifact_capture_observations(
+                artifact_id=artifact["artifact_id"]
+            )
+        )
+        for artifact in artifacts
+    )
+
+
+def test_current_exporter_does_not_write_artifact_observations(tmp_path):
+    """This version freezes the schema only; production must not emit the file."""
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        exported = domain.session_export(root)
+        files = _unpack(exported["data"])
+        manifest = json.loads(files["manifest.json"])
+        listed = {entry["path"] for entry in manifest["files"]}
+        assert PORTABLE_OBSERVATION_FILE not in files
+        assert PORTABLE_OBSERVATION_FILE not in listed
+        assert exported["schema_version"] == 1
+    finally:
+        store.close()
+
+
+def test_old_importer_accepts_v1_package_without_artifact_observations(tmp_path):
+    """Probe A: a schema-v1 package with no extra optional file still imports."""
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        package = domain.session_export(root)["data"]
+        files = _unpack(package)
+        assert PORTABLE_OBSERVATION_FILE not in files
+        projects_before = {item["project_id"] for item in store.list_projects()}
+        probe = _probe_old_importer(domain, package)
+        assert probe["outcome"] == "imported", probe
+        imported = probe["result"]
+        assert imported["ok"] is True
+        assert imported["schema_version"] == 1
+        assert imported["trust_state"] == "quarantined"
+        assert "observation_imported_count" not in imported
+        assert imported["project_id"] not in projects_before
+        assert _imported_observation_count(store, imported["root_frame_id"]) == 0
+    finally:
+        store.close()
+
+
+def test_old_importer_ignores_listed_artifact_observations_file(tmp_path):
+    """Probe B: manifest-listed artifact_observations.json is extra optional v1.
+
+    The real old importer must classify as reject, ignore, or crash. Ignore
+    means the rest of the package imports and no observation rows are written.
+    """
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        payload = _portable_observation_document([_valid_portable_observation(files)])
+        files[PORTABLE_OBSERVATION_FILE] = payload
+        package = _repack(files)
+        packed = _unpack(package)
+        assert PORTABLE_OBSERVATION_FILE in packed
+        manifest = json.loads(packed["manifest.json"])
+        listed = {entry["path"] for entry in manifest["files"]}
+        assert PORTABLE_OBSERVATION_FILE in listed
+
+        observations_before = store.list_artifact_capture_observations()
+        probe = _probe_old_importer(domain, package)
+        assert probe["outcome"] == "imported", probe
+        imported = probe["result"]
+        assert imported["ok"] is True
+        assert imported["schema_version"] == 1
+        assert "observation_imported_count" not in imported
+        assert store.list_artifact_capture_observations() == observations_before
+        assert _imported_observation_count(store, imported["root_frame_id"]) == 0
+    finally:
+        store.close()
+
+
+def test_old_importer_rejects_unlisted_extra_file(tmp_path):
+    """Unknown ZIP members that the manifest does not list still fail closed."""
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        packed = _repack(files)
+        output = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(packed), "r") as source:
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+                for name in source.namelist():
+                    info = zipfile.ZipInfo(name)
+                    info.date_time = (1980, 1, 1, 0, 0, 0)
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.create_system = 3
+                    info.external_attr = 0o100600 << 16
+                    archive.writestr(info, source.read(name))
+                extra = zipfile.ZipInfo("unlisted-optional.json")
+                extra.date_time = (1980, 1, 1, 0, 0, 0)
+                extra.compress_type = zipfile.ZIP_DEFLATED
+                extra.create_system = 3
+                extra.external_attr = 0o100600 << 16
+                archive.writestr(extra, _canonical({"note": "unlisted"}))
+        probe = _probe_old_importer(domain, output.getvalue())
+        assert probe["outcome"] == "rejected", probe
+        assert "unlisted" in probe["error"]
+    finally:
+        store.close()
+
+
+def test_old_importer_ignores_unknown_listed_optional_file(tmp_path):
+    """A listed extra file that is not artifact_observations.json is ignored."""
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        files["future-optional.json"] = _canonical({"schema_version": 1, "rows": []})
+        probe = _probe_old_importer(domain, _repack(files))
+        assert probe["outcome"] == "imported", probe
+        assert probe["result"]["ok"] is True
+        assert _imported_observation_count(store, probe["result"]["root_frame_id"]) == 0
+    finally:
+        store.close()
+
+
+def test_old_importer_rejects_secret_canary_in_optional_observation_file(tmp_path):
+    """The old importer already fail-closes on secret-shaped extra-file bytes."""
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        files[PORTABLE_OBSERVATION_FILE] = _canonical(
+            {
+                "schema_version": 1,
+                "observations": [],
+                "token": "Bearer abcdefghijklmnop",
+            }
+        )
+        probe = _probe_old_importer(domain, _repack(files))
+        assert probe["outcome"] == "rejected", probe
+        assert "secret material" in probe["error"]
+        assert probe["error"].endswith(PORTABLE_OBSERVATION_FILE)
+    finally:
+        store.close()
+
+
+def test_portable_observation_in_scope_record_passes_preflight(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        first = _valid_portable_observation(files)
+        notebook = json.loads(files["notebook.json"])
+        second_cell = dict(notebook["cells"][0])
+        second_cell["producing_cell_id"] = "cell-portable-second"
+        second_cell["state_revision"] = int(second_cell.get("state_revision") or 1) + 1
+        notebook["cells"].append(second_cell)
+        files["notebook.json"] = _canonical(notebook)
+        scope = _package_identity_scope(files)
+        second = dict(first)
+        second["observation_id"] = "aco-portable-2"
+        second["producing_cell_id"] = "cell-portable-second"
+        second["capture_kind"] = "head_checksum_reused"
+        payload = _portable_observation_document([first, second])
+        observations = _frozen_portable_observation_preflight(payload, scope=scope)
+        assert [item["producing_cell_id"] for item in observations] == [
+            first["producing_cell_id"],
+            "cell-portable-second",
+        ]
+        assert observations[0]["version_id"] == observations[1]["version_id"]
+    finally:
+        store.close()
+
+
+def test_portable_observation_record_limit_fails_closed(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        scope = _package_identity_scope(files)
+        # Compact empty records keep this under 16 MiB so the count bound,
+        # not the byte bound, is the one that fail-closes.
+        payload = _portable_observation_document(
+            [{} for _ in range(PORTABLE_OBSERVATION_MAX_RECORDS + 1)]
+        )
+        assert len(payload) <= PORTABLE_OBSERVATION_MAX_BYTES
+        projects_before = [item["project_id"] for item in store.list_projects()]
+        observations_before = store.list_artifact_capture_observations()
+        with pytest.raises(SessionPackageError, match="too many artifact observations"):
+            _frozen_portable_observation_preflight(payload, scope=scope)
+        assert [item["project_id"] for item in store.list_projects()] == projects_before
+        assert store.list_artifact_capture_observations() == observations_before
+    finally:
+        store.close()
+
+
+def test_portable_observation_file_size_limit_fails_closed(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        scope = _package_identity_scope(files)
+        payload = b"x" * (PORTABLE_OBSERVATION_MAX_BYTES + 1)
+        projects_before = [item["project_id"] for item in store.list_projects()]
+        observations_before = store.list_artifact_capture_observations()
+        with pytest.raises(SessionPackageError, match="16 MiB portable limit"):
+            _frozen_portable_observation_preflight(payload, scope=scope)
+        assert [item["project_id"] for item in store.list_projects()] == projects_before
+        assert store.list_artifact_capture_observations() == observations_before
+    finally:
+        store.close()
+
+
+def test_portable_observation_path_canary_fails_closed(tmp_path):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        scope = _package_identity_scope(files)
+        record = _valid_portable_observation(files)
+        record["path"] = "/Users/canary/.openai4s/prediction.csv"
+        record["snapshot_path"] = "/var/secret/snapshot.bin"
+        payload = _portable_observation_document([record])
+        observations_before = store.list_artifact_capture_observations()
+        with pytest.raises(SessionPackageError, match="filesystem path fields"):
+            _frozen_portable_observation_preflight(payload, scope=scope)
+        assert store.list_artifact_capture_observations() == observations_before
+
+        # The old importer does not parse the extra file, so a path-shaped
+        # value that is not secret-shaped is ignored rather than imported.
+        files[PORTABLE_OBSERVATION_FILE] = payload
+        probe = _probe_old_importer(domain, _repack(files))
+        assert probe["outcome"] == "imported", probe
+        assert _imported_observation_count(store, probe["result"]["root_frame_id"]) == 0
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "corruption,match",
+    [
+        ("foreign_artifact", "artifact references an unknown identity"),
+        ("foreign_version", "artifact version references an unknown identity"),
+        ("cross_entity_version", "version does not belong to the referenced artifact"),
+        ("foreign_cell", "cell references an unknown identity"),
+        ("foreign_frame", "frame references an unknown identity"),
+        ("foreign_env", "environment snapshot references an unknown identity"),
+        ("foreign_input_version", "input version references an unknown identity"),
+    ],
+)
+def test_portable_observation_malicious_references_fail_closed(
+    tmp_path, corruption, match
+):
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        scope = _package_identity_scope(files)
+        record = _valid_portable_observation(files)
+        if corruption == "foreign_artifact":
+            record["artifact_id"] = "art_other_session"
+        elif corruption == "foreign_version":
+            record["version_id"] = "ver_other_session"
+        elif corruption == "cross_entity_version":
+            artifacts_doc = json.loads(files["artifacts.json"])
+            second = dict(artifacts_doc["artifacts"][0])
+            second["artifact_id"] = "art_sibling_in_package"
+            second_version = dict(second["versions"][0])
+            second_version["version_id"] = "ver_sibling_in_package"
+            second["versions"] = [second_version]
+            artifacts_doc["artifacts"].append(second)
+            files["artifacts.json"] = _canonical(artifacts_doc)
+            scope = _package_identity_scope(files)
+            record["version_id"] = "ver_sibling_in_package"
+        elif corruption == "foreign_cell":
+            record["producing_cell_id"] = "cell_other_session"
+        elif corruption == "foreign_frame":
+            record["frame_id"] = "frame_other_session"
+        elif corruption == "foreign_env":
+            record["env_snapshot_id"] = "env_other_session"
+        else:
+            record["input_version_ids"] = ["ver_other_session"]
+        payload = _portable_observation_document([record])
+        observations_before = store.list_artifact_capture_observations()
+        with pytest.raises(SessionPackageError, match=match):
+            _frozen_portable_observation_preflight(payload, scope=scope)
+        assert store.list_artifact_capture_observations() == observations_before
+    finally:
+        store.close()
+
+
+def test_portable_observation_v1_enablement_conclusion(tmp_path):
+    """Single P2-1 conclusion from the real old importer, not from reading it.
+
+    v1 is safe to enable only when a package without the extra file imports
+    and a package with listed artifact_observations.json also imports, with
+    the extra file ignored rather than consumed or crashing the importer.
+    """
+    store, domain, _project, root, _artifact, _checkpoint, _workspace = _source(
+        tmp_path
+    )
+    try:
+        files = _unpack(domain.session_export(root)["data"])
+        without_extra = _repack(files)
+        files_with_extra = dict(files)
+        files_with_extra[PORTABLE_OBSERVATION_FILE] = _portable_observation_document(
+            [_valid_portable_observation(files)]
+        )
+        with_extra = _repack(files_with_extra)
+
+        probe_without = _probe_old_importer(domain, without_extra)
+        probe_with = _probe_old_importer(domain, with_extra)
+        outcomes = {
+            "without_extra_file": probe_without["outcome"],
+            "with_extra_file": probe_with["outcome"],
+        }
+        if (
+            probe_without["outcome"] == "imported"
+            and probe_with["outcome"] == "imported"
+            and _imported_observation_count(
+                store, probe_with["result"]["root_frame_id"]
+            )
+            == 0
+        ):
+            conclusion = "v1 可安全启用"
+        else:
+            conclusion = "保持关闭"
+        assert outcomes == {
+            "without_extra_file": "imported",
+            "with_extra_file": "imported",
+        }, outcomes
+        assert conclusion == "v1 可安全启用"
+        assert "observation_imported_count" not in probe_with["result"]
     finally:
         store.close()

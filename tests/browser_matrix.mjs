@@ -208,6 +208,42 @@ async function runEngine(engineName) {
       return `HTTP ${recovery.status}`;
     });
 
+    // ---- composer: typing + Enter is the only way to send ----------------
+    // The other browser files send by calling window.send() from
+    // page.evaluate, which is exactly how a workbench whose Enter handler was
+    // never attached stayed green in every gate. This check presses the key
+    // in each engine and watches for the POST the handler has to produce; it
+    // runs last because the turn it starts has no model behind it here.
+    await check(engineName, "composer Enter sends", async () => {
+      const opened = await page.evaluate(async (fid) => {
+        if (typeof openConversation !== "function") return "no openConversation";
+        await openConversation(fid);
+        return "ok";
+      }, frameId);
+      if (opened !== "ok") throw new Error(opened);
+      const composer = page.locator("#composer");
+      await composer.waitFor({ state: "visible", timeout: 15000 });
+      let posted = 0;
+      const onRequest = (request) => {
+        if (request.method() === "POST" && request.url().includes(`/frames/${frameId}/message`)) posted += 1;
+      };
+      page.on("request", onRequest);
+      try {
+        await composer.fill("matrix enter");
+        await composer.press("Enter");
+        if (!(await waitUntil(() => posted > 0, 10000))) throw new Error("Enter did not POST /message");
+        if (!(await waitUntil(async () => (await composer.inputValue()) === "", 10000))) {
+          throw new Error("the composer was not cleared after Enter");
+        }
+        // One keystroke, one dispatch: a second POST here is the double-send.
+        await new Promise((r) => setTimeout(r, 500));
+        if (posted !== 1) throw new Error(`Enter produced ${posted} POST /message requests`);
+      } finally {
+        page.off("request", onRequest);
+      }
+      return `POST /message ×${posted}`;
+    });
+
     await check(engineName, "no uncaught page errors", async () => {
       if (pageErrors.length) throw new Error(pageErrors.slice(0, 3).join(" | "));
       return "clean";

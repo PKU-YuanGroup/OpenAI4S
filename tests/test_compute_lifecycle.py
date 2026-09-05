@@ -453,8 +453,121 @@ def test_cancel_refuses_a_byoc_job_with_no_sandbox_to_terminate(byoc, cfg):
     manager = ComputeManager(cfg)
     with pytest.raises(ComputeError) as error:
         manager.cancel({"job_id": "job-nameless"})
-    assert error.value.error_kind == "unknown_state"
+    assert error.value.error_kind == "receipt_unconfirmed"
+    assert error.value.indeterminate is True
     assert store.get_compute_job("job-nameless")["status"] == states.UNKNOWN
+
+
+def test_cancel_that_cannot_reach_the_host_is_remote_unreachable(
+    ssh_job, monkeypatch, cfg
+):
+    import subprocess as _subprocess
+
+    manager, job_id = ssh_job
+
+    def boom(*a, **k):
+        raise _subprocess.TimeoutExpired(cmd="ssh", timeout=45)
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", boom)
+    with pytest.raises(ComputeError) as error:
+        manager.cancel({"job_id": job_id})
+    assert error.value.error_kind == "remote_unreachable"
+    assert error.value.indeterminate is True
+    row = get_store(cfg.db_path).get_compute_job(job_id)
+    assert row["status"] == states.RUNNING
+    assert "may still be running and billing" in (row["reason"] or "")
+
+
+def test_cancel_of_a_finished_job_does_not_signal_the_remote(ssh_job, monkeypatch, cfg):
+    manager, job_id = ssh_job
+    job = manager._jobs[job_id]
+    assert manager._commit_terminal(job, states.SUCCEEDED, terminal_at=1) is None
+    calls = []
+
+    def fake_run(*a, **k):
+        calls.append(a)
+        return _Proc(0)
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", fake_run)
+    out = manager.cancel({"job_id": job_id})
+    assert out["conflict"]["actual"] == states.SUCCEEDED
+    assert calls == []
+    assert get_store(cfg.db_path).get_compute_job(job_id)["status"] == states.SUCCEEDED
+
+
+def test_cancel_maps_unsupported_terminate_to_provider_cancel_unsupported(
+    byoc, monkeypatch, cfg
+):
+    def submit_ok(op, stage):
+        if op == "create":
+            _reply(stage, {"ok": True, "sandbox_id": "sbx-no-cancel"})
+        else:
+            _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(submit_ok)
+    )
+    job_id = byoc.submit({"provider": "byoc:fake", "command": "train.py"})["job_id"]
+
+    def no_cancel(op, stage):
+        if op == "terminate":
+            _reply(
+                stage,
+                {
+                    "ok": False,
+                    "kind": "invalid_request",
+                    "msg": "terminate is not supported",
+                },
+            )
+            return 0
+        _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(no_cancel)
+    )
+    with pytest.raises(ComputeError) as error:
+        byoc.cancel({"job_id": job_id})
+    assert error.value.error_kind == "provider_cancel_unsupported"
+    assert error.value.indeterminate is True
+    assert get_store(cfg.db_path).get_compute_job(job_id)["status"] != states.CANCELLED
+
+
+def test_a_provider_not_found_on_terminate_is_an_unconfirmed_cancel(
+    byoc, monkeypatch, cfg
+):
+    """The provider no longer knows the sandbox this side still holds. That is
+    not "no such job" -- the job exists and may be billing -- and a plain
+    re-raise of the provider's kind rendered it as a 404."""
+
+    def submit_ok(op, stage):
+        if op == "create":
+            _reply(stage, {"ok": True, "sandbox_id": "sbx-gone"})
+        else:
+            _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr(
+        "openai4s.compute.manager.subprocess.Popen", _fake_popen(submit_ok)
+    )
+    job_id = byoc.submit({"provider": "byoc:fake", "command": "train.py"})["job_id"]
+
+    def gone(op, stage):
+        if op == "terminate":
+            _reply(stage, {"ok": False, "kind": "not_found", "msg": "no such sandbox"})
+            return 0
+        _reply(stage, {"ok": True})
+        return 0
+
+    monkeypatch.setattr("openai4s.compute.manager.subprocess.Popen", _fake_popen(gone))
+    with pytest.raises(ComputeError) as error:
+        byoc.cancel({"job_id": job_id})
+    assert error.value.error_kind == states.REASON_CANCEL_UNCONFIRMED
+    assert error.value.indeterminate is True
+    row = get_store(cfg.db_path).get_compute_job(job_id)
+    assert row["status"] != states.CANCELLED
+    assert "may still be running and billing" in (row["reason"] or "")
 
 
 # --------------------------------------------------------------------------

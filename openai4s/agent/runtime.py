@@ -577,6 +577,34 @@ class LocalActionExecutor:
     # keeps the historical in-memory-only continuity metadata.
     generation_recorder: KernelGenerationRecorder | None = None
 
+    def bind_progress_circuit(self, state: RunState) -> None:
+        """Restore the process cache from the Action Ledger, if present."""
+
+        from .ledger import restore_progress_circuit
+        from .progress_circuit import (
+            ProgressCircuit,
+            attach_progress_circuit,
+            circuit_from_state,
+        )
+
+        if circuit_from_state(state) is not None:
+            return
+        ledger = self.action_ledger
+        store = getattr(ledger, "store", None) if ledger is not None else None
+        root = getattr(ledger, "root_frame_id", None) if ledger is not None else None
+        if store is None or not str(root or "").strip():
+            attach_progress_circuit(state, ProgressCircuit())
+            return
+        try:
+            circuit = restore_progress_circuit(
+                store,
+                str(root),
+                branch_id=getattr(ledger, "branch_id", None),
+            )
+        except Exception:  # noqa: BLE001 — missing ledger APIs must not break a run
+            circuit = ProgressCircuit()
+        attach_progress_circuit(state, circuit)
+
     def execute(
         self, action: Action | None, reply: ModelReply, state: RunState
     ) -> ExecutionOutcome:

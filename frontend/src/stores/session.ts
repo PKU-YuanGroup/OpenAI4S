@@ -32,6 +32,14 @@ export const sessionPages = field(() => 1);
 export const _sessionsLoadingMore = field(() => false);
 /** S.sessionsHasMore — app.js:6997 */
 export const sessionsHasMore = field(() => false);
+/** Dashboard project-list search box. Not part of the frozen S field set. */
+export const projectsQuery = field(() => "");
+/** Opaque keyset cursor for GET /projects. Not part of the frozen S field set. */
+export const projectsNextCursor = field(() => null as string | null);
+export const projectsHasMore = field(() => false);
+export const projectsTotal = field(() => 0);
+export const _projectsLoadingMore = field(() => false);
+export const projectsLoadError = field(() => false);
 /** S._openGen — app.js:7137 */
 export const _openGen = field(() => 0);
 /** S.msgCursor — app.js:7134 */
