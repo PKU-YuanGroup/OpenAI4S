@@ -2,7 +2,9 @@
 
 [English](README.md)
 
-标准库 Gateway 在 `/static/` 下提供这棵树。默认工作台外壳是 `dist/` 里提交的 Vite 构建产物（源码在 [`../../../frontend/`](../../../frontend/)）。`OPENAI4S_WEBUI=legacy` 改发本目录冻结的 `index.html` + `app.js`。`frontend/` 里的改动需要 `npm run build`（或对着正在跑的 daemon 用 `npm run dev`），刷新页面不会自动生效。安装后的 wheel 提供的则是包内副本。旧的 `index.html` 会加载 `theme-bootstrap.js`、`favicon.js`、`scientific_renderers.js` 和 `app.js`；dist 外壳加载同一批经典脚本外加带哈希的模块。所有可执行代码都放在外部文件中，CSP 无需放行内联脚本。有一个第三方库仍会进到页面里：打开分子 Artifact 时，`app.js` 会在运行时注入 3Dmol，只取 `vendor/` 下自带的那一份，不再有别的来源。这次注入原先在本地那份加载失败时会改从 `https://3Dmol.org/build/3Dmol-min.js` 再取一次——那是一次悄无声息的真实对外请求，而且是在持有会话 Cookie 的页面里执行第三方脚本。它已经被删掉了：自带的那份加载不上时，Artifact 直接退回成纯文本展示，而这本来就是 CDN 那条路失败时的同一个结果。`vendor/ketcher/` 下钉住的 Ketcher 3.7.0 独立版是另一份第三方资产，但它根本不进这个页面：Stage 9 workbench 开关打开时，`app.js` 会用 iframe 打开独立的 `/ketcher` 文档；开关关闭或资产缺失时，那条路由只回一个占位页。客户端通过 REST 读取和写入，并跟随一条 WebSocket 事件流。它手里只有会话状态的投影，规范状态始终在服务端。
+标准库 Gateway 在 `/static/` 下提供这棵树。默认工作台外壳是 `dist/` 里提交的 Vite 构建产物（源码在 [`../../../frontend/`](../../../frontend/)）。`OPENAI4S_WEBUI=legacy` 改发本目录冻结的 `index.html` + `app.js`。`frontend/` 里的改动需要 `npm run build`（或对着正在跑的 daemon 用 `npm run dev`），刷新页面不会自动生效。安装后的 wheel 提供包内副本。两套外壳都在应用 CSP 下加载外链脚本。客户端通过 REST 读取和写入，并跟随一条 WebSocket 事件流；规范会话状态始终在服务端。
+
+分子查看器只加载自带的 3Dmol；运行时缺失时回退到文本，不向 CDN 请求。Ketcher 3.7.0 位于 `vendor/ketcher/`，在独立但与应用同源的 `/ketcher` 文档中运行，保留鉴权及第一方 API 桥接。仅精确的编辑器文档 `/static/vendor/ketcher/index.html` 放行上游运行时所需的 `unsafe-eval`；包装页、应用外壳及 Artifact 策略均不增加该例外。Stage 9 关闭或资产缺失时，路由返回占位页。Artifact HTML 使用另一条信任边界：可执行预览位于具有范围限制的另一个 loopback origin，详见下文。
 
 ## 运行时职责
 
@@ -12,7 +14,7 @@
 - 现行工作台在 `frontend/`。`app.js` 是冻结的逃生舱，在 `OPENAI4S_WEBUI=legacy` 时仍保存同一套投影。核心 Workbench 投影都经过显式的净化处理，既不保留 provider 的原始报文，也不保留工具调用的原始参数。不要往 `app.js` 加新功能。
 - WebSocket 事件驱动流式文本、Cell、activity、执行所有权以及 Workbench 的读模型；REST 负责有界读取和显式写入。订阅时会带上 `since_seq` 和这条流的 `epoch`，所以重连是在 `replay_begin`/`replay_end` 之间续传，而不是整段重取；而 epoch 一变，这个标签页手里的游标全部作废，绝不会拿去给一条本 daemon 从未产生过的流编号。一轮由它的 `execution_id` 追踪，绝不用它所在的会话来追踪：frame 活得比 turn 长，两个 turn 也会重叠。
 - 一次应答丢失会毁掉的那点状态，由客户端自己保管。钉住评论的 admission id 在这里生成，取自平台 CSPRNG，并在消息**发出之前**写进 `localStorage`，于是一个没收到 202 的标签页可以去问这些评论后来怎么了，而不必重发、也不必悄悄丢掉。长列表是分页而不是截断：会话列表跟着服务端那个不透明的 keyset 游标走，配一个「加载更多」控件；更早的一页消息按时间插入而不是追加，因为这一栏里本来就有比最新一页消息更早的 activity 步骤。
-- Artifact 用哪个渲染器由服务端的 [`../renderers.py`](../renderers.py) 决定。sequence、alignment、genome、Molfile/SMILES 与 LaTeX 的解析在 [`scientific_renderers.js`](scientific_renderers.js) 里；table、image、PDF、HTML 与 text 的展示主要在 `app.js` 中组合。HTML preview 不执行脚本：iframe 不含 `allow-scripts`，每个 Artifact 响应还带有响应级 CSP sandbox、`script-src 'none'` 与 `connect-src 'none'`，直接打开预览 URL 也无法绕过 iframe 边界。
+- Artifact 的渲染器由服务端 [`../renderers.py`](../renderers.py) 决定。sequence、alignment、genome、Molfile/SMILES 与 LaTeX 的解析在 [`scientific_renderers.js`](scientific_renderers.js) 中；现行查看器在 `frontend/` 中组合。HTML preview 最初使用空 iframe sandbox；只有 grant 请求成功且 origin 校验通过，才在另一个 loopback 主机名上升级为 `allow-scripts allow-same-origin`，支持交互报告与授权范围内的同目录资源。服务端把 grant 绑定到该 Host、签发时的父页面 origin、非空 frame 及过期时间；应用 Host 无法使用它。不支持的部署与失败的 grant 保持静态预览。应用源上的 Artifact 响应仍带禁止脚本的 CSP，PDF iframe 仍使用空 sandbox。grant URL 是脚本可读取的 bearer 凭证；CSP 不能阻止 iframe 通过自身导航向外携带数据。见[安全契约与剩余风险](../../../docs/security.md#executable-artifact-previews-use-a-scoped-alternate-origin)。
 - 新的工作台 UI 在 [`../../../frontend/`](../../../frontend/)。请保持 DOM ID 和事件名稳定，离线静态契约测试和浏览器冒烟测试都是照着它们写的。
 
 ## 文件
@@ -28,7 +30,7 @@
 | [`replay.js`](replay.js) | 拉取 `GET /api/v1/sessions/{id}/replay`（现场构建的脱敏 web-share view.json），把消息与科学 cell 渲染成朴素的转录稿。 |
 | [`favicon_anim_64.gif`](favicon_anim_64.gif) | 打包的 favicon 源文件：动画解码的帧来自它，静态回退图标也是它。 |
 | [`index.html`](index.html) | Dashboard、对话 Workspace、composer、右侧 dock、dialog 与设置的可访问 DOM 骨架。它在首屏绘制前应用主题，并引用静态脚本与样式。 |
-| [`scientific_renderers.js`](scientific_renderers.js) | 零依赖的 sequence/MSA、genome、Molfile/SMILES、LaTeX 解析与辅助函数，外加渲染器描述符校验。它们只产出普通数据、绝不产出 HTML，DOM 由 `app.js` 依据这些记录构建；一层薄薄的 UMD 包装让 Node 契约测试能直接导入同一个文件。通用的 table/image/PDF/HTML/text 展示仍留在 `app.js` 中。 |
+| [`scientific_renderers.js`](scientific_renderers.js) | 零依赖的 sequence/MSA、genome、Molfile/SMILES、LaTeX 解析与辅助函数，外加渲染器描述符校验。它们只产出普通数据、绝不产出 HTML，DOM 由查看器依据这些记录构建；一层薄薄的 UMD 包装让 Node 契约测试能直接导入同一个文件。现行 table/image/PDF/HTML/text 展示在 `frontend/` 中；旧版实现保留在 `app.js` 中。 |
 | [`style.css`](style.css) | 整套视觉系统：明暗 token（含 `--text-100/--text-300/--surface-0/--warn`）、字体、Dashboard/Workspace 布局、Activity 与 Artifact 组件、dialog、可访问性以及移动端断点。`scripts/check_css_tokens.py` 要求每一处 `var(--x)` 都有声明。 |
 | [`theme-bootstrap.js`](theme-bootstrap.js) | 在解析文档 head 时、body 绘制前应用已保存的明暗主题；外链后 CSP 授权不再依赖内联 HTML 的 hash。 |
 

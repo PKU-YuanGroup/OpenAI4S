@@ -3,25 +3,29 @@
 The Workbench previews model-authored HTML. Executing it on the app's own
 origin is the one thing the Artifact policy exists to prevent: a script there
 reaches `parent.document`, the session cookie and the whole REST API. So the
-preview is served from a *different* origin, where a script can run because
-there is nothing on that origin worth reaching.
+preview is served from a *different* origin with a restrictive CSP, keeping
+it separate from the embedding Workbench.
 
-A different origin has no session cookie, which is the point and also the
-problem: the preview request arrives unauthenticated. This module is the
+The preview must work without a session cookie on the alternate origin. This module is the
 answer. The app origin, where the caller *is* authenticated, mints a grant; the
-sandbox origin accepts nothing else.
+sandbox namespace accepts nothing else.
 
-Two properties do the work:
+The signed scope enforces these properties:
 
 * **The token is in the path, not a query or a cookie.** A grant URL is
   ``/sandbox/<token>/preview/<ident>``, so a relative ``<img src="figure.png">``
   inside the document resolves to ``/sandbox/<token>/preview/figure.png`` and
-  carries the grant with it. No cookie is set on the sandbox origin at all,
-  which is what keeps that origin credential-free.
-* **A grant names one frame and one deadline.** Sibling files resolve because
+  carries the grant with it. The sandbox namespace sets no cookies and never uses them as authorization.
+* **A grant names one frame, one spend origin, and one deadline.** Sibling files resolve because
   they share the frame; nothing else resolves, so a preview of one session's
   report cannot read another session's artifacts even though both are one
   filename lookup apart.
+
+* **The primary document names an immutable version.** Later workspace edits
+  cannot change the bytes addressed by an existing preview grant.
+
+The path is a script-readable bearer. CSP blocks resource fetches but not
+iframe self-navigation, so it is not a data-exfiltration boundary.
 
 The key is the daemon's own access token, so there is no new secret to store or
 rotate: restarting the daemon keeps grants valid exactly as long as the token
@@ -32,8 +36,11 @@ from __future__ import annotations
 
 import base64
 import hmac
+import json
 import time
+from dataclasses import dataclass
 from hashlib import sha256
+from urllib.parse import urlsplit
 
 #: Path prefix that marks a request as arriving under a grant. Everything below
 #: it is artifact bytes and nothing else -- no API, no app shell.
@@ -48,6 +55,36 @@ _SEPARATOR = "."
 
 class GrantError(ValueError):
     """A grant that does not verify. Never says which half failed."""
+
+
+@dataclass(frozen=True)
+class Grant:
+    frame_id: str
+    app_origin: str
+    sandbox_origin: str
+    artifact_id: str
+    version_id: str
+
+
+def origin_pair(host: str, port: int) -> tuple[str, str]:
+    """Accept only an exact HTTP loopback authority at the listener port."""
+    try:
+        parsed = urlsplit("http://" + host)
+        actual_port = parsed.port or 80
+    except ValueError as error:
+        raise GrantError("invalid preview origin") from error
+    other = {"127.0.0.1": "localhost", "localhost": "127.0.0.1"}.get(
+        parsed.hostname or ""
+    )
+    authority = f"{parsed.hostname}:{port}" if port != 80 else parsed.hostname
+    if (
+        not other
+        or actual_port != port
+        or host not in {authority, f"{parsed.hostname}:{port}"}
+    ):
+        raise GrantError("invalid preview origin")
+    suffix = f":{port}" if port != 80 else ""
+    return f"http://{parsed.hostname}{suffix}", f"http://{other}{suffix}"
 
 
 def _sign(secret: str, payload: str) -> str:
@@ -69,19 +106,39 @@ def mint(
     secret: str,
     frame_id: str,
     *,
+    app_origin: str,
+    sandbox_origin: str,
+    artifact_id: str,
+    version_id: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     now: float | None = None,
 ) -> str:
     """Return a token granting read access to one frame's artifacts."""
     if not secret:
         raise GrantError("no signing secret")
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (frame_id, artifact_id, version_id)
+    ):
+        raise GrantError("missing preview scope")
+    parsed = urlsplit(app_origin)
+    if parsed.scheme != "http" or origin_pair(parsed.netloc, parsed.port or 80) != (
+        app_origin,
+        sandbox_origin,
+    ):
+        raise GrantError("invalid preview origin")
     expiry = int((time.time() if now is None else now) + max(1, int(ttl_seconds)))
-    payload = f"{_b64(str(frame_id or ''))}{_SEPARATOR}{expiry}"
+    payload = _b64(
+        json.dumps(
+            [2, frame_id, app_origin, sandbox_origin, artifact_id, version_id, expiry],
+            separators=(",", ":"),
+        )
+    )
     return f"{payload}{_SEPARATOR}{_sign(secret, payload)}"
 
 
-def verify(secret: str, token: str, *, now: float | None = None) -> str:
-    """Return the granted frame id, or raise :class:`GrantError`.
+def verify(secret: str, token: str, *, origin: str, now: float | None = None) -> Grant:
+    """Return the scope only on its signed spend origin, or raise GrantError.
 
     Constant-time on the signature, and the signature is checked *before* the
     expiry so a forged token cannot be distinguished from an expired one by
@@ -90,20 +147,45 @@ def verify(secret: str, token: str, *, now: float | None = None) -> str:
     if not secret:
         raise GrantError("no signing secret")
     parts = str(token or "").split(_SEPARATOR)
-    if len(parts) != 3:
+    if len(str(token or "")) > 8192 or len(parts) != 2:
         raise GrantError("malformed grant")
-    encoded_frame, encoded_expiry, signature = parts
-    payload = f"{encoded_frame}{_SEPARATOR}{encoded_expiry}"
-    if not hmac.compare_digest(_sign(secret, payload), signature):
+    payload, signature = parts
+    if not signature.isascii() or not hmac.compare_digest(
+        _sign(secret, payload), signature
+    ):
         raise GrantError("grant does not verify")
     try:
-        expiry = int(encoded_expiry)
-        frame_id = _unb64(encoded_frame)
-    except (ValueError, UnicodeDecodeError) as error:
+        (
+            version,
+            frame_id,
+            app_origin,
+            sandbox_origin,
+            artifact_id,
+            version_id,
+            expiry,
+        ) = json.loads(_unb64(payload))
+        if (
+            version != 2
+            or not all(
+                isinstance(value, str) and value.strip()
+                for value in (
+                    frame_id,
+                    app_origin,
+                    sandbox_origin,
+                    artifact_id,
+                    version_id,
+                )
+            )
+            or type(expiry) is not int
+        ):
+            raise ValueError("invalid scope")
+    except (ValueError, TypeError, UnicodeDecodeError) as error:
         raise GrantError("malformed grant") from error
     if (time.time() if now is None else now) >= expiry:
         raise GrantError("grant expired")
-    return frame_id
+    if origin != sandbox_origin or origin == app_origin:
+        raise GrantError("grant does not verify")
+    return Grant(frame_id, app_origin, sandbox_origin, artifact_id, version_id)
 
 
 def split_path(path: str) -> tuple[str, str]:
@@ -130,10 +212,12 @@ def grant_path(token: str, ident: str) -> str:
 
 __all__ = [
     "DEFAULT_TTL_SECONDS",
+    "Grant",
     "GrantError",
     "SANDBOX_PREFIX",
     "grant_path",
     "mint",
+    "origin_pair",
     "split_path",
     "verify",
 ]

@@ -26,16 +26,10 @@ def artifact_content_security_policy() -> str:
     sandboxed iframe, so the sandbox rides the response and applies in either
     navigation mode.
 
-    **Artifact HTML never executes script in the product.** `script-src 'none'`
-    says so, the sandbox has no `allow-scripts`, and `app.js` frames previews
-    with `sandbox=""`; all three agree on purpose. A skill that emits an
-    interactive dashboard — `retrosynthesis_planning`, `admet_genetic` — gets a
-    static rendering in the Workbench and in a `/preview/` tab, and its
-    interactivity only on a downloaded copy opened from the filesystem. That is
-    a deliberate trade, not an oversight: these bytes are model-authored, and
-    the alternative is executing them on the origin that holds the session
-    cookie. Say it here rather than leaving a reader to infer it from three
-    separate files.
+    App-origin Artifact HTML never executes script. The ordinary preview,
+    direct download, and frozen legacy iframe retain this inert policy.
+    Only the separately validated, Host-bound grant namespace may use the
+    executable sandbox policy below.
 
     `allow-same-origin` is the one sandbox token granted, and it buys back the
     sub-resources a report needs. Without it the document is on an opaque
@@ -67,16 +61,14 @@ def artifact_content_security_policy() -> str:
 def sandboxed_artifact_content_security_policy(app_origins: Sequence[str]) -> str:
     """Policy for artifact bytes served on the *sandbox* origin.
 
-    This is the one place artifact HTML is allowed to execute, and it is safe
-    for a reason that has nothing to do with the script: the origin it runs on
-    holds no cookie, answers nothing but grant-scoped artifact bytes, and is
-    cross-origin with the app, so `parent.document` and the REST API are behind
-    the same-origin policy rather than behind a directive.
+    The grant route must validate its signed spend origin before selecting
+    this policy. Cross-origin isolation protects the embedding Workbench;
+    the grant namespace accepts no session credential and exposes only scoped
+    Artifact snapshots. Other previews share the same browser origin.
 
-    What stays closed is exfiltration. `default-src 'none'` with no host in any
-    fetch directive means a script here cannot beacon out -- not by `fetch`
-    (`connect-src 'none'`), not by an image URL, not by a form post. `'self'`
-    here is the sandbox origin, so a report still loads its own sibling files.
+    Fetches, forms, and external resources are blocked, but an iframe can
+    navigate itself. Such navigation can disclose its bearer path and readable
+    bytes. This policy is not a general data-exfiltration boundary.
 
     `frame-ancestors` names the app origins literally: `'self'` would mean the
     sandbox origin, which is not who embeds this.
@@ -112,6 +104,8 @@ def sandboxed_artifact_security_headers(
     headers["Content-Security-Policy"] = sandboxed_artifact_content_security_policy(
         app_origins
     )
+    headers["Referrer-Policy"] = "no-referrer"
+    headers["Cache-Control"] = "no-store"
     if app_origins:
         # Dropped, not set to a permissive value: `X-Frame-Options` has no
         # "these origins" form, and its non-standard `ALLOWALL` relies on
@@ -147,6 +141,27 @@ def embeddable_security_headers() -> dict[str, str]:
         frame_ancestors="'self'"
     )
     headers["X-Frame-Options"] = "SAMEORIGIN"
+    return headers
+
+
+def ketcher_editor_security_headers() -> dict[str, str]:
+    """Allow the pinned first-party editor's generated chemistry bindings.
+
+    Ketcher 3.7.0 uses JavaScript string compilation as well as WebAssembly.
+    Without this permission its initialization raises EvalError and structure
+    import/export waits forever. Only the exact vendored editor document uses
+    this profile; its blob worker inherits it. The wrapper, Workbench, and
+    all untrusted Artifact responses keep their existing no-eval policies.
+    """
+    headers = embeddable_security_headers()
+    headers["Content-Security-Policy"] = "; ".join(
+        (
+            directive + " 'unsafe-eval'"
+            if directive.startswith("script-src ")
+            else directive
+        )
+        for directive in headers["Content-Security-Policy"].split("; ")
+    )
     return headers
 
 
@@ -226,6 +241,7 @@ __all__ = [
     "artifact_security_headers",
     "content_security_policy",
     "embeddable_security_headers",
+    "ketcher_editor_security_headers",
     "sandboxed_artifact_content_security_policy",
     "sandboxed_artifact_security_headers",
     "security_headers",

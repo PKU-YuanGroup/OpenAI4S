@@ -13,12 +13,30 @@ import pytest
 from openai4s.server import sandbox_grants as grants
 
 SECRET = "daemon-access-token"
+APP = "http://127.0.0.1:8760"
+SANDBOX = "http://localhost:8760"
+
+
+def mint(secret, frame, **kwargs):
+    return grants.mint(
+        secret,
+        frame,
+        app_origin=APP,
+        sandbox_origin=SANDBOX,
+        artifact_id="a-1",
+        version_id="v-1",
+        **kwargs,
+    )
+
+
+def verify(secret, token, **kwargs):
+    return grants.verify(secret, token, origin=SANDBOX, **kwargs).frame_id
 
 
 def test_a_grant_round_trips_the_frame_it_names():
-    token = grants.mint(SECRET, "f-123")
+    token = mint(SECRET, "f-123")
 
-    assert grants.verify(SECRET, token) == "f-123"
+    assert verify(SECRET, token) == "f-123"
 
 
 def test_a_frame_id_survives_characters_that_would_break_the_path():
@@ -27,9 +45,9 @@ def test_a_frame_id_survives_characters_that_would_break_the_path():
     A `/` in an id would otherwise split the path segment the grant occupies
     and silently truncate the scope.
     """
-    token = grants.mint(SECRET, "a/b.c?d")
+    token = mint(SECRET, "a/b.c?d")
 
-    assert grants.verify(SECRET, token) == "a/b.c?d"
+    assert verify(SECRET, token) == "a/b.c?d"
     assert "/" not in token
 
 
@@ -38,7 +56,7 @@ def test_a_frame_id_survives_characters_that_would_break_the_path():
     [
         pytest.param(lambda t: t[:-1] + ("x" if t[-1] != "x" else "y"), id="signature"),
         pytest.param(
-            lambda t: t.split(".")[0] + ".9999999999." + t.split(".")[2], id="expiry"
+            lambda t: t.split(".")[0] + ".9999999999." + t.split(".")[-1], id="expiry"
         ),
         pytest.param(lambda t: "Zg" + t[2:], id="frame"),
         pytest.param(lambda t: "a.b.c", id="shape"),
@@ -46,36 +64,36 @@ def test_a_frame_id_survives_characters_that_would_break_the_path():
     ],
 )
 def test_every_tampered_grant_is_refused(mangle):
-    token = mangle(grants.mint(SECRET, "f-123"))
+    token = mangle(mint(SECRET, "f-123"))
 
     with pytest.raises(grants.GrantError):
-        grants.verify(SECRET, token)
+        verify(SECRET, token)
 
 
 def test_a_grant_minted_by_another_daemon_is_refused():
     """The signing key is the daemon's own access token, so a grant does not
     survive the credential that authorised it being replaced."""
-    token = grants.mint("a-different-token", "f-123")
+    token = mint("a-different-token", "f-123")
 
     with pytest.raises(grants.GrantError):
-        grants.verify(SECRET, token)
+        verify(SECRET, token)
 
 
 def test_a_grant_expires():
-    token = grants.mint(SECRET, "f-123", ttl_seconds=10, now=1000)
+    token = mint(SECRET, "f-123", ttl_seconds=10, now=1000)
 
-    assert grants.verify(SECRET, token, now=1005) == "f-123"
+    assert verify(SECRET, token, now=1005) == "f-123"
     with pytest.raises(grants.GrantError):
-        grants.verify(SECRET, token, now=1010)
+        verify(SECRET, token, now=1010)
 
 
 def test_without_a_secret_nothing_mints_and_nothing_verifies():
     """The posture where the daemon has no access token: no grant exists, so
     the client keeps the inert preview rather than getting an unsigned one."""
     with pytest.raises(grants.GrantError):
-        grants.mint("", "f-123")
+        mint("", "f-123")
     with pytest.raises(grants.GrantError):
-        grants.verify("", grants.mint(SECRET, "f-123"))
+        verify("", mint(SECRET, "f-123"))
 
 
 def test_the_token_leads_the_path_so_relative_links_carry_it():
@@ -86,7 +104,7 @@ def test_the_token_leads_the_path_so_relative_links_carry_it():
     cookie on the sandbox origin at all -- which is what keeps that origin
     credential-free.
     """
-    token = grants.mint(SECRET, "f-123")
+    token = mint(SECRET, "f-123")
     path = grants.grant_path(token, "a-1")
 
     assert path.startswith(f"{grants.SANDBOX_PREFIX}{token}/preview/")
@@ -95,7 +113,7 @@ def test_the_token_leads_the_path_so_relative_links_carry_it():
 
 
 def test_an_identifier_that_would_escape_the_segment_is_quoted():
-    token = grants.mint(SECRET, "f-123")
+    token = mint(SECRET, "f-123")
 
     path = grants.grant_path(token, "../../etc/passwd")
 
@@ -110,3 +128,71 @@ def test_an_identifier_that_would_escape_the_segment_is_quoted():
 def test_a_path_without_a_grant_segment_is_refused(path):
     with pytest.raises(grants.GrantError):
         grants.split_path(path)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [APP, "http://localhost:8761", "https://localhost:8760", "http://evil.test:8760"],
+)
+def test_grant_cannot_be_spent_on_another_origin(origin):
+    with pytest.raises(grants.GrantError):
+        grants.verify(SECRET, mint(SECRET, "f-123"), origin=origin)
+
+
+@pytest.mark.parametrize("frame", ["", " ", None])
+def test_empty_scope_cannot_be_minted(frame):
+    with pytest.raises(grants.GrantError):
+        mint(SECRET, frame)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "",
+        "evil.test:8760",
+        "localhost:8761",
+        "localhost:8760/x",
+        "user@localhost:8760",
+        "localhost:8760#x",
+        "localhost.:8760",
+        "[::1]:8760",
+        "[",
+    ],
+)
+def test_origin_pair_refuses_ambiguous_or_unsupported_authorities(host):
+    with pytest.raises(grants.GrantError):
+        grants.origin_pair(host, 8760)
+
+
+def test_origin_pair_supports_both_directions_and_default_port():
+    assert grants.origin_pair("localhost:8760", 8760) == (SANDBOX, APP)
+    assert grants.origin_pair("127.0.0.1:8760", 8760) == (APP, SANDBOX)
+    assert grants.origin_pair("localhost", 80) == (
+        "http://localhost",
+        "http://127.0.0.1",
+    )
+
+
+def test_grant_pins_primary_version_and_mint_origin():
+    scope = grants.verify(SECRET, mint(SECRET, "f-123"), origin=SANDBOX)
+    assert (scope.frame_id, scope.artifact_id, scope.version_id) == (
+        "f-123",
+        "a-1",
+        "v-1",
+    )
+    assert (scope.app_origin, scope.sandbox_origin) == (APP, SANDBOX)
+
+
+@pytest.mark.parametrize(
+    "sandbox", [APP, "https://localhost:8760", "http://evil.test:8760"]
+)
+def test_mint_rejects_an_unrelated_or_same_origin(sandbox):
+    with pytest.raises(grants.GrantError):
+        grants.mint(
+            SECRET,
+            "f-123",
+            app_origin=APP,
+            sandbox_origin=sandbox,
+            artifact_id="a-1",
+            version_id="v-1",
+        )

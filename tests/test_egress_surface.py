@@ -380,14 +380,21 @@ def test_skill_egress_scan_recognizes_each_supported_client_family():
 #: session cookie. Frozen the same way and for the same reason.
 _WEBUI = _PACKAGE / "server" / "webui"
 
-#: Absolute URLs the client may *name*, each with why it is not a request. A
-#: string is not egress; a string handed to something that fetches it is. Both
-#: of these are inert, so they are listed rather than removed -- and listed with
-#: a reason, so a third entry has to argue for itself.
+#: Absolute URLs the client may *name*, each with its bounded purpose. A
+#: string is not egress; a string handed to something that fetches it is.
+#: Most entries are inert. The loopback pair constructs the separately tested
+#: scoped preview origin; it cannot be replaced with an arbitrary destination.
 #:
 #: `vendor/` is excluded from the scan entirely: it is upstream minified code,
 #: and a URL inside a bundled library is not the client choosing to call it.
 _WEBUI_NAMED_HOSTS = {
+    "localhost": "constructs the exact alternate loopback preview origin at "
+    "the current daemon port; used only after an authenticated, origin-bound "
+    "Artifact grant. Frontend origin/path tests and browser_sandbox_preview "
+    "verify the scoped iframe destination and refuse external overrides",
+    "127.0.0.1": "the reverse direction of the same bounded preview origin: "
+    "selected only when the app is HTTP localhost at this daemon port, then "
+    "matched against the signed grant response before navigating the iframe",
     "www.w3.org": "the SVG XML namespace passed to createElementNS -- an "
     "identifier, never dereferenced by any browser",
     "api.tavily.com": "displayed as the default search endpoint in Customize. "

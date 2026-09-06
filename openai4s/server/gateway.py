@@ -200,6 +200,7 @@ from openai4s.server.scientific_review import ScientificReviewService
 from openai4s.server.security_headers import (
     artifact_security_headers,
     embeddable_security_headers,
+    ketcher_editor_security_headers,
     sandboxed_artifact_security_headers,
     security_headers,
 )
@@ -13230,20 +13231,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
     )
 
     def _app_origins() -> tuple[str, ...]:
-        """Origins allowed to frame a sandboxed artifact preview.
+        """Loopback origins the application shell may frame.
 
         Both loopback names at the bound port: the operator may have opened
         either, and the sandbox origin is deliberately *the other one*, so a
         preview opened from `127.0.0.1` is framed by `127.0.0.1` and served
         from `localhost`, or the reverse. Nothing else is admitted -- a
-        non-loopback deployment gets no sandboxed preview rather than a
-        `frame-ancestors` naming a host we did not verify.
+        non-loopback deployment gets no interactive preview. A granted
+        response separately binds frame-ancestors to its sole minting origin.
         """
-        if _bind_is_wildcard:
+        if cfg.host not in ("127.0.0.1", "localhost"):
             return ()
         return tuple(
             f"http://{host}:{_allowed_port}" for host in ("127.0.0.1", "localhost")
         )
+
+    sandbox_delivery = CompletionDeliveryService(store=store, data_dir=cfg.data_dir)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "openai4s-gateway/1.0"
@@ -13265,7 +13268,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             self.send_response(code)
             self.send_header("Content-Type", _sanitize_header_value(ctype))
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-cache")
+            if not security or "Cache-Control" not in security:
+                self.send_header("Cache-Control", "no-cache")
             # Echoed so a user reporting a failure can hand over an id that ties
             # their request to this daemon's log line for it.
             request_id = getattr(self, "_correlation_id", "")
@@ -14335,7 +14339,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 log_event(
                     "http_request",
                     method=method,
-                    path=path,
+                    path=(
+                        "/sandbox/[redacted]"
+                        if path.startswith(sandbox_grants.SANDBOX_PREFIX)
+                        else path
+                    ),
                     status=getattr(self, "_last_status", None),
                 )
                 reset_correlation_id(correlation_token)
@@ -14358,7 +14366,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 if _webui_legacy_enabled()
                 else WEBUI_DIR / "dist" / "index.html"
             )
-            self._serve_ui_file(index, "text/html; charset=utf-8")
+            self._serve_ui_file(
+                index,
+                "text/html; charset=utf-8",
+                security=security_headers(frame_src=_app_origins()),
+            )
 
         def _serve_static(self, path: str) -> bool:
             if path in ("/", "/index.html"):
@@ -14376,10 +14388,11 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 assert target is not None
                 ctype = _guess_ctype(target.name)
                 # The one static document that is itself framed: `/ketcher`
-                # embeds the vendored editor's entry page. Everything else
-                # under /static/ keeps the shell's frame denial.
+                # embeds the vendored editor's entry page. The pinned editor
+                # also needs string compilation for its chemistry bindings.
+                # Everything else keeps the shell's no-eval/frame-denial policy.
                 security = (
-                    embeddable_security_headers()
+                    ketcher_editor_security_headers()
                     if rel == _FRAMED_STATIC_DOCUMENT
                     else None
                 )
@@ -14575,7 +14588,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return
             try:
                 token, remainder = sandbox_grants.split_path(path)
-                granted_frame = sandbox_grants.verify(_auth_token, token)
+                if not _app_origins():
+                    raise sandbox_grants.GrantError("unsupported preview origin")
+                spend_origin, _ = sandbox_grants.origin_pair(
+                    self.headers.get("Host", ""), _allowed_port
+                )
+                grant = sandbox_grants.verify(_auth_token, token, origin=spend_origin)
             except sandbox_grants.GrantError:
                 self._json({"error": "not found"}, 404)
                 return
@@ -14583,29 +14601,55 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self._json({"error": "not found"}, 404)
                 return
             ident = unquote(remainder[len("/preview/") :])
-            meta = store.get_artifact(ident) or store.artifact_by_unique_filename(ident)
-            if not isinstance(meta, dict) or str(
-                meta.get("root_frame_id") or ""
-            ) != str(granted_frame):
+            if ident == grant.artifact_id:
+                meta = store.version_meta(grant.version_id)
+            else:
+                meta = store.get_artifact(ident)
+                if meta is None:
+                    matches = store.list_artifacts(
+                        {"root_frame_id": grant.frame_id, "filename": ident}
+                    )
+                    meta = (
+                        store.get_artifact(matches[0]["artifact_id"])
+                        if len(matches) == 1
+                        else None
+                    )
+                if meta:
+                    meta = store.version_meta(str(meta.get("latest_version_id") or ""))
+            owner = (
+                store.get_artifact(str(meta.get("artifact_id") or "")) if meta else None
+            )
+            if (
+                not isinstance(owner, dict)
+                or str(owner.get("root_frame_id") or "") != grant.frame_id
+            ):
                 # Includes the cross-frame case: a preview of one session's
                 # report resolving another session's file by name.
                 self._json({"error": "not found"}, 404)
                 return
-            target = meta.get("path") or store.resolve_artifact_path(
-                str(meta.get("artifact_id") or "")
-            )
-            if not target or not Path(target).is_file():
+            if (
+                ident == grant.artifact_id
+                and meta.get("artifact_id") != grant.artifact_id
+            ):
                 self._json({"error": "not found"}, 404)
                 return
-            ctype = meta.get("content_type") or _guess_ctype(Path(target).name)
-            if str(ident) == str(meta.get("artifact_id") or "") and str(
-                ctype
-            ).startswith("text/html"):
+            # Always serve a captured version. Never read mutable workspace
+            # bytes (or substitute a newer head) behind an already minted URL.
+            try:
+                body = sandbox_delivery.read_verified_snapshot(meta)
+            except DeliveryValidationError:
+                self._json({"error": "not found"}, 404)
+                return
+            ctype = meta.get("content_type") or _guess_ctype(
+                str(meta.get("filename") or ident)
+            )
+            if ident == grant.artifact_id:
                 ctype = "text/html; charset=utf-8"
-            self._serve_file(
-                Path(target),
+            self._send(
+                200,
+                body,
                 ctype,
-                security=sandboxed_artifact_security_headers(_app_origins()),
+                security=sandboxed_artifact_security_headers((grant.app_origin,)),
             )
 
         def _serve_artifact(self, ident: str, force_html: bool = False) -> None:
@@ -17315,16 +17359,45 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                     self._json({"error": "artifact not found"}, 404)
                     return
                 self._team_guard_served_artifact(artifact)
-                if not _auth_token:
+                if (
+                    not _auth_token
+                    or not _app_origins()
+                    or not str(artifact.get("root_frame_id") or "").strip()
+                ):
                     # No signing secret, so no sandboxed preview exists to
                     # grant. The client falls back to the inert preview.
                     self._json({"error": "sandbox preview unavailable"}, 409)
                     return
-                token = sandbox_grants.mint(
-                    _auth_token, str(artifact.get("root_frame_id") or "")
-                )
+                version_id = (
+                    q.get("version_id") or [artifact.get("latest_version_id")]
+                )[0]
+                version = store.version_meta(str(version_id or ""))
+                if not version or version.get("artifact_id") != artifact["artifact_id"]:
+                    self._json({"error": "artifact version not found"}, 404)
+                    return
+                try:
+                    sandbox_delivery.verify_snapshot(version)
+                except DeliveryValidationError:
+                    self._json({"error": "sandbox preview unavailable"}, 409)
+                    return
+                try:
+                    app_origin, sandbox_origin = sandbox_grants.origin_pair(
+                        self.headers.get("Host", ""), _allowed_port
+                    )
+                    token = sandbox_grants.mint(
+                        _auth_token,
+                        str(artifact["root_frame_id"]),
+                        app_origin=app_origin,
+                        sandbox_origin=sandbox_origin,
+                        artifact_id=artifact["artifact_id"],
+                        version_id=version["version_id"],
+                    )
+                except sandbox_grants.GrantError:
+                    self._json({"error": "sandbox preview unavailable"}, 409)
+                    return
                 self._json(
                     {
+                        "origin": sandbox_origin,
                         "path": sandbox_grants.grant_path(token, m.group(1)),
                         "expires_in": sandbox_grants.DEFAULT_TTL_SECONDS,
                     }

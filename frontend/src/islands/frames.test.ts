@@ -10,6 +10,7 @@ import {
   applyKetcherFrame,
   htmlPreviewSrc,
   ketcherFrameSrc,
+  resolveSandboxOrigin,
 } from "./frames";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -49,15 +50,15 @@ describe("artifact iframe sandbox (app.js:8663-8664)", () => {
     expect(frame.getAttribute("sandbox")).not.toContain("allow-forms");
   });
 
-  it("html-preview src is sandboxOrigin + /preview/{id}", () => {
-    expect(htmlPreviewSrc("https://sb.example", "art-1")).toBe("https://sb.example/preview/art-1");
+  it("inert html-preview stays on the app origin even with an origin override", () => {
+    expect(htmlPreviewSrc("https://sb.example", "art-1")).toBe("/preview/art-1");
     expect(htmlPreviewSrc("", "a b")).toBe("/preview/a%20b");
   });
 
-  it("F-17 pdf glue and html-preview glue both call applyArtifactIframeSandbox", () => {
+  it("PDF stays inert and HTML delegates to the scoped preview implementation", () => {
     const src = readFileSync(join(here, "../features/artifacts/renderers.ts"), "utf8");
     expect(src).toContain('applyArtifactIframeSandbox(frame, "pdf")');
-    expect(src).toContain('applyArtifactIframeSandbox(frame, "html-preview")');
+    expect(src).toContain("renderHtmlPreview(content, a)");
     const pdfFn = src.slice(src.indexOf("function renderPdfGlue"), src.indexOf("function renderHtmlPreviewGlue"));
     expect(pdfFn).toContain("applyArtifactIframeSandbox");
     expect(pdfFn).not.toContain("allow-scripts");
@@ -69,7 +70,7 @@ describe("Ketcher iframe (app.js:10834, embeddable headers)", () => {
     expect(KETCHER_PATH).toBe("/ketcher");
     expect(ketcherFrameSrc("", null)).toBe("/ketcher");
     expect(ketcherFrameSrc("https://sb.example", "mol-1")).toBe(
-      "https://sb.example/ketcher?artifact_id=mol-1",
+      "/ketcher?artifact_id=mol-1",
     );
   });
 
@@ -80,5 +81,37 @@ describe("Ketcher iframe (app.js:10834, embeddable headers)", () => {
     expect(frame.src).toBe("/ketcher?artifact_id=a1");
     expect(frame.getAttribute("allow")).toBe(KETCHER_ALLOW);
     expect(frame.getAttribute("sandbox")).toBeNull();
+  });
+});
+
+describe("verified sandbox origin", () => {
+  const app = { protocol: "http:", hostname: "127.0.0.1", port: "8760" };
+
+  it("derives only the other loopback name at the same HTTP port", () => {
+    expect(resolveSandboxOrigin(app)).toBe("http://localhost:8760");
+    expect(resolveSandboxOrigin({ ...app, hostname: "localhost" })).toBe("http://127.0.0.1:8760");
+    expect(resolveSandboxOrigin({ ...app, port: "" })).toBe("http://localhost");
+    expect(resolveSandboxOrigin(app, "http://localhost:8760")).toBe("http://localhost:8760");
+  });
+
+  it.each([
+    "http://127.0.0.1:8760",
+    "https://preview.example",
+    "http://localhost:8761",
+    "http://localhost:8760.evil.example",
+    "http://localhost:8760/",
+    "http://user@localhost:8760",
+    "//localhost:8760",
+    "javascript:alert(1)",
+    {},
+    null,
+  ])("rejects unverified override %j", (override) => {
+    expect(resolveSandboxOrigin(app, override)).toBe("");
+  });
+
+  it("keeps non-loopback and HTTPS apps inert even with a loopback override", () => {
+    expect(resolveSandboxOrigin({ ...app, hostname: "remote.example" }, "http://localhost:8760")).toBe("");
+    expect(resolveSandboxOrigin({ ...app, hostname: "[::1]" })).toBe("");
+    expect(resolveSandboxOrigin({ ...app, protocol: "https:" })).toBe("");
   });
 });

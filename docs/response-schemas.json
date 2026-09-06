@@ -27325,12 +27325,16 @@
           "expires_in": {
             "type": "integer"
           },
+          "origin": {
+            "type": "string"
+          },
           "path": {
             "type": "string"
           }
         },
         "required": [
           "expires_in",
+          "origin",
           "path"
         ],
         "type": "object"

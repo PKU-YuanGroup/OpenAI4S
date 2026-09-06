@@ -115,11 +115,6 @@ function apiErrorText(e) {
 // directive, is what keeps an artifact's script away from the workbench
 // document and the API. Anything other than loopback gets "" and the inert
 // preview, because we have not verified what that origin would be.
-function defaultSandboxOrigin() {
-  const other = { "127.0.0.1": "localhost", "localhost": "127.0.0.1" }[location.hostname];
-  if (!other || location.protocol !== "http:") return "";
-  return `${location.protocol}//${other}${location.port ? ":" + location.port : ""}`;
-}
 const api = async (p, o = {}) => {
   // `p` must be an internal, same-origin API path: a single leading slash and no
   // scheme/host. Rejecting "//host" (protocol-relative) and non-string input keeps
@@ -8851,10 +8846,8 @@ function renderArtifactBody(body, a) {
     renderArtifactDescriptor(body, a, compatibilityRendererDescriptor(a));
   });
 }
-// An HTML artifact is model-authored, so it runs on the sandbox origin or it
-// does not run at all. Start inert -- that is the safe state and the one that
-// survives a failed or unavailable grant -- and upgrade only once the daemon
-// has actually minted one.
+// The frozen legacy shell keeps inert HTML previews. Interactive previews
+// are owned by the Preact workbench in frontend/.
 function renderHtmlPreview(content, a) {
   const frame = el("iframe");
   frame.setAttribute("sandbox", "");
@@ -8862,16 +8855,7 @@ function renderHtmlPreview(content, a) {
   content.appendChild(frame);
   const note = el("p", "muted renderer-noscript", t("viewer.renderer.noscript"));
   content.appendChild(note);
-  if (!S.sandboxOrigin) return;
-  api(`/artifacts/${encodeURIComponent(a.id)}/sandbox-grant`, { method: "POST" }).then(grant => {
-    const path = grant && typeof grant.path === "string" ? grant.path : "";
-    if (!path || path[0] !== "/" || path[1] === "/") return;
-    // `allow-same-origin` names the *sandbox* origin, not this one, so the
-    // document gets its own sibling files and still cannot reach here.
-    frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
-    frame.src = S.sandboxOrigin + path;
-    note.remove();
-  }).catch(() => { /* stay inert; the note already says why */ });
+
 }
 
 function renderArtifactDescriptor(body, a, descriptor) {
@@ -9143,7 +9127,7 @@ function renderChemistry2D(container, a, url) {
       $("#modal-download").style.display = "none";
       const body = $("#modal-body"); body.innerHTML = "";
       const frame = el("iframe");
-      frame.src = (S.sandboxOrigin || "") + "/ketcher?artifact_id=" + encodeURIComponent(a.id);
+      frame.src = "/ketcher?artifact_id=" + encodeURIComponent(a.id);
       frame.setAttribute("allow", "clipboard-read; clipboard-write");
       body.appendChild(frame); openModalEl($("#modal"));
     };
@@ -11059,7 +11043,7 @@ function renderProvReview(body, a, lin) {
   const save = inter.find(i => i.kind === "save");
   if (save && save.at) body.appendChild(el("div", "prov-meta", t("prov.review.saved", ago(save.at))));
 }
-function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = (S.sandboxOrigin || "") + "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); openModalEl($("#modal")); }
+function openKetcher() { $("#modal-title").textContent = t("ketcher.modalTitle"); $("#modal-download").style.display = "none"; const body = $("#modal-body"); body.innerHTML = ""; const f = el("iframe"); f.src = "/ketcher"; f.setAttribute("allow", "clipboard-read; clipboard-write"); body.appendChild(f); openModalEl($("#modal")); }
 function renderLocatorComments(container, a, kind, viewer) {
   const box = el("div", "wb-locator");
   box.appendChild(el("div", "wb-locator-title", t("wb.locator.title")));
@@ -13779,7 +13763,7 @@ function makeColResizer(host, kind) {
 
 /* ---------- init ---------- */
 async function init() {
-  try { S.sandboxOrigin = (window.__OPERON__ || {}).sandboxOrigin || defaultSandboxOrigin(); } catch {}
+  try { S.sandboxOrigin = ""; } catch {}
   paintIcons();
   document.documentElement.lang = LANG === "en" ? "en" : "zh";
   applyStaticI18n(document); refreshLangToggle();

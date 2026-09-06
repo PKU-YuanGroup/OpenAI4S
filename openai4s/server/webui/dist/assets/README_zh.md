@@ -10,5 +10,5 @@
 | --- | --- |
 | `en-CPQbE2IT.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `index-BNySJcqm.css` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
-| `index-DuHuvGEL.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
+| `index-Dhp9HE4I.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |
 | `zh-cawl9S-h.js` | Vite 构建产物。不要手改；在 `frontend/` 里重新 build。 |

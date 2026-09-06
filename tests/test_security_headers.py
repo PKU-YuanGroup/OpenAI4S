@@ -25,6 +25,9 @@ from openai4s.server.security_headers import (
     artifact_security_headers,
     content_security_policy,
     embeddable_security_headers,
+    ketcher_editor_security_headers,
+    sandboxed_artifact_content_security_policy,
+    sandboxed_artifact_security_headers,
     security_headers,
 )
 
@@ -165,6 +168,30 @@ def test_the_shell_itself_is_still_unframeable():
     assert security_headers()["X-Frame-Options"] == "DENY"
 
 
+def test_only_the_pinned_ketcher_editor_can_compile_javascript_strings():
+    editor = ketcher_editor_security_headers()
+    wrapper = embeddable_security_headers()
+    policy = editor["Content-Security-Policy"]
+    assert _directive(policy, "script-src") == (
+        "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'"
+    )
+    assert "'unsafe-inline'" not in _directive(policy, "script-src")
+    assert editor == {
+        **wrapper,
+        "Content-Security-Policy": wrapper["Content-Security-Policy"].replace(
+            "script-src 'self' 'wasm-unsafe-eval'",
+            "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'",
+        ),
+    }
+    for profile in (
+        security_headers(),
+        wrapper,
+        artifact_security_headers(),
+        sandboxed_artifact_security_headers(("http://127.0.0.1:8760",)),
+    ):
+        assert "'unsafe-eval'" not in profile["Content-Security-Policy"]
+
+
 def _html_preview_renderer(app_js: str) -> str:
     """The body of `renderHtmlPreview`, where the whole decision lives."""
     start = app_js.index("function renderHtmlPreview(")
@@ -172,66 +199,31 @@ def _html_preview_renderer(app_js: str) -> str:
     return app_js[start:end]
 
 
-def test_the_html_preview_starts_inert_and_says_why(index_html):
-    """The safe state is the *initial* state, not a state it falls back to.
-
-    A grant can be unavailable (no signing secret), refused, or simply slow.
-    Building the frame inert and upgrading only on success means every one of
-    those paths ends somewhere safe without a single error branch having to
-    remember to. While it is inert it says so, because an interactive
-    dashboard that renders its chrome and never draws is indistinguishable
-    from a corrupt artifact.
-    """
+def test_legacy_preview_remains_inert(index_html):
     app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
     body = _html_preview_renderer(app_js)
-
-    inert = body.index('frame.setAttribute("sandbox", "")')
-    upgrade = body.index('frame.setAttribute("sandbox", "allow-scripts')
-    assert inert < upgrade, "the frame must be built inert before any upgrade"
+    assert 'frame.setAttribute("sandbox", "")' in body
     assert 't("viewer.renderer.noscript")' in body
-    for language_marker in (
-        '"viewer.renderer.noscript": "预览不执行脚本',
-        '"viewer.renderer.noscript": "This preview runs no scripts',
-    ):
-        assert language_marker in app_js, "the note must exist in both languages"
+    assert 'setAttribute("sandbox", "allow-scripts' not in app_js
+    assert '(S.sandboxOrigin || "") + "/ketcher' not in app_js
 
 
-def test_scripts_are_only_ever_enabled_against_the_sandbox_origin(index_html):
-    """The load-bearing assertion of the whole sandbox-origin design.
-
-    `allow-scripts` on a *same-origin* frame would hand model-authored HTML
-    the session cookie and `parent.document`. It is admissible only because
-    the document is served from another origin, so the two must be
-    inseparable: the upgrade sits behind the `S.sandboxOrigin` guard and sets
-    the src from it.
-    """
-    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
-    body = _html_preview_renderer(app_js)
-
-    guard = body.index("if (!S.sandboxOrigin) return;")
-    upgrade = body.index('frame.setAttribute("sandbox", "allow-scripts')
-    src = body.index("frame.src = S.sandboxOrigin + path;")
-    assert guard < upgrade < src
-
-    # And nowhere else in the client.
-    enabling = [
-        line
-        for line in app_js.splitlines()
-        if "allow-scripts" in line and "sandbox" in line
-    ]
-    assert len(enabling) == 1, f"allow-scripts appears outside the upgrade: {enabling}"
-
-
-def test_the_sandbox_origin_is_a_different_loopback_name(index_html):
-    """Distinctness is the security property; loopback is the safety bound."""
-    app_js = index_html.with_name("app.js").read_text(encoding="utf-8")
-    start = app_js.index("function defaultSandboxOrigin()")
-    body = app_js[start : app_js.index("const api = async", start)]
-
-    assert '"127.0.0.1": "localhost"' in body and '"localhost": "127.0.0.1"' in body
-    # Anything else gets "" and the inert preview rather than an origin we
-    # have not verified.
-    assert 'if (!other || location.protocol !== "http:") return "";' in body
+def test_executable_preview_policy_names_only_the_minting_ancestor():
+    origin = "http://127.0.0.1:8760"
+    headers = sandboxed_artifact_security_headers((origin,))
+    policy = headers["Content-Security-Policy"]
+    assert _directive(policy, "frame-ancestors") == f"frame-ancestors {origin}"
+    assert _directive(policy, "sandbox") == "sandbox allow-scripts allow-same-origin"
+    assert _directive(policy, "connect-src") == "connect-src 'none'"
+    assert _directive(policy, "form-action") == "form-action 'none'"
+    assert _directive(policy, "base-uri") == "base-uri 'none'"
+    assert "X-Frame-Options" not in headers
+    assert headers["Referrer-Policy"] == "no-referrer"
+    assert headers["Cache-Control"] == "no-store"
+    assert (
+        _directive(sandboxed_artifact_content_security_policy(()), "frame-ancestors")
+        == "frame-ancestors 'none'"
+    )
 
 
 def test_connect_src_is_same_origin_only():
