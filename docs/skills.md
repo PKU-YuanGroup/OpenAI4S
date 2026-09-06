@@ -60,7 +60,11 @@ treated as usable.
    Skill directories are loaded as pinned namespace packages: executable
    `__init__.py` files are intentionally not run. Put all executable sidecar
    initialization in `kernel.py`, whose exact bytes are hashed and captured.
-3. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
+3. Give the directory its bilingual `README.md` + `README_zh.md` pair
+   (`scripts/check_directory_readmes.py` enforces it) and run
+   `python scripts/render_skill_install_sections.py` to stamp the pair's
+   Install section; `tests/test_skills_installer_contract.py` fails until you do.
+4. That's it — the loader discovers it on the next run and surfaces its one-line summary to the agent. Bundled skills (`origin: openai4s`) are read-only; skills you author or import are editable from the UI (**Customize → Skills**).
 
 GPU/model Skills (`requirements: [gpu]`) run their heavy step on a remote GPU through [`host.compute`](compute.md); everything else runs directly in the kernel.
 
@@ -186,7 +190,11 @@ npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 
 `npx openai4s-skills <command>` is the same CLI under the package's published
 name. It is not on npm yet, so the `github:` form above is the one that
-resolves today; `docs/TODO.md` tracks the publication.
+resolves today; `docs/TODO.md` tracks the publication. Every Skill page under
+`skills/` carries an **Install** section with its own name already filled in,
+rendered and checked by `scripts/render_skill_install_sections.py`, so you can
+install from whichever page you landed on and a new Skill directory cannot land
+without one.
 
 **Targets.** `--target claude` → `~/.claude/skills`, `--target claude-project`
 → `./.claude/skills`, `--target openai4s` → `<data_dir>/user-skills` (honouring
@@ -201,7 +209,7 @@ members sit one level below and are addressable by name like any other Skill.
 Neither side hardcodes a directory name, so a new bundled collection is
 installable the moment its marker exists.
 
-**Source.** The npm package carries `skills/` (about 6.4 MiB packed), so the
+**Source.** The npm package carries `skills/` (about 6.5 MiB packed), so the
 common path needs no second download; `--remote`, `--repo`, or `--ref` fetch
 the source tarball from codeload.github.com instead, cached per ref under
 `~/.cache/openai4s-skills`. A download records the ref, the URL, and the

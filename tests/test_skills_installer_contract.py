@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts import render_skill_install_sections as install_sections
+
 pytestmark = pytest.mark.skills
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +77,24 @@ def test_the_published_description_counts_the_skills_it_actually_ships():
     assert int(stated.group(1)) == len(_skill_dirs()), (
         f"package.json advertises {stated.group(1)} recipes; "
         f"skills/ holds {len(_skill_dirs())}"
+    )
+
+
+def test_every_skill_page_carries_its_own_install_section():
+    """The page a reader lands on must install the Skill it describes.
+
+    `skills/README.md` promises that every Skill page repeats the Install
+    section with its own name filled in. That is a claim about ninety generated
+    pages, and a generated page with no generator is a snapshot: the next
+    `skills/<name>/` lands with a README pair, passes the directory-README gate
+    and the count gate above, and has no section — or a hand edit forks one
+    page's wording from the other eighty-nine. `render_skill_install_sections
+    --check` is the mechanism; this test is what makes it run on every commit.
+    """
+    stale = install_sections.check()
+    assert not stale, (
+        "Install sections out of date; run "
+        "`python scripts/render_skill_install_sections.py`: " + ", ".join(stale)
     )
 
 

@@ -11,37 +11,23 @@
 
 ## 安装
 
-这里是一个集合，而不是单个 Skill：一个目录条目背后是 561 份配方。有 Node 18+ 即
-可，无需先克隆仓库：
+这里是一个集合，而不是单个 Skill：一个目录条目背后是 561 份配方。有 Node 18+、且 `PATH` 上有 `git`（npm 靠它解析 `github:` 形式的包名）即可，无需先克隆仓库：
 
 ```bash
 npx github:PKU-YuanGroup/OpenAI4S install --collection bioskills --target claude
 ```
 
-`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入
-`./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则
-写到你指定的任意位置；`--dry-run` 只打印解析出的绝对路径，不写任何文件。重装时
-若目标副本被你改过则拒绝覆盖，`uninstall` 也只删除它自己写过的文件。只想要其中
-一份配方时直接点名即可——
-`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`
-——名字都在 `MANIFEST.json` 里。发布名写法
-`npx openai4s-skills install --collection bioskills` 跑的是同一套 CLI，只是这个
-包还没有发布到 npm。
+`--target claude` 写入 `~/.claude/skills`，`claude-project` 写入 `./.claude/skills`，`openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写到你指定的任意位置。往目标写任何东西之前，都会先打印解析出的绝对路径；`--dry-run` 到此为止，不再写入。重装时，若目标副本被你改过、或者不是它自己装的，就拒绝覆盖；`uninstall` 也只删除它自己写过的文件。只想要其中一份配方时直接点名即可——`npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`——名字取 `MANIFEST.json` 里的 `directory` 字段，`uninstall` 和 `installed` 认的也是它。包发布到 npm 之后，同一条命令的简写是 `npx openai4s-skills install --collection bioskills --target claude`。
 
-没有 Node 时，直接取这棵目录树——需要 `.zip` 上传时再打包：
+没有 Node 时，直接取配方本身。各份配方要平铺摆放——`<目标>/<配方>/`，也就是 `--collection` 写出来的样子——因为嵌在 skills 目录里的 `bioskills/` 文件夹不会被发现。tarball 是整个仓库（超过 100 MB），下面这条管道是 POSIX shell（macOS、Linux、WSL）写法：
 
 ```bash
 curl -L https://codeload.github.com/PKU-YuanGroup/OpenAI4S/tar.gz/refs/heads/main \
   | tar -xz --strip-components=2 OpenAI4S-main/skills/bioskills
-python3 -m zipfile -c bioskills.zip bioskills
+mkdir -p ~/.claude/skills && mv bioskills/*/ ~/.claude/skills/
 ```
 
-同一份内容的图形界面版本是点击下载整个
-[仓库 zip 包](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip)：解压
-后把 `skills/bioskills/` 拷出来即可。如果你本来就在跑 OpenAI4S，那这里没有任何
-东西需要安装——wheel 自带的就是此处这份固定版集合。目标目录、来源记录，以及安装
-器拒绝去做的那些事：
-[`tools/skills-installer/`](../../tools/skills-installer/README_zh.md)。
+同一份内容的图形界面版本是点击下载整个[仓库 zip 包](https://github.com/PKU-YuanGroup/OpenAI4S/archive/main.zip)，Windows 上也走这条路：解压后把 `skills/bioskills/` 里面的各个目录拷出来——拷配方，不要连文件夹一起拷。单份配方用 `python3 -m zipfile -c <配方>.zip <配方>` 就能打成上传框认的压缩包。如果你本来就在跑 OpenAI4S，那这里没有任何东西需要安装——wheel 自带的就是此处这份固定版集合。目标目录、来源记录，以及安装器拒绝去做的那些事：[`tools/skills-installer/`](../../tools/skills-installer/README_zh.md)。
 
 ## 包含内容
 
