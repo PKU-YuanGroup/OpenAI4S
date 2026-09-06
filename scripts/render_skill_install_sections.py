@@ -229,7 +229,11 @@ def render(
                 f"when one is all you want — `npx github:{repo} install {member}` — "
                 "and the `directory` field of `MANIFEST.json` is where those names "
                 "come from; it is also the name `uninstall` and `installed` answer "
-                "to. Once the package is on npm, "
+                f"to. Installing all {count} into `~/.claude/skills` puts {count} "
+                "descriptions into every Claude Code session's prompt — the cost the "
+                "*Discovery and context cost* section below exists to avoid — so on "
+                "that target name the recipes you need, and keep `--collection` for a "
+                "directory an agent searches (`--dir`). Once the package is on npm, "
                 f"`npx openai4s-skills install --collection {name} --target claude` "
                 "is the short form of the same command.",
                 "Without Node, take the recipes themselves. They must sit flat — "
@@ -256,6 +260,10 @@ def render(
                 _targets_zh() + "只想要其中一份配方时直接点名即可——"
                 f"`npx github:{repo} install {member}`——名字取 `MANIFEST.json` "
                 "里的 `directory` 字段，`uninstall` 和 `installed` 认的也是它。"
+                f"把全部 {count} 份装进 `~/.claude/skills`，等于让每个 Claude Code 会话的 "
+                f"prompt 都带上 {count} 条 description——正是下文“发现机制与上下文成本”一节"
+                "要避免的开销——所以在这个目标上请只点名你需要的配方，`--collection` "
+                "留给 agent 会去搜索的目录（`--dir`）。"
                 "包发布到 npm 之后，同一条命令的简写是 "
                 f"`npx openai4s-skills install --collection {name} --target claude`。",
                 "没有 Node 时，直接取配方本身。各份配方要平铺摆放——`<目标>/<配方>/`，"

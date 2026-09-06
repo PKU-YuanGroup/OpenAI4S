@@ -207,7 +207,7 @@ npx github:PKU-YuanGroup/OpenAI4S list
 npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
 
-上面这些写法直接从本仓库运行 CLI，中间不经任何发布；`npx openai4s-skills …` 是同一套 CLI 的发布名写法，只是这个包还没有发布到 npm。`--target claude` 写入 `~/.claude/skills`，`--target openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写入你指定的任意位置；在写任何东西之前，解析出的绝对路径都会先打印出来，而 `--dry-run` 什么都不写。每个已安装文件的 SHA-256 都会记进 Skills 旁边的清单，因此重装会拒绝覆盖你改过的 Skill，卸载也只删它自己写下的文件。[`skills/`](skills/) 下每个 Skill 页面都带一节**安装**，命令里已经填好它自己的名字，所以你跳到哪一页，就可以在哪一页直接装。
+上面这些写法直接从本仓库运行 CLI，中间不经任何发布；`npx openai4s-skills …` 是同一套 CLI 的发布名写法，只是这个包还没有发布到 npm。`--target claude` 写入 `~/.claude/skills`，`--target openai4s` 写入 `<data_dir>/user-skills`，`--dir <path>` 则写入你指定的任意位置；在往目标写任何东西之前，解析出的绝对路径都会先打印出来，而 `--dry-run` 到此为止、不再写入。每个已安装文件的 SHA-256 都会记进 Skills 旁边的清单，因此重装会拒绝覆盖你改过的、或不是它自己装的 Skill，卸载也只删它自己写下的文件。[`skills/`](skills/) 下每个精选 Skill 页面和集合根目录页面都带一节**安装**，命令里已经填好它自己的名字，所以你跳到哪一页，就可以在哪一页直接装。
 
 如果你本来就在跑 OpenAI4S，那 604 个你已经全有了——同名时自带 Skill 优先于数据目录里的那个。这条命令是为反方向准备的。
 

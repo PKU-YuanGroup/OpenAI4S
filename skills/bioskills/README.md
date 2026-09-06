@@ -29,9 +29,13 @@ removes only the files it wrote. Name one recipe instead of the whole collection
 when one is all you want —
 `npx github:PKU-YuanGroup/OpenAI4S install bio-differential-expression-deseq2-basics`
 — and the `directory` field of `MANIFEST.json` is where those names come from;
-it is also the name `uninstall` and `installed` answer to. Once the package is
-on npm, `npx openai4s-skills install --collection bioskills --target claude` is
-the short form of the same command.
+it is also the name `uninstall` and `installed` answer to. Installing all 561
+into `~/.claude/skills` puts 561 descriptions into every Claude Code session's
+prompt — the cost the *Discovery and context cost* section below exists to avoid
+— so on that target name the recipes you need, and keep `--collection` for a
+directory an agent searches (`--dir`). Once the package is on npm,
+`npx openai4s-skills install --collection bioskills --target claude` is the
+short form of the same command.
 
 Without Node, take the recipes themselves. They must sit flat —
 `<target>/<recipe>/`, exactly what `--collection` writes — because a

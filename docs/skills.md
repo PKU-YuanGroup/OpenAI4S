@@ -190,9 +190,9 @@ npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 
 `npx openai4s-skills <command>` is the same CLI under the package's published
 name. It is not on npm yet, so the `github:` form above is the one that
-resolves today; `docs/TODO.md` tracks the publication. Every Skill page under
-`skills/` carries an **Install** section with its own name already filled in,
-rendered and checked by `scripts/render_skill_install_sections.py`, so you can
+resolves today; `docs/TODO.md` tracks the publication. Every curated Skill page
+and the collection root under `skills/` carry an **Install** section with their
+own name already filled in, rendered and checked by `scripts/render_skill_install_sections.py`, so you can
 install from whichever page you landed on and a new Skill directory cannot land
 without one.
 
