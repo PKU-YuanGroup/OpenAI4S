@@ -525,5 +525,35 @@ def test_every_external_host_the_client_names_is_accounted_for():
         "client code names a host with no recorded reason:\n"
         + "\n".join(f"  {path}:{line} -> {host}" for path, line, host in unaccounted)
         + "\n\nAdd it to _WEBUI_NAMED_HOSTS with why it is not a request, or "
-        "remove it."
+        "remove it. A loopback name is already listed there but only counts "
+        "inside the built preview-origin resolver (see _WEBUI_SCOPED_HOSTS): "
+        "naming one anywhere else needs its own argument."
     )
+
+
+def test_the_loopback_hosts_count_only_inside_the_built_origin_resolver():
+    """The scoping half of the allowance, which no real source line exercises.
+
+    Only the compiled `resolveSandboxOrigin` may name a loopback host, so the
+    rows admitting them are the one place a copy-pasted `"http://127.0.0.1"`
+    base URL in the frozen shell could slip through unremarked. Nothing in the
+    tree currently sits on the refusing side of that rule, so the negative
+    cases are constructed rather than found -- otherwise the helper would be a
+    pin that cannot fail.
+    """
+    resolver = 'e.hostname==="127.0.0.1"?"http://localhost":'
+    assert _webui_host_accounted(
+        "server/webui/dist/assets/index-BzJ6k69J.js", "127.0.0.1", resolver
+    )
+    # Same host, same file, but not the resolver: an ordinary absolute URL.
+    assert not _webui_host_accounted(
+        "server/webui/dist/assets/index-BzJ6k69J.js",
+        "127.0.0.1",
+        'fetch("http://127.0.0.1" + "/api/v1/status")',
+    )
+    # The frozen shell and the satellite pages get no loopback allowance.
+    for path in ("server/webui/app.js", "server/webui/login.js"):
+        assert not _webui_host_accounted(path, "localhost", resolver)
+    # Unscoped rows keep their tree-wide reason; unknown hosts stay refused.
+    assert _webui_host_accounted("server/webui/app.js", "www.w3.org", "")
+    assert not _webui_host_accounted("server/webui/app.js", "evil.example", resolver)

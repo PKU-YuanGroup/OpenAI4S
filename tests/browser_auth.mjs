@@ -130,6 +130,24 @@ export function minimalChildEnvironment(extra = {}) {
   return environment;
 }
 
+/**
+ * Strip credentials from text that is about to be printed. A daemon prints its
+ * bootstrap URL (`?token=...`) on startup, so a log tail attached to a failure
+ * summary would otherwise write a live access token into CI output.
+ */
+export function redactSecrets(value, ...literals) {
+  let text = String(value == null ? "" : value)
+    .replace(/([?&](?:token|api[_-]?key|secret|password)=)[^&#\s"']+/gi, "$1<redacted>")
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<redacted>")
+    .replace(/(X-OpenAI4S-Token\s*:\s*)\S+/gi, "$1<redacted>");
+  for (const literal of literals) {
+    if (typeof literal === "string" && literal.length >= 8) {
+      text = text.split(literal).join("<redacted>");
+    }
+  }
+  return text;
+}
+
 /** Keep the tail of a child's stream so a failure can quote the daemon. */
 export function boundedLogCollector(stream, limit = 64 * 1024) {
   let value = "";

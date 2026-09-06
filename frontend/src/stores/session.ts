@@ -8,7 +8,11 @@ export const sessions = field(() => [] as unknown[]);
 export const project = field(() => null as string | null);
 /** S.currentId — app.js:120 */
 export const currentId = field(() => null as string | null);
-/** S.sandboxOrigin — app.js:120 */
+/**
+ * S.sandboxOrigin — app.js:120. Declared for field parity with the frozen
+ * shell and nothing else: the preview origin is derived from `location` at
+ * render time (features/artifacts/preview.ts), so this has no reader.
+ */
 export const sandboxOrigin = field(() => "");
 /** S._titleName — app.js:120 */
 export const _titleName = field(() => "");

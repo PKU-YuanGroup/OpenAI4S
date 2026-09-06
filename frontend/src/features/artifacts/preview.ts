@@ -6,6 +6,7 @@ import {
   resolveSandboxOrigin,
 } from "../../islands/frames";
 import { api, el, translate } from "./api";
+import { artifactRendererVersion } from "./cache";
 import type { ArtifactRow } from "./types";
 
 /** A grant already minted for one exact artifact version, reusable until near expiry. */
@@ -71,7 +72,13 @@ export function renderHtmlPreview(content: HTMLElement, a: ArtifactRow): void {
     frame.src = inertSrc;
     return;
   }
-  const key = `${a.id}:${exactVersion}`;
+  // Keyed on the version the grant will actually pin, not merely on whether
+  // this is an exact-version request. A head preview's grant names whatever
+  // version was current at mint; when a new capture lands, `syncArtifactVersion`
+  // rewrites the row's `version_id` without setting `_exactVersion`, so a key
+  // built from the flag alone would still hit and replay the superseded bytes
+  // under a banner naming the new version.
+  const key = `${a.id}:${exactVersion}:${artifactRendererVersion(a)}`;
   const cached = grants.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     upgrade(frame, note, cached.src);

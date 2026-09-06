@@ -15,6 +15,7 @@ import {
   authenticate,
   boundedLogCollector,
   minimalChildEnvironment,
+  redactSecrets,
   waitUntil,
 } from "./browser_auth.mjs";
 
@@ -360,6 +361,7 @@ async function main() {
   let startupError = null;
   daemon.once("error", (error) => { startupError = error; });
   let browser = null;
+  let token = null;
   try {
     await waitUntil("daemon startup", async () => {
       if (startupError) throw startupError;
@@ -367,7 +369,7 @@ async function main() {
       if (!fs.existsSync(path.join(dataDir, "access-token"))) return false;
       return (await fetch(`${appOrigin}/health`)).ok;
     }, 60000, 250);
-    const token = fs.readFileSync(path.join(dataDir, "access-token"), "utf8").trim();
+    token = fs.readFileSync(path.join(dataDir, "access-token"), "utf8").trim();
     const headers = { "content-type": "application/json", "X-OpenAI4S-Token": token };
     const api = async (route, body) => {
       const response = await fetch(`${appOrigin}/api/v1${route}`, {
@@ -414,10 +416,17 @@ async function main() {
     }
     summary.ok = summary.cases.every((result) => result.ok);
     if (!summary.ok) process.exitCode = 1;
-  } catch (error) {
-    summary.daemon_log = `${daemonStdout()}\n${daemonStderr()}`.trim().slice(-16 * 1024);
-    throw error;
   } finally {
+    // Attached whenever the run is not green, not only when main() throws:
+    // runDirection swallows its own assertion failures into `result.error`,
+    // which is the likeliest way this gate goes red, and the data directory
+    // is deleted a few lines below. Redacted because the daemon prints its
+    // `?token=` bootstrap URL on startup and SUMMARY reaches the CI log.
+    if (!summary.ok) {
+      summary.daemon_log = redactSecrets(
+        `${daemonStdout()}\n${daemonStderr()}`, token,
+      ).trim().slice(-16 * 1024);
+    }
     if (browser) await browser.close().catch(() => {});
     daemon.kill("SIGTERM");
     await new Promise((resolve) => setTimeout(resolve, 500));

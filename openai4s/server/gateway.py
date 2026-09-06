@@ -658,8 +658,10 @@ def _sanitize_header_value(value: str) -> str:
 
 # Static UI transport (ETag / 304 / gzip / fingerprint Cache-Control). These
 # apply only to `_serve_index` / `_serve_static` / the large-file branch of
-# `_stream_file`. `_send` stays `Cache-Control: no-cache` so API JSON and
-# Artifact bytes keep the same headers they always had.
+# `_stream_file`. All three body writers resolve `Cache-Control` the same way
+# -- `extra` over the security profile over `no-cache` -- and emit it exactly
+# once, so API JSON keeps `no-cache` while a profile carrying its own value
+# (the granted preview's `no-store`) is honoured rather than contradicted.
 _STATIC_STREAM_BYTES = 8 * 1024 * 1024
 _GZIP_MIN_BYTES = 1024
 _GZIP_CACHE_MAX_BYTES = 48 * 1024 * 1024
@@ -14421,15 +14423,19 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             extra: dict | None,
             security: dict[str, str] | None,
         ) -> None:
-            """Write a static response whose Cache-Control `_send` cannot express.
+            """Write a static response with the transport headers `_send` omits.
 
-            `_send` hard-wires `no-cache`. Fingerprint names need
-            `public, max-age=31536000, immutable`; sending both would combine
-            into a contradictory policy. 304 still applies the security
-            profile — an empty body is not an opt-out.
+            Fingerprint names need `public, max-age=31536000, immutable`, and
+            this writer carries the ETag/gzip transport API JSON has no use
+            for. Cache-Control follows the same precedence as `_send` and is
+            written once. 304 still applies the security profile — an empty
+            body is not an opt-out.
             """
             extra = dict(extra or {})
-            cache_control = extra.pop("Cache-Control", "no-cache")
+            profile = security if security is not None else _default_security()
+            cache_control = extra.pop(
+                "Cache-Control", profile.get("Cache-Control", "no-cache")
+            )
             self._last_status = code
             self.send_response(code)
             self.send_header("Content-Type", _sanitize_header_value(ctype))
@@ -14438,8 +14444,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             request_id = getattr(self, "_correlation_id", "")
             if request_id:
                 self.send_header("X-Request-Id", _sanitize_header_value(request_id))
-            profile = security if security is not None else _default_security()
             for key, value in profile.items():
+                if key == "Cache-Control":
+                    continue
                 self.send_header(key, _sanitize_header_value(value))
             for key, value in extra.items():
                 self.send_header(key, _sanitize_header_value(value))
@@ -14540,10 +14547,14 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 self.send_response(304)
                 self.send_header("Content-Type", _sanitize_header_value(ctype))
                 self.send_header("Content-Length", "0")
-                cache_control = extra.get("Cache-Control", "no-cache")
-                self.send_header("Cache-Control", _sanitize_header_value(cache_control))
                 profile = security if security is not None else _default_security()
+                cache_control = extra.get(
+                    "Cache-Control", profile.get("Cache-Control", "no-cache")
+                )
+                self.send_header("Cache-Control", _sanitize_header_value(cache_control))
                 for key, value in profile.items():
+                    if key == "Cache-Control":
+                        continue
                     self.send_header(key, _sanitize_header_value(value))
                 for key, value in extra.items():
                     if key == "Cache-Control":
@@ -14556,7 +14567,10 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             except OSError:
                 self._json({"error": "not found"}, 404)
                 return
-            cache_control = extra.pop("Cache-Control", "no-cache")
+            profile = security if security is not None else _default_security()
+            cache_control = extra.pop(
+                "Cache-Control", profile.get("Cache-Control", "no-cache")
+            )
             with source:
                 self._last_status = 200
                 self.send_response(200)
@@ -14568,8 +14582,9 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # its own headers instead of going through _send, so it has to
                 # opt in explicitly — and it takes the same `security` profile
                 # as `_serve_file`, or the two writers of one fact drift.
-                profile = security if security is not None else _default_security()
                 for key, value in profile.items():
+                    if key == "Cache-Control":
+                        continue
                     self.send_header(key, _sanitize_header_value(value))
                 for key, value in extra.items():
                     self.send_header(key, _sanitize_header_value(value))
@@ -14677,16 +14692,22 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
         def _presents_session_cookie(self) -> bool:
             """True when the request carries one of the daemon's own cookies.
 
-            Presence, not validity: a stale or wrong `os_token` still marks a
-            browsing context that once held a session on this name. Cookies
-            of other local apps on the same hostname (cookies ignore ports)
-            are not ours and do not count; `SimpleCookie` skips what it cannot
-            parse, which is the same answer.
-            """
-            from http.cookies import SimpleCookie
+            Scanned from the raw header rather than parsed. `SimpleCookie` does
+            not skip a pair it cannot read -- it abandons the rest of the
+            header, so `a="unterminated; os_token=x` parses to no names at all
+            -- and the document this refusal exists to contain runs with
+            `allow-same-origin` on that very hostname, so it could set one
+            malformed cookie and hide the real `os_token` behind it. A guard
+            whose bypass the guarded party can write is not a guard.
 
-            jar = SimpleCookie(self.headers.get("Cookie", "") or "")
-            return jar.get("os_token") is not None or jar.get(_TEAM_COOKIE) is not None
+            Presence, not validity: a stale or wrong `os_token` still marks a
+            browsing context that once held a session on this name. Only an
+            exact name at a pair boundary counts, so cookies of other local
+            apps on the same hostname (cookies ignore ports) are not ours.
+            """
+            ours = {"os_token", _TEAM_COOKIE}
+            raw = self.headers.get("Cookie", "") or ""
+            return any(pair.split("=", 1)[0].strip() in ours for pair in raw.split(";"))
 
         def _referring_preview_frame(self) -> str | None:
             """The root frame of the `/preview/` document that referenced us.
@@ -14707,7 +14728,8 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 return None
             host = (headers.get("Host", "") or "").strip().lower()
             if (
-                not referer.path.startswith("/preview/")
+                not host  # absent Host: `"" == ""` would admit any Referer
+                or not referer.path.startswith("/preview/")
                 or referer.netloc.lower() != host
             ):
                 return None
@@ -14794,7 +14816,12 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
                 # names the report, ask within its frame first -- the same
                 # rule the granted preview applies -- and only then fall back
                 # to store-wide uniqueness for a bare `/artifacts/<name>`.
-                frame_id = self._referring_preview_frame()
+                # Only for the preview route: `force_html` marks it and is the
+                # sole caller that sets it. A bare `/api/v1/artifacts/<name>`
+                # keeps the store-wide rule -- widening *its* resolution on a
+                # Referer is not what a rendered document's relative reference
+                # asked for.
+                frame_id = self._referring_preview_frame() if force_html else None
                 meta = (
                     store.artifact_by_unique_filename(decoded_ident, frame_id)
                     if frame_id

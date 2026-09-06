@@ -5284,6 +5284,10 @@ def test_a_sandbox_grant_is_minted_scoped_and_spendable(
             "os_token=stale-or-wrong",
             "os_user=someone",
             "a=1; os_token=x; b=2",
+            # A cookie the sandboxed document can set on this hostname itself.
+            # `SimpleCookie` abandons the header after it, so parsing rather
+            # than scanning would hide the real credential behind it.
+            'a="unterminated; os_token=x',
         ):
             handler.headers = {"Host": f"{sandbox_host}:{cfg.port}", "Cookie": cookie}
             handler._route("GET")
@@ -5479,6 +5483,56 @@ def test_send_serializes_only_the_artifact_security_profile(tmp_path):
     assert [value for key, value in emitted if key == "X-Frame-Options"] == [
         "SAMEORIGIN"
     ]
+
+
+def test_every_unprofiled_writer_answers_with_the_same_shell_policy(tmp_path):
+    """One default CSP, whichever writer and whichever status code.
+
+    `_send` is not the only body writer: `_send_static_bytes` and both branches
+    of `_stream_file` build their own headers. A 304 replaces the stored
+    response's headers, so a writer that substituted a different default would
+    swap the shell's policy for one that cannot frame the sandbox origin --
+    and nothing would notice, because no route-level test looks past which
+    profile was *selected* to what the writer actually substitutes.
+    """
+    cfg = _cfg(tmp_path)
+    runner = gateway_mod.SessionRunner(cfg, _Hub(), start_idle_sweeper=False)
+    handler = object.__new__(gateway_mod.make_handler(cfg, _Hub(), runner))
+    emitted: list[tuple[str, str]] = []
+    handler.send_response = lambda code: None
+    handler.send_header = lambda key, value: emitted.append((key, value))
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+    handler.headers = {"If-None-Match": '"etag-1"'}
+    asset = tmp_path / "big.aaaaaaaa.js"
+    asset.write_bytes(b"console.log(1)\n")
+
+    def policies() -> list[str]:
+        found = [value for key, value in emitted if key == "Content-Security-Policy"]
+        emitted.clear()
+        return found
+
+    try:
+        handler._send(200, b"{}", "application/json")
+        send = policies()
+        handler._send_static_bytes(200, b"x", "application/javascript", None, None)
+        static_bytes = policies()
+        handler._stream_file(
+            asset, "application/javascript", extra={"ETag": '"etag-2"'}
+        )
+        streamed_200 = policies()
+        handler._stream_file(
+            asset, "application/javascript", extra={"ETag": '"etag-1"'}
+        )
+        streamed_304 = policies()
+    finally:
+        runner.close()
+
+    assert send == static_bytes == streamed_200 == streamed_304
+    assert len(send) == 1
+    # And it is the profile that can frame the preview, not the bare shell one.
+    for origin in (f"http://127.0.0.1:{cfg.port}", f"http://localhost:{cfg.port}"):
+        assert origin in send[0]
 
 
 def test_an_empty_security_profile_is_not_read_as_no_profile(tmp_path):

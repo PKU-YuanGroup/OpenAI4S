@@ -100,6 +100,21 @@ describe("production HTML artifact preview", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
+  it("re-mints after a new version rather than replaying the superseded grant", async () => {
+    const request = vi.fn(async () => response(grant));
+    setArtifactsFetch(request);
+    const row = { id: "report", version_id: "version-1" };
+    renderHtmlPreview(host(new FakeNode()), row);
+    await flush();
+    expect(request).toHaveBeenCalledTimes(1);
+    // What syncArtifactVersion writes when a new capture lands: a new
+    // version_id on the same row, with no _exactVersion flag. The cached URL
+    // still points at the version the server pinned at mint, so it must miss.
+    renderHtmlPreview(host(new FakeNode()), { ...row, version_id: "version-2" });
+    await flush();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("does not remember a grant that would expire before it could be reused", async () => {
     const request = vi.fn(async () => response({ ...grant, expires_in: 30 }));
     setArtifactsFetch(request);

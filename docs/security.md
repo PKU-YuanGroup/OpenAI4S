@@ -158,7 +158,16 @@ a session -- the one browsing context in which the executable document could
 load that name's authenticated API as a same-site subresource (an `<img>` of
 another frame's file, readable through a canvas) and then navigate itself
 away with the bytes. Cookies of other local applications on the same
-hostname are not the daemon's and do not count.
+hostname are not the daemon's and do not count. The cookie is read by
+scanning the raw header, because a cookie parser that abandons a malformed
+pair would let the previewed document hide the credential behind one it sets
+itself. This closes the reachable path -- a grant URL opened from the address
+bar or a bookmark, where the cookie is sent -- rather than every path: a
+cross-site top-level navigation withholds a `SameSite=Strict` cookie from the
+navigation itself while the loaded document's own same-origin subresources
+still carry it. Nothing in the Workbench links a grant URL that way, and the
+response grants no popup or top-navigation sandbox permission, so the
+document cannot arrange it; the residual below still applies.
 The main document remains pinned to the selected captured version. Sibling
 resources resolve by ID or an unambiguous filename within that frame and use
 their current captured versions; this is not a frozen multi-file bundle. The
