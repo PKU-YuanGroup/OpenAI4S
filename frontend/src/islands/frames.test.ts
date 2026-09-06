@@ -50,9 +50,10 @@ describe("artifact iframe sandbox (app.js:8663-8664)", () => {
     expect(frame.getAttribute("sandbox")).not.toContain("allow-forms");
   });
 
-  it("inert html-preview stays on the app origin even with an origin override", () => {
-    expect(htmlPreviewSrc("https://sb.example", "art-1")).toBe("/preview/art-1");
-    expect(htmlPreviewSrc("", "a b")).toBe("/preview/a%20b");
+  it("inert html-preview is the app-origin preview of an artifact or version id", () => {
+    expect(htmlPreviewSrc("art-1")).toBe("/preview/art-1");
+    expect(htmlPreviewSrc("version-1")).toBe("/preview/version-1");
+    expect(htmlPreviewSrc("a b")).toBe("/preview/a%20b");
   });
 
   it("PDF stays inert and HTML delegates to the scoped preview implementation", () => {
@@ -68,16 +69,14 @@ describe("artifact iframe sandbox (app.js:8663-8664)", () => {
 describe("Ketcher iframe (app.js:10834, embeddable headers)", () => {
   it("points at /ketcher, never a sandboxed origin path", () => {
     expect(KETCHER_PATH).toBe("/ketcher");
-    expect(ketcherFrameSrc("", null)).toBe("/ketcher");
-    expect(ketcherFrameSrc("https://sb.example", "mol-1")).toBe(
-      "/ketcher?artifact_id=mol-1",
-    );
+    expect(ketcherFrameSrc(null)).toBe("/ketcher");
+    expect(ketcherFrameSrc("mol-1")).toBe("/ketcher?artifact_id=mol-1");
   });
 
   it("sets clipboard allow and does not set sandbox", () => {
     const frame = new FakeFrame();
     frame.setAttribute("sandbox", "stale");
-    applyKetcherFrame(frame, "", "a1");
+    applyKetcherFrame(frame, "a1");
     expect(frame.src).toBe("/ketcher?artifact_id=a1");
     expect(frame.getAttribute("allow")).toBe(KETCHER_ALLOW);
     expect(frame.getAttribute("sandbox")).toBeNull();
@@ -91,27 +90,12 @@ describe("verified sandbox origin", () => {
     expect(resolveSandboxOrigin(app)).toBe("http://localhost:8760");
     expect(resolveSandboxOrigin({ ...app, hostname: "localhost" })).toBe("http://127.0.0.1:8760");
     expect(resolveSandboxOrigin({ ...app, port: "" })).toBe("http://localhost");
-    expect(resolveSandboxOrigin(app, "http://localhost:8760")).toBe("http://localhost:8760");
   });
 
-  it.each([
-    "http://127.0.0.1:8760",
-    "https://preview.example",
-    "http://localhost:8761",
-    "http://localhost:8760.evil.example",
-    "http://localhost:8760/",
-    "http://user@localhost:8760",
-    "//localhost:8760",
-    "javascript:alert(1)",
-    {},
-    null,
-  ])("rejects unverified override %j", (override) => {
-    expect(resolveSandboxOrigin(app, override)).toBe("");
-  });
-
-  it("keeps non-loopback and HTTPS apps inert even with a loopback override", () => {
-    expect(resolveSandboxOrigin({ ...app, hostname: "remote.example" }, "http://localhost:8760")).toBe("");
+  it("keeps non-loopback, IPv6 and HTTPS apps inert", () => {
+    expect(resolveSandboxOrigin({ ...app, hostname: "remote.example" })).toBe("");
     expect(resolveSandboxOrigin({ ...app, hostname: "[::1]" })).toBe("");
     expect(resolveSandboxOrigin({ ...app, protocol: "https:" })).toBe("");
+    expect(resolveSandboxOrigin(null)).toBe("");
   });
 });

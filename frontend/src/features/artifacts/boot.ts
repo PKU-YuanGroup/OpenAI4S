@@ -5,7 +5,6 @@ import { setArtifactCreatedSideEffects, setLoadArtifactsImpl } from "../ws/handl
 import { artifactCreatedSideEffects } from "./events";
 import { loadArtifacts, setRenderConversationArtifactsImpl, setRenderFilesGridImpl } from "./load";
 import { renderSheet } from "./sheet";
-import { initializeSandboxOrigin } from "./preview";
 import {
   consumeArtifactDeepLink,
   dockClose,
@@ -56,7 +55,6 @@ export function installArtifacts(target?: Target): void {
 }
 
 export function bootArtifacts(target?: Target): void {
-  initializeSandboxOrigin(hostTarget(target) || undefined);
   installArtifacts(target);
 }
 

@@ -11,7 +11,12 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { authenticate, waitUntil } from "./browser_auth.mjs";
+import {
+  authenticate,
+  boundedLogCollector,
+  minimalChildEnvironment,
+  waitUntil,
+} from "./browser_auth.mjs";
 
 const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pythonPath = process.env.OPENAI4S_PYTHON
@@ -222,9 +227,12 @@ async function runDirection(browser, port, token, fixtures, appHost) {
     `a refused grant did not leave a useful inert preview: ${JSON.stringify(result.inert_without_grant)}`);
     await page.unroute("**/api/v1/artifacts/*/sandbox-grant*");
 
-    // Both loopback names are valid app entry points. If a user has logged in
-    // to both, the sandbox name can already hold a cookie: the artifact CSP
-    // must still prevent it from calling that origin's authenticated API.
+    // Both loopback names are valid app entry points, so the sandbox name can
+    // already hold a session cookie. Framed under the app origin the frame is
+    // cross-site and SameSite=Strict keeps that cookie off every request it
+    // makes, so what `api-fetch-refused` proves is `connect-src 'none'`, not
+    // the cookie. (The cookie-bearing case -- a grant URL opened top-level on
+    // that name -- is refused by the server outright; see test_gateway.)
     phase("authenticated sandbox API refusal");
     const alternateLogin = await context.newPage();
     await alternateLogin.goto(`${sandboxOrigin}/?token=${encodeURIComponent(token)}`, {
@@ -261,6 +269,13 @@ async function runDirection(browser, port, token, fixtures, appHost) {
     const ketcherFrame = await (await ketcherFrameElement.elementHandle()).contentFrame();
     await waitUntil("Ketcher artifact load", async () =>
       (await ketcherFrame.locator("#ketcher-status").innerText()).startsWith("loaded "), 45000);
+    // The wrapper loads the artifact twice -- once on the editor's init
+    // message and again 400 ms after the frame's load event -- and both
+    // report the same "loaded" status. An edit made between the two is
+    // silently overwritten by the second, which on a fast host turns into a
+    // "save without persisting" red that blames the server. Let the deferred
+    // reload land before touching the canvas.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
     const editor = ketcherFrame.childFrames().find((frame) => frame.url().includes("/static/vendor/ketcher/"));
     assertion(editor, "Ketcher never loaded its vendored editor");
     await waitUntil("real Ketcher editor", () => editor.evaluate(() =>
@@ -275,18 +290,33 @@ async function runDirection(browser, port, token, fixtures, appHost) {
     // The pinned editor's setMolecule returns before its import action
     // completes. Wait for the actual canvas serialization to change before
     // clicking Save, just as a user waits for the editor to finish drawing.
+    const currentMolfile = () => editor.evaluate(() => Promise.race([
+      window.ketcher.getMolfile(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Ketcher serialization timed out")), 10000)),
+    ]));
     await editor.evaluate((molfile) => window.ketcher.setMolecule(molfile), editedMolfile);
+    // The edit has to *stay* on the canvas, not merely appear once: require
+    // several consecutive reads that still carry the atom, re-applying the
+    // edit if a late reload wiped it.
+    let stableReads = 0;
     await waitUntil("Ketcher molecule edit", async () => {
-      const edited = await editor.evaluate(() => Promise.race([
-        window.ketcher.getMolfile(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Ketcher serialization timed out")), 10000)),
-      ]));
-      return edited.includes(` ${atom} `);
-    }, 30000);
+      if ((await currentMolfile()).includes(` ${atom} `)) {
+        stableReads += 1;
+        return stableReads >= 4;
+      }
+      stableReads = 0;
+      await editor.evaluate((molfile) => window.ketcher.setMolecule(molfile), editedMolfile);
+      return false;
+    }, 30000, 250);
     result.ketcher_edited_atom = atom;
     await ketcherFrame.locator("#ketcher-save").click();
-    await waitUntil("Ketcher artifact save", async () =>
-      (await ketcherFrame.locator("#ketcher-status").innerText()).startsWith("saved "));
+    await waitUntil("Ketcher artifact save", async () => {
+      const status = await ketcherFrame.locator("#ketcher-status").innerText();
+      // "saved <vid> (unchanged)" is the wrapper telling us the edit was
+      // gone before it posted; that is the failure, not a success to accept.
+      assertion(!status.endsWith("(unchanged)"), `Ketcher saved an unchanged molecule: ${status}`);
+      return status.startsWith("saved ");
+    });
     const savedMolecule = await page.request.get(`${appOrigin}/api/v1/artifacts/${fixtures.moleculeId}`);
     assertion(savedMolecule.ok() && (await savedMolecule.text()).includes(` ${atom} `),
       "Ketcher reported a save without persisting the edited molecule");
@@ -310,22 +340,23 @@ async function main() {
   const daemon = spawn(pythonPath,
     ["-m", "openai4s", "serve", "--no-browser", "--port", String(port)], {
       cwd: workspaceRoot,
-      env: {
-        ...process.env,
+      // Pinned, not inherited: this gate measures the origin boundary, and a
+      // provider key, team mode or sandbox posture from the developer's shell
+      // would change what it measures (or make it time out on a live turn).
+      env: minimalChildEnvironment({
         OPENAI4S_DATA_DIR: dataDir,
         OPENAI4S_HOST: "127.0.0.1",
         OPENAI4S_PORT: String(port),
         OPENAI4S_REQUIRE_TOKEN: "1",
         OPENAI4S_ALLOW_NETWORK: "0",
-        OPENAI4S_SKIP_DOTENV: "1",
-        OPENAI4S_SECRET_STORE: "plaintext",
         OPENAI4S_WEBUI: "",
         OPENAI4S_STAGE9_ARTIFACT_WORKBENCH: "1",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     });
-  daemon.stdout.resume();
-  daemon.stderr.resume();
+  // Kept, not discarded: a failing run must be able to quote the daemon.
+  const daemonStdout = boundedLogCollector(daemon.stdout);
+  const daemonStderr = boundedLogCollector(daemon.stderr);
   let startupError = null;
   daemon.once("error", (error) => { startupError = error; });
   let browser = null;
@@ -383,6 +414,9 @@ async function main() {
     }
     summary.ok = summary.cases.every((result) => result.ok);
     if (!summary.ok) process.exitCode = 1;
+  } catch (error) {
+    summary.daemon_log = `${daemonStdout()}\n${daemonStderr()}`.trim().slice(-16 * 1024);
+    throw error;
   } finally {
     if (browser) await browser.close().catch(() => {});
     daemon.kill("SIGTERM");

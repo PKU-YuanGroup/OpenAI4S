@@ -33,12 +33,16 @@ scripts.
   local capture observation. The scoped lineage view projects the latest
   version's path-free producer frame, so delegated code/native outputs show the
   real child frame without fabricating a root Notebook Cell or view-code link.
-- **Interactive HTML previews on loopback** — the default Workbench starts
-  previews inert, then requests a signed grant to run a report on the other
-  loopback hostname at the daemon's port. The grant is bound to that origin,
-  the minting app origin, a nonempty frame and an expiry; sibling resources
-  remain scoped to the frame. Unsupported deployments and refused grants keep
-  the static preview. Ordinary app-origin Artifact links remain script-free.
+- **Interactive HTML previews on loopback** — the default Workbench requests
+  a signed grant before navigating a report's frame anywhere, then runs the
+  report on the other loopback hostname at the daemon's port; a granted URL
+  is reused per Artifact version until shortly before it expires. The grant
+  is bound to that origin, the minting app origin, a nonempty frame and an
+  expiry; sibling resources remain scoped to the frame, and the static
+  `/preview/` route resolves them by the same frame rule. Unsupported
+  deployments and refused grants load the static preview instead (the exact
+  version's own `/preview/<version-id>` for a historical link). Ordinary
+  app-origin Artifact links remain script-free.
   Ketcher stays on the authenticated app origin. Preview grants are temporary
   bearer URLs, with [documented self-navigation disclosure limits](security.md#executable-artifact-previews-use-a-scoped-alternate-origin).
 - **Recoverable completion delivery (opt-in)** — Stage 1 freezes and verifies

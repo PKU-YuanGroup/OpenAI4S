@@ -12,7 +12,7 @@ F-18 命令式孤岛。3Dmol 懒注入 script 标签（只取自带副本；删-
 | [`annot.test.ts`](annot.test.ts) | `annotationStatus` 映射；held pin；`openAnnotations`。 |
 | [`dom.ts`](dom.ts) | `el` / `$` / lucide 子集 / `ghostIconBtn`。 |
 | [`frames.ts`](frames.ts) | 惰性 iframe 策略、回环源与 grant 路径检查；应用同源 Ketcher 与剪贴板权限。 |
-| [`frames.test.ts`](frames.test.ts) | iframe sandbox 属性、不安全源覆盖及应用同源 Ketcher。 |
+| [`frames.test.ts`](frames.test.ts) | iframe sandbox 属性、派生的回环源、grant 路径检查及应用同源 Ketcher。 |
 | [`host.ts`](host.ts) | 用 `isReady` 调 window；`t()` 回退。 |
 | [`index.ts`](index.ts) | `bootIslands` / `installIslands`。覆盖 F-05 占位。 |
 | [`install.test.ts`](install.test.ts) | 安装后契约名字通过 `isReady`。 |

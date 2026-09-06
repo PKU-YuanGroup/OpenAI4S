@@ -108,13 +108,6 @@ function apiErrorText(e) {
   const msg = (e && e.message) ? String(e.message) : String(e);
   return (e && e.requestId) ? `${msg} [${e.requestId}]` : msg;
 }
-// The origin a sandboxed artifact preview is served from: the *other* loopback
-// name at this same port, which the daemon already admits in its Host allowlist
-// and which is a distinct browser origin. Distinct is the whole point -- no
-// session cookie is sent there, and the same-origin policy, not a CSP
-// directive, is what keeps an artifact's script away from the workbench
-// document and the API. Anything other than loopback gets "" and the inert
-// preview, because we have not verified what that origin would be.
 const api = async (p, o = {}) => {
   // `p` must be an internal, same-origin API path: a single leading slash and no
   // scheme/host. Rejecting "//host" (protocol-relative) and non-string input keeps
@@ -1460,6 +1453,7 @@ Object.assign(I18N.zh, {
   "viewer.renderer.matched": "匹配：{0}",
   "viewer.renderer.version": "版本 {0}",
   "viewer.renderer.noscript": "预览不执行脚本。交互式报表请下载后在本地打开。",
+  "viewer.renderer.interactive": "交互式预览运行在隔离的备用 loopback 源上。若一直空白，请重新打开该文件或下载报表。",
   "viewer.sequence.omitted": "为保持界面流畅，其余 {0} 个残基未展开。",
   "viewer.sequence.summary": "{0} 条序列 · {1} 个残基 · {2}",
   "viewer.table.shape": "共 {0} 行 × {1} 列",
@@ -2674,6 +2668,7 @@ Object.assign(I18N.en, {
   "viewer.renderer.matched": "Matched by {0}",
   "viewer.renderer.version": "Version {0}",
   "viewer.renderer.noscript": "This preview runs no scripts. Download an interactive report to use it.",
+  "viewer.renderer.interactive": "Interactive preview, isolated on the alternate loopback origin. If it stays blank, reopen the artifact or download the report.",
   "viewer.sequence.omitted": "{0} additional residues are collapsed to keep the viewer responsive.",
   "viewer.sequence.summary": "{0} sequences · {1} residues · {2}",
   "viewer.table.shape": "{0} rows × {1} columns",
@@ -8855,7 +8850,6 @@ function renderHtmlPreview(content, a) {
   content.appendChild(frame);
   const note = el("p", "muted renderer-noscript", t("viewer.renderer.noscript"));
   content.appendChild(note);
-
 }
 
 function renderArtifactDescriptor(body, a, descriptor) {
@@ -13763,7 +13757,6 @@ function makeColResizer(host, kind) {
 
 /* ---------- init ---------- */
 async function init() {
-  try { S.sandboxOrigin = ""; } catch {}
   paintIcons();
   document.documentElement.lang = LANG === "en" ? "en" : "zh";
   applyStaticI18n(document); refreshLangToggle();

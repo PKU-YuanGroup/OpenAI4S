@@ -127,13 +127,18 @@ decision. Stored/redacted approval payloads are never executed as arguments.
 
 ### Executable Artifact previews use a scoped alternate origin
 
-The default Preact Workbench initially creates an inert HTML iframe. On a
-direct HTTP loopback deployment, it may upgrade that iframe after an
-authenticated `POST /api/v1/artifacts/{id}/sandbox-grant` succeeds. The
+The default Preact Workbench creates an HTML iframe with the empty sandbox
+attribute and, on a direct HTTP loopback deployment, asks for an
+authenticated `POST /api/v1/artifacts/{id}/sandbox-grant` before navigating
+it anywhere; a granted URL is remembered per Artifact version until shortly
+before it expires, so reopening the same report does not mint again. The
 alternate origin is the other loopback hostname (`127.0.0.1` ↔ `localhost`)
-at the daemon's port; no second listener is started. Unsupported origins,
-missing signing credentials, and refused grants keep the inert preview.
-Same-origin overrides cannot enable executable Artifact content.
+at the daemon's port; no second listener is started. On any other origin, and
+whenever the grant is refused, the frame loads the inert app-origin preview
+(`/preview/<artifact-id>` or `/preview/<version-id>` for an exact version)
+instead. There is no client-side origin override: the client derives the one
+alternate origin from its own location and accepts a grant only for exactly
+that origin.
 
 A signed grant binds a nonempty Artifact root frame, the selected Artifact
 version, an expiry, the minting app origin, and the exact alternate origin
@@ -144,10 +149,22 @@ bytes in that frame; they expose no API or app shell and neither require nor
 set a session cookie. Missing, forged, expired, cross-frame, and wrong-Host
 grants return 404. In particular, changing the preview URL's hostname back to
 the app hostname cannot return executable Artifact bytes. The only permitted
-framing ancestor is the origin that minted the grant.
+framing ancestor is the origin that minted the grant. A grant request that
+presents the daemon's own session cookie (`os_token`, or the team login
+cookie) is also refused with 404: the legitimate spend is the cross-site
+subframe load, on which a `SameSite=Strict` cookie is never sent, so a cookie
+can only mean a grant URL opened top-level on a loopback name that also holds
+a session -- the one browsing context in which the executable document could
+load that name's authenticated API as a same-site subresource (an `<img>` of
+another frame's file, readable through a canvas) and then navigate itself
+away with the bytes. Cookies of other local applications on the same
+hostname are not the daemon's and do not count.
 The main document remains pinned to the selected captured version. Sibling
 resources resolve by ID or an unambiguous filename within that frame and use
-their current captured versions; this is not a frozen multi-file bundle.
+their current captured versions; this is not a frozen multi-file bundle. The
+inert `/preview/` route answers a report's relative reference by the same
+frame-scoped rule when the request's same-origin `Referer` names the report,
+so a figure does not render in one preview mode and 404 in the other.
 All served bytes must pass snapshot checksum verification, and a missing or
 damaged snapshot does not fall back to a mutable workspace file.
 

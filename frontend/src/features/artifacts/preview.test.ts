@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sandboxOrigin } from "../../stores/session";
-import { setArtifactsFetch } from "./api";
-import { bootArtifacts } from "./boot";
-import { renderHtmlPreview } from "./preview";
+import { setArtifactsFetch, translate } from "./api";
+import { forgetGrants, renderHtmlPreview } from "./preview";
 import { renderArtifactDescriptor } from "./renderers";
 
 class FakeNode {
@@ -36,29 +34,24 @@ const app = { protocol: "http:", hostname: "127.0.0.1", port: "8760" };
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const host = (node: FakeNode) => node as unknown as HTMLElement;
+const grant = { origin, path, expires_in: 3600 };
+const noscript = translate("viewer.renderer.noscript");
+const interactive = translate("viewer.renderer.interactive");
 
 describe("production HTML artifact preview", () => {
   beforeEach(() => {
     vi.stubGlobal("location", app);
     vi.stubGlobal("document", { createElement: (tag: string) => new FakeNode(tag) });
-    sandboxOrigin.value = origin;
+    forgetGrants();
   });
 
   afterEach(() => {
     setArtifactsFetch(null);
-    sandboxOrigin.value = "";
+    forgetGrants();
     vi.unstubAllGlobals();
   });
 
-  it("initializes the verified origin in workbench boot and refuses an unsafe override", () => {
-    sandboxOrigin.value = "";
-    bootArtifacts({});
-    expect(sandboxOrigin.value).toBe(origin);
-    bootArtifacts({ __OPERON__: { sandboxOrigin: "http://127.0.0.1:8760" } });
-    expect(sandboxOrigin.value).toBe("");
-  });
-
-  it("the renderer starts inert and upgrades only after its authenticated grant resolves", async () => {
+  it("waits for its authenticated grant and navigates the frame exactly once", async () => {
     let release!: (value: Response) => void;
     const request = vi.fn(() => new Promise<Response>((done) => { release = done; }));
     setArtifactsFetch(request);
@@ -68,28 +61,68 @@ describe("production HTML artifact preview", () => {
     });
     const content = body.children[0]!.children[1]!;
     const frame = content.children[0]!;
-    expect(frame.src).toBe("/preview/report");
+    const note = content.children[1]!;
+    // No first paint of the inert document: on a loopback page the grant is
+    // the expected outcome, and loading the report twice is pure waste.
+    expect(frame.src).toBe("");
     expect(frame.getAttribute("sandbox")).toBe("");
-    expect(content.children).toHaveLength(2);
+    expect(note.textContent).toBe(noscript);
     expect(request).toHaveBeenCalledWith("/api/v1/artifacts/report/sandbox-grant", expect.objectContaining({ method: "POST" }));
 
-    release(response({ origin, path }));
+    release(response(grant));
     await flush();
     expect(frame.src).toBe(origin + path);
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin");
-    expect(content.children).toHaveLength(1);
+    // The caption is retargeted, not removed: a cross-origin frame cannot
+    // report a refused navigation, so a blank canvas keeps an explanation.
+    expect(content.children).toHaveLength(2);
+    expect(note.textContent).toBe(interactive);
   });
 
-  it("pins both the inert bytes and the scoped grant to an exact version", async () => {
+  it("reuses a live grant for the same artifact version instead of minting again", async () => {
+    const request = vi.fn(async () => response(grant));
+    setArtifactsFetch(request);
+    const first = new FakeNode();
+    renderHtmlPreview(host(first), { id: "report" });
+    await flush();
+    expect(first.children[0]!.src).toBe(origin + path);
+
+    const second = new FakeNode();
+    renderHtmlPreview(host(second), { id: "report" });
+    // Synchronous: the remembered URL needs no round trip.
+    expect(second.children[0]!.src).toBe(origin + path);
+    expect(second.children[0]!.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin");
+    expect(request).toHaveBeenCalledTimes(1);
+
+    // A different version is a different grant.
+    renderHtmlPreview(host(new FakeNode()), { id: "report", version_id: "version-1", _exactVersion: true });
+    await flush();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not remember a grant that would expire before it could be reused", async () => {
+    const request = vi.fn(async () => response({ ...grant, expires_in: 30 }));
+    setArtifactsFetch(request);
+    renderHtmlPreview(host(new FakeNode()), { id: "report" });
+    await flush();
+    renderHtmlPreview(host(new FakeNode()), { id: "report" });
+    await flush();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("pins both the inert fallback and the scoped grant to an exact version", async () => {
     const request = vi.fn(async () => response({ error: "unavailable" }, 409));
     setArtifactsFetch(request);
     const content = new FakeNode();
     renderHtmlPreview(host(content), { id: "report", version_id: "version-1", _exactVersion: true });
     await flush();
     expect(request).toHaveBeenCalledWith("/api/v1/artifacts/report/sandbox-grant?version_id=version-1", expect.objectContaining({ method: "POST" }));
-    expect(content.children[0]!.src).toBe("/api/v1/artifacts/versions/version-1");
+    // The app-origin preview of the version id: pinned bytes, forced HTML,
+    // and relative siblings resolve next to it. Never the raw API byte route.
+    expect(content.children[0]!.src).toBe("/preview/version-1");
     expect(content.children[0]!.getAttribute("sandbox")).toBe("");
     expect(content.children).toHaveLength(2);
+    expect(content.children[1]!.textContent).toBe(noscript);
   });
 
   it.each([
@@ -103,24 +136,25 @@ describe("production HTML artifact preview", () => {
     { origin: "https://external.example", path },
     { path },
     null,
-  ])("keeps the document inert for an invalid grant %j", async (grant) => {
-    setArtifactsFetch(async () => response(grant));
+  ])("falls back to the inert document for an invalid grant %j", async (reply) => {
+    setArtifactsFetch(async () => response(reply));
     const content = new FakeNode();
     renderHtmlPreview(host(content), { id: "report" });
     await flush();
     expect(content.children[0]!.src).toBe("/preview/report");
     expect(content.children[0]!.getAttribute("sandbox")).toBe("");
     expect(content.children).toHaveLength(2);
+    expect(content.children[1]!.textContent).toBe(noscript);
   });
 
-  it("does not grant from an unsafe runtime origin override", async () => {
-    sandboxOrigin.value = "http://127.0.0.1:8760";
-    const request = vi.fn(async () => response({ origin, path }));
+  it("stays inert without a request when the page is not a loopback HTTP origin", () => {
+    vi.stubGlobal("location", { ...app, hostname: "remote.example" });
+    const request = vi.fn(async () => response(grant));
     setArtifactsFetch(request);
     const content = new FakeNode();
     renderHtmlPreview(host(content), { id: "report" });
-    await flush();
     expect(request).not.toHaveBeenCalled();
+    expect(content.children[0]!.src).toBe("/preview/report");
     expect(content.children[0]!.getAttribute("sandbox")).toBe("");
   });
 
@@ -131,17 +165,18 @@ describe("production HTML artifact preview", () => {
     renderHtmlPreview(host(content), { id: "report" });
     const frame = content.children[0]!;
     frame.remove();
-    release(response({ origin, path }));
+    release(response(grant));
     await flush();
-    expect(frame.src).toBe("/preview/report");
+    expect(frame.src).toBe("");
     expect(frame.getAttribute("sandbox")).toBe("");
   });
 
-  it("keeps the inert document on a network failure", async () => {
+  it("falls back to the inert document on a network failure", async () => {
     setArtifactsFetch(async () => { throw new TypeError("connection lost"); });
     const content = new FakeNode();
     renderHtmlPreview(host(content), { id: "report" });
     await flush();
+    expect(content.children[0]!.src).toBe("/preview/report");
     expect(content.children[0]!.getAttribute("sandbox")).toBe("");
     expect(content.children).toHaveLength(2);
   });

@@ -5,48 +5,98 @@ import {
   INTERACTIVE_ARTIFACT_SANDBOX,
   resolveSandboxOrigin,
 } from "../../islands/frames";
-import { sandboxOrigin } from "../../stores/session";
 import { api, el, translate } from "./api";
-import { artUrl } from "./cache";
 import type { ArtifactRow } from "./types";
 
-/** Initialize the production workbench using the same verified origin policy. */
-export function initializeSandboxOrigin(target?: Record<string, unknown>): void {
-  const config = target?.__OPERON__;
-  const override = config && typeof config === "object"
-    ? (config as Record<string, unknown>).sandboxOrigin : undefined;
-  sandboxOrigin.value = resolveSandboxOrigin(
-    typeof location === "undefined" ? null : location,
-    override,
-  );
+/** A grant already minted for one exact artifact version, reusable until near expiry. */
+interface CachedGrant {
+  src: string;
+  expiresAt: number;
 }
 
-/** The inert preview remains usable if an interactive grant is unavailable. */
+const grants = new Map<string, CachedGrant>();
+
+/**
+ * Renew this long before the server would refuse. A cached URL that navigates
+ * a frame into a 404 is a blank canvas the caption cannot explain.
+ */
+const RENEWAL_MARGIN_MS = 60_000;
+
+/** The verified alternate loopback origin for this page, or "" when the preview stays inert. */
+export function sandboxOriginForPage(): string {
+  return resolveSandboxOrigin(typeof location === "undefined" ? null : location);
+}
+
+/** Drop every remembered grant (tests, and a future explicit logout hook). */
+export function forgetGrants(): void {
+  grants.clear();
+}
+
+function grantTtlMs(grant: unknown): number {
+  const seconds = grant && typeof grant === "object"
+    ? (grant as Record<string, unknown>).expires_in : undefined;
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0
+    ? seconds * 1000 : 0;
+}
+
+function upgrade(frame: HTMLIFrameElement, note: HTMLElement, src: string): void {
+  frame.setAttribute("sandbox", INTERACTIVE_ARTIFACT_SANDBOX);
+  frame.src = src;
+  // A cross-origin frame cannot tell us whether its navigation was refused,
+  // so the explanation is retargeted, never removed: a blank canvas still
+  // has a caption that says what it is and what to do about it.
+  note.textContent = translate("viewer.renderer.interactive");
+}
+
+/**
+ * The inert document is the fallback, not the first paint: on an origin
+ * that can never grant, or once a grant is refused, the frame loads the
+ * app-origin preview; otherwise it waits for the grant and navigates once.
+ */
 export function renderHtmlPreview(content: HTMLElement, a: ArtifactRow): void {
-  const frame = el("iframe");
+  const frame = el("iframe") as HTMLIFrameElement;
   applyArtifactIframeSandbox(frame, "html-preview");
-  const exactVersion = a._exactVersion && a.version_id ? a.version_id : "";
-  frame.src = exactVersion ? artUrl(a) : htmlPreviewSrc("", a.id);
+  const exactVersion = a._exactVersion && a.version_id ? String(a.version_id) : "";
+  // `/preview/<version-id>` pins the bytes, forces text/html and lets a
+  // relative <img src="figure.png"> resolve beside the report, which the raw
+  // API byte route does not.
+  const inertSrc = htmlPreviewSrc(exactVersion || a.id);
   content.appendChild(frame);
   const note = el("p", "muted renderer-noscript", translate("viewer.renderer.noscript"));
   content.appendChild(note);
+  const attached = () => frame.isConnected && frame.parentNode === content;
 
-  // Revalidate the store at use time; compatibility window exports can write it.
-  const origin = sandboxOrigin.value && resolveSandboxOrigin(
-    typeof location === "undefined" ? null : location,
-    sandboxOrigin.value,
-  );
-  if (!origin) return;
+  const origin = sandboxOriginForPage();
+  if (!origin) {
+    frame.src = inertSrc;
+    return;
+  }
+  const key = `${a.id}:${exactVersion}`;
+  const cached = grants.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    upgrade(frame, note, cached.src);
+    return;
+  }
+  grants.delete(key);
   const suffix = exactVersion ? `?version_id=${encodeURIComponent(exactVersion)}` : "";
   api(`/artifacts/${encodeURIComponent(a.id)}/sandbox-grant${suffix}`, { method: "POST" })
     .then((grant) => {
       // A user may close the viewer or switch artifacts before the POST ends.
-      if (!frame.isConnected || frame.parentNode !== content) return;
+      if (!attached()) return;
       const src = grantedHtmlPreviewSrc(origin, grant, a.id);
-      if (!src) return;
-      frame.setAttribute("sandbox", INTERACTIVE_ARTIFACT_SANDBOX);
-      frame.src = src;
-      note.remove();
+      if (!src) {
+        frame.src = inertSrc;
+        return;
+      }
+      const ttl = grantTtlMs(grant);
+      if (ttl > RENEWAL_MARGIN_MS) {
+        grants.set(key, { src, expiresAt: Date.now() + ttl - RENEWAL_MARGIN_MS });
+      }
+      upgrade(frame, note, src);
     })
-    .catch(() => { /* Preserve the inert document and its explanation. */ });
+    .catch(() => {
+      // Refused (409), unauthenticated, or unreachable: keep the inert
+      // document and its explanation.
+      if (attached()) frame.src = inertSrc;
+    });
 }

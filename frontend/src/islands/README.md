@@ -12,7 +12,7 @@ F-18 imperative islands. 3Dmol lazy script-tag inject (vendored copy only; the d
 | [`annot.test.ts`](annot.test.ts) | `annotationStatus` mapping; held pins; `openAnnotations`. |
 | [`dom.ts`](dom.ts) | `el` / `$` / lucide subset / `ghostIconBtn`. |
 | [`frames.ts`](frames.ts) | Inert iframe policy, verified loopback origin and grant path checks; app-origin Ketcher + clipboard allow. |
-| [`frames.test.ts`](frames.test.ts) | iframe sandbox attributes, unsafe origin overrides, and app-origin Ketcher. |
+| [`frames.test.ts`](frames.test.ts) | iframe sandbox attributes, the derived loopback origin, grant path checks, and app-origin Ketcher. |
 | [`host.ts`](host.ts) | `isReady` window calls; `t()` fallback. |
 | [`index.ts`](index.ts) | `bootIslands` / `installIslands`. Overwrites F-05 stubs. |
 | [`install.test.ts`](install.test.ts) | Contract names pass `isReady` after install. |

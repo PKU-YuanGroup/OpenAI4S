@@ -22,7 +22,7 @@ export function openKetcher(a?: ArtifactRow | null): void {
   if (!body) return;
   body.innerHTML = "";
   const frame = el("iframe");
-  applyKetcherFrame(frame, "", a && a.id ? a.id : null);
+  applyKetcherFrame(frame, a && a.id ? a.id : null);
   body.appendChild(frame);
   openModalEl($("#modal"));
 }

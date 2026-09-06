@@ -14698,14 +14698,17 @@ def make_handler(cfg: Config, hub: WSHub, runner: SessionRunner):
             route answer it the way the granted route does. Anything that is
             not a same-host `/preview/` referrer yields None.
             """
+            headers = getattr(self, "headers", None)
+            if headers is None:
+                return None
             try:
-                referer = urlparse(self.headers.get("Referer", "") or "")
+                referer = urlparse(headers.get("Referer", "") or "")
             except ValueError:
                 return None
+            host = (headers.get("Host", "") or "").strip().lower()
             if (
                 not referer.path.startswith("/preview/")
-                or referer.netloc.lower()
-                != (self.headers.get("Host", "") or "").strip().lower()
+                or referer.netloc.lower() != host
             ):
                 return None
             ident = unquote(referer.path[len("/preview/") :])

@@ -108,3 +108,34 @@ export async function waitUntil(label, predicate, timeoutMs = 20000, intervalMs 
   }
   throw new Error(`timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ""}`);
 }
+
+/**
+ * A daemon spawned by a browser gate gets a pinned, minimal environment: the
+ * developer's shell must not drive it (a real provider key, a team mode, an
+ * enforced kernel sandbox or an approval policy would each change what the
+ * gate measures). Only locale, temp and executable lookup pass through.
+ */
+export function minimalChildEnvironment(extra = {}) {
+  const environment = {
+    PYTHONDONTWRITEBYTECODE: "1",
+    PYTHONUTF8: "1",
+    OPENAI4S_SKIP_DOTENV: "1",
+    OPENAI4S_SECRET_STORE: "plaintext",
+    OPENAI4S_UNATTENDED_APPROVAL: "deny",
+    ...extra,
+  };
+  for (const key of ["PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "WINDIR"]) {
+    if (process.env[key]) environment[key] = process.env[key];
+  }
+  return environment;
+}
+
+/** Keep the tail of a child's stream so a failure can quote the daemon. */
+export function boundedLogCollector(stream, limit = 64 * 1024) {
+  let value = "";
+  stream?.setEncoding("utf8");
+  stream?.on("data", (chunk) => {
+    value = (value + chunk).slice(-limit);
+  });
+  return () => value;
+}

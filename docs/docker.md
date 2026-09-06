@@ -27,6 +27,12 @@ not to put `0.0.0.0` on an untrusted network. The image binds `0.0.0.0`
 anyway — and that is not a contradiction, because the two statements are about
 different networks.
 
+One feature does notice the bind: executable HTML Artifact previews exist only
+on a direct loopback bind, where the *other* loopback name serves as the
+sandbox origin. A container bound to `0.0.0.0` never mints a preview grant, so
+the Workbench keeps the inert, script-free preview for HTML reports; download
+the report to run it.
+
 Inside a container, `0.0.0.0` is the container's *own* network namespace. It is
 the only address a published port or a Service can reach; a container bound to
 `127.0.0.1` is reachable from nothing but itself. What actually decides
@@ -329,6 +335,10 @@ OpenAI4S 提供了 daemon 与 Web 工作台的容器镜像、面向单机的 `co
 
 daemon 默认绑 `127.0.0.1`，[security.md](security.md) 也写着不要把 `0.0.0.0`
 放到不可信网络上。镜像却仍然绑 `0.0.0.0`——这不矛盾，因为两句话说的是不同的网络。
+
+有一项功能确实取决于绑定地址：可执行的 HTML Artifact 预览只在直接绑 loopback 时
+存在，由另一个 loopback 名充当沙箱源。绑在 `0.0.0.0` 的容器永远不会签发预览
+grant，Workbench 对 HTML 报表始终保留惰性、不执行脚本的预览；要运行报表请下载它。
 
 在容器里，`0.0.0.0` 指的是这个容器**自己**的网络命名空间。它是发布端口或 Service
 唯一能到达的地址；绑在 `127.0.0.1` 的容器除了自己谁也够不着。真正决定暴露程度的是
