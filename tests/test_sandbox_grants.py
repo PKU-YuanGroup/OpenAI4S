@@ -22,7 +22,6 @@ def mint(secret, frame, **kwargs):
         secret,
         frame,
         app_origin=APP,
-        sandbox_origin=SANDBOX,
         artifact_id="a-1",
         version_id="v-1",
         **kwargs,
@@ -171,6 +170,18 @@ def test_origin_pair_supports_both_directions_and_default_port():
         "http://localhost",
         "http://127.0.0.1",
     )
+    assert grants.origin_pair("localhost:80", 80) == grants.origin_pair("localhost", 80)
+
+
+def test_origin_pair_agrees_with_the_rebind_allowlist_on_case():
+    """Two parsers of one header must not disagree on what a browser sends.
+
+    The gateway's DNS-rebind allowlist lowercases the Host before comparing;
+    a second parser that refused `LOCALHOST:8760` would let a request past the
+    first gate and then silently degrade the preview to inert.
+    """
+    assert grants.origin_pair("LOCALHOST:8760", 8760) == (SANDBOX, APP)
+    assert grants.origin_pair(" 127.0.0.1:8760 ", 8760) == (APP, SANDBOX)
 
 
 def test_grant_pins_primary_version_and_mint_origin():
@@ -184,15 +195,27 @@ def test_grant_pins_primary_version_and_mint_origin():
 
 
 @pytest.mark.parametrize(
-    "sandbox", [APP, "https://localhost:8760", "http://evil.test:8760"]
+    "app_origin",
+    [
+        "https://127.0.0.1:8760",
+        "http://evil.test:8760",
+        "http://127.0.0.1:8760/",
+        "http://LOCALHOST:8760",
+        "http://[::1]:8760",
+        "http://localhost:99999",
+        "127.0.0.1:8760",
+        "",
+    ],
 )
-def test_mint_rejects_an_unrelated_or_same_origin(sandbox):
+def test_mint_rejects_anything_but_an_exact_loopback_app_origin(app_origin):
+    """The spend origin is derived, never supplied, so only the minting side
+    can be wrong -- and it is refused unless it is exactly one loopback
+    origin in the form `origin_pair` itself produces."""
     with pytest.raises(grants.GrantError):
         grants.mint(
             SECRET,
             "f-123",
-            app_origin=APP,
-            sandbox_origin=sandbox,
+            app_origin=app_origin,
             artifact_id="a-1",
             version_id="v-1",
         )

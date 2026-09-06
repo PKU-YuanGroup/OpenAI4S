@@ -423,6 +423,23 @@ _WEBUI_REQUEST_SITES = (
 )
 
 
+#: Hosts admitted only where the built preview-origin resolver names them: the
+#: compiled workbench bundle, next to the `hostname===` comparison that derives
+#: the other loopback name. Anywhere else -- the frozen legacy shell, a
+#: satellite page -- a loopback literal is a new absolute URL and has to argue
+#: for itself like any other host, or the tree-wide allowance would let a
+#: copy-pasted `"http://127.0.0.1"` base URL through unremarked.
+_WEBUI_SCOPED_HOSTS = {"localhost", "127.0.0.1"}
+
+
+def _webui_host_accounted(path: str, host: str, near: str) -> bool:
+    if host not in _WEBUI_NAMED_HOSTS:
+        return False
+    if host in _WEBUI_SCOPED_HOSTS:
+        return path.startswith("server/webui/dist/assets/") and 'hostname==="' in near
+    return True
+
+
 def _webui_sources() -> list[Path]:
     return [
         path
@@ -500,8 +517,8 @@ def test_every_external_host_the_client_names_is_accounted_for():
     unaccounted = sorted(
         {
             (path, line, host)
-            for path, line, host, _ in _webui_absolute_urls()
-            if host not in _WEBUI_NAMED_HOSTS
+            for path, line, host, near in _webui_absolute_urls()
+            if not _webui_host_accounted(path, host, near)
         }
     )
     assert not unaccounted, (

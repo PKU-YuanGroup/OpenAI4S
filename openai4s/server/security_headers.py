@@ -58,7 +58,29 @@ def artifact_content_security_policy() -> str:
     )
 
 
-def sandboxed_artifact_content_security_policy(app_origins: Sequence[str]) -> str:
+def _one_minting_origin(app_origin: str) -> str:
+    """Refuse anything but a single, whole `http://` origin.
+
+    The first draft of this policy took a *sequence* of ancestors and was
+    handed both loopback names, which let a report navigate its own frame
+    from the sandbox name to the cookie name and stay framed. The type now
+    says what the data already is: a grant is minted by exactly one origin,
+    and that origin is the only permitted ancestor. Anything else is a
+    caller bug, and a caller bug here must not degrade into a wider policy.
+    """
+    origin = str(app_origin or "")
+    if (
+        not origin.startswith("http://")
+        or origin.endswith("/")
+        or any(ch.isspace() for ch in origin)
+        or ";" in origin
+        or "," in origin
+    ):
+        raise ValueError("sandbox preview needs exactly one minting origin")
+    return origin
+
+
+def sandboxed_artifact_content_security_policy(app_origin: str) -> str:
     """Policy for artifact bytes served on the *sandbox* origin.
 
     The grant route must validate its signed spend origin before selecting
@@ -70,10 +92,10 @@ def sandboxed_artifact_content_security_policy(app_origins: Sequence[str]) -> st
     navigate itself. Such navigation can disclose its bearer path and readable
     bytes. This policy is not a general data-exfiltration boundary.
 
-    `frame-ancestors` names the app origins literally: `'self'` would mean the
-    sandbox origin, which is not who embeds this.
+    `frame-ancestors` names the one minting origin literally: `'self'` would
+    mean the sandbox origin, which is not who embeds this.
     """
-    ancestors = " ".join(app_origins) if app_origins else "'none'"
+    ancestors = _one_minting_origin(app_origin)
     return "; ".join(
         [
             "default-src 'none'",
@@ -96,23 +118,20 @@ def sandboxed_artifact_content_security_policy(app_origins: Sequence[str]) -> st
     )
 
 
-def sandboxed_artifact_security_headers(
-    app_origins: Sequence[str],
-) -> dict[str, str]:
+def sandboxed_artifact_security_headers(app_origin: str) -> dict[str, str]:
     """Headers for an executable artifact preview on the sandbox origin."""
     headers = security_headers()
     headers["Content-Security-Policy"] = sandboxed_artifact_content_security_policy(
-        app_origins
+        app_origin
     )
     headers["Referrer-Policy"] = "no-referrer"
     headers["Cache-Control"] = "no-store"
-    if app_origins:
-        # Dropped, not set to a permissive value: `X-Frame-Options` has no
-        # "these origins" form, and its non-standard `ALLOWALL` relies on
-        # browsers ignoring a value they cannot parse. `frame-ancestors` is
-        # the standard control and takes precedence wherever both appear, so
-        # the honest thing is to let it be the only one.
-        headers.pop("X-Frame-Options", None)
+    # Dropped, not set to a permissive value: `X-Frame-Options` has no "this
+    # origin" form, and its non-standard `ALLOWALL` relies on browsers
+    # ignoring a value they cannot parse. `frame-ancestors` is the standard
+    # control and takes precedence wherever both appear, so the honest thing
+    # is to let it be the only one.
+    headers.pop("X-Frame-Options", None)
     return headers
 
 
@@ -127,7 +146,7 @@ def artifact_security_headers() -> dict[str, str]:
     return headers
 
 
-def embeddable_security_headers() -> dict[str, str]:
+def embeddable_security_headers(*, allow_eval: bool = False) -> dict[str, str]:
     """Headers for a UI-owned document the Workbench loads in an iframe.
 
     `/ketcher` and the vendored editor it frames are first-party documents, not
@@ -138,7 +157,7 @@ def embeddable_security_headers() -> dict[str, str]:
     """
     headers = security_headers()
     headers["Content-Security-Policy"] = content_security_policy(
-        frame_ancestors="'self'"
+        frame_ancestors="'self'", allow_eval=allow_eval
     )
     headers["X-Frame-Options"] = "SAMEORIGIN"
     return headers
@@ -153,26 +172,22 @@ def ketcher_editor_security_headers() -> dict[str, str]:
     this profile; its blob worker inherits it. The wrapper, Workbench, and
     all untrusted Artifact responses keep their existing no-eval policies.
     """
-    headers = embeddable_security_headers()
-    headers["Content-Security-Policy"] = "; ".join(
-        (
-            directive + " 'unsafe-eval'"
-            if directive.startswith("script-src ")
-            else directive
-        )
-        for directive in headers["Content-Security-Policy"].split("; ")
-    )
-    return headers
+    return embeddable_security_headers(allow_eval=True)
 
 
 def content_security_policy(
     *,
     frame_ancestors: str = "'none'",
     frame_src: Sequence[str] = (),
+    allow_eval: bool = False,
 ) -> str:
     """Return the static UI-shell policy.
 
-    Two directives vary, and both vary by *who is on the other side of a
+    ``allow_eval`` is the one directive that varies by what the document
+    *contains*: it exists for a single pinned first-party bundle that compiles
+    JavaScript strings, and nothing model-authored is ever built with it.
+
+    Two more directives vary, and both vary by *who is on the other side of a
     frame boundary* rather than by what this document contains:
 
     ``frame_ancestors``
@@ -187,10 +202,15 @@ def content_security_policy(
         sandbox side was already correct.
     """
     script_src = ["'self'"]
-    # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
-    # permits exactly that and nothing else — unlike 'unsafe-eval', it does not
-    # re-enable eval()/new Function() for injected script.
-    script_src.append("'wasm-unsafe-eval'")
+    if allow_eval:
+        # 'unsafe-eval' already covers WebAssembly compilation, so the narrower
+        # keyword below would be dead weight beside it.
+        script_src.append("'unsafe-eval'")
+    else:
+        # 3Dmol compiles WebAssembly for molecular surfaces. 'wasm-unsafe-eval'
+        # permits exactly that and nothing else — unlike 'unsafe-eval', it does
+        # not re-enable eval()/new Function() for injected script.
+        script_src.append("'wasm-unsafe-eval'")
 
     policy = "; ".join(
         [

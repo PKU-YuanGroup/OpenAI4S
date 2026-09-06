@@ -66,25 +66,28 @@ class Grant:
     version_id: str
 
 
+#: The two loopback names, each the other's sandbox. Kept as one table so
+#: `origin_pair`, `mint` and the gateway's `_app_origins` cannot drift apart.
+LOOPBACK_PAIRS: tuple[tuple[str, str], ...] = (
+    ("127.0.0.1", "localhost"),
+    ("localhost", "127.0.0.1"),
+)
+
+
 def origin_pair(host: str, port: int) -> tuple[str, str]:
-    """Accept only an exact HTTP loopback authority at the listener port."""
-    try:
-        parsed = urlsplit("http://" + host)
-        actual_port = parsed.port or 80
-    except ValueError as error:
-        raise GrantError("invalid preview origin") from error
-    other = {"127.0.0.1": "localhost", "localhost": "127.0.0.1"}.get(
-        parsed.hostname or ""
-    )
-    authority = f"{parsed.hostname}:{port}" if port != 80 else parsed.hostname
-    if (
-        not other
-        or actual_port != port
-        or host not in {authority, f"{parsed.hostname}:{port}"}
-    ):
-        raise GrantError("invalid preview origin")
+    """Accept only an exact HTTP loopback authority at the listener port.
+
+    The raw ``Host`` header is compared as a whole after one lowercase, so a
+    client the gateway's rebind allowlist admits (it lowercases too) is not
+    refused here on case alone. Userinfo, a path, brackets, a padded port and
+    any other port are refused; on port 80 the portless form is the origin.
+    """
+    authority = str(host or "").strip().lower()
     suffix = f":{port}" if port != 80 else ""
-    return f"http://{parsed.hostname}{suffix}", f"http://{other}{suffix}"
+    for name, other in LOOPBACK_PAIRS:
+        if authority in {f"{name}{suffix}", f"{name}:{port}"}:
+            return f"http://{name}{suffix}", f"http://{other}{suffix}"
+    raise GrantError("invalid preview origin")
 
 
 def _sign(secret: str, payload: str) -> str:
@@ -107,13 +110,16 @@ def mint(
     frame_id: str,
     *,
     app_origin: str,
-    sandbox_origin: str,
     artifact_id: str,
     version_id: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     now: float | None = None,
 ) -> str:
-    """Return a token granting read access to one frame's artifacts."""
+    """Return a token granting read access to one frame's artifacts.
+
+    The spend origin is not a parameter: it is *derived* from the minting
+    origin, so no caller can pair a grant with a sandbox it did not compute.
+    """
     if not secret:
         raise GrantError("no signing secret")
     if not all(
@@ -121,12 +127,14 @@ def mint(
         for value in (frame_id, artifact_id, version_id)
     ):
         raise GrantError("missing preview scope")
-    parsed = urlsplit(app_origin)
-    if parsed.scheme != "http" or origin_pair(parsed.netloc, parsed.port or 80) != (
-        app_origin,
-        sandbox_origin,
-    ):
+    try:
+        parsed = urlsplit(app_origin)
+        pair = origin_pair(parsed.netloc, parsed.port or 80)
+    except ValueError as error:  # GrantError is a ValueError too
+        raise GrantError("invalid preview origin") from error
+    if parsed.scheme != "http" or pair[0] != app_origin:
         raise GrantError("invalid preview origin")
+    sandbox_origin = pair[1]
     expiry = int((time.time() if now is None else now) + max(1, int(ttl_seconds)))
     payload = _b64(
         json.dumps(
@@ -214,6 +222,7 @@ __all__ = [
     "DEFAULT_TTL_SECONDS",
     "Grant",
     "GrantError",
+    "LOOPBACK_PAIRS",
     "SANDBOX_PREFIX",
     "grant_path",
     "mint",
