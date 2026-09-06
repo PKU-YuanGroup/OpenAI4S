@@ -80,6 +80,121 @@ def test_the_published_description_counts_the_skills_it_actually_ships():
     )
 
 
+#: Every prose sentence that states a live Skill count, as (path, regex, which
+#: counts its groups carry). Historical figures — the v0.2.0 release-note lines,
+#: the tag's pack size in `docs/TODO.md` — are deliberately not matched: they
+#: were true at the tag and are meant to stay as written.
+COUNT_SITES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("README.md", r"\*\*🔬 (\d+) bundled Skills\*\*", ("total",)),
+    ("README.md", r"(\d+) curated OpenAI4S recipes", ("curated",)),
+    ("README.md", r"plus all (\d+) recipes from the pinned", ("collection",)),
+    ("README.md", r"The (\d+) bundled Skills are recipes", ("total",)),
+    ("README.md", r"# the (\d+) curated Skills", ("curated",)),
+    ("README.md", r"# the (\d+) pinned bioinformatics recipes", ("collection",)),
+    ("README.md", r"you already have all (\d+)", ("total",)),
+    ("README_zh.md", r"\*\*🔬 (\d+) 个内置 Skill\*\*", ("total",)),
+    ("README_zh.md", r"(\d+) 份由 OpenAI4S 筛选维护", ("curated",)),
+    ("README_zh.md", r"内置的 (\d+) 个 Skill 是配方", ("total",)),
+    ("README_zh.md", r"# (\d+) 个精选 Skill", ("curated",)),
+    ("README_zh.md", r"# (\d+) 个固定版生信配方", ("collection",)),
+    ("README_zh.md", r"那 (\d+) 个你已经全有了", ("total",)),
+    (
+        "CLAUDE.md",
+        r"(\d+) bundled Skills: (\d+) curated OpenAI4S directories plus the pinned (\d+)-recipe",
+        ("total", "curated", "collection"),
+    ),
+    ("docs/skills.md", r"## Bundled Skills \((\d+)\)", ("total",)),
+    (
+        "docs/skills.md",
+        r"two maintenance tiers: (\d+) curated OpenAI4S Skills",
+        ("curated",),
+    ),
+    ("docs/skills.md", r"read-only import of all (\d+) MIT-licensed", ("collection",)),
+    ("docs/skills.md", r"### Curated OpenAI4S Skills \((\d+)\)", ("curated",)),
+    ("docs/skills.md", r"# the (\d+) curated Skills", ("curated",)),
+    ("docs/skills.md", r"# the (\d+) pinned recipes", ("collection",)),
+    (
+        "docs/skills.md",
+        r"(\d+) Skills and a bundled Skill takes precedence",
+        ("total",),
+    ),
+    (
+        "skills/README.md",
+        r"This tree exposes (\d+) bundled Skills: (\d+) curated OpenAI4S recipes plus the (\d+)",
+        ("total", "curated", "collection"),
+    ),
+    (
+        "skills/README_zh.md",
+        r"共暴露 (\d+) 个内置 Skill：(\d+) 份由 OpenAI4S 筛选维护",
+        ("total", "curated"),
+    ),
+    ("skills/README_zh.md", r"GPTomics/bioSkills 全部 (\d+) 份配方", ("collection",)),
+    ("tools/skills-installer/README.md", r"# the (\d+) curated Skills", ("curated",)),
+    (
+        "tools/skills-installer/README.md",
+        r"# the (\d+) pinned recipes",
+        ("collection",),
+    ),
+    (
+        "tools/skills-installer/README.md",
+        r"all (\d+) Skills, and `openai4s/skills_loader",
+        ("total",),
+    ),
+    ("tools/skills-installer/README_zh.md", r"# (\d+) 个精选 Skill", ("curated",)),
+    (
+        "tools/skills-installer/README_zh.md",
+        r"# (\d+) 个固定版第三方配方",
+        ("collection",),
+    ),
+    (
+        "tools/skills-installer/README_zh.md",
+        r"wheel 已经带上了全部 (\d+) 个 Skill",
+        ("total",),
+    ),
+    ("docs/TODO.md", r"current `main` packs [\d,]+ files /\s+(\d+) Skills", ("total",)),
+    (
+        "docs/TODO_zh.md",
+        r"当前 `main` 则打出 [\d,]+ 个文件 / (\d+) 个 Skill",
+        ("total",),
+    ),
+)
+
+
+def test_every_prose_count_matches_the_tree():
+    """The number `package.json` is held to is stated in thirty other places.
+
+    The count gate above pins one JSON field; the same 604, 43 and 561 sit in
+    the root README (the PyPI long_description), `CLAUDE.md`, the Skills doc,
+    the `skills/` index, the installer README and the TODO — where the next
+    Skill directory would leave them wrong with `package.json` green. Each site
+    is matched by a sentence-specific pattern so a sentence that stops stating
+    the count fails too, rather than silently dropping out of the gate; a
+    second collection would change what "collection" means here and must
+    revisit the table.
+    """
+    dirs = _skill_dirs()
+    curated = [skill for skill in dirs if skill.parent == SKILLS]
+    expected = {
+        "total": len(dirs),
+        "curated": len(curated),
+        "collection": len(dirs) - len(curated),
+    }
+    problems = []
+    for rel, pattern, counts in COUNT_SITES:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        matches = list(re.finditer(pattern, text))
+        if not matches:
+            problems.append(f"{rel}: no sentence matches {pattern!r} any more")
+        for match in matches:
+            for stated, name in zip(match.groups(), counts):
+                if int(stated) != expected[name]:
+                    problems.append(
+                        f"{rel}: says {stated} where the tree's {name} count is "
+                        f"{expected[name]} ({match.group(0)[:60]!r})"
+                    )
+    assert not problems, "\n".join(problems)
+
+
 def test_every_skill_page_carries_its_own_install_section():
     """The page a reader lands on must install the Skill it describes.
 
