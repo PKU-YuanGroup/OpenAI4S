@@ -17,7 +17,8 @@ npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 That is the form that works today: it runs the CLI straight from the
 repository, with no npm publication involved. The package's own name is
 `openai4s-skills`, and once it is published `npx openai4s-skills <command>`
-runs exactly the same code — until then that name does not resolve.
+runs the same CLI at its published version (the `github:` form always tracks
+the default branch) — until then that name does not resolve.
 
 ## Files
 

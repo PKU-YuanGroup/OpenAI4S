@@ -15,8 +15,8 @@ npx github:PKU-YuanGroup/OpenAI4S uninstall --all
 ```
 
 今天能用的就是这种写法：直接从仓库运行 CLI，不需要先发布到 npm。这个包自己的名
-字是 `openai4s-skills`，一旦发布，`npx openai4s-skills <command>` 跑的就是同一
-份代码——在那之前这个名字解析不到。
+字是 `openai4s-skills`，一旦发布，`npx openai4s-skills <command>` 跑的是发布版
+本里的同一套 CLI（`github:` 写法则始终跟随默认分支）——在那之前这个名字解析不到。
 
 ## 文件
 

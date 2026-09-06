@@ -5,15 +5,16 @@
 Developer- and user-facing tooling that is not part of the Python package.
 
 Everything under `openai4s/` ships in the wheel and is imported at runtime.
-What lives here does not: it is delivered through a different channel — today,
-npm — and is deliberately kept out of `[tool.setuptools.packages.find]` so a
+What lives here does not: it is delivered through a different channel — `npx`
+straight from this repository today, npm once the package is published — and is
+deliberately kept out of `[tool.setuptools.packages.find]` so a
 `pip install openai4s` carries no JavaScript.
 
 ## Subdirectories
 
 | Directory | Responsibility |
 | --- | --- |
-| [`skills-installer/`](skills-installer/) | The `openai4s-skills` command behind `npx openai4s-skills`. It copies the bundled Skill library out of this repository and into Claude Code, an OpenAI4S data directory, or any directory the user names — with a manifest that makes uninstall exact and overwrite refuse by default. |
+| [`skills-installer/`](skills-installer/) | The `openai4s-skills` command — run today as `npx github:PKU-YuanGroup/OpenAI4S <command>`, and as `npx openai4s-skills` once it is on npm. It copies the bundled Skill library out of this repository and into Claude Code, an OpenAI4S data directory, or any directory the user names — with a manifest that makes uninstall exact and overwrite refuse by default. |
 
 ## Where this fits
 

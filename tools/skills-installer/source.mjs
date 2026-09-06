@@ -6,7 +6,7 @@
  *   1. A tree that already contains `skills/`. That covers both ordinary
  *      cases: `npx github:PKU-YuanGroup/OpenAI4S` clones the repository before
  *      running this file, and the published npm package ships `skills/` inside
- *      it (about 6.4 MiB packed). Either way the common path needs no network
+ *      it (about 6.5 MiB packed). Either way the common path needs no network
  *      at all and installs the bytes npm just fetched.
  *   2. The source tarball at codeload.github.com, extracted into a cache
  *      directory. This is the `--remote` / `--repo` / `--ref` path -- a

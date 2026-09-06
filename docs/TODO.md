@@ -20,17 +20,18 @@ is a factual record of the v0.3 plan and is validated by
       `node tools/skills-installer/check_package.mjs`), and `npm pack` produces
       6.5 MiB carrying all 604 Skills. Until it is published,
       `npx openai4s-skills …` does not resolve; `npx github:PKU-YuanGroup/OpenAI4S install --all`
-      works today and is what every doc site leads with — the root README,
-      `docs/skills.md`, `tools/skills-installer/`, and each Skill's own page. The name is
-      unclaimed on the registry as of 2026-08-23.
+      works today and is what every doc site and the CLI's own `--help` lead
+      with — the root README, `docs/skills.md`, `tools/`, and each Skill's own
+      page, whose Install section is worded to stay true after publication. The
+      name is unclaimed on the registry as of 2026-08-23.
       *Done when:* `npm publish --access public` has run from a clean checkout
       of the released tag, `npx openai4s-skills list` works on a machine with
-      no checkout, and the 90 bilingual Skill pages whose `## Install` section
-      says the package is not on npm yet have stopped saying it
-      (`grep -rl openai4s-skills skills/` finds all 90; the Chinese sentence
-      wraps mid-phrase, so grep for the command name and not for the claim).
-      Needs an npm account with publish rights — no automated agent should hold
-      that credential.
+      no checkout, and the five pages that still say the name does not resolve
+      have stopped saying it — `README.md` (also the npm and PyPI front page),
+      `README_zh.md`, `docs/skills.md`, `tools/skills-installer/README.md` and
+      `README_zh.md`; `grep -rlE --exclude='TODO*' 'not on npm yet|name does not resolve|还没有发布到 npm|名字解析不到' README.md README_zh.md docs tools`
+      lists exactly those five. Needs an npm account with publish rights — no
+      automated agent should hold that credential.
 
 ## CI and supply chain
 
